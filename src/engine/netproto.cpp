@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot";
         default: return "?";
     }
 }
@@ -139,6 +139,7 @@ void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps
     w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
     for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
     w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
+    w.u32(m.ackSnap); w.u32(m.ackMask); // (#769)
 }
 bool NetRead(NetReader& r, MsgInputs& m) {
     const uint32_t newest = r.u32();
@@ -151,6 +152,7 @@ bool NetRead(NetReader& r, MsgInputs& m) {
         m.steps.push_back(s);
     }
     m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
+    m.ackSnap = r.u32(); m.ackMask = r.u32(); // (#769)
     if (m.action > 3) r.ok = false;
     return Done(r);
 }
@@ -170,6 +172,102 @@ bool NetRead(NetReader& r, MsgPlayerState& m) {
     m.jumpBuffer = r.u8() / 1000.0f; m.coyote = r.u8() / 1000.0f; m.jumpLock = r.u8() / 1000.0f; m.jetpackFuel = r.u8() / 255.0f;
     m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
     if (m.action > 3) r.ok = false;
+    return Done(r);
+}
+
+// ---- #769 player snapshots ----
+bool PlayerStateQ::operator==(const PlayerStateQ& o) const {
+    return session == o.session && ackInput == o.ackInput && body == o.body && p[0] == o.p[0] && p[1] == o.p[1] && p[2] == o.p[2] &&
+           v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2] && yaw == o.yaw && pitch == o.pitch && flags == o.flags && jumpBuffer == o.jumpBuffer &&
+           coyote == o.coyote && jumpLock == o.jumpLock && fuel == o.fuel && action == o.action && phase == o.phase;
+}
+// Through the PlayerState message itself: the quantised values are exactly what it carries, and back exactly what it reads.
+PlayerStateQ NetQuantize(const MsgPlayerState& m) {
+    NetWriter w; NetWrite(w, m);
+    NetReader r(w.bytes); r.u8(); // (the id)
+    PlayerStateQ q;
+    q.session = (uint32_t)r.varu(); r.u32(); q.ackInput = r.u32(); q.body = r.varu();
+    for (int64_t& x : q.p) x = r.vari();
+    for (int64_t& x : q.v) x = r.vari();
+    q.yaw = r.u16(); q.pitch = r.u16(); q.flags = r.u8();
+    q.jumpBuffer = r.u8(); q.coyote = r.u8(); q.jumpLock = r.u8(); q.fuel = r.u8(); q.action = r.u8(); q.phase = r.u8();
+    return q;
+}
+MsgPlayerState NetDequantize(const PlayerStateQ& q, uint32_t tick) {
+    NetWriter w; Id(w, NetMsg::PlayerState);
+    w.varu(q.session); w.u32(tick); w.u32(q.ackInput); w.varu(q.body);
+    for (int64_t x : q.p) w.vari(x);
+    for (int64_t x : q.v) w.vari(x);
+    w.u16(q.yaw); w.u16(q.pitch); w.u8(q.flags);
+    w.u8(q.jumpBuffer); w.u8(q.coyote); w.u8(q.jumpLock); w.u8(q.fuel); w.u8(q.action); w.u8(q.phase);
+    NetReader r(w.bytes); r.u8();
+    MsgPlayerState m; NetRead(r, m);
+    return m;
+}
+// Entry: session, the base's age in snapshots (0 = full), a mask of the fields present, then those fields - against the base:
+// differences for the numbers that move (input tick, position, velocity), new values for the rest.
+namespace {
+enum : uint16_t { kQAck = 1, kQBody = 2, kQPos = 4, kQVel = 8, kQYaw = 16, kQPitch = 32, kQFlags = 64, kQTimers = 128, kQFuel = 256, kQHands = 512, kQAll = 1023 };
+}
+void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m) {
+    Id(w, NetMsg::PlayerSnapshot);
+    w.u32(m.seq); w.u32(m.tick); w.varu(m.entries.size());
+    for (const MsgPlayerSnapshot::Entry& e : m.entries) {
+        const PlayerStateQ& s = e.s; const PlayerStateQ b = e.baseSeq ? e.base : PlayerStateQ{};
+        uint16_t mask = kQAll;
+        if (e.baseSeq) {
+            mask = 0;
+            if (s.ackInput != b.ackInput) mask |= kQAck;
+            if (s.body != b.body) mask |= kQBody;
+            if (s.p[0] != b.p[0] || s.p[1] != b.p[1] || s.p[2] != b.p[2]) mask |= kQPos;
+            if (s.v[0] != b.v[0] || s.v[1] != b.v[1] || s.v[2] != b.v[2]) mask |= kQVel;
+            if (s.yaw != b.yaw) mask |= kQYaw;
+            if (s.pitch != b.pitch) mask |= kQPitch;
+            if (s.flags != b.flags) mask |= kQFlags;
+            if (s.jumpBuffer != b.jumpBuffer || s.coyote != b.coyote || s.jumpLock != b.jumpLock) mask |= kQTimers;
+            if (s.fuel != b.fuel) mask |= kQFuel;
+            if (s.action != b.action || s.phase != b.phase) mask |= kQHands;
+        }
+        w.varu(s.session); w.varu(e.baseSeq ? m.seq - e.baseSeq : 0); w.varu(mask);
+        if (mask & kQAck) w.vari((int64_t)s.ackInput - (int64_t)b.ackInput);
+        if (mask & kQBody) w.varu(s.body);
+        if (mask & kQPos) for (int i = 0; i < 3; ++i) w.vari(s.p[i] - b.p[i]);
+        if (mask & kQVel) for (int i = 0; i < 3; ++i) w.vari(s.v[i] - b.v[i]);
+        if (mask & kQYaw) w.u16(s.yaw);
+        if (mask & kQPitch) w.u16(s.pitch);
+        if (mask & kQFlags) w.u8(s.flags);
+        if (mask & kQTimers) { w.u8(s.jumpBuffer); w.u8(s.coyote); w.u8(s.jumpLock); }
+        if (mask & kQFuel) w.u8(s.fuel);
+        if (mask & kQHands) { w.u8(s.action); w.u8(s.phase); }
+    }
+}
+bool NetRead(NetReader& r, MsgPlayerSnapshot& m, const std::function<bool(uint32_t, uint32_t, PlayerStateQ&)>& lookup) {
+    m.seq = r.u32(); m.tick = r.u32();
+    const uint64_t n = r.varu();
+    if (n > 256) r.ok = false;
+    m.entries.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        MsgPlayerSnapshot::Entry e;
+        const uint32_t session = (uint32_t)r.varu();
+        const uint64_t age = r.varu();
+        const uint64_t mask = r.varu();
+        if (mask > kQAll || age > m.seq || (age == 0 && mask != kQAll)) { r.ok = false; break; }
+        PlayerStateQ b;
+        if (age) { e.baseSeq = m.seq - (uint32_t)age; if (lookup && !lookup(session, e.baseSeq, b)) { r.ok = false; break; } e.base = b; }
+        PlayerStateQ s = b; s.session = session;
+        if (mask & kQAck) s.ackInput = (uint32_t)((int64_t)b.ackInput + r.vari());
+        if (mask & kQBody) s.body = r.varu();
+        if (mask & kQPos) for (int k = 0; k < 3; ++k) s.p[k] = b.p[k] + r.vari();
+        if (mask & kQVel) for (int k = 0; k < 3; ++k) s.v[k] = b.v[k] + r.vari();
+        if (mask & kQYaw) s.yaw = r.u16();
+        if (mask & kQPitch) s.pitch = r.u16();
+        if (mask & kQFlags) s.flags = r.u8();
+        if (mask & kQTimers) { s.jumpBuffer = r.u8(); s.coyote = r.u8(); s.jumpLock = r.u8(); }
+        if (mask & kQFuel) s.fuel = r.u8();
+        if (mask & kQHands) { s.action = r.u8(); s.phase = r.u8(); if (s.action > 3) r.ok = false; }
+        e.s = s;
+        m.entries.push_back(e);
+    }
     return Done(r);
 }
 
@@ -372,6 +470,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PartRefused: { MsgPartRefused m; return NetRead(r, m); }
         case NetMsg::PlotEdit: { MsgPlotEdit m; return NetRead(r, m); }
         case NetMsg::Chat: { MsgChat m; return NetRead(r, m); }
+        case NetMsg::PlayerSnapshot: { MsgPlayerSnapshot m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -461,6 +560,27 @@ bool NetProto_Test() {
         samples.push_back(s);
     }
     { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }
+    { // #769: quantised states round-trip exactly; a snapshot with a full and a delta entry decodes to the same states
+        MsgPlayerState ps; ps.session = 4; ps.tick = 900; ps.ackInput = 812; ps.body = 1; ps.local = { 12345.678, -60001.25, 7.5 };
+        ps.vx = 3.21f; ps.vy = -0.5f; ps.vz = 6.0f; ps.yaw = 2.0f; ps.pitch = -0.3f; ps.flags = 1 | 32; ps.jetpackFuel = 0.5f; ps.action = 1; ps.actionPhase = 0.25f;
+        const PlayerStateQ q0 = NetQuantize(ps);
+        const PlayerStateQ q0b = NetQuantize(NetDequantize(q0, ps.tick));
+        MsgPlayerState moved = NetDequantize(q0, ps.tick); moved.local.x += 0.2; moved.local.z -= 0.013; moved.ackInput += 2; moved.yaw += 0.1f;
+        const PlayerStateQ q1 = NetQuantize(moved);
+        MsgPlayerSnapshot a; a.seq = 50; a.tick = 902;
+        a.entries.push_back({ q1, 0, {} });              // full
+        a.entries.push_back({ q1, 47, q0 });             // against the state acknowledged in snapshot 47
+        a.entries[1].s.session = 4;
+        NetWriter w; NetWrite(w, a);
+        NetReader r(w.bytes); r.u8();
+        MsgPlayerSnapshot b;
+        const bool ok = NetRead(r, b, [&](uint32_t s, uint32_t seq, PlayerStateQ& out) { if (s != 4 || seq != 47) return false; out = q0; return true; });
+        size_t deltaBytes = 0; { NetWriter one; MsgPlayerSnapshot d = a; d.entries.erase(d.entries.begin()); NetWrite(one, d); deltaBytes = one.bytes.size(); }
+        size_t fullBytes = 0; { NetWriter one; MsgPlayerSnapshot d = a; d.entries.pop_back(); NetWrite(one, d); fullBytes = one.bytes.size(); }
+        check(q0b == q0 && ok && b.entries.size() == 2 && b.entries[0].s == q1 && b.entries[1].s == q1 && deltaBytes + 10 < fullBytes, "player snapshot (delta)");
+        printf("bench: netproto: a walking player's state: %zu bytes full, %zu as a delta (in a snapshot message, header included)\n", fullBytes, deltaBytes);
+        samples.push_back(w.bytes);
+    }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.

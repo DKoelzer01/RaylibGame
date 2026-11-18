@@ -13,9 +13,10 @@
 #include "dvec3.h"
 #include <cstdint>
 #include <string>
+#include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 10; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330)
+constexpr uint32_t kNetProtocol = 12; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -37,6 +38,8 @@ enum class NetMsg : uint8_t {
     PartRequest,   // client -> server: place a part (into a plot, or a new one) or break one (#330)
     PartRefused,   // server -> client: that request was refused (why)
     PlotEdit,      // server -> client: a plot made, a part placed or removed, in the server's order (#330)
+    PlayerSnapshot = 24, // server -> client (#769): the player states of one snapshot in one message, each delta-coded against one
+                   // the client acknowledged (20-23 are #776's)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -128,6 +131,7 @@ struct MsgInput {                    // one sim step of a client's PlayerInput (
 constexpr int kInputRedundancy = 4;
 struct MsgInputs {
     std::vector<MsgInput> steps;
+    uint32_t ackSnap = 0, ackMask = 0; // #769: the newest player snapshot received (its sequence) and the 32 before it (bit i: ackSnap-1-i)
     uint8_t action = 0;              // what the hands do now (avatars, #750): 0 none, 1 dig / mine, 2 chop, 3 place / use
     float actionPhase = 0.0f;        // 0..1 within the swing
 };
@@ -142,6 +146,25 @@ struct MsgPlayerState {              // a player's authoritative state (#327)
     float yaw = 0.0f, pitch = 0.0f;  // the view direction, body-local: yaw about the body's y from +z, pitch from its xz plane
     uint8_t flags = 0;               // bit 0 grounded, 1 fly mode, 2 dead, 3 in water, 4 hovering, 5-6 posture, 7 jetpack firing
     uint8_t action = 0; float actionPhase = 0.0f; // the hands (relayed from the input, #750)
+};
+// #769 player snapshots. A player state as its quantised wire values (exactly what a PlayerState message carries:
+// mm, cm/s, 1/65536 turn, ...): deltas are taken between these, so a decoded state is bit-identical to a full message's.
+struct PlayerStateQ {
+    uint32_t session = 0, ackInput = 0; uint64_t body = 0;
+    int64_t p[3]{}; int64_t v[3]{};
+    uint16_t yaw = 0, pitch = 0;
+    uint8_t flags = 0, jumpBuffer = 0, coyote = 0, jumpLock = 0, fuel = 0, action = 0, phase = 0;
+    bool operator==(const PlayerStateQ& o) const;
+};
+PlayerStateQ NetQuantize(const MsgPlayerState& m);
+MsgPlayerState NetDequantize(const PlayerStateQ& q, uint32_t tick);
+// One snapshot to one client: a sequence number (per client, acked back in MsgInputs), the server tick, and the states the
+// client's interest picked. Each entry is full (baseSeq 0) or the fields that changed against the state of that player the
+// client acknowledged in snapshot baseSeq (the writer fills `base`; the reader looks it up in what it received).
+struct MsgPlayerSnapshot {
+    uint32_t seq = 0, tick = 0;
+    struct Entry { PlayerStateQ s; uint32_t baseSeq = 0; PlayerStateQ base; };
+    std::vector<Entry> entries;
 };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
@@ -243,6 +266,10 @@ bool NetRead(NetReader& r, MsgPartRequest& m);
 bool NetRead(NetReader& r, MsgPartRefused& m);
 bool NetRead(NetReader& r, MsgPlotEdit& m);
 bool NetRead(NetReader& r, MsgChat& m);
+void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
+// lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
+// decoded and the read fails). Without one (validation), deltas decode against zeros.
+bool NetRead(NetReader& r, MsgPlayerSnapshot& m, const std::function<bool(uint32_t, uint32_t, PlayerStateQ&)>& lookup = nullptr);
 // A message's id (the first byte; NetMsg::Count if empty or unknown).
 NetMsg NetPeek(const std::vector<uint8_t>& bytes);
 
