@@ -66,9 +66,17 @@ inline bool IsWildcardItem(const std::string& id) { return id.rfind("any_", 0) =
 struct InvSlot {
     std::string id;
     int64_t centi = 0;
+    float heat = 0.0f; // #580: 1 fresh out of a furnace, kiln or crucible, cooling to 0 (Inventory::cool); merges average it by amount
     bool empty() const { return centi <= 0 || id.empty(); }
     double amount() const { return centi / 100.0; }
 };
+
+// How an item glows (#580): heat (a hot ingot: dark red -> orange -> yellow-white as it gets hotter) or a constant glow
+// from resources/data/item_glow.txt (radioactive materials). strength 0 = no glow. Used by the held item; the inventory,
+// hotbar and machine-slot icons can draw it over the icon.
+struct ItemGlow { Color color = BLACK; float strength = 0.0f; };
+ItemGlow Item_GlowOf(const std::string& id, float heat);
+inline ItemGlow Item_Glow(const InvSlot& s) { return s.empty() ? ItemGlow{} : Item_GlowOf(s.id, s.heat); }
 
 class Inventory {
 public:
@@ -83,7 +91,10 @@ public:
     // Mining produces fractional amounts: hundredths go into the grid, smaller remainders carry over.
     void addFractional(const std::string& id, float amount);
     // Returns what did not fit (the grid is full); `overflowed` is set so the game can say so.
-    double addAmount(const std::string& id, double amount);
+    // heat (#580): how hot what comes in is (0 cold .. 1 straight out of a furnace); stacks it joins average it by amount.
+    double addAmount(const std::string& id, double amount, float heat = 0.0f);
+    void cool(float dt);           // hot stacks cool to nothing over kCoolSeconds (#580)
+    static constexpr float kCoolSeconds = 90.0f;
     void add(const std::string& id, int count) { if (count > 0) addAmount(id, count); }
     bool remove(const std::string& id, int count) { return removeAmount(id, count); }
     bool removeAmount(const std::string& id, double amount);

@@ -41,6 +41,15 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 
 struct Stack { int item = -1, count = 0; };
+// #580: results taken from a heating machine's output carry this bit on their item index: they reach the inventory hot.
+constexpr int kHotItem = 1 << 30;
+static bool HeatsItems(PartType t) {
+    switch (t) {
+        case PartType::Furnace: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace:
+        case PartType::AlloySmelter: case PartType::ArcFurnace: case PartType::Campfire: return true;
+        default: return false;
+    }
+}
 constexpr int kSlots = 4;
 constexpr int kStackMax = 64;
 constexpr int kChestSlots = 16;
@@ -727,20 +736,23 @@ void SimLoop() {
                 } else if (im.kind == 4) {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item, s[im.item].count }); s[im.item] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item | hot, s[im.item].count }); s[im.item] = Stack{}; }
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
                     if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
-                        toCursor.push_back({ s[im.item].item, k });
+                        toCursor.push_back({ s[im.item].item | hot, k });
                         s[im.item].count -= k;
                         if (s[im.item].count <= 0) s[im.item] = Stack{};
                     }
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
-                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item, s[i].count }); s[i] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
+                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item | hot, s[i].count }); s[i] = Stack{}; }
                 }
             }
             // Tick: near plots every tick; far plots once a second with a 20x step.
@@ -879,8 +891,10 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         cur.swap(cursorResults);
     }
-    for (auto& r : back) inventory.add(tables.name(r.first), r.second);
-    for (auto& r : cur) { if (cursorSink) cursorSink(tables.name(r.first), r.second); else inventory.add(tables.name(r.first), r.second); }
+    // kHotItem marks what came out of a heating machine's output (#580): it arrives hot. (The cursor keeps no heat yet:
+    // the inventory UI's cursor stack is a plain id and count.)
+    for (auto& r : back) inventory.addAmount(tables.name(r.first & ~kHotItem), r.second, (r.first & kHotItem) ? 1.0f : 0.0f);
+    for (auto& r : cur) { const std::string id = tables.name(r.first & ~kHotItem); if (cursorSink) cursorSink(id, r.second); else inventory.addAmount(id, r.second, (r.first & kHotItem) ? 1.0f : 0.0f); }
 }
 
 void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count) {

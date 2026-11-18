@@ -38,6 +38,7 @@ void GameSave_Register() {
         for (int i = 0; i < Inventory::kCells; ++i) { // with the off hand (#165)
             const InvSlot& s = inventory.grid()[i];
             if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
+            if (!s.empty() && s.heat > 0.0f) fprintf(f, "slot_heat %d %.3f\n", i, s.heat); // still hot (#580)
         }
         QuestBook_Save(f);
         fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
@@ -128,6 +129,9 @@ void GameSave_Register() {
                     InvSlot& s = inventory.grid()[i];
                     if (s.empty()) { s.id = id; s.centi = c; } else { ++inventory.muted; inventory.addAmount(id, c / 100.0); --inventory.muted; } // no pickup feed for a load (#208)
                 }
+            } else if (strcmp(tok, "slot_heat") == 0) { // #580: after its slot line
+                int i = 0; float h = 0.0f;
+                if (fscanf(f, " %d %f", &i, &h) == 2 && i >= 0 && i < Inventory::kCells && !inventory.grid()[i].empty()) inventory.grid()[i].heat = std::clamp(h, 0.0f, 1.0f);
             } else if (strcmp(tok, "item") == 0) {
                 char id[64] = {};
                 int n = 0;

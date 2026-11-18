@@ -1011,6 +1011,26 @@ int main(int argc, char** argv)
         }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) != "--test-heat") continue;
+        // --test-heat (#580): hot stacks merge by amount, glow by heat, cool to nothing; cold adds stay cold.
+        Inventory inv;
+        inv.addAmount("iron_ingot", 2, 1.0f);
+        const float fresh = inv.grid()[0].heat;
+        const ItemGlow g0 = Item_Glow(inv.grid()[0]);
+        inv.addAmount("iron_ingot", 2, 0.0f);
+        const float mixed = inv.grid()[0].heat;
+        inv.addAmount("stone", 5);
+        const float stone = inv.grid()[1].heat;
+        inv.cool(Inventory::kCoolSeconds * 0.25f);
+        const float cooled = inv.grid()[0].heat;
+        inv.cool(Inventory::kCoolSeconds);
+        const ItemGlow g1 = Item_Glow(inv.grid()[0]);
+        const bool ok = fresh == 1.0f && fabsf(mixed - 0.5f) < 1e-4f && stone == 0.0f && fabsf(cooled - 0.25f) < 1e-3f && inv.grid()[0].heat == 0.0f &&
+                        g0.strength > 0.9f && g0.color.r == 255 && g1.strength == 0.0f;
+        printf("bench: heat: fresh %.2f (glow %.2f, rgb %d,%d,%d), merged with as many cold %.2f, stone %.2f, after a quarter of the cooling %.2f, cooled %.2f (glow %.2f) -> %s\n",
+               fresh, g0.strength, g0.color.r, g0.color.g, g0.color.b, mixed, stone, cooled, inv.grid()[0].heat, g1.strength, ok ? "PASS" : "FAIL");
+    }
     GameSave_Register();
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
@@ -7681,6 +7701,7 @@ int main(int argc, char** argv)
             }
             if (ship.piloted && ship.lastImpact > 12.0f) survival.health -= (ship.lastImpact - 12.0f) * 3.0f; // crash damage
             if (!loading) Survival_Update(world, simDt, PlayerInput_If(gameInput, stepIn));
+            if (!loading) inventory.cool(simDt); // hot items cool (#580)
             if (!loading) Farm_Update(world, simDt * timeScale * gDebugTimeScale * Rocket_Warp()); // crops grow on world time
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
