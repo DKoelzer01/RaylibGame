@@ -42,7 +42,9 @@ namespace {
 
 struct Stack { int item = -1, count = 0; };
 constexpr int kSlots = 4;
-constexpr int kStackMax = 64;
+// A slot holds as much as a player inventory cell (#566: StackLimit: 8192 resources, 256 blocks, 1 tool), but conveyors and
+// inserters keep only kFeedMax of an item in a machine's inputs (a buffer, not a store).
+constexpr int kFeedMax = 64;
 constexpr int kChestSlots = Inventory::kGrid; // as many cells as the player's main inventory (#495: 50, drawn 10 wide)
 
 struct Recipe {
@@ -60,10 +62,15 @@ struct Tables {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
         if (it != itemIds.end()) return it->second;
-        itemIds[n] = (int)itemNames.size();
+        const int id = (int)itemNames.size();
+        if (id < kMaxCapItems) caps[id] = StackLimit(n); // written before the id is handed out (under the lock)
+        itemIds[n] = id;
         itemNames.push_back(n);
-        return (int)itemNames.size() - 1;
+        return id;
     }
+    // Whole units of the item a slot holds (#566: the player inventory's StackLimit). Lock-free: the sim thread asks
+    // per stack move, and an id's cap never changes once it is interned.
+    int cap(int id) const { return id >= 0 && id < kMaxCapItems ? caps[id] : 64; }
     int find(const std::string& n) { // -1 if never seen
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
@@ -74,6 +81,8 @@ struct Tables {
         return id >= 0 && id < (int)itemNames.size() ? itemNames[id] : std::string();
     }
 private:
+    static constexpr int kMaxCapItems = 4096;
+    int caps[kMaxCapItems] = {};
     std::mutex mutex;
     std::vector<std::string> itemNames;
     std::unordered_map<std::string, int> itemIds;
@@ -281,13 +290,14 @@ PlotSim* FindPlot(uint64_t body, uint32_t plot) {
 
 // Adds items to a stack array; returns the count that did not fit.
 int AddItems(Stack* s, int n, int item, int count) {
+    const int cap = tables.cap(item);
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item && s[i].count < kStackMax) { const int k = std::min(count, kStackMax - s[i].count); s[i].count += k; count -= k; }
+        if (s[i].item == item && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, kStackMax); s[i].count = k; count -= k; }
+        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
     return count;
 }
-bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < kStackMax)) return true; return false; }
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
 int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
@@ -327,7 +337,7 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
     if (HasFuelSlot(m.type) && IsFuel(def, item) && (toFuel || !dual || m.fuel.count == 0)) {
         int k = 0;
         if (m.fuel.count == 0 || m.fuel.item == item) { // one kind of fuel at a time
-            k = std::min(count, kStackMax - m.fuel.count);
+            k = std::min(count, tables.cap(item) - m.fuel.count);
             if (k > 0) { m.fuel.item = item; m.fuel.count += k; }
         }
         count -= k;
@@ -475,7 +485,7 @@ void ApplyLayout(const LayoutMsg& L) {
                     Stack& st = m.in[j];
                     if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
                     if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
-                    const int k = std::min(st.count, kStackMax - m.fuel.count);
+                    const int k = std::min(st.count, tables.cap(st.item) - m.fuel.count);
                     m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
                     if (!st.count) st.item = -1;
                 }
@@ -626,7 +636,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
                         if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
                         if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
-                        else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) < kStackMax &&
+                        else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
                                  !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
                             int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
                             if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
@@ -655,9 +665,15 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.hasFuelSlot = HasFuelSlot(m.type);
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
-    auto list = [](const Stack* s, int n) {
+    auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
+        std::vector<std::pair<int, int>> total;
+        for (int i = 0; i < n; ++i) {
+            if (s[i].count <= 0) continue;
+            auto it = std::find_if(total.begin(), total.end(), [&](const auto& t) { return t.first == s[i].item; });
+            if (it == total.end()) total.push_back({ s[i].item, s[i].count }); else it->second += s[i].count;
+        }
         std::string out;
-        for (int i = 0; i < n; ++i) if (s[i].count > 0) { if (!out.empty()) out += ", "; out += tables.name(s[i].item) + " x" + std::to_string(s[i].count); }
+        for (const auto& t : total) { if (!out.empty()) out += ", "; out += tables.name(t.first) + " x" + std::to_string(t.second); }
         return out.empty() ? std::string("-") : out;
     };
     v.input = list(m.in.data(), InSlots(m));

@@ -39,6 +39,8 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
 void Machine_DrawHUD();
+// A ", "-separated item list wrapped into lines of at most maxW px, capped at maxLines ("+N more", #567).
+std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines);
 bool IsMachineItem(const std::string& id); // an item that builds a machine part (chests don't take these)
 
 #endif
