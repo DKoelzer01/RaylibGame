@@ -89,6 +89,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "ring.h"
 #include "factory.h"
 #include "fluid.h"
+#include "watersurface.h"
 #include "waterfield.h"
 #include "waterworks.h"
 
@@ -5884,20 +5885,42 @@ int main(int argc, char** argv)
                         const Vector3 home = pf->findSpawnDir(p->seed);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
                         float best = 1e30f, level = 0.0f, shoreS = 0.0f; Vector3 wdir{}, out{};
-                        for (float e = -3000.0f; e <= 3000.0f; e += 16.0f)
-                            for (float n = -3000.0f; n <= 3000.0f; n += 16.0f) {
+                        // Out to 3 km, then 6 and 12 km (coarser) if nothing qualifies (#730: as --test-flow; the flat-water and
+                        // level-ground needs rule out more of a seed's nearby water).
+                        WaterSurface::Reader drawn(*pf, 0.25f); // the drawn water surface (#730)
+                        for (float span = 3000.0f; span <= 12000.0f && best > 1e29f; span *= 2.0f)
+                        for (float e = -span; e <= span; e += 16.0f * span / 3000.0f)
+                            for (float n = -span; n <= span; n += 16.0f * span / 3000.0f) {
                                 const float dist = sqrtf(e * e + n * n);
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 const PlanetField::WaterSource ws = pf->waterSourceAt(d);
-                                if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.0f) continue;
+                                // River water (#730): a 1003 m lake seed 42 picked after bake v26 held nothing to scoop where
+                                // waterSourceAt reported it.
+                                if (ws.kind != 1 || ws.level <= 5.0f || pf->elevation(d) > ws.level - 1.0f) continue; // and clear of the sea: a released reach at its mouth drains back from the shore
                                 const Vector3 outs[4] = { t1, Vector3Negate(t1), t2, Vector3Negate(t2) };
+                                // Gentle water (as --test-flow, #723): 6 m out, what is water stands within 0.5 m of this level.
+                                int wide = 0; bool flatW = true;
+                                for (const Vector3& o : outs) {
+                                    const PlanetField::WaterSource wn = pf->waterSourceAt(Vector3Normalize(Vector3Add(d, Vector3Scale(o, 6.0f / pf->radius))));
+                                    if (wn.kind) { ++wide; flatW = flatW && fabsf(wn.level - ws.level) < 0.5f; }
+                                }
+                                if (wide < 1 || !flatW) continue; // a river: one wet direction (along it) is enough
+                                // Drawn there (#730): the generated surface the world shows stands within 0.3 m of this level. On steep
+                                // high rivers seed 42's waterSourceAt reported water where none was drawn: nothing to scoop.
+                                if (fabsf(drawn.drawLevel(d) - ws.level) > 0.3f) continue;
                                 for (const Vector3& o : outs)
                                     for (float s = 2.0f; s <= 20.0f; s += 1.0f) {
                                         const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
                                         if (pf->waterSourceAt(q).kind) continue;
                                         const float eq = pf->elevation(q);
-                                        if (eq > ws.level + 0.2f && eq < ws.level + 2.5f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        if (eq > ws.level + 0.2f && eq < ws.level + 2.5f) {
+                                            // Level ground where the water is poured (#730): from 45 to 57 m inland within 1.5 m, or the
+                                            // pour runs off downhill (bake v26 put seed 42's pick on a mountainside) and the field stays dry.
+                                            float lo = 1e9f, hi = -1e9f;
+                                            for (float k = 45.0f; k <= 57.0f; k += 3.0f) { const float ek = pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(o, (s + k) / pf->radius)))); lo = std::min(lo, ek); hi = std::max(hi, ek); }
+                                            if (hi - lo < 1.5f) { best = dist; wdir = d; out = o; level = ws.level; shoreS = s; }
+                                        }
                                         break;
                                     }
                             }
@@ -5905,7 +5928,13 @@ int main(int argc, char** argv)
                         else {
                             auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
                             auto ground = [&](float s) { const Vector3 d = along(s); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                            // Scoop where the water is 0.6 m deep or more, 0.3 m under its own level (#730: 3 m in from the shore at the
+                            // pick's level - 0.4 m lay inside the bank on seed 42's sloping river, under 0.19 m of water: nothing to scoop).
                             bucketWater = Vector3Scale(along(shoreS - 3.0f), pf->radius + level - 0.4f);
+                            for (float s = shoreS - 2.0f; s >= shoreS - 12.0f; s -= 0.5f) {
+                                const PlanetField::WaterSource wa = pf->waterSourceAt(along(s));
+                                if (wa.kind && wa.level - pf->elevation(along(s)) >= 0.6f) { bucketWater = Vector3Scale(along(s), pf->radius + wa.level - 0.3f); break; }
+                            }
                             // The basin: a bowl 50 m inland; the field 3 m beyond it.
                             const Vector3 b = ground(shoreS + 50.0f);
                             const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(Vector3Normalize(b), 0.8f)), 2.2f, -1.0f, true };
@@ -5922,6 +5951,17 @@ int main(int argc, char** argv)
                         // At the shore, looking at the water: scoop.
                         auto along = [&](Vector3 from, float s) { (void)from; return s; };
                         (void)along;
+                        // Re-aim each trip where the water is now (#730): the first scoop releases the river's reach into the
+                        // simulation, and on a sloping river its water by the bank can drop under the generated level. Out from
+                        // the aim point toward the river: the first point under water 0.3 m over the ground, as a player would aim.
+                        {
+                            const Vector3 toBasin = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
+                            for (float s = 0.0f; s <= 8.0f; s += 0.5f) {
+                                const Vector3 q = Vector3Normalize(Vector3Subtract(bucketWater, Vector3Scale(toBasin, s)));
+                                const Vector3 at = Vector3Scale(q, pf->radius + pf->elevation(q) + 0.3f);
+                                if (IsUnderwater(world, p->toWorld(at))) { bucketWater = at; break; }
+                            }
+                        }
                         const Vector3 up = Vector3Normalize(bucketWater);
                         const Vector3 outDir = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
                         const Vector3 flat = Vector3Normalize(Vector3Subtract(outDir, Vector3Scale(up, Vector3DotProduct(outDir, up))));
