@@ -653,7 +653,7 @@ namespace {
             SendToJoined(out);
         } else {
             const Part part = ToPart(q.part);
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
             Plot* plot = nullptr;
