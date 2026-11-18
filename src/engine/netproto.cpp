@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -555,6 +555,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PlantAction: { MsgPlantAction m; return NetRead(r, m); }
         case NetMsg::Plants: { MsgPlants m; return NetRead(r, m); }
         case NetMsg::FarmFields: { MsgFarmFields m; return NetRead(r, m); }
+        case NetMsg::Claims: { MsgClaims m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -727,6 +728,8 @@ bool NetProto_Test() {
         check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.plot == 9 && pb.part == 4 && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
         MsgPlants la{ 5, 3, { { 0xFFEEDDCCBBAA9988ull, 12345.25 }, { 7, 0.5 } } }, lb; std::vector<uint8_t> s14;
         check(RoundTrip(la, lb, &s14) && lb.body == 5 && lb.session == 3 && lb.removed.size() == 2 && lb.removed[0].first == 0xFFEEDDCCBBAA9988ull && lb.removed[0].second == 12345.25, "plants"); samples.push_back(s14);
+        MsgClaims ka, kb; NetClaim kc; kc.id = 7; kc.team = 3; kc.teamName = "rangers"; kc.colour = 0x3C8CE0u; kc.body = 0x2000000000000001ull; kc.centre[0] = 1.5f; kc.centre[1] = 60000.25f; kc.radius = 400.0f; kc.flags = 2; ka.claims.push_back(kc); std::vector<uint8_t> s16;
+        check(RoundTrip(ka, kb, &s16) && kb.claims.size() == 1 && kb.claims[0].teamName == "rangers" && kb.claims[0].colour == 0x3C8CE0u && kb.claims[0].body == kc.body && kb.claims[0].centre[1] == 60000.25f && kb.claims[0].radius == 400.0f && kb.claims[0].flags == 2, "claims"); samples.push_back(s16);
         MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 11, 3, "grain", 0.5f }, { 11, 4, "roots", 1.0f } }; std::vector<uint8_t> s15;
         check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].part == 3, "farm fields"); samples.push_back(s15);
     }
@@ -977,6 +980,31 @@ bool NetRead(NetReader& r, MsgTeamState& m) {
         MsgTeamState::Member x; x.name = r.str(32);
         const uint8_t f = r.u8(); x.online = f & 1; x.owner = f & 2; x.you = f & 4; x.health = r.f32();
         m.members.push_back(x);
+    }
+    return Done(r);
+}
+
+// ---- Land claims (#343) ----
+namespace { constexpr size_t kMaxClaimsPerMsg = 4096; }
+void NetWrite(NetWriter& w, const MsgClaims& m) {
+    Id(w, NetMsg::Claims);
+    const size_t n = std::min(m.claims.size(), kMaxClaimsPerMsg);
+    w.varu(n);
+    for (size_t i = 0; i < n; ++i) {
+        const NetClaim& c = m.claims[i];
+        w.u32(c.id); w.vari(c.team); w.str(c.teamName.substr(0, 40)); w.u32(c.colour); w.varu(c.body);
+        w.f32(c.centre[0]); w.f32(c.centre[1]); w.f32(c.centre[2]); w.f32(c.radius); w.u8(c.flags);
+    }
+}
+bool NetRead(NetReader& r, MsgClaims& m) {
+    const uint64_t n = r.varu();
+    if (n > kMaxClaimsPerMsg) { r.ok = false; return false; }
+    m.claims.clear();
+    for (uint64_t i = 0; i < n && r.ok; ++i) {
+        NetClaim c; c.id = r.u32(); c.team = (int32_t)r.vari(); c.teamName = r.str(40); c.colour = r.u32(); c.body = r.varu();
+        c.centre[0] = r.f32(); c.centre[1] = r.f32(); c.centre[2] = r.f32(); c.radius = r.f32(); c.flags = r.u8();
+        if (c.radius < 0.0f || c.radius > 100000.0f || c.flags > 3) r.ok = false;
+        m.claims.push_back(std::move(c));
     }
     return Done(r);
 }

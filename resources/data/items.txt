@@ -121,6 +121,10 @@ cooked_fish      | Cooked fish      |   999 | 210,160,100 | Fish roasted over a 
 fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
 gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
 bed              | Bed              |    5 | 150,62,52   | Build it (hotbar, then place) and right-click it: you respawn at your bed while it stands.
+claim_banner          | Claim banner          | 5 | 190, 70, 60 | Place it (multiplayer) to claim the land 100 m across for your team: other teams can't build, dig or open anything there. Break it to unclaim.
+bronze_claim_banner   | Bronze claim banner   | 5 | 205,140, 70 | A claim banner for 200 m across (multiplayer).
+steel_claim_banner    | Steel claim banner    | 5 | 150,160,175 | A claim banner for 400 m across (multiplayer).
+titanium_claim_banner | Titanium claim banner | 5 | 205,180,215 | A claim banner for 800 m across (multiplayer).
 # Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
 cloth              | Cloth              |   999 | 220,215,190 | Woven from fibre or wool. Suits and modules.
 basic_suit         | Basic suit         |  tool | 200,200,190 | 2 module slots. You start in one.
