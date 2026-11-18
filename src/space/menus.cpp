@@ -1,4 +1,5 @@
 #include "menus.h"
+#include "playerinput.h"
 #include "playerrecord.h"
 #include "scenetarget.h"
 #include "slideshow.h"
@@ -181,7 +182,7 @@ namespace {
 
     // The settings page (shared by both menus), in tabs (#512: one long list ran its Back button off a 720p screen).
     // Back is pinned to the bottom edge; if a tab's rows still would not fit above it, they shrink. Returns true on Back.
-    enum class SettingsTab { Graphics, Controls, Audio, Gameplay, Count };
+    enum class SettingsTab { Graphics, Controls, Keys, Audio, Gameplay, Count };
     SettingsTab settingsTab = SettingsTab::Graphics;
     float settingsContentBottom = 0.0f; Rectangle settingsBackRect{}; // the last frame's layout (--shot-settings checks it)
     bool SettingsPage() {
@@ -189,9 +190,9 @@ namespace {
         const float sh = (float)GetScreenHeight(), sw = (float)GetScreenWidth();
         const float backH = 58 * s, backY = sh - backH - 28 * s;
         // Tabs under the menu's title (the main menu's at 18%, the pause menu's at 20% of the height).
-        const char* tabNames[] = { "Graphics", "Controls", "Audio", "Gameplay" };
+        const char* tabNames[] = { "Graphics", "Controls", "Keys", "Audio", "Gameplay" };
         const float tabW = 200 * s, tabH = 46 * s, tabGap = 10 * s, tabY = sh * 0.30f;
-        const float tabsX = (sw - (4 * tabW + 3 * tabGap)) * 0.5f;
+        const float tabsX = (sw - ((int)SettingsTab::Count * tabW + ((int)SettingsTab::Count - 1) * tabGap)) * 0.5f;
         for (int t = 0; t < (int)SettingsTab::Count; ++t) {
             const Rectangle r = { tabsX + t * (tabW + tabGap), tabY, tabW, tabH };
             const bool on = (int)settingsTab == t;
@@ -235,6 +236,58 @@ namespace {
             // Camera smoothing (#168): how much the eye's small bumps (collision push-out on rough ground) are filtered.
             static const char* smoothing[] = { "Off", "Low", "Default", "High" };
             changed |= Choice({ x, y, w, h }, "Camera smoothing", smoothing, 4, settings.cameraSmoothing); next();
+            // Interface size (#821): the game window and panels; Auto follows the screen's height (1080 p is 100%).
+            static const float sizes[] = { 0.0f, 0.75f, 1.0f, 1.25f, 1.5f };
+            static const char* sizeNames[] = { "Auto", "75%", "100%", "125%", "150%" };
+            int sz = 0;
+            for (int k = 0; k < 5; ++k) if (fabsf(settings.uiScale - sizes[k]) < 0.01f) sz = k;
+            if (Choice({ x, y, w, h }, "Interface size", sizeNames, 5, sz)) { settings.uiScale = sizes[sz]; changed = true; }
+            next();
+            break;
+        }
+        case SettingsTab::Keys: {
+            // Key bindings (#821): every action; click one, then press its new key or mouse button (Esc keeps the old one).
+            static int waiting = -1;   // the action waiting for a key
+            static int waitFrames = 0; // frames it has waited (the click that started it is no binding)
+            static float scroll = 0.0f;
+            const int n = (int)Act::Count;
+            const float rowH = std::min(40.0f * s, h * 0.8f), colGap = 24 * s, colW = (std::min(sw - 64 * s, 1500.0f * s) - colGap) * 0.5f;
+            const float x0 = (sw - (2 * colW + colGap)) * 0.5f, listTop = y, listBottom = backY - 70 * s;
+            const int rowsPerCol = (n + 1) / 2;
+            const float content = rowsPerCol * (rowH + 4 * s), view = listBottom - listTop;
+            if (waiting < 0) scroll = std::clamp(scroll - GetMouseWheelMove() * rowH * 2.0f, 0.0f, std::max(0.0f, content - view));
+            BeginScissorMode((int)x0, (int)listTop, (int)(2 * colW + colGap), (int)view);
+            for (int a = 0; a < n; ++a) {
+                const int col = a / rowsPerCol, row = a % rowsPerCol;
+                const float rx = x0 + col * (colW + colGap), ry = listTop + row * (rowH + 4 * s) - scroll;
+                if (ry + rowH < listTop || ry > listBottom) continue;
+                const int fs = (int)(rowH * 0.45f);
+                DrawText(PlayerInput_ActLabel((Act)a), (int)rx, (int)(ry + (rowH - fs) * 0.5f), fs, kText);
+                const Rectangle kb = { rx + colW * 0.62f, ry, colW * 0.38f, rowH };
+                const bool isWaiting = waiting == a;
+                const int code = PlayerInput_Binding((Act)a);
+                const bool changedKey = code != PlayerInput_DefaultBinding((Act)a);
+                if (Button(kb, isWaiting ? "press a key..." : changedKey ? TextFormat("%s *", PlayerInput_KeyName(code)) : PlayerInput_KeyName(code)) && waiting < 0) {
+                    waiting = a; waitFrames = 0;
+                }
+            }
+            EndScissorMode();
+            const Rectangle reset = { (sw - 360 * s) * 0.5f, listBottom + 12 * s, 360 * s, 44 * s };
+            if (waiting < 0 && Button(reset, "Reset all to defaults")) { PlayerInput_ResetBindings(); changed = true; }
+            y = listBottom;
+            if (waiting >= 0) {
+                // Waiting for the key: Esc keeps the old one (and stays on the page); the starting click is skipped.
+                bool done = false;
+                if (IsKeyPressed(KEY_ESCAPE)) done = true;
+                else if (const int code = PlayerInput_PressedCode(); code >= 0 && waitFrames > 0) { PlayerInput_SetBinding((Act)waiting, code); changed = true; done = true; }
+                ++waitFrames;
+                if (done) waiting = -1;
+                settingsContentBottom = y;
+                settingsBackRect = { (sw - 300 * s) * 0.5f, backY, 300 * s, backH };
+                if (changed) { Settings_Apply(); Settings_Save(); }
+                DrawText("Press the new key or mouse button (Esc keeps the old one)", (int)x0, (int)(listBottom + 20 * s), (int)(22 * s), Fade(kText, 0.8f));
+                return false;
+            }
             break;
         }
         case SettingsTab::Audio:
@@ -271,6 +324,8 @@ void Settings_Load() {
             if (!strcmp(key, "log_level")) { settings.logLevel = val; continue; }
             // Multiplayer (#341): words (a name, addresses), the suit colour in hex.
             if (!strcmp(key, "player_uuid")) { settings.playerUuid = val; continue; } // (#346)
+            if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
+            if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -311,6 +366,9 @@ void Settings_Save() {
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
+    fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
+    for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
+        if (PlayerInput_Binding((Act)a) != PlayerInput_DefaultBinding((Act)a)) fprintf(f, "bind_%s %d\n", PlayerInput_ActId((Act)a), PlayerInput_Binding((Act)a));
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
     // Multiplayer (#341; never the password).
     if (!settings.mpName.empty()) fprintf(f, "mp_name %s\n", settings.mpName.c_str());

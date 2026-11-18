@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "playerinput.h"
 #include "hotbar.h"
 #include "inventory.h"
 #include "player.h"
@@ -27,6 +28,8 @@
 #include "plots.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
+#include "menus.h"
+#include "playerrecord.h"
 #include "combat.h"
 #include "playersession.h"
 #include <raymath.h>
@@ -36,10 +39,22 @@ namespace {
     std::string toast;
     double toastUntil = 0.0;
     struct Container { bool open = false; uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } container;
+    // The game window (#821): the screen shown; Quests' view; the temporary Help and Creative pages (until #826 and #823).
+    GameScreen screen = GameScreen::Inventory;
+    bool questTree = false;
+    enum class Extra { None, Help, Creative } extra = Extra::None;
 }
 
 bool GameUI_InventoryOpen() { return inventoryOpen; }
-void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) container.open = false; }
+void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) { container.open = false; extra = Extra::None; } }
+void GameUI_ShowScreen(GameScreen s) { inventoryOpen = true; screen = s; extra = Extra::None; }
+GameScreen GameUI_Screen() { return screen; }
+bool GameUI_TextInputActive() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput; }
+float GameUI_Scale() {
+    // Settings' interface size (0: auto, by the screen's height: 1080 p is 100%).
+    if (settings.uiScale > 0.0f) return settings.uiScale;
+    return std::clamp(GetScreenHeight() / 1080.0f, 0.75f, 2.0f);
+}
 void GameUI_OpenContainer(uint64_t body, uint32_t plot, int part, int partType) {
     container = { true, body, plot, part, (PartType)partType };
     inventoryOpen = true;
@@ -114,9 +129,15 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
 // Whether a container takes an item from the inventory: a chest takes every item (#568: tools and machines too; tool
 // wear is kept per item kind, not per stack, so nothing is lost), a machine what it burns or processes.
 static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
-static std::string forceTab; // the tab to select when the window next draws
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
-void GameUI_ShowTab(const char* tab) { inventoryOpen = true; forceTab = tab; }
+void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests and tutorials)
+    const std::string t = tab;
+    if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
+    else if (t == "Quest tree" || t == "Quests") { GameUI_ShowScreen(GameScreen::Quests); questTree = t == "Quest tree"; }
+    else if (t == "Help") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Help; }
+    else if (t == "Creative") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Creative; }
+    else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
+}
 void GameUI_Toast(const char* text) { toast = text; toastUntil = GetTime() + 2.5; }
 
 static ImVec4 ToImColor(Color c) { return ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f); }
@@ -412,7 +433,7 @@ static void DrawGrid() {
     // Deposit (button or Q): items a nearby chest already holds go into it.
     const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
     ImGui::BeginDisabled(nChests == 0);
-    if ((ImGui::Button("Deposit (Q)") || (nChests > 0 && IsKeyPressed(KEY_Q))) && uiWorld) {
+    if ((ImGui::Button("Deposit (Q)") || (nChests > 0 && PlayerInput_BindingPressed(Act::Deposit))) && uiWorld) {
         const int kinds = Storage_Deposit(*uiWorld);
         GameUI_Toast(kinds > 0 ? TextFormat("Deposited %d kind%s of item into nearby chests", kinds, kinds > 1 ? "s" : "") : "Nothing here matches what the nearby chests hold");
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
@@ -605,7 +626,7 @@ static void DrawContainer() {
         DrawSlots(v.outSlots, 1, 4, v.hotOutputs);
     }
     ImGui::Spacing();
-    if (ImGui::Button("Put in all (I)") || IsKeyPressed(KEY_I)) {
+    if (ImGui::Button("Put in all (I)") || PlayerInput_BindingPressed(Act::Insert)) {
         const auto all = inventory.all(); // copy: we remove while walking it
         int kinds = 0;
         for (const auto& kv : all) {
@@ -618,7 +639,7 @@ static void DrawContainer() {
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Take all (O)") || IsKeyPressed(KEY_O)) {
+    if (ImGui::Button("Take all (O)") || PlayerInput_BindingPressed(Act::Extract)) {
         if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) Factory::TakeSlot(container.body, container.plot, container.part, i, false); }
         else Factory::Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
@@ -705,71 +726,142 @@ static void DrawCreative() {
     ImGui::EndChild();
 }
 
+// The main quest line: done tiers collapsed, the current one open, the next shown.
+static void DrawQuestList() {
+    const int cur = QuestBook_Tier();
+    for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
+        ImGui::PushID(i);
+        const bool done = i < cur;
+        const char* name = QuestBook_TierName(i);
+        ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
+        if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
+            ImGui::TextWrapped("%s", QuestBook_TierText(i));
+            for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
+                const bool kd = QuestBook_TaskDone(i, k);
+                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
+            }
+        }
+        ImGui::PopID();
+    }
+}
+
+// The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
+static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
+    const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, bg);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.32f, 0.44f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.28f, 0.37f, 0.50f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::Button(key && *key ? TextFormat("%s  [%s]", label, key) : label, ImVec2(w, h));
+    if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+
+// Placeholder screens for what comes later (their features are separate issues).
+static void DrawComing(const char* title, const char* text) {
+    ImGui::Dummy(ImVec2(0, 20 * GameUI_Scale()));
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", title);
+    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x * 0.7f);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopTextWrapPos();
+}
+
+static void DrawTeam() {
+    // Today a team of one in single player; multiplayer teams (invites, shared claims) come with #604.
+    const std::string me = PlayerId_Local();
+    const int id = Teams_Of(me);
+    const TeamRecord* team = nullptr;
+    for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
+    ImGui::Dummy(ImVec2(0, 12 * GameUI_Scale()));
+    if (team) {
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team->name.c_str());
+        ImGui::Text("%d member%s. Quests and tiers belong to the team.", (int)team->members.size(), team->members.size() == 1 ? "" : "s");
+    } else {
+        ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "Your team");
+        ImGui::TextWrapped("You are a team of one: the world saves your team the first time it saves.");
+    }
+    ImGui::Dummy(ImVec2(0, 8 * GameUI_Scale()));
+    DrawComing("Coming with multiplayer teams (#604)", "Invite other players, see teammates' health and where they are, share quest progress, recipes and land claims, and set who may build or open chests in your claims.");
+}
+
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
     if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
+    if (container.open && screen != GameScreen::Inventory) screen = GameScreen::Inventory; // a chest or machine opens beside your items
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(1320, 640), ImGuiCond_Appearing);
-    if (ImGui::Begin("Inventory (Tab)", &inventoryOpen, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Columns(2, "inv", true);
-        static bool widthSet = false;
-        if (!widthSet) { ImGui::SetColumnWidth(0, Inventory::kCols * 58.0f + 24.0f); widthSet = true; }
-        ImGui::TextUnformatted("Items");
-        ImGui::Separator();
-        DrawGrid();
-
-        ImGui::NextColumn();
-        if (container.open) DrawContainer();
-        else if (ImGui::BeginTabBar("invtabs")) {
-            if (ImGui::BeginTabItem("Crafting", nullptr, forceTab == "Crafting" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                DrawCrafting();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Quests")) {
-                // The main quest line: done tiers collapsed, the current one open, the next shown.
-                const int cur = QuestBook_Tier();
-                for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
-                    ImGui::PushID(i);
-                    const bool done = i < cur;
-                    const char* name = QuestBook_TierName(i);
-                    ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
-                    if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
-                        ImGui::TextWrapped("%s", QuestBook_TierText(i));
-                        for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
-                            const bool kd = QuestBook_TaskDone(i, k);
-                            ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
-                        }
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Quest tree", nullptr, forceTab == "Quest tree" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                QuestTree_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Suit", nullptr, forceTab == "Suit" ? ImGuiTabItemFlags_SetSelected : 0)) {
-                Suit_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Help", nullptr, forceTab == "Help" ? ImGuiTabItemFlags_SetSelected : 0)) { // the manual (#354)
-                HelpManual_DrawTab();
-                ImGui::EndTabItem();
-            }
-            if (ImGui::BeginTabItem("Creative")) {
-                DrawCreative();
-                ImGui::EndTabItem();
-            }
-            ImGui::EndTabBar();
-            forceTab.clear();
+    const float s = GameUI_Scale();
+    // The whole screen but a margin, no title bar: the tabs are the window's header.
+    const float margin = 24.0f * s;
+    ImGui::SetNextWindowPos(ImVec2(margin, margin));
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * margin, io.DisplaySize.y - 2 * margin));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 0.97f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::Begin("Game window", nullptr, flags)) {
+        ImGui::SetWindowFontScale(s);
+        // The tabs (#810's order), their keys from the bindings; at the right end the temporary Help and Creative pages and Close.
+        struct Tab { GameScreen s; const char* name; Act key; };
+        static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Crafting, "Crafting", Act::Crafting },
+                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
+        const float tabH = 46.0f * s, tabW = 190.0f * s;
+        for (const Tab& t : tabs) {
+            const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
+            if (ScreenTab(t.name, key, screen == t.s && extra == Extra::None, tabW, tabH)) { screen = t.s; extra = Extra::None; if (t.s != GameScreen::Inventory) container.open = false; }
+            ImGui::SameLine(0.0f, 6.0f * s);
         }
-        ImGui::Columns(1);
+        const float right = ImGui::GetWindowContentRegionMax().x;
+        const float smallW = 120.0f * s;
+        ImGui::SetCursorPosX(right - 3 * smallW - 12.0f * s);
+        if (ScreenTab("Help", "", extra == Extra::Help, smallW, tabH)) extra = extra == Extra::Help ? Extra::None : Extra::Help; // until #826's pop-up
+        ImGui::SameLine(0.0f, 6.0f * s);
+        if (ScreenTab("Creative", "", extra == Extra::Creative, smallW, tabH)) extra = extra == Extra::Creative ? Extra::None : Extra::Creative; // until #823's /gamemode
+        ImGui::SameLine(0.0f, 6.0f * s);
+        if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
+        ImGui::Separator();
+        ImGui::BeginChild("screen", ImVec2(0, 0), false);
+        // Inventory and Crafting show your items on the left; the others use the whole width.
+        const bool items = extra != Extra::None || screen == GameScreen::Inventory || screen == GameScreen::Crafting;
+        if (items) {
+            ImGui::Columns(2, "inv", true);
+            static float colW = -1.0f;
+            if (colW != s) { ImGui::SetColumnWidth(0, (Inventory::kCols * 58.0f + 24.0f) * s); colW = s; }
+            ImGui::TextUnformatted("Items");
+            ImGui::Separator();
+            DrawGrid();
+            ImGui::NextColumn();
+        }
+        if (extra == Extra::Help) HelpManual_DrawTab();
+        else if (extra == Extra::Creative) DrawCreative();
+        else switch (screen) {
+            case GameScreen::Inventory:
+                if (container.open) DrawContainer();
+                else Suit_DrawTab(); // the suit beside your items (#822 puts the player preview here)
+                break;
+            case GameScreen::Crafting: DrawCrafting(); break;
+            case GameScreen::Quests:
+                if (ImGui::RadioButton("List", !questTree)) questTree = false;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Tree", questTree)) questTree = true;
+                ImGui::Separator();
+                if (questTree) QuestTree_DrawTab(); else DrawQuestList();
+                break;
+            case GameScreen::Skills:
+                DrawComing("Skills are coming (#167)", "Skills level as you use them: mining, building, farming, husbandry, combat, engineering, piloting and more. "
+                                                     "Each level gives a point to spend in that skill's perk tree: faster digging, better yields, longer air, new abilities.");
+                break;
+            case GameScreen::Team: DrawTeam(); break;
+            case GameScreen::Count: break;
+        }
+        if (items) ImGui::Columns(1);
+        ImGui::EndChild();
     }
     ImGui::End();
+    ImGui::PopStyleColor();
     // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
     if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) DropCursor(cursorStack.centi);
