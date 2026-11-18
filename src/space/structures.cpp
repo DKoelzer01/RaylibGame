@@ -46,6 +46,7 @@ struct Set {
     int yOffset = 0;               // the lowest part cell before normalising (parts may sit underground: wonders)
     struct Guard { std::string species; int count = 1; float radius = 6.0f; };
     std::vector<Guard> guards;     // animals set down round the site when it is built ("guard <species> <n> [radius m]")
+    float dungeon = 0.0f;          // the odds of a dungeon under it (#719: "dungeon <chance>"; RAYLIBGAME_DUNGEONS=0 off)
 };
 std::vector<Set> sets;
 bool loaded = false;
@@ -163,6 +164,8 @@ bool LoadSet(const std::string& path, Set& s) {
                 for (auto& c : fp) if (c.first.x >= x0 && c.first.x <= x1 && c.first.y >= y0 && c.first.y <= y1 && c.first.z >= z0 && c.first.z <= z1) return true;
                 return false;
             }), s.parts.end());
+        } else if (cmd == "dungeon") {
+            ss >> s.dungeon;
         } else if (cmd == "guard") {
             Set::Guard g; if (ss >> g.species >> g.count) { float r; if (ss >> r) g.radius = r; s.guards.push_back(g); }
         } else if (cmd == "carve") {
@@ -355,6 +358,8 @@ struct BuildJob {
     uint64_t body = 0; uint32_t plot = 0; uint32_t seed = 0;
     std::vector<std::pair<Part, std::string>> parts; // the part, and its loot table for a chest ("" none)
     size_t next = 0;
+    std::vector<TerrainEdit> edits;                  // carved first (a dungeon's rooms and corridors, #719)
+    size_t nextEdit = 0;
 };
 std::vector<BuildJob> jobs;
 int lastPlaced = 0; // parts the last RunJob placed (all of them, for a forced build)
@@ -362,7 +367,12 @@ bool RunJob(Planetoid& body, BuildJob& job, double budgetMs) { // true when the 
     Plot* plot = body.plots ? body.plots->byId(job.plot) : nullptr;
     if (!plot) return true; // the plot is gone (a reload, a world change): nothing to finish
     const auto t0 = std::chrono::steady_clock::now();
+    auto spent = [&]() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
     lastPlaced = 0;
+    while (job.nextEdit < job.edits.size()) {
+        ApplyTerrainEdit(body, job.edits[job.nextEdit++]);
+        if (spent() > budgetMs) return false;
+    }
     while (job.next < job.parts.size()) {
         const auto& [p, table] = job.parts[job.next++];
         const int idx = plot->place(p);
@@ -371,7 +381,7 @@ bool RunJob(Planetoid& body, BuildJob& job, double budgetMs) { // true when the 
             ++lastPlaced;
             if (!table.empty()) pending.push_back({ body.name, plot->id, idx, table, Hash(job.seed + idx) });
         }
-        if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > budgetMs) break;
+        if (spent() > budgetMs) break;
     }
     return job.next >= job.parts.size();
 }
@@ -384,6 +394,89 @@ void PlaceJobs() {
         jobs.erase(jobs.begin());
         return;
     }
+}
+
+// Dungeons (#719, per the #164 design): under some ruins, a ramp beside the ruin goes down 8 m to 3-6 rooms carved from
+// templates, joined in a tree by corridors, all on one floor. Each room has a torch; the deepest (the last) a chest of
+// rare loot, the others now and then a common one. Everything is terrain carves and plot parts on the site's plot (saved
+// as edits and parts, nothing new). RAYLIBGAME_DUNGEONS=0 turns them off.
+bool DungeonsOn() { static const bool on = !(getenv("RAYLIBGAME_DUNGEONS") && atoi(getenv("RAYLIBGAME_DUNGEONS")) == 0); return on; }
+struct DungeonPlan { int rooms = 0; Vector3 entrance{}; std::vector<Vector3> roomCentres; std::vector<std::pair<int, int>> links; float floorY = 0.0f; };
+DungeonPlan lastDungeon; // tests: the last dungeon planned (plot metres)
+bool forceDungeon = false; // tests: every ruin with a dungeon chance gets one
+bool noDungeons = false;   // tests: none (--test-structures checks the surface sets and their chests)
+void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Plot& plot, float floorY, float ruinHalfX, uint32_t seed) {
+    // Rock over every room and corridor (at least kCover): where the ground falls away from the ruin a room came up
+    // under a thin crust and trees showed through its ceiling. The plan is dropped when fewer than 3 rooms fit.
+    constexpr float kCover = 3.0f;
+    auto cover = [&](Vector3 plotTop) { const Vector3 t = plot.toBody(plotTop); return pf.radius + pf.elevation(Vector3Normalize(t)) - Vector3Length(t); };
+    std::vector<TerrainEdit> cuts;
+    constexpr float kDepth = 8.0f, kRoomH = 3.0f, kCorrHalfW = 0.75f, kCorrH = 2.4f;
+    struct Room { Vector3 c; float hx, hz; };
+    static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f } }; // half sizes (m)
+    uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
+    auto box = [&](Vector3 c, Vector3 half) {
+        TerrainEdit e{};
+        e.carve = true; e.box = true;
+        e.center = plot.toBody(c);
+        e.half = half; e.ax = plot.east; e.ay = plot.up; e.az = plot.north;
+        e.radius = Vector3Length(half);
+        cuts.push_back(e);
+    };
+    // The ramp: from just outside the ruin (+x), 0.5 m forward and 0.35 m down a step (35 deg), 2.4 m of headroom.
+    const float x0 = ruinHalfX + 2.0f;
+    const int steps = (int)ceilf(kDepth / 0.35f);
+    for (int i = 0; i <= steps; ++i) {
+        const float y = floorY - 0.35f * i;
+        box({ x0 + 0.5f * i, y + 1.2f, 0.0f }, { 0.4f, 1.2f, kCorrHalfW });
+    }
+    const float roomFloor = floorY - 0.35f * steps;
+    const float xEnd = x0 + 0.5f * steps;
+    // Rooms: the first at the ramp's foot, each next one off a room already there (a tree), never overlapping.
+    std::vector<Room> rooms;
+    std::vector<std::pair<int, int>> links; // corridors: room indices
+    const int n = 3 + (int)(Unit(h) * 4.0f) % 4;
+    auto covered = [&](const Room& r) { // the ceiling's middle and corners under kCover of rock
+        const float top = roomFloor + kRoomH;
+        for (int k = 0; k < 5; ++k) {
+            const float u = k == 0 ? 0.0f : (k & 1 ? 1.0f : -1.0f), v = k == 0 ? 0.0f : (k & 2 ? 1.0f : -1.0f);
+            if (cover({ r.c.x + u * r.hx, top, r.c.z + v * r.hz }) < kCover) return false;
+        }
+        return true;
+    };
+    { const Vector2 t = kTemplates[(int)(Unit(h) * 4.0f) & 3]; rooms.push_back({ { xEnd + t.x, roomFloor, 0.0f }, t.x, t.y }); }
+    if (!covered(rooms[0])) return; // the ground falls away right past the ruin: no dungeon here
+    for (int tries = 0; (int)rooms.size() < n && tries < 60; ++tries) {
+        const size_t fi = (size_t)(Unit(h) * rooms.size()) % rooms.size();
+        const Room& from = rooms[fi];
+        const Vector2 t = kTemplates[(int)(Unit(h) * 4.0f) & 3];
+        const float ang = Unit(h) * 2.0f * PI, d = std::max(from.hx, from.hz) + std::max(t.x, t.y) + 3.0f + Unit(h) * 4.0f;
+        const Room r{ { from.c.x + cosf(ang) * d, roomFloor, from.c.z + sinf(ang) * d }, t.x, t.y };
+        bool clear = fabsf(r.c.x) > ruinHalfX + 4.0f + r.hx || fabsf(r.c.z) > ruinHalfX + 4.0f + r.hz; // not under the ruin (or its ramp's top)
+        for (const Room& o : rooms) clear = clear && (fabsf(o.c.x - r.c.x) > o.hx + r.hx + 2.0f || fabsf(o.c.z - r.c.z) > o.hz + r.hz + 2.0f);
+        if (!clear || !covered(r) || cover({ 0.5f * (from.c.x + r.c.x), roomFloor + kCorrH, 0.5f * (from.c.z + r.c.z) }) < kCover) continue;
+        // The corridor from `from` to it, boxes every 0.6 m along the floor.
+        const Vector3 a = from.c, b = r.c;
+        const float len = Vector2Length({ b.x - a.x, b.z - a.z });
+        for (float s = 0.0f; s <= len; s += 0.6f) { const float k = s / len; box({ a.x + (b.x - a.x) * k, roomFloor + kCorrH * 0.5f, a.z + (b.z - a.z) * k }, { kCorrHalfW, kCorrH * 0.5f, kCorrHalfW }); }
+        links.push_back({ (int)fi, (int)rooms.size() });
+        rooms.push_back(r);
+    }
+    if (rooms.size() < 3) return; // too little room under good cover: no dungeon
+    lastDungeon = DungeonPlan{ (int)rooms.size(), { x0, floorY, 0.0f }, {}, links, roomFloor };
+    for (size_t i = 0; i < rooms.size(); ++i) {
+        const Room& r = rooms[i];
+        box({ r.c.x, roomFloor + kRoomH * 0.5f, r.c.z }, { r.hx, kRoomH * 0.5f, r.hz });
+        lastDungeon.roomCentres.push_back({ r.c.x, roomFloor + 1.0f, r.c.z });
+        if (body.trees) body.trees->addClearing(plot.toBody({ r.c.x, roomFloor + kRoomH, r.c.z }), std::max(r.hx, r.hz) + 2.0f); // (roots)
+        auto cell = [&](float x, float y, float z) { return Int3{ (int)floorf(x / kCellSize), (int)floorf(y / kCellSize), (int)floorf(z / kCellSize) }; };
+        // A torch in a corner (light: rooms 8 m down are black), and a chest against the far wall now and then.
+        job.parts.push_back({ Part{ PartType::Torch, cell(r.c.x + r.hx - 0.4f, roomFloor + 0.1f, r.c.z + r.hz - 0.4f), 0, 0 }, "" });
+        const bool last = i + 1 == rooms.size();
+        if (last || Unit(h) < 0.4f)
+            job.parts.push_back({ Part{ PartType::Chest, cell(r.c.x - r.hx + 0.6f, roomFloor + 0.1f, r.c.z - 0.5f), 0, 0 }, last ? "ruin_rare" : "ruin_common" });
+    }
+    job.edits.insert(job.edits.end(), cuts.begin(), cuts.end());
 }
 
 // Build one site (its tile id for the discovery record; world for its guards, null: none): -1 if the spot doesn't
@@ -471,6 +564,9 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             }
         job.parts.push_back({ p, table });
     }
+    uint32_t dh = Hash((uint64_t)site.seed ^ 0xd0d0ull);
+    if (S.dungeon > 0.0f && DungeonsOn() && !noDungeons && (forceDungeon || Unit(dh) < S.dungeon)) // a dungeon under it (#719)
+        PlanDungeon(job, body, pf, *plot, (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, site.seed);
     const int planned = (int)job.parts.size();
     jobs.push_back(std::move(job));
     if (force) { RunJob(body, jobs.back(), 1e9); jobs.pop_back(); } // tests (forced sites): all at once
@@ -695,6 +791,7 @@ bool Structures_Test(Scene& world, Planetoid& body, Vector3 nearLocal) {
     if (!pf || sets.empty()) { printf("bench: structures: no sets or no planet -> FAIL\n"); return false; }
     const Vector3 up = Vector3Normalize(nearLocal);
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    noDungeons = true; // the surface sets only (--test-dungeon builds one)
     bool ok = true;
     const size_t pending0 = pending.size();
     for (int i = 0; i < (int)sets.size(); ++i) {
@@ -719,6 +816,7 @@ bool Structures_Test(Scene& world, Planetoid& body, Vector3 nearLocal) {
         printf("bench: structures: %s (%s): %d of %d parts placed (decay %.2f), turned %d quarters, rigid %d\n", sets[i].name.c_str(), sets[i].kind.c_str(), placed, expect, sets[i].decay, s.quarters, (int)rigid);
         ok = ok && good;
     }
+    noDungeons = false;
     for (size_t k = pending0; k < pending.size(); ++k) testFilled.push_back({ pending[k].plot, pending[k].part });
     const int chests = (int)(pending.size() - pending0);
     int lootCount = 0;
@@ -769,6 +867,51 @@ std::string Structures_PlacesText(bool discoveredOnly) {
 }
 
 const char* Structures_LastSkip() { return lastSkip; }
+
+bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target) {
+    // A ruined watchtower with its dungeon forced, 40 m from the player (#719), built at once. Checks: 3-6 rooms; the air
+    // (density under ISO) at every room's middle, along the ramp and at every corridor's middle; a chest of rare loot
+    // waiting in the last room. eye/target (body-local): a view across the first room toward its torch.
+    Ensure();
+    if (!DungeonsOn()) { printf("bench: dungeon: RAYLIBGAME_DUNGEONS=0: off -> SKIP\n"); return true; }
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    int set = -1;
+    for (int i = 0; i < (int)sets.size(); ++i) if (sets[i].name == "Ruined watchtower") set = i;
+    if (!pf || set < 0) { printf("bench: dungeon: no watchtower set -> FAIL\n"); return false; }
+    const Vector3 up = Vector3Normalize(nearLocal);
+    Vector3 t1, t2; TangentAxes(up, t1, t2);
+    Site s; s.any = true; s.set = set; s.quarters = 0; s.seed = 4242u;
+    s.dir = Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 40.0f / pf->radius)));
+    forceDungeon = true;
+    lastDungeon = DungeonPlan{};
+    const size_t pending0 = pending.size();
+    const int placed = BuildSite(&world, body, *pf, kRingTile + 200, s, true);
+    forceDungeon = false;
+    const Plot* plot = body.plots ? body.plots->plotFor(Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir)), 15.0f, false) : nullptr;
+    if (placed < 0 || !plot || lastDungeon.rooms == 0) { printf("bench: dungeon: not built (%s) -> FAIL\n", lastSkip); return false; }
+    auto air = [&](Vector3 plotPos) { return body.densityAt(plot->toBody(plotPos)) < ISO_LEVEL; };
+    int roomsOpen = 0, links = 0, linksOpen = 0, ramp = 0, rampOpen = 0;
+    for (const Vector3& c : lastDungeon.roomCentres) roomsOpen += air(c);
+    for (const auto& [a, b] : lastDungeon.links) {
+        ++links;
+        const Vector3 m = Vector3Scale(Vector3Add(lastDungeon.roomCentres[a], lastDungeon.roomCentres[b]), 0.5f);
+        linksOpen += air(m);
+    }
+    for (float k = 0.1f; k < 0.95f; k += 0.1f) { // along the ramp, 1 m over its floor
+        const Vector3 e = lastDungeon.entrance;
+        const Vector3 p = { e.x + (lastDungeon.roomCentres[0].x - e.x) * k * 0.6f, e.y + (lastDungeon.floorY - e.y) * k * 0.6f + 1.0f, 0.0f };
+        ++ramp; rampOpen += air(p);
+    }
+    int rare = 0;
+    for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "ruin_rare";
+    const bool ok = lastDungeon.rooms >= 3 && lastDungeon.rooms <= 6 && roomsOpen == lastDungeon.rooms && linksOpen == links && rampOpen == ramp && rare == 1;
+    printf("bench: dungeon: %d rooms %.1f m down (%d open), %d corridors (%d open at the middle), the ramp open at %d of %d points, %d rare chest waiting -> %s\n",
+           lastDungeon.rooms, lastDungeon.entrance.y - lastDungeon.floorY, roomsOpen, links, linksOpen, rampOpen, ramp, rare, ok ? "PASS" : "FAIL");
+    const Vector3 c0 = lastDungeon.roomCentres[0];
+    eye = plot->toBody({ c0.x - 1.5f, c0.y + 0.6f, c0.z - 1.5f });
+    target = plot->toBody({ c0.x + 3.0f, c0.y - 0.6f, c0.z + 3.0f });
+    return ok;
+}
 
 bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash) {
     const auto clk0 = std::chrono::steady_clock::now();

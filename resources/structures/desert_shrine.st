@@ -5,6 +5,7 @@ biomes Desert Badlands
 weight 1.0
 bury 0.5
 decay 0.2
+dungeon 0.4
 fill slab 2 0 2 13 0 13 sandstone
 walls block 0 0 0 15 1 15 sandstone
 clear 6 0 0 9 1 1
