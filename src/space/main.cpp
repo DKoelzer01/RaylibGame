@@ -10788,7 +10788,7 @@ int main(int argc, char** argv)
                     printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
                            hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
                     printf("bench: host: records (#346): written on leaving %d; after a restart, \"alice\" under another id refused %d (%s); alice back as alicia with %d iron "
-                           "(5), bob with %d coal (3) -> %s\n", (int)recordsWritten, (int)malloryRefused, NetRejectText(mallory.reject.reason), aliceIron, bobCoal,
+                           "(5) and %d telescope (1: the kit once), bob with %d coal (3) -> %s\n", (int)recordsWritten, (int)malloryRefused, NetRejectText(mallory.reject.reason), aliceIron, aliceScopes, bobCoal,
                            records ? "PASS" : "FAIL");
                     printf("bench: host: lifecycle (#321): alice joined %d as session %u (world matches %d, shower matches %d, ping %d: %.1f ms); old protocol refused %d (%s); "
                            "a second alice refused %d (%s); alice left %d and came back to session %u (same, reconnected %d); %d joins, step %d after %.1f s -> %s\n",
