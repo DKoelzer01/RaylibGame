@@ -1797,6 +1797,12 @@ static constexpr float kSkinMoving = 0.02f; // m: the same for moving water (#64
 static std::atomic<long long> gWaterPhaseNs[4];
 static std::atomic<long long> gWaterSamples[2]; // exact water density samples, all samples (#381)
 void ChunkWaterPhases(long long out[6]) { for (int i = 0; i < 4; ++i) out[i] = gWaterPhaseNs[i].load(); out[4] = gWaterSamples[0].load(); out[5] = gWaterSamples[1].load(); }
+// Moving simulated water's vertices (#677, --test-flow-shade): all, steep ones (surface 40+ degrees off level), steep ones
+// drawn with a current of 1 m/s or more along their surface.
+static std::atomic<long long> gSimFlowVerts[3];
+// RAYLIBGAME_FLOW_SURFACE=0: the current stays level and simulated water keeps its gradient normal (before #677/#696), for A/B.
+static const bool kFlowSurface = [] { const char* e = getenv("RAYLIBGAME_FLOW_SURFACE"); return !(e && e[0] == '0'); }();
+void ChunkWaterFlowStats(long long out[3]) { for (int i = 0; i < 3; ++i) out[i] = gSimFlowVerts[i].load(); }
 // RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
 static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
 static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -2058,7 +2064,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         // n (n 0.03, at most 4 m/s): a channel runs, a level pool stands still - awake, steady or asleep alike.
                         Vector3 down; float grade;
                         Vector3 solverDir; float solverSpeed;
-                        if (sim.simFlow(bp, solverDir, solverSpeed)) { // the debug view (#695): the solver's own flow, published only then
+                        if (sim.simFlow(bp, solverDir, solverSpeed)) { // the solver's own flow, published per column (#695)
                             simFlow = Vector3Subtract(solverDir, Vector3Scale(radial, Vector3DotProduct(solverDir, radial)));
                             const float fl = Vector3Length(simFlow);
                             simFlow = fl > 1e-4f ? Vector3Scale(simFlow, 1.0f / fl) : Vector3{ 0, 0, 0 };
@@ -2070,6 +2076,39 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                                 simFlow = Vector3Scale(simFlow, 1.0f / fl);
                                 simSpeed = std::min(4.0f, powf(std::max(0.05f, sim.depthBelow(bp, kind)), 2.0f / 3.0f) * sqrtf(grade) / 0.03f);
                             }
+                        }
+                        // Along the water's own surface (#677): the solver's flow is level (east, north), so on a step, a chute or
+                        // a falling sheet it pointed into the surface and water.fs had nothing left to draw. Moving water on a
+                        // slope runs down it: tilt the current into the surface plane, towards its downhill as it steepens, and a
+                        // sheet sliding down a step or a fall is fast (3 m/s at vertical) even where its column's flow is small.
+                        const float upN = Vector3DotProduct(n, radial); // 1: level, 0: a vertical sheet, < 0: an underside
+                        if (kFlowSurface && upN < 0.97f && upN > -0.3f && sim.moving(bp)) {
+                            const Vector3 along = Vector3Subtract(simFlow, Vector3Scale(n, Vector3DotProduct(simFlow, n)));
+                            Vector3 downhill = Vector3Subtract(Vector3Scale(n, upN), radial);
+                            const float dl = Vector3Length(downhill);
+                            if (dl > 1e-4f) {
+                                downhill = Vector3Scale(downhill, 1.0f / dl);
+                                const float steep = std::clamp((0.97f - upN) / 0.6f, 0.0f, 1.0f);
+                                const Vector3 f = Vector3Add(Vector3Scale(along, 1.0f - steep), Vector3Scale(downhill, steep));
+                                const float fl = Vector3Length(f);
+                                if (fl > 1e-4f) { simFlow = Vector3Scale(f, 1.0f / fl); simSpeed = std::min(4.0f, std::max(simSpeed, 3.0f * steep)); }
+                            }
+                        }
+                        if (sim.moving(bp)) {
+                            ++gSimFlowVerts[0];
+                            if (upN < 0.77f && upN > -0.3f) {
+                                ++gSimFlowVerts[1];
+                                const float alongN = fabsf(Vector3DotProduct(simFlow, n)); // drawn along the surface, not into it
+                                if (simSpeed >= 1.0f && alongN < 0.2f) ++gSimFlowVerts[2];
+                            }
+                        }
+                        // Shade near-level water with the radial normal, as the generated water is (#696): the fill grid's
+                        // gradient tilts from cell to cell over a resting or gently running surface (its levels step), and
+                        // at grazing angles that tilt cost most of the Fresnel sky reflection - disturbed water turned clear
+                        // and dull along a hard line where it met the generated water. Steps and falls keep their own normal.
+                        if (kFlowSurface && upN > 0.5f) {
+                            const float t = std::clamp((upN - 0.5f) / 0.4f, 0.0f, 1.0f), w = t * t * (3.0f - 2.0f * t);
+                            n = Vector3Normalize(Vector3Lerp(n, radial, w));
                         }
                         // Over simulated sea or lake cells: no shallower than the generated water around them (a lighter
                         // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
