@@ -65,6 +65,7 @@
 #include "trapping.h"
 #include "dungeontraps.h"
 #include "playerrecord.h"
+#include "commandline.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -587,6 +588,7 @@ int main(int argc, char** argv)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
     bool shotGameWindow = false;   // --shot-game-window (#821): each screen of the game window, and the key bindings tables
+    bool benchGameMode = false;     // --test-gamemode (#823): /gamemode, the Catalog screen in creative only, the command line
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -921,6 +923,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pickups") benchPickups = true;
         if (std::string(argv[i]) == "--shot-inventory") shotInventory = true;
         if (std::string(argv[i]) == "--shot-game-window") shotGameWindow = true;
+        if (std::string(argv[i]) == "--test-gamemode") benchGameMode = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -1863,7 +1866,14 @@ int main(int argc, char** argv)
                     if (cmd == "kick" && !who.empty()) { reply = Host_Kick(who, rest) ? who + " was kicked" : who + " is not online"; Admin_Audit(name + ": " + line + " -> " + reply); }
                     else if (cmd == "say" && !who.empty()) { Host_Say("[" + name + "] " + line.substr(4)); reply = ""; }
                     else if (cmd == "list") { reply = "online:"; for (const HostPlayer& p : Host_ListPlayers()) if (p.online) reply += " " + p.name; }
-                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list)";
+                    else if (cmd == "gamemode" || cmd == "gm") { // (#823) /gamemode creative|survival [name]: the op themselves by default
+                        const bool creative = who == "creative" || who == "c" || who == "1", survival = who == "survival" || who == "s" || who == "0";
+                        const std::string target = rest.empty() ? name : rest;
+                        if (!creative && !survival) reply = "/gamemode creative|survival [name]";
+                        else if (!Host_SetCreative(target, creative)) reply = target + " is not online";
+                        else { reply = target + ": " + (creative ? "creative" : "survival"); Admin_Audit(name + ": " + line); }
+                    }
+                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list, gamemode)";
                 }
                 if (!reply.empty()) Host_Say(reply, 0, session);
             });
@@ -9039,7 +9049,8 @@ int main(int argc, char** argv)
         }
         // The game window (#821): Tab (or E on foot, when not looking at a cockpit to board) opens and closes it at its last
         // screen; C and K open Crafting and Skills on foot (in a rocket they roll and dock). All rebindable in Settings.
-        if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive()) {
+        if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen()) CommandLine_Update(world); // (#823) Enter or /: the command line
+        if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
             else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || !Rocket_AimingCockpit())) GameUI_ToggleInventory();
@@ -9052,7 +9063,7 @@ int main(int argc, char** argv)
             Nav_ToggleMap();
             // (relocking the cursor centres it)
         }
-        const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen();
+        const bool uiOpen = DebugUI_IsOpen() || GameUI_InventoryOpen() || Nav_MapOpen() || CommandLine_Open(); // (#823: typing a command)
         if (!bench && !telescope.active && !DebugUI_IsOpen()) world.camera.fovy = settings.fov; // Settings (the telescope zooms from it)
         // Near plane: 0.5 m keeps depth precision out to the 2 km pass split, but the frustum corners
         // then sit 0.65 m from the eye, past the 0.45 m player radius, so walls clipped into view.
@@ -9647,6 +9658,32 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --test-gamemode (#823): /gamemode creative and survival from the command line; the Catalog screen only in creative;
+        // /help and an unknown command answer; screenshots of the command line and the Catalog screen.
+        if (benchGameMode && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static bool startSurvival = false, creativeOn = false, catalogShown = false, survivalOff = false, catalogGone = false, helpOk = false, unknownOk = false;
+            if (f == 0) {
+                startSurvival = !terrainTool.creative;
+                creativeOn = CommandLine_Run("/gamemode creative").find("creative") != std::string::npos && terrainTool.creative;
+                GameUI_ShowTab("Catalog");
+            }
+            if (f == 20) { catalogShown = GameUI_Screen() == GameScreen::Catalog; TakeScreenshot("bench_gamemode_catalog.png"); GameUI_ToggleInventory(); CommandLine_TestOpen("/gamemode survival"); }
+            if (f == 40) {
+                TakeScreenshot("bench_gamemode_commandline.png");
+                survivalOff = CommandLine_Run("gm s") == "Game mode: survival" && !terrainTool.creative;
+                GameUI_ShowTab("Catalog");
+                catalogGone = GameUI_Screen() == GameScreen::Inventory; // (no Catalog in survival)
+                helpOk = CommandLine_Run("/help").find("/gamemode") != std::string::npos;
+                unknownOk = CommandLine_Run("/fly").find("Unknown") != std::string::npos;
+                GameUI_ToggleInventory();
+                const bool ok = startSurvival && creativeOn && catalogShown && survivalOff && catalogGone && helpOk && unknownOk;
+                printf("bench: gamemode (#823): survival to start %d; /gamemode creative %d, the Catalog screen %d; /gamemode survival %d, no Catalog %d; /help %d, unknown command %d -> %s\n",
+                       startSurvival, creativeOn, catalogShown, survivalOff, catalogGone, helpOk, unknownOk, ok ? "PASS" : "FAIL");
+                benchGameMode = false;
+            }
+            ++f;
+        }
         // --shot-game-window (#821): the game window on each screen (and the temporary Help page), a screenshot each; the
         // key bindings tables (every action named, its settings word unique and back to it, a key name for its key).
         if (shotGameWindow && gameState == 1 && !loading && WorldIdle()) {
@@ -10837,6 +10874,7 @@ int main(int argc, char** argv)
                 static int step = 0;
                 static uint32_t aliceSession = 0;
                 static int joinsBefore = 0, aliceIron = -1, bobCoal = -1, aliceScopes = -1;
+                static bool creativeHeard = false; // (#823)
                 static bool joined = false, sameWorld = false, sameShower = false, pinged = false, protoRefused = false, nameRefused = false,
                             left = false, sameSession = false, recordsWritten = false, forgot = false, malloryRefused = false;
                 const char* addr = TextFormat("127.0.0.1:%d", hostPort);
@@ -10883,16 +10921,19 @@ int main(int argc, char** argv)
                     aliceIron = Host_ItemCount(alicia.welcome.session, "iron_ingot");
                     aliceScopes = Host_ItemCount(alicia.welcome.session, "telescope"); // the kit once, not again on her return
                     bobCoal = Host_ItemCount(bob2.welcome.session, "coal");
+                    Host_SetCreative("alicia", true); // (#823) an op's /gamemode: her game hears it with the next vitals
                     step = 8;
+                } else if (step == 8 && (alicia.vitals.flags & 128)) {
+                    creativeHeard = true; step = 9;
                 }
-                if ((step == 8 && autosaveDone) || GetTime() - t0 > 90.0) {
+                if ((step == 9 && autosaveDone) || GetTime() - t0 > 90.0) {
                     const bool ok = saveOnDisk && gHeadless && seedOk && autosaveDone && joined && sameWorld && sameShower && pinged && protoRefused && nameRefused &&
                                     left && sameSession && joinsBefore == 2;
-                    const bool records = recordsWritten && forgot && malloryRefused && aliceIron == 5 && bobCoal == 3 && aliceScopes == 1;
+                    const bool records = recordsWritten && forgot && malloryRefused && aliceIron == 5 && bobCoal == 3 && aliceScopes == 1 && creativeHeard;
                     printf("bench: host: save %s on disk %d, headless %d, listening on %d; seed %u (%s) ok %d; autosaves %d\n",
                            hostSave.c_str(), (int)saveOnDisk, (int)gHeadless, hostPort, worldGen.lastSeed, seedHow, (int)seedOk, Host_Autosaves());
                     printf("bench: host: records (#346): written on leaving %d; after a restart, \"alice\" under another id refused %d (%s); alice back as alicia with %d iron "
-                           "(5) and %d telescope (1: the kit once), bob with %d coal (3) -> %s\n", (int)recordsWritten, (int)malloryRefused, NetRejectText(mallory.reject.reason), aliceIron, aliceScopes, bobCoal,
+                           "(5) and %d telescope (1: the kit once), bob with %d coal (3); her /gamemode creative heard by her game %d -> %s\n", (int)recordsWritten, (int)malloryRefused, NetRejectText(mallory.reject.reason), aliceIron, aliceScopes, bobCoal, (int)creativeHeard,
                            records ? "PASS" : "FAIL");
                     printf("bench: host: lifecycle (#321): alice joined %d as session %u (world matches %d, shower matches %d, ping %d: %.1f ms); old protocol refused %d (%s); "
                            "a second alice refused %d (%s); alice left %d and came back to session %u (same, reconnected %d); %d joins, step %d after %.1f s -> %s\n",
@@ -11522,7 +11563,8 @@ int main(int argc, char** argv)
             const bool escPressed = IsKeyPressed(KEY_ESCAPE) || menuEsc;
             menuEsc = false;
             if (gameState == 1 && !loading && m.action == MenuAction::None && escPressed) {
-                if (Nav_MapOpen()) Nav_CloseMap();
+                if (CommandLine_Open()) {} // (#823) the command line closes itself on Esc
+                else if (Nav_MapOpen()) Nav_CloseMap();
                 else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
                 else if (buildTool.active) buildTool.active = false;
                 else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
@@ -11665,6 +11707,7 @@ int main(int argc, char** argv)
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);
+                if (gameState == 1) CommandLine_Draw(); // (#823)
                 BugReport_Draw();
                 BugReport_Update();
                 rlImGuiEnd();

@@ -41,10 +41,10 @@ namespace {
     std::string toast;
     double toastUntil = 0.0;
     struct Container { bool open = false; uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } container;
-    // The game window (#821): the screen shown; Quests' view; the temporary Help and Creative pages (until #826 and #823).
+    // The game window (#821): the screen shown; Quests' view; the temporary Help page (until #826).
     GameScreen screen = GameScreen::Inventory;
     bool questTree = false;
-    enum class Extra { None, Help, Creative } extra = Extra::None;
+    enum class Extra { None, Help } extra = Extra::None;
 }
 
 bool GameUI_InventoryOpen() { return inventoryOpen; }
@@ -137,7 +137,7 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") { GameUI_ShowScreen(GameScreen::Quests); questTree = t == "Quest tree"; }
     else if (t == "Help") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Help; }
-    else if (t == "Creative") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Creative; }
+    else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
 }
 void GameUI_Toast(const char* text) { toast = text; toastUntil = GetTime() + 2.5; }
@@ -670,7 +670,7 @@ static void CheckContainer(Scene& world) {
 
 // Creative mode: free building, crafting and blueprints, and any item into the inventory.
 static void DrawCreative() {
-    ImGui::Checkbox("Creative mode (build, craft and place blueprints for free)", &terrainTool.creative);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "Creative: build, craft and place blueprints for free (/gamemode survival to leave)"); // (#823)
     static char filter[64] = {};
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
@@ -926,28 +926,29 @@ void GameUI_Draw(Scene& world) {
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin("Game window", nullptr, flags)) {
         ImGui::SetWindowFontScale(s);
-        // The tabs (#810's order), their keys from the bindings; at the right end the temporary Help and Creative pages and Close.
+        // The tabs (#810's order; Catalog beside Inventory in creative only, #823), their keys from the bindings; at the right
+        // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
-        static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Crafting, "Crafting", Act::Crafting },
+        static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
                                     { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
         const float tabH = 46.0f * s, tabW = 190.0f * s;
+        if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
         for (const Tab& t : tabs) {
+            if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
             if (ScreenTab(t.name, key, screen == t.s && extra == Extra::None, tabW, tabH)) { screen = t.s; extra = Extra::None; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
         const float smallW = 120.0f * s;
-        ImGui::SetCursorPosX(right - 3 * smallW - 12.0f * s);
+        ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
         if (ScreenTab("Help", "", extra == Extra::Help, smallW, tabH)) extra = extra == Extra::Help ? Extra::None : Extra::Help; // until #826's pop-up
-        ImGui::SameLine(0.0f, 6.0f * s);
-        if (ScreenTab("Creative", "", extra == Extra::Creative, smallW, tabH)) extra = extra == Extra::Creative ? Extra::None : Extra::Creative; // until #823's /gamemode
         ImGui::SameLine(0.0f, 6.0f * s);
         if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
         // Inventory and Crafting show your items on the left; the others use the whole width.
-        const bool items = extra != Extra::None || screen == GameScreen::Inventory || screen == GameScreen::Crafting;
+        const bool items = extra != Extra::None || screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog;
         if (items) {
             ImGui::Columns(2, "inv", true);
             static float colW = -1.0f;
@@ -958,8 +959,8 @@ void GameUI_Draw(Scene& world) {
             ImGui::NextColumn();
         }
         if (extra == Extra::Help) HelpManual_DrawTab();
-        else if (extra == Extra::Creative) DrawCreative();
         else switch (screen) {
+            case GameScreen::Catalog: DrawCreative(); break; // (#823) every item, free: creative only
             case GameScreen::Inventory:
                 if (container.open) DrawContainer();
                 else DrawYou(); // (#822) the player, the suit and its modules, the off hand
