@@ -17,6 +17,8 @@ void MachineAct_Extract(uint64_t bodyId, uint32_t plotId, int part);
 // inventory for now.
 void MachineAct_TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int cursorCount = -1);
 bool MachineAct_Remote();                         // a joined game: actions go to the server
+void MachineAct_Update();                        // once a frame (#854: a joined client's cursor takes, once their items arrive)
+int MachineAct_CursorMoves();                    // (#854 tests) cursor takes completed (the items moved onto the cursor)
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;

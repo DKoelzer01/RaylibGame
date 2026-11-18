@@ -342,6 +342,27 @@ namespace {
     struct MachineWatch { Factory::MachineKey key{ 0, 0, -1 }; bool on = false; };
     std::map<uint32_t, MachineWatch> machineWatch;                                    // session -> its open machine
     std::map<std::pair<uint32_t, std::pair<uint64_t, uint32_t>>, std::vector<int>> machineStatesSent; // (session, (body, plot)) -> parts
+    // (#854) the chests near each player: their views go to it (what crafting may draw on), once a second when they change
+    constexpr float kChestRange = 10.0f;
+    long long lastChestViews = 0;
+    std::map<std::pair<uint32_t, Factory::MachineKey>, uint64_t> chestViewSent; // (session, chest) -> hash of what it was sent
+    std::vector<std::pair<Planetoid*, std::pair<Plot*, int>>> ChestsNear(const Remote& r) {
+        std::vector<std::pair<Planetoid*, std::pair<Plot*, int>>> out;
+        Planetoid* b = r.player.nearest;
+        if (!b || !b->plots) return out;
+        const Vector3 me = b->toLocalD(r.player.position).toFloat();
+        for (auto& pl : b->plots->plots)
+            for (int k = 0; k < (int)pl->parts.size(); ++k) {
+                if (pl->parts[k].type != PartType::Chest) continue;
+                const Int3 c = pl->parts[k].origin;
+                if (Vector3Distance(pl->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) <= kChestRange) out.push_back({ b, { pl.get(), k } });
+            }
+        return out;
+    }
+    uint32_t ConnOf(uint32_t session); // (below)
+    // (#854) crafts waiting for what they pulled from chests to arrive (Factory::Take delivers next tick)
+    struct PendingCraft { uint32_t session = 0; int recipe = 0, count = 0; double until = 0.0; };
+    std::vector<PendingCraft> pendingCrafts;
     void StepMachines(Scene& world) {
         // The factory ticks the plots near every player at full rate and publishes what they see.
         std::vector<Vector3> near;
@@ -349,7 +370,50 @@ namespace {
         Factory::SetNearPoints(near);
         std::vector<Factory::MachineKey> keys;
         for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
+        for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
         Factory::WatchMany(keys);
+        if (SimTick() - lastChestViews >= 60) { // (#854) 1 Hz
+            lastChestViews = SimTick();
+            for (const auto& [conn, p] : peers) {
+                if (!p.joined) continue;
+                auto rit = remotes.find(p.session);
+                if (rit == remotes.end()) continue;
+                for (const auto& [b, pc] : ChestsNear(rit->second)) {
+                    const Factory::MachineKey key{ b->id, pc.first->id, pc.second };
+                    MsgMachineView v; v.body = b->netId; v.plot = pc.first->id; v.part = pc.second; v.view = Factory::Watched(key);
+                    if (!v.view.valid) continue;
+                    uint64_t h = 1469598103934665603ull;
+                    for (const auto& s : v.view.inSlots) { for (char ch : s.first) { h ^= (uint8_t)ch; h *= 1099511628211ull; } h ^= (uint64_t)s.second; h *= 1099511628211ull; }
+                    uint64_t& sent = chestViewSent[{ p.session, key }];
+                    if (sent == h) continue;
+                    sent = h;
+                    SendMsg(conn, v);
+                }
+            }
+        }
+        // (#854) crafts that pulled from chests: done once the items are here, refused after 3 s
+        for (size_t i = 0; i < pendingCrafts.size();) {
+            PendingCraft& pc = pendingCrafts[i];
+            auto rit = remotes.find(pc.session);
+            const uint32_t conn = ConnOf(pc.session);
+            const Recipe& rc = itemDB.recipes()[pc.recipe];
+            if (rit == remotes.end()) { pendingCrafts.erase(pendingCrafts.begin() + i); continue; }
+            Inventory& inv = rit->second.inventory;
+            if (inv.canCraft(rc)) {
+                const auto before = AllAmounts(inv);
+                int made = 0;
+                while (made < pc.count && inv.canCraft(rc) && inv.craft(rc)) ++made;
+                if (conn) SendChangedItems(conn, inv, before);
+                crafts += made;
+                if (made >= pc.count || GetTime() > pc.until) { pendingCrafts.erase(pendingCrafts.begin() + i); continue; }
+                pc.count -= made;
+            } else if (GetTime() > pc.until) {
+                if (conn) SendMsg(conn, MsgChat{ 0, std::string("Missing items for ") + rc.output + " (the chests near you didn't have enough)" });
+                pendingCrafts.erase(pendingCrafts.begin() + i);
+                continue;
+            }
+            ++i;
+        }
         if (SimTick() - lastMachineViews >= 12) { // 5 Hz
             lastMachineViews = SimTick();
             for (const auto& [conn, p] : peers) {
@@ -422,7 +486,10 @@ namespace {
                 break;
             }
             case 4: Factory::Extract(b->id, plot->id, a.part, session); break;                       // O: the outputs (delivered next tick)
-            case 5: Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session); break;    // one slot of its screen
+            case 5: // one slot of its screen; with a count (#854), that much of it (its client puts it on its cursor)
+                if (a.count > 0) Factory::TakeSlotToCursor(b->id, plot->id, a.part, a.slot, a.which, a.count, session);
+                else Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session);
+                break;
             default: return;
         }
         SendChangedItems(conn, inv, before);
@@ -724,7 +791,7 @@ namespace {
     }
     // A joining player's record, if they have one: their place, inventory and survival come back (the client is sent the
     // inventory); a first-timer starts at the world's start (SpawnRemote) with nothing.
-    bool LoadRecord(uint32_t conn, const Session& s) { // true: their record was loaded
+    bool LoadRecord(Scene& world, uint32_t conn, const Session& s) { // true: their record was loaded
         Remote& rm = remotes[s.id];
         rm.record = PlayerRecordMeta{};
         const std::string path = PlayerRecord_Path(s.uuid);
@@ -732,6 +799,9 @@ namespace {
         if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record)) {
             loaded = true;
             rm.player.flyAllowed = false; // (#781) never for a client's server-side player
+            // (#856) anchored where the record put them: until their first step (their client still loading) the server reports
+            // the anchor, and SpawnRemote's was the world's start
+            if (Planetoid* b = rm.player.nearest ? rm.player.nearest : StartBody(world)) rm.player.anchorTo(*b);
             std::map<std::string, double> before;
             for (const InvSlot& c : rm.inventory.grid()) if (!c.empty()) before[c.id] = 0.0; // the client starts from nothing
             SendInventoryDeltas(conn, rm.inventory, before);
@@ -935,7 +1005,7 @@ namespace {
         bool hadRecord = true; // (a reconnect within the run keeps its player: not a new one)
         if (!remotes.count(s->id)) { // (#346) at the world's start, or where their record left them, with what they carried
             SpawnRemote(world, s->id);
-            hadRecord = LoadRecord(conn, *s);
+            hadRecord = LoadRecord(world, conn, *s);
         } else { // (#780) a reconnect keeps the player but its client counts ticks from 1 again: a fresh input stream
             Remote& rm = remotes[s->id];
             rm.inputs.clear(); rm.lastQueued = 0; rm.lastApplied = 0; rm.carried = 0; rm.budget = 0.0; rm.tick = SimTick();
@@ -1095,6 +1165,7 @@ namespace {
             const Part removed = plot->parts[q.partIndex];
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            if (IsMachine(plot->parts[q.partIndex].type)) plot->refundTo = session; // (#854) its contents go to this player (the factory's next layout)
             if (!plot->remove((int)q.partIndex)) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
             // The refund (a meteorite breaks into ore, rolled here: the authority rolls, #316).
             std::vector<std::pair<std::string, int>> give;
@@ -1405,6 +1476,24 @@ namespace {
                 if (rit->second.creative) { for (; made < q.count; ++made) inv.addAmount(rc.output, rc.outputCount); } // (#823) creative: free
                 else while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
                 if (made > 0) SendChangedItems(m.conn, inv, before);
+                if (made < q.count && q.useChests) { // (#854) what the inventory lacks, from the chests near the player; the craft waits for it
+                    const int rest = q.count - made;
+                    std::vector<std::pair<std::string, int>> missing;
+                    for (const auto& [want, n] : rc.inputs) { const int lack = n * rest - inv.count(want); if (lack > 0) missing.push_back({ want, lack }); }
+                    std::vector<std::tuple<Planetoid*, Plot*, int, std::string, int>> takes;
+                    for (const auto& [b, pc] : ChestsNear(rit->second))
+                        for (const auto& [id, have] : Factory::ChestContents(b->id, pc.first->id, pc.second))
+                            for (auto& [want, lack] : missing)
+                                if (lack > 0 && ItemMatches(want, id)) { const int k = std::min(lack, have); takes.push_back({ b, pc.first, pc.second, id, k }); lack -= k; break; }
+                    bool enough = true;
+                    for (const auto& [want, lack] : missing) enough = enough && lack <= 0;
+                    if (enough) {
+                        for (const auto& [b, pl, part, id, k] : takes) Factory::Take(b->id, pl->id, part, id, k, it->second.session); // into its inventory next tick
+                        pendingCrafts.push_back({ it->second.session, (int)q.recipe, rest, GetTime() + 3.0 });
+                        crafts += made;
+                        return;
+                    }
+                }
                 if (made < q.count) SendMsg(m.conn, MsgChat{ 0, made ? TextFormat("Crafted %d of %d: not enough for more", made, (int)q.count) : std::string("Missing items for ") + rc.output });
                 crafts += made;
                 return;

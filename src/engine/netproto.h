@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 24; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24: team state (#604)
+constexpr uint32_t kNetProtocol = 26; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26: team state (#604; it was to be 24)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -205,7 +205,7 @@ struct MsgVitals { float health = 100.0f, food = 100.0f, oxygen = 100.0f, power 
 struct MsgUseItem { std::string item; };
 struct MsgBedUse { std::string body; uint32_t plot = 0; int32_t cell[3] = { 0, 0, 0 }; }; // #800: the bed's origin cell
 struct MsgQuestBook { uint32_t team = 0; std::string text; }; // #338 (at most 64 KB)
-struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count = 1; }; // #338 (output: a check that both sides mean the same recipe)
+struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count = 1; bool useChests = false; }; // useChests (#854): what the inventory lacks, from the chests near the player // #338 (output: a check that both sides mean the same recipe)
 // #332. action: 1 insert item (count), 2 insert all it takes, 3 insert fuel (item, count), 4 extract the outputs,
 // 5 take one slot (slot, which: 0 inputs, 1 outputs, 2 fuel), 6 watch (its screen opened), 7 unwatch.
 struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; };

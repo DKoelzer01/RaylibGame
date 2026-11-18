@@ -597,6 +597,7 @@ int main(int argc, char** argv)
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
+    bool benchIdleDrift = false;     // --test-idle-drift (#856, with --host): a joiner that sends nothing yet stays put in the planet's frame
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -939,6 +940,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
+        if (std::string(argv[i]) == "--test-idle-drift") benchIdleDrift = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -1435,7 +1437,7 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
-        gCraftRequest = [](int index, const std::string& output, int count) { NetClient_Craft(gJoin, index, output, count); }; // (#338) and our crafting
+        gCraftRequest = [](int index, const std::string& output, int count, bool useChests) { NetClient_Craft(gJoin, index, output, count, useChests); }; // (#338) and our crafting
         // (#332) the server runs the machines: ours show its views, and what we do to them is a request
         Factory::SetRemote(true);
         gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
@@ -2032,7 +2034,7 @@ int main(int argc, char** argv)
             NewWorld_Shutdown();
             // The .worldgen sidecar round-trips every field (the bake key hashes them: a lost field rebakes the wrong world).
             WorldGenParams wp; wp.ocean = 0.3f; wp.mountains = 1.7f; wp.roughness = 0.6f; wp.biomeSize = 1.3f; wp.resources = 0.8f;
-            wp.erosion = true; wp.erosionStrength = 1.4f; wp.cliffs = 0.35f; wp.karst = false; wp.volcanoes = false;
+            wp.erosion = true; wp.erosionStrength = 1.4f; wp.cliffs = 0.35f; wp.karst = false; wp.volcanoes = false; wp.waterCycle = 1.6f; // #637
             const std::string sidecar = std::string(GetApplicationDirectory()) + "newworld_test";
             const bool saved = WorldGenParams_Save(sidecar, wp);
             const WorldGenParams back = WorldGenParams_ForSave(sidecar);
@@ -3326,6 +3328,27 @@ int main(int argc, char** argv)
                             printf("bench: rivers: network built in %.2f s: %d cells of %.0f m, %d land, %d river (%.1f%%), %d lake cells, %d mouths; %d links: worst rise %.5f m, worst narrowing %.5f m\n",
                                    buildS, s.cells, s.cellSize, s.landCells, s.riverCells, 100.0f * s.riverCells / std::max(1, s.landCells), s.lakeCells, s.mouths, links, rise, shrink);
                             printf("bench: rivers: %d river cells above 700 m, highest source at %.0f m (#359)\n", s.riverCellsAbove700, s.highestSource);
+                            {   // Widths and depths (#637), by river length: full width (2 x half) in bins, and the widest / deepest.
+                                const float edges[] = { 2, 5, 10, 20, 30, 50, 1e9f };
+                                double km[7] = {}, total = 0.0; float widest = 0.0f, deepest = 0.0f;
+                                const Vector3 start = pf->findSpawnDir(p->seed);
+                                float bigNear = 1e30f; Vector3 bigDir{}, bigDown{}; float bigW = 0.0f; // the nearest river 30 m+ wide (a capture)
+                                net->forEachLink([&](const RiverNetwork::Link& l) {
+                                    if (l.inLake) return;
+                                    const float w = 0.5f * (l.wa + l.wb), len = Vector3Distance(l.a, l.b) / 1000.0f; // full width at the middle (Link widths are full)
+                                    int b = 0; while (w >= edges[b]) ++b;
+                                    km[b] += len; total += len; widest = std::max(widest, std::max(l.wa, l.wb)); deepest = std::max(deepest, std::max(l.da, l.db));
+                                    const Vector3 mid = Vector3Normalize(Vector3Add(l.a, l.b));
+                                    const float far = Vector3Distance(mid, start);
+                                    if (w >= 30.0f && far < bigNear) { bigNear = far; bigDir = mid; bigDown = Vector3Normalize(Vector3Subtract(l.b, l.a)); bigW = w; }
+                                });
+                                if (bigNear < 1e29f)
+                                    printf("bench: rivers: a %.0f m wide river %.1f km from the start; look down it: --view-fall %.6f %.6f %.6f %.5f %.5f %.5f --view-fall-dist 90\n",
+                                           bigW, bigNear * pf->radius / 1000.0f, bigDir.x, bigDir.y, bigDir.z, -bigDown.x, -bigDown.y, -bigDown.z);
+                                printf("bench: rivers: widths by length (#637): <2 m %.0f%%, 2-5 %.0f%%, 5-10 %.0f%%, 10-20 %.0f%%, 20-30 %.0f%%, 30-50 %.0f%%, 50+ %.0f%% of %.0f km; widest %.0f m, deepest %.1f m\n",
+                                       100 * km[0] / std::max(total, 1e-6), 100 * km[1] / std::max(total, 1e-6), 100 * km[2] / std::max(total, 1e-6), 100 * km[3] / std::max(total, 1e-6),
+                                       100 * km[4] / std::max(total, 1e-6), 100 * km[5] / std::max(total, 1e-6), 100 * km[6] / std::max(total, 1e-6), total, widest, deepest);
+                            }
                             if (net->bakeNative()) {
                                 // Heads (#625): a river starts as a seep and a trickle, never at a waterfall (unless the ground drops there).
                                 printf("bench: rivers: heads (#625): %d sources, %d with a waterfall in their first 3 links\n", s.heads, s.headFalls);
@@ -5847,7 +5870,7 @@ int main(int argc, char** argv)
                         if (best > 1e29f) { printf("bench: pump: no water with a shore -> FAIL\n"); benchPump = false; }
                         else {
                             auto along = [&](float s) { return Vector3Normalize(Vector3Add(wdir, Vector3Scale(out, s / pf->radius))); };
-                            const Vector3 intakeAt = Vector3Scale(along(shoreS - 2.5f), pf->radius + level + 0.15f); // the pump's floor, just over the water
+                            const Vector3 intakeAt = Vector3Scale(along(shoreS - 4.0f), pf->radius + level + 0.15f); // the pump's floor, just over the water (4 m in: #637's wider rivers have a shallow edge)
                             const Vector3 bd = along(shoreS + 28.0f);
                             const Vector3 b = Vector3Scale(bd, pf->radius + pf->elevation(bd));
                             const TerrainEdit bowl{ Vector3Subtract(b, Vector3Scale(bd, 0.8f)), 2.6f, -1.0f, true };
@@ -8839,7 +8862,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9246,6 +9269,7 @@ int main(int argc, char** argv)
             // Per frame: the view, the HUD's helpers and client-only effects (not simulation, #315).
             if (ship.piloted) ship.applyChaseCamera(world);
             if (!loading) Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); // exploration, the map, the minimap zoom (#278)
+            if (!loading) MachineAct_Update(); // (#854) a joined client's cursor takes from machines
             if (!loading) Viewmodel_Update(world, Combat_HitStop(LocalSession(), settings.reduceMotion) ? 0.0f : frameDt); // hit-stop (#165)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
             if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
@@ -10611,7 +10635,7 @@ int main(int argc, char** argv)
         // feeder watches it (MachineView). After RAYLIBGAME_MACHINES_TAKE_AT s the taker takes the outputs (O): the roasted
         // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
         if (benchNetMachines && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
-            static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false;
+            static double t0 = -1.0; static bool placed = false, fed = false, took = false, sawWorking = false, fireSeen = false;
             static int roots0 = -1;
             const char* role = getenv("RAYLIBGAME_NET_MACHINES_ROLE");
             const bool feeder = role && !strcmp(role, "feeder");
@@ -10628,19 +10652,51 @@ int main(int argc, char** argv)
                 const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                 placed = NetClient_RequestPart(gJoin, *mb, nullptr, Vector3Add(me, Vector3Scale(t1, 3.0f)), Part{ PartType::Campfire, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             }
+            // (#854) a chest beside it (the feeder's): 2 logs stored in it for crafting from chests
+            Plot* chestPl = nullptr; int chestPart = -1;
+            if (mb && mb->plots)
+                for (auto& pl : mb->plots->plots)
+                    for (int k = 0; k < (int)pl->parts.size() && !chestPl; ++k) if (pl->parts[k].type == PartType::Chest) { chestPl = pl.get(); chestPart = k; }
+            static bool chestPlaced = false, stored = false, craftedFromChest = false, refed = false, cursorTook = false, removed = false;
+            static int planks0 = -1;
+            if (feeder && placed && !chestPlaced && mb && inventory.count("chest") > 0 && GetTime() - t0 > 4.0) {
+                const Vector3 up = Vector3Normalize(me);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                chestPlaced = NetClient_RequestPart(gJoin, *mb, nullptr, Vector3Add(me, Vector3Scale(t1, -3.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            }
             if (feeder && fire && !fed && inventory.count("roots") >= 2 && inventory.count("oak_log") >= 2) {
                 inventory.remove("roots", 2); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 2);           // as the UI does: out of the
                 inventory.remove("oak_log", 2); MachineAct_Insert(mb->id, fire->id, firePart, "oak_log", 2, true); // inventory, then the request
                 fed = true;
             }
+            if (feeder && chestPl && fed && !stored && GetTime() - t0 > 10.0 && inventory.count("oak_log") >= 2) {
+                inventory.remove("oak_log", 2); MachineAct_Insert(mb->id, chestPl->id, chestPart, "oak_log", 2); stored = true;
+            }
+            auto recipeIdx = [](const char* out) { for (size_t k = 0; k < itemDB.recipes().size(); ++k) if (itemDB.recipes()[k].output == out) return (int)k; return -1; };
+            if (feeder && stored && !craftedFromChest && GetTime() - t0 > 20.0) { planks0 = inventory.count("oak_planks"); Crafting_Request(recipeIdx("oak_planks"), 2); craftedFromChest = true; }
+            auto fireCount = [&](bool outputs, const char* item) { int n = 0; if (fire) for (const auto& s : (outputs ? Factory::View(mb->id, fire->id, firePart).outSlots : Factory::View(mb->id, fire->id, firePart).inSlots)) if (s.first == item) n += s.second; return n; };
+            // the feeder puts one more root in once the outputs have been taken (the view shows them empty)
+            if (feeder && fire && !refed && craftedFromChest && GetTime() - t0 > 30.0 && fireCount(true, "roasted_roots") == 0 && inventory.count("roots") >= 1) { inventory.remove("roots", 1); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 1); refed = true; }
+            fireSeen = fireSeen || fire != nullptr;
             if (fire) { Factory::View(mb->id, fire->id, firePart); sawWorking = sawWorking || Factory::Working(mb->id, fire->id, firePart); } // (the look-at panel's watch)
             const double takeAt = getenv("RAYLIBGAME_MACHINES_TAKE_AT") ? atof(getenv("RAYLIBGAME_MACHINES_TAKE_AT")) : 40.0;
-            if (!feeder && fire && !took && GetTime() - t0 > takeAt) { roots0 = inventory.count("roasted_roots"); MachineAct_Extract(mb->id, fire->id, firePart); took = true; }
+            // the taker: 1 roasted root onto its cursor (#854), then the rest (O); later it removes the campfire, which then
+            // holds the root the feeder put back in: that root and the campfire come back to the taker (#854), not the host
+            if (!feeder && fire && !cursorTook && GetTime() - t0 > takeAt && fireCount(true, "roasted_roots") >= 2) { roots0 = inventory.count("roasted_roots"); MachineAct_TakeSlot(mb->id, fire->id, firePart, 0, 1, 1); cursorTook = true; }
+            if (!feeder && fire && cursorTook && !took && MachineAct_CursorMoves() >= 1) { MachineAct_Extract(mb->id, fire->id, firePart); took = true; }
+            static int roots1 = -1, campfires1 = -1;
+            if (!feeder && fire && took && !removed && fireCount(false, "roots") > 0) { // once the feeder's root is inside (the server's view)
+                roots1 = inventory.count("roots"); campfires1 = inventory.count("campfire");
+                removed = NetClient_RequestPart(gJoin, *mb, fire, Vector3{}, Part{}, true, firePart) != 0;
+            }
             if (GetTime() - t0 > (getenv("RAYLIBGAME_MACHINES_SECONDS") ? atof(getenv("RAYLIBGAME_MACHINES_SECONDS")) : 50.0)) {
                 const MachineView v = fire ? Factory::View(mb->id, fire->id, firePart) : MachineView{};
                 printf("bench: net machines (%s, #332): campfire seen %d, placed %d, fed %d; saw it working %d; views %d, state lists %d; took %d: roasted roots %d -> %d; roots %d, logs %d; view valid %d\n",
-                       role ? role : "?", fire != nullptr, (int)placed, (int)fed, (int)sawWorking, gJoin.machineViews, gJoin.machineStates, (int)took, roots0,
+                       role ? role : "?", (int)fireSeen, (int)placed, (int)fed, (int)sawWorking, gJoin.machineViews, gJoin.machineStates, (int)took, roots0,
                        inventory.count("roasted_roots"), inventory.count("roots"), inventory.count("oak_log"), (int)v.valid);
+                printf("bench: net machines 2 (%s, #854): cursor moves %d; crafted from the chest %d: planks %d -> %d; removed the campfire %d: roots %d -> %d, campfires %d -> %d\n",
+                       role ? role : "?", MachineAct_CursorMoves(), (int)craftedFromChest, planks0, inventory.count("oak_planks"),
+                       (int)removed, roots1, inventory.count("roots"), campfires1, inventory.count("campfire"));
                 NetClient_Disconnect(gJoin);
                 benchNetMachines = false;
             }
@@ -11112,6 +11168,25 @@ int main(int argc, char** argv)
                        invited, together, healthSeen, chatToTeam, chatNotOthers, carolRefused, kicked, step, ok ? "PASS" : "FAIL");
                 for (NetClient* c : { &alice, &bob, &carol }) NetClient_Disconnect(*c);
                 benchTeams = false;
+        // --test-idle-drift (#856, with --host <save>): a client joins over loopback and sends no inputs (as one still loading
+        // its world): the server's states of its player must stay put in the planet's frame. Before the fix they slid at the
+        // surface's spin speed (~105 m/s): the client then started kilometres off and was snapped back on its first step.
+        if (benchIdleDrift && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
+            static NetClient idle;
+            static int step = 0;
+            static double t0 = -1.0, firstAt = 0.0;
+            static DVec3 first{};
+            if (t0 < 0.0) t0 = GetTime();
+            NetClient_Update(idle);
+            if (step == 0) { NetClient_Connect(idle, TextFormat("127.0.0.1:%d", hostPort), "idle"); step = 1; }
+            else if (step == 1 && idle.state == NetClient::State::Joined && idle.haveOwn) { first = idle.own.local; firstAt = GetTime(); step = 2; }
+            if ((step == 2 && GetTime() - firstAt > 12.0) || GetTime() - t0 > 60.0) {
+                const double drift = (idle.own.local - first).length();
+                const bool ok = step == 2 && drift < 0.5;
+                printf("bench: idle drift (#856): a joiner sending nothing for %.1f s: its server state moved %.3f m in the planet's frame (< 0.5) -> %s\n",
+                       GetTime() - firstAt, drift, ok ? "PASS" : "FAIL");
+                NetClient_Disconnect(idle);
+                benchIdleDrift = false;
             }
         }
         if (benchHost && gameState == 1 && !loading && WorldIdle()) {

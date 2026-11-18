@@ -869,6 +869,8 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
+            rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
         } else
@@ -1378,6 +1380,7 @@ PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
     c.temp = 30.0f - 44.0f * (lat * sqrtf(lat)) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
     // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
     c.moist = 0.5f + 0.85f * moistNoise.fractal(3, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)); // noise sits mostly in +-0.4
+    c.moist += 0.15f * (gen.waterCycle - 1.0f); // #637: a busier water cycle, wetter climates (biomes follow)
     c.moist = std::clamp(c.moist, 0.0f, 1.0f);
     return c;
 }

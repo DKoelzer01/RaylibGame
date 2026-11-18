@@ -698,8 +698,6 @@ bool NetProto_Test() {
         check(RoundTrip(ga, gb, &s7) && gb.graves.size() == 1 && gb.graves[0].id == 7 && gb.graves[0].owner == "victim" && gb.graves[0].style == 2 && gb.graves[0].diedAt == 1795000000 && fabs(gb.graves[0].local.y - 60000.25) < 1e-6, "graves"); samples.push_back(s7);
         MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
         check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
-        MsgCraftRequest ca{ 12, "oak_planks", 5 }, cb; std::vector<uint8_t> s9;
-        check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5, "craft request"); samples.push_back(s9);
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
             a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
@@ -708,6 +706,8 @@ bool NetProto_Test() {
                   b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
             samples.push_back(s);
         }
+        MsgCraftRequest ca{ 12, "oak_planks", 5, true }, cb; std::vector<uint8_t> s9;
+        check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5 && cb.useChests, "craft request"); samples.push_back(s9);
         MsgMachineAction ma{ 0x2000000000000003ull, 4, 17, 5, "", 0, 2, 1 }, mb; std::vector<uint8_t> s10;
         check(RoundTrip(ma, mb, &s10) && mb.body == ma.body && mb.plot == 4 && mb.part == 17 && mb.action == 5 && mb.slot == 2 && mb.which == 1, "machine action"); samples.push_back(s10);
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
@@ -835,8 +835,8 @@ bool NetRead(NetReader& r, MsgGraves& m) {
 }
 void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w.u32(m.team); w.str(m.text.substr(0, 65536)); }
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
-void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); }
-bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
+void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); }
+bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 
 // ---- Machines on the server (#332) ----
 void NetWrite(NetWriter& w, const MsgMachineAction& m) {

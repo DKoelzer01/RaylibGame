@@ -746,9 +746,9 @@ void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, cons
     for (int i = 0; i < 3; ++i) b.cell[i] = cell[i];
     SendMsg(c, b);
 }
-void NetClient_Craft(NetClient& c, int index, const std::string& output, int count) { // (#338)
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests) { // (#338)
     if (c.state != NetClient::State::Joined || index < 0 || output.empty()) return;
-    MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64);
+    MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64); q.useChests = useChests;
     SendMsg(c, q);
 }
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) { // (#332)

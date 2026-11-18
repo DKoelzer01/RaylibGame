@@ -836,7 +836,12 @@ bool Player::netState(const Scene& world, NetState& s) const {
         if (!b) return false;
         const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
         s.body = b->netId;
-        s.local = b->toLocalD(position);
+        // (#856) The anchor's body-local feet, not the world position: a player spawned and not stepped yet (a server's
+        // joiner still loading its world) keeps its spawn-time world position while the planet turns under it (~105 m/s at
+        // the surface), so that position read later lay kilometres off; the client started there and was snapped back.
+        if (grounded && groundBody == b) s.local = groundLocal;
+        else if (!grounded && airBody == b) s.local = airLocal;
+        else s.local = b->toLocalD(position);
         s.vel = Vector3RotateByQuaternion(rel, QuaternionInvert(b->rotationQuat()));
     } else {
         s.body = netCache.body; s.local = netCache.local; s.vel = netCache.vel;
