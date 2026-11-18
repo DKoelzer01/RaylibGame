@@ -76,6 +76,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "recipebook.h"
 #include "station.h"
 #include "weather.h"
+#include "wind.h"
 #include "storage.h"
 #include "tools.h"
 #include "rivers.h"
@@ -390,6 +391,9 @@ int main(int argc, char** argv)
     bool benchGiant = false;       // --shot-giant: one tree of each size class (#274)
     bool benchTorch = false;       // --test-torch: a held torch lights the ground (#218)
     bool benchPause = false;       // --test-pause (#511): behind the pause menu nothing moves (the game clock and the sim stop)
+    bool benchBite = false, biteStarted = false; // --test-bite (#165)
+    bool benchShotDig = false;     // --shot-dig (#533): the dig preview ring, looking down at the ground
+    bool benchF2 = false;          // --test-f2 (#579): take an F2 screenshot
     bool benchTime = false;        // --test-time: dawn start (#259), a +6 h jump carries the player (#275)
     bool benchPickups = false;     // --test-pickups: the pickup feed (#208): repeats merge, a screenshot while it shows
     bool shotInventory = false;    // --shot-inventory: long item names in their cells (#219)
@@ -424,6 +428,10 @@ int main(int argc, char** argv)
     bool benchShadow = false; int shadowPhase = 0; double shadowT0 = 0.0; Vector3 shadowEye{}, shadowAt{}; // --shot-shadow
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
+    bool benchWind = false; // --test-wind (#650)
+    bool benchCampfire = false; int campfirePhase = 0; double campfireT0 = 0.0; uint32_t campfirePlot = 0; int campfirePart = -1; Vector3 campfireAt{}, campfireOut{}; // --shot-campfire (#552)
+    bool benchCaveMouth = false; int mouthPhase = 0; double mouthT0 = 0.0; Vector3 mouthAt{}, mouthOut{}; // --shot-cave-mouth (#549)
+    bool benchMountain = false; int mountainPhase = 0; double mountainT0 = 0.0; Vector3 mountainAt{}, mountainOut{}; // --shot-mountain (#545)
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
     bool benchFacing = false; // --test-facing (#196)
@@ -657,6 +665,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-time") benchTime = true;
         if (std::string(argv[i]) == "--test-torch") benchTorch = true;
         if (std::string(argv[i]) == "--test-pause") benchPause = true;
+        if (std::string(argv[i]) == "--test-bite") benchBite = true;
+        if (std::string(argv[i]) == "--shot-dig") benchShotDig = true;
+        if (std::string(argv[i]) == "--test-f2") benchF2 = true;
         if (std::string(argv[i]) == "--shot-giant") benchGiant = true;
         if (std::string(argv[i]) == "--test-lamps") benchLamps = true;
         if (std::string(argv[i]) == "--test-fill") benchFill = true;
@@ -717,6 +728,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump-hand") { benchPump = true; benchPumpHand = true; }
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
+        if (std::string(argv[i]) == "--test-wind") benchWind = true;
+        if (std::string(argv[i]) == "--shot-campfire") benchCampfire = true;
+        if (std::string(argv[i]) == "--shot-cave-mouth") benchCaveMouth = true;
+        if (std::string(argv[i]) == "--shot-mountain") benchMountain = true;
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-room") benchRoom = true;
         if (std::string(argv[i]) == "--test-facing") benchFacing = true;
@@ -975,6 +990,7 @@ int main(int argc, char** argv)
         DrawRectangle(bx, by, (int)(bw * std::clamp(progress, 0.02f, 1.0f)), 14, SKYBLUE);
         if (strncmp(what, "Shaping", 7) == 0) // a real bake (a cache read is quick and says "Loading", #505)
             DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
+        if (settings.showFps) DrawFPS(10, 10); // every screen when the setting is on (#572)
         EndDrawing();
     };
     if (!IsWindowReady()) {
@@ -2145,6 +2161,7 @@ int main(int argc, char** argv)
                     } else if (factPhase == 3 && GetTime() - factStart > 2.0) {
                         factMade0 = Factory::Stats().itemsMade;
                         Factory::View(p->id, factPlot, factSeeds[0][2] + 1); // watch the first chest from now on
+                        Factory::Cable(p->id, factPlot, Int3{ 0, 0, -1 }); // and the first group's cable (#570)
                         factPhase = 4; factStart = GetTime(); factSamples = 0; factSum = 0.0; factMax = 0.0;
                     } else if (factPhase == 4) {
                         const FactoryStats s = Factory::Stats();
@@ -2152,7 +2169,10 @@ int main(int argc, char** argv)
                         if (GetTime() - factStart > 12.0) {
                             const double avg = factSum / std::max(1, factSamples);
                             const MachineView chest = Factory::View(p->id, factPlot, factSeeds[0][2] + 1);
-                            const bool pass = avg < 5.0 && s.activeMachines >= benchFactory / 2 && s.itemsMade > 0;
+                            const CableView cable = Factory::Cable(p->id, factPlot, Int3{ 0, 0, -1 });
+                            const bool cableOk = cable.valid && cable.voltage > 0 && cable.generators == 1 && cable.consumers == 2 && cable.supply > 0.0f;
+                            printf("bench: factory: the first cable's network (#570): %d V, %d generator, %d machines, %.1f of %.1f EU/t -> %s\n", cable.voltage, cable.generators, cable.consumers, cable.supply, cable.demand, cableOk ? "ok" : "WRONG");
+                            const bool pass = avg < 5.0 && s.activeMachines >= benchFactory / 2 && s.itemsMade > 0 && cableOk;
                             printf("bench: factory: %d machines (%d active), %d item / %d power networks; tick %.2f ms avg, %.2f ms worst; %lld items made in the last 12 s (%lld total); first chest: %s -> %s\n",
                                    s.machines, s.activeMachines, s.itemNetworks, s.powerNetworks, avg, s.maxTickMs, s.itemsMade - factMade0, s.itemsMade, chest.input.c_str(), pass ? "PASS" : "FAIL");
                             factChestBefore = chest.input;
@@ -2624,10 +2644,10 @@ int main(int argc, char** argv)
                            before == after ? "yes" : "no", freshNew ? "yes" : "no", pass ? "PASS" : "FAIL");
                 } else if (benchFall && (fallPhase > 0 || WorldIdle())) {
                     // --test-fall (#263): drops onto flat ground near the start. Expected on Terra (g 5.9, safe 6 m/s, x8.5):
-                    // 3 m none, 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
+                    // 3 m none, 5 m none (14 would be under the 15-point grace, #536), 10 m ~41, 20 m ~79, 30 m and 100 m fatal.
                     Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
-                    const float heights[] = { 3.0f, 10.0f, 20.0f, 30.0f, 100.0f };
-                    const float lo[] = { 0.0f, 25.0f, 60.0f, 100.0f, 100.0f }, hi[] = { 0.0f, 55.0f, 95.0f, 1e9f, 1e9f };
+                    const float heights[] = { 3.0f, 5.0f, 10.0f, 20.0f, 30.0f, 100.0f };
+                    const float lo[] = { 0.0f, 0.0f, 25.0f, 60.0f, 100.0f, 100.0f }, hi[] = { 0.0f, 0.0f, 55.0f, 95.0f, 1e9f, 1e9f };
                     if (fallPhase == 0) {
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         fallPhase = 1; fallStart = GetTime();
@@ -2644,7 +2664,7 @@ int main(int argc, char** argv)
                                hi[fallIdx] > 1e8f ? "fatal" : TextFormat("%.0f", hi[fallIdx]), pass ? "ok" : "FAIL");
                         fallOk = fallOk && pass;
                         if (dead) Survival_Respawn(world);
-                        if (++fallIdx < 5) { fallPhase = 1; fallStart = GetTime() - 1.0; }
+                        if (++fallIdx < 6) { fallPhase = 1; fallStart = GetTime() - 1.0; }
                         else { printf("bench: fall: %s\n", fallOk ? "PASS" : "FAIL"); survival.health = 100.0f; benchFall = false; }
                     } else if (fallPhase == 2 && GetTime() - fallStart > 30.0) {
                         printf("bench: fall: %.0f m: never landed -> FAIL\n", heights[fallIdx]); benchFall = false;
@@ -4947,6 +4967,88 @@ int main(int argc, char** argv)
                             benchShelter = false;
                         }
                     }
+                } else if (benchWind && WorldIdle()) {
+                    // --test-wind (#650): the field is deterministic, its gusts travel with the mean wind, bursts come more
+                    // often in storms, the day cycle runs calm dawn < afternoon, and the wind grows with height.
+                    benchWind = false;
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf || !Wind_Enabled()) printf("bench: wind: %s -> SKIP\n", pf ? "RAYLIBGAME_WIND=0" : "needs the planet");
+                    else {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 at = Vector3Scale(home, pf->radius + pf->elevation(home));
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        const Vector3 mean = Vector3Scale(t1, 8.0f); // 8 m/s along t1
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 0.0f);
+                        const Vector3 q = Vector3Add(at, Vector3Scale(t2, 37.0f));
+                        const Vector3 w0 = Wind_At(*p, q, 10.0f, false), w0b = Wind_At(*p, q, 10.0f, false);
+                        const bool same = Vector3Distance(w0, w0b) < 1e-6f;
+                        // Advection: after 3 s the pattern seen at q is found 24 m downwind.
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 3.0f);
+                        const Vector3 w1 = Wind_At(*p, Vector3Add(q, Vector3Scale(t1, 24.0f)), 10.0f, false);
+                        const float drift = fabsf(Vector3Length(w1) - Vector3Length(w0));
+                        // Bursts: the share of a 400 m square in a burst, calm vs storm; speed range.
+                        auto burstShare = [&](float storm, float& lo, float& hi) {
+                            Wind_SetFrame(p, at, mean, storm, 1.0f, 0.0f);
+                            int n = 0, b = 0; lo = 1e9f; hi = 0.0f;
+                            for (float x = -200.0f; x <= 200.0f; x += 4.0f)
+                                for (float y = -200.0f; y <= 200.0f; y += 4.0f) {
+                                    const Vector3 s = Vector3Add(at, Vector3Add(Vector3Scale(t1, x), Vector3Scale(t2, y)));
+                                    ++n; b += Wind_Gust01(*p, s) > 0.5f;
+                                    const float v = Vector3Length(Wind_At(*p, s, 10.0f, false)); lo = std::min(lo, v); hi = std::max(hi, v);
+                                }
+                            return (float)b / (float)n;
+                        };
+                        float cLo, cHi, sLo, sHi;
+                        const float calmShare = burstShare(0.0f, cLo, cHi), stormShare = burstShare(1.0f, sLo, sHi);
+                        // The day: the sun rising in the east, mid-afternoon, at night (the spin axis is +y).
+                        const Vector3 up = home, east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, up));
+                        auto sunAt = [&](float th) { return Vector3Add(Vector3Scale(east, cosf(th)), Vector3Scale(up, sinf(th))); };
+                        const float dawn = Wind_DailyFactor(up, sunAt(0.02f), { 0, 1, 0 }), afternoon = Wind_DailyFactor(up, sunAt(0.7f * PI), { 0, 1, 0 }), night = Wind_DailyFactor(up, sunAt(1.5f * PI), { 0, 1, 0 });
+                        Wind_SetFrame(p, at, mean, 0.0f, 1.0f, 0.0f);
+                        const float low = Vector3Length(Wind_At(*p, q, 1.0f, false)), high = Vector3Length(Wind_At(*p, q, 20.0f, false));
+                        const float terrain = Vector3Length(Wind_At(*p, q, 10.0f, true));
+                        const bool ok = same && drift < 0.15f && stormShare > calmShare && calmShare > 0.0f && calmShare < 0.2f &&
+                                        dawn < night && night < afternoon && high > low && cLo > 0.5f && cHi > 12.0f && terrain > 0.0f;
+                        printf("bench: wind: deterministic %d; gust 24 m downwind 3 s later differs %.3f m/s; bursts calm %.1f%% storm %.1f%% of the ground; "
+                               "speed calm %.1f..%.1f storm %.1f..%.1f m/s; day dawn %.2f afternoon %.2f night %.2f; at 1 m %.1f, 20 m %.1f m/s; with terrain %.1f -> %s\n",
+                               (int)same, drift, 100.0f * calmShare, 100.0f * stormShare, cLo, cHi, sLo, sHi, dawn, afternoon, night, low, high, terrain, ok ? "PASS" : "FAIL");
+                    }
+                } else if (benchCampfire && (campfirePhase > 0 || WorldIdle())) {
+                    // --shot-campfire (#552): a lit campfire 2.5 m from the camera, at dusk (bench_campfire.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    if (!p) benchCampfire = false;
+                    else if (campfirePhase == 0) {
+                        player.spawnOn(world, *p, StartSpawnDir(*p));
+                        campfirePhase = 1; campfireT0 = GetTime();
+                    } else if (campfirePhase == 1 && GetTime() - campfireT0 > 1.5 && player.grounded) {
+                        const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                        Plot* plot = p->plots->plotFor(p->toLocal(Vector3Add(Vector3Add(feet, Vector3Scale(flat, 4.0f)), Vector3Scale(player.up, 1.0f))), 0.0f, true);
+                        const int fire = plot->place({ PartType::Campfire, { 0, 0, 0 }, 0 });
+                        Factory::Sync(world);
+                        Factory::WaitTicks(3);
+                        if (fire >= 0) { Factory::Seed(p->id, plot->id, fire, "oak_log", 5); Factory::Seed(p->id, plot->id, fire, "oak_log", 3); }
+                        campfirePlot = plot->id; campfirePart = fire;
+                        campfireAt = plot->toBody({ 0.5f, 0.0f, 0.5f });
+                        campfireOut = p->dirToLocal(flat);
+                        const Vector3 up = Vector3Normalize(campfireAt);
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(campfireOut, -3.0f)))); // low sun behind the camera
+                        printf("bench: campfire: placed part %d\n", fire);
+                        campfirePhase = 2; campfireT0 = GetTime();
+                    } else if (campfirePhase == 2) {
+                        const Vector3 up = Vector3Normalize(campfireAt);
+                        const Vector3 eye = Vector3Add(campfireAt, Vector3Add(Vector3Scale(campfireOut, -2.3f), Vector3Scale(up, 1.3f)));
+                        player.flyMode = true;
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(campfireAt, Vector3Scale(up, 0.25f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - campfireT0 > 3.0) {
+                            TakeScreenshot("bench_campfire.png");
+                            printf("bench: campfire: working %d -> bench_campfire.png\n", (int)Factory::Working(p->id, campfirePlot, campfirePart));
+                            benchCampfire = false;
+                        }
+                    }
                 } else if (benchTerrain && (terrainPhase > 0 || WorldIdle())) {
                     // --shot-terrain (plan item 6): the nearest strongly rugged land (the 3D band at full
                     // strength), seen from the air (bench_terrain.png) and from the ground (bench_terrain_low.png).
@@ -4994,6 +5096,111 @@ int main(int argc, char** argv)
                             TakeScreenshot(low ? "bench_terrain_low.png" : "bench_terrain.png");
                             if (low) { printf("bench: terrain: bench_terrain.png, bench_terrain_low.png\n"); benchTerrain = false; }
                             else { terrainPhase = 2; terrainT0 = GetTime(); }
+                        }
+                    }
+                } else if (benchMountain && (mountainPhase > 0 || WorldIdle())) {
+                    // --shot-mountain (#545): the highest ground within 8 km of the start, seen from 1.5 km away and 250 m
+                    // over it, sun from the side (bench_mountain.png): the mid/far LOD transitions lie across its slopes.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: mountain: needs the planet\n"); benchMountain = false; }
+                    else if (mountainPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float bestE = -1e30f; Vector3 bestD = home;
+                        for (float a = -8000.0f; a <= 8000.0f; a += 100.0f)
+                            for (float b = -8000.0f; b <= 8000.0f; b += 100.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d);
+                                if (e > bestE) { bestE = e; bestD = d; }
+                            }
+                        mountainAt = Vector3Scale(bestD, pf->radius + bestE);
+                        mountainOut = Vector3Normalize(Vector3Subtract(Vector3Scale(home, pf->radius), Vector3Scale(bestD, pf->radius))); // from the peak toward the start
+                        if (Vector3Length(mountainOut) < 0.5f) mountainOut = t1;
+                        printf("bench: mountain: highest ground within 8 km: %.0f m\n", bestE);
+                        player.flyMode = true; sunOverride = true;
+                        const Vector3 up = Vector3Normalize(mountainAt);
+                        sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3CrossProduct(up, mountainOut), 1.2f))));
+                        mountainPhase = 1; mountainT0 = GetTime();
+                    } else {
+                        const Vector3 up = Vector3Normalize(mountainAt);
+                        const Vector3 eye = Vector3Add(mountainAt, Vector3Add(Vector3Scale(mountainOut, 1500.0f), Vector3Scale(up, 250.0f)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Subtract(mountainAt, Vector3Scale(up, 150.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - mountainT0 > 5.0 && WorldIdle()) {
+                            TakeScreenshot("bench_mountain.png");
+                            printf("bench: mountain: bench_mountain.png\n");
+                            benchMountain = false;
+                        }
+                    }
+                } else if (benchCaveMouth && (mouthPhase > 0 || WorldIdle())) {
+                    // --shot-cave-mouth (#549): the nearest cave mouth to the start (open ground 2 m and 6 m under the
+                    // surface), how open it is per LOD footprint, and shots from 20, 80 and 250 m (bench_mouth_<m>.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    const double t = GetTime() - mouthT0;
+                    static const float kMouthDist[3] = { 20.0f, 80.0f, 250.0f };
+                    if (!pf) { printf("bench: cave mouth: needs the planet\n"); benchCaveMouth = false; }
+                    else if (mouthPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f; int mouths = 0, probes = 0;
+                        for (float a = -3000.0f; a <= 3000.0f; a += 20.0f)
+                            for (float b = -3000.0f; b <= 3000.0f; b += 20.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d);
+                                if (e < 2.0f) continue;
+                                ++probes;
+                                const float s = pf->radius + e;
+                                if (pf->baseDensity(Vector3Scale(d, s - 2.0f)) >= ISO_LEVEL || pf->baseDensity(Vector3Scale(d, s - 6.0f)) >= ISO_LEVEL) continue;
+                                ++mouths;
+                                const float dist = sqrtf(a * a + b * b);
+                                if (dist < best) { best = dist; mouthAt = Vector3Scale(d, s); }
+                            }
+                        printf("bench: cave mouth: %d of %d land columns within 3 km open 2-6 m down; nearest %.0f m from the start\n", mouths, probes, best);
+                        if (best > 1e29f) { printf("bench: cave mouth: none found -> FAIL\n"); benchCaveMouth = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(mouthAt);
+                            // Look in from the side the mouth opens to: the horizontal direction with the most open air 3 m down.
+                            const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), e2 = Vector3CrossProduct(up, e1);
+                            float bestOpen = -1.0f;
+                            for (int k = 0; k < 16; ++k) {
+                                const float ang = 2.0f * PI * k / 16.0f;
+                                const Vector3 h = Vector3Add(Vector3Scale(e1, cosf(ang)), Vector3Scale(e2, sinf(ang)));
+                                int open = 0;
+                                for (float r = 2.0f; r <= 30.0f; r += 2.0f) open += pf->baseDensity(Vector3Add(mouthAt, Vector3Add(Vector3Scale(h, r), Vector3Scale(up, -3.0f)))) < ISO_LEVEL;
+                                if (open > bestOpen) { bestOpen = (float)open; mouthOut = h; }
+                            }
+                            // How open the mouth is to the meshes of each LOD footprint: samples in a 12 m disc, 2 m down.
+                            printf("bench: cave mouth: open samples 2 m down by footprint:");
+                            for (float fp : { 0.25f, 1.0f, 2.0f, 4.0f, 8.0f, 12.0f, 16.0f }) {
+                                int open = 0, n = 0;
+                                for (float x = -12.0f; x <= 12.0f; x += 2.0f)
+                                    for (float y = -12.0f; y <= 12.0f; y += 2.0f) {
+                                        if (x * x + y * y > 144.0f) continue;
+                                        const Vector3 q = Vector3Add(mouthAt, Vector3Add(Vector3Add(Vector3Scale(e1, x), Vector3Scale(e2, y)), Vector3Scale(up, -2.0f)));
+                                        const Vector3 qd = Vector3Normalize(q);
+                                        const float surf = pf->radius + pf->elevation(qd, fp);
+                                        ++n; open += pf->baseDensityLod(Vector3Scale(qd, surf - 2.0f), fp) < ISO_LEVEL;
+                                    }
+                                printf(" fp%g %d/%d", fp, open, n);
+                            }
+                            printf("\n");
+                            player.flyMode = true; sunOverride = true;
+                            sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(mouthOut, 0.5f)))); // light into the mouth
+                            mouthPhase = 1; mouthT0 = GetTime();
+                        }
+                    } else {
+                        const Vector3 up = Vector3Normalize(mouthAt);
+                        const float r = kMouthDist[mouthPhase - 1];
+                        const Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(mouthAt, Vector3Scale(up, -3.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (t > 4.0 && WorldIdle()) {
+                            TakeScreenshot(TextFormat("bench_mouth_%d.png", (int)r));
+                            printf("bench: cave mouth: bench_mouth_%d.png\n", (int)r);
+                            if (++mouthPhase > 3) benchCaveMouth = false;
+                            mouthT0 = GetTime();
                         }
                     }
                 } else if (benchCaveWater && (caveWaterPhase > 0 || WorldIdle())) {
@@ -7206,6 +7413,29 @@ int main(int argc, char** argv)
                         printf("bench: hotbar: an empty slot in build mode is bare hands %d; a new pickaxe lands in a free slot, moved to key 6 and taken in hand %d (#272, #209)\n", unownedKept, ownedTaken);
                         Hotbar_Press(0, false); // key 1: an empty slot, bare hands
                         const bool toolMode = !buildTool.active && unownedKept && ownedTaken;
+                        // #554: placing the last chest of the slot in hand ends build mode (the hand is empty).
+                        inventory.add("chest", 1);
+                        Hotbar_Bind(6, "chest");
+                        Hotbar_Press(6, false);
+                        Hotbar_Update(world, PlayerInput::None(), false);
+                        const bool chestMode = buildTool.active && buildTool.part == (int)PartType::Chest;
+                        const bool chestPlaced = BuildTool_Place(*p, *plot, { PartType::Chest, { 6, 0, 0 }, 0, 0 }, true);
+                        Hotbar_Update(world, PlayerInput::None(), false);
+                        const bool lastEnds = chestMode && chestPlaced && inventory.count("chest") == 0 && !buildTool.active;
+                        printf("bench: hotbar: the last chest in hand placed: build mode %d -> %d (#554)\n", (int)chestMode, (int)buildTool.active);
+                        // #531: F flies only in creative mode.
+                        const bool creative0 = terrainTool.creative, fly0 = player.flyMode;
+                        PlayerInput f; f.press(Act::Fly);
+                        player.flyMode = false;
+                        terrainTool.creative = false; player.flyAllowed = false; player.update(world, f, 1.0f / 60.0f);
+                        const bool flyLocked = !player.flyMode;
+                        terrainTool.creative = true; player.flyAllowed = true; player.update(world, f, 1.0f / 60.0f);
+                        const bool flyCreative = player.flyMode;
+                        player.flyAllowed = false; player.update(world, PlayerInput::None(), 1.0f / 60.0f); // creative off mid-flight: down
+                        const bool flyDropped = !player.flyMode;
+                        terrainTool.creative = creative0; player.flyMode = fly0; player.flyAllowed = true;
+                        printf("bench: hotbar: F out of creative flies %d, in creative %d, creative off mid-flight lands %d (#531)\n", (int)!flyLocked, (int)flyCreative, (int)flyDropped);
+                        Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
                         int woodParts = 0, concreteParts = 0;
@@ -7216,7 +7446,7 @@ int main(int argc, char** argv)
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
                                     if (PartItem(part) == std::string("concrete")) ++concreteParts;
                                 }
-                        ok = concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
                         printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
                                concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
                     }
@@ -8004,7 +8234,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchShelter && !benchRoom && !benchFacing && !benchPause && !benchPlacement && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -8092,8 +8322,8 @@ int main(int argc, char** argv)
                     int over20 = 0; for (float f : ft) over20 += f > 0.020f ? 1 : 0;
                     printf("bench: streaming: %lld requests, %lld built, %lld skipped stale, %lld results dropped; %d nodes alive; frame ms p50 %.2f p95 %.2f p99 %.2f, %d frames over 20 ms\n",
                            ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
-                    printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices\n",
-                           ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0);
+                    printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices; LOD cross-fades %lld\n",
+                           ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0, ws.lodFades);
                     if (ws.waterBuilds || ws.waterFullBuilds)
                         printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
                                ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);
@@ -8225,6 +8455,7 @@ int main(int argc, char** argv)
                     Combat_Step(session, simDt, moveIn); // stamina and the block before this step's movement (#165)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
                     // camera and the floating origin do (a server runs every player this way).
+                    player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
                     RenderOriginScope frame(world, player.position);
                     player.update(world, moveIn, simDt);
                 }
@@ -8353,7 +8584,7 @@ int main(int argc, char** argv)
             torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
             if (torch.enabled) {
                 const float t = (float)GetTime();
-                const float flicker = 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f);
+                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
                 const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
                 torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
@@ -9013,6 +9244,48 @@ int main(int argc, char** argv)
             }
         }
         // --test-torch (#218): at the dawn start (still dark), the ground in front gets brighter with a torch in hand.
+        // --test-f2 (#579): the F2 screenshot path once the world is up (the recorder prints "screenshot: <dir> saved").
+        if (benchF2 && gameState == 1 && !loading && WorldIdle()) { benchF2 = false; Recorder_Screenshot(); }
+        // --shot-dig (#533): standing on the ground, looking 40 deg down: the dig preview's ring (bench_dig.png).
+        if (benchShotDig && gameState == 1 && !loading && WorldIdle()) {
+            static int df = 0;
+            ++df;
+            if (df == 5) if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); }
+            if (df >= 8) {
+                const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                player.forward = Vector3Normalize(Vector3Subtract(flat, Vector3Scale(player.up, 0.84f))); // tan 40 deg
+            }
+            if (df == 40) { TakeScreenshot("bench_dig.png"); printf("bench: shot-dig: bench_dig.png\n"); benchShotDig = false; }
+        }
+        // --test-bite (#165): a thornback set down 2 m ahead charges, warns, and strikes no sooner than its wind-up; the hit
+        // goes through Combat_Damage (8 health on normal) and shoves the player away from it.
+        if (benchBite && gameState == 1 && !loading && (biteStarted || WorldIdle())) {
+            biteStarted = true;
+            static int phase = 0; static double t0 = 0.0, tHit = -1.0; static DVec3 atHit{}; // body-local
+            static float hp0 = 100.0f; static double sim0 = 0.0; // the spawn, in sim time (the wind-up runs on it)
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const double t = GetTime() - t0;
+            if (phase == 0) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); phase = 1; t0 = GetTime(); }
+            else if (phase == 1 && t > 1.5 && player.grounded) {
+                Animals_SetThreats(true);
+                survival.health = 100.0f; hp0 = survival.health;
+                const Vector3 feet = p->toLocal((player.position - world.renderOrigin).toFloat());
+                const Vector3 flat = Vector3Normalize(p->dirToLocal(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))));
+                const int n = Animals_Spawn(world, *p, "thornback", Vector3Add(feet, Vector3Scale(flat, 2.0f / p->scale)), 1, false, 0.0f);
+                printf("bench: bite: %d thornback set down 2 m ahead\n", n);
+                phase = 2; t0 = GetTime();
+            } else if (phase == 2) {
+                if (tHit < 0.0 && survival.health < hp0 - 0.01f) { tHit = SimTime() - sim0; atHit = p->toLocalD(player.position); }
+                if (tHit >= 0.0 && SimTime() - sim0 > tHit + 0.4) {
+                    const float lost = hp0 - survival.health;
+                    const float shoved = (float)(p->toLocalD(player.position) - atHit).length() * p->scale;
+                    const bool ok = tHit >= Animals_BiteWindUp() && fabsf(lost - 8.0f * Difficulty_ThreatScale()) < 0.5f && shoved > 0.3f;
+                    printf("bench: bite: first hit %.2f s after it was set down (wind-up %.1f s), %.1f health lost, shoved %.2f m -> %s\n",
+                           tHit, Animals_BiteWindUp(), lost, shoved, ok ? "PASS" : "FAIL");
+                    Animals_SetThreats(false); benchBite = false;
+                } else if (t > 10.0) { printf("bench: bite: no hit within 10 s -> FAIL\n"); Animals_SetThreats(false); benchBite = false; }
+            }
+        }
         if (benchTorch && gameState == 1 && !loading && WorldIdle()) {
             static int tf = 0;
             static double lumOff = 0.0;
@@ -9045,6 +9318,7 @@ int main(int argc, char** argv)
                 Hotbar_Press(8, false);
             }
             if (tf == 70) {
+                printf("bench: torch: %d particles alive (the placed torch's flame, #558)\n", Particles_Count());
                 TakeScreenshot("bench_torch_placed.png");
                 const double lumPlaced = groundLum("bench_torch_placed.png");
                 const bool handOff = !(world.lights.size() > 3 && world.lights[3].enabled);
@@ -9251,6 +9525,7 @@ int main(int argc, char** argv)
                 if (!worldFresh) {
                     if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
                     else NewWorld_Apply(nw);           // the seed, and <save>.worldgen: generateWorld reads it
+                    if (!bench) { settings.difficulty = nw.difficulty; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
                     regenerateWorld(world);            // the erosion bake (or its cache) behind its progress screen
                     StartNewWorld(world, true, !bench);
                 }
@@ -9385,6 +9660,7 @@ int main(int argc, char** argv)
                 rlImGuiEnd();
                 GpuTimer_Mark("imgui");
             }
+            if (settings.showFps) DrawFPS(10, 10); // every screen when the setting is on (#572: menus, loading, play), over everything
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)

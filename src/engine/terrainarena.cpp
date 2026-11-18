@@ -471,7 +471,7 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     e.iCount = (GLuint)ni; e.iFirst = (GLuint)a.iFirst; e.vFirst = (GLuint)a.vFirst;
     memcpy(e.palette, pk->palette, kPaletteSlots); // #480: the chunk's materials (chunk_cull.comp copies them into its records)
     WriteTable(a.slot, &e, sizeof(e));
-    a.clip = { 1e30f, 1e30f, 1e30f };
+    a.clip = { 1e30f, 1e30f, 1e30f }; a.fade = 0.0f;
     return a;
 }
 
@@ -484,12 +484,12 @@ void TerrainArena_Free(ArenaAlloc& a) {
     a = ArenaAlloc{};
 }
 
-void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip) {
+void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip, float fade) {
     if (!a.valid()) return;
-    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z) {
-        const float c[4] = { clip.x, clip.y, clip.z, 0.0f };
+    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z || fade != a.fade) {
+        const float c[4] = { clip.x, clip.y, clip.z, fade };
         WriteTable(a.slot, c, sizeof(c), offsetof(TableEntry, clip));
-        a.clip = clip;
+        a.clip = clip; a.fade = fade;
     }
     S.queued.push_back((GLuint)a.slot);
 }
