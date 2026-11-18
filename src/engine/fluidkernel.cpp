@@ -475,7 +475,10 @@ struct Pass {
             if (f == 0 && nf > 0) kind = inKind;
             if (fl & SOURCE) nf = (int)TG(c);
             else if (p.evaporate && nf > 0 && nf <= 2 && g.delta[gi] == 0 && onGround(slot, x, y, z)) nf = 0;
-            if (f != nf) g.flags[slot] |= 1u;
+            // Changed against the cell before this substep (A, as the face rules compare), not after the vertical pass: water
+            // that only fell inside a brick left it unflagged, so the unpack skipped it and the fall was lost (#680: the leak
+            // test's sim volume fell 103 -> 55 m^3 in 60 s with nothing reaching the channel).
+            if (F(outC[gi]) != (uint32_t)nf) g.flags[slot] |= 1u;
             outC[gi] = Pack((uint32_t)nf, (fl & 31u) | (kind << 5), c);
             return;
         }
