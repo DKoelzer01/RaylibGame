@@ -9,6 +9,7 @@
 #include <thread>
 #include <array>
 #include "terrainarena.h"
+#include "envflag.h"
 #include "mainmenu.h"
 #include "world.h"
 #include "playerinput.h"
@@ -2382,7 +2383,7 @@ int main(int argc, char** argv)
                         // Walk the lane; stop once past the wall (pressing the far rail would only bank impact speed).
                         player.autoWalk = lf.x < 6.0f && t < 7.0;
                         player.forward = Vector3Normalize(Vector3Subtract(p->toWorld(plot->toBody({ 2.0f, kDoorFloor, laneZ[doorLane] })), p->toWorld(plot->toBody({ 1.0f, kDoorFloor, laneZ[doorLane] }))));
-                        if (getenv("DOOR_DEBUG")) {
+                        if (EnvFlag("DOOR_DEBUG")) {
                             static float lastHealth = 100.0f;
                             if (survival.health < lastHealth - 0.01f)
                                 printf("DOOR hurt t=%.2f: health %.0f -> %.0f, landing %.2f m/s, impact %.2f m/s, grounded %d, y %.2f, v %.2f along up\n", t, lastHealth, survival.health,
@@ -2427,7 +2428,7 @@ int main(int argc, char** argv)
                             if (wallCamKnown >= 2) {
                                 const double s = (stepNow - wallCamStepPrev).length();
                                 if (s > 0.005) { ++wallCamShake; if (player.lastEyePush > 0.0f) ++wallCamShakePushed; if (player.grounded) ++wallCamShakeGrounded; }
-                                if (s > 0.02 && getenv("WALL_DEBUG")) printf("SHAKE t=%.3f phase %d s=%.1f mm push=%.3f grounded=%d feetstep=%.1f mm\n", t, wallPhase, s * 1000.0, player.lastEyePush, player.grounded ? 1 : 0, (local - wallLast).length() * 1000.0);
+                                if (s > 0.02 && EnvFlag("WALL_DEBUG")) printf("SHAKE t=%.3f phase %d s=%.1f mm push=%.3f grounded=%d feetstep=%.1f mm\n", t, wallPhase, s * 1000.0, player.lastEyePush, player.grounded ? 1 : 0, (local - wallLast).length() * 1000.0);
                                 wallCamShakeMax = std::max(wallCamShakeMax, s);
                             }
                             wallCamPrev = cam; wallCamStepPrev = stepNow; ++wallCamKnown;
@@ -2645,7 +2646,7 @@ int main(int argc, char** argv)
                         Player probe; // finds the ground there
                         probe.spawnOn(world, *p, d1);
                         centre = p->toLocalD(probe.position).toFloat();
-                        if (!getenv("RAYLIBGAME_NO_INTEREST")) gInterestCentres = { InterestCentre{ p->id, centre } }; // (the A/B: without it)
+                        if (!EnvFlag("RAYLIBGAME_NO_INTEREST")) gInterestCentres = { InterestCentre{ p->id, centre } }; // (the A/B: without it)
                         before = Animals_Count();
                         first = Animals_Count();
                         placed = Animals_Spawn(world, *p, "woolback", centre, 3, false, 6.0f);
@@ -2884,7 +2885,7 @@ int main(int argc, char** argv)
                         if (best > 1e8f) { printf("bench: tor: no low tor within 6 km -> FAIL\n"); benchTor = false; }
                         else {
                             printf("bench: tor: a tor %.0f m from the start at %.1f m elevation\n", best, pf->elevation(torDir));
-                            if (getenv("TOR_PROFILE")) { // debug: the top solid height across the tor, two directions
+                            if (EnvFlag("TOR_PROFILE")) { // debug: the top solid height across the tor, two directions
                                 const float base = pf->radius + pf->elevation(torDir);
                                 for (int ax = 0; ax < 2; ++ax) {
                                     const Vector3 a = ax ? t2 : t1;
@@ -6602,7 +6603,7 @@ int main(int argc, char** argv)
                         world.camera.position = p->toWorld(at(off(off(divDir, damSide, damHW + 25.0f), dn, -15.0f), divLevel0 + 25.0f));
                         world.camera.target = p->toWorld(at(divDir, divLevel0 - divDepth));
                         world.camera.up = p->dirToWorld(divDir);
-                        if (getenv("RAYLIBGAME_DIVERT_CAM")) { // diagnostics/captures: over the first dam, looking down the reach
+                        if (EnvFlag("RAYLIBGAME_DIVERT_CAM")) { // diagnostics/captures: over the first dam, looking down the reach
                             world.camera.position = p->toWorld(at(off(off(damDir, damSide, damHW + 20.0f), damDown, -25.0f), damLevel + 22.0f));
                             world.camera.target = p->toWorld(at(off(damDir, damDown, 20.0f), damLevel - damDepth));
                             world.camera.up = p->dirToWorld(damDir);
@@ -6613,7 +6614,7 @@ int main(int argc, char** argv)
                         static double lastPrint = -10.0;
                         if (t - lastPrint >= 5.0) {
                             lastPrint = t;
-                            if (getenv("RAYLIBGAME_RIVERFLOW_LOG")) {
+                            if (EnvFlag("RAYLIBGAME_RIVERFLOW_LOG")) {
                                 // Diagnostics: the water surface along the river through the first reach, 50 m up to 60 m down
                                 // (a straight line along the dam site's downstream; "-": no simulated water), the natural level and the ground.
                                 const RiverNetwork::NaturalScope natural;
@@ -6809,7 +6810,7 @@ int main(int argc, char** argv)
                         else {
                             const float shore = (float)flowStart;
                             printf("bench: flow: water %.0f m from the start, level %.1f m, shore %.0f m out\n", best, flowLevel, shore);
-                            if (getenv("FLOWDBG"))
+                            if (EnvFlag("FLOWDBG"))
                                 for (float s = shore - 8.0f; s <= shore + 2.0f; s += 2.0f) {
                                     const Vector3 q = Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, s / pf->radius)));
                                     const PlanetField::WaterSource wq = pf->waterSourceAt(q);
@@ -6856,7 +6857,7 @@ int main(int argc, char** argv)
                         }
                         if (flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT < 0.0 && Fluid::Asleep()) flowSleepT = t;
                         if (t > 6.0 && t < 7.0) TakeScreenshot("bench_flow.png");
-                        if (getenv("FLOWDBG") && t > 8.0 && t < 8.1) {
+                        if (EnvFlag("FLOWDBG") && t > 8.0 && t < 8.1) {
                             // Cells along the channel at three heights, and down the shaft.
                             const Vector3 up = Vector3Normalize(flowEnd);
                             for (float s = -6.0f; s <= 6.0f; s += 2.0f)
@@ -8632,7 +8633,7 @@ int main(int argc, char** argv)
                     static int lastSec = -1;
                     if ((int)t != lastSec) {
                         lastSec = (int)t;
-                        if (getenv("FLY_SHOTS") ? lastSec >= 3 : (lastSec == 8 || lastSec == 10 || lastSec == 12)) TakeScreenshot(TextFormat("bench_fly_%02d.png", lastSec)); // mid-flight views
+                        if (EnvFlag("FLY_SHOTS") ? lastSec >= 3 : (lastSec == 8 || lastSec == 10 || lastSec == 12)) TakeScreenshot(TextFormat("bench_fly_%02d.png", lastSec)); // mid-flight views
                         const WorldStats& s = GetWorldStats();
                         printf("bench: fly t=%2d s  %5.1f km flown  nodes %5d  drawn %4d  queued %4d  %.0f FPS\n", (int)t,
                                benchFlySpeed * t / 1000.0, s.nodes, s.chunks, s.queuedJobs, (double)GetFPS());
