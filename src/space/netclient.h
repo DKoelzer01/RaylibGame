@@ -159,6 +159,7 @@ void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swin
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count); // (#338) craft on the server
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

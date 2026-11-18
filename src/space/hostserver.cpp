@@ -22,6 +22,7 @@
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "recipebook.h"
 #include "playerrecord.h"
 #include "inventory.h"
 #include <cmath>
@@ -96,6 +97,7 @@ namespace {
         SurvivalState survival;
         SuitStats suitStats = Suit_StatsOf(SuitState{});
         bool deathHandled = false;   // (#804) this death's drops are done (a grave, losses, or none)
+        bool inNight = false; int deathsAtDusk = 0; // (#338) a night survived (dark fell and day came back without a death)
         double editTokens = 2.0, editTokensAt = -1.0;
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
@@ -244,6 +246,7 @@ namespace {
     long long lastVitals = 0;
     int itemsUsed = 0;
     int gravesMade = 0; // (#804)
+    int crafts = 0; // (#338) recipes crafted for players
     // ---- Graves (#804; the user's rules on #337, 2026-11-18) ----
     // A remote player's death leaves what death_drops says (by difficulty, keep, or a grave owned by that player); walking up
     // to a grave takes what that player may (Combat_CanLoot); every client gets the list when it changes; the owners' teams
@@ -323,9 +326,17 @@ namespace {
         MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
         SendMsg(conn, m);
     }
-    void StepTeamQuests() {
+    void StepTeamQuests(Scene& world) {
         if (SimTick() - lastQuestTick < 60) return; // once a second
         lastQuestTick = SimTick();
+        // Nights survived, as single player counts them (survival.cpp): per player, for their team
+        const Vector3 sunDir = Vector3Normalize(world.sunDirection);
+        for (auto& [sid, r] : remotes) {
+            if (!r.player.nearest) continue;
+            const bool dark = Vector3DotProduct(sunDir, r.player.up) < -0.1f;
+            if (dark && !r.inNight) { r.inNight = true; r.deathsAtDusk = r.survival.deaths; }
+            else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) TeamEvent(sid, "count", "nights"); }
+        }
         std::map<int, std::vector<std::pair<uint32_t, uint32_t>>> online; // team -> (session, conn)
         for (const auto& [conn, p] : peers) if (p.joined) if (const int t = TeamOfSession(p.session)) online[t].push_back({ p.session, conn });
         for (auto& [team, members] : online) {
@@ -1112,6 +1123,29 @@ namespace {
                 ++itemsUsed;
                 return;
             }
+            case NetMsg::CraftRequest: { // (#338) crafting on the server: the recipe unlocked for the player's team, the inputs in its inventory
+                MsgCraftRequest q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end() || rit->second.survival.dead) return;
+                const auto& recipes = itemDB.recipes();
+                if (q.recipe >= recipes.size() || recipes[q.recipe].output != q.output) { SendMsg(m.conn, MsgChat{ 0, "Can't craft that here (unknown recipe)" }); return; }
+                const Recipe& rc = recipes[q.recipe];
+                bool unlocked = true;
+                if (const int team = TeamOfSession(it->second.session)) {
+                    QuestBookState& book = TeamQuests_Book(team);
+                    QuestBook_Select(&book); unlocked = RecipeBook_Unlocked(rc); QuestBook_Select(nullptr);
+                }
+                if (!unlocked) { SendMsg(m.conn, MsgChat{ 0, "Your team hasn't unlocked " + rc.output + " yet" }); return; }
+                Inventory& inv = rit->second.inventory;
+                const auto before = AllAmounts(inv);
+                int made = 0;
+                while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
+                if (made > 0) SendChangedItems(m.conn, inv, before);
+                if (made < q.count) SendMsg(m.conn, MsgChat{ 0, made ? TextFormat("Crafted %d of %d: not enough for more", made, (int)q.count) : std::string("Missing items for ") + rc.output });
+                crafts += made;
+                return;
+            }
             case NetMsg::BedUse: { // (#800) a right-click on a bed: within reach, a bed there: that player's spawn
                 MsgBedUse b;
                 if (!it->second.joined || !NetRead(r, b)) return;
@@ -1233,7 +1267,7 @@ void Host_Update(Scene& world) {
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
     StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
-    StepTeamQuests();     // (#338) team books: evaluate, pay, tell, send
+    StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
