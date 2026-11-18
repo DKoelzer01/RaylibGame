@@ -1608,8 +1608,12 @@ void GpuTick(int n) {
             G.delta.use();
             G.delta.setUint("count", (unsigned)list.size());
             G.delta.setInt("useGroups", G.groupsOn ? 1 : 0);
-            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); G.nbrs.bind(3); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.delta.setInt("mode", 0);
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
+            // What did not fit (the CPU placed it on a mirror a dispatch old) goes up its column, in list order (#840).
+            G.delta.setInt("mode", 1);
+            G.delta.dispatch(1);
             for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
     }
