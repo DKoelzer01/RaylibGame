@@ -5806,12 +5806,13 @@ int main(int argc, char** argv)
                         // (3.5 m out, 0.5 m round: clear of the dug edge, which the lattice rounds out to ~2.5 m at 1 m cells)
                         auto onGrass = [&]() { float v = 0.0f; for (float x = -19.0f; x < 40.0f; x += 3.0f) for (float y : { -3.5f, 3.5f }) v += Fluid::WaterAt(*p, pt(x, y, 0.25f), 0.5f); return v; };
                         if (lkPhase == 1 && t > 1.0 && WorldIdle()) {
-                            // Fill at 5 m^3/s, 1 m^3 at a time moving over the whole floor (#691: a pour every frame - 60 m^3/s -
-                            // piled mounds over the rim faster than water spreads, and they spilled onto the grass).
+                            // Fill at 2.5 m^3/s, 1 m^3 at a time moving over the whole floor (#691: a pour every frame - 60 m^3/s -
+                            // piled mounds over the rim faster than water spreads, and they spilled onto the grass; #680: at 5 m^3/s the
+                            // column model's pour points mounded, the pool stayed shallow and some spilled).
                             static int k = 0;
                             static double nextPour = 0.0;
                             if (t >= nextPour) {
-                                nextPour = t + 0.2;
+                                nextPour = t + 0.4;
                                 const float x = -19.0f + 2.0f * (float)(k % 10), y = (k / 10) % 2 ? 1.0f : -1.0f;
                                 ++k;
                                 lkPoured += Fluid::Pour(*p, pt(x, y, -2.3f), 1.0f);
