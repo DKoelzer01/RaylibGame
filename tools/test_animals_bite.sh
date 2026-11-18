@@ -14,10 +14,21 @@ SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
 RAYLIBGAME_HOST_HUNGER=50 RAYLIBGAME_HOST_GIVE="berries 3" RAYLIBGAME_HOST_HERD="thornback 1" RAYLIBGAME_HOST_HERD_THREATS=1 "$exe" --host "$tmp/host.sav" --seed 42 --day --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
+# #795: on Windows a signal to the msys PID can miss the native game.exe; stop it by its Windows PID as well.
+stop_host() {
+    local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
+    kill "$hp" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$hp" 2>/dev/null || break; sleep 1; done
+    wait "$hp" 2>/dev/null
+    # only our own host: the PID still names a game.exe moments after we started it
+    if [ -n "$w" ] && tasklist //FI "PID eq $w" //FI "IMAGENAME eq game.exe" 2>/dev/null | grep -q game.exe; then taskkill //F //PID "$w" >/dev/null 2>&1; fi
+    true
+}
+trap stop_host EXIT
 until grep -q "test herd" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
-grep -h "test herd" "$tmp/host.log" || { echo "test_animals_bite: no thornback on the host -> FAIL"; kill "$hp" 2>/dev/null; exit 1; }
+grep -h "test herd" "$tmp/host.log" || { echo "test_animals_bite: no thornback on the host -> FAIL"; stop_host; exit 1; }
 RAYLIBGAME_VICTIM_SECONDS=40 RAYLIBGAME_NET_ANIMALS_ROLE=victim timeout 200 "$exe" --join "127.0.0.1:$port" --name victim --bench 3 --test-net-animals > "$tmp/victim.log" 2>&1
-kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+stop_host
 line=$(grep "^bench: net animals (victim)" "$tmp/victim.log")
 echo "$line"
 ok=1

@@ -15,8 +15,19 @@ SECONDS=0
 printf 'erosion 0\n' > "$tmp/host.sav.worldgen" # (a quick world: no bake)
 RAYLIBGAME_HOST_HERD="woolback 4" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
+# #795: on Windows a signal to the msys PID can miss the native game.exe; stop it by its Windows PID as well.
+stop_host() {
+    local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
+    kill "$hp" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$hp" 2>/dev/null || break; sleep 1; done
+    wait "$hp" 2>/dev/null
+    # only our own host: the PID still names a game.exe moments after we started it
+    if [ -n "$w" ] && tasklist //FI "PID eq $w" //FI "IMAGENAME eq game.exe" 2>/dev/null | grep -q game.exe; then taskkill //F //PID "$w" >/dev/null 2>&1; fi
+    true
+}
+trap stop_host EXIT
 until grep -q "test herd" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
-grep -h "test herd" "$tmp/host.log" || { echo "test_animals_net: no herd on the host -> FAIL"; kill "$hp" 2>/dev/null; exit 1; }
+grep -h "test herd" "$tmp/host.log" || { echo "test_animals_net: no herd on the host -> FAIL"; stop_host; exit 1; }
 cpids=()
 RAYLIBGAME_ANIMALS_SHOT="${SHOT:-}" RAYLIBGAME_NET_ANIMALS_ROLE=watcher RAYLIBGAME_JOIN_LINGER=50 timeout 300 "$exe" --join "127.0.0.1:$port" --name watcher --bench 3 --test-net-animals > "$tmp/watcher.log" 2>&1 &
 cpids+=($!)
@@ -24,7 +35,7 @@ sleep 3
 RAYLIBGAME_NET_ANIMALS_ROLE=hunter timeout 300 "$exe" --join "127.0.0.1:$port" --name hunter --bench 3 --test-net-animals > "$tmp/hunter.log" 2>&1 &
 cpids+=($!)
 for c in "${cpids[@]}"; do wait "$c"; done
-sleep 1; kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
+sleep 1; stop_host
 grep -h "^bench: net animals" "$tmp/hunter.log" "$tmp/watcher.log"
 grep -h "felled animal" "$tmp/host.log" | sed 's/^/host: /'
 ok=1
