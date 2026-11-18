@@ -21,6 +21,7 @@ class Planetoid;
 
 void Structures_Update(Scene& world);   // once a second is plenty; cheap when nothing is near
 void Structures_Reset();                // a new or loaded world
+void Structures_SetEnabled(bool on);    // tests: off, no sites are built (--test-build counts every part on the planet)
 void Structures_Save(FILE* f);
 bool Structures_LoadLine(const char* tok, FILE* f);
 int Structures_SetCount();              // sets loaded (tests)
