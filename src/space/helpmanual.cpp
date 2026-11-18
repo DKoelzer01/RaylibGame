@@ -230,3 +230,4 @@ bool HelpManual_LoadLine(const char* tok, FILE* f) {
     if (fscanf(f, " %d", &v) == 1) discoveredOnly = v != 0;
     return true;
 }
+const std::string& HelpManual_PageItem() { return page.item; }
