@@ -478,6 +478,7 @@ int main(int argc, char** argv)
     std::string hostSave;          // --host <save> (#311): a dedicated server: load (or create) the save, run headless, listen
     uint16_t hostPort = kDefaultHostPort; // --port N
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
+    bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
@@ -719,6 +720,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--host-password" && i + 1 < argc) Host_SetPassword(argv[i + 1]); // (#321)
         if (std::string(argv[i]) == "--max-players" && i + 1 < argc) Host_SetMaxPlayers(atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--test-host") benchHost = true;
+        if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
@@ -8487,7 +8489,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchTimeFollow && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9580,6 +9582,41 @@ int main(int argc, char** argv)
             if (hostSave.empty()) { printf("bench: mp-bots: --test-mp-bots needs --host <save> -> FAIL\n"); benchMpBots = 0; }
             else if (!botsStarted) { MpBots_Start(benchMpBots, hostPort); botsStarted = true; }
             else if (MpBots_Update(world)) benchMpBots = 0;
+        }
+        // --test-time-follow (#339): the world clock follows a server's. 1 s behind: slewed in at 10% (the clock never runs
+        // more than 1.1x nor jumps); 0.5 s ahead: slowed (0.9x, never backwards); 30 s behind: taken at once, and the planet's
+        // spin keeps its phase (angle = phase + spin x time), so any machine with the same world time draws the same sky.
+        if (benchTimeFollow && gameState == 1 && !loading && WorldIdle()) {
+            static int tf = 0; static double tStart = 0.0, wLast = 0.0; static long long tickLast = 0; static float fastest = 0.0f, slowest = 9.0f;
+            static bool slewOk = false, slowOk = false, snapOk = false, phaseOk = false;
+            static double phase0[3] = {};
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const double now = GetTime(), w = WorldTime();
+            const long long ticks = SimTick() - tickLast; tickLast = SimTick(); // the world clock moves in sim steps: its rate per step
+            if (tf > 0 && ticks > 0 && tf != 3) { const float r = (float)((w - wLast) / (ticks * SimDt())); fastest = std::max(fastest, r); slowest = std::min(slowest, r); }
+            wLast = w;
+            if (tf == 0) { WorldTime_Follow(w + 1.0); tf = 1; tStart = now; fastest = 0.0f; slowest = 9.0f; }
+            else if (tf == 1 && (WorldTime_Pending() == 0.0 || now - tStart > 15.0)) {
+                slewOk = WorldTime_Pending() == 0.0 && fastest <= 1.12f && slowest > 0.0f;
+                printf("bench: time follow: 1 s behind: caught up in %.1f s, the clock ran %.2f-%.2fx\n", now - tStart, slowest, fastest);
+                WorldTime_Follow(w - 0.5); tf = 2; tStart = now; fastest = 0.0f; slowest = 9.0f;
+            } else if (tf == 2 && (WorldTime_Pending() == 0.0 || now - tStart > 10.0)) {
+                slowOk = WorldTime_Pending() == 0.0 && slowest >= 0.88f && fastest <= 1.02f;
+                printf("bench: time follow: 0.5 s ahead: settled in %.1f s, the clock ran %.2f-%.2fx\n", now - tStart, slowest, fastest);
+                if (p) for (int k = 0; k < 3; ++k) phase0[k] = p->spinPhase[k];
+                WorldTime_Follow(w + 30.0); snapOk = fabs(WorldTime() - (w + 30.0)) < 1e-9 && WorldTime_Pending() == 0.0;
+                tf = 3; tStart = now;
+            } else if (tf == 3 && now - tStart > 0.5) {
+                phaseOk = p != nullptr;
+                if (p) for (int k = 0; k < 3; ++k) {
+                    double a = fmod(p->spinPhase[k] + (double)(&p->spin.x)[k] * WorldTime(), 360.0); if (a < 0.0) a += 360.0;
+                    phaseOk = phaseOk && p->spinPhase[k] == phase0[k] && fabs(a - p->spinAngle[k]) < 1e-6;
+                }
+                const bool ok = slewOk && slowOk && snapOk && phaseOk;
+                printf("bench: time follow (#339): slew %d, slow %d, 30 s snap %d, spin phase kept and angle = phase + spin x time %d (spin %.4f deg/s) -> %s\n",
+                       (int)slewOk, (int)slowOk, (int)snapOk, (int)phaseOk, p ? p->spin.y : 0.0f, ok ? "PASS" : "FAIL");
+                benchTimeFollow = false;
+            }
         }
         // --test-host (#311, with --host <save>): the dedicated server loaded or created its save and runs headless.
         //   - seed (user, 2026-11-15): a new world takes --seed N, else a random seed (printed); an existing save keeps its own;
