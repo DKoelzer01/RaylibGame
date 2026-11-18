@@ -125,6 +125,10 @@ struct Brick {
     bool changed = true;            // since the last publish
     std::array<uint8_t, B3> check{}; long long checkStep = -1; // the cells a settle window ago (#366: resting water sleeps)
     bool settled = false;           // put to sleep resting (#366): small changes (the GPU step at its edge) do not wake it
+    // CPU mode's dry-cell skip (#747): the wet groups of its last two substeps, kept across ticks (the kernel's masks belong
+    // to slots, handed out afresh each tick). Without them a group that dried in a tick's last substep was skipped from the
+    // next tick on and kept a stale momentum in its face records.
+    uint32_t cpuMask[4] = { ~0u, ~0u, ~0u, ~0u }; // last substep (2 words), the one before; all set until first run
     std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
     bool drawnSet = false;
     bool drawnMoving = false;       // published as moving (#649: its thin films are drawn while it is awake)
@@ -1797,6 +1801,10 @@ void CpuTick(int n) {
         else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
+        // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
+        // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
+        uint32_t* m = &g.gmask[(size_t)i * 6];
+        m[0] = b->cpuMask[0]; m[1] = b->cpuMask[1]; m[2] = 0u; m[3] = 0u; m[4] = b->cpuMask[2]; m[5] = b->cpuMask[3];
     }
     FluidKernel::Params p;
     for (int k = 0; k < 8; ++k) { p.minSpread[k] = kindMinSpread[k]; p.visc[k] = kindVisc[k]; KindFriction(k, p.frictionLin[k], p.frictionQuad[k]); }
@@ -1892,6 +1900,11 @@ void CpuTick(int n) {
         Brick* br = slots[i];
         const uint32_t fl = g.flags[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
+        { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
+            const uint32_t* m = &g.gmask[(size_t)i * 6];
+            const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;
+            br->cpuMask[0] = m[c0 * 2]; br->cpuMask[1] = m[c0 * 2 + 1]; br->cpuMask[2] = m[c1 * 2]; br->cpuMask[3] = m[c1 * 2 + 1];
+        }
         if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
         if (fl & 1u) {
             const uint32_t* c = &g.a[(size_t)i * B3];

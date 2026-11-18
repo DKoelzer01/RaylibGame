@@ -688,9 +688,8 @@ void BeginTick(Grid& g, const std::vector<int>& list, int slots) {
                 for (int k = grp * 64; k < grp * 64 + 64; ++k) any |= c[k] & 255u;
                 if (any) w[grp >> 5] |= 1u << (grp & 31);
             }
-            uint32_t* m = &g.gmask[(size_t)s * 6];
-            for (int k = 0; k < 6; ++k) m[k] = 0u;
-            m[0] = w[0]; m[1] = w[1]; // as the last substep's (gcur = 0): the first substep lists them and their borders
+            uint32_t* m = &g.gmask[(size_t)s * 6]; // the host put the brick's history in 0 (last substep) and 2 (the one before)
+            m[0] |= w[0]; m[1] |= w[1];            // and the groups wet now: the first substep lists them and their borders
         }
     };
     std::atomic<int> left{ parts - 1 };
