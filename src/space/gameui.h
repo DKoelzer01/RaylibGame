@@ -20,6 +20,9 @@ bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this
 void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
+#include <string>
+void GameUI_OpenDatabase(const std::string& itemId); // (#826) the database pop-up, at an item's page ("" where it was)
+bool GameUI_DatabaseOpen();
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
 void GameUI_DrawHUD(Scene& world); // plain raylib 2D HUD (status, toasts)
 void GameUI_Toast(const char* text);

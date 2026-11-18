@@ -591,6 +591,7 @@ int main(int argc, char** argv)
     bool benchGameMode = false;     // --test-gamemode (#823): /gamemode, the Catalog screen in creative only, the command line
     bool benchCraftScreen = false;   // --test-crafting-screen (#824): the Crafting screen's queue and page
     bool benchQuestPins = false;     // --test-quest-pins (#825): pin three quests (a fourth refused), saved with the player, on the HUD
+    bool benchDatabase = false;      // --test-database (#826): the database pop-up at an item's page
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
     bool benchDungeonTraps = false; int dungeonTrapFrame = 0; // --test-dungeon-traps (#719)
     bool benchSaveSplit = false; // --test-save-split (#346)
@@ -928,6 +929,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-gamemode") benchGameMode = true;
         if (std::string(argv[i]) == "--test-crafting-screen") benchCraftScreen = true;
         if (std::string(argv[i]) == "--test-quest-pins") benchQuestPins = true;
+        if (std::string(argv[i]) == "--test-database") benchDatabase = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
         if (std::string(argv[i]) == "--test-dungeon-traps") benchDungeonTraps = true; // #719: best with --sandbox
         if (std::string(argv[i]) == "--test-save-split") benchSaveSplit = true; // #346: world + player records
@@ -9662,6 +9664,27 @@ int main(int argc, char** argv)
         }
         // --test-save-split (#346): the world file and the player's record (gamesave.cpp), once the world is up.
         if (benchSaveSplit && gameState == 1 && !loading && WorldIdle()) { GameSave_TestSplit(world); benchSaveSplit = false; }
+        // --test-database (#826): the database pop-up opened at copper ingot's page (as an alt-click on it does) over the
+        // inventory, then from the Database button (where it was); a screenshot.
+        if (benchDatabase && gameState == 1 && !loading && WorldIdle()) {
+            static int f = 0;
+            static bool atPage = false, overInventory = false;
+            if (f == 0) { inventory.add("copper_ingot", 6); GameUI_ShowScreen(GameScreen::Inventory); GameUI_OpenDatabase("copper_ingot"); }
+            if (f == 15) {
+                atPage = GameUI_DatabaseOpen() && HelpManual_PageItem() == "copper_ingot";
+                overInventory = GameUI_Screen() == GameScreen::Inventory;
+                TakeScreenshot("bench_database.png");
+            }
+            if (f == 20) {
+                GameUI_ToggleInventory(); // closing the window closes the pop-up
+                const bool closed = !GameUI_DatabaseOpen();
+                const bool ok = atPage && overInventory && closed;
+                printf("bench: database (#826): the pop-up at copper ingot's page %d, over the inventory %d, closed with the window %d; bench_database.png -> %s\n",
+                       atPage, overInventory, closed, ok ? "PASS" : "FAIL");
+                benchDatabase = false;
+            }
+            ++f;
+        }
         // --test-quest-pins (#825): three of the current tier's tasks pinned, a fourth refused; a save and load keeps them (the
         // player's record); screenshots of the Quests screen and of the HUD with the pins.
         if (benchQuestPins && gameState == 1 && !loading && WorldIdle()) {

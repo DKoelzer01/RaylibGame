@@ -41,15 +41,23 @@ namespace {
     std::string toast;
     double toastUntil = 0.0;
     struct Container { bool open = false; uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } container;
-    // The game window (#821): the screen shown; Quests' view; the temporary Help page (until #826).
+    // The game window (#821): the screen shown; Quests' view; the database pop-up (#826: alt-click an item).
     GameScreen screen = GameScreen::Inventory;
     bool questTree = false;
-    enum class Extra { None, Help } extra = Extra::None;
+    bool databaseOpen = false;
 }
 
 bool GameUI_InventoryOpen() { return inventoryOpen; }
-void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) { container.open = false; extra = Extra::None; } }
-void GameUI_ShowScreen(GameScreen s) { inventoryOpen = true; screen = s; extra = Extra::None; }
+void GameUI_ToggleInventory() { inventoryOpen = !inventoryOpen; if (!inventoryOpen) { container.open = false; databaseOpen = false; } }
+void GameUI_ShowScreen(GameScreen s) { inventoryOpen = true; screen = s; }
+// (#826) Alt + click on an item (a cell, a slot, a recipe): its database page opens in the pop-up, instead of the click. True
+// when it opened (the caller skips its own click).
+static bool OpenIfAlt(const std::string& id) {
+    if (id.empty() || !ImGui::GetIO().KeyAlt) return false;
+    HelpManual_OpenItem(id);
+    databaseOpen = true;
+    return true;
+}
 GameScreen GameUI_Screen() { return screen; }
 bool GameUI_TextInputActive() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput; }
 float GameUI_Scale() {
@@ -133,10 +141,11 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
 static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
 void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests and tutorials)
+    databaseOpen = false; // (a named screen: the pop-up only when asked for, below)
     const std::string t = tab;
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") { GameUI_ShowScreen(GameScreen::Quests); questTree = t == "Quest tree"; }
-    else if (t == "Help") { GameUI_ShowScreen(GameScreen::Inventory); extra = Extra::Help; }
+    else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
 }
@@ -366,7 +375,7 @@ static void DrawCell(int i, float cw, float cell) {
     const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
     ImGui::PushID(i);
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("cell", ImVec2(cw, cell))) {
+    if (ImGui::InvisibleButton("cell", ImVec2(cw, cell)) && !OpenIfAlt(grid[i].id)) {
         const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
         if (GameUI_ContainerOpen() && shift && cursorStack.empty() && !grid[i].empty()) {
             // Shift+click with a container open (#192: the quick-move, as everywhere): the stack goes into it (machines
@@ -559,7 +568,7 @@ static void DrawCrafting() {
         const ItemDef* out = itemDB.find(r.output);
         ImGui::PushID((int)i);
         const ImVec2 p = ImGui::GetCursorScreenPos(), qd(p.x + cell, p.y + cell);
-        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell))) selectedRecipe = (int)i;
+        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell)) && !OpenIfAlt(r.output)) selectedRecipe = (int)i;
         const bool hover = ImGui::IsItemHovered(), sel = selectedRecipe == (int)i;
         if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) craftQueue.push_back({ (int)i, 1 }); // double-click: craft one
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
@@ -600,6 +609,7 @@ static void DrawCrafting() {
             const bool enough = creative || all >= in.second;
             ImGui::TextColored(enough ? ImVec4(0.55f, 0.9f, 0.55f, 1.0f) : ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "  %d %s   (have %d%s)", in.second,
                                id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "");
+            if (ImGui::IsItemClicked()) { HelpManual_OpenItem(in.first); databaseOpen = true; } // (#826) an ingredient: its page
         }
         const bool can = canMake(r);
         const int most = maxFromInventory(r);
@@ -693,7 +703,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
-        const bool clicked = ImGui::InvisibleButton("slot", ImVec2(cell, cell));
+        const bool clicked = ImGui::InvisibleButton("slot", ImVec2(cell, cell)) && !OpenIfAlt(slots[i].second > 0 ? slots[i].first : std::string());
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         if (slots[i].second > 0) DrawGlow(dl, p, q, Item_GlowOf(slots[i].first, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
@@ -825,6 +835,7 @@ static void DrawCreative() {
         ImGui::ColorButton("##c", ToImColor(d.color), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
         ImGui::SameLine();
         ImGui::Text("%-20s", d.name.c_str());
+        if (ImGui::IsItemClicked() && ImGui::GetIO().KeyAlt) OpenIfAlt(d.id); // (#826)
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (%s, %d per slot)\n%s", d.id.c_str(), KindName(d.kind), StackLimit(d.id), d.description.c_str());
         ImGui::SameLine(260.0f);
         if (ImGui::SmallButton("+1")) inventory.add(d.id, 1);
@@ -881,7 +892,7 @@ static void DrawQuestList() {
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(full ? "Three are pinned: unpin one first" : pinned ? "Pinned to the HUD" : "Pin to the HUD");
                     ImGui::SameLine();
                 } else ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0f)), ImGui::SameLine();
-                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s %s", kd ? "[x]" : "[ ]", QuestBook_TaskText(i, k));
+                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s%s", QuestBook_TaskText(i, k), kd ? "   (done)" : ""); // (the pin box is the only box: no "[ ]" beside it)
                 ImGui::PopID();
             }
         }
@@ -941,7 +952,7 @@ namespace {
 bool GameUI_PreviewDrawn() { return previewDrawn; }
 void GameUI_PrepareFrame(Scene& world) {
     previewDrawn = false;
-    if (!inventoryOpen || screen != GameScreen::Inventory || extra != Extra::None || container.open) return;
+    if (!inventoryOpen || screen != GameScreen::Inventory || container.open) return;
     const Vector3 up = Vector3Normalize(player.up);
     if (Vector3Length(player.up) < 0.5f) return; // (not placed yet)
     const float s = GameUI_Scale();
@@ -973,7 +984,7 @@ void GameUI_PrepareFrame(Scene& world) {
 static void SuitSlot(float cell) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
-    if (ImGui::InvisibleButton("suit", ImVec2(cell, cell)) && !cursorStack.empty() && Suit_IsSuit(cursorStack.id)) {
+    if (ImGui::InvisibleButton("suit", ImVec2(cell, cell)) && !OpenIfAlt(Suit_Worn()) && !cursorStack.empty() && Suit_IsSuit(cursorStack.id)) {
         const std::string id = cursorStack.id;
         ReturnCursorStack();
         if (Suit_Wear(id)) Audio_Play(Sfx::Build, 0.4f, 1.2f);
@@ -994,7 +1005,7 @@ static void ModuleSlot(int i, float cell) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const std::string fitted = i < (int)Suit_Modules().size() ? Suit_Modules()[i] : std::string();
     const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
-    if (ImGui::InvisibleButton("module", ImVec2(cell, cell))) {
+    if (ImGui::InvisibleButton("module", ImVec2(cell, cell)) && !OpenIfAlt(fitted)) {
         if (!cursorStack.empty() && Suit_IsModule(cursorStack.id)) { const std::string id = cursorStack.id; ReturnCursorStack(); Suit_FitInto(i, id); }
         else if (cursorStack.empty() && !fitted.empty()) Suit_Unfit(i);
     }
@@ -1072,19 +1083,19 @@ void GameUI_Draw(Scene& world) {
         for (const Tab& t : tabs) {
             if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
-            if (ScreenTab(t.name, key, screen == t.s && extra == Extra::None, tabW, tabH)) { screen = t.s; extra = Extra::None; if (t.s != GameScreen::Inventory) container.open = false; }
+            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
         const float smallW = 120.0f * s;
         ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
-        if (ScreenTab("Help", "", extra == Extra::Help, smallW, tabH)) extra = extra == Extra::Help ? Extra::None : Extra::Help; // until #826's pop-up
+        if (ScreenTab("Database", "", databaseOpen, smallW, tabH)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
         ImGui::SameLine(0.0f, 6.0f * s);
         if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
         // Inventory and Crafting show your items on the left; the others use the whole width.
-        const bool items = extra != Extra::None || screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog;
+        const bool items = screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog;
         if (items) {
             ImGui::Columns(2, "inv", true);
             static float colW = -1.0f;
@@ -1094,8 +1105,7 @@ void GameUI_Draw(Scene& world) {
             DrawGrid();
             ImGui::NextColumn();
         }
-        if (extra == Extra::Help) HelpManual_DrawTab();
-        else switch (screen) {
+        switch (screen) {
             case GameScreen::Catalog: DrawCreative(); break; // (#823) every item, free: creative only
             case GameScreen::Inventory:
                 if (container.open) DrawContainer();
@@ -1122,6 +1132,19 @@ void GameUI_Draw(Scene& world) {
     }
     ImGui::End();
     ImGui::PopStyleColor();
+    // The database (#826): a pop-up over the game window, opened by alt-clicking an item (at its page) or the Database
+    // button; browse on from there (links, search, Back). Like Factorio's Factoriopedia.
+    if (databaseOpen) {
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x * 0.62f, io.DisplaySize.y * 0.7f), ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.52f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.11f, 0.16f, 1.0f)); // opaque: the screen under it doesn't show through
+        if (ImGui::Begin("Database (alt-click any item)", &databaseOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::SetWindowFontScale(s);
+            HelpManual_DrawTab();
+        }
+        ImGui::End();
+        ImGui::PopStyleColor();
+    }
     // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
     if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) DropCursor(cursorStack.centi);
@@ -1261,3 +1284,7 @@ void GameUI_DrawHUD(Scene& world) {
 void GameUI_QueueCraft(int recipe, int count) { if (count > 0) craftQueue.push_back({ recipe, count }); }
 int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }
 void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; }
+
+// (#826) the database pop-up from outside the window's clicks (tests; later a key or a link from quests)
+void GameUI_OpenDatabase(const std::string& id) { inventoryOpen = true; if (!id.empty()) HelpManual_OpenItem(id); databaseOpen = true; }
+bool GameUI_DatabaseOpen() { return inventoryOpen && databaseOpen; }
