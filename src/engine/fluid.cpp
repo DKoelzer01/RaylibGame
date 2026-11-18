@@ -1250,6 +1250,10 @@ struct GpuState {
     ComputeProgram groups;
     ComputeBuffer mask, glist;
     ComputeBuffer sinkOut; // per slot: fill units its sinks took in (river flow, #656; binding 12)
+    // The column-pair flow's scratch (#680, FLUID_COLUMNS; binding 13): a cell's delta, demand, capacity and its pairs'
+    // codes, 20 bytes (only allocated with the column model on).
+    ComputeBuffer col;
+    bool colOn = false;
     bool groupsOn = false;
     int maskCur = 0;
     int capacity = 0;                      // bricks
@@ -1275,6 +1279,7 @@ std::mutex flowMx;
 
 constexpr unsigned kCellsPerBrick = (unsigned)B3;
 constexpr unsigned kFacePBytes = 8, kFaceNBytes = 16; // half-precision face flows a cell (#675; were 16 and 32)
+constexpr unsigned kColBytes = 20;                    // the column flow's scratch a cell (#680: delta, demand, capacity, codes)
 
 bool GpuInit() {
     if (G.init) return G.ok;
@@ -1290,6 +1295,8 @@ bool GpuInit() {
         const std::vector<unsigned> zeros(64, 0u);
         G.flags.upload(zeros.data(), 64 * 4);
         G.sinkOut.create(64 * 4, zeros.data());
+        G.colOn = EnvFlag("FLUID_COLUMNS");
+        if (G.colOn) { const std::vector<unsigned> zc((size_t)64 * kCellsPerBrick * kColBytes / 4, 0u); G.col.create(64 * kCellsPerBrick * kColBytes, zc.data()); }
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
         G.asyncRb = !EnvFlag("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
@@ -1320,6 +1327,7 @@ void GpuGrow(int need) {
     grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
     grow(G.flags, G.capacity * 4, cap * 4);
     grow(G.sinkOut, G.capacity * 4, cap * 4);
+    if (G.colOn) grow(G.col, G.capacity * kCellsPerBrick * kColBytes, cap * kCellsPerBrick * kColBytes);
     if (G.groupsOn) {
         grow(G.mask, G.capacity * 6 * 4, cap * 6 * 4);
         const std::vector<unsigned> zero((size_t)(8 + cap * 64), 0u);
@@ -1668,6 +1676,10 @@ void GpuTick(int n) {
     const float cellSize = WaterField::CellSize();
     rlSetUniform(G.step.uniform("cellSize"), &cellSize, RL_SHADER_UNIFORM_FLOAT, 1);
     G.step.setInt("kColumnCells", ColumnCells());
+    static const bool advectOn = !EnvFlag("FLUID_NOADVECT");
+    G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
+    G.step.setInt("advect", advectOn ? 1 : 0);
+    if (G.colOn) G.col.bind(13);
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
@@ -1697,6 +1709,7 @@ void GpuTick(int n) {
         }
         G.a.bind(0); G.b.bind(1); pass(0);
         G.b.bind(0); G.a.bind(1); pass(1);
+        if (G.colOn) pass(3); // the column pairs' scaled move (#680)
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
         G.step.setInt("evaporate", !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0 ? 1 : 0);

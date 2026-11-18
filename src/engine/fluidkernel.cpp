@@ -485,12 +485,13 @@ struct Pass {
         int nf = std::clamp(f + g.delta[gi], 0, cap);
         bool pb, pa;
         const int bl = stepZ(gi, -1, pb), ab = stepZ(gi, 1, pa);
-        if (bl >= 0) {
+        // Only processed cells move water (an unprocessed brick's scratch holds whatever it last had: on the GPU slots persist).
+        if (bl >= 0 && pb) {
             const uint32_t b = inC[bl];
             const int over = (int)F(b) + g.delta[bl] - (int)CAP(b);
             if (over > 0 && !(FL(b) & SOLID)) { if (nf == 0) kindOut = KIND(b); nf += over; }
         }
-        if (ab >= 0) {
+        if (ab >= 0 && pa) {
             const uint32_t a = inC[ab];
             const int under = (int)F(a) + g.delta[ab];
             if (under < 0 && !(FL(a) & SOLID)) nf += under;
