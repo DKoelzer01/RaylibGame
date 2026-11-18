@@ -4,6 +4,8 @@
 #include "player.h"
 #include "audio.h"
 #include "terraintool.h"
+#include "animals.h"
+#include "weather.h"
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
@@ -345,6 +347,7 @@ static void DrawGrid() {
             } else CellClick(i, false, shift && !GameUI_ContainerOpen());
         }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Middle)) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577)
         const bool hover = ImGui::IsItemHovered();
         const InvSlot& s = grid[i];
         const ImVec2 q(p.x + cw, p.y + cell);
@@ -385,7 +388,7 @@ static void DrawGrid() {
         if (hover) ImGui::SetTooltip(!cursorStack.empty() ? "Click: delete the held stack" : !binned.empty() ? "Click: take the deleted stack back" :
                                      "The bin: put a stack here to delete it\n(or click outside the window to drop it on the ground)");
     }
-    if (ImGui::Button("Sort")) { ReturnCursorStack(); inventory.sort(); }
+    if (ImGui::Button("Sort (middle-click)")) { ReturnCursorStack(); inventory.sort(); }
     ImGui::SameLine();
     // Deposit (button or Q): items a nearby chest already holds go into it.
     const int nChests = uiWorld ? (int)Storage_NearbyChests(*uiWorld).size() : 0;
@@ -622,6 +625,33 @@ static void DrawCreative() {
     ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
     ImGui::SameLine();
     if (ImGui::Button("Clear inventory")) inventory.clear();
+    {   // Creatures at the crosshair (#529): any species, on the ground the view's centre is on (within 200 m).
+        static int kind = 0, count = 1;
+        static const auto list = Animals_SpeciesList();
+        if (!list.empty()) {
+            kind = std::clamp(kind, 0, (int)list.size() - 1);
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::BeginCombo("##creature", list[kind].second.c_str())) {
+                for (int i = 0; i < (int)list.size(); ++i)
+                    if (ImGui::Selectable(list[i].second.c_str(), i == kind)) kind = i;
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90.0f);
+            ImGui::InputInt("##count", &count);
+            count = std::clamp(count, 1, 20);
+            ImGui::SameLine();
+            if (ImGui::Button("Spawn at crosshair") && uiWorld) {
+                Scene& w = *uiWorld;
+                const Vector3 dir = Vector3Normalize(Vector3Subtract(w.camera.target, w.camera.position));
+                TerrainHit th;
+                if (RaycastTerrain(w, Ray{ w.camera.position, dir }, 200.0f, th) && th.planetoid) {
+                    const int n = Animals_Spawn(w, *th.planetoid, list[kind].first, th.local, count, false, count > 1 ? 3.0f : 0.0f);
+                    GameUI_Toast(TextFormat("Spawned %d %s", n, list[kind].second.c_str()));
+                } else GameUI_Toast("Nothing under the crosshair within 200 m");
+            }
+        }
+    }
     ImGui::Separator();
     std::string f = filter;
     for (char& c : f) c = (char)tolower(c);
@@ -820,8 +850,30 @@ void GameUI_DrawHUD(Scene& world) {
         DrawRectangle(w - 220, 70, (int)(200 * player.jetpackFuel), 12, SKYBLUE);
         DrawText("JET", w - 260, 68, 16, RAYWHITE);
     }
-    const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
-    DrawText(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), w - 220, 90, 16, RAYWHITE);
-    DrawText(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), w - 220, 110, 16, player.dampeners ? RAYWHITE : ORANGE);
+    // Under the minimap (#574): where you are (latitude, longitude and height over the body whose sphere of influence you
+    // are in; world kilometres out in space), then speed and gravity, then the biome and the weather.
+    {
+        int ly = 384; // the minimap and its scale line end at ~372
+        auto line = [&](const char* t, Color c) { DrawText(t, w - 20 - MeasureText(t, 16), ly, 16, c); ly += 20; }; // right-aligned with the minimap
+        bool rotate = false;
+        Planetoid* ref = player.nearest ? player.nearest : player.flyReference(world, rotate);
+        const DVec3 local = ref ? ref->toLocalD(player.position) : DVec3{};
+        const double r = sqrt(local.x * local.x + local.y * local.y + local.z * local.z);
+        if (ref && r < 2.0 * ref->radius) {
+            const double lat = asin(std::clamp(local.y / std::max(r, 1e-9), -1.0, 1.0)) * RAD2DEG, lon = atan2(local.z, local.x) * RAD2DEG;
+            line(TextFormat("%s  %.3f %c  %.3f %c  %.0f m", ref->name.c_str(), fabs(lat), lat >= 0.0 ? 'N' : 'S', fabs(lon), lon >= 0.0 ? 'E' : 'W',
+                                (r - ref->radius) * ref->scale), RAYWHITE);
+        } else {
+            const DVec3 p = player.position;
+            line(TextFormat("%.1f  %.1f  %.1f km", p.x / 1000.0, p.y / 1000.0, p.z / 1000.0), RAYWHITE);
+        }
+        const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
+        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), RAYWHITE);
+        const char* biome = Survival_BiomeName();
+        const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
+        if (biome[0]) { line(weather ? TextFormat("%s   %s", biome, Weather_Name(Weather_Here().kind)) : biome, Fade(RAYWHITE, 0.8f)); }
+        if (player.jetpackAccel > 0.0f) // only with a jetpack: nothing else uses them (#531)
+            line(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), player.dampeners ? RAYWHITE : ORANGE);
+    }
     if (GetTime() < toastUntil) DrawText(toast.c_str(), 10, GetScreenHeight() - 90, 20, YELLOW);
 }

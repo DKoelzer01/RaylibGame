@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 #include <raylib.h>
 
 class Scene;
@@ -37,6 +39,9 @@ uint64_t Animals_NetId(int index);                              // its stable id
 int Animals_SimulatedCount();                                   // simulated in the last update: near an interest centre (#318)
 int Animals_SimulatedNear(const Planetoid& body, Vector3 local, float range); // of those, within range of a body-local point
 int Animals_Spawn(Scene& world, Planetoid& body, const std::string& species, Vector3 bodyLocal, int count, bool young = false, float spread = 18.0f);
+// Every species as (id, display name), in animals.txt order: the Creative tab's spawner (#529).
+std::vector<std::pair<std::string, std::string>> Animals_SpeciesList();
+double Animals_BiteWindUp();            // s from a hostile's warning to its strike (#165)
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
