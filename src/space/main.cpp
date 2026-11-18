@@ -423,6 +423,7 @@ int main(int argc, char** argv)
     bool benchFarForest = false; int farForestPhase = 0; double farForestT0 = 0.0; Vector3 farForestEye{}, farForestAt{}; // --shot-far-forest
     bool benchTerrain = false; int terrainPhase = 0; double terrainT0 = 0.0; Vector3 terrainAt{}, terrainOut{}; // --shot-terrain
     bool benchCaveMouth = false; int mouthPhase = 0; double mouthT0 = 0.0; Vector3 mouthAt{}, mouthOut{}; // --shot-cave-mouth (#549)
+    bool benchMountain = false; int mountainPhase = 0; double mountainT0 = 0.0; Vector3 mountainAt{}, mountainOut{}; // --shot-mountain (#545)
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
     bool benchFacing = false; // --test-facing (#196)
@@ -705,6 +706,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-pump-boiler") { benchPump = true; benchPumpBoiler = true; }
         if (std::string(argv[i]) == "--shot-terrain") benchTerrain = true;
         if (std::string(argv[i]) == "--shot-cave-mouth") benchCaveMouth = true;
+        if (std::string(argv[i]) == "--shot-mountain") benchMountain = true;
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-room") benchRoom = true;
         if (std::string(argv[i]) == "--test-facing") benchFacing = true;
@@ -4771,6 +4773,41 @@ int main(int argc, char** argv)
                             else { terrainPhase = 2; terrainT0 = GetTime(); }
                         }
                     }
+                } else if (benchMountain && (mountainPhase > 0 || WorldIdle())) {
+                    // --shot-mountain (#545): the highest ground within 8 km of the start, seen from 1.5 km away and 250 m
+                    // over it, sun from the side (bench_mountain.png): the mid/far LOD transitions lie across its slopes.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: mountain: needs the planet\n"); benchMountain = false; }
+                    else if (mountainPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float bestE = -1e30f; Vector3 bestD = home;
+                        for (float a = -8000.0f; a <= 8000.0f; a += 100.0f)
+                            for (float b = -8000.0f; b <= 8000.0f; b += 100.0f) {
+                                const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(d);
+                                if (e > bestE) { bestE = e; bestD = d; }
+                            }
+                        mountainAt = Vector3Scale(bestD, pf->radius + bestE);
+                        mountainOut = Vector3Normalize(Vector3Subtract(Vector3Scale(home, pf->radius), Vector3Scale(bestD, pf->radius))); // from the peak toward the start
+                        if (Vector3Length(mountainOut) < 0.5f) mountainOut = t1;
+                        printf("bench: mountain: highest ground within 8 km: %.0f m\n", bestE);
+                        player.flyMode = true; sunOverride = true;
+                        const Vector3 up = Vector3Normalize(mountainAt);
+                        sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3CrossProduct(up, mountainOut), 1.2f))));
+                        mountainPhase = 1; mountainT0 = GetTime();
+                    } else {
+                        const Vector3 up = Vector3Normalize(mountainAt);
+                        const Vector3 eye = Vector3Add(mountainAt, Vector3Add(Vector3Scale(mountainOut, 1500.0f), Vector3Scale(up, 250.0f)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Subtract(mountainAt, Vector3Scale(up, 150.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - mountainT0 > 5.0 && WorldIdle()) {
+                            TakeScreenshot("bench_mountain.png");
+                            printf("bench: mountain: bench_mountain.png\n");
+                            benchMountain = false;
+                        }
+                    }
                 } else if (benchCaveMouth && (mouthPhase > 0 || WorldIdle())) {
                     // --shot-cave-mouth (#549): the nearest cave mouth to the start (open ground 2 m and 6 m under the
                     // surface), how open it is per LOD footprint, and shots from 20, 80 and 250 m (bench_mouth_<m>.png).
@@ -7497,7 +7534,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchCaveMouth && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
