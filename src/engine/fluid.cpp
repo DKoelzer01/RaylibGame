@@ -1783,6 +1783,7 @@ void CpuTick(int n) {
     p.setCell(WaterField::CellSize(), ColumnCells());
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
     static unsigned evapTick = 0;
+    g.groupsFull = true; // the dry-cell skip (#747): slots are new this tick, its first substep runs every cell
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);

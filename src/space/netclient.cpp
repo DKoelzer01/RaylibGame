@@ -136,6 +136,7 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, d)) return;
                 ++c.inventoryDeltas;
                 if (c.inventory) { if (d.amount > 0.0) c.inventory->addAmount(d.item, d.amount); else c.inventory->removeAmount(d.item, -d.amount); }
+                else c.pendingInventory.push_back({ d.item, d.amount }); // (#803) before the game attached its inventory: kept for then
                 return;
             }
             case NetMsg::PlotEdit: { // (#330) in the server's order; a host in this process already changed the world
@@ -330,6 +331,10 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 
 void NetClient_Update(NetClient& c) {
     if (c.state == NetClient::State::Idle || c.state == NetClient::State::Rejected || c.state == NetClient::State::Closed) return;
+    if (c.inventory && !c.pendingInventory.empty()) { // (#803) deltas that arrived before the inventory was attached
+        for (const auto& [item, amount] : c.pendingInventory) { if (amount > 0.0) c.inventory->addAmount(item, amount); else c.inventory->removeAmount(item, -amount); }
+        c.pendingInventory.clear();
+    }
     if (!c.syncHold && !c.syncHeld.empty()) { // (#776) the world is ready now: the sync's messages held so far, in order
         std::vector<NetMessage> held;
         held.swap(c.syncHeld);
@@ -687,4 +692,10 @@ void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action) {
 void NetClient_UseItem(NetClient& c, const std::string& item) {
     if (c.state != NetClient::State::Joined || item.empty()) return;
     SendMsg(c, MsgUseItem{ item });
+}
+void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]) { // (#800)
+    if (c.state != NetClient::State::Joined || body.empty()) return;
+    MsgBedUse b; b.body = body; b.plot = plot;
+    for (int i = 0; i < 3; ++i) b.cell[i] = cell[i];
+    SendMsg(c, b);
 }

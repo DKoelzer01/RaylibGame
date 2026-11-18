@@ -16,7 +16,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 17; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341)
+constexpr uint32_t kNetProtocol = 18; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -49,6 +49,7 @@ enum class NetMsg : uint8_t {
     Damage = 27,   // server -> client (#334): a hit on the client's player (an animal's bite): the hit's effect (the health is in Vitals)
     Vitals = 28,   // server -> client (#337): its player's survival numbers (health, food, oxygen, power, temperature, dead), 5 a second
     UseItem = 29,  // client -> server (#337): eat or use an item (oxygen canister, power cell) from its inventory as the server keeps it
+    BedUse = 30,   // client -> server (#800): make the bed at (body, plot, cell) this player's spawn
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -193,6 +194,7 @@ struct MsgAnimals {
 struct MsgAnimalHit { uint64_t netId = 0; uint8_t action = 0; }; // 0 hit, 1 feed, 2 take its product
 struct MsgVitals { float health = 100.0f, food = 100.0f, oxygen = 100.0f, power = 100.0f, temperature = 20.0f; uint8_t flags = 0; uint16_t deaths = 0; }; // flags: 1 dead, 2 breathable, 4 vacuum, 8 underwater, 16 life support, 32 sick, 64 headlamp
 struct MsgUseItem { std::string item; };
+struct MsgBedUse { std::string body; uint32_t plot = 0; int32_t cell[3] = { 0, 0, 0 }; }; // #800: the bed's origin cell
 struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
@@ -328,6 +330,8 @@ void NetWrite(NetWriter& w, const MsgVitals& m);
 bool NetRead(NetReader& r, MsgVitals& m);
 void NetWrite(NetWriter& w, const MsgUseItem& m);
 bool NetRead(NetReader& r, MsgUseItem& m);
+void NetWrite(NetWriter& w, const MsgBedUse& m);
+bool NetRead(NetReader& r, MsgBedUse& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
 // decoded and the read fails). Without one (validation), deltas decode against zeros.

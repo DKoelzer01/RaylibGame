@@ -68,11 +68,17 @@ void WritePlayerLines(FILE* f) {
     ToolWear_Save(f);
     fprintf(f, "survival %f %f %f %d\n", survival.oxygen, survival.power, survival.health, survival.deaths);
     fprintf(f, "food %f\n", survival.food);
+    if (survival.hasBed) fprintf(f, "bed %s %u %d %d %d\n", survival.bedBody.c_str(), survival.bedPlot, survival.bedCell[0], survival.bedCell[1], survival.bedCell[2]); // #800: the player's spawn bed
 }
 
 // One of the player's lines (a record's, or a format 12 save's extras): true if it was one.
 bool ReadPlayerLine(const char* tok, FILE* f) {
     if (strcmp(tok, "food") == 0) { float v = 100.0f; if (fscanf(f, " %f", &v) == 1) survival.food = std::clamp(v, 0.0f, 100.0f); return true; }
+    if (strcmp(tok, "bed") == 0) { // #800: the spawn bed
+        char b[64] = {}; unsigned pl = 0; int x = 0, y = 0, z = 0;
+        if (fscanf(f, " %63s %u %d %d %d", b, &pl, &x, &y, &z) == 5) { survival.hasBed = true; survival.bedBody = b; survival.bedPlot = pl; survival.bedCell[0] = x; survival.bedCell[1] = y; survival.bedCell[2] = z; }
+        return true;
+    }
     if (strcmp(tok, "creative") == 0) { int c = 0; if (fscanf(f, " %d", &c) == 1) terrainTool.creative = c != 0; return true; }
     if (Hotbar_LoadLine(tok, f)) return true;
     if (HelpManual_LoadLine(tok, f)) return true;
@@ -208,6 +214,7 @@ void GameSave_Register() {
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Teams_Reset();
+        survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         playerLoaded = false;

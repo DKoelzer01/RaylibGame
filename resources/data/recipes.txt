@@ -84,6 +84,7 @@ snare 1            = rope 2, any_planks 1
 fibre 2            = wool 1
 fence 2            = any_planks 3
 gate 1             = any_planks 3, fibre 1
+bed 1              = any_planks 6, fibre 4
 # Environmental suit (milestone 13).
 cloth 1              = fibre 4
 cloth 2              = wool 3
