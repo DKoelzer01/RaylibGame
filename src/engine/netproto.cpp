@@ -11,6 +11,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Hello: return "hello"; case NetMsg::Welcome: return "welcome"; case NetMsg::Reject: return "reject";
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta";
         default: return "?";
     }
 }
@@ -175,11 +176,51 @@ void NetWrite(NetWriter& w, const MsgTerrainEdit& m) {
     Id(w, NetMsg::TerrainEdit);
     w.varu(m.body); w.pos(m.center); w.f32(m.radius); w.u8(m.flags); w.u8((uint8_t)m.paint);
     if (m.flags & 4) { w.f32(m.hx); w.f32(m.hy); w.f32(m.hz); w.unit(m.ax[0], m.ax[1], m.ax[2]); w.unit(m.ay[0], m.ay[1], m.ay[2]); }
+    w.f32(m.strength); w.varu(m.session); w.u32(m.seq);
 }
 bool NetRead(NetReader& r, MsgTerrainEdit& m) {
     m.body = r.varu(); m.center = r.pos(); m.radius = r.f32(); m.flags = r.u8(); m.paint = (int8_t)r.u8();
     if (m.flags & 4) { m.hx = r.f32(); m.hy = r.f32(); m.hz = r.f32(); r.unit(m.ax[0], m.ax[1], m.ax[2]); r.unit(m.ay[0], m.ay[1], m.ay[2]); }
-    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F)) r.ok = false; // a dig is metres, not a planet
+    m.strength = r.f32();
+    const uint64_t s = r.varu();
+    m.session = (uint32_t)s; m.seq = r.u32();
+    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F) || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
+    return Done(r);
+}
+
+const char* NetEditRefusalText(NetEditRefusal r) {
+    switch (r) {
+        case NetEditRefusal::Reach: return "out of reach"; case NetEditRefusal::Rate: return "too fast";
+        case NetEditRefusal::Tool: return "the tool in hand can't dig that"; case NetEditRefusal::Cost: return "not enough to place";
+        case NetEditRefusal::Body: return "no such body"; case NetEditRefusal::Mantle: return "the mantle can't be dug";
+        case NetEditRefusal::Shape: return "not a stroke the tool makes";
+        default: return "?";
+    }
+}
+void NetWrite(NetWriter& w, const MsgEditRequest& m) {
+    Id(w, NetMsg::EditRequest);
+    w.u32(m.seq); w.u8((uint8_t)m.kind); w.varu(m.body); w.pos(m.hit); w.pos(m.center); w.f32(m.radius); w.str(m.item.substr(0, 48));
+}
+bool NetRead(NetReader& r, MsgEditRequest& m) {
+    m.seq = r.u32();
+    const uint8_t k = r.u8();
+    if (k >= (uint8_t)NetEditKind::Count) r.ok = false;
+    m.kind = (NetEditKind)k; m.body = r.varu(); m.hit = r.pos(); m.center = r.pos(); m.radius = r.f32(); m.item = r.str(48);
+    if (!(m.radius > 0.0f && m.radius <= 16.0f)) r.ok = false;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgEditRefused& m) { Id(w, NetMsg::EditRefused); w.u32(m.seq); w.u8((uint8_t)m.why); }
+bool NetRead(NetReader& r, MsgEditRefused& m) {
+    m.seq = r.u32();
+    const uint8_t why = r.u8();
+    if (why >= (uint8_t)NetEditRefusal::Count) r.ok = false;
+    m.why = (NetEditRefusal)why;
+    return Done(r);
+}
+void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); }
+bool NetRead(NetReader& r, MsgInventoryDelta& m) {
+    m.item = r.str(48); m.amount = r.f64();
+    if (m.item.empty() || !(std::fabs(m.amount) < 1e6)) r.ok = false;
     return Done(r);
 }
 
@@ -249,6 +290,9 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Shower: { MsgShower m; return NetRead(r, m); }
         case NetMsg::Roster: { MsgRoster m; return NetRead(r, m); }
         case NetMsg::Loadout: { MsgLoadout m; return NetRead(r, m); }
+        case NetMsg::EditRequest: { MsgEditRequest m; return NetRead(r, m); }
+        case NetMsg::EditRefused: { MsgEditRefused m; return NetRead(r, m); }
+        case NetMsg::InventoryDelta: { MsgInventoryDelta m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -301,14 +345,21 @@ bool NetProto_Test() {
     }
     {
         MsgTerrainEdit a; a.body = 1; a.center = { 100.25, 59950.5, -3.75 }; a.radius = 1.5f; a.flags = 1 | 4; a.hx = 0.25f; a.hy = 0.5f; a.hz = 0.25f;
-        a.ay[0] = 0.0f; a.ay[1] = 0.6f; a.ay[2] = 0.8f; a.paint = 3;
+        a.ay[0] = 0.0f; a.ay[1] = 0.6f; a.ay[2] = 0.8f; a.paint = 3; a.strength = 0.6f; a.session = 4; a.seq = 77;
         MsgTerrainEdit b; std::vector<uint8_t> s;
         check(RoundTrip(a, b, &s) && b.body == 1 && std::fabs(b.center.y - a.center.y) < 0.001 && b.radius == a.radius && b.flags == a.flags &&
-              b.hy == a.hy && fabsf(b.ay[2] - 0.8f) < 1e-3f && b.paint == 3, "terrain edit (box)");
+              b.hy == a.hy && fabsf(b.ay[2] - 0.8f) < 1e-3f && b.paint == 3 && b.strength == 0.6f && b.session == 4 && b.seq == 77, "terrain edit (box)");
         samples.push_back(s);
     }
     { MsgShower a{ 3600.5, 3900.25, 17 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.start == a.start && b.end == a.end && b.id == 17, "shower"); samples.push_back(s); }
-
+    {
+        MsgEditRequest a, b; a.seq = 9; a.kind = NetEditKind::Place; a.body = 2; a.hit = { 10.5, 60000.25, -2.0 }; a.center = { 10.5, 60000.5, -2.0 }; a.radius = 0.65f; a.item = "dirt";
+        std::vector<uint8_t> s;
+        check(RoundTrip(a, b, &s) && b.seq == 9 && b.kind == NetEditKind::Place && b.body == 2 && std::fabs(b.center.y - a.center.y) < 0.001 && b.radius == a.radius && b.item == "dirt", "edit request");
+        samples.push_back(s);
+    }
+    { MsgEditRefused a{ 9, NetEditRefusal::Cost }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 9 && b.why == NetEditRefusal::Cost, "edit refused"); samples.push_back(s); }
+    { MsgInventoryDelta a{ "gravel", -0.375 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.item == "gravel" && b.amount == -0.375, "inventory delta"); samples.push_back(s); }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.

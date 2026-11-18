@@ -41,6 +41,9 @@ int Host_Autosaves();                                 // autosaves written so fa
 int Host_OnlinePlayers();                             // sessions connected now
 // Tests (#327): a session's player as the server simulates it (body NetId, body-local feet); false: no such player.
 bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& local);
+// Tests (#329): terrain edits applied for players so far; a player's inventory as the server keeps it.
+int Host_EditsApplied();
+double Host_InventoryAmount(uint32_t session, const std::string& item);
 // Tests: client connections opened in the same process; their messages are handed to the client, not to the host.
 void Host_SetLocalClient(uint32_t conn);
 std::vector<NetMessage> Host_TakeLocalClientMessages(uint32_t conn);

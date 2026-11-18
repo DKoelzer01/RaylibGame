@@ -493,6 +493,7 @@ int main(int argc, char** argv)
     bool benchHost = false;        // --test-host (#311): with --host, a loopback client joins
     bool benchTimeFollow = false;  // --test-time-follow (#339): the world clock follows a server time (slew, snap)
     bool benchNetMove = false;     // --test-net-move (#327): two clients, prediction and interpolation over loopback
+    bool benchNetDig = false;      // --test-net-dig (#329): a client's digs and places, validated and replicated
     int benchMpBots = 0;           // --test-mp-bots N (#347): with --host, N bot clients join, ping and churn
     bool seedGiven = false;        // --seed N was passed (a --host new world: else a random seed)
     double autosaveMinutes = kDefaultAutosaveMinutes; // --autosave-minutes N (--host; 0 = off)
@@ -739,6 +740,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-host") benchHost = true;
         if (std::string(argv[i]) == "--test-time-follow") benchTimeFollow = true;
         if (std::string(argv[i]) == "--test-net-move") benchNetMove = true;
+        if (std::string(argv[i]) == "--test-net-dig") benchNetDig = true;
         if (std::string(argv[i]) == "--test-mp-bots" && i + 1 < argc) benchMpBots = std::max(1, atoi(argv[i + 1]));
         if (std::string(argv[i]) == "--seed") seedGiven = true;
         if (std::string(argv[i]) == "--server") { // (#326) the config first; flags after it override
@@ -8573,7 +8575,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchHost && !benchJoin && !benchTimeFollow && !benchNetMove && !benchNetDig && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9705,6 +9707,114 @@ int main(int argc, char** argv)
             else if (!botsStarted) { MpBots_Start(benchMpBots, hostPort); botsStarted = true; }
             else if (MpBots_Update(world)) benchMpBots = 0;
         }
+        // --test-net-dig (#329, with --host <save>, ENABLE_GNS): bob (bare hands) digs five strokes beside where the server
+        // has him and places one of the dirt he got back; carol watches. Then the refusals: a stroke 30 m off (reach), a
+        // burst of five at once (rate), placing stone he doesn't have (cost). Checks: every accepted edit reaches both
+        // clients in the same order, the ground at the first dig is air, bob's inventory (rebuilt only from the server's
+        // deltas) matches the server's copy, and each refusal came back. The camera watches the spot.
+        if (benchNetDig && gameState == 1 && !loading && WorldIdle()) {
+            static NetClient bob, carol;
+            static Inventory bobInv, carolInv;
+            static int phase = 0, step = 0;
+            static double t0 = 0.0;
+            static Planetoid* body = nullptr;
+            static Vector3 up{}, hitPt{}, firstCentre{};
+            static float digR = 0.0f;
+            static int requested = 0;
+            static Player bobSelf;          // bob's predicted player: he stands still, sending an input every step (the
+            static bool synced = false;     // server steps a player only by its inputs, so without them he'd hang at spawn)
+            static long long stepped = 0;
+            static double syncedAt = 0.0, lastStepAt = 0.0;
+            if (!Host_Listening()) { printf("bench: net dig: needs --host with ENABLE_GNS -> SKIP\n"); benchNetDig = false; }
+            else {
+                const char* addr = TextFormat("127.0.0.1:%d", hostPort);
+                NetClient_Update(bob); NetClient_Update(carol);
+                if (!synced && bob.state == NetClient::State::Joined && bob.haveOwn)
+                    if (Planetoid* b = Planetoid::findNet(bob.own.body)) {
+                        bobSelf.spawnOn(world, *b, b->dirToWorld(Vector3Normalize(bob.own.local.toFloat())));
+                        bobSelf.applyNetState(world, NetClient_FromMsg(bob.own));
+                        synced = true; stepped = SimTick(); syncedAt = GetTime();
+                    }
+                if (synced) for (; stepped < SimTick(); ++stepped) { PlayerInput idle; NetClient_Step(bob, world, bobSelf, idle); }
+                auto spot = [&]() { // the dig spot (2 m east of the server's bob), on the ground; false: not found
+                    uint64_t bid = 0; DVec3 feet{};
+                    if (!Host_PlayerLocal(world, bob.welcome.session, bid, feet) || !(body = Planetoid::findNet(bid))) return false;
+                    up = Vector3Normalize(feet.toFloat());
+                    Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
+                    east = Vector3Normalize(Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : east);
+                    const Vector3 d = Vector3Normalize(Vector3Add(feet.toFloat(), Vector3Scale(east, 2.0f)));
+                    const float r0 = (float)feet.length();
+                    for (float r = r0 + 1.5f; r >= r0 - 3.0f; r -= 0.02f)
+                        if (body->densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { hitPt = Vector3Scale(d, r); return true; }
+                    return false;
+                };
+                if (phase == 0) { Net_SetFakeConditions(50, 2.0f); NetClient_Connect(bob, addr, "bob"); NetClient_Connect(carol, addr, "carol"); phase = 1; t0 = GetTime(); }
+                else if (phase == 1 && carol.state == NetClient::State::Joined && synced && GetTime() - syncedAt > 2.0) { // (landed by then)
+                    bob.inventory = &bobInv; carol.inventory = &carolInv;
+                    NetClient_SetLoadout(bob, "", false, 0); // bare hands
+                    if (spot()) {
+                        const VoxelMaterial m = body->materialAt(hitPt, body->field->normal(hitPt, body->edits.get()));
+                        digR = DigRuleFor(ToolSpec{}, m, TerrainTool_ItemAt(*body, hitPt, (int)m)).radius / body->scale;
+                        if (digR <= 0.0f) digR = DigRuleFor(ToolSpec{}, VoxelMaterial::Regolith, nullptr).radius / body->scale;
+                        phase = 2; step = 0; t0 = GetTime();
+                    } else { printf("bench: net dig: no ground beside bob -> FAIL\n"); benchNetDig = false; }
+                } else if (phase == 2) {
+                    // A stroke every 0.6 s: five digs (bare hands get ~0.4 dirt a stroke; a place costs a whole one), each into
+                    // the hole the last one left; then the place and the refusals.
+                    constexpr int kDigs = 5;
+                    if (step <= kDigs + 1 && GetTime() - t0 > 0.6 * step) {
+                        if (step < kDigs) {
+                            spot();
+                            const Vector3 c = Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR));
+                            if (step == 0) firstCentre = c;
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, c, digR, ""); ++requested;
+                        } else if (step == kDigs) {
+                            spot();
+                            const float pr = digR * 1.3f;
+                            NetClient_RequestEdit(bob, NetEditKind::Place, *body, hitPt, Vector3Add(hitPt, Vector3Scale(up, 0.3f * pr)), pr, "dirt"); ++requested;
+                        } else if (step == kDigs + 1) {
+                            const Vector3 far = Vector3Add(hitPt, Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })), 30.0f));
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *body, far, far, digR, "");                   // reach
+                            NetClient_RequestEdit(bob, NetEditKind::Place, *body, hitPt, hitPt, digR, "stone");        // cost
+                            for (int k = 0; k < 5; ++k) NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR)), digR, ""); // rate
+                        }
+                        ++step;
+                        lastStepAt = GetTime();
+                    }
+                    // Keep the spot in view: 3 m up and 4 m back from where the first stroke hit (the hole deepens under it).
+                    if (body) {
+                        const Vector3 anchor = step > 0 ? Vector3Add(firstCentre, Vector3Scale(up, 0.5f * digR)) : hitPt;
+                        const Vector3 at = (body->toWorldD(DVec3(anchor)) - world.renderOrigin).toFloat(); // render space (double: 60 km out)
+                        Vector3 side = Vector3CrossProduct(body->dirToWorld(up), { 0, 0, 1 });
+                        side = Vector3Normalize(Vector3Length(side) < 1e-3f ? Vector3{ 1, 0, 0 } : side);
+                        world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(body->dirToWorld(up), 3.0f), Vector3Scale(side, 4.0f)));
+                        world.camera.target = at; world.camera.up = body->dirToWorld(up);
+                    }
+                    if (step > kDigs + 1 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
+                        const int accepted = Host_EditsApplied();
+                        const bool sameOrder = bob.editsSeen == carol.editsSeen && bob.editOrder == carol.editOrder && bob.editsSeen == accepted;
+                        const bool dugOut = body && body->densityAt(firstCentre) < ISO_LEVEL;
+                        double worst = 0.0;
+                        for (const char* it : { "dirt", "gravel", "peat", "sand", "clay" })
+                            worst = std::max(worst, std::fabs(bobInv.amount(it) - Host_InventoryAmount(bob.welcome.session, it)));
+                        const bool got = bobInv.amount("dirt") + bobInv.amount("sand") + bobInv.amount("gravel") > 0.0;
+                        const bool reach = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Reach), rate = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Rate),
+                                   cost = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Cost);
+                        const bool placed = bob.placesSeen == 1 && carol.placesSeen == 1;
+                        const bool ok = accepted >= kDigs + 1 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carol.inventoryDeltas == 0;
+                        printf("bench: net dig (#329, 100 ms round trip, 2%% loss): %d edits applied by the server (%d digs, a place, the burst's), bob saw %d (own %d), carol %d, same order %d; "
+                               "ground at the first dig is air %d; the place reached both %d; bob carries dirt %.2f gravel %.2f (server's copy off by %.3f at worst, %d deltas; carol got none %d); "
+                               "refused: reach %d, rate %d, cost %d (%d refusals) -> %s\n",
+                               accepted, kDigs, bob.editsSeen, bob.editsOwn, carol.editsSeen, (int)sameOrder, (int)dugOut, (int)placed, bobInv.amount("dirt"), bobInv.amount("gravel"), worst,
+                               bob.inventoryDeltas, (int)(carol.inventoryDeltas == 0), (int)reach, (int)rate, (int)cost, bob.editsRefused, ok ? "PASS" : "FAIL");
+                        NetClient_Disconnect(bob); NetClient_Disconnect(carol);
+                        Net_SetFakeConditions(0, 0.0f);
+                        benchNetDig = false;
+                    }
+                }
+                if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net dig: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetDig = false; }
+            }
+        }
         // --test-join (with --join; tools/test_join.sh runs the host and two clients as separate processes): the client side.
         // Once the server's world has streamed in: the fingerprint matches the Welcome's, the player started at the server's
         // state, walks 8 s predicting itself (error at each acknowledged input < 0.5 m, at most 1 correction in 10 states),
@@ -10356,6 +10466,14 @@ int main(int argc, char** argv)
             } else if (gameState == 1) {
                 gAvatars = gBenchAvatars; // (#328)
                 if (gNetClient) NetClient_FillAvatars(*gNetClient, world, gAvatars); // the other players on the server (#750)
+                // Joined to a server as a client (#329): the terrain tool asks it to dig and place; our inventory follows it.
+                if (gNetClient && gNetRole == NetRole::Client && gNetClient->state == NetClient::State::Joined) {
+                    gNetClient->inventory = &inventory;
+                    if (!gTerrainToolNetEdit)
+                        gTerrainToolNetEdit = [](Planetoid& p, bool dig, Vector3 hit, Vector3 centre, float radius, const std::string& item) {
+                            NetClient_RequestEdit(*gNetClient, dig ? NetEditKind::Dig : NetEditKind::Place, p, hit, centre, radius, item);
+                        };
+                } else gTerrainToolNetEdit = nullptr;
                 if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
                     AvatarState a = Avatar_FromPlayer(player, 0);
                     const Vector3 ahead = a.facing;

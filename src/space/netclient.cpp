@@ -1,6 +1,9 @@
 #include "netclient.h"
 #include "hostserver.h"
 #include "net.h"
+#include "world.h"
+#include "inventory.h"
+#include "voxel.h"
 #include "player.h"
 #include "scene.h"
 #include "simclock.h"
@@ -75,6 +78,40 @@ namespace {
                 MsgLoadout l;
                 if (c.state != NetClient::State::Joined || !NetRead(r, l) || l.session == 0) return;
                 if (l.session != c.welcome.session) c.loadouts[l.session] = l;
+                return;
+            }
+            case NetMsg::TerrainEdit: { // (#329) in the server's order; a host in this process already changed the world
+                MsgTerrainEdit t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                ++c.editsSeen;
+                c.editOrder = c.editOrder * 1099511628211ull ^ (((uint64_t)t.session << 32) | t.seq); // the order, to compare clients
+                if (t.session == c.welcome.session) ++c.editsOwn;
+                if (!(t.flags & 3) && t.strength > 0.0f) ++c.placesSeen;
+                if (Host_Listening()) return;
+                Planetoid* p = Planetoid::findNet(t.body);
+                if (!p) return;
+                TerrainEdit e{};
+                e.center = t.center.toFloat(); e.radius = t.radius; e.strength = t.strength; e.paint = t.paint;
+                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0;
+                if (e.box) {
+                    e.half = { t.hx, t.hy, t.hz };
+                    e.ax = { t.ax[0], t.ax[1], t.ax[2] }; e.ay = { t.ay[0], t.ay[1], t.ay[2] };
+                    e.az = Vector3CrossProduct(e.ax, e.ay);
+                }
+                ApplyTerrainEdit(*p, e);
+                return;
+            }
+            case NetMsg::EditRefused: {
+                MsgEditRefused f;
+                if (c.state != NetClient::State::Joined || !NetRead(r, f)) return;
+                ++c.editsRefused; c.lastRefusal = f.why; c.refusedWhy |= 1u << (unsigned)f.why;
+                return;
+            }
+            case NetMsg::InventoryDelta: { // the server's inventory is the truth: ours follows it exactly (hundredths)
+                MsgInventoryDelta d;
+                if (c.state != NetClient::State::Joined || !NetRead(r, d)) return;
+                ++c.inventoryDeltas;
+                if (c.inventory) { if (d.amount > 0.0) c.inventory->addAmount(d.item, d.amount); else c.inventory->removeAmount(d.item, -d.amount); }
                 return;
             }
             case NetMsg::PlayerState: {
@@ -307,3 +344,12 @@ void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, 
 }
 
 NetClient* gNetClient = nullptr;
+
+uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const Planetoid& body, Vector3 hit, Vector3 centre, float radius, const std::string& item) {
+    if (c.state != NetClient::State::Joined) return 0;
+    MsgEditRequest q;
+    q.seq = ++c.editSeq; q.kind = kind; q.body = body.netId;
+    q.hit = DVec3(hit); q.center = DVec3(centre); q.radius = radius; q.item = item;
+    SendMsg(c, q);
+    return q.seq;
+}

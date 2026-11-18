@@ -432,6 +432,59 @@ static Vector3 DigCentre(float r) {
     return Vector3Add(hit.local, Vector3Scale(d, kDigSink * r));
 }
 
+TerrainToolNetEdit gTerrainToolNetEdit;
+int TerrainTool_FillerMaterial(const std::string& item) { return FillerMaterial(item); }
+const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material) { return ItemAt(p, local, (VoxelMaterial)material); }
+
+// Collect what the sphere holds: sample it on a grid (solid samples by material, two items per cubic metre), counting
+// only what the tool can dig (softOnly: hands and shovels leave rock in place).
+DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, int gemBoost) {
+    DigYield out;
+    std::map<std::string, float>& got = out.items;
+    const float step = r / 4.0f;
+    const float cell = step * step * step * p.scale * p.scale * p.scale;
+    const Vector3 surfN = p.field->normal(hitLocal, p.edits.get()); // the face being dug: materials as drawn (#636)
+    bool grass = false;
+    const char* stoneKindAt = nullptr;
+    bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
+    if (const auto* pfb = dynamic_cast<const PlanetField*>(p.field.get()); pfb && itemDB.find("peat")) {
+        const float r0 = Vector3Length(hitLocal);
+        if (r0 > 1.0f) swampHere = pfb->biomeAt(Vector3Scale(hitLocal, 1.0f / r0), pfb->elevation(Vector3Scale(hitLocal, 1.0f / r0))) == Biome::Swamp;
+    }
+    for (int z = -4; z <= 4; ++z)
+        for (int y = -4; y <= 4; ++y)
+            for (int x = -4; x <= 4; ++x) {
+                if (x * x + y * y + z * z > 16) continue;
+                const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
+                const float d = p.densityAt(q);
+                if (d < ISO_LEVEL || !p.field->editable(q)) continue;
+                const VoxelMaterial m = p.materialAt(q, surfN);
+                if (softOnly && !IsSoft(m)) continue;
+                const char* item = ItemAt(p, q, m);
+                got[item] += cell * 2.0f;
+                if (!stoneKindAt && m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) stoneKindAt = item; // #587: a stratum's rock hosts its gem
+                if (strcmp(item, "stone") == 0) { // the kind of stone the rock is here (building variety), one look per stroke
+                    if (!stoneKindAt) { const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get()); stoneKindAt = pfk ? pfk->stoneKind(hitLocal) : "stone"; }
+                    if (strcmp(stoneKindAt, "stone") != 0) got[stoneKindAt] += cell * 0.8f;
+                }
+                if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
+                if (m == VoxelMaterial::Grass) grass = true;
+                if (swampHere && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) got["peat"] += cell * 0.8f; // Plan 5 B: swamp ground is peat
+            }
+    if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
+        const char* gem = GameRng_Int(0, 29999) < 10 * gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
+        if (gem && itemDB.find(gem)) out.gem = gem;
+    }
+    if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
+        static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
+        const char* s = seeds[GameRng_Int(0, 2)];
+        if (itemDB.find(s)) out.seed = s;
+    }
+    if (!softOnly) for (int k = 0; k < PlanetField::kOreKindCount; ++k)
+        if (const char* oreName = PlanetField::OreKindName(k); oreName && got.count(oreName)) { out.ore = true; break; }
+    return out;
+}
+
 // Particles for a stroke (particles.h): a puff of dust in the ground's colour and a few clods thrown
 // out of the hole, toward the camera side.
 static Color DustColor(VoxelMaterial m) {
@@ -557,14 +610,24 @@ bool TerrainTool_Stroke(bool dig) {
     }
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
-        int paint = -1;
-        if (!PayFiller(paint)) return false;
         TerrainEdit e{};
         e.radius = radius * 1.3f / p.scale;
         e.strength = 0.6f;
-        e.paint = paint;
         const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
+        if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler (the one in hand, else the best carried)
+            std::string pay = FillerMaterial(terrainTool.heldTool) >= 0 ? terrainTool.heldTool : std::string();
+            static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
+            for (const char* f : fillers) if (pay.empty() && inventory.count(f) > 0) pay = f;
+            if (pay.empty() || inventory.count(pay) <= 0) { Toast("Need stone, dirt, regolith, gravel, sand or concrete to build"); Audio_Play(Sfx::Error, 0.5f); return false; }
+            gTerrainToolNetEdit(p, false, hit.local, e.center, e.radius, pay);
+            StrokeParticles(p, hit.local, hit.material, false);
+            Audio_Play(Sfx::Build, 0.6f);
+            return true;
+        }
+        int paint = -1;
+        if (!PayFiller(paint)) return false;
+        e.paint = paint;
         StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);
         Audio_Play(Sfx::Build, 0.6f);
@@ -575,52 +638,20 @@ bool TerrainTool_Stroke(bool dig) {
         Audio_Play(Sfx::Error, 0.3f);
         return false;
     }
-    // Collect what the sphere holds: sample it on a grid (solid samples by material, two items per
-    // cubic metre), counting only what the tool can dig - hands and shovels leave rock in place.
-    const bool softOnly = tool.type != ToolType::Pickaxe;
+    const bool softOnly = tool.type != ToolType::Pickaxe; // hands and shovels leave rock in place
     const float r = radius / p.scale;
-    const float step = r / 4.0f;
     const Vector3 centre = DigCentre(r);
-    const float cell = step * step * step * p.scale * p.scale * p.scale;
-    const Vector3 surfN = p.field->normal(hit.local, p.edits.get()); // the face being dug: materials as drawn (#636)
-    std::map<std::string, float> got;
-    bool grass = false;
-    const char* stoneKindAt = nullptr;
-    bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
-    if (const auto* pfb = dynamic_cast<const PlanetField*>(p.field.get()); pfb && itemDB.find("peat")) {
-        const float r0 = Vector3Length(hit.local);
-        if (r0 > 1.0f) swampHere = pfb->biomeAt(Vector3Scale(hit.local, 1.0f / r0), pfb->elevation(Vector3Scale(hit.local, 1.0f / r0))) == Biome::Swamp;
+    if (gTerrainToolNetEdit) { // joined to a server (#329): it digs, in its order, and sends the yield
+        gTerrainToolNetEdit(p, true, hit.local, centre, r, terrainTool.heldTool);
+        StrokeParticles(p, hit.local, hit.material, true);
+        Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
+        ++terrainTool.swings;
+        return true;
     }
-    for (int z = -4; z <= 4; ++z)
-        for (int y = -4; y <= 4; ++y)
-            for (int x = -4; x <= 4; ++x) {
-                if (x * x + y * y + z * z > 16) continue;
-                const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
-                const float d = p.densityAt(q);
-                if (d < ISO_LEVEL || !p.field->editable(q)) continue;
-                const VoxelMaterial m = p.materialAt(q, surfN);
-                if (softOnly && !IsSoft(m)) continue;
-                const char* item = ItemAt(p, q, m);
-                got[item] += cell * 2.0f;
-                if (!stoneKindAt && m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) stoneKindAt = item; // #587: a stratum's rock hosts its gem
-                if (strcmp(item, "stone") == 0) { // the kind of stone the rock is here (building variety), one look per stroke
-                    if (!stoneKindAt) { const auto* pfk = dynamic_cast<const PlanetField*>(p.field.get()); stoneKindAt = pfk ? pfk->stoneKind(hit.local) : "stone"; }
-                    if (strcmp(stoneKindAt, "stone") != 0) got[stoneKindAt] += cell * 0.8f;
-                }
-                if (strcmp(item, "dirt") == 0) got["gravel"] += cell * 0.4f; // stones in the soil (enough for the first stone tools)
-                if (m == VoxelMaterial::Grass) grass = true;
-                if (swampHere && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) got["peat"] += cell * 0.8f; // Plan 5 B: swamp ground is peat
-            }
-    for (auto& kv : got) inventory.addFractional(kv.first, kv.second);
-    if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
-        const char* gem = GameRng_Int(0, 29999) < 10 * terrainTool.gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * terrainTool.gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
-        if (gem && itemDB.find(gem)) { inventory.add(gem, 1); Toast(TextFormat("+1 %s!", gem)); }
-    }
-    if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
-        static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
-        const char* s = seeds[GameRng_Int(0, 2)];
-        if (itemDB.find(s)) { inventory.add(s, 1); Toast(TextFormat("+1 %s from the grass", s)); }
-    }
+    const DigYield got = TerrainTool_DigYield(p, centre, r, hit.local, softOnly, terrainTool.gemBoost);
+    for (auto& kv : got.items) inventory.addFractional(kv.first, kv.second);
+    if (got.gem) { inventory.add(got.gem, 1); Toast(TextFormat("+1 %s!", got.gem)); }
+    if (got.seed) { inventory.add(got.seed, 1); Toast(TextFormat("+1 %s from the grass", got.seed)); }
     TerrainEdit e{};
     e.center = centre;
     e.radius = r;
@@ -628,8 +659,7 @@ bool TerrainTool_Stroke(bool dig) {
     e.softOnly = softOnly;
     StrokeParticles(p, hit.local, hit.material, true);
     ApplyTerrainEdit(p, e);
-    if (!softOnly) for (int k = 0; k < PlanetField::kOreKindCount; ++k) // a stroke that took ore: the vein may be nearly done (#207)
-        if (const char* oreName = PlanetField::OreKindName(k); oreName && got.count(oreName)) { CheckOreVein(p, hit.local); break; }
+    if (got.ore) CheckOreVein(p, hit.local); // a stroke that took ore: the vein may be nearly done (#207)
     Audio_Play(Sfx::Dig, 0.5f, 0.85f + 0.3f * (float)GetRandomValue(0, 100) / 100.0f);
     ++terrainTool.swings;
     return true;
