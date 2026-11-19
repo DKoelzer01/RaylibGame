@@ -10,6 +10,8 @@
 #include <cstring>
 #include <map>
 #include <set>
+#include <cfloat>
+#include <cmath>
 #include <vector>
 
 namespace {
@@ -164,20 +166,60 @@ void QuestTree_DrawTab() {
     ImGui::Dummy(ImVec2((maxX + 1.0f) * cw + pad * 2.0f, maxY * ch + pad * 2.0f));
     auto boxAt = [&](float x, float y) { return ImVec2(o.x + pad + x * cw, o.y + pad + y * ch); };
     const int cur = QuestBook_Tier();
-    // Edges first.
+    // Edges first. (#914 review) Routed along the gaps between rows and columns, never across a box: out of the parent into
+    // a gap, along the column gap left of the child to the row gap above it, across to the child's top centre.
+    const float gx = (cw - bw) * 0.5f, gy = (ch - bh) * 0.5f;
+    auto route = [&](ImVec2 from, float alongX, ImVec2 b, ImU32 col, float thick) {
+        const ImVec2 to(b.x + bw * 0.5f, b.y);
+        const float yc = b.y - gy, xc = b.x - gx;
+        std::vector<ImVec2> pts{ from, ImVec2(alongX, from.y) };
+        if (std::fabs(from.y - yc) > 0.5f) { pts.push_back(ImVec2(xc, from.y)); pts.push_back(ImVec2(xc, yc)); }
+        pts.push_back(ImVec2(to.x, yc));
+        pts.push_back(to);
+        dl->AddPolyline(pts.data(), (int)pts.size(), col, ImDrawFlags_None, thick);
+    };
     for (const Node& n : nodes) {
         const ImVec2 b = boxAt(n.x, n.y);
-        const ImVec2 to(b.x + bw * 0.5f, b.y);
-        if (n.reqTier >= 0) {
+        if (n.reqTier >= 0) { // from the tier box's right side into the gap beside it
             const ImVec2 t = boxAt(0.0f, (float)n.reqTier);
-            dl->AddLine(ImVec2(t.x + bw, t.y + bh * 0.5f), to, IM_COL32(150, 150, 150, 120), 1.5f);
+            const ImVec2 s(t.x + bw, t.y + bh * 0.5f);
+            route(s, s.x + gx, b, IM_COL32(150, 150, 150, 120), 1.5f);
         }
         for (const std::string& r : n.reqNodes)
-            if (const Node* p = Find(r)) {
+            if (const Node* p = Find(r)) { // from the parent's bottom centre down into the row gap below it
                 const ImVec2 pb = boxAt(p->x, p->y);
-                dl->AddLine(ImVec2(pb.x + bw * 0.5f, pb.y + bh), to, Done().count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
+                const ImVec2 s(pb.x + bw * 0.5f, pb.y + bh + gy);
+                dl->AddLine(ImVec2(s.x, pb.y + bh), s, Done().count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
+                route(s, s.x, b, Done().count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
             }
     }
+    // (#914 review) A node's text fits its box: whole; else shrunk to 70%; else cut at a word with "..." (never mid-word;
+    // the tooltip has it all). The UI font is monospaced and its glyph advances snap to whole pixels, so a size is chosen
+    // by whole-pixel advances (a 4% shrink drew exactly as wide as the full size and still ran out of the box).
+    auto fitText = [&](ImVec2 at, float room, ImU32 col, const std::string& s) {
+        ImFont* font = ImGui::GetFont();
+        const float fd = ImGui::GetFontSize();
+        const int len = std::max(1, (int)s.size());
+        const float adv = font->CalcTextSizeA(fd, FLT_MAX, 0.0f, s.c_str()).x / (float)len; // one glyph at fd
+        auto drawn = [&](float f, int n) { return std::ceil(adv * f / fd) * (float)n; };     // width at size f, snapped
+        if (drawn(fd, len) <= room) { dl->AddText(font, fd, at, col, s.c_str()); return; }
+        const float px = std::floor(room / (float)len);                                       // whole pixels a glyph may take
+        if (px >= std::ceil(adv * 0.7f)) {
+            const float f = fd * px / adv;
+            dl->AddText(font, f, ImVec2(at.x, at.y + (fd - f) * 0.5f), col, s.c_str());
+            return;
+        }
+        const float f = fd * 0.7f;
+        std::string cut = s;
+        while (drawn(f, (int)cut.size() + 3) > room) {
+            const size_t sp = cut.find_last_of(' ');
+            if (sp == std::string::npos) break;
+            cut.resize(sp);
+            while (!cut.empty() && (cut.back() == ' ' || cut.back() == ',' || cut.back() == ':' || cut.back() == '(')) cut.pop_back();
+        }
+        cut += "...";
+        dl->AddText(font, f, ImVec2(at.x, at.y + (fd - f) * 0.5f), col, cut.c_str());
+    };
     // The main line: one box per tier (done / now / locked). A click opens its objectives in a pop-out beside it (#890).
     bool tierClicked = false;
     for (int t = 0; t < QuestBook_TierCount(); ++t) {
@@ -206,8 +248,8 @@ void QuestTree_DrawTab() {
         dl->AddRectFilled(b, ImVec2(b.x + bw, b.y + bh), fill, 6.0f);
         dl->AddRect(b, ImVec2(b.x + bw, b.y + bh), lc, 6.0f, 0, open ? 2.5f : 1.0f);
         const ImU32 tc = isDone ? IM_COL32(170, 240, 170, 255) : open ? IM_COL32(240, 240, 240, 255) : IM_COL32(130, 130, 130, 255);
-        dl->AddText(ImVec2(b.x + 8, b.y + fh * 0.35f), tc, n.title.c_str());
-        dl->AddText(ImVec2(b.x + 8, b.y + fh * 1.85f), IM_COL32(170, 170, 170, 255), isDone ? "done" : open ? TaskText(n).c_str() : "locked");
+        fitText(ImVec2(b.x + 8, b.y + fh * 0.35f), bw - 16.0f, tc, n.title);
+        fitText(ImVec2(b.x + 8, b.y + fh * 1.85f), bw - 16.0f, IM_COL32(170, 170, 170, 255), isDone ? std::string("done") : open ? TaskText(n) : std::string("locked"));
         if (ImGui::IsMouseHoveringRect(b, ImVec2(b.x + bw, b.y + bh))) {
             ImGui::BeginTooltip();
             ImGui::Text("%s  (%s)", n.title.c_str(), l ? l->name.c_str() : n.line.c_str());
