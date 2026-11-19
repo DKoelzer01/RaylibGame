@@ -608,6 +608,7 @@ int main(int argc, char** argv)
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
     bool benchSkills = false;         // --test-skills (#883): real strokes earn XP, a level-up, a perk speeds strokes up
+    bool benchClaimOffline = false;   // --test-claim-offline (#900): a banner placed in single player claims its land
     bool benchJoinedItems = false;    // --test-joined-items (#865, #866, with --host): creative gives and drops through the server
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
     bool benchIdleDrift = false;     // --test-idle-drift (#856, with --host): a joiner that sends nothing yet stays put in the planet's frame
@@ -960,6 +961,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
         if (std::string(argv[i]) == "--test-skills") benchSkills = true;
+        if (std::string(argv[i]) == "--test-claim-offline") benchClaimOffline = true;
         if (std::string(argv[i]) == "--test-joined-items") benchJoinedItems = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
         if (std::string(argv[i]) == "--test-idle-drift") benchIdleDrift = true;
@@ -9031,7 +9033,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoinedItems && !benchSkills && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9788,6 +9790,38 @@ int main(int argc, char** argv)
                        rate0, rate1, rate0 > 0.0 ? rate1 / rate0 : 0.0, ok ? "PASS" : "FAIL");
                 worldXpRate = 1.0f;
                 benchSkills = false;
+        // --test-claim-offline (#900): in single player, a claim banner placed 4 m ahead (BuildTool_Place, the build tool's own
+        // path) claims its land for the player's team (a team of one made for them): Claims_At there finds it, and the map's
+        // mirror shows it as ours. Its claim goes with the save (the claims and team lines), so a hosted copy keeps it.
+        if (benchClaimOffline && gameState == 1 && !loading && WorldIdle()) {
+            static int frames = 0;
+            if (frames++ == 0)
+                if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); } // (standing on the body)
+            if (frames > 600) { printf("bench: claim offline (#900): no body under the player after 600 frames -> FAIL\n"); benchClaimOffline = false; }
+            else if (frames >= 30 && player.nearest) { // (a body under the feet)
+                Planetoid* b = player.nearest;
+                bool placed = false, claimed = false, ours = false, mirrored = false;
+                int team = 0;
+                if (b) {
+                    const Vector3 me = b->toLocalD(player.position).toFloat();
+                    const Vector3 up = Vector3Normalize(me);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 at = Vector3Add(me, Vector3Scale(t1, 4.0f));
+                    if (!b->plots) b->plots = std::make_unique<PlotSet>();
+                    Plot* pl = b->plots->plotFor(at, 0.0f, true);
+                    inventory.add(PartItem(Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }), 4);
+                    placed = pl && BuildTool_Place(*b, *pl, Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, true);
+                    team = Teams_Of(PlayerId_Local());
+                    const Claim* c = Claims_At(b->name, pl ? pl->toBody(Vector3{ 0.5f * kCellSize, 0.5f * kCellSize, 0.5f * kCellSize }) : at);
+                    claimed = c != nullptr;
+                    ours = c && team != 0 && c->team == team;
+                    BuildTool_Update(world, PlayerInput::None(), true); // (the mirror refreshes on the build tool's update)
+                    for (const ClaimView& v : Claims_Mirror()) mirrored = mirrored || (v.ours && c && v.id == c->id);
+                }
+                const bool ok = placed && claimed && ours && mirrored;
+                printf("bench: claim offline (#900): banner placed %d; its land claimed %d, for the player's team %d (team %d); on the map as ours %d -> %s\n",
+                       placed, claimed, ours, team, mirrored, ok ? "PASS" : "FAIL");
+                benchClaimOffline = false;
             }
         }
         if (testInvCursor && gameState == 1 && !loading && WorldIdle()) {

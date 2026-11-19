@@ -16,6 +16,11 @@
 #include "worldtypes.h"
 #include "factory.h"
 #include "blueprint.h"
+#include "claims.h"
+#include "playerrecord.h"
+#include "menus.h"
+#include "net.h"
+#include <ctime>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -96,16 +101,59 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
     return true;
 }
 
+// (#900) Claims in a game this player runs (single player, or a host's own player): the player's team (a solo player is a
+// team of one: made the first time it is needed), and the map's mirror of the claims, which a joined client gets from its
+// server (MsgClaims) and a game run here builds from its own list when that changes.
+static int LocalTeam() {
+    int team = Teams_Of(PlayerId_Local());
+    if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
+    return team;
+}
+static void RefreshLocalClaims() {
+    if (gNetRole == NetRole::Client) return;
+    static uint32_t seen = 0xFFFFFFFFu;
+    if (Claims_Version() == seen) return;
+    seen = Claims_Version();
+    const int me = Teams_Of(PlayerId_Local());
+    std::vector<ClaimView> list;
+    for (const Claim& c : Claims_All()) {
+        const TeamRecord* t = Teams_Find(c.team);
+        ClaimView v;
+        v.id = c.id; v.team = c.team; v.teamName = t && !t->name.empty() ? t->name : TextFormat("team %d", c.team);
+        v.colour = Claims_TeamColour(c.team, t ? t->colour : 0);
+        v.body = c.body; v.centre = c.centre; v.radius = c.radius;
+        v.ours = me != 0 && c.team == me; v.allowed = me != 0 && Claims_Allows(c.team, me);
+        list.push_back(std::move(v));
+    }
+    Claims_SetMirror(list);
+}
+
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
     const char* item = PartItem(part);
+    // (#900) A claim banner claims its ground for the placer's team here too, as a server does for a joined player (or it
+    // is refused, nothing spent: over the budget, or over another team's claim).
+    uint32_t claim = 0;
+    if (const int tier = ClaimBannerTier(t); tier >= 0 && gNetRole != NetRole::Client) {
+        const int team = LocalTeam();
+        const Vector3 cellCentre{ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize };
+        const int reached = std::max(1, (int)QuestBook_LocalState().visitedBodies.size()); // (the bodies stood on: the budget grows with them)
+        std::string why;
+        claim = Claims_Make(team, Claims_Budget(reached), body.name, plot.toBody(cellCentre), kClaimBannerAcross[tier] * 0.5f, (int64_t)time(nullptr), why);
+        if (!claim) { GameUI_Toast(why.c_str()); Audio_Play(Sfx::Error, 0.5f); return false; }
+    }
     if (charge && !terrainTool.creative && !inventory.remove(item, PartCostCount(t))) {
         GameUI_Toast(TextFormat("Need %d %s for a %s", PartCostCount(t), item, PartName(t)));
         Audio_Play(Sfx::Error, 0.5f);
+        if (claim) Claims_Remove(claim);
         return false;
     }
     BuildTool_ApplyPart(body, plot, part);
+    if (claim) {
+        Claims_SetBanner(claim, plot.id, plot.partAt(part.origin));
+        GameUI_Toast(TextFormat("Claimed the land %.0f m across around the banner (the map shows it)", kClaimBannerAcross[ClaimBannerTier(t)]));
+    }
     if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
     return true;
 }
@@ -158,7 +206,9 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
         gPrimaryLatch.consume(); // (#895) the held button is used up
         return;
     }
+    const uint32_t bannerClaim = ClaimBannerTier(removed.type) >= 0 && gNetRole != NetRole::Client ? Claims_OfBanner(body->name, hitPlot->id, part) : 0; // (#900)
     if (hitPlot->remove(part)) {
+        if (bannerClaim) { Claims_Remove(bannerClaim); GameUI_Toast("The banner is down: the land is no longer claimed"); }
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
             const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
             inventory.add("nickel_iron_ore", n);
@@ -175,6 +225,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
+    RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
     if (in.hit(Act::BuildMode)) {
         buildTool.active = !buildTool.active;
