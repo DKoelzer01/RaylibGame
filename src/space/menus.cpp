@@ -10,6 +10,7 @@
 #include "foliage.h"
 #include "world.h"
 #include "headless.h"
+#include "bugreport.h"
 #include "simclock.h"
 
 #include <raylib.h>
@@ -659,6 +660,11 @@ MenuResult Menu_Pause() {
     if (Button(Row(1), "Save")) r.action = MenuAction::Save;
     if (Button(Row(2), "Settings")) pausePage = Page::Settings;
     if (Button(Row(3), "Report a bug")) r.action = MenuAction::ReportBug; // #169
+    if (const int n = BugReport_Unsent(); n > 0) { // (#617) beside the button: reports still waiting for the relay
+        const char* t = TextFormat(n == 1 ? "1 unsent bug report" : "%d unsent bug reports", n);
+        const int tfs = (int)(18 * s);
+        DrawText(t, (int)(Row(3).x + Row(3).width + 16 * s), (int)(Row(3).y + (Row(3).height - tfs) * 0.5f), tfs, Color{ 255, 190, 90, 255 });
+    }
     if (Button(Row(4), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
     return r;
 }
