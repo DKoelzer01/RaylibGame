@@ -1305,7 +1305,7 @@ static void DrawSkills() {
                 const float endX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
                 if (endX + ImGui::GetStyle().ItemSpacing.x < target) ImGui::SameLine(target); else ImGui::SetCursorPosX(target);
             }
-            if (why.empty()) { if (ImGui::SmallButton("Learn")) Skills_Buy(st, p.id); }
+            if (why.empty()) { if (ImGui::SmallButton("Learn")) { if (gSkillSpendRequest) gSkillSpendRequest(p.id); else Skills_Buy(st, p.id); } } // (#920: joined, the server decides)
             else if (rank < p.ranks) ImGui::TextDisabled("%s", right);
             ImGui::EndGroup();
             ImGui::PopID();

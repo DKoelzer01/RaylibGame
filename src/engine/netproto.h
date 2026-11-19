@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 33; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server (#920)
+constexpr uint32_t kNetProtocol = 33; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -65,6 +65,7 @@ enum class NetMsg : uint8_t {
     DropItems = 42,     // client -> server (#865): drop some of an item at the feet (the server makes the pile; 41 is #343's Claims)
     CreativeGive = 43,  // client -> server (#866): creative items into the inventory the server keeps ("" clears it)
     SkillState = 44,    // server -> client (#920): the player's skills (XP and perks) as the save's lines, when they change
+    SkillSpend = 45,    // client -> server (#920): spend a point on a perk (the server checks it and answers with SkillState)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -232,6 +233,7 @@ struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" 
 struct NetClaim { uint32_t id = 0; int32_t team = 0; std::string teamName; uint32_t colour = 0; uint64_t body = 0; float centre[3] = {}; float radius = 0.0f; uint8_t flags = 0; }; // flags: 1 ours, 2 we may build there (ours or an ally's)
 struct MsgClaims { std::vector<NetClaim> claims; }; // (#343) every claim (the full list: replaces)
 struct MsgSkillState { std::string text; }; // (#920) Skills_SaveText of the player's skills (the whole state: replaces the client's)
+struct MsgSkillSpend { std::string perk; }; // (#920) a perk id (skills.txt)
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
     struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
                     bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile: what it holds, up to 3 ids (its bundle's colours)
@@ -401,6 +403,8 @@ void NetWrite(NetWriter& w, const MsgClaims& m);
 bool NetRead(NetReader& r, MsgClaims& m);
 void NetWrite(NetWriter& w, const MsgSkillState& m);
 bool NetRead(NetReader& r, MsgSkillState& m);
+void NetWrite(NetWriter& w, const MsgSkillSpend& m);
+bool NetRead(NetReader& r, MsgSkillSpend& m);
 bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be

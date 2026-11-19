@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -559,6 +559,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::CreativeGive: { MsgCreativeGive m; return NetRead(r, m); }
         case NetMsg::Claims: { MsgClaims m; return NetRead(r, m); }
         case NetMsg::SkillState: { MsgSkillState m; return NetRead(r, m); }
+        case NetMsg::SkillSpend: { MsgSkillSpend m; return NetRead(r, m); }
         default: return false;
     }
 }
@@ -751,6 +752,7 @@ bool NetProto_Test() {
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgSkillState a{ "skill_xp mining 2478.5\nperk quick_pick 2\n" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.text == a.text, "skill state (#920)"); samples.push_back(s); }
+    { MsgSkillSpend a{ "quick_pick" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.perk == "quick_pick", "skill spend (#920)"); samples.push_back(s); }
     { MsgLoadout a{ 3, "stone_pickaxe", true, 2, 0xD04A2Fu }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.session == 3 && b.held == "stone_pickaxe" && b.headlamp && b.suitTier == 2 && b.suitColor == 0xD04A2Fu, "loadout"); samples.push_back(s); }
     // Every message cut short anywhere must not read as valid; garbage must never crash a reader.
     int truncValid = 0, truncTotal = 0;
@@ -1018,6 +1020,8 @@ namespace { constexpr size_t kMaxClaimsPerMsg = 4096; }
 // (#920) the player's skills: the save's text lines (a few dozen at most)
 void NetWrite(NetWriter& w, const MsgSkillState& m) { Id(w, NetMsg::SkillState); w.str(m.text.substr(0, 8192)); }
 bool NetRead(NetReader& r, MsgSkillState& m) { m.text = r.str(8192); return Done(r); }
+void NetWrite(NetWriter& w, const MsgSkillSpend& m) { Id(w, NetMsg::SkillSpend); w.str(m.perk.substr(0, 64)); }
+bool NetRead(NetReader& r, MsgSkillSpend& m) { m.perk = r.str(64); return Done(r) && !m.perk.empty(); }
 
 void NetWrite(NetWriter& w, const MsgClaims& m) {
     Id(w, NetMsg::Claims);

@@ -804,6 +804,11 @@ void NetClient_Craft(NetClient& c, int index, const std::string& output, int cou
     MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64); q.useChests = useChests; q.recursive = recursive;
     SendMsg(c, q);
 }
+void NetClient_SkillSpend(NetClient& c, const std::string& perk) { // (#920)
+    if (c.state != NetClient::State::Joined || perk.empty()) return;
+    MsgSkillSpend q; q.perk = perk;
+    SendMsg(c, q);
+}
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi) { // (#865)
     if (c.state != NetClient::State::Joined || item.empty() || centi <= 0) return;
     MsgDropItems q; q.item = item; q.centi = centi;
