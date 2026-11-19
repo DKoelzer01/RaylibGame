@@ -127,6 +127,7 @@ steel_claim_banner    | Steel claim banner    | 5 | 150,160,175 | A claim banner
 titanium_claim_banner | Titanium claim banner | 5 | 205,180,215 | A claim banner for 800 m across (multiplayer).
 # Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
 cloth              | Cloth              |   999 | 220,215,190 | Woven from fibre or wool. Suits and modules.
+retraining_manual  | Retraining manual  |    20 | 200,175,120 | Spend on the Skills tab: every point of one skill's perk tree comes back to spend again (#883).
 basic_suit         | Basic suit         |  tool | 200,200,190 | 2 module slots. You start in one.
 field_suit         | Field suit         |  tool | 120,150,110 | 4 module slots, +20% oxygen and power.
 explorer_suit      | Explorer suit      |  tool | 220,200,120 | 6 module slots, +50% oxygen and power.

@@ -1090,12 +1090,93 @@ static bool ScreenTab(const char* label, const char* key, bool on, float w, floa
 }
 
 // Placeholder screens for what comes later (their features are separate issues).
-static void DrawComing(const char* title, const char* text) {
-    ImGui::Dummy(ImVec2(0, 20 * GameUI_Scale()));
-    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", title);
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x * 0.7f);
-    ImGui::TextWrapped("%s", text);
-    ImGui::PopTextWrapPos();
+// The Skills screen (#883, the design on #167): every skill on the left (level, progress, free points), the selected one's
+// perk tree on the right in its three tiers (opening at levels 5, 15 and 30), each perk with its ranks and what one rank
+// does; Learn spends the skill's points. A retraining manual takes back every point of one tree (Q1).
+static int skillSelected = 0;
+static void DrawSkills() {
+    SkillState& st = LocalSession().skills;
+    const auto& all = Skills_All();
+    if (all.empty()) { ImGui::TextDisabled("No skills loaded (resources/data/skills.txt)"); return; }
+    skillSelected = std::clamp(skillSelected, 0, (int)all.size() - 1);
+    const float fh = ImGui::GetFontSize();
+    ImGui::BeginChild("skilllist", ImVec2(fh * 17.0f, 0.0f), true);
+    for (int i = 0; i < (int)all.size(); ++i) {
+        const SkillDef& d = all[i];
+        const double xp = st.xp.count(d.id) ? st.xp.at(d.id) : 0.0;
+        const int free = Skills_PointsFree(st, d.id);
+        ImGui::PushID(i);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        if (ImGui::Selectable("##skill", skillSelected == i, 0, ImVec2(0.0f, fh * 2.4f))) skillSelected = i;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float w = ImGui::GetContentRegionAvail().x;
+        dl->AddText(ImVec2(p.x + 4, p.y + 2), IM_COL32(230, 230, 230, 255), d.name.c_str());
+        dl->AddText(ImVec2(p.x + w * 0.62f, p.y + 2), IM_COL32(255, 210, 90, 255), TextFormat("Lv %d", Skills_LevelOf(xp)));
+        if (free > 0) dl->AddText(ImVec2(p.x + w * 0.8f, p.y + 2), IM_COL32(120, 230, 140, 255), TextFormat("+%d", free));
+        const ImVec2 b0(p.x + 4, p.y + fh * 1.45f), b1(p.x + w - 4, p.y + fh * 1.45f + fh * 0.55f);
+        dl->AddRectFilled(b0, b1, IM_COL32(40, 44, 52, 255), 3.0f);
+        dl->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * (float)Skills_Progress(xp), b1.y), IM_COL32(230, 180, 60, 255), 3.0f);
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("skilltree", ImVec2(0.0f, 0.0f), true);
+    const SkillDef& d = all[skillSelected];
+    const double xp = st.xp.count(d.id) ? st.xp.at(d.id) : 0.0;
+    const int level = Skills_LevelOf(xp);
+    double into = xp; for (int k = 1; k <= level; ++k) into -= Skills_XpForLevel(k);
+    ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f), "%s  level %d", d.name.c_str(), level);
+    ImGui::SameLine();
+    ImGui::TextDisabled("  %.0f / %.0f XP to level %d   |   %d point%s to spend   |   world XP rate %gx", into, Skills_XpForLevel(level + 1), level + 1,
+                        Skills_PointsFree(st, d.id), Skills_PointsFree(st, d.id) == 1 ? "" : "s", worldXpRate);
+    std::string earns;
+    for (const auto& [ev, x] : d.xp) earns += TextFormat("%s%s %g", earns.empty() ? "" : ", ", ev.c_str(), x);
+    ImGui::TextDisabled("XP from: %s", earns.empty() ? "nothing yet" : earns.c_str());
+    if (gNetClient && gNetClient->state == NetClient::State::Joined) ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.4f, 1.0f), "On a server, skills don't gain XP yet (the server's XP comes next: #883 slice 2).");
+    ImGui::Separator();
+    bool any = false;
+    for (int tier = 1; tier <= 3; ++tier) {
+        const int need = kSkillTierLevel[tier - 1];
+        ImGui::TextColored(level >= need ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.55f, 1.0f), "Tier %d  (level %d)%s", tier, need, level >= need ? "" : "  - locked");
+        for (const PerkDef& p : Skills_Perks()) {
+            if (p.skill != d.id || p.tier != tier) continue;
+            any = true;
+            const int rank = st.ranks.count(p.id) ? st.ranks.at(p.id) : 0;
+            const std::string why = Skills_CanBuy(st, p.id);
+            ImGui::PushID(p.id.c_str());
+            ImGui::BeginGroup();
+            ImGui::TextColored(rank > 0 ? ImVec4(0.55f, 0.95f, 0.6f, 1.0f) : ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "%s  %d/%d", p.name.c_str(), rank, p.ranks);
+            ImGui::SameLine();
+            ImGui::TextDisabled("  %s%s", p.text.c_str(), p.cost > 1 ? TextFormat("  (%d points a rank)", p.cost) : "");
+            if (!p.needs.empty()) {
+                std::string n;
+                for (const std::string& q : p.needs) { const PerkDef* qd = Skills_FindPerk(q); n += (n.empty() ? "" : ", ") + (qd ? qd->name : q); }
+                ImGui::SameLine(); ImGui::TextDisabled("  needs %s", n.c_str());
+            }
+            // Learn, or why not, right-aligned by its own width (a fixed column cut "Needs Mining level 5" short)
+            const char* right = why.empty() ? "Learn" : rank < p.ranks ? why.c_str() : "";
+            const float rw = ImGui::CalcTextSize(right).x + (why.empty() ? ImGui::GetStyle().FramePadding.x * 2.0f : 0.0f);
+            ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowContentRegionMax().x - rw - 4.0f));
+            if (why.empty()) { if (ImGui::SmallButton("Learn")) Skills_Buy(st, p.id); }
+            else if (rank < p.ranks) ImGui::TextDisabled("%s", right);
+            ImGui::EndGroup();
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+    }
+    if (!any) ImGui::TextDisabled("%s's perks come in the next update; its XP and levels count already.", d.name.c_str());
+    ImGui::Separator();
+    const int spent = Skills_PointsSpent(st, d.id);
+    const int manuals = (int)inventory.count("retraining_manual");
+    if (spent > 0) {
+        if (manuals > 0) {
+            if (ImGui::Button(TextFormat("Retrain %s (uses a retraining manual: %d points back)", d.name.c_str(), spent))) {
+                inventory.remove("retraining_manual", 1);
+                Skills_Respec(st, d.id);
+            }
+        } else ImGui::TextDisabled("A retraining manual (crafted: cloth, charcoal, planks) gives back every point of this tree.");
+    }
+    ImGui::EndChild();
 }
 
 // The Team screen (#604). Joined to a server: the team as the server says (members, who's online, their health, the owner),
@@ -1351,10 +1432,7 @@ void GameUI_Draw(Scene& world) {
                 ImGui::Separator();
                 if (questTree) QuestTree_DrawTab(); else DrawQuestList();
                 break;
-            case GameScreen::Skills:
-                DrawComing("Skills are coming (#167)", "Skills level as you use them: mining, building, farming, husbandry, combat, engineering, piloting and more. "
-                                                     "Each level gives a point to spend in that skill's perk tree: faster digging, better yields, longer air, new abilities.");
-                break;
+            case GameScreen::Skills: DrawSkills(); break; // (#883)
             case GameScreen::Team: DrawTeam(); break;
             case GameScreen::Count: break;
         }

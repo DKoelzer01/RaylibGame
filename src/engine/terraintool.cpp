@@ -94,6 +94,10 @@ namespace {
         }
         plantBody->trees->remove(p.id);
         GiveDrops(TerrainTool_PlantDrops(*plantBody, p));
+        if (gSkillEvent) { // (#883) XP: chops at a tree, a tree down, a bush, a loose stone
+            if (p.tree()) { gSkillEvent("chop", (double)HitsToFell(p), p.base); gSkillEvent("tree_felled", 1.0, p.base); }
+            else gSkillEvent(p.stone() ? "loose_stone" : "bush", 1.0, p.base);
+        }
         gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
         chopId = 0; chopHits = 0;
         hasPlant = false;
@@ -184,6 +188,8 @@ bool TerrainTool_Bucket(Scene& world) {
 }
 
 static int FillerMaterial(const std::string& item); // below
+static bool HitOre();
+static bool PickOnRock(); // (#883: below)
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -255,7 +261,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         strokeLength = (float)(nextStrokeAt - now);
         return;
     }
-    const float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
+    const float rate = TerrainTool_StrokeRate();
     const float interval = 1.0f / rate;
     if (!TerrainTool_Stroke(digging)) { nextStrokeAt = now + 0.4; strokeLength = 0.4f; return; }
     terrainTool.swingTime = interval;
@@ -404,7 +410,21 @@ static bool BrushStroke(bool digging) {
 }
 
 // The mining sphere for the current hit: centred on the surface point, the tool's radius.
-static float MiningRadius() { return rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius; }
+// Rock and ore under the crosshair (skills: Mining's perks act on a pickaxe there, #883).
+static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
+static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
+static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
+// Strokes a second for the aimed ground with the tool in hand: the tool's rule, and (#883) Mining's perks on a pick at rock
+// and ore (Quick Pick, Vein Follower).
+float TerrainTool_StrokeRate() {
+    float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
+    if (!terrainTool.terraform && PickOnRock()) rate *= SkillStat("rock_speed") * (HitOre() ? SkillStat("ore_speed") : 1.0f);
+    return rate;
+}
+static float MiningRadius() {
+    const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
+    return PickOnRock() ? r * SkillStat("rock_radius") : r;
+}
 
 // Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so
 // the hole is where the crosshair is and the circle drawn on the surface is exactly its mouth
@@ -422,7 +442,7 @@ const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material) { retu
 
 // Collect what the sphere holds: sample it on a grid (solid samples by material, two items per cubic metre), counting
 // only what the tool can dig (softOnly: hands and shovels leave rock in place).
-DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, int gemBoost) {
+DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost) {
     DigYield out;
     std::map<std::string, float>& got = out.items;
     const float step = r / 4.0f;
@@ -546,6 +566,7 @@ static bool FillStroke(Planetoid& p) {
     e.center = c; e.radius = r; e.fill = true; e.paint = paint;
     StrokeParticles(p, hit.local, hit.material, false);
     ApplyTerrainEdit(p, e);
+    if (gSkillEvent) gSkillEvent("fill", 0.0, e.center); // (#883) ground we placed: dug out again soon, it pays little XP
     Audio_Play(Sfx::Build, 0.6f, 0.8f);
     return true;
 }
@@ -614,6 +635,7 @@ bool TerrainTool_Stroke(bool dig) {
         e.paint = paint;
         StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);
+        if (gSkillEvent) gSkillEvent("fill", 0.0, e.center); // (#883) ground we placed: dug out again soon, it pays little XP
         Audio_Play(Sfx::Build, 0.6f);
         return true;
     }
@@ -632,8 +654,21 @@ bool TerrainTool_Stroke(bool dig) {
         ++terrainTool.swings;
         return true;
     }
-    const DigYield got = TerrainTool_DigYield(p, centre, r, hit.local, softOnly, terrainTool.gemBoost);
+    const bool rockHit = HitRock() || HitOre(); // (before the edit changes what is there)
+    DigYield got = TerrainTool_DigYield(p, centre, r, hit.local, softOnly, terrainTool.gemBoost * SkillStat("gem_chance"));
+    // (#883) Mining's perks: more ore, more stone of the rock's own kind
+    const float oreMul = SkillStat("ore_yield"), stoneMul = SkillStat("stone_yield");
+    for (auto& kv : got.items) {
+        bool ore = false;
+        for (int k = 0; k < PlanetField::kOreKindCount && !ore; ++k) if (const char* o = PlanetField::OreKindName(k); o && kv.first == o) ore = true;
+        const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
+        if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
+    }
     for (auto& kv : got.items) inventory.addFractional(kv.first, kv.second);
+    if (gSkillEvent) { // (#883) XP: the stroke's kind, and a gem
+        gSkillEvent(got.ore ? "ore_stroke" : rockHit && !softOnly ? "rock_stroke" : "soil_stroke", 1.0, hit.local);
+        if (got.gem) gSkillEvent("gem", 1.0, hit.local);
+    }
     if (got.gem) { inventory.add(got.gem, 1); Toast(TextFormat("+1 %s!", got.gem)); }
     if (got.seed) { inventory.add(got.seed, 1); Toast(TextFormat("+1 %s from the grass", got.seed)); }
     TerrainEdit e{};
