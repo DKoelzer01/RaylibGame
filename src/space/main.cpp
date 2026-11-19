@@ -9817,6 +9817,10 @@ int main(int argc, char** argv)
             }
             if (!joinAddr.empty()) { // --join (#341 core): the server's messages; the player starts at its first own state
                 NetClient_Update(gJoin);
+                { // (#920) our skills are the server's: its SkillState replaces ours (the Skills tab, the perks we play with)
+                    static int skillStatesSeen = 0;
+                    if (gJoin.skillStates != skillStatesSeen) { skillStatesSeen = gJoin.skillStates; LocalSession().skills = gJoin.skills; }
+                }
                 // (#750, #341) what the others see in our hands, the lamp, the suit colour (sent only when it changes)
                 NetClient_SetLoadout(gJoin, inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string(), survival.headlamp, 0);
                 static bool cacheSaved = false; // (#776) the sync done: keep what we now hold for a rejoin, and report
@@ -11063,12 +11067,20 @@ int main(int argc, char** argv)
                         const bool reach = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Reach), rate = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Rate),
                                    cost = bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Cost);
                         const bool placed = bob.placesSeen == 1 && carol.placesSeen == 1;
-                        const bool ok = accepted >= kDigs + 1 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carol.inventoryDeltas == 0;
+                        // (#920) bob's digs earned XP on the server, which sent his skills (carol, who dug nothing, has none)
+                        auto xpOf = [](NetClient& c) { double x = 0.0; for (const auto& [id, v] : c.skills.xp) x += v; return x; };
+                        const double bobXp = xpOf(bob), carolXp = xpOf(carol);
+                        const bool skillsOk = bob.skillStates >= 1 && bobXp > 0.0 && carolXp == 0.0;
+                        // (#984) carol gets none of bob's yields (her own deltas are the starting kit a new player gets at the join)
+                        const bool carolNone = carolInv.amount("dirt") == 0.0 && carolInv.amount("gravel") == 0.0;
+                        printf("bench: net dig (#920): bob heard %d skill states, %.1f XP from his digs (digging %.1f, mining %.1f); carol %.1f XP -> %s\n",
+                               bob.skillStates, bobXp, bob.skills.xp["digging"], bob.skills.xp["mining"], carolXp, skillsOk ? "ok" : "FAIL");
+                        const bool ok = accepted >= kDigs + 1 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carolNone && skillsOk;
                         printf("bench: net dig (#329, 100 ms round trip, 2%% loss): %d edits applied by the server (%d digs, a place, the burst's), bob saw %d (own %d), carol %d, same order %d; "
                                "ground at the first dig is air %d; the place reached both %d; bob carries dirt %.2f gravel %.2f (server's copy off by %.3f at worst, %d deltas; carol got none %d); "
                                "refused: reach %d, rate %d, cost %d (%d refusals) -> %s\n",
                                accepted, kDigs, bob.editsSeen, bob.editsOwn, carol.editsSeen, (int)sameOrder, (int)dugOut, (int)placed, bobInv.amount("dirt"), bobInv.amount("gravel"), worst,
-                               bob.inventoryDeltas, (int)(carol.inventoryDeltas == 0), (int)reach, (int)rate, (int)cost, bob.editsRefused, ok ? "PASS" : "FAIL");
+                               bob.inventoryDeltas, (int)carolNone, (int)reach, (int)rate, (int)cost, bob.editsRefused, ok ? "PASS" : "FAIL");
                         NetClient_Disconnect(bob); NetClient_Disconnect(carol);
                         Net_SetFakeConditions(0, 0.0f);
                         benchNetDig = false;

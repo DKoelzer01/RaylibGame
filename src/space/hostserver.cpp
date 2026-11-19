@@ -26,6 +26,7 @@
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
+#include "skills.h"
 #include "playerrecord.h"
 #include "inventory.h"
 #include "farming.h"
@@ -111,6 +112,9 @@ namespace {
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
         bool creative = false;        // (#823) /gamemode creative (ops): building, digging and placing cost nothing; it may fly
+        SkillState skills;           // (#920) XP and perks, counted here from what the server sees (strokes); saved in the record
+        bool skillsDirty = true;     // (#920) to send (SkillState): at the join, after XP changes (at most every 2 s; a level-up at once)
+        double skillsSentAt = -1e9;
         double joinedAt = 0.0;      // (play time, added at the next write)
         double lastFellAt = -1e9;   // (#335) its last plant felled (the fell rate)
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
@@ -683,6 +687,23 @@ namespace {
     }
     uint32_t ConnOf(uint32_t session); // (below)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
+    int skillStatesSent = 0; // (#920 tests)
+    // (#920) Each player's skills, to that player, when they changed: at most every 2 s (a level-up or the join at once).
+    void SendSkills() {
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            if (rit == remotes.end() || !rit->second.skillsDirty || GetTime() - rit->second.skillsSentAt < 2.0) continue;
+            SendMsg(conn, MsgSkillState{ Skills_SaveText(rit->second.skills) });
+            rit->second.skillsDirty = false; rit->second.skillsSentAt = GetTime();
+            ++skillStatesSent;
+        }
+    }
+    // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
+    uint64_t SkillCell(Vector3 local) {
+        const auto q = [](float v) { return (uint64_t)(uint32_t)(int32_t)std::floor(v) & 0x1FFFFFull; };
+        return q(local.x) | (q(local.y) << 21) | (q(local.z) << 42);
+    }
     int animalBites = 0;
     // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
     // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
@@ -916,9 +937,10 @@ namespace {
     bool LoadRecord(Scene& world, uint32_t conn, const Session& s) { // true: their record was loaded
         Remote& rm = remotes[s.id];
         rm.record = PlayerRecordMeta{};
+        rm.skills = SkillState{}; rm.skillsDirty = true; rm.skillsSentAt = -1e9; // (#920) (sent with the next update)
         const std::string path = PlayerRecord_Path(s.uuid);
         bool loaded = false;
-        if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record)) {
+        if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record, &rm.skills)) {
             loaded = true;
             rm.player.flyAllowed = false; // (#781) never for a client's server-side player
             // (#856) anchored where the record put them: until their first step (their client still loading) the server reports
@@ -940,7 +962,7 @@ namespace {
         if (it == remotes.end() || !PlayerId_Valid(it->second.record.uuid)) return false;
         Remote& rm = it->second;
         const double now = GetTime();
-        const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt);
+        const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt, &rm.skills);
         if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
         else printf("host: could not write the record of %s\n", rm.record.name.c_str());
         return ok;
@@ -1376,11 +1398,24 @@ namespace {
             if (got.seed) rm.inventory.add(got.seed, 1);
             e.carve = true; e.softOnly = softOnly;
             out.flags = 1 | (softOnly ? 8 : 0);
+            if (!rm.creative) { // (#920) Mining or Digging XP for the stroke, as a game run here counts it (#883); ground the
+                // player filled and dug out again soon pays little (the anti-farming share)
+                bool rock = false;
+                for (const auto& [item, amt] : got.items) rock = rock || ItemMatches("any_stone", item);
+                const char* ev = got.ore ? "ore_stroke" : (!softOnly && rock) ? "rock_stroke" : "soil_stroke";
+                const double share = Skills_DigShare(rm.skills, SkillCell(hit), SimTime());
+                int ups = Skills_Event(rm.skills, ev, share, worldXpRate);
+                if (got.gem) ups += Skills_Event(rm.skills, "gem", 1.0, worldXpRate);
+                rm.skillsDirty = true;
+                if (ups > 0) rm.skillsSentAt = -1e9; // (a level-up goes out at once)
+            }
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
             before.emplace(q.item, rm.inventory.amount(q.item));
             if (!rm.creative && !rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
+            for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) // (#920) our ground now
+                Skills_NoteFill(rm.skills, SkillCell(Vector3Add(hit, Vector3{ (float)dx, (float)dy, (float)dz })), SimTime());
             e.strength = 0.6f; e.paint = paint;
             out.strength = e.strength; out.paint = (int8_t)paint;
         }
@@ -2006,6 +2041,7 @@ void Host_Update(Scene& world) {
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
+    SendSkills();         // (#920) and their skills, when they changed
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
     StepGraves(world);         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send

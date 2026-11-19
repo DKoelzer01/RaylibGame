@@ -300,6 +300,21 @@ namespace {
                 else b->trees->mergeRemovals(p.removed);
                 return;
             }
+            case NetMsg::SkillState: { // (#920) our skills as the server counts them: the whole state, replacing ours
+                MsgSkillState k;
+                if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;
+                SkillState s;
+                size_t a = 0;
+                while (a < k.text.size()) {
+                    size_t b = k.text.find('\n', a);
+                    if (b == std::string::npos) b = k.text.size();
+                    Skills_LoadLine(s, k.text.substr(a, b - a).c_str());
+                    a = b + 1;
+                }
+                c.skills = s;
+                ++c.skillStates;
+                return;
+            }
             case NetMsg::Claims: { // (#343) the land claims: the map's circles and the border near another team's
                 MsgClaims k;
                 if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;

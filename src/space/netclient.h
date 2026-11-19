@@ -12,6 +12,7 @@
 #include "netproto.h"
 #include "net.h"
 #include "playerinput.h"
+#include "skills.h"
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -70,6 +71,8 @@ struct NetClient {
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
+    SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
+    int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
