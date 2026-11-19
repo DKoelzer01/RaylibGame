@@ -2411,7 +2411,7 @@ int main(int argc, char** argv)
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
     // (#910) F2's screenshot also writes lod.txt: the camera, the clear-colour pixels (nothing drawn: a hole when enclosed),
     // and every LOD node within 150 m of the camera with its level, state and whether it is drawn.
-    Recorder_SetShotExtra([&](const Image& img) -> std::string {
+    std::function<std::string(const Image&)> lodDump = [&](const Image& img) -> std::string {
         std::string out;
         char line[512];
         auto add = [&](const char* fmt, auto... a) { snprintf(line, sizeof line, fmt, a...); out += line; };
@@ -2469,7 +2469,8 @@ int main(int argc, char** argv)
             }
         }
         return out;
-    });
+    };
+    Recorder_SetShotExtra(lodDump);
     // --play-new S (#387): the menus as a player uses them, for --perf-log. 10 s on the title screen; New Game (the New World
     // screen creates after a moment) -> bake -> loading -> S s of play; Save & Quit -> 10 s on the title screen; Load that
     // save -> loading -> 30 s of play; exit.
@@ -10671,7 +10672,7 @@ int main(int argc, char** argv)
                     printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
                            crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
                     if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
-                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); } } // every flagged frame (the first 24)
+                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
                 }
                 UnloadImage(shot);
             }
