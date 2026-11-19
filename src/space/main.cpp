@@ -9862,6 +9862,85 @@ int main(int argc, char** argv)
                         }
                     }
         }
+        {   // (#916) RAYLIBGAME_BENCH_DESCEND=S with --at-save: a fall from 20 m over the surface down to the save's position in S
+            // seconds (the user's cave fall: the arena grew through it), then the camera stays there.
+            static const float descend = getenv("RAYLIBGAME_BENCH_DESCEND") ? (float)atof(getenv("RAYLIBGAME_BENCH_DESCEND")) : 0.0f;
+            static double d0 = -1.0; static Vector3 target{}, top{};
+            if (descend > 0.0f && bench && benchAtSave && gameState == 1 && !world.objects.empty()) {
+                Planetoid* b = dynamic_cast<Planetoid*>(world.objects[0].get());
+                const PlanetField* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+                if (b && pf) {
+                    if (d0 < 0.0 && WorldIdle()) {
+                        target = b->toLocal((player.position - world.renderOrigin).toFloat());
+                        const Vector3 up = Vector3Normalize(target);
+                        top = Vector3Scale(up, pf->radius + pf->elevation(up) + 20.0f);
+                        d0 = GetTime();
+                        printf("bench: descend: from %.0f m to %.0f m (from the centre) in %.0f s\n", Vector3Length(top), Vector3Length(target), descend);
+                    }
+                    // RAYLIBGAME_BENCH_RESPAWN_AT=S: S seconds after landing, respawn at the world's start (once): a death in the cave
+                    // and the walk back from the spawn (a new preload ring while the cave's nodes are still resident).
+                    static const float respawnAt = getenv("RAYLIBGAME_BENCH_RESPAWN_AT") ? (float)atof(getenv("RAYLIBGAME_BENCH_RESPAWN_AT")) : -1.0f;
+                    static bool respawned = false;
+                    if (d0 >= 0.0 && !respawned && respawnAt >= 0.0f && GetTime() - d0 > descend + respawnAt) {
+                        respawned = true;
+                        player.spawnOn(world, *b, StartSpawnDir(*b));
+                        printf("bench: descend: respawned at the start\n");
+                    }
+                    if (d0 >= 0.0 && !respawned) {
+                        const float t = std::min(1.0f, (float)((GetTime() - d0) / descend));
+                        Vector3 at = Vector3Lerp(top, target, t);
+                        // RAYLIBGAME_BENCH_WANDER=R: after the fall, circle R m around the landing spot at its depth (6 m/s), so the
+                        // underground selection keeps changing (allocation churn in the arena).
+                        static const float wander = getenv("RAYLIBGAME_BENCH_WANDER") ? (float)atof(getenv("RAYLIBGAME_BENCH_WANDER")) : 0.0f;
+                        if (wander > 0.0f && t >= 1.0f) {
+                            const Vector3 up = Vector3Normalize(target);
+                            const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), e2 = Vector3CrossProduct(up, e1);
+                            const float ang = (float)((GetTime() - d0 - descend) * 6.0 / wander);
+                            at = Vector3Add(target, Vector3Add(Vector3Scale(e1, wander * (cosf(ang) - 1.0f)), Vector3Scale(e2, wander * sinf(ang))));
+                        }
+                        player.placeAt(world, *b, b->toWorld(at));
+                        player.velocity = { 0, 0, 0 };
+                    }
+                }
+            }
+        }
+        {   // (#916) RAYLIBGAME_ARENA_LOG=1: once a second, the terrain arena and what holds its vertices (drawn, the preload ring,
+            // the cache only, other built nodes), and how much of each lies wholly under the height-map surface.
+            static const bool arenaLog = getenv("RAYLIBGAME_ARENA_LOG") && getenv("RAYLIBGAME_ARENA_LOG")[0] == '1';
+            static double nextLog = 0.0;
+            // Always (not only with the log): an arena that grows during play (after the loading screens) prints the same
+            // breakdown once, tagged GREW, so a playtest log says what drove it (#916 couldn't be reproduced since #901).
+            static int lastCap = 0;
+            const int capNow = TerrainArena_Available() ? TerrainArena_Stats().vertexCapacity : 0;
+            const bool grewInPlay = lastCap >= 16000000 && capNow > lastCap && gameState == 1 && !loading && TerrainArena_Stats().vertices > 0; // (not the first reserve from the small initial arena, 4.2 M)
+            if (capNow != lastCap) lastCap = capNow;
+            if (grewInPlay) printf("arena: GREW in play to %.1f M vertices; what holds them:\n", capNow / 1e6);
+            if ((grewInPlay || (arenaLog && GetTime() >= nextLog)) && gameState == 1 && TerrainArena_Available() && !world.objects.empty()) {
+                if (arenaLog) nextLog = GetTime() + 1.0;
+                Planetoid* b = dynamic_cast<Planetoid*>(world.objects[0].get());
+                const PlanetField* pf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+                if (b && pf) {
+                    std::unordered_set<const Chunk*> drawn(b->drawList.begin(), b->drawList.end());
+                    double v[4] = {}, under[4] = {}; int n[4] = {}, nu[4] = {};
+                    for (const auto& [k, c] : b->nodes) {
+                        if (!c->arena.valid()) continue;
+                        const int cat = drawn.count(c.get()) ? 0 : c->inRing ? 1 : (c->lastWanted < GetTime() - 0.5 ? 2 : 3);
+                        const Vector3 mid = Vector3AddValue(k.origin(), 0.5f * k.size());
+                        const float r = Vector3Length(mid);
+                        const bool isUnder = r + 0.8660254f * k.size() < pf->radius + pf->elevation(Vector3Scale(mid, 1.0f / std::max(r, 1.0f)));
+                        v[cat] += c->arena.vCount; ++n[cat];
+                        if (isUnder) { under[cat] += c->arena.vCount; ++nu[cat]; }
+                    }
+                    const ArenaStats as = TerrainArena_Stats();
+                    const Vector3 camL = b->toLocal(world.camera.position);
+                    const float camR = Vector3Length(camL);
+                    const float camH = camR - (pf->radius + pf->elevation(Vector3Scale(camL, 1.0f / std::max(camR, 1.0f))));
+                    printf("arena: t=%.0f cam %.1f m vs surface | %.1f/%.1f M verts, %.1f/%.1f M idx | drawn %.1f M (%d; under %.1f M %d) ring %.1f M (%d; under %.1f M) cache %.1f M (%d; under %.1f M) other %.1f M (%d; under %.1f M)\n",
+                           GetTime(), camH, as.vertices / 1e6, as.vertexCapacity / 1e6, as.indices / 1e6, as.indexCapacity / 1e6,
+                           v[0] / 1e6, n[0], under[0] / 1e6, nu[0], v[1] / 1e6, n[1], under[1] / 1e6, v[2] / 1e6, n[2], under[2] / 1e6, v[3] / 1e6, n[3], under[3] / 1e6);
+                }
+            }
+        }
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
