@@ -172,6 +172,7 @@ namespace {
 }
 
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / BreakHold()) : 0.0f; }
+float BuildTool_BreakHold() { return BreakHold(); }
 bool BuildTool_AimingPart() { return breakAiming; }
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
