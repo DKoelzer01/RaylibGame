@@ -90,7 +90,7 @@ bool SlotRules_Frame(const SlotInput& in, SlotGrid* g, int i) {
         }
     }
     // Middle-click in creative: a full stack of that item.
-    if (in.mPress && g && in.creative && held->empty() && !at.empty()) { *held = at; held->centi = g->capOf(at.id); did = true; }
+    if (in.mPress && g && in.creative && held->empty() && !at.empty()) { g->cloneStack(i, *held); did = true; }
     // Left press
     if (in.lPress && g) {
         did = true;
