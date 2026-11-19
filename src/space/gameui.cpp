@@ -570,8 +570,9 @@ static void DrawCell(int i, float cw, float cell) {
     ImGui::PopID();
 }
 
-static void DrawGrid() {
-    const float cell = 54.0f, gap = 4.0f;
+// cell: a cell's size (px): 54 beside another screen; the Inventory screen sizes it to fill its area (#887).
+static void DrawGrid(float cell = 54.0f) {
+    const float gap = 4.0f, bin = std::min(cell, 64.0f * GameUI_Scale()); // (the bin stays a modest square)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int i = 0; i < Inventory::kSlots; ++i) {
         // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them). The
@@ -583,17 +584,18 @@ static void DrawGrid() {
     }
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     { // the bin, under the hotbar (#564)
-        const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
-        if (ImGui::InvisibleButton("bin", ImVec2(cell, cell))) BinClick();
+        const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + bin, p.y + bin);
+        if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
-        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y + cell * 0.1f), cell * 0.64f, binned.id, true);
+        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
         const ImVec2 sz = ImGui::CalcTextSize("Bin");
-        dl->AddText(ImVec2(p.x + (cell - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
+        dl->AddText(ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
         dl->AddRect(p, q, hover ? IM_COL32(230, 150, 140, 255) : IM_COL32(110, 60, 60, 255), 4.0f, 0, 1.0f);
         if (hover) ImGui::SetTooltip(!cursorStack.empty() ? "Click: delete the held stack" : !binned.empty() ? "Click: take the deleted stack back" :
                                      "The bin: put a stack here to delete it\n(or click outside the window to drop it on the ground)");
     }
+    ImGui::SameLine(0.0f, 8.0f); // (#887: beside the bin, a row saved)
     if (ImGui::Button("Sort (middle-click)")) { ReturnCursorStack(); inventory.sort(); }
     ImGui::SameLine();
     // Deposit (button or Q): items a nearby chest already holds go into it.
@@ -1235,6 +1237,7 @@ namespace {
     RenderTexture2D preview{};
     float previewTurn = 0.0f;   // radians: the preview turns slowly; dragging over it turns it by hand
     bool previewDrawn = false;  // rendered this frame (GameUI_PrepareFrame)
+    ImVec2 previewWant{ 250.0f, 360.0f }; // (#887) the size its panel gives it (px), from the last frame
     Color SuitColour() { const uint32_t c = settings.mpSuit; return c ? Color{ (unsigned char)(c >> 16), (unsigned char)(c >> 8), (unsigned char)c, 255 } : Color{ 0, 0, 0, 0 }; }
 }
 
@@ -1245,7 +1248,7 @@ void GameUI_PrepareFrame(Scene& world) {
     const Vector3 up = Vector3Normalize(player.up);
     if (Vector3Length(player.up) < 0.5f) return; // (not placed yet)
     const float s = GameUI_Scale();
-    const int w = (int)(250 * s), h = (int)(360 * s);
+    const int w = std::clamp((int)previewWant.x, (int)(120 * s), 2048), h = std::clamp((int)previewWant.y, (int)(160 * s), 2048); // (#887: its panel's size)
     if (preview.id == 0 || preview.texture.width != w || preview.texture.height != h) {
         if (preview.id) UnloadRenderTexture(preview);
         preview = LoadRenderTexture(w, h);
@@ -1311,8 +1314,11 @@ static void ModuleSlot(int i, float cell) {
     ImGui::PopID();
 }
 
+// The player panel (#822; #887: sized to its area, the top right of the Inventory screen): the suit and the off hand on the
+// left, the turning preview filling the rest, the module slots under it, and what else is carried.
 static void DrawYou() {
-    const float cell = 54.0f, big = 64.0f;
+    const float avW = ImGui::GetContentRegionAvail().x, avH = ImGui::GetContentRegionAvail().y;
+    const float big = std::clamp(avH * 0.16f, 48.0f, 110.0f), cell = std::clamp(big * 0.8f, 44.0f, 90.0f);
     ImGui::TextUnformatted("You");
     ImGui::Separator();
     ImGui::BeginGroup();
@@ -1321,26 +1327,91 @@ static void DrawYou() {
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ImGui::TextDisabled("Off hand");
     DrawCell(Inventory::kOffHand, big, big);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 150.0f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(big * 2.2f, 150.0f));
     ImGui::TextDisabled("A shield blocks (hold RMB); a torch lights; food or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
     ImGui::PopTextWrapPos();
     ImGui::EndGroup();
+    const float leftW = ImGui::GetItemRectSize().x;
     ImGui::SameLine(0.0f, 16.0f);
-    // The player, turning; drag over it to turn it.
+    // The player, turning; drag over it to turn it. It fills what the column and the module row leave (the size is the
+    // render target's next frame: GameUI_PrepareFrame).
+    const float lineH = ImGui::GetTextLineHeightWithSpacing();
+    previewWant = ImVec2(std::max(120.0f, avW - leftW - 24.0f), std::max(160.0f, avH - lineH * 4.0f - cell - 12.0f));
     if (previewDrawn) {
         const ImVec2 size((float)preview.texture.width, (float)preview.texture.height);
         ImGui::Image((ImTextureID)(intptr_t)preview.texture.id, size, ImVec2(0, 1), ImVec2(1, 0));
         if (ImGui::IsItemActive()) previewTurn += ImGui::GetIO().MouseDelta.x * 0.012f;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to turn");
-    }
+    } else ImGui::Dummy(previewWant);
     const int slots = (int)Suit_Modules().size();
     int fitted = 0; for (const std::string& m : Suit_Modules()) fitted += m.empty() ? 0 : 1;
     ImGui::TextDisabled("Suit modules (%d of %d fitted)", fitted, slots);
     for (int i = 0; i < slots; ++i) { if (i) ImGui::SameLine(0.0f, 4.0f); ModuleSlot(i, cell); }
-    ImGui::Separator();
     Suit_DrawCarried();
+}
+
+// The stats panel (#887, the bottom right of the Inventory screen): what changes the player's numbers. The suit's
+// multipliers, the skill perks' (#883; they stack with the suit's), and room for team bonuses and timed effects.
+static const char* PerkStatName(const std::string& stat) {
+    static const struct { const char* id; const char* name; } kNames[] = {
+        { "rock_speed", "Rock strokes" }, { "ore_speed", "Ore strokes" }, { "rock_radius", "Rock stroke reach" }, { "ore_yield", "Ore per stroke" },
+        { "stone_yield", "Stone of the rock's kind" }, { "gem_chance", "Gem odds" }, { "pick_wear", "Pick wear" } };
+    for (const auto& n : kNames) if (stat == n.id) return n.name;
+    return stat.c_str();
+}
+static void DrawStats() {
+    ImGui::TextUnformatted("Stats");
     ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Suit");
     Suit_DrawStats();
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Skills");
+    const SkillState& st = LocalSession().skills;
+    std::vector<std::string> stats;
+    for (const PerkDef& p : Skills_Perks())
+        for (const auto& [stat, per] : p.effects) if (std::find(stats.begin(), stats.end(), stat) == stats.end()) stats.push_back(stat);
+    int shown = 0;
+    for (const std::string& stat : stats) {
+        const double m = Skills_Stat(st, stat);
+        if (std::fabs(m - 1.0) < 1e-6) continue;
+        std::string from; // the perks that give it
+        for (const auto& [id, r] : st.ranks)
+            if (const PerkDef* p = Skills_FindPerk(id); p && r > 0)
+                for (const auto& [s2, per] : p->effects) if (s2 == stat) from += (from.empty() ? "" : ", ") + p->name + (p->ranks > 1 ? TextFormat(" %d", r) : "");
+        ImGui::Text("%s x%.2f", PerkStatName(stat), m);
+        ImGui::SameLine(); ImGui::TextDisabled("(%s)", from.c_str());
+        ++shown;
+    }
+    if (!shown) ImGui::TextDisabled("No perks learnt yet: skills level as you work (the Skills tab)");
+    ImGui::Spacing();
+    ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Team and effects");
+    ImGui::TextDisabled("None now (team bonuses and timed effects will show here)");
+}
+
+// The Inventory screen with no container open (#887, the user's layout): the grid and hotbar scaled to fill the left 72%,
+// the player at the top right (55% of the height), the stats under it.
+static void DrawInventoryScreen() {
+    const float leftW = ImGui::GetContentRegionAvail().x * 0.72f;
+    ImGui::BeginChild("invgrid", ImVec2(leftW, 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    {   // cells to fill it: 10 across; 6 rows (the grid and the hotbar), the hotbar's label, the bin's row and the gaps down
+        const ImVec2 a = ImGui::GetContentRegionAvail();
+        const float gap = 4.0f, line = ImGui::GetTextLineHeightWithSpacing(), binRow = std::max(64.0f * GameUI_Scale(), ImGui::GetFrameHeight());
+        const float cw = (a.x - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
+        const float ch = (a.y - line * 2.0f - binRow - 6.0f * gap - 8.0f) / (float)(Inventory::kRows + 1);
+        ImGui::TextUnformatted("Items");
+        DrawGrid(std::clamp(std::min(cw, ch), 40.0f, 200.0f));
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("invright", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoScrollbar);
+    const float h = ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("you", ImVec2(0.0f, h * 0.55f), true, ImGuiWindowFlags_NoScrollbar);
+    DrawYou();
+    ImGui::EndChild();
+    ImGui::BeginChild("stats", ImVec2(0.0f, 0.0f), true);
+    DrawStats();
+    ImGui::EndChild();
+    ImGui::EndChild();
 }
 
 void GameUI_Draw(Scene& world) {
@@ -1384,8 +1455,10 @@ void GameUI_Draw(Scene& world) {
         if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
-        // Inventory and Crafting show your items on the left; the others use the whole width.
-        const bool items = screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog;
+        // Crafting, the Catalog and an open container show your items on the left; the Inventory screen alone lays itself out
+        // (#887); the others use the whole width.
+        const bool ownLayout = screen == GameScreen::Inventory && !container.open;
+        const bool items = !ownLayout && (screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog);
         if (items) {
             ImGui::Columns(2, "inv", true);
             static float colW = -1.0f;
@@ -1399,7 +1472,7 @@ void GameUI_Draw(Scene& world) {
             case GameScreen::Catalog: DrawCreative(); break; // (#823) every item, free: creative only
             case GameScreen::Inventory:
                 if (container.open) DrawContainer();
-                else DrawYou(); // (#822) the player, the suit and its modules, the off hand
+                else DrawInventoryScreen(); // (#887) the grid scaled up, the player (#822) and the stats
                 break;
             case GameScreen::Crafting: DrawCrafting(); break;
             case GameScreen::Quests:
