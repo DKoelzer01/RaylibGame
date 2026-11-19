@@ -706,12 +706,29 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const Part& bp = parts[it->second.part];
             return IsShape(bp.type) && PartPatternOf(bp) != PatGlass;
         };
+        // (#933 layer 1) Corner ambient occlusion: a face corner looks at the 3 cells around it in the layer in front of the
+        // face (the two sides and the diagonal; both sides solid = the darkest), as voxel games do. Room corners, wall/floor
+        // joints and the underside of shelves darken; the sun is untouched (ambient only, via the sky share).
+        // RAYLIBGAME_PART_AO=0: off.
+        static const bool partAo = !(getenv("RAYLIBGAME_PART_AO") && getenv("RAYLIBGAME_PART_AO")[0] == '0');
+        auto cornerAo = [&](Vector3 vp, Vector3 faceMid, Vector3 n) {
+            if (!partAo || fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) > 1e-3f) return 1.0f;
+            const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
+            const Vector3 t2 = Vector3CrossProduct(n, t1);
+            const Vector3 dv = Vector3Subtract(vp, faceMid);
+            const float s1 = Vector3DotProduct(dv, t1) >= 0.0f ? 1.0f : -1.0f, s2 = Vector3DotProduct(dv, t2) >= 0.0f ? 1.0f : -1.0f;
+            const Vector3 front = Vector3Add(faceMid, Vector3Scale(n, 0.5f)); // the middle of the cell in front of the face
+            const bool a = solidCell(Vector3Add(front, Vector3Scale(t1, s1))), b = solidCell(Vector3Add(front, Vector3Scale(t2, s2)));
+            const bool c = solidCell(Vector3Add(front, Vector3Add(Vector3Scale(t1, s1), Vector3Scale(t2, s2))));
+            static const float kLevel[4] = { 0.45f, 0.62f, 0.8f, 1.0f };
+            return kLevel[a && b ? 0 : 3 - (int)a - (int)b - (int)c];
+        };
         auto pushSkyVerts = [&](Vector3 faceMid, Vector3 n) {
             const bool axis = fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) < 1e-3f; // an axis-aligned face
             const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
             const Vector3 t2 = Vector3CrossProduct(n, t1);
             for (size_t v = emitted; v < pos.size() / 3; ++v) {
-                const Vector3 vp = { lo.x + pos[3 * v], lo.y + pos[3 * v + 1], lo.z + pos[3 * v + 2] };
+                const Vector3 vp = { lo.x + pos[3 * v] / kCellSize, lo.y + pos[3 * v + 1] / kCellSize, lo.z + pos[3 * v + 2] / kCellSize }; // (pos is in metres; the probes work in cells)
                 float fs = 0.0f;
                 int k = 0;
                 if (axis) {
@@ -725,6 +742,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
                         }
                 }
                 fs = k > 0 ? fs / k : probeAt(faceMid, n);
+                fs *= cornerAo(vp, faceMid, n); // (#933)
                 sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky);
             }
             emitted = pos.size() / 3;
@@ -751,8 +769,16 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
             Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
+            const Vector3 faceMid = Vector3Add(cellLo, polyCentre(poly));
+            if (partAo && poly.size() == 4) {
+                // (#933) A quad's fan runs along the 0-2 diagonal; when the other pair of corners is the less occluded one,
+                // start the fan one corner on so the diagonal joins those (else the AO spreads into a wedge over the quad).
+                float ao[4];
+                for (int k = 0; k < 4; ++k) ao[k] = cornerAo(Vector3Add(cellLo, poly[k]), faceMid, kFaceN[f]);
+                if (ao[1] + ao[3] > ao[0] + ao[2]) std::rotate(poly.begin(), poly.begin() + 1, poly.end());
+            }
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
-            pushSkyVerts(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]);
+            pushSkyVerts(faceMid, kFaceN[f]);
         }
         // Caps on the cutting planes.
         for (int i = 0; i < shape.planes; ++i) {
