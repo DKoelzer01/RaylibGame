@@ -94,7 +94,7 @@ namespace {
         int ringCap = 0, ringPos = 0;
         std::vector<GLuint> queued;
         ComputeProgram cull;
-        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap, hizOn, hizTex, hizSize, hizLevels, prevViewProj, prevRot, prevScale, prevOffset; } cl{}; // looked up once
+        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap, hizOn, hizTex, hizSize, hizLevels, prevViewProj, prevRot, prevScale, prevOffset, hizCam, hizNear; } cl{}; // looked up once
         struct DrawLocs { GLuint shader; GLint arena, viewProj, model; };
         std::vector<DrawLocs> drawLocs; // per draw shader (hot reload makes new ids)
         int draws = 0, flushes = 0;
@@ -195,7 +195,7 @@ namespace {
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
             S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
                      L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap"),
-                     L("hizOn"), L("hizTex"), L("hizSize"), L("hizLevels"), L("prevViewProj"), L("prevRot"), L("prevScale"), L("prevOffset") }; // (#134)
+                     L("hizOn"), L("hizTex"), L("hizSize"), L("hizLevels"), L("prevViewProj"), L("prevRot"), L("prevScale"), L("prevOffset"), L("hizCam"), L("hizNear") }; // (#134)
         }
         {   // #286: RAYLIBGAME_INDIRECT_COUNT=1 draws only the visible commands (compacted in order, indirect count draws).
             const char* ic = getenv("RAYLIBGAME_INDIRECT_COUNT");
@@ -546,6 +546,8 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
         glUniformMatrix3dv(S.cl.prevRot, 1, GL_TRUE, cull.hizBody.rot);
         glUniform1d(S.cl.prevScale, cull.hizBody.scale);
         glUniform3d(S.cl.prevOffset, cull.hizBody.offset[0], cull.hizBody.offset[1], cull.hizBody.offset[2]);
+        glUniform3f(S.cl.hizCam, cull.hizCam.x, cull.hizCam.y, cull.hizCam.z); // (#910)
+        glUniform1f(S.cl.hizNear, cull.hizNear);
     }
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
     if (hiz) { glActiveTexture(GL_TEXTURE0 + 7); glBindTexture(GL_TEXTURE_2D, 0); glActiveTexture(GL_TEXTURE0); }
