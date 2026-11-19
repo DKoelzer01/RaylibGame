@@ -829,7 +829,7 @@ static void DrawCrafting() {
         if (shown == 1) { recipeTest.firstCell = ImVec2((p.x + qd.x) * 0.5f, (p.y + qd.y) * 0.5f); recipeTest.firstRecipe = (int)i; }
         if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) { // double-click: craft one (#928: its intermediates first)
             if (creative || canMake(r)) craftQueue.push_back({ (int)i, 1 });
-            else QueuePlan(CraftPlan_Make(recipes, known, carried, (int)i, 1, machineMade));
+            else if (!Crafting_RequestRecursive((int)i, 1)) QueuePlan(CraftPlan_Make(recipes, known, carried, (int)i, 1, machineMade)); // (#946: joined, the server plans it)
         }
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
@@ -915,8 +915,9 @@ static void DrawCrafting() {
         // Queues n: in creative, or with everything carried, as it was; else the plan's steps, intermediates first.
         auto queueN = [&](int n) {
             if (creative || inventory.canCraft(r)) { craftQueue.push_back({ selectedRecipe, n }); return; }
+            if (Crafting_RequestRecursive(selectedRecipe, n)) return; // (#946) joined: one request, the server plans and crafts it whole
             const CraftPlan p = n == 1 ? plan1 : CraftPlan_Make(recipes, known, carried, selectedRecipe, n, machineMade);
-            if (p.ok) QueuePlan(p); else craftQueue.push_back({ selectedRecipe, n }); // (joined: the server checks)
+            if (p.ok) QueuePlan(p); else craftQueue.push_back({ selectedRecipe, n });
         };
         auto planTip = [&](int n) { // what a button will make first
             if (creative || !ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) return;
@@ -981,6 +982,7 @@ static void DrawCrafting() {
     // The queue: what's being crafted, next first.
     ImGui::BeginChild("craftqueue", ImVec2(0.0f, 0.0f), true);
     if (craftQueue.empty()) ImGui::TextDisabled("Queue: empty"); else ImGui::TextUnformatted("Queue:");
+    ImGui::PushTextWrapPos(0.0f); // (#946) long step labels wrap in the column ("(craftin..." was cut)
     for (size_t k = 0; k < craftQueue.size(); ++k) {
         const QueuedCraft& c = craftQueue[k];
         const ItemDef* d = c.recipe >= 0 && c.recipe < (int)recipes.size() ? itemDB.find(recipes[c.recipe].output) : nullptr;
@@ -1000,6 +1002,7 @@ static void DrawCrafting() {
         else ImGui::Text("%s  x%d%s", d ? d->name.c_str() : "?", c.left, k == 0 ? "  (crafting)" : "");
         ImGui::PopID();
     }
+    ImGui::PopTextWrapPos();
     ImGui::EndChild();
 }
 
@@ -1938,7 +1941,7 @@ bool GameUI_QueueRecursive(int recipe, int count, int* steps) { // (#928) as the
     const std::function<bool(int)> known = [&](int k) { return k >= 0 && k < (int)recipes.size() && RecipeBook_Known(recipes[k]); };
     const CraftPlan p = CraftPlan_Make(recipes, known, carried, recipe, count, machineMade);
     if (steps) *steps = (int)p.steps.size();
-    if (p.ok) QueuePlan(p);
+    if (p.ok && !Crafting_RequestRecursive(recipe, count)) QueuePlan(p); // (#946: joined, the server plans and crafts it)
     return p.ok;
 }
 int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }

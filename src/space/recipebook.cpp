@@ -94,9 +94,16 @@ bool Crafting_Request(int index, int count) {
     const auto& recipes = itemDB.recipes();
     if (index < 0 || index >= (int)recipes.size() || count < 1) return false;
     const Recipe& r = recipes[index];
-    if (gCraftRequest) { gCraftRequest(index, r.output, std::min(count, 64), true); return true; } // (#854: from nearby chests too, as the screen counts them) // the server crafts and says so
+    if (gCraftRequest) { gCraftRequest(index, r.output, std::min(count, 64), true, false); return true; } // (#854: from nearby chests too, as the screen counts them) // the server crafts and says so
     int made = 0;
     while (made < count && inventory.canCraft(r) && inventory.craft(r)) ++made;
     if (made > 0) Audio_Play(Sfx::Craft);
     return made > 0;
+}
+
+bool Crafting_RequestRecursive(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (!gCraftRequest || index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    gCraftRequest(index, recipes[index].output, std::min(count, 64), false, true); // (#946) one request: the server plans it whole
+    return true;
 }

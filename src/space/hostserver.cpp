@@ -25,6 +25,7 @@
 #include "teamquests.h"
 #include "navigation.h"
 #include "recipebook.h"
+#include "craftplan.h"
 #include "playerrecord.h"
 #include "inventory.h"
 #include "farming.h"
@@ -1800,6 +1801,44 @@ namespace {
                 if (!unlocked) { SendMsg(m.conn, MsgChat{ 0, "Your team hasn't unlocked " + rc.output + " yet" }); return; }
                 Inventory& inv = rit->second.inventory;
                 const auto before = AllAmounts(inv);
+                if (q.recursive && !rit->second.creative) {
+                    // (#946) Recursive crafting (#928) planned here, whole: the player's known recipes as the server sees them
+                    // (unlocked for its team, every ingredient held once by this inventory), its carried items; then the
+                    // steps in order, intermediates first. A step that fails stops the rest (what was made stays).
+                    const int team = TeamOfSession(it->second.session);
+                    if (team) QuestBook_Select(&TeamQuests_Book(team));
+                    std::vector<char> knownK(recipes.size(), 0);
+                    for (size_t k = 0; k < recipes.size(); ++k) {
+                        bool ok = !team || RecipeBook_Unlocked(recipes[k]);
+                        for (const auto& [in, n] : recipes[k].inputs) {
+                            bool held = inv.obtainedTotal(in) > 0.0 || inv.count(in) > 0;
+                            if (!held) for (const ItemDef& d : itemDB.items()) if (ItemMatches(in, d.id) && (inv.obtainedTotal(d.id) > 0.0 || inv.count(d.id) > 0)) { held = true; break; }
+                            ok = ok && held;
+                        }
+                        knownK[k] = ok;
+                    }
+                    if (team) QuestBook_Select(nullptr);
+                    knownK[q.recipe] = 1; // (the target itself: unlocked, checked above)
+                    std::set<std::string> machineMade;
+                    for (const auto& ri : Factory::RecipeList()) for (const auto& o : ri.out) machineMade.insert(o.first);
+                    std::map<std::string, int> carried;
+                    for (const auto& kv : inv.all()) carried[kv.first] = kv.second;
+                    const CraftPlan plan = CraftPlan_Make(recipes, [&](int k) { return k >= 0 && k < (int)knownK.size() && knownK[k]; }, carried, (int)q.recipe, q.count, machineMade);
+                    if (!plan.ok) { SendMsg(m.conn, MsgChat{ 0, std::string("Missing items for ") + rc.output }); return; }
+                    int made = 0;
+                    bool stopped = false;
+                    for (const CraftStep& s : plan.steps) {
+                        for (int k = 0; k < s.times && !stopped; ++k) {
+                            if (!inv.craft(recipes[s.recipe])) stopped = true;
+                            else if (s.recipe == (int)q.recipe) ++made;
+                        }
+                        if (stopped) break;
+                    }
+                    SendChangedItems(m.conn, inv, before);
+                    if (made < q.count) SendMsg(m.conn, MsgChat{ 0, TextFormat("Crafted %d of %d %s: a step ran short", made, (int)q.count, rc.output.c_str()) });
+                    crafts += made;
+                    return;
+                }
                 int made = 0;
                 if (rit->second.creative) { for (; made < q.count; ++made) inv.addAmount(rc.output, rc.outputCount); } // (#823) creative: free
                 else while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
@@ -2085,6 +2124,11 @@ double Host_PlayersApart(Scene& world, uint32_t a, uint32_t b) {
 int Host_ItemCount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? -1 : it->second.inventory.count(item);
+}
+bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (tests) count < 0 takes
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    return count >= 0 ? (it->second.inventory.add(item, count), true) : it->second.inventory.remove(item, -count);
 }
 bool Host_ForgetPlayers() {
     for (const Session& s : sessions) if (s.online) return false;
