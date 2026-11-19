@@ -635,7 +635,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (id == "repair_kit") { Repair(cv); return; }
     if (id == "crucible_mold" || id == "fired_crucible") { Crucible(cv, c); return; }
     if (id == "fence" || id == "gate") { Fence(cv, c, id == "gate"); return; }
-    if (id == "lamp" || id == "lamp_upgrade") { Lantern(cv, c); return; }
+    if (id == "lamp" || id == "lamp_upgrade" || id == "lantern") { Lantern(cv, c); return; } // (#836: the lantern too)
     if (id == "any_planks") { Planks(cv, c); return; }
     if (id == "insulation_module") { Module(cv, c, Sym::Plus); return; }
     if (id == "rebreather") { Module(cv, c, Sym::Drop); return; }
