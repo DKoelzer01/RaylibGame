@@ -56,6 +56,11 @@ void Combat_OnDeath(PlayerSession& s);
 int Combat_GraveCount();
 // Drops a stack at the player's feet as a pile (#564), picked up by walking back to it after leaving; false: nowhere.
 bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
+// (#865) A pile at `at` (body-local) on that body: a server dropping a remote player's stack (who: its name, the pile's owner;
+// only their walk arms it). A joined client's
+// Combat_Drop sends gDropRequest instead (the item, hundredths of a unit): the server makes the pile and the deltas.
+bool Combat_DropFor(const std::string& body, const DVec3& at, const struct InvSlot& stack, const std::string& who); // at: body-local feet
+inline std::function<void(const std::string& item, int64_t centi)> gDropRequest;
 int Combat_DroppedPiles();
 void Combat_DrawGraves(Scene& world);
 void Combat_Reset();                          // a new world: no graves
@@ -71,7 +76,8 @@ class Inventory; struct ToolWearState;
 // anyone may loot). wear: their tool wear (nullptr: none kept, a server's remote player). True when a grave was made.
 bool Combat_OnDeathFor(Inventory& inv, ToolWearState* wear, const Player& p, const std::string& owner, DeathDrops mode, bool local);
 // One player walking up to graves takes what they may (Combat_Step does this for the local player). True when anything moved.
-bool Combat_PickUpGravesFor(const Player& p, Inventory& inv, const std::string& who, bool dead, bool local);
+// body, me: the player's body and body-local feet (a server: from its netState, right between its steps, #856).
+bool Combat_PickUpGravesFor(const std::string& body, const DVec3& me, Inventory& inv, const std::string& who, bool dead, bool local);
 // Who may loot a grave: the owner and their team at once; anyone else 15 minutes after the death, never inside the owner's
 // team claim. Times are wall-clock seconds (graves outlive server restarts). An owner "" (single player): anyone.
 bool Combat_CanLoot(const std::string& owner, int64_t diedAt, const std::string& who, int64_t now, bool inOwnerClaim);
@@ -86,7 +92,8 @@ bool Combat_SameTeam(const std::string& a, const std::string& b);
 int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now);
 // Replication (#804, NetMsg 31): the graves (not dropped piles) as the server lists them, and a client's mirror of them
 // (drawn; its own and its team's get a compass waypoint and a toast when new). Version: bumps on every change.
-struct GraveInfo { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
+struct GraveInfo { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
+                   bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile and up to 3 of its item ids
 std::vector<GraveInfo> Combat_GraveList();
 void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string& me);
 uint32_t Combat_GraveVersion();
