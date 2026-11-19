@@ -1517,6 +1517,7 @@ int main(int argc, char** argv)
         gDropRequest = [](const std::string& item, int64_t centi) { NetClient_DropItems(gJoin, item, centi); }; // (#865)
         gCreativeGive = [](const std::string& item, int count) { NetClient_CreativeGive(gJoin, item, count); }; // (#866)
         gCraftRequest = [](int index, const std::string& output, int count, bool useChests, bool recursive) { NetClient_Craft(gJoin, index, output, count, useChests, recursive); }; // (#338) and our crafting
+        gSkillSpendRequest = [](const std::string& perk) { NetClient_SkillSpend(gJoin, perk); }; // (#920) perk points are the server's
         // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
         gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
         gFarmRequest = [](Planetoid& b, const Plot& plot, int part, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, plot.id, part, seed); };
@@ -11063,7 +11064,7 @@ int main(int argc, char** argv)
                     // A stroke every 0.6 s: five digs (bare hands get ~0.4 dirt a stroke; a place costs a whole one), each into
                     // the hole the last one left; then the place and the refusals.
                     constexpr int kDigs = 5;
-                    if (step <= kDigs + 1 && GetTime() - t0 > 0.6 * step) {
+                    if (step <= kDigs + 3 && GetTime() - t0 > 0.6 * step) {
                         if (step < kDigs) {
                             spot();
                             const Vector3 c = Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR));
@@ -11078,6 +11079,14 @@ int main(int argc, char** argv)
                             NetClient_RequestEdit(bob, NetEditKind::Dig, *body, far, far, digR, "");                   // reach
                             NetClient_RequestEdit(bob, NetEditKind::Place, *body, hitPt, hitPt, digR, "stone");        // cost
                             for (int k = 0; k < 5; ++k) NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR)), digR, ""); // rate
+                        } else if (step == kDigs + 2) { // (#920) perk points: bob gets one (mining XP), carol has none; carol eats
+                            Host_TestSkillXp(bob.welcome.session, "mining", 2600.0);
+                            NetClient_SkillSpend(carol, "quick_pick");            // refused: no points
+                            Host_TestSetFood(carol.welcome.session, 50.0f);
+                            Host_TestGive(carol.welcome.session, "berries", 1);
+                            NetClient_UseItem(carol, "berries");                  // Survival XP for eating
+                        } else if (step == kDigs + 3) {
+                            NetClient_SkillSpend(bob, "quick_pick");              // allowed: the server's copy has the point
                         }
                         ++step;
                         lastStepAt = GetTime();
@@ -11091,7 +11100,7 @@ int main(int argc, char** argv)
                         world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(body->dirToWorld(up), 3.0f), Vector3Scale(side, 4.0f)));
                         world.camera.target = at; world.camera.up = body->dirToWorld(up);
                     }
-                    if (step > kDigs + 1 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
+                    if (step > kDigs + 3 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
                         const int accepted = Host_EditsApplied();
                         const bool sameOrder = bob.editsSeen == carol.editsSeen && bob.editOrder == carol.editOrder && bob.editsSeen == accepted;
                         const bool dugOut = body && body->densityAt(firstCentre) < ISO_LEVEL;
@@ -11104,8 +11113,13 @@ int main(int argc, char** argv)
                         const bool placed = bob.placesSeen == 1 && carol.placesSeen == 1;
                         // (#920) bob's digs earned XP on the server, which sent his skills (carol, who dug nothing, has none)
                         auto xpOf = [](NetClient& c) { double x = 0.0; for (const auto& [id, v] : c.skills.xp) x += v; return x; };
-                        const double bobXp = xpOf(bob), carolXp = xpOf(carol);
-                        const bool skillsOk = bob.skillStates >= 1 && bobXp > 0.0 && carolXp == 0.0;
+                        const double bobXp = xpOf(bob), carolXp = carol.skills.xp["digging"] + carol.skills.xp["mining"]; // (carol's own: eating, below)
+                        // (#920) perk spends: bob's (a point from the XP given) allowed, carol's (none) refused; carol's eating paid Survival XP
+                        const bool spendOk = bob.skills.ranks["quick_pick"] == 1 && Host_SkillSpends() == 1 && Host_SkillSpendsRefused() >= 1;
+                        const bool eatOk = carol.skills.xp["survival"] > 0.0;
+                        printf("bench: net dig (#920): bob learnt Quick Pick %d (spends allowed %d, refused %d); carol ate: survival %.1f XP -> %s\n",
+                               bob.skills.ranks["quick_pick"], Host_SkillSpends(), Host_SkillSpendsRefused(), carol.skills.xp["survival"], spendOk && eatOk ? "ok" : "FAIL");
+                        const bool skillsOk = bob.skillStates >= 1 && bobXp > 0.0 && carolXp == 0.0 && spendOk && eatOk;
                         // (#984) carol gets none of bob's yields (her own deltas are the starting kit a new player gets at the join)
                         const bool carolNone = carolInv.amount("dirt") == 0.0 && carolInv.amount("gravel") == 0.0;
                         printf("bench: net dig (#920): bob heard %d skill states, %.1f XP from his digs (digging %.1f, mining %.1f); carol %.1f XP -> %s\n",
@@ -12757,7 +12771,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }

@@ -692,7 +692,7 @@ namespace {
     }
     uint32_t ConnOf(uint32_t session); // (below)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
-    int skillStatesSent = 0; // (#920 tests)
+    int skillStatesSent = 0, skillSpends = 0, skillSpendsRefused = 0; // (#920 tests)
     // (#920) Each player's skills, to that player, when they changed: at most every 2 s (a level-up or the join at once).
     void SendSkills() {
         for (const auto& [conn, p] : peers) {
@@ -1815,6 +1815,21 @@ namespace {
                 SendChangedItems(m.conn, inv, before);
                 return;
             }
+            case NetMsg::SkillSpend: { // (#920) a point on a perk: the server's copy of the skills decides (points, tier, ranks, needs)
+                MsgSkillSpend q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end()) return;
+                if (!Skills_Buy(rit->second.skills, q.perk)) {
+                    ++skillSpendsRefused;
+                    const PerkDef* p = Skills_FindPerk(q.perk);
+                    SendMsg(m.conn, MsgChat{ 0, std::string("Can't learn ") + (p ? p->name : q.perk) + " now" });
+                    return;
+                }
+                ++skillSpends;
+                rit->second.skillsDirty = true; rit->second.skillsSentAt = -1e9; // (the new state at once)
+                return;
+            }
             case NetMsg::CreativeGive: { // (#866) a creative player's Catalog: free items (or "" clears its inventory); refused otherwise
                 MsgCreativeGive q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -2175,6 +2190,18 @@ int Host_ItemCount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? -1 : it->second.inventory.count(item);
 }
+// (#920 tests) XP into a remote player's skill (sent with the next SkillState); their food (so eating is not refused as full);
+// the perk spends the server allowed and refused.
+bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    Skills_AddXp(it->second.skills, skill, xp, 1.0);
+    it->second.skillsDirty = true; it->second.skillsSentAt = -1e9;
+    return true;
+}
+bool Host_TestSetFood(uint32_t session, float food) { auto it = remotes.find(session); if (it == remotes.end()) return false; it->second.survival.food = food; return true; }
+int Host_SkillSpends() { return skillSpends; }
+int Host_SkillSpendsRefused() { return skillSpendsRefused; }
 bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (tests) count < 0 takes
     auto it = remotes.find(session);
     if (it == remotes.end()) return false;
