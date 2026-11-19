@@ -58,6 +58,7 @@ bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pou
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 bool TerrainTool_LastHit(class Planetoid*& body, Vector3& local, Vector3& normalWorld); // the crosshair's terrain hit (placing torches, #218)
 bool TerrainTool_TestFill(); // --test-fill (#228): an exact sphere of dirt, paid by volume
+bool TerrainTool_TestFillOffHand(); // (#836) a tool in hand: RMB places the off hand's block stack
 class Planetoid;
 bool TerrainTool_DigAt(Planetoid& p, Vector3 local);              // tests: dig a point, gain what it held
 bool TerrainTool_HarvestNearest(Planetoid& p, Vector3 local, bool tree, bool stone = false); // tests: fell / harvest the nearest plant (or pick up stones)
