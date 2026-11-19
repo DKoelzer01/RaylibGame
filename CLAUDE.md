@@ -224,6 +224,8 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   the JoinInfo + shower (src/space/hostserver.*); `--test-host` (loopback client; SKIP without GNS), `--test-shower`.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
+- Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
+  together. `--cave-stats R` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest mouth).
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
   SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
   dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.

@@ -659,6 +659,7 @@ int main(int argc, char** argv)
     bool benchWind = false; // --test-wind (#650)
     bool benchCampfire = false; int campfirePhase = 0; double campfireT0 = 0.0; uint32_t campfirePlot = 0; int campfirePart = -1; Vector3 campfireAt{}, campfireOut{}; // --shot-campfire (#552)
     bool benchCaveMouth = false; int mouthPhase = 0; double mouthT0 = 0.0; Vector3 mouthAt{}, mouthOut{}; // --shot-cave-mouth (#549)
+    bool benchTestCaves = false; int cavesPhase = 0; double cavesT0 = 0.0; std::vector<Vector3> cavesPath; int cavesOpen = 0; float cavesInside = 0.0f; // --test-caves (#615)
     bool benchMountain = false; int mountainPhase = 0; double mountainT0 = 0.0; Vector3 mountainAt{}, mountainOut{}; // --shot-mountain (#545)
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
@@ -1030,6 +1031,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-wind") benchWind = true;
         if (std::string(argv[i]) == "--shot-campfire") benchCampfire = true;
         if (std::string(argv[i]) == "--shot-cave-mouth") benchCaveMouth = true;
+        if (std::string(argv[i]) == "--test-caves") benchTestCaves = true; // (#615 step 1 scaffold)
         if (std::string(argv[i]) == "--shot-mountain") benchMountain = true;
         if (std::string(argv[i]) == "--shot-shelter") benchShelter = true;
         if (std::string(argv[i]) == "--shot-room") benchRoom = true;
@@ -1661,6 +1663,55 @@ int main(int argc, char** argv)
                 // score ~0.85 +- 0.01 wherever they land: 0.847 on 2026-11-15. A 1 m lattice scored 0.28, so 0.83 still catches
                 // any real regression.)
             }
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
+            // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
+            // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
+            // #549 roof collapse opened, and the trench metric: columns open to the sky through a cave (a cave sample within
+            // 4 m under the surface with no rock above it: a roof under 4 m). Plus an FNV hash of the full density there
+            // (refactors must leave it unchanged).
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            long long tunnel = 0, cavern = 0, samples = 0, land = 0, collapsedCols = 0, trenchCols = 0, caveCols = 0;
+            uint64_t hash = 1469598103934665603ull;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (float a = -R; a <= R; a += 2.0f)
+                for (float b = -R; b <= R; b += 2.0f) {
+                    if (a * a + b * b > R * R) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                    const float e = pf->elevation(dir);
+                    if (e < 0.0f) continue;
+                    ++land;
+                    const float surface = pf->radius + e;
+                    bool anyCave = false, collapsed = false, rockAbove = false, trench = false;
+                    for (float h = 14.0f; h >= -80.0f; h -= 0.5f) {
+                        const Vector3 q = Vector3Scale(dir, surface + h);
+                        const float dens = pf->baseDensity(q);
+                        uint32_t bits; memcpy(&bits, &dens, 4);
+                        hash = (hash ^ bits) * 1099511628211ull;
+                        ++samples;
+                        PlanetField::CaveHit hit;
+                        const float m = pf->caveDistance(q, surface + h, -h, surface, 0.0f, nullptr, &hit);
+                        const bool open = dens < ISO_LEVEL, caveOpen = open && m < 0.0f;
+                        if (caveOpen) { anyCave = true; if (hit.kind == 1) ++tunnel; else if (hit.kind == 2) ++cavern; if (hit.collapsed) collapsed = true; }
+                        if (h <= 0.0f && !open) rockAbove = true;
+                        if (caveOpen && -h < 4.0f && h <= 0.0f && !rockAbove) trench = true;
+                    }
+                    caveCols += anyCave; collapsedCols += collapsed; trenchCols += trench;
+                }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave stats: R %.0f m, %lld land columns (2 m), %lld samples (0.5 m, +14..-80 m) in %.0f ms\n", R, land, samples, ms);
+            printf("bench: cave stats: open cave samples: tunnel %lld, cavern %lld (%.2f%% of samples); columns with a cave %lld (%.1f%%)\n",
+                   tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
+            printf("bench: cave stats: columns a #549 roof collapse opened %lld; trench columns (open to the sky through a cave, roof < 4 m) %lld = %.0f m^2 (%.2f%% of land)\n",
+                   collapsedCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
             return 0;
         }
     for (int i = 1; i < argc; ++i)
@@ -5994,6 +6045,81 @@ int main(int argc, char** argv)
                             benchMountain = false;
                         }
                     }
+                } else if (benchTestCaves && (cavesPhase > 0 || WorldIdle())) {
+                    // --test-caves (#615 step 1 scaffold): the nearest cave mouth to the start (open ground 2-6 m under the
+                    // surface), a path planned through the density field from 30 m outside into the mouth and on along the
+                    // passage (each 1 m step toward the most open of 26 directions, never back the way it came, 60 m), the
+                    // camera flown along it in 12 s (record it with --record), and a check: the path's samples are open space
+                    // and it got 10 m+ under the surface. Cave types and chambers come with the later steps.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    if (!pf) { printf("bench: caves: needs the planet -> FAIL\n"); benchTestCaves = false; }
+                    else if (cavesPhase == 0) {
+                        const Vector3 home = pf->findSpawnDir(p->seed);
+                        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+                        float best = 1e30f; Vector3 at{};
+                        for (float a = -3000.0f; a <= 3000.0f; a += 20.0f)
+                            for (float b = -3000.0f; b <= 3000.0f; b += 20.0f) {
+                                const Vector3 dd = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                                const float e = pf->elevation(dd);
+                                if (e < 2.0f) continue;
+                                const float s = pf->radius + e;
+                                if (pf->baseDensity(Vector3Scale(dd, s - 2.0f)) >= ISO_LEVEL || pf->baseDensity(Vector3Scale(dd, s - 6.0f)) >= ISO_LEVEL) continue;
+                                const float dist = sqrtf(a * a + b * b);
+                                if (dist < best) { best = dist; at = Vector3Scale(dd, s - 3.0f); }
+                            }
+                        if (best > 1e29f) { printf("bench: caves: no cave mouth within 3 km -> FAIL\n"); benchTestCaves = false; }
+                        else {
+                            const Vector3 up = Vector3Normalize(at);
+                            const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), e2 = Vector3CrossProduct(up, e1);
+                            Vector3 out = e1; int bestOpen = -1; // the side the mouth opens to: the most open air 3 m down
+                            for (int k = 0; k < 16; ++k) {
+                                const float ang = 2.0f * PI * k / 16.0f;
+                                const Vector3 h = Vector3Add(Vector3Scale(e1, cosf(ang)), Vector3Scale(e2, sinf(ang)));
+                                int open = 0;
+                                for (float r = 2.0f; r <= 30.0f; r += 2.0f) open += pf->baseDensity(Vector3Add(at, Vector3Scale(h, r))) < ISO_LEVEL;
+                                if (open > bestOpen) { bestOpen = open; out = h; }
+                            }
+                            cavesPath.clear();
+                            const Vector3 start = Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f)));
+                            for (int k = 0; k <= 30; ++k) cavesPath.push_back(Vector3Lerp(start, at, k / 30.0f)); // the approach
+                            Vector3 pos = at, prev = Vector3Scale(out, -1.0f);
+                            for (int k = 0; k < 60; ++k) {          // on along the passage
+                                Vector3 bestDir = prev; float bestD = 1e30f;
+                                for (int x = -1; x <= 1; ++x) for (int y = -1; y <= 1; ++y) for (int z = -1; z <= 1; ++z) {
+                                    if (!x && !y && !z) continue;
+                                    const Vector3 dir = Vector3Normalize({ (float)x, (float)y, (float)z });
+                                    if (Vector3DotProduct(dir, prev) < 0.2f) continue;     // never back
+                                    const float dens = pf->baseDensity(Vector3Add(pos, Vector3Scale(dir, 1.5f))) + 0.02f * Vector3DotProduct(dir, up); // prefer down a little
+                                    if (dens < bestD) { bestD = dens; bestDir = dir; }
+                                }
+                                prev = bestDir; pos = Vector3Add(pos, bestDir); cavesPath.push_back(pos);
+                            }
+                            cavesOpen = 0; cavesInside = 0.0f;
+                            for (size_t k = 31; k < cavesPath.size(); ++k) {
+                                const Vector3 q = cavesPath[k];
+                                cavesOpen += pf->baseDensity(q) < ISO_LEVEL;
+                                const float len = Vector3Length(q);
+                                cavesInside = std::max(cavesInside, pf->radius + pf->elevation(Vector3Scale(q, 1.0f / len)) - len);
+                            }
+                            printf("bench: caves: mouth %.0f m from the start; path %zu points (30 m approach, 60 m inside)\n", best, cavesPath.size());
+                            player.flyMode = true;
+                            cavesPhase = 1; cavesT0 = GetTime();
+                        }
+                    } else {
+                        const float u = std::min(1.0f, (float)((GetTime() - cavesT0) / 12.0)) * (float)(cavesPath.size() - 2);
+                        const int k = (int)u;
+                        const Vector3 eye = Vector3Lerp(cavesPath[k], cavesPath[k + 1], u - k);
+                        const Vector3 ahead = cavesPath[std::min(k + 4, (int)cavesPath.size() - 1)];
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(ahead); world.camera.up = p->dirToWorld(Vector3Normalize(eye));
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (GetTime() - cavesT0 > 12.5) {
+                            const int inside = (int)cavesPath.size() - 31;
+                            const bool ok = cavesOpen >= inside * 0.9f && cavesInside >= 10.0f;
+                            printf("bench: caves: %d of %d path points inside are open space; deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesInside, ok ? "PASS" : "FAIL");
+                            benchTestCaves = false;
+                        }
+                    }
                 } else if (benchCaveMouth && (mouthPhase > 0 || WorldIdle())) {
                     // --shot-cave-mouth (#549): the nearest cave mouth to the start (open ground 2 m and 6 m under the
                     // surface), how open it is per LOD footprint, and shots from 20, 80 and 250 m (bench_mouth_<m>.png).
@@ -9291,7 +9417,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchTestCaves && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);

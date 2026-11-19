@@ -392,25 +392,20 @@ float floatingIsland(vec3 p, float d) {
 }
 
 // PlanetField::densityNear with the column given.
-float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet) { // cwet (#971): the wet lowland column
-    precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
-    precise float depth = surface - d;
-    if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
-    if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
-    if (depth < 3.0 && depth > -14.0) {
-        precise float m = rockFeature(p, d, surface, fp);
-        if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
-    }
+// (#615 step 1) The caves in one place, bit-exact with PlanetField::caveDistance (voxel.cpp): metres to the nearest cave
+// wall (< 0 inside; 1e9 where none reaches). Worm tunnels with #549's mouth regions (thin roofs collapse; #971: not in wet
+// lowlands, cwet) and caverns.
+float caveDistance(vec3 p, float d, float depth, float fp, float cwet) {
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     precise float caveTop = 5.0;
     precise float mouth = 0.0; // #549: in mouth regions tunnels open at full width where they meet the surface
     if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); if (mouth > 0.0) mouth = mouth * (1.0 - cwet); caveTop = 5.0 - 7.5 * mouth; } // (#971) wet lowlands keep their roofs
-    // #549: in mouth regions a roof thinner than 4 m collapses (voxel.cpp densityNear, bit-exact with it).
+    // #549: in mouth regions a roof thinner than 4 m collapses.
     precise float gate = mouth > 0.0 ? -14.0 : caveTop;
+    precise float m = 1e9;
     if (caveWeight > 0.0 && depth > gate && d > mantleRadius + 20.0) {
         precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
         precise float reach = mouth > 0.0 ? max(near_, 4.0 + 1.0 - depth) : near_;
-        precise float m = 1e9;
         precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
         if ((a - K_TUNNEL_LEVEL) * 100.0 <= reach) {
             precise float top = clamp(xdiv(depth - caveTop, 8.0), 0.0, 1.0);
@@ -429,6 +424,22 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
             precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
             m = min(m, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
         }
+    }
+    return m;
+}
+
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet) { // cwet (#971): the wet lowland column
+    precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
+    precise float depth = surface - d;
+    if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
+    if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
+    if (depth < 3.0 && depth > -14.0) {
+        precise float m = rockFeature(p, d, surface, fp);
+        if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+    }
+    { // caves (#615 step 1: caveDistance, bit-exact with the CPU's)
+        precise float m = caveDistance(p, d, depth, fp, cwet);
+        precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
         if (m < near_) v = min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     if (depth < -15.0 && planetMoon == 0) {
