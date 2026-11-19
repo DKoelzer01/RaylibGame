@@ -471,7 +471,7 @@ namespace {
 bool CompareShot(const std::string& name, const std::string& shotPath, double tolPct) {
     std::error_code ec;
     std::string scen = R.def.name;
-    for (char& ch : scen) if (ch == '/' || ch == ':' || ch == '\') ch = '_';
+    for (char& ch : scen) if (ch == '/' || ch == ':' || ch == '\\') ch = '_';
     const std::string dir = Scenario_BaselineDir() + "/" + scen, base = dir + "/" + name;
     const bool update = getenv("RAYLIBGAME_BASELINE_UPDATE") && atoi(getenv("RAYLIBGAME_BASELINE_UPDATE")) != 0;
     if (!fs::exists(shotPath, ec)) return Record("shot " + name, 0.0, "is", "taken", false, "no image at " + shotPath);
