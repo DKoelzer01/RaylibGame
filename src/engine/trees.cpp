@@ -319,13 +319,13 @@ float Smooth(float a, float b, float x) { const float t = std::clamp((x - a) / (
 struct BiomeFlora { float trees, bushes, stones; bool cold; float size; float cover = 0.0f; }; // cover: least tree odds anywhere in it (closed canopy)
 static BiomeFlora FloraOf(Biome b) {
     switch (b) {
-        case Biome::Jungle:   return { 1.5f, 1.4f, 0.5f, false, 1.35f, 0.34f };
+        case Biome::Jungle:   return { 1.5f, 1.4f, 0.8f, false, 1.35f, 0.34f }; // (#893: stones 0.5 -> 0.8)
         case Biome::Savanna:  return { 0.08f, 0.45f, 1.0f, false, 1.15f };
         case Biome::Desert:   return { 0.0f, 0.06f, 2.0f, false, 1.0f };
         case Biome::Badlands: return { 0.02f, 0.12f, 2.5f, false, 0.8f };
         case Biome::Forest:   return { 1.0f, 1.0f, 1.0f, false, 1.0f };
         case Biome::Meadow:   return { 0.07f, 1.3f, 0.8f, false, 1.1f };
-        case Biome::Swamp:    return { 0.45f, 1.5f, 0.3f, false, 0.9f };
+        case Biome::Swamp:    return { 0.45f, 1.5f, 0.8f, false, 0.9f };          // (#893: stones 0.3 -> 0.8)
         case Biome::Taiga:    return { 1.35f, 0.6f, 1.0f, true, 1.05f, 0.26f };
         case Biome::Tundra:   return { 0.04f, 0.35f, 1.6f, true, 0.6f };
         case Biome::Alpine:   return { 0.25f, 0.5f, 1.5f, true, 0.8f };
@@ -423,7 +423,9 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
             }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
-            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
+            // Trees and bushes root in turf or soil; loose stones lie on any natural ground but snow and ice (#893: the swamp's clay
+            // and mud and the desert's sand had none, though their biomes call for them; the mountaintops stay bare by height).
+            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
             if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
             if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
@@ -819,6 +821,27 @@ static void TilesAround(Vector3 dir, float radius, TreeTileKey out[9], int& n) {
             for (int m = 0; m < n; ++m) dup |= out[m] == k;
             if (!dup) out[n++] = k;
         }
+}
+
+// (#893 tests) The scatter around `dir` as generated (no edits, removals or clearings), counted within `range` m of the
+// ground point there: trees, bushes and loose stones. Builds the tiles itself (the tree system need not have them).
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones) {
+    trees = bushes = stones = 0;
+    const Vector3 d = Vector3Normalize(dir);
+    const Vector3 at = Vector3Scale(d, f.radius + f.elevation(d));
+    TreeTileKey keys[9]; int n = 0;
+    TilesAround(d, f.radius, keys, n);
+    const TerrainDeltas none;
+    const PlantRemovals noRemovals;
+    const std::vector<Vector4> noClearings;
+    for (int k = 0; k < n; ++k) {
+        TreeTile t;
+        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t);
+        for (const Plant& p : t.plants) {
+            if (Vector3Distance(p.base, at) > range) continue;
+            if (p.stone()) ++stones; else if (p.tree()) ++trees; else ++bushes;
+        }
+    }
 }
 
 void TreeSystem::trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const {

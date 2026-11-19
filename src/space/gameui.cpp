@@ -1277,6 +1277,13 @@ static void DrawYou() {
     Suit_DrawStats();
 }
 
+// (#894) The pointer is over none of our windows. IsWindowHovered(AnyWindow) alone says no while an item is active, and a
+// cell's InvisibleButton turns active on the very press that picks a stack up: that press counted as "outside the window"
+// and dropped the stack it had just picked up. Blocked by an active item or a pop-up, a window under the pointer still counts.
+static bool PointerOutsideWindows() {
+    return !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_AllowWhenBlockedByPopup);
+}
+
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
@@ -1370,6 +1377,7 @@ void GameUI_Draw(Scene& world) {
         ImGui::PopStyleColor();
     }
     // The item rules (#862), once a frame: the mouse and keys with the slot under the mouse (Alt-clicks open the database).
+    const bool heldBefore = !cursorStack.empty(); // (#894: only a stack already held when the click came may be dropped by it)
     if (!io.KeyAlt && !databaseOpen) {
         SlotInput in;
         in.lPress = ImGui::IsMouseClicked(ImGuiMouseButton_Left); in.rPress = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
@@ -1391,8 +1399,9 @@ void GameUI_Draw(Scene& world) {
         SlotRules_SetGrids(grids);
         SlotRules_Frame(in, hoverGrid, hoverSlot);
     }
-    // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
-    if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+    // A click outside every window drops the held stack (right-click: one unit) at the feet (#564). Only a stack held before
+    // this click, and only outside every window even while a cell's button is active (#894: a pickup click dropped it).
+    if (heldBefore && !cursorStack.empty() && PointerOutsideWindows()) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) DropCursor(cursorStack.centi);
         else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) DropCursor(100);
     }
@@ -1577,3 +1586,59 @@ static void DrawKeyHints(int x, int y) {
     DrawText(line.c_str(), x, std::min(y, GetScreenHeight() - fs - (int)(8 * s)), fs, Fade(RAYWHITE, alpha)); // (larger text: kept on screen)
 }
 void GameUI_InstallKeyHints() { gKeyHintsHook = DrawKeyHints; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#894): the press that picks a stack up is not a click outside the window ----
+#include "unit_helpers.h"
+
+namespace {
+struct HeadlessImGui { // a context with a 1280 x 720 display and the mouse injected per frame
+    ImGuiContext* prev = nullptr;
+    ImGuiContext* ctx = nullptr;
+    HeadlessImGui() {
+        prev = ImGui::GetCurrentContext();
+        ctx = ImGui::CreateContext();
+        ImGui::SetCurrentContext(ctx);
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(1280.0f, 720.0f); io.DeltaTime = 1.0f / 60.0f; io.IniFilename = nullptr;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // (as rlImGui sets: the 1.92 font atlas builds as fonts are used)
+        io.Fonts->AddFontDefault();
+    }
+    ~HeadlessImGui() { ImGui::DestroyContext(ctx); ImGui::SetCurrentContext(prev); }
+    // One frame: a window at (0,0) 800 x 600 with a cell button at (100,100); after it, `after` runs (as GameUI_Draw's tail).
+    template <class F> void Frame(float mx, float my, bool down, F after) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(mx, my); io.AddMouseButtonEvent(0, down);
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f)); ImGui::SetNextWindowSize(ImVec2(800.0f, 600.0f));
+        ImGui::Begin("game window", nullptr, ImGuiWindowFlags_NoDecoration);
+        ImGui::SetCursorScreenPos(ImVec2(100.0f, 100.0f));
+        ImGui::InvisibleButton("cell", ImVec2(54.0f, 54.0f));
+        ImGui::End();
+        after();
+        ImGui::Render();
+    }
+};
+}
+
+TEST(GameUiCursor, ThePressThatPicksAStackUpIsNotAClickOutside) {
+    HeadlessImGui ui;
+    bool oldCheckSaysOutside = false, outside = true;
+    ui.Frame(120.0f, 120.0f, false, [] {});
+    ui.Frame(120.0f, 120.0f, true, [&] { // the press on the cell (it picked the stack up: its button is active now)
+        oldCheckSaysOutside = !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
+        outside = PointerOutsideWindows();
+    });
+    EXPECT_TRUE(oldCheckSaysOutside) << "the cause of #894: an active button hides the window from IsWindowHovered(AnyWindow)";
+    EXPECT_FALSE(outside) << "over the window: the stack stays on the cursor";
+    ui.Frame(120.0f, 120.0f, false, [&] { EXPECT_FALSE(PointerOutsideWindows()) << "the release on the cell"; });
+}
+
+TEST(GameUiCursor, AClickOutsideEveryWindowIsOutside) {
+    HeadlessImGui ui;
+    bool outside = false;
+    ui.Frame(1000.0f, 650.0f, false, [] {});
+    ui.Frame(1000.0f, 650.0f, true, [&] { outside = PointerOutsideWindows(); });
+    EXPECT_TRUE(outside) << "past the window: a held stack is dropped at the feet";
+}
+#endif
