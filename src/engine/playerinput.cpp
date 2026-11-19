@@ -158,4 +158,12 @@ TEST(HoldLatch, AReleaseInTheSameFrameAsTheBreakClearsIt) {
     EXPECT_FALSE(l.allows(false));
     EXPECT_FALSE(l.latched);
 }
+
+TEST(HoldLatch, EatingKeepsLmbDeadUntilAReleaseAfterIt) { // (#896) eating consumes it every frame
+    HoldLatch l;
+    for (int f = 0; f < 30; ++f) { l.consume(); EXPECT_FALSE(l.allows(f >= 10)) << "pressed while eating (frame " << f << ")"; }
+    EXPECT_FALSE(l.allows(true)) << "eating stopped, LMB still held from before: still nothing";
+    EXPECT_FALSE(l.allows(false));
+    EXPECT_TRUE(l.allows(true)) << "pressed again after eating";
+}
 #endif
