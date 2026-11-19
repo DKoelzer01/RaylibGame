@@ -690,14 +690,41 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky); } emitted = pos.size() / 3; };
         // (#922) Per vertex (a little in from the corner, toward the face's middle), so the light grades smoothly across the
         // 0.5 m faces instead of stepping; corners shared by faces with the same normal are probed once.
+        // (#926) A corner's value = the mean of the probes from the middles of the (up to 4) cell faces in its plane around
+        // it, skipping middles whose ray origin sits in a solid cell. Probing at the corner itself let one corner of a quad
+        // read much darker than the others (its rays start against the neighbouring part), and the two triangles of the quad
+        // interpolated that differently: dark wedges and streaks on walls. Shared middles are probed once.
+        auto probeAt = [&](Vector3 p, Vector3 n) {
+            const std::array<int, 6> key = { (int)lroundf(p.x * 8.0f), (int)lroundf(p.y * 8.0f), (int)lroundf(p.z * 8.0f),
+                                             (int)lroundf(n.x * 64.0f), (int)lroundf(n.y * 64.0f), (int)lroundf(n.z * 64.0f) };
+            auto it = vertexSky.find(key);
+            return it != vertexSky.end() ? it->second : (vertexSky[key] = faceSky(p, n));
+        };
+        auto solidCell = [&](Vector3 q) {
+            auto it = cells.find(Int3{ (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) });
+            if (it == cells.end()) return false;
+            const Part& bp = parts[it->second.part];
+            return IsShape(bp.type) && PartPatternOf(bp) != PatGlass;
+        };
         auto pushSkyVerts = [&](Vector3 faceMid, Vector3 n) {
+            const bool axis = fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) < 1e-3f; // an axis-aligned face
+            const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
+            const Vector3 t2 = Vector3CrossProduct(n, t1);
             for (size_t v = emitted; v < pos.size() / 3; ++v) {
                 const Vector3 vp = { lo.x + pos[3 * v], lo.y + pos[3 * v + 1], lo.z + pos[3 * v + 2] };
-                const Vector3 q = Vector3Lerp(vp, faceMid, 0.15f);
-                const std::array<int, 6> key = { (int)lroundf(vp.x * 8.0f), (int)lroundf(vp.y * 8.0f), (int)lroundf(vp.z * 8.0f),
-                                                 (int)lroundf(n.x * 64.0f), (int)lroundf(n.y * 64.0f), (int)lroundf(n.z * 64.0f) };
-                auto it = vertexSky.find(key);
-                const float fs = it != vertexSky.end() ? it->second : (vertexSky[key] = faceSky(q, n));
+                float fs = 0.0f;
+                int k = 0;
+                if (axis) {
+                    // The vertex snapped to the cell corners, then the middles of the 4 cell faces around it in its plane.
+                    const Vector3 g = { roundf(vp.x), roundf(vp.y), roundf(vp.z) }; // (plot coordinates are cells)
+                    for (int a = -1; a <= 1; a += 2)
+                        for (int b = -1; b <= 1; b += 2) {
+                            const Vector3 m = Vector3Add(g, Vector3Add(Vector3Scale(t1, 0.5f * a), Vector3Scale(t2, 0.5f * b)));
+                            if (solidCell(Vector3Add(m, Vector3Scale(n, 0.5f)))) continue; // that middle is behind another part
+                            fs += probeAt(m, n); ++k;
+                        }
+                }
+                fs = k > 0 ? fs / k : probeAt(faceMid, n);
                 sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky);
             }
             emitted = pos.size() / 3;
