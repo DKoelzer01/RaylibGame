@@ -392,7 +392,7 @@ float floatingIsland(vec3 p, float d) {
 }
 
 // PlanetField::densityNear with the column given.
-float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf) {
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet) { // cwet (#971): the wet lowland column
     precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     precise float depth = surface - d;
     if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
@@ -404,7 +404,7 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     precise float caveTop = 5.0;
     precise float mouth = 0.0; // #549: in mouth regions tunnels open at full width where they meet the surface
-    if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); caveTop = 5.0 - 7.5 * mouth; }
+    if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); if (mouth > 0.0) mouth = mouth * (1.0 - cwet); caveTop = 5.0 - 7.5 * mouth; } // (#971) wet lowlands keep their roofs
     // #549: in mouth regions a roof thinner than 4 m collapses (voxel.cpp densityNear, bit-exact with it).
     precise float gate = mouth > 0.0 ? -14.0 : caveTop;
     if (caveWeight > 0.0 && depth > gate && d > mantleRadius + 20.0) {
