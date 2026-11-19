@@ -1028,7 +1028,7 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
     if (aimed >= 0 && in.enabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
-        if (in.hit(Act::Primary) && SimTime() - lastHit > 0.35) {
+        if (in.hit(Act::Primary) && !gPrimaryLatch.latched && SimTime() - lastHit > 0.35) { // (#896: not while eating; #895: not on a used-up hold)
             lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
