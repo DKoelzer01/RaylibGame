@@ -60,6 +60,12 @@ void Profiler_Sample(const char* name, double ms);   // a time measured elsewher
 void Profiler_Counter(const char* name, double v);   // a named number once a frame (bricks awake, bytes sent), main thread
 void Profiler_Reset();                   // forget everything so far (a timed window starts; main thread)
 std::string Profiler_SummaryJson();      // "" when off or nothing was recorded
+// (#886) Play sessions (RAYLIBGAME_PROFILE=1 outside a scenario): each hitch stamped with the game time and a short note of
+// what was going on; how many hitches to keep (200; a long session: more); and the summary written on quit as
+// <dir>/profile-<date-time>.json and .txt (path: the .txt). False when off or nothing was recorded.
+void Profiler_SetHitchStamp(double (*gameClock)(), std::string (*context)());
+void Profiler_SetHitchCap(size_t cap);
+bool Profiler_WriteSession(const std::string& dir, std::string& path);
 void Profiler_PrintSummary();            // "profile: ..." lines
 // Microbenchmark for the overhead check: ns per zone (on), and per zone while off.
 void Profiler_MeasureZoneCost(double& onNs, double& offNs);
