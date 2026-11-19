@@ -586,6 +586,7 @@ struct Pass {
             uint32_t inKind = kind;
             int nf = colApply(gi, c, inKind);
             if (f == 0 && nf > 0) kind = inKind;
+            if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c)); // a sink's net intake (#656, #875: the columns counted none)
             if (fl & SOURCE) nf = (int)TG(c);
             else if (p.evaporate && nf > 0 && nf <= 2 && g.delta[gi] == 0 && onGround(slot, x, y, z)) nf = 0;
             // Changed against the cell before this substep (A, as the face rules compare), not after the vertical pass: water
@@ -640,7 +641,11 @@ struct Pass {
         g.faceP[gi] = H(applied);
         int nf = std::clamp(f + net, 0, 255);
         if (f == 0 && nf > 0) kind = inKind;
-        if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > (int)TG(c)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c)); // a released reach's sink takes in (#656)
+        // What a released reach's sink takes in (#656), net (#875): a sink is a source held at the natural level, so once the
+        // reach drains below it, it gives into the reach beside it and takes the same water back - counting only the intake read
+        // that loop as outflow, and a cut upstream never reached the springs downstream. Signed (two's complement): what it gives
+        // counts against.
+        if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c));
         if (fl & SOURCE) nf = (int)TG(c);
         else if (p.evaporate && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0;
         const uint32_t old = outC[gi];
