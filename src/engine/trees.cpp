@@ -125,7 +125,7 @@ void BakeFoliageAo(VariantMesh& m, bool stone) {
                 if (dx * dx + dz * dz < rh * rh) ao *= 0.72f;
             }
         }
-        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 1.0f; // 1 = as tuned, 2 = twice as dark
+        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f; // (#933) 2 = the default (user, 2026-11-19); 1 = the first tuning
         ao = std::clamp(1.0f - strength * (1.0f - ao), 0.0f, 1.0f);
         m.col[4 * i + 3] = (unsigned char)std::clamp((int)lroundf(ao * 255.0f), 0, 255);
     }
