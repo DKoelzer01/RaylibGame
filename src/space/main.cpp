@@ -9694,7 +9694,7 @@ int main(int argc, char** argv)
             GpuTimer_CpuMark("step: farm");
             if (!loading) Animals_Update(world, simDt, simDt * timeScale * gDebugTimeScale * Rocket_Warp(), gameInput && alive && !ship.piloted);
             GpuTimer_CpuMark("step: animals");
-            if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale); // the sky, rain and snow, lightning
+            if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             GpuTimer_CpuMark("step: weather, factory");
