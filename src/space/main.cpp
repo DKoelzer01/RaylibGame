@@ -818,7 +818,7 @@ int main(int argc, char** argv)
     int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0, walkLegWater = 0;
     bool walkLegReady = true;
     double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
-    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
+    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0, walkSolidRun = 0, walkSolidMax = 0; float walkDeepest = 0.0f; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
@@ -2475,6 +2475,7 @@ int main(int argc, char** argv)
                         } else {
                             if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
+                            if (chopSwings == 3) { TakeScreenshot("bench_chop_aim.png"); printf("bench: chop: bench_chop_aim.png (the hover: size and species, #528)\n"); }
                             if (TerrainTool_Chop()) {
                                 const int wood = inventory.count("any_log") - chopWood0;
                                 printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
@@ -4857,6 +4858,7 @@ int main(int argc, char** argv)
                     for (const Rule& u : rules) for (const std::string& o : u.out) made.insert(o);
                     for (const std::string& id : loot) if (!made.count(id)) used.insert(id);
                     used.insert("retraining_manual");
+                    used.insert("lantern"); // (#836) held for its light, never spent
                     std::vector<std::string> missing, unused;
                     for (const ItemDef& d : itemDB.items()) {
                         if (!have.count(d.id)) missing.push_back(d.id);
@@ -6879,9 +6881,25 @@ int main(int argc, char** argv)
                         const bool basinWet = Fluid::WaterAt(*p, bucketBasin, 1.6f) >= 1.0f;
                         const bool field = Fluid::StandingWaterNear(*p, bucketField, 4.0f);
                         const float vol = (float)Fluid::GetStats().volume;
-                        const bool pass = basinWet && field && QuestBook_CountOf("pour") >= 2.0 && inventory.count("bucket") == 1;
-                        printf("bench: bucket: basin %s, field 3 m away watered %s, pour events %.0f, %.1f m^3 of moving water -> %s\n", basinWet ? "wet" : "dry", field ? "yes" : "no",
-                               QuestBook_CountOf("pour"), vol, pass ? "PASS" : "FAIL");
+                        const bool bucketsBack = inventory.count("bucket") == 1;
+                        // (#836) The bucket in the off hand, a pickaxe in the main hand: the off-hand key scoops at the water.
+                        bool offScoop = false;
+                        if (inventory.remove("bucket", 1)) {
+                            inventory.grid()[Inventory::kOffHand] = InvSlot{ "bucket", 100 };
+                            if (inventory.count("stone_pickaxe") <= 0) inventory.add("stone_pickaxe", 1);
+                            terrainTool.heldTool = "stone_pickaxe";
+                            const Vector3 up = Vector3Normalize(bucketWater);
+                            const Vector3 outDir = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(outDir, Vector3Scale(up, Vector3DotProduct(outDir, up))));
+                            Vector3 stand = Vector3Add(bucketWater, Vector3Scale(flat, 2.5f));
+                            stand = Vector3Scale(Vector3Normalize(stand), pf->radius + pf->elevation(Vector3Normalize(stand)) + 0.3f);
+                            lookFrom(stand, bucketWater);
+                            TerrainTool_BucketFromOffHand(world);
+                            offScoop = inventory.offHand().id == "water_bucket" && inventory.count("bucket") == 0 && terrainTool.heldTool == "stone_pickaxe";
+                        }
+                        const bool pass = basinWet && field && QuestBook_CountOf("pour") >= 2.0 && bucketsBack && offScoop;
+                        printf("bench: bucket: basin %s, field 3 m away watered %s, pour events %.0f, %.1f m^3 of moving water; from the off hand (pickaxe in hand) a scoop filled it %d -> %s\n",
+                               basinWet ? "wet" : "dry", field ? "yes" : "no", QuestBook_CountOf("pour"), vol, offScoop, pass ? "PASS" : "FAIL");
                         benchBucket = false;
                     }
                 } else if (benchPond && (pondPhase > 0 || WorldIdle())) {
@@ -9073,7 +9091,7 @@ int main(int argc, char** argv)
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
-                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0; walkSolidRun = walkSolidMax = 0; walkDeepest = 0.0f; walkFellThrough = 0;
                         walkLast = walkFrom; walkPath = 0.0;
                         walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
                         walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
@@ -9083,6 +9101,9 @@ int main(int argc, char** argv)
                     const float d = start->densityAt(start->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
                     walkMinDensity = std::min(walkMinDensity, d);
                     walkMaxDensity = std::max(walkMaxDensity, d);
+                    // Inside solid ground (#941): the body centre in rock for frames on end (one frame touching the surface is not).
+                    walkSolidRun = d >= ISO_LEVEL ? walkSolidRun + 1 : 0;
+                    walkSolidMax = std::max(walkSolidMax, walkSolidRun);
                     static const bool walkLog = getenv("RAYLIBGAME_WALK_LOG") != nullptr; // #941: the swimmer each second
                     static double walkLogT = -1.0;
                     if (walkLog && GetTime() - walkLogT >= 1.0)
@@ -9102,11 +9123,16 @@ int main(int argc, char** argv)
                     if (walkLegs > 0) {
                         // Deaths (falls off what the walker strides into) lose the leg, not the test (user, 2026-11-14).
                         if (survival.dead) walkLegDied = true;
-                        // Falling through the world is the failure: the body 30 m under the height-map surface.
+                        // Depth under the height-map surface, reported, not failed (user, #941): open space under it (caves,
+                        // overhangs, cave mouths, a swimmer sinking into a flooded cave) is real terrain, not a fall through the world.
                         if (const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get())) {
                             const Vector3 lp = start->toLocal(feet);
                             const float alt = Vector3Length(lp);
-                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            if (alt > 1.0f) {
+                                const float under = pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - alt;
+                                walkDeepest = std::max(walkDeepest, under);
+                                if (under > 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            }
                         }
                     }
                     if (player.grounded) walkLegSlope = std::max(walkLegSlope, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
@@ -9213,11 +9239,16 @@ int main(int argc, char** argv)
                         } else {
                             player.autoWalk = false;
                             const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
-                            // Pass (user, 2026-11-14): most legs walked, and never through the world (body under the surface
-                            // or inside solid ground). Steep or deadly legs are part of the terrain, not failures.
-                            const bool pass = walkLegsDone * 2 > walkLegs && walkFellThrough == 0 && walkMaxDensity < ISO_LEVEL;
-                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%, %d frames under the surface, deepest body density %.2f (solid >= %.2f): %s\n",
-                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkFellThrough, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            // Pass (user, 2026-11-14; #941, 2026-11-19): most legs walked, and never inside solid ground - the body
+                            // centre in rock for kSolidFrames frames on end (touching the surface for a frame is not). Depth under the
+                            // height map is reported only: caves, overhangs and flooded caves are open space under it. Steep or deadly
+                            // legs are part of the terrain, not failures.
+                            constexpr int kSolidFrames = 6; // 0.1 s at 60 FPS
+                            const bool pass = walkLegsDone * 2 > walkLegs && walkSolidMax < kSolidFrames;
+                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%; inside solid at most %d frames on end "
+                                   "(fail >= %d), deepest body density %.2f (solid >= %.2f); under the height map: deepest %.1f m, %d frames over 30 m (open space, reported): %s\n",
+                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkSolidMax, kSolidFrames, walkMaxDensity, ISO_LEVEL,
+                                   walkDeepest, walkFellThrough, pass ? "PASS" : "FAIL");
                             walkTargetM = 0.0; walkLegs = 0; benchWalkSeconds = 0.0;
                         }
                     } else if (walkLegs == 0 && (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM))) {
@@ -9737,8 +9768,9 @@ int main(int argc, char** argv)
                 const std::string id = inventory.offHand().id;
                 if (id.empty()) GameUI_Toast("Your off hand is empty: put food or an oxygen canister there (the inventory, beside you)");
                 else if (Survival_IsFood(id) || Survival_IsUsable(id)) { if (!Survival_UseItem(id) && Survival_IsFood(id)) GameUI_Toast("You're not hungry"); }
+                else if (id == "bucket" || id == "water_bucket") TerrainTool_BucketFromOffHand(world); // (#836) scoop or pour where you aim
                 else if (id == "telescope" && !ship.piloted) { Telescope_SetActive(world, !telescope.active); Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f); } // (#534)
-                else GameUI_Toast(TextFormat("%s uses food, a consumable or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
+                else GameUI_Toast(TextFormat("%s uses food, a consumable, a bucket or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
@@ -9991,20 +10023,23 @@ int main(int argc, char** argv)
             // (#822) or in the off hand, when the main hand holds none: the light at the left hand, and it burns down the same way
             const std::string& inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
             const std::string& offId = inventory.offHand().id;
-            const bool handTorch = inHand == "torch" || inHand == "fibre_torch";
-            const bool offTorch = !handTorch && (offId == "torch" || offId == "fibre_torch");
+            // (#836) A lantern too: a steady, slightly cooler light that reaches further and never burns out.
+            auto isLight = [](const std::string& id) { return id == "torch" || id == "fibre_torch" || id == "lantern"; };
+            const bool handTorch = isLight(inHand);
+            const bool offTorch = !handTorch && isLight(offId);
             const std::string& held = offTorch ? offId : inHand;
-            const bool fibre = held == "fibre_torch", lit = (handTorch || offTorch) && inventory.count(held) > 0;
+            const bool fibre = held == "fibre_torch", lantern = held == "lantern", lit = (handTorch || offTorch) && inventory.count(held) > 0;
             torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
             if (torch.enabled) {
                 const float t = (float)GetTime();
-                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
+                const float flicker = settings.fireFlicker && !lantern ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
                 const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
                 torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, offTorch ? -0.3f : 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
-                torch.target = { fibre ? 7.0f : 12.0f, 0.0f, 0.0f };   // range (m)
-                torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
-                burnt += GetFrameTime();
+                torch.target = { fibre ? 7.0f : lantern ? 15.0f : 12.0f, 0.0f, 0.0f };   // range (m)
+                torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : lantern ? Color{ 255, 214, 160, (unsigned char)(160 * flicker) }
+                                    : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
+                if (!lantern) burnt += GetFrameTime(); // (a lantern never burns out)
                 if (burnt >= (fibre ? 90.0f : 300.0f)) { // one burns out; the next in the stack is lit
                     burnt = 0.0f;
                     inventory.remove(held, 1);
@@ -10399,15 +10434,24 @@ int main(int argc, char** argv)
             static bool minimapWithMap = false, minimapWithout = true;
             static int noMapAt = 1 << 30;
             if (f >= 45 && noMapAt == (1 << 30) && (Nav_MinimapShown() || f >= 900)) { // (the minimap's image is built a few seconds in)
-                minimapWithMap = Nav_MinimapShown(); TakeScreenshot("bench_hud_creative.png"); // (read before the slow screenshot) terrainTool.creative = false;
+                minimapWithMap = Nav_MinimapShown(); TakeScreenshot("bench_hud_creative.png"); terrainTool.creative = false; // (read before the slow screenshot)
                 inventory.removeAmount("map", inventory.count("map")); noMapAt = f;
             }
             if (f == noMapAt + 60) { // (a second on: past Nav_MinimapShown's 0.25 s)
                 minimapWithout = Nav_MinimapShown();
                 TakeScreenshot("bench_hud_nomap.png");
+                GameUI_TierBanner(1); // (#226) the tier banner, as tier 1 is reached
+                Audio_Play(Sfx::Fanfare, 0.8f);
+            }
+            if (f == noMapAt + 90) { // (half a second on: slid in)
+                TakeScreenshot("bench_hud_tier.png");
+                inventory.grid()[Inventory::kOffHand] = InvSlot{ "lantern", 100 }; // (#836) its steady light, after the torch's
+            }
+            if (f == noMapAt + 110) {
+                TakeScreenshot("bench_hud_lantern.png");
                 settings.keyHints = 0;
                 const bool ok = gKeyHintsHook && minimapWithMap && !minimapWithout; // (#937: the flying bench camera has its minimap now)
-                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
+                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png, bench_hud_tier.png, bench_hud_lantern.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
                        minimapWithMap, minimapWithout, ok ? "PASS" : "FAIL");
                 shotHud = false;
             }
@@ -12281,6 +12325,7 @@ int main(int argc, char** argv)
             if (ff == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
             if (ff >= 8 && ff < 30) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.5f)));
             if (ff == 30) TerrainTool_TestFill();
+            if (ff == 50) TerrainTool_TestFillOffHand(); // (#836)
             if (ff == 70) { TakeScreenshot("bench_fill.png"); printf("bench: fill: bench_fill.png\n"); benchFill = false; }
         }
         // --test-lamps (#139): at the dawn start (dark), 100 lamp cubes on a 2 m grid round the player light the ground.

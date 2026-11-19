@@ -35,6 +35,7 @@ water_outlet    | Water outlet    | 999 |  60,120,190 | Pours out the water a pu
 campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: bakes charcoal, fires clay.
 fibre_torch     | Fibre torch     |  20 | 220,170, 90 | Hold it (hotbar) for a little light. Burns out in 90 s.
 torch           | Torch           |  20 | 250,150, 60 | Hold it (hotbar) for warm light around you. Burns 5 minutes.
+lantern         | Lantern         |  20 | 255,205,130 | Hold it (hotbar or off hand) for a steady light that never burns out.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
 blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
