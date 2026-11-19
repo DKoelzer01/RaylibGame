@@ -187,6 +187,8 @@ static std::string AmountText(const InvSlot& s) {
 
 // (#891) Text inside a cell follows the cell, not the window: a quarter of its height, never above the window's font (the
 // doubled font in a small cell ran out of it). Drawn with the font at that size (crisp: the dynamic atlas).
+// (#889 follow-up) The items grid's cell this frame (DrawItemsPanel): the recipe icons and the You slots are sized from it.
+static float gGridCell = 0.0f;
 static float CellFontSize(float cellH) { return std::min(ImGui::GetFontSize(), std::max(11.0f, cellH * 0.24f)); }
 static ImVec2 CellTextSize(float fs, const char* t, const char* end = nullptr) { return ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, t, end); }
 static void CellText(ImDrawList* dl, float fs, ImVec2 at, ImU32 col, const char* t, const char* end = nullptr) { dl->AddText(ImGui::GetFont(), fs, at, col, t, end); }
@@ -752,8 +754,11 @@ static void DrawCrafting() {
     int hidden = 0, shown = 0;
     ImGui::BeginChild("recipes", ImVec2(0.0f, ImGui::GetContentRegionAvail().y * 0.42f));
     const float gap = 6.0f;
-    const int cols = std::clamp((int)(ImGui::GetContentRegionAvail().x / (110.0f * GameUI_Scale())), 3, 5);
-    const float cell = std::max(56.0f, (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize - (cols - 1) * gap) / (float)cols);
+    // (#889 follow-up, the user: "around the same size as the inventory slots, maybe a little smaller") 0.9 of the grid's cell.
+    const float want = gGridCell > 0.0f ? gGridCell * 0.9f : 72.0f * GameUI_Scale();
+    const float usable = ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize;
+    const int cols = std::max(3, (int)((usable + gap) / (want + gap)));
+    const float cell = std::min(want, (usable - (cols - 1) * gap) / (float)cols);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (size_t i = 0; i < recipes.size(); ++i) {
         const Recipe& r = recipes[i];
@@ -1353,7 +1358,7 @@ static void PreviewWidget(ImTextureID tex, ImVec2 size, float& turn) {
 
 // The player panel (#822; #887: sized to its area, the top right of the Inventory screen): the suit and the off hand on the
 // left, the turning preview filling the rest, the module slots under it, and what else is carried.
-// (#913 review) One column of slots down the left (suit, off hand, modules; the off hand's help in its tooltip, spare suits
+// (#913 review) The slots down the left (suit and off hand, modules under them; the off hand's help in its tooltip, spare suits
 // and modules behind a button), and the preview, the panel's feature, in all the rest at its full height. Fits 1080 p.
 static void DrawYou() {
     ImGui::TextUnformatted("You");
@@ -1363,13 +1368,19 @@ static void DrawYou() {
     const float line = ImGui::GetTextLineHeightWithSpacing(), sy = ImGui::GetStyle().ItemSpacing.y;
     const int slots = (int)Suit_Modules().size();
     const int modCols = slots > 1 ? 2 : 1, modRows = (slots + modCols - 1) / std::max(1, modCols);
-    // Down the column: 3 labels and the button, 2 big cells (suit, off hand) and the module rows at 0.8 of big.
-    const float big = std::clamp((avH - line * 4.6f - sy * 9.0f) / (2.0f + 0.8f * std::max(1, modRows)), 30.0f, 120.0f);
-    const float cell = big * 0.8f;
+    // (#889 follow-up) The slots as large as the items grid's cells where the column's height allows: suit and off hand side
+    // by side, the modules two to a row under them, all one size. Down the column: 2 label rows and the button, the
+    // suit row and the module rows.
+    const float fit = (avH - line * 3.6f - sy * 8.0f) / (1.0f + (float)std::max(1, modRows));
+    const float big = std::max(30.0f, std::min(fit, gGridCell > 0.0f ? gGridCell : 120.0f));
+    const float cell = big;
     ImGui::BeginGroup();
+    const float x0 = ImGui::GetCursorPosX();
     ImGui::TextDisabled("Suit");
-    SuitSlot(big);
+    ImGui::SameLine(); ImGui::SetCursorPosX(x0 + big + 4.0f);
     ImGui::TextDisabled("Off hand");
+    SuitSlot(big);
+    ImGui::SameLine(0.0f, 4.0f);
     DrawCell(Inventory::kOffHand, big, big);
     if (ImGui::IsItemHovered() && inventory.grid()[Inventory::kOffHand].empty())
         ImGui::SetTooltip("Off hand: a shield blocks (hold RMB); a torch lights;\nfood or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
@@ -1461,6 +1472,7 @@ static void DrawItemsPanel() {
     const float cw = (a.x * 0.72f - pad - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
     const float ch = (a.y - line * 2.0f - sy * 9.0f - 8.0f) / (float)(Inventory::kRows + 2);
     const float cell = std::clamp(std::min(cw, ch), 40.0f, 200.0f);
+    gGridCell = cell;
     const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + cell + pad);
     ImGui::BeginChild("invgrid", ImVec2(std::min(panelW, a.x * 0.72f), 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted("Items");
@@ -1516,7 +1528,7 @@ void GameUI_Draw(Scene& world) {
     const float margin = 24.0f * s;
     ImGui::SetNextWindowPos(ImVec2(margin, margin));
     ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * margin, io.DisplaySize.y - 2 * margin));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 1.0f)); // (#889 follow-up: opaque)
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin("Game window", nullptr, flags)) {
@@ -1577,6 +1589,16 @@ void GameUI_Draw(Scene& world) {
     }
     ImGui::End();
     ImGui::PopStyleColor();
+    // (#889 follow-up) The HUD is hidden while the window is open, but the window's own messages (the bin, Deposit, crafting)
+    // still show: over the window's bottom edge, on a dark backing.
+    if (GetTime() < toastUntil) {
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        const float fs = ImGui::GetFontSize();
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, toast.c_str());
+        const ImVec2 at((io.DisplaySize.x - sz.x) * 0.5f, io.DisplaySize.y - margin - sz.y * 0.5f);
+        fg->AddRectFilled(ImVec2(at.x - 10, at.y - 4), ImVec2(at.x + sz.x + 10, at.y + sz.y + 4), IM_COL32(10, 14, 20, 235), 4.0f);
+        fg->AddText(ImGui::GetFont(), fs, at, IM_COL32(255, 230, 90, 255), toast.c_str());
+    }
     // The database (#826): a pop-up over the game window, opened by alt-clicking an item (at its page) or the Database
     // button; browse on from there (links, search, Back). Like Factorio's Factoriopedia.
     if (databaseOpen) {
