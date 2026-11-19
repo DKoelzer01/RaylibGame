@@ -120,6 +120,7 @@ namespace {
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
+    void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
@@ -599,6 +600,8 @@ namespace {
             plantsSeen[b->id] = b->trees->removalsShared(); // (sent here, with who felled it)
             SendPlants(0, b->netId, session, { { a.plant, b->trees->removals().at(a.plant) } });
             ++plantsFelled;
+            if (pl.tree()) { RemoteXp(session, "chop", (double)hits); RemoteXp(session, "tree_felled"); } // (#920) Woodcutting; Foraging
+            else RemoteXp(session, pl.stone() ? "loose_stone" : "bush");
         } else { // sow / harvest a farmland part
             Plot* plot = b->plots ? b->plots->byId(a.plot) : nullptr;
             if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::Farmland) { refuse("That farmland isn't there any more"); return; }
@@ -609,9 +612,11 @@ namespace {
             if (a.action == 2) {
                 if (!Farm_SowFor(rm.inventory, *b, *plot, a.part, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
                 TeamEvent(session, "count", "plant");
+                RemoteXp(session, "plant"); // (#920) Farming
             } else {
                 if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; }
                 TeamEvent(session, "count", "harvest");
+                RemoteXp(session, "harvest"); // (#920) Farming
             }
             for (auto& [s, r] : remotes) r.farmHash = 0; // (everyone near sees it at once)
             lastFarmTick = 0;
@@ -637,7 +642,7 @@ namespace {
                 if (sscanf(nt, "%lf,%lf", &a, &b) == 2) { const double t = GetTime() - firstJoin; dark = t >= a && t < b; }
             }
             if (dark && !r.inNight) { r.inNight = true; r.deathsAtDusk = r.survival.deaths; }
-            else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) TeamEvent(sid, "count", "nights"); }
+            else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) { TeamEvent(sid, "count", "nights"); RemoteXp(sid, "night"); } }
             // (#338 slice 3) exploring and visiting, from the server's own view of the player: the map tiles around it (the
             // local map's tiles and radius) for its team, and a moon or the ring within two radii
             if (const int team = TeamOfSession(sid)) {
@@ -698,6 +703,15 @@ namespace {
             rit->second.skillsDirty = false; rit->second.skillsSentAt = GetTime();
             ++skillStatesSent;
         }
+    }
+    // (#920) XP for a remote player's event (skills.txt's xp lines), at the world's rate; creative earns none. Sent with the
+    // next SkillState (a level-up at once).
+    void RemoteXp(uint32_t session, const char* event, double n) {
+        auto it = remotes.find(session);
+        if (it == remotes.end() || it->second.creative) return;
+        const int ups = Skills_Event(it->second.skills, event, n, worldXpRate);
+        it->second.skillsDirty = true;
+        if (ups > 0) it->second.skillsSentAt = -1e9;
     }
     // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
     uint64_t SkillCell(Vector3 local) {
@@ -1525,7 +1539,7 @@ namespace {
                 const int team = TeamOfSession(session);
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
-            if (till) TeamEvent(session, "count", "till"); // (#335)
+            if (till) { TeamEvent(session, "count", "till"); RemoteXp(session, "till"); } // (#335)
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
@@ -1763,7 +1777,7 @@ namespace {
                 std::map<std::string, double> before{ { u.item, rit->second.inventory.amount(u.item) } };
                 if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) {
                     SendInventoryDeltas(m.conn, rit->second.inventory, before);
-                    if (Survival_FoodValue(u.item) > 0.0f) TeamEvent(it->second.session, "count", "eat"); // (#338) "do eat" tasks
+                    if (Survival_FoodValue(u.item) > 0.0f) { TeamEvent(it->second.session, "count", "eat"); RemoteXp(it->second.session, "eat"); } // (#338) "do eat" tasks
                 }
                 else SendMsg(m.conn, MsgChat{ 0, "Can't use " + u.item + " now" });
                 ++itemsUsed;
