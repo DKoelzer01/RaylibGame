@@ -608,6 +608,8 @@ int main(int argc, char** argv)
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
     bool benchSkills = false;         // --test-skills (#883): real strokes earn XP, a level-up, a perk speeds strokes up
+    bool benchInventoryFps = false;   // --bench-inventory-fps (#887): frame time with the game window closed, then open on the Inventory screen
+    float benchUiScale = 0.0f;        // --ui-scale S (#891): the interface size for benches and shots (benches read no settings: 0 = auto)
     bool benchClaimOffline = false;   // --test-claim-offline (#900): a banner placed in single player claims its land
     bool benchJoinedItems = false;    // --test-joined-items (#865, #866, with --host): creative gives and drops through the server
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
@@ -961,6 +963,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
         if (std::string(argv[i]) == "--test-skills") benchSkills = true;
+        if (std::string(argv[i]) == "--bench-inventory-fps") benchInventoryFps = true;
+        if (std::string(argv[i]) == "--ui-scale" && i + 1 < argc) benchUiScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-claim-offline") benchClaimOffline = true;
         if (std::string(argv[i]) == "--test-joined-items") benchJoinedItems = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
@@ -1515,6 +1519,7 @@ int main(int argc, char** argv)
     if (!benchAtSave && !hostLoaded && !world.objects.empty()) StartNewWorld(world, false, !bench);
     if (!hostSave.empty() && !hostLoaded) SaveWorld(world);
     if (!bench) Settings_Load();
+    if (benchUiScale > 0.0f) settings.uiScale = benchUiScale; // (#891 shots)
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     NewWorldChoice pendingNewWorld; // the New World screen's choice, handled at the start of the next frame (#504)
@@ -9056,7 +9061,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9777,6 +9782,28 @@ int main(int argc, char** argv)
                 for (int k = 0; k < 5; ++k) { const float d = fabsf(p->densityAt(outside[k]) - before[k]); worst = std::max(worst, d); kept &= d < 0.02f; }
                 printf("bench: foundation: placed %s, its cell cleared %s, ground 0.3 m outside unchanged %s (largest change %.3f) -> %s\n",
                        placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
+            }
+        }
+        // --bench-inventory-fps (#887; the user saw 30 FPS with the window open): 3 s with the game window closed, then 3 s open
+        // on the Inventory screen (the preview renders), 1 s to settle before each; the mean and worst frame of each.
+        if (benchInventoryFps && gameState == 1 && !loading && WorldIdle()) {
+            static int phase = 0;
+            static double t0 = -1.0, sum = 0.0, worst = 0.0, closedMean = 0.0, closedWorst = 0.0;
+            static int n = 0;
+            if (t0 < 0.0) t0 = GetTime();
+            const double t = GetTime() - t0, dt = GetFrameTime() * 1000.0;
+            if (phase == 0 && t > 1.0) { sum = worst = 0.0; n = 0; phase = 1; }
+            else if (phase == 1) { sum += dt; worst = std::max(worst, dt); ++n; if (t > 4.0) { closedMean = sum / std::max(1, n); closedWorst = worst; GameUI_ShowScreen(GameScreen::Inventory); phase = 2; } }
+            else if (phase == 2 && t > 5.0) { sum = worst = 0.0; n = 0; phase = 3; }
+            else if (phase == 3) {
+                sum += dt; worst = std::max(worst, dt); ++n;
+                if (t > 8.0) {
+                    const double openMean = sum / std::max(1, n);
+                    printf("bench: inventory fps (#887): window closed %.2f ms a frame (worst %.1f, %.0f FPS); open on the Inventory screen %.2f ms (worst %.1f, %.0f FPS): +%.2f ms\n",
+                           closedMean, closedWorst, 1000.0 / std::max(0.01, closedMean), openMean, worst, 1000.0 / std::max(0.01, openMean), openMean - closedMean);
+                    GameUI_ToggleInventory();
+                    benchInventoryFps = false;
+                }
             }
         }
         // --test-skills (#883): a stone pickaxe in hand, looking at the ground at the feet; Mining set just short of level 5
@@ -12510,6 +12537,7 @@ int main(int argc, char** argv)
             if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
                 if (gameState == 1) GameUI_PrepareFrame(world); // (#822) the inventory screen's player preview, rendered before ImGui
+                GameUI_ApplyStyleScale(); // (#891) the interface scale (fonts, padding) before the frame
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);
