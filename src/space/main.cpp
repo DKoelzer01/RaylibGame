@@ -2592,11 +2592,27 @@ int main(int argc, char** argv)
                         t = clk::now();
                         SaveWorld(world);
                         const double saveFull = ms(t);
+                        const size_t regionsAll = Regions_List(*p->edits).size();
+                        // (#948) "100 more strokes": the first 100 of the run, spread over the whole area, so they dirty most of the
+                        // regions and this save rewrites about what the full one did (903 vs 773 ms was that, and noise). Reported
+                        // with the regions it wrote; the incremental case itself is the local one below.
                         std::vector<TerrainEdit> more(strokes.begin(), strokes.begin() + std::min<size_t>(100, strokes.size()));
                         ApplyTerrainEdits(*p, more.data(), more.size());
+                        const size_t regionsSpread = p->dirtyRegions.size();
                         t = clk::now();
                         SaveWorld(world);
                         const double saveIncr = ms(t);
+                        // (#948) 100 strokes in one spot (a player digging a cellar): the save writes only their region or two.
+                        std::vector<TerrainEdit> local(more);
+                        for (size_t k = 0; k < local.size(); ++k) {
+                            local[k].center = Vector3Add(strokes[0].center, { (float)(k % 5) - 2.0f, -(float)(k / 25), (float)((k / 5) % 5) - 2.0f });
+                            local[k].radius = 1.5f;
+                        }
+                        ApplyTerrainEdits(*p, local.data(), local.size());
+                        const size_t regionsLocal = p->dirtyRegions.size();
+                        t = clk::now();
+                        SaveWorld(world);
+                        const double saveLocal = ms(t);
                         const size_t chunks = p->edits->chunks.size();
                         size_t deltaBytes = 0;
                         for (const auto& [k, c] : p->edits->chunks) deltaBytes += c->bytes();
@@ -2612,7 +2628,10 @@ int main(int argc, char** argv)
                         // Night decision 2026-11-19; the regeneration time is followed on #365.
                         const LoadPhases& lp = LastLoadPhases();
                         const double editsLoadMs = lp.regionsMs;
-                        const bool pass = same && saveFull < 1000.0 && editsLoadMs < 1000.0 && buildAfter < buildBefore * 1.5 + 0.5;
+                        // (#948) and a local incremental save costs a fraction of the full one (it writes a region or two)
+                        const bool pass = same && saveFull < 1000.0 && editsLoadMs < 1000.0 && buildAfter < buildBefore * 1.5 + 0.5 && saveLocal < saveFull * 0.25;
+                        printf("bench: persist: regions %zu in all; 100 strokes spread over the area dirtied %zu (save %.0f ms), 100 in one spot %zu (save %.0f ms; gate: under a quarter of the full save)\n",
+                               regionsAll, regionsSpread, saveIncr, regionsLocal, saveLocal);
                         printf("bench: persist: load %.0f ms = regenerate the world %.0f + saved edits (region deltas) %.0f + plots %.0f + fluid %.0f (gate: the edits < 1000)\n",
                                loadMs, lp.regenMs, lp.regionsMs, lp.plotsMs, lp.fluidMs);
                         printf("bench: persist: %d strokes folded in %.0f ms into %zu delta chunks (%zu strokes recorded)\n", benchPersist, foldMs, chunks, p->edits->strokes);
