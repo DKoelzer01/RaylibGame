@@ -9790,6 +9790,8 @@ int main(int argc, char** argv)
                        rate0, rate1, rate0 > 0.0 ? rate1 / rate0 : 0.0, ok ? "PASS" : "FAIL");
                 worldXpRate = 1.0f;
                 benchSkills = false;
+            }
+        }
         // --test-claim-offline (#900): in single player, a claim banner placed 4 m ahead (BuildTool_Place, the build tool's own
         // path) claims its land for the player's team (a team of one made for them): Claims_At there finds it, and the map's
         // mirror shows it as ours. Its claim goes with the save (the claims and team lines), so a hosted copy keeps it.
