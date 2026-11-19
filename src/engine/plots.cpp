@@ -711,7 +711,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
             const Vector3 t2 = Vector3CrossProduct(n, t1);
             for (size_t v = emitted; v < pos.size() / 3; ++v) {
-                const Vector3 vp = { lo.x + pos[3 * v], lo.y + pos[3 * v + 1], lo.z + pos[3 * v + 2] };
+                const Vector3 vp = { lo.x + pos[3 * v] / kCellSize, lo.y + pos[3 * v + 1] / kCellSize, lo.z + pos[3 * v + 2] / kCellSize }; // (pos is in metres; the probes work in cells)
                 float fs = 0.0f;
                 int k = 0;
                 if (axis) {
