@@ -4857,6 +4857,7 @@ int main(int argc, char** argv)
                     for (const Rule& u : rules) for (const std::string& o : u.out) made.insert(o);
                     for (const std::string& id : loot) if (!made.count(id)) used.insert(id);
                     used.insert("retraining_manual");
+                    used.insert("lantern"); // (#836) held for its light, never spent
                     std::vector<std::string> missing, unused;
                     for (const ItemDef& d : itemDB.items()) {
                         if (!have.count(d.id)) missing.push_back(d.id);
@@ -9975,20 +9976,23 @@ int main(int argc, char** argv)
             // (#822) or in the off hand, when the main hand holds none: the light at the left hand, and it burns down the same way
             const std::string& inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
             const std::string& offId = inventory.offHand().id;
-            const bool handTorch = inHand == "torch" || inHand == "fibre_torch";
-            const bool offTorch = !handTorch && (offId == "torch" || offId == "fibre_torch");
+            // (#836) A lantern too: a steady, slightly cooler light that reaches further and never burns out.
+            auto isLight = [](const std::string& id) { return id == "torch" || id == "fibre_torch" || id == "lantern"; };
+            const bool handTorch = isLight(inHand);
+            const bool offTorch = !handTorch && isLight(offId);
             const std::string& held = offTorch ? offId : inHand;
-            const bool fibre = held == "fibre_torch", lit = (handTorch || offTorch) && inventory.count(held) > 0;
+            const bool fibre = held == "fibre_torch", lantern = held == "lantern", lit = (handTorch || offTorch) && inventory.count(held) > 0;
             torch.enabled = gameState == 1 && lit && !ship.piloted && !survival.dead;
             if (torch.enabled) {
                 const float t = (float)GetTime();
-                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
+                const float flicker = settings.fireFlicker && !lantern ? 0.85f + 0.1f * sinf(t * 13.0f) + 0.05f * sinf(t * 31.7f + 1.3f) : 0.85f; // #558: steady when off
                 const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
                 const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, world.camera.up));
                 torch.position = Vector3Add(Vector3Add(world.camera.position, Vector3Scale(right, offTorch ? -0.3f : 0.3f)), Vector3Add(Vector3Scale(world.camera.up, -0.15f), Vector3Scale(fwd, 0.35f)));
-                torch.target = { fibre ? 7.0f : 12.0f, 0.0f, 0.0f };   // range (m)
-                torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
-                burnt += GetFrameTime();
+                torch.target = { fibre ? 7.0f : lantern ? 15.0f : 12.0f, 0.0f, 0.0f };   // range (m)
+                torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : lantern ? Color{ 255, 214, 160, (unsigned char)(160 * flicker) }
+                                    : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
+                if (!lantern) burnt += GetFrameTime(); // (a lantern never burns out)
                 if (burnt >= (fibre ? 90.0f : 300.0f)) { // one burns out; the next in the stack is lit
                     burnt = 0.0f;
                     inventory.remove(held, 1);
@@ -10382,6 +10386,10 @@ int main(int argc, char** argv)
             if (f == noMapAt + 60) { // (a second on: past Nav_MinimapShown's 0.25 s)
                 minimapWithout = Nav_MinimapShown();
                 TakeScreenshot("bench_hud_nomap.png");
+                inventory.grid()[Inventory::kOffHand] = InvSlot{ "lantern", 100 }; // (#836) its steady light, after the torch's
+            }
+            if (f == noMapAt + 80) {
+                TakeScreenshot("bench_hud_lantern.png");
                 settings.keyHints = 0;
                 const bool ok = gKeyHintsHook && minimapWithMap && !minimapWithout; // (#937: the flying bench camera has its minimap now)
                 printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
