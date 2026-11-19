@@ -9705,7 +9705,7 @@ int main(int argc, char** argv)
                         if (Vector3LengthSqr(heading) < 0.5f || fabsf(Vector3DotProduct(heading, up)) > 0.2f)
                             heading = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(up, Vector3DotProduct(player.forward, up))));
                         const float t = (float)(GetTime() - walkStart);
-                        const float yaw = 70.0f * sinf(2.0f * PI * t / 3.0f) + 25.0f * t; // drifting heading: the walk wanders
+                        const float yaw = 70.0f * sinf(2.0f * PI * t / 3.0f) + 6.0f * t; // drifting heading: the walk wanders (slowly: 25 deg/s walked in 9 m circles)
                         const float pitch = -(30.0f + 10.0f * sinf(2.0f * PI * t / 4.3f));
                         Vector3 h = Vector3RotateByAxisAngle(heading, up, yaw * DEG2RAD);
                         player.forward = Vector3Normalize(Vector3Add(Vector3Scale(h, cosf(pitch * DEG2RAD)), Vector3Scale(up, sinf(pitch * DEG2RAD))));
