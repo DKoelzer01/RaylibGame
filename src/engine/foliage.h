@@ -31,9 +31,11 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out); // worker thre
 
 // #830: no grass in the cells of placed parts (a bed, a floor, a machine). A body's snapshot of its plots (frame and occupied
 // cells, plot space), swapped whole on the main thread when parts change and read by ScatterGrass on the workers.
-struct GrassBlockPlot { DVec3 origin{}; Vector3 east{}, up{}, north{}; float radius = 0.0f; std::unordered_set<Int3> cells; };
+struct GrassBlockPlot { DVec3 origin{}; Vector3 east{}, up{}, north{}; float radius = 0.0f; std::unordered_set<Int3> cells;
+                        std::unordered_set<Int3> solid; }; // (#908) solid: building blocks (not glass, not small parts): they shade the ground under them
 using GrassBlockers = std::vector<GrassBlockPlot>;
 void Grass_SetBlockers(const DensityField* field, std::shared_ptr<const GrassBlockers> blockers);
+std::shared_ptr<const GrassBlockers> Grass_BlockersOf(const DensityField* field); // (#908) the chunk builder's sky probe reads it too
 
 // GPU side, per chunk: VAOs pairing the shared tuft meshes with this chunk's instance buffer.
 struct FoliageGpu {

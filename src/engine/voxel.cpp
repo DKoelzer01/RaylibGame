@@ -2307,6 +2307,18 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
     const int E = S + 2;
     const Vector3 eo = Vector3AddValue(origin, -stride);
     std::vector<float> ext(base, base + (size_t)E * E * E);
+    // (#908) The plots near this chunk with building blocks in them: the sky probe below lets their roofs shade the ground.
+    std::shared_ptr<const GrassBlockers> roofSnap;
+    std::vector<const GrassBlockPlot*> roofPlots;
+    static const bool roofSkyOn = !(getenv("RAYLIBGAME_ROOF_SKY") && getenv("RAYLIBGAME_ROOF_SKY")[0] == '0');
+    if (roofSkyOn && stride <= 2.0f && (roofSnap = Grass_BlockersOf(&field))) {
+        const Vector3 cc = Vector3AddValue(origin, 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size() + 12.0f;
+        for (const GrassBlockPlot& b : *roofSnap) {
+            if (b.solid.empty()) continue;
+            if ((DVec3{ cc.x, cc.y, cc.z } - b.origin).length() <= reach + b.radius) roofPlots.push_back(&b);
+        }
+    }
     // Player edits: the delta lattice at the samples (lattice points at every stride); coarse nodes filter it along
     // their columns (AddDeltasColumnFiltered, #679), so big excavations show from afar with flat floors. Cost depends
     // on the edited chunks here, never on how many strokes the world has had.
@@ -2419,6 +2431,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
+                float roofOpen = 1.0f; // (#908) the built roofs' share of the sky here (ambient only: folded into the occlusion below)
                 if (gSkyProbes && stride <= 2.0f) {
                     const PlanetField::Column3D* pc = hinted ? &gCol : nullptr; const float* pe = hinted ? &gElev : nullptr;
                     // (#898) Under the surface (the depth term < 1) and less than 40 m down: light comes in where the sky can be
@@ -2429,6 +2442,31 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
                     if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
+                    // (#908) Built roofs: the same rays (up, and four at 45 degrees; the up one weighs 3) through the solid cells of the
+                    // plots near this chunk (the #830 snapshot): the ground under a shelter, a covered yard or a house without a floor
+                    // no longer takes the full sky. RAYLIBGAME_ROOF_SKY=0: off.
+                    if (sky > 0.02f && !roofPlots.empty()) {
+                        constexpr float kCellSize = 0.5f; // plots.h (not included here)
+                        float partsOpen = 1.0f;
+                        for (const GrassBlockPlot* b : roofPlots) {
+                            const DVec3 d = DVec3{ p.x, p.y, p.z } - b->origin;
+                            const Vector3 l = { (float)d.x, (float)d.y, (float)d.z };
+                            const Vector3 c = { Vector3DotProduct(l, b->east) / kCellSize, Vector3DotProduct(l, b->up) / kCellSize, Vector3DotProduct(l, b->north) / kCellSize };
+                            if (Vector3Length(c) * kCellSize > b->radius + 12.0f) continue;
+                            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
+                            float open = 0.0f;
+                            for (int r = 0; r < 5; ++r) {
+                                bool blocked = false;
+                                for (float s = 0.6f; s <= 24.0f && !blocked; s += 0.5f) { // cells: 12 m
+                                    const Vector3 q = Vector3Add(c, Vector3Scale(dirs[r], s));
+                                    blocked = b->solid.count(Int3{ (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) }) > 0;
+                                }
+                                if (!blocked) open += r == 0 ? 3.0f : 1.0f;
+                            }
+                            partsOpen = std::min(partsOpen, std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f));
+                        }
+                        roofOpen = partsOpen; // not the sky term: that scales the sun too, and a roof's shadow comes from the shadow maps (parts cast)
+                    }
                 }
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
@@ -2456,6 +2494,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                             if (solidAt(Vector3Add(e0, Vector3Scale(dirs[r], m / stride)))) occ += (r == 0 ? 1.5f : 1.0f) * (m < 1.0f ? 1.3f : 0.7f);
                     out.occlusion[v] = std::clamp(occ / 7.0f, 0.0f, 1.0f);
                 }
+                if (roofOpen < 1.0f) out.occlusion[v] = std::max(out.occlusion[v], 1.0f - roofOpen); // (#908) also with RAYLIBGAME_AO=0
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
                     if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {

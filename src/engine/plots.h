@@ -86,6 +86,7 @@ struct Part {
     uint8_t orient;     // 0..23
     uint8_t material = 0; // shapes: BuildMaterial index
 };
+bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
