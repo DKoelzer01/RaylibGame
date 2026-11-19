@@ -743,7 +743,14 @@ void Scene::drawScene(int gamestate) {
                     SetShaderValue(as, GetShaderLocation(as, "skyRt"), &Rt, SHADER_UNIFORM_FLOAT);
                     SetShaderValue(as, GetShaderLocation(as, "skyPhysTint"), &tint, SHADER_UNIFORM_FLOAT);
                     SetShaderValue(as, GetShaderLocation(as, "skyPhysExposure"), &expo, SHADER_UNIFORM_FLOAT);
+                    // #142 later slices: the limb from orbit and clouds lit from the LUTs (RAYLIBGAME_SKY_LIMB=0 / RAYLIBGAME_SKY_CLOUDS_LUT=0: off)
+                    static const float extras[2] = { getenv("RAYLIBGAME_SKY_LIMB") && atoi(getenv("RAYLIBGAME_SKY_LIMB")) == 0 ? 0.0f : 1.0f,
+                                                     getenv("RAYLIBGAME_SKY_CLOUDS_LUT") && atoi(getenv("RAYLIBGAME_SKY_CLOUDS_LUT")) == 0 ? 0.0f : 1.0f };
+                    SetShaderValue(as, GetShaderLocation(as, "skyExtras"), extras, SHADER_UNIFORM_VEC2);
+                    SetShaderValue(as, GetShaderLocation(as, "skyAirTop"), &Rt0, SHADER_UNIFORM_FLOAT);
                 }
+                as.locs[SHADER_LOC_MAP_OCCLUSION] = GetShaderLocation(as, "skyTransLut"); // (the transmittance LUT in the occlusion slot)
+                atmosphereDome.materials[0].maps[MATERIAL_MAP_OCCLUSION].texture = Texture2D{ lut ? SkyPhys_TransmittanceTexture() : 0u, 256, 64, 1, PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 };
             }
             atmosphereDome.materials[0].shader = as;
             DrawModel(atmosphereDome, (Vector3){ 0, 0, 0 }, 1.0f, WHITE);
