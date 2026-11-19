@@ -76,7 +76,10 @@ struct Here {
 };
 Here Locate(Scene& world) {
     Here h;
-    Planetoid* p = player.nearest;
+    // (#937) Flying, player.nearest is never set: the body the fly camera follows instead (as the HUD's readout does).
+    // Without it the minimap and compass vanished in fly mode (and every bench, whose camera flies).
+    bool rotate = false;
+    Planetoid* p = player.nearest ? player.nearest : player.flyReference(world, rotate);
     if (!p || p->flat || !p->field) return h;
     auto pf = std::dynamic_pointer_cast<const PlanetField>(p->field);
     if (!pf) return h;
@@ -274,7 +277,7 @@ int Nav_ExploredTiles(const std::string& body) { auto it = explored.find(body); 
 int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
 static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
-bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.1; }
+bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.25; } // (#937: 0.25 s, so one slow frame does not blink the readout)
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
