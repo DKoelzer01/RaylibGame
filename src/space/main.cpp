@@ -7584,6 +7584,7 @@ int main(int argc, char** argv)
                             const Fluid::Stats s = Fluid::GetStats();
                             printf("bench: flow t=%3.0f s: %d sites, %d bricks (%d awake), %.0f wet cells, %.1f m^3, step %.2f ms (max %.2f), publish %.2f ms; changes d%lld s%lld r%lld l%lld\n",
                                    t, s.sites, s.bricks, s.activeBricks, s.wetCells, s.volume, s.stepMs, s.maxStepMs, s.meshMs, s.dbg[0], s.dbg[1], s.dbg[2], s.dbg[3]);
+                            if (s.activeBricks > 0 && t > 60.0) printf("bench: flow awake: %s; steady bricks %d, wakes gpu %lld cpu %lld\n", Fluid::DebugAwake().c_str(), s.steadyBricks, s.wakes[0], s.wakes[1]); // #935
                         }
                         if (flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT < 0.0 && Fluid::Asleep()) flowSleepT = t;
                         if (t > 6.0 && t < 7.0) TakeScreenshot("bench_flow.png");

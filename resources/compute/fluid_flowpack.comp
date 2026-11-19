@@ -44,9 +44,11 @@ void main() {
             q = vec2(sign(Q.x) * float(r.z & 0xFFFFu) - sign(Q.z) * float(r.w & 0xFFFFu),
                      sign(Q.y) * float(r.z >> 16) - sign(Q.w) * float(r.w >> 16)) * unitFlow;
         } else {
-            // The total planned flow (momentum and the levelling share): a thin stream moves mostly by the share, which the
-            // momentum record (faceP) leaves out - a running spring read as still water.
-            q = unpackHalf2x16(faceN[i].x);
+            // Cells (#935): what moved across the top cell's own +x / +y faces this substep (fluid_step.comp's pass 2, signed
+            // units in w). The planned flow (x) counted momentum that never moved a unit - against a settled brick's edge a
+            // channel at rest read 3 m/s and stayed awake as steady flow; moved units still count a thin stream's share.
+            uint w = faceN[i].w;
+            q = vec2(float(int(w << 16) >> 16), float(int(w) >> 16)) * unitFlow;
         }
         v = q / (cellSize * max(depth, 0.02)); // the highest surface in the column wins
     }
