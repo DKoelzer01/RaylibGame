@@ -721,7 +721,8 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const bool a = solidCell(Vector3Add(front, Vector3Scale(t1, s1))), b = solidCell(Vector3Add(front, Vector3Scale(t2, s2)));
             const bool c = solidCell(Vector3Add(front, Vector3Add(Vector3Scale(t1, s1), Vector3Scale(t2, s2))));
             static const float kLevel[4] = { 0.45f, 0.62f, 0.8f, 1.0f };
-            return kLevel[a && b ? 0 : 3 - (int)a - (int)b - (int)c];
+            static const float strength = getenv("RAYLIBGAME_PART_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_PART_AO_STRENGTH")) : 1.0f; // (#933) 1 = as tuned, 2 = twice as dark
+            return std::clamp(1.0f - strength * (1.0f - kLevel[a && b ? 0 : 3 - (int)a - (int)b - (int)c]), 0.0f, 1.0f);
         };
         auto pushSkyVerts = [&](Vector3 faceMid, Vector3 n) {
             const bool axis = fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) < 1e-3f; // an axis-aligned face

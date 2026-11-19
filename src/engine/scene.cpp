@@ -662,7 +662,7 @@ void Scene::drawScene(int gamestate) {
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
-    { static const int floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0 : 1; SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_INT); } // (#933 layer 2)
+    { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 1.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.
     for (int i = 0; i < MAX_LIGHTS; ++i) {

@@ -125,6 +125,8 @@ void Weather_Update(Scene& world, float dt) {
     here.wind = Vector3Lerp(here.wind, target.wind, k);
     here.kind = target.kind;
     if (forced >= 0) { here.cloud = target.cloud; here.precipitation = target.precipitation; here.fog = target.fog; }
+    static const float cloudOverride = getenv("RAYLIBGAME_WEATHER_CLOUD") ? (float)atof(getenv("RAYLIBGAME_WEATHER_CLOUD")) : -1.0f; // (#933 captures) cloud cover, no rain
+    if (cloudOverride >= 0.0f) { here.cloud = cloudOverride; here.precipitation = 0.0f; }
     // Above the air or underground the sky is not overhead.
     world.weatherCloud = here.cloud;
     world.weatherFog = here.fog;

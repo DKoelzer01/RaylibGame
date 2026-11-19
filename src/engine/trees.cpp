@@ -113,6 +113,10 @@ void BakeFoliageAo(VariantMesh& m, bool stone) {
             const float dx = (p.x - c.x) / std::max(rh, 0.1f), dz = (p.z - c.z) / std::max(rh, 0.1f), dy = (p.y - c.y) / std::max(rv, 0.1f);
             const float d = sqrtf(dx * dx + dy * dy + dz * dz);                          // 0 in the crown's middle, ~1 at its edge
             ao = 0.5f + 0.5f * ss(0.15f, 0.95f, d);
+            // A crown's lower half sees less sky than its top (the canopy above it): blocky crowns show only their outer
+            // faces (all near the edge, d ~ 1), so this is the part of the AO that reads.
+            const float h = std::clamp((p.y - (c.y - rv)) / std::max(2.0f * rv, 0.1f), 0.0f, 1.0f); // 0 bottom .. 1 top
+            ao = std::min(ao, 0.6f + 0.4f * ss(0.05f, 0.85f, h));
             if (ny < -0.5f) ao *= 0.78f;                                                 // leaf undersides face the dark ground
         } else {
             ao = 0.55f + 0.45f * ss(-0.2f, 0.9f, p.y);                                   // the trunk's foot
@@ -121,6 +125,8 @@ void BakeFoliageAo(VariantMesh& m, bool stone) {
                 if (dx * dx + dz * dz < rh * rh) ao *= 0.72f;
             }
         }
+        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 1.0f; // 1 = as tuned, 2 = twice as dark
+        ao = std::clamp(1.0f - strength * (1.0f - ao), 0.0f, 1.0f);
         m.col[4 * i + 3] = (unsigned char)std::clamp((int)lroundf(ao * 255.0f), 0, 255);
     }
 }
