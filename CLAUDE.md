@@ -31,6 +31,11 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   fluids, seed 42, a scratch save dir, a heartbeat every 5 s and a low-res recording (deleted on PASS, kept on FAIL); results go
   to `<--scenario-out DIR>/<name>/results.json`. `game.exe --scenario-report DIR [out.html]` makes the HTML report and appends to
   the history on the share. Several names or a tag run each scenario in its own process. New tests are scenarios, not flags.
+- **Profiler (#871):** without Tracy, `PROFILE_SCOPE` records into a per-thread ring (~20 ns a zone on, ~1 ns off); scenarios
+  turn it on (`RAYLIBGAME_PROFILE=1` for any run) and results.json gets its summary (zones p50/p95/p99, frame histogram, hitches
+  over 20 ms with their top zones, gputimer's cpu:/gpu: passes, counters, peak commit/VRAM). A/B timing:
+  `game.exe --scenario-ab perf/planet-view --ab-a K=V --ab-b K=V --ab-runs 3` (interleaved; quiet window only). Perf policy: the
+  report always shows the numbers and fails only on +15% mean frame time or a new hitch over 30 ms against recent passes.
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)

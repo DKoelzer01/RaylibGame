@@ -8,6 +8,8 @@
 #include "simclock.h"
 #include "voxel.h"
 #include "world.h"
+#include "profiler.h"
+#include "gputimer.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -25,7 +27,7 @@ int ScenarioProc_Run(const std::string& cmdline, double timeoutSec);
 std::string ScenarioProc_Exe();
 int ScenarioProc_Pid();
 int ScenarioReport_Main(int argc, char** argv); // scenarioreport.cpp
-// The profiler's run summary for results.json (#871 sets it); nullptr or "": none.
+int ScenarioAB_Main(int argc, char** argv);     // scenarioab.cpp (#871)
 
 namespace fs = std::filesystem;
 
@@ -97,6 +99,7 @@ struct Run {
     double simStart = -1.0, stepSim = 0.0, wallStart = 0.0, stepWall = 0.0, lastBeat = 0.0, startedAt = 0.0;
     long frames = 0;
     std::string started;
+    std::string profile; // (#871) the profiler's summary, taken when the scenario finished
 } R;
 
 double Wall() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -148,7 +151,7 @@ std::string ResultsJson() {
     j += "  \"capture\": {\"recorded\": " + std::string(R.record ? "true" : "false") + ", \"kept\": " + (kept ? "true" : "false") +
          ", \"dir\": \"" + JsonEsc(kept ? R.capture : "") + "\", \"sheet\": \"" + JsonEsc(kept && fs::exists(R.capture + "/sheet.png") ? R.capture + "/sheet.png" : "") +
          "\", \"reason\": \"" + JsonEsc(R.keepReason) + "\"}";
-    const std::string prof = gScenarioProfileJson ? gScenarioProfileJson() : std::string();
+    const std::string prof = R.finished ? R.profile : Profiler_SummaryJson(); // (#871) the run summary; "" when off
     if (!prof.empty()) j += ",\n  \"profile\": " + prof;
     j += "\n}\n";
     return j;
@@ -169,6 +172,10 @@ void Finish(const std::string& verdict, const std::string& reason) {
     int failed = 0; for (const auto& c : R.checks) failed += c.pass ? 0 : 1;
     printf("scenario: %s -> %s%s%s (%zu checks, %d failed; %.1f s sim, %.1f s wall)\n", R.def.name.c_str(), verdict.c_str(), reason.empty() ? "" : ": ", reason.c_str(),
            R.checks.size(), failed, SimTime() - R.simStart, Wall() - R.wallStart);
+    // (#871) The profile covers the scenario, not the bench frames after it.
+    R.profile = Profiler_SummaryJson();
+    Profiler_PrintSummary();
+    Profiler_Enable(false);
     WriteResults();
 }
 
@@ -243,6 +250,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--scenario-report") { std::exit(ScenarioReport_Main(argc - i - 1, argv + i + 1)); }
+        else if (a == "--scenario-ab") { std::exit(ScenarioAB_Main(argc - i - 1, argv + i + 1)); } // (#871) scenarioab.cpp
         else if (a == "--scenario" && i + 1 < argc) sel = argv[++i];
         else if (a == "--scenario-out" && i + 1 < argc) outDir = argv[++i];
         else if (a == "--scenario-list") { list = true; if (i + 1 < argc && argv[i + 1][0] != '-') sel = argv[++i]; }
@@ -275,6 +283,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
 
     // One scenario, in this process.
     R.def = defs[0];
+    if (!R.def.record) R.record = false; // (#871) perf scenarios: no recording
     R.active = true;
     R.outDir = outDir;
     std::string safe = R.def.name;
@@ -313,6 +322,8 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     argv = gArgPtrs.data();
     printf("scenario: %s (%s) -> %s\n", R.def.name.c_str(), R.def.file.c_str(), R.runDir.c_str());
     printf("scenario: args %s\n", R.args.c_str());
+    // (#871) The profiler records every scenario (RAYLIBGAME_PROFILE=0: off, the A/B overhead check's other side).
+    if (const char* e = getenv("RAYLIBGAME_PROFILE"); !(e && e[0] == '0')) Profiler_Enable(true);
     WriteResults(); // RUNNING: a crash leaves this behind
 }
 
@@ -334,6 +345,7 @@ bool Scenario_Frame(Scene& world) {
     if (R.simStart < 0.0) {
         R.simStart = SimTime(); R.stepSim = SimTime(); R.wallStart = now; R.stepWall = now; R.lastBeat = now;
         printf("scenario: %s: world ready after %.1f s; %zu steps\n", R.def.name.c_str(), now - R.startedAt, R.def.steps.size());
+        if (Profiler_On()) { GpuTimer_KeepOn(true); Profiler_Reset(); } // (#871) the passes as cpu:/gpu: zones; the summary from here on (not the loading)
     }
     ScenarioCtx c{ world };
     c.body = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -352,6 +364,15 @@ bool Scenario_Frame(Scene& world) {
         R.lastBeat = now;
         printf("scenario: %s heartbeat: step %d/%zu '%s' t=%.1f s (sim %.1f s, wall %.0f s)%s\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
                R.def.steps[R.step].name.c_str(), c.t, c.T, now - R.wallStart, R.waiting.empty() ? "" : (", waiting for " + R.waiting).c_str());
+    }
+    if (Profiler_On()) { // (#871) named counters, once a frame
+        const Fluid::Stats fs = Fluid::GetStats();
+        Profiler_Counter("fluid bricks awake", fs.activeBricks);
+        Profiler_Counter("fluid volume m^3", fs.volume);
+        Profiler_Counter("fluid step ms", fs.stepMs);
+        const WorldStats& ws = GetWorldStats();
+        Profiler_Counter("chunks alive", ws.nodes);
+        Profiler_Counter("chunk jobs queued", ws.queuedJobs);
     }
     const ScenarioStep& st = R.def.steps[R.step];
     const bool done = st.run(c);
