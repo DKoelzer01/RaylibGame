@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -555,6 +555,8 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::PlantAction: { MsgPlantAction m; return NetRead(r, m); }
         case NetMsg::Plants: { MsgPlants m; return NetRead(r, m); }
         case NetMsg::FarmFields: { MsgFarmFields m; return NetRead(r, m); }
+        case NetMsg::DropItems: { MsgDropItems m; return NetRead(r, m); }
+        case NetMsg::CreativeGive: { MsgCreativeGive m; return NetRead(r, m); }
         case NetMsg::Claims: { MsgClaims m; return NetRead(r, m); }
         default: return false;
     }
@@ -703,6 +705,15 @@ bool NetProto_Test() {
         check(RoundTrip(ba, bb, &s6) && bb.body == "terra" && bb.plot == 7 && bb.cell[0] == -3 && bb.cell[1] == 12 && bb.cell[2] == 40, "bed use"); samples.push_back(s6);
         MsgGraves ga, gb; ga.graves.push_back({ 7, "terra", DVec3{ 1.5, 60000.25, -3.0 }, "victim", "victim's grave 7", 2, 1795000000 }); std::vector<uint8_t> s7;
         check(RoundTrip(ga, gb, &s7) && gb.graves.size() == 1 && gb.graves[0].id == 7 && gb.graves[0].owner == "victim" && gb.graves[0].style == 2 && gb.graves[0].diedAt == 1795000000 && fabs(gb.graves[0].local.y - 60000.25) < 1e-6, "graves"); samples.push_back(s7);
+        { // #865, #866: a dropped pile in the graves list; drops and creative items
+            MsgGraves a, b; std::vector<uint8_t> s;
+            MsgGraves::Entry e; e.id = 9; e.body = "terra"; e.dropped = true; e.items = { "stone", "oak_log" }; a.graves.push_back(e);
+            check(RoundTrip(a, b, &s) && b.graves.size() == 1 && b.graves[0].dropped && b.graves[0].items.size() == 2 && b.graves[0].items[1] == "oak_log", "graves: a dropped pile"); samples.push_back(s);
+            MsgDropItems da{ "stone", 250 }, db; std::vector<uint8_t> s2;
+            check(RoundTrip(da, db, &s2) && db.item == "stone" && db.centi == 250, "drop items"); samples.push_back(s2);
+            MsgCreativeGive ca{ "diamond", 64 }, cb; std::vector<uint8_t> s3;
+            check(RoundTrip(ca, cb, &s3) && cb.item == "diamond" && cb.count == 64, "creative give"); samples.push_back(s3);
+        }
         MsgQuestBook qa{ 3, "quest 2\nside_done e0f\nquest_count eat 1.00\n" }, qb; std::vector<uint8_t> s8;
         check(RoundTrip(qa, qb, &s8) && qb.team == 3 && qb.text == qa.text, "quest book"); samples.push_back(s8);
         { // #604
@@ -837,6 +848,9 @@ void NetWrite(NetWriter& w, const MsgGraves& m) {
         const auto& g = m.graves[i];
         w.u32(g.id); w.str(g.body.substr(0, 64)); w.f64(g.local.x); w.f64(g.local.y); w.f64(g.local.z);
         w.str(g.owner.substr(0, 32)); w.str(g.name.substr(0, 64)); w.u8(g.style); w.vari(g.diedAt);
+        const size_t k = std::min<size_t>(g.items.size(), 3); // (#865) a dropped pile and what it holds (its bundle's colours)
+        w.boolean(g.dropped); w.u8((uint8_t)k);
+        for (size_t j = 0; j < k; ++j) w.str(g.items[j].substr(0, 64));
     }
 }
 bool NetRead(NetReader& r, MsgGraves& m) {
@@ -847,6 +861,10 @@ bool NetRead(NetReader& r, MsgGraves& m) {
         MsgGraves::Entry g;
         g.id = r.u32(); g.body = r.str(64); g.local.x = r.f64(); g.local.y = r.f64(); g.local.z = r.f64();
         g.owner = r.str(32); g.name = r.str(64); g.style = r.u8(); g.diedAt = r.vari();
+        g.dropped = r.boolean();
+        const uint8_t k = r.u8();
+        if (k > 3) r.ok = false;
+        for (uint8_t j = 0; j < k && r.ok; ++j) g.items.push_back(r.str(64));
         if (!(std::fabs(g.local.x) < 1e9 && std::fabs(g.local.y) < 1e9 && std::fabs(g.local.z) < 1e9) || g.style > 2) r.ok = false;
         m.graves.push_back(std::move(g));
     }
@@ -856,6 +874,11 @@ void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
+// (#865, #866) drops and creative items
+void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); }
+bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000; }
+void NetWrite(NetWriter& w, const MsgCreativeGive& m) { Id(w, NetMsg::CreativeGive); w.str(m.item.substr(0, 64)); w.varu(m.count); }
+bool NetRead(NetReader& r, MsgCreativeGive& m) { m.item = r.str(64); m.count = (uint32_t)std::min<uint64_t>(r.varu(), 1000000); return Done(r); }
 
 // ---- Machines on the server (#332) ----
 void NetWrite(NetWriter& w, const MsgMachineAction& m) {

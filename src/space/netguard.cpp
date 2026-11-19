@@ -24,6 +24,8 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::CraftRequest: return { 4, 10 };  // (#338: a click, or a few)
         case NetMsg::MachineAction: return { 8, 20 };  // (#332: clicks in a machine screen, I / O, watch on open and close)
         case NetMsg::PlantAction: return { 10, 20 };   // (#335: a fell (bushes and stones fall in one swing), I / O on farmland; the fell rate is checked behind this)
+        case NetMsg::DropItems: return { 6, 12 };     // (#865: Q drops one per press, a click outside the window a stack)
+        case NetMsg::CreativeGive: return { 8, 20 };  // (#866: Catalog clicks and middle-clicks, a drag across the Catalog)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }

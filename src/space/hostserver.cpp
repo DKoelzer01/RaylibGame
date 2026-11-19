@@ -259,6 +259,7 @@ namespace {
     int itemsUsed = 0;
     int gravesMade = 0; // (#804)
     int crafts = 0; // (#338) recipes crafted for players
+    int dropsMade = 0, creativeGives = 0, creativeRefused = 0; // (#865, #866)
     // ---- Graves (#804; the user's rules on #337, 2026-11-18) ----
     // A remote player's death leaves what death_drops says (by difficulty, keep, or a grave owned by that player); walking up
     // to a grave takes what that player may (Combat_CanLoot); every client gets the list when it changes; the owners' teams
@@ -278,10 +279,10 @@ namespace {
     }
     void SendGraves(uint32_t conn) {
         MsgGraves m;
-        for (const GraveInfo& g : Combat_GraveList()) m.graves.push_back({ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt });
+        for (const GraveInfo& g : Combat_GraveList()) { MsgGraves::Entry e{ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt }; e.dropped = g.dropped; e.items = g.items; m.graves.push_back(std::move(e)); } // (#865: dropped piles too)
         SendMsg(conn, m);
     }
-    void StepGraves() {
+    void StepGraves(Scene& world) {
         const bool pickupTick = SimTick() - lastGravePickup >= 6; // ten times a second
         if (pickupTick) lastGravePickup = SimTick();
         std::vector<std::string> online;
@@ -302,7 +303,9 @@ namespace {
                 r.deathHandled = false;
                 if (pickupTick) {
                     const auto before = AllAmounts(r.inventory);
-                    if (Combat_PickUpGravesFor(r.player, r.inventory, name, false, false)) SendChangedItems(conn, r.inventory, before);
+                    Player::NetState feet; // (body-local feet as its last step left them: its world position goes stale as the planet turns, #856)
+                    const Planetoid* body = r.player.netState(world, feet) ? Planetoid::findNet(feet.body) : nullptr;
+                    if (body && Combat_PickUpGravesFor(body->name, feet.local, r.inventory, name, false, false)) SendChangedItems(conn, r.inventory, before);
                 }
             }
         }
@@ -1742,6 +1745,44 @@ namespace {
                 OnPlantAction(m.conn, it->second.session, a);
                 return;
             }
+            case NetMsg::DropItems: { // (#865) some of an item from the inventory this server keeps, as a pile at the player's feet
+                MsgDropItems q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end() || rit->second.survival.dead) return;
+                Inventory& inv = rit->second.inventory;
+                const int64_t have = (int64_t)llround(inv.amount(q.item) * 100.0);
+                const int64_t centi = std::min(q.centi, have);
+                if (centi <= 0) return; // (it has none: the client's view was stale; nothing to send)
+                const auto before = AllAmounts(inv);
+                if (!inv.removeAmount(q.item, centi / 100.0)) return;
+                std::string name;
+                for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
+                Player::NetState feet; // (its body and body-local feet as the last step left them: right even before a first step, #856)
+                const Planetoid* body = rit->second.player.netState(world, feet) ? Planetoid::findNet(feet.body) : nullptr;
+                if (body && Combat_DropFor(body->name, feet.local, InvSlot{ q.item, centi }, name)) ++dropsMade;
+                else inv.addAmount(q.item, centi / 100.0); // (not on a body: it stays)
+                SendChangedItems(m.conn, inv, before);
+                return;
+            }
+            case NetMsg::CreativeGive: { // (#866) a creative player's Catalog: free items (or "" clears its inventory); refused otherwise
+                MsgCreativeGive q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end()) return;
+                if (!rit->second.creative) { ++creativeRefused; SendMsg(m.conn, MsgChat{ 0, "Only creative players take from the Catalog" }); return; }
+                Inventory& inv = rit->second.inventory;
+                const auto before = AllAmounts(inv);
+                if (q.item.empty()) inv.clear();
+                else {
+                    const ItemDef* d = itemDB.find(q.item);
+                    if (!d || IsWildcardItem(q.item)) return;
+                    inv.addAmount(q.item, (double)std::min<uint32_t>(q.count, (uint32_t)StackLimit(q.item)));
+                }
+                ++creativeGives;
+                SendChangedItems(m.conn, inv, before);
+                return;
+            }
             case NetMsg::CraftRequest: { // (#338) crafting on the server: the recipe unlocked for the player's team, the inputs in its inventory
                 MsgCraftRequest q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -1887,6 +1928,9 @@ void Host_SetPassword(const std::string& p) { password = p; }
 void Host_SetMaxPlayers(int n) { maxPlayers = std::clamp(n, 1, 64); }
 void Host_SetDeathDrops(DeathDrops d) { deathDrops = d; } // (#804)
 int Host_GravesMade() { return gravesMade; }
+int Host_DropsMade() { return dropsMade; }
+int Host_CreativeGives() { return creativeGives; }
+int Host_CreativeRefused() { return creativeRefused; }
 
 void Host_Update(Scene& world) {
     // Autosave (user, 2026-11-15: every 30 minutes by default; --autosave-minutes N, 0 = off). Wall-clock time: a
@@ -1924,7 +1968,7 @@ void Host_Update(Scene& world) {
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
-    StepGraves();         // (#804) deaths' drops, pickups, decay and the graves list to everyone
+    StepGraves(world);         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
     StepMachines(world);  // (#332) machines: near points, watched views, working states
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
@@ -2024,6 +2068,20 @@ int Host_GuardDropped() { return guardDropped; }
 int Host_GuardKicks() { return guardKicks; }
 
 // ---- Tests (#346): records across a restart ----
+// (#865 tests) remote player `who` stands where `at` stands (its body-local feet and anchor)
+bool Host_TestPutPlayerAt(Scene& world, uint32_t who, uint32_t at) {
+    auto iw = remotes.find(who), ia = remotes.find(at);
+    if (iw == remotes.end() || ia == remotes.end()) return false;
+    Player::NetState s;
+    return ia->second.player.netState(world, s) && iw->second.player.applyNetState(world, s);
+}
+// (#865 tests) how far apart two remote players stand, body-local (their world positions go stale between steps); -1: unknown
+double Host_PlayersApart(Scene& world, uint32_t a, uint32_t b) {
+    auto ia = remotes.find(a), ib = remotes.find(b);
+    Player::NetState sa, sb;
+    if (ia == remotes.end() || ib == remotes.end() || !ia->second.player.netState(world, sa) || !ib->second.player.netState(world, sb) || sa.body != sb.body) return -1.0;
+    return (sa.local - sb.local).length();
+}
 int Host_ItemCount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? -1 : it->second.inventory.count(item);
