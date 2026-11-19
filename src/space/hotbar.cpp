@@ -271,10 +271,25 @@ void Hotbar_DrawHUD(bool piloting) {
             }
         }
         std::string name = ShortName(id);
-        int fs = (int)(12 * sc);
-        while (fs > (int)(9 * sc) && MeasureText(name.c_str(), fs) > size - 4) --fs;
-        while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back(); // still too long: cut (#219: names ran into the next slot)
-        DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+        // (#925 follow-up) As the inventory's names: never cut mid-word. One line, shrunk to 70% at most; else two lines split at
+        // the space nearest the middle; a single long word shrinks to fit (raylib's font has a 10 px floor).
+        const int fs0 = (int)(12 * sc), room = size - 4;
+        int fs = fs0;
+        while (fs > (int)(fs0 * 0.7f) && MeasureText(name.c_str(), fs) > room) --fs;
+        size_t split = std::string::npos;
+        if (MeasureText(name.c_str(), fs) > room)
+            for (size_t i = 0; i < name.size(); ++i)
+                if (name[i] == ' ' && (split == std::string::npos || std::abs((int)i - (int)name.size() / 2) < std::abs((int)split - (int)name.size() / 2))) split = i;
+        if (split == std::string::npos) {
+            while (fs > 10 && MeasureText(name.c_str(), fs) > room) --fs;
+            DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+        } else {
+            const std::string a = name.substr(0, split), b = name.substr(split + 1);
+            fs = fs0;
+            while (fs > 10 && std::max(MeasureText(a.c_str(), fs), MeasureText(b.c_str(), fs)) > room) --fs;
+            DrawText(a.c_str(), x + (size - MeasureText(a.c_str(), fs)) / 2, y0 + size - 2 * fs - 7, fs, RAYWHITE);
+            DrawText(b.c_str(), x + (size - MeasureText(b.c_str(), fs)) / 2, y0 + size - fs - 5, fs, RAYWHITE);
+        }
     }
     // Eating (#202): its bar under the crosshair, where the swing bar sits.
     if (H().eatProgress > 0.0f) {
