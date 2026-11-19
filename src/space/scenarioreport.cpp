@@ -222,8 +222,25 @@ int ScenarioReport_Main(int argc, char** argv) {
         return t + "</table></div>";
     };
 
+    // Perf policy (#871, the user's choice): always reported; a run fails only on a large regression against its recent
+    // passing runs: the mean frame time 15% over the baseline, or a hitch over 30 ms where the baseline had none.
+    std::vector<std::pair<const J*, std::string>> perfFails;
+    for (const J& r : runs) {
+        double mean = -1.0, over30 = -1.0;
+        for (const J& m : r["metrics"].a) {
+            if (m.str("name") == "frame mean") mean = m.num("value");
+            if (m.str("name") == "frames over 30 ms") over30 = m.num("value");
+        }
+        double base = 0.0;
+        if (mean > 0.0 && baseline(r.str("scenario"), "frame mean", base) && base > 0.0 && mean > 1.15 * base)
+            perfFails.push_back({ &r, "mean frame " + Fmt(mean) + " ms is " + Fmt(100.0 * (mean - base) / base) + "% over the baseline " + Fmt(base) + " ms (limit +15%)" });
+        if (over30 > 0.0 && baseline(r.str("scenario"), "frames over 30 ms", base) && base == 0.0)
+            perfFails.push_back({ &r, Fmt(over30) + " frames over 30 ms; the baseline had none" });
+    }
     h += "<h2>Failures</h2>";
-    if (failed.empty()) h += "<p class=ok>None.</p>";
+    if (failed.empty() && perfFails.empty()) h += "<p class=ok>None.</p>";
+    for (const auto& pf : perfFails)
+        h += "<div class=card><b class=bad>PERF</b> <b>" + Html(pf.first->str("scenario")) + "</b><p>" + Html(pf.second) + "</p></div>";
     for (const J* r : failed) {
         h += "<div class=card><b class=bad>" + Html(r->str("verdict")) + "</b> <b>" + Html(r->str("scenario")) + "</b> <span class=muted>" + Html(r->str("file")) + "</span>";
         if (!r->str("reason").empty()) h += "<p>" + Html(r->str("reason")) + "</p>";
@@ -296,5 +313,5 @@ int ScenarioReport_Main(int argc, char** argv) {
         } else printf("report: cannot append to the history %s\n", history.c_str());
     }
     printf("report: %zu runs (%zu failed) -> %s%s\n", runs.size(), failed.size(), out.c_str(), useHistory ? (" (history " + history + ")").c_str() : "");
-    return failed.empty() ? 0 : 1;
+    return failed.empty() && perfFails.empty() ? 0 : 1;
 }

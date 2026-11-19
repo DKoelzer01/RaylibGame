@@ -84,6 +84,7 @@ struct ScenarioDef {
     std::vector<std::string> args;            // extra game flags (e.g. --day)
     std::vector<std::pair<std::string, std::string>> env; // environment set before the game starts
     std::string legacyFlag;                   // the --test-* flag it replaces (the report pairs their verdicts)
+    bool record = true;                       // the temporary recording (perf scenarios: off, it costs frame time)
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }
@@ -106,7 +107,5 @@ void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
 void Scenario_Shutdown();
 bool Scenario_Active();
-// results.json's "profile" object (the profiler's run summary, #871): set by the profiler; nullptr: none.
-inline std::string (*gScenarioProfileJson)() = nullptr;
 
 #endif
