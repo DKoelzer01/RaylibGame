@@ -242,16 +242,6 @@ void Suit_DrawCarried() {
     if (!any) ImGui::TextDisabled("No other suits or modules carried (craft them on the Crafting screen)");
 }
 
-// (#822) What the suit does now.
-void Suit_DrawStats() {
-    Load();
-    const SuitStats& st = S().stats;
-    ImGui::TextWrapped("Oxygen x%.2f   power x%.2f   jetpack fuel x%.2f, thrust x%.2f", st.oxygen, st.power, st.jetFuel, st.jetThrust);
-    ImGui::TextWrapped("Walk x%.2f   lamp x%.2f   hunger x%.2f   underwater oxygen x%.1f", st.walk, st.lamp, st.food, st.underwater);
-    ImGui::TextWrapped("Cold felt %.0f%%   heat %s   grip %s   ore scanner %s", st.cold * 100.0f, st.heatProof ? "regulated" : "hurts above 35 C",
-                       st.grip ? "on" : "off", st.scanner ? "on" : "off");
-}
-
 void Suit_Save(FILE* f) {
     fprintf(f, "suit %s %d", S().worn.c_str(), (int)S().fitted.size());
     for (const std::string& m : S().fitted) fprintf(f, " %s", m.empty() ? "-" : m.c_str());

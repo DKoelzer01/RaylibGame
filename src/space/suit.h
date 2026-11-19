@@ -56,7 +56,6 @@ void Suit_Apply(Scene& world, float dt);              // stats into player/survi
 void Suit_DrawHUD();                                  // the scanner's ping
 bool Suit_FitInto(int slot, const std::string& moduleId); // (#822) into that slot (a fitted one comes out first)
 void Suit_DrawCarried();                              // (#822) carried suits and modules, Wear / Fit (ImGui)
-void Suit_DrawStats();                                // (#822) what the suit does now (ImGui)
 void Suit_Reset();                                    // a new game: the basic suit, empty slots
 void Suit_Save(FILE* f);
 bool Suit_LoadLine(const char* tok, FILE* f);
