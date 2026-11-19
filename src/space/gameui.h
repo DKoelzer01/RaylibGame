@@ -20,6 +20,7 @@ void GameUI_ApplyStyleScale();             // (#891) before each ImGui frame: fo
 void GameUI_PrepareFrame(Scene& world);  // (#822) before ImGui, after the world: renders the inventory screen's player preview
 bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this frame (tests)
 void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
+bool GameUI_QueueRecursive(int recipe, int count, int* steps = nullptr); // (#928) with its missing intermediates first; false: can't
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 bool GameUI_ClosePopout();                     // (#921) Esc: closes an open pop-out (a recipe's page, a quest tier); false: none was open

@@ -14,6 +14,7 @@
 #include "questtree.h"
 #include "navigation.h"
 #include "recipebook.h"
+#include "craftplan.h"
 #include "net.h"
 #include "storage.h"
 #include "factory.h"
@@ -689,8 +690,11 @@ namespace {
             default: return CraftCat::Materials;
         }
     }
-    struct QueuedCraft { int recipe; int left; };
+    // group (#928): the steps of one recursive craft (intermediates first) share it; cancelling one cancels them all, and a
+    // step that runs short drops the rest. 0: a craft on its own.
+    struct QueuedCraft { int recipe; int left; int group = 0; };
     std::vector<QueuedCraft> craftQueue;
+    int nextCraftGroup = 1;
     double nextCraftAt = 0.0;
     constexpr double kCraftEvery = 0.3; // s between queued crafts (you see them come)
     int selectedRecipe = -1;
@@ -716,7 +720,18 @@ static void RunCraftQueue() {
         else if (gNetRole == NetRole::Client || inventory.canCraft(r)) { Crafting_Request(q.recipe, 1); --q.left; } // (#338: the server checks)
         else { const ItemDef* d = itemDB.find(r.output); GameUI_Toast(TextFormat("Ran out of what %s takes", d ? d->name.c_str() : r.output.c_str())); done = true; }
     }
+    if (done && q.group) { // (#928) a step of a recursive craft ran short: the rest of it goes too (what was made stays)
+        const int g = q.group;
+        craftQueue.erase(std::remove_if(craftQueue.begin(), craftQueue.end(), [g](const QueuedCraft& c) { return c.group == g; }), craftQueue.end());
+        return;
+    }
     if (done || q.left <= 0) craftQueue.erase(craftQueue.begin());
+}
+
+// (#928) A plan's steps into the queue, intermediates first, as one group (a single step is a craft on its own).
+static void QueuePlan(const CraftPlan& p) {
+    const int g = p.steps.size() > 1 ? nextCraftGroup++ : 0;
+    for (const CraftStep& s : p.steps) craftQueue.push_back({ s.recipe, s.times, g });
 }
 
 static void DrawCrafting() {
@@ -748,12 +763,26 @@ static void DrawCrafting() {
             for (const auto& s : Factory::ChestContents(c.body, c.plot, c.part)) stored[s.first] += s.second;
     auto have = [&](const std::string& id) { int n = inventory.count(id); for (const auto& s : stored) if (ItemMatches(id, s.first)) n += s.second; return n; };
     auto canMake = [&](const Recipe& r) { if (creative) return true; for (const auto& in : r.inputs) if (have(in.first) < in.second) return false; return true; };
-    auto maxFromInventory = [&](const Recipe& r) {
-        if (creative) return 99;
-        int n = 1 << 20;
-        for (const auto& in : r.inputs) n = std::min(n, inventory.count(in.first) / std::max(1, in.second));
-        return n;
-    };
+    // (#928) Factorio-style: a known recipe whose ingredients are not all carried can still be made when the missing ones
+    // can be hand-crafted from what is carried (known hand recipes only; what only a machine makes stays missing). Every
+    // recipe's plan, refreshed twice a second rather than each frame; which recipes are known, once per refresh.
+    static std::vector<char> knownNow, planOk;
+    static double planAt = -1.0;
+    static std::set<std::string> machineMade;
+    if (machineMade.empty()) for (const auto& ri : Factory::RecipeList()) for (const auto& o : ri.out) machineMade.insert(o.first);
+    std::map<std::string, int> carried;
+    for (const auto& kv : inventory.all()) carried[kv.first] = kv.second;
+    const std::function<bool(int)> known = [&](int k) { return k >= 0 && k < (int)knownNow.size() && knownNow[k]; };
+    if (GetTime() - planAt > 0.5 || planOk.size() != recipes.size()) {
+        planAt = GetTime();
+        knownNow.assign(recipes.size(), 0);
+        for (size_t k = 0; k < recipes.size(); ++k) knownNow[k] = RecipeBook_Known(recipes[k]);
+        planOk.assign(recipes.size(), 0);
+        if (!creative)
+            for (size_t k = 0; k < recipes.size(); ++k)
+                if (knownNow[k] && !canMake(recipes[k])) planOk[k] = CraftPlan_Make(recipes, known, carried, (int)k, 1, machineMade).ok;
+    }
+    auto canMakeAt = [&](int k) { return canMake(recipes[k]) || (k >= 0 && k < (int)planOk.size() && planOk[k]); };
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)recipes.size()) {
         const Recipe& r = recipes[pending];
@@ -785,7 +814,7 @@ static void DrawCrafting() {
         const Recipe& r = recipes[i];
         if (!RecipeBook_Known(r)) { ++hidden; continue; }
         if (!RecipeBook_Matches(r, q)) continue;
-        const bool can = canMake(r);
+        const bool can = canMakeAt((int)i); // (#928: intermediates counted)
         if (cat == CraftCat::CanMake && !can) continue;
         if (cat != CraftCat::All && cat != CraftCat::CanMake && CategoryOf(r.output) != cat) continue;
         if (shown % cols != 0) ImGui::SameLine(0.0f, gap);
@@ -798,7 +827,10 @@ static void DrawCrafting() {
         if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
         if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
         if (shown == 1) { recipeTest.firstCell = ImVec2((p.x + qd.x) * 0.5f, (p.y + qd.y) * 0.5f); recipeTest.firstRecipe = (int)i; }
-        if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) craftQueue.push_back({ (int)i, 1 }); // double-click: craft one
+        if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) { // double-click: craft one (#928: its intermediates first)
+            if (creative || canMake(r)) craftQueue.push_back({ (int)i, 1 });
+            else QueuePlan(CraftPlan_Make(recipes, known, carried, (int)i, 1, machineMade));
+        }
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
         if (r.outputCount > 1) {
@@ -862,23 +894,42 @@ static void DrawCrafting() {
         ImGui::EndGroup();
         if (out && !out->description.empty()) ImGui::TextWrapped("%s", out->description.c_str());
         ImGui::Separator();
+        // (#928) The plan for one: what it makes first from what is carried (empty when the ingredients are all there), and
+        // the most that can be made that way (the binary search: twice a second, for the recipe on the page).
+        const bool direct = canMake(r);
+        const CraftPlan plan1 = creative ? CraftPlan{} : CraftPlan_Make(recipes, known, carried, selectedRecipe, 1, machineMade);
+        static int mostFor = -1, mostCached = 0;
+        static double mostAt = -1.0;
+        if (mostFor != selectedRecipe || GetTime() - mostAt > 0.5) { mostFor = selectedRecipe; mostAt = GetTime(); mostCached = creative ? 99 : CraftPlan_Max(recipes, known, carried, selectedRecipe, 999, machineMade); }
+        const int most = mostCached;
         ImGui::TextUnformatted("Takes:");
         for (const auto& in : r.inputs) {
             const ItemDef* id = itemDB.find(in.first);
             const int inv = inventory.count(in.first), all = have(in.first);
-            const bool enough = creative || all >= in.second;
-            ImGui::TextColored(enough ? ImVec4(0.55f, 0.9f, 0.55f, 1.0f) : ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "  %d %s   (have %d%s)", in.second,
-                               id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "");
+            const bool enough = creative || all >= in.second, madeFirst = !enough && plan1.ok; // (#928: crafted from what you carry)
+            ImGui::TextColored(enough ? ImVec4(0.55f, 0.9f, 0.55f, 1.0f) : madeFirst ? ImVec4(0.95f, 0.8f, 0.4f, 1.0f) : ImVec4(0.95f, 0.45f, 0.4f, 1.0f), "  %d %s   (have %d%s)%s", in.second,
+                               id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "", madeFirst ? "  - made first" : "");
             if (ImGui::IsItemClicked()) { HelpManual_OpenItem(in.first); databaseOpen = true; } // (#826) an ingredient: its page
         }
-        const bool can = canMake(r);
-        const int most = maxFromInventory(r);
+        const bool can = direct || plan1.ok;
+        // Queues n: in creative, or with everything carried, as it was; else the plan's steps, intermediates first.
+        auto queueN = [&](int n) {
+            if (creative || inventory.canCraft(r)) { craftQueue.push_back({ selectedRecipe, n }); return; }
+            const CraftPlan p = n == 1 ? plan1 : CraftPlan_Make(recipes, known, carried, selectedRecipe, n, machineMade);
+            if (p.ok) QueuePlan(p); else craftQueue.push_back({ selectedRecipe, n }); // (joined: the server checks)
+        };
+        auto planTip = [&](int n) { // what a button will make first
+            if (creative || !ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) return;
+            const CraftPlan p = n == 1 ? plan1 : CraftPlan_Make(recipes, known, carried, selectedRecipe, n, machineMade);
+            if (p.ok && p.steps.size() > 1) ImGui::SetTooltip("Crafts %s", CraftPlan_Describe(recipes, p).c_str());
+        };
         ImGui::Spacing();
         ImGui::BeginDisabled(!can || pending >= 0);
         const bool craft1 = ImGui::Button("Craft 1");
         { const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(); recipeTest.craft1 = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); }
+        planTip(1);
         if (craft1) {
-            if (creative || gNetRole == NetRole::Client || inventory.canCraft(r)) craftQueue.push_back({ selectedRecipe, 1 });
+            if (creative || gNetRole == NetRole::Client || inventory.canCraft(r) || plan1.ok) queueN(1);
             else if (uiWorld) { // short in the inventory: pulled from nearby chests first (#338: not when joined)
                 bool ok = true;
                 for (const auto& in : r.inputs) ok = Storage_Pull(*uiWorld, in.first, in.second - inventory.count(in.first)) && ok;
@@ -888,14 +939,21 @@ static void DrawCrafting() {
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(most < 5);
-        if (ImGui::Button("x5")) craftQueue.push_back({ selectedRecipe, 5 });
+        if (ImGui::Button("x5")) queueN(5);
+        planTip(5);
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(most < 1);
-        if (ImGui::Button(creative ? "x20" : TextFormat("All (%d)", most))) craftQueue.push_back({ selectedRecipe, creative ? 20 : most });
+        if (ImGui::Button(creative ? "x20" : TextFormat("All (%d)", most))) queueN(creative ? 20 : most);
+        planTip(most);
         ImGui::EndDisabled();
-        if (!can) ImGui::TextDisabled("Missing items");
-        else if (pending >= 0) ImGui::TextDisabled("Waiting for items from the chests...");
+        if (!can) {
+            if (!plan1.machineOnly.empty()) { // (#928) what a machine must make first: hand crafting can't
+                std::string names;
+                for (const std::string& m : plan1.machineOnly) { const ItemDef* d = itemDB.find(m); names += (names.empty() ? "" : ", ") + (d ? d->name : m); }
+                ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Missing items; a machine makes %s", names.c_str()); ImGui::PopTextWrapPos();
+            } else ImGui::TextDisabled("Missing items");
+        } else if (pending >= 0) ImGui::TextDisabled("Waiting for items from the chests...");
         // What this is used by: the recipes that take it.
         ImGui::Separator();
         ImGui::TextUnformatted("Used by:");
@@ -926,10 +984,20 @@ static void DrawCrafting() {
     for (size_t k = 0; k < craftQueue.size(); ++k) {
         const QueuedCraft& c = craftQueue[k];
         const ItemDef* d = c.recipe >= 0 && c.recipe < (int)recipes.size() ? itemDB.find(recipes[c.recipe].output) : nullptr;
+        // (#928) A recursive craft's intermediate steps sit indented under it (the last step of a group is the item asked
+        // for); cancelling any step cancels the group (nothing is reserved: what was made, and every ingredient not yet
+        // used, stays in the inventory).
+        const bool step = c.group && k + 1 < craftQueue.size() && craftQueue[k + 1].group == c.group;
         ImGui::PushID(20000 + (int)k);
-        if (ImGui::SmallButton("x")) { craftQueue.erase(craftQueue.begin() + (long)k); ImGui::PopID(); break; }
+        if (ImGui::SmallButton("x")) {
+            if (c.group) { const int g = c.group; craftQueue.erase(std::remove_if(craftQueue.begin(), craftQueue.end(), [g](const QueuedCraft& e) { return e.group == g; }), craftQueue.end()); }
+            else craftQueue.erase(craftQueue.begin() + (long)k);
+            ImGui::PopID(); break;
+        }
+        if (ImGui::IsItemHovered() && c.group) ImGui::SetTooltip("Cancels this craft and the steps it makes first");
         ImGui::SameLine();
-        ImGui::Text("%s  x%d%s", d ? d->name.c_str() : "?", c.left, k == 0 ? "  (crafting)" : "");
+        if (step) ImGui::TextDisabled("- %s  x%d (first)%s", d ? d->name.c_str() : "?", c.left * (c.recipe >= 0 && c.recipe < (int)recipes.size() ? std::max(1, recipes[c.recipe].outputCount) : 1), k == 0 ? "  (crafting)" : "");
+        else ImGui::Text("%s  x%d%s", d ? d->name.c_str() : "?", c.left, k == 0 ? "  (crafting)" : "");
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1855,6 +1923,18 @@ void GameUI_DrawHUD(Scene& world) {
 
 // (#824) the crafting queue from outside (tests; later, e.g. a recipe's "craft" from the database pop-up, #826)
 void GameUI_QueueCraft(int recipe, int count) { if (count > 0) craftQueue.push_back({ recipe, count }); }
+bool GameUI_QueueRecursive(int recipe, int count, int* steps) { // (#928) as the page's buttons: its intermediates first
+    const auto& recipes = itemDB.recipes();
+    std::set<std::string> machineMade;
+    for (const auto& ri : Factory::RecipeList()) for (const auto& o : ri.out) machineMade.insert(o.first);
+    std::map<std::string, int> carried;
+    for (const auto& kv : inventory.all()) carried[kv.first] = kv.second;
+    const std::function<bool(int)> known = [&](int k) { return k >= 0 && k < (int)recipes.size() && RecipeBook_Known(recipes[k]); };
+    const CraftPlan p = CraftPlan_Make(recipes, known, carried, recipe, count, machineMade);
+    if (steps) *steps = (int)p.steps.size();
+    if (p.ok) QueuePlan(p);
+    return p.ok;
+}
 int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }
 void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; recipePageOpen = recipe >= 0; } // (#921: its page open)
 bool GameUI_ClosePopout() { // (#921) Esc: a pop-out closes before the window does
