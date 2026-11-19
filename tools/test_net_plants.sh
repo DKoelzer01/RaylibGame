@@ -46,5 +46,9 @@ f2=$(grep -h "^bench: net farm (feller" "$tmp/feller.log"); w2=$(grep -h "^bench
 chk "$(echo "$f2" | grep -q "farmland 1; sown 1: seeds 2 -> [23];" && echo 1)" "the feller tilled (server farmland) and sowed (a seed out, 1-2 back with the harvest)"
 chk "$(echo "$f2" | grep -q "harvested 1: grain 0 -> [1-9]" && echo 1)" "it harvested the ripe crop: grain arrived by deltas"
 chk "$(echo "$w2" | grep -q "crop seen 1, gone 1" && echo 1)" "the watcher saw the crop grow and go (FarmFields)"
+# (#920) XP counted on the server and sent as SkillState: the feller's felling and farming; the watcher, who did nothing, none
+f3=$(grep -h "^bench: net skills (feller" "$tmp/feller.log"); w3=$(grep -h "^bench: net skills (watcher" "$tmp/watcher.log"); echo "$f3"; echo "$w3"
+chk "$(echo "$f3" | awk -F'[;,]' '{ split($3, a, " "); split($4, b, " "); split($5, c, " "); exit !((a[2] + b[2]) > 0 && c[2] > 0) }' && echo 1)" "the feller earned felling and farming XP on the server"
+chk "$(echo "$w3" | grep -q "woodcutting 0.0, foraging 0.0, farming 0.0" && echo 1)" "the watcher earned none"
 echo "=== test_net_plants: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
 [ $ok = 1 ]

@@ -11427,6 +11427,9 @@ int main(int argc, char** argv)
                        gJoin.plantsRemoved, gJoin.plantLists, ids.c_str());
                 printf("bench: net farm (%s, #335): farmland %d; sown %d: seeds %d -> %d; crop seen %d, gone %d; harvested %d: grain %d -> %d; field lists %d\n",
                        role ? role : "?", (int)(farm != nullptr || cropGone), (int)sown, seeds0, inventory.count("grain_seeds"), (int)cropSeen, (int)cropGone, (int)harvested, grain0, inventory.count("grain"), gJoin.farmLists);
+                // (#920) the XP the server counted for it (felling: Woodcutting or Foraging; tilling, sowing, harvesting: Farming)
+                printf("bench: net skills (%s, #920): skill states %d; woodcutting %.1f, foraging %.1f, farming %.1f\n", role ? role : "?", gJoin.skillStates,
+                       gJoin.skills.xp["woodcutting"], gJoin.skills.xp["foraging"], gJoin.skills.xp["farming"]);
                 NetClient_Disconnect(gJoin);
                 benchNetPlants = false;
             }
