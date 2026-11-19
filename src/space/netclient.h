@@ -163,7 +163,7 @@ void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swin
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
-void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false); // (#338) craft on the server
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false, bool recursive = false); // (#338) craft on the server
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)

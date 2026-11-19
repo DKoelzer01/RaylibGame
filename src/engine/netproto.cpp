@@ -724,8 +724,8 @@ bool NetProto_Test() {
                   b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
             samples.push_back(s);
         }
-        MsgCraftRequest ca{ 12, "oak_planks", 5, true }, cb; std::vector<uint8_t> s9;
-        check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5 && cb.useChests, "craft request"); samples.push_back(s9);
+        MsgCraftRequest ca{ 12, "oak_planks", 5, true, true }, cb; std::vector<uint8_t> s9;
+        check(RoundTrip(ca, cb, &s9) && cb.recipe == 12 && cb.output == "oak_planks" && cb.count == 5 && cb.useChests && cb.recursive, "craft request (recursive: #946)"); samples.push_back(s9);
         MsgMachineAction ma{ 0x2000000000000003ull, 4, 17, 5, "", 0, 2, 1 }, mb; std::vector<uint8_t> s10;
         check(RoundTrip(ma, mb, &s10) && mb.body == ma.body && mb.plot == 4 && mb.part == 17 && mb.action == 5 && mb.slot == 2 && mb.which == 1, "machine action"); samples.push_back(s10);
         { // #862: into one chest slot
@@ -872,8 +872,8 @@ bool NetRead(NetReader& r, MsgGraves& m) {
 }
 void NetWrite(NetWriter& w, const MsgQuestBook& m) { Id(w, NetMsg::QuestBook); w.u32(m.team); w.str(m.text.substr(0, 65536)); }
 bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(65536); return Done(r); }
-void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); }
-bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
+void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
+bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items
 void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); }
 bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000; }

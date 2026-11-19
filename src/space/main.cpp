@@ -1497,7 +1497,7 @@ int main(int argc, char** argv)
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gDropRequest = [](const std::string& item, int64_t centi) { NetClient_DropItems(gJoin, item, centi); }; // (#865)
         gCreativeGive = [](const std::string& item, int count) { NetClient_CreativeGive(gJoin, item, count); }; // (#866)
-        gCraftRequest = [](int index, const std::string& output, int count, bool useChests) { NetClient_Craft(gJoin, index, output, count, useChests); }; // (#338) and our crafting
+        gCraftRequest = [](int index, const std::string& output, int count, bool useChests, bool recursive) { NetClient_Craft(gJoin, index, output, count, useChests, recursive); }; // (#338) and our crafting
         // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
         gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
         gFarmRequest = [](Planetoid& b, const Plot& plot, int part, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, plot.id, part, seed); };
@@ -11816,8 +11816,9 @@ int main(int argc, char** argv)
             static int step = 0;
             static double t0 = -1.0, stepAt = 0.0;
             static bool given = false, refused = false, dropped = false, heard = false, keptByDropper = false, takenByOther = false;
+            static bool plainRefused = false, recursiveMade = false; // (#946)
             static double apart = -1.0;
-            static int plainGraves0 = 0;
+            static int plainGraves0 = 0, circuitRecipe = -1;
             if (t0 < 0.0) t0 = GetTime();
             for (NetClient* c : { &maker, &plain }) NetClient_Update(*c);
             const uint32_t ms = maker.welcome.session, ps = plain.welcome.session;
@@ -11836,15 +11837,32 @@ int main(int argc, char** argv)
                 Host_TestPutPlayerAt(world, ps, ms); // plain onto maker's spot, by the pile (they joined 3 m apart; a pickup reaches 2.5 m)
                 apart = Host_PlayersApart(world, ms, ps);
                 stepAt = GetTime(); step = 4;
-            } else if (step == 4 && GetTime() - stepAt > 1.0) { // within 2 s: nobody has it yet, the dropper standing on it least of all
-                keptByDropper = Host_ItemCount(ms, "stone") == 15 && pileOf("maker");
+            } else if (step == 4 && GetTime() - stepAt > 1.0) { // the dropper standing on it has not taken it back
+                // (#957) The pile itself may be gone already: plain's 2 s run from the drop, and step 3 can wait longer than that.
+                keptByDropper = Host_ItemCount(ms, "stone") == 15 && (pileOf("maker") || Host_ItemCount(ps, "stone") == 5);
                 stepAt = GetTime(); step = 5;
             } else if (step == 5 && ((Host_ItemCount(ps, "stone") == 5 && !pileOf("maker")) || GetTime() - stepAt > 6.0)) {
                 takenByOther = Host_ItemCount(ps, "stone") == 5 && !pileOf("maker") && Host_ItemCount(ms, "stone") == 15;
-                step = 6;
+                // (#946) Recursive crafting planned on the server: plain carries only raw materials for a basic circuit (wire
+                // and tubes held once: the recipes known). A plain request is refused; a recursive one makes it whole.
+                for (const char* id : { "copper_wire", "vacuum_tube" }) { Host_TestGive(ps, id, 1); Host_TestGive(ps, id, -1); }
+                Host_TestGive(ps, "copper_ingot", 4); Host_TestGive(ps, "glass", 2); Host_TestGive(ps, "steel_plate", 3);
+                for (size_t i = 0; i < itemDB.recipes().size(); ++i) if (itemDB.recipes()[i].output == "basic_circuit") circuitRecipe = (int)i;
+                if (circuitRecipe >= 0) NetClient_Craft(plain, circuitRecipe, "basic_circuit", 1, false, false);
+                stepAt = GetTime(); step = 6;
+            } else if (step == 6 && GetTime() - stepAt > 1.0) {
+                plainRefused = Host_ItemCount(ps, "basic_circuit") == 0 && Host_ItemCount(ps, "copper_ingot") == 4;
+                if (circuitRecipe >= 0) NetClient_Craft(plain, circuitRecipe, "basic_circuit", 1, false, true);
+                stepAt = GetTime(); step = 7;
+            } else if (step == 7 && (Host_ItemCount(ps, "basic_circuit") == 1 || GetTime() - stepAt > 5.0)) {
+                recursiveMade = Host_ItemCount(ps, "basic_circuit") == 1 && Host_ItemCount(ps, "copper_ingot") == 0 && Host_ItemCount(ps, "glass") == 0 &&
+                                Host_ItemCount(ps, "steel_plate") == 0 && Host_ItemCount(ps, "copper_wire") == 0 && Host_ItemCount(ps, "vacuum_tube") == 0;
+                step = 8;
             }
-            if (step == 6 || GetTime() - t0 > 60.0) {
-                const bool ok = given && refused && dropped && heard && keptByDropper && takenByOther;
+            if (step == 8 || GetTime() - t0 > 60.0) {
+                const bool ok = given && refused && dropped && heard && keptByDropper && takenByOther && plainRefused && recursiveMade;
+                printf("bench: joined items (#946): a plain craft request for a circuit from raw materials refused %d, a recursive one planned and made on the server %d\n",
+                       plainRefused, recursiveMade);
                 printf("bench: joined items (#865, #866): creative give reached the server %d, a survival player's refused %d; drop made a pile and left the server's "
                        "inventory %d, the other client heard of it %d; the dropper on it kept off %d, the other player, moved onto it, took it after 2 s %d (players then %.1f m apart); step %d -> %s\n",
                        given, refused, dropped, heard, keptByDropper, takenByOther, apart, step, ok ? "PASS" : "FAIL");
