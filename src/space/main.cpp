@@ -12588,6 +12588,9 @@ int main(int argc, char** argv)
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
                 if (!noHud && !gHeadless) { // --no-hud: clean shots (the menu slides, #386); --headless: nothing (#311)
                 Avatar_DrawNameplates(world, gAvatars);
+                // (#889 follow-up) While the game window is open the HUD is not drawn: its toasts, pickup lines and
+                // readouts showed through the window's panels. (The window draws its own toasts over it: GameUI_Draw.)
+                if (!GameUI_InventoryOpen()) {
                 world.drawUI(gameState);
                 Telescope_DrawHUD(world);
                 BuildTool_DrawHUD();
@@ -12601,6 +12604,7 @@ int main(int argc, char** argv)
                 Survival_DrawHUD();
                 Objectives_DrawHUD();
                 if (!Rocket_Boarded()) Nav_DrawHUD(world);
+                }
                 Rocket_DrawHUD(world); // the orbit map covers the rest
                 Nav_DrawMap(world);    // last: the full map covers everything
                 if (gNetClient && gNetClient->state == NetClient::State::Joined && (IsKeyDown(PlayerInput_Binding(Act::PlayerList)))) DrawPlayerList(*gNetClient); // (#341) hold J (the pause screen shows it too)
