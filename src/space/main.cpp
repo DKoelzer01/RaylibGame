@@ -815,7 +815,7 @@ int main(int argc, char** argv)
     double walkTargetM = 0.0, walkPath = 0.0; // --test-planet-walk M: walk M metres (path, body frame), then PASS/FAIL
     // Planet walk legs (#363): M metres as 100 m legs at places drawn from the seed, teleporting between them.
     constexpr double kWalkLegM = 100.0, kWalkLegMaxS = 45.0;
-    int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0;
+    int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0, walkLegWater = 0;
     bool walkLegReady = true;
     double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
     int walkLegJumps = 0, walkFellThrough = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
@@ -2131,6 +2131,22 @@ int main(int argc, char** argv)
                     printf("bench: probe water:   %s %.1f m over: level %.1f, ground %.1f (before water %.1f) at %.4f %.4f (%+.0f E %+.0f N m)\n",
                            kname[b.kind], b.over, b.level, b.ground, b.base, asinf(d.y) * RAD2DEG, atan2f(d.z, d.x) * RAD2DEG, b.e, b.n);
                 }
+                // Open ground under the height map (#941): columns whose generated density is not solid 2-40 m under elevation().
+                long cols = 0, open = 0; float deepest = 0.0f, oe = 0.0f, on = 0.0f, oground = 0.0f;
+                for (float e = -probeWaterR; e <= probeWaterR; e += 8.0f)
+                    for (float nn = -probeWaterR; nn <= probeWaterR; nn += 8.0f) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(c, Vector3Add(Vector3Scale(t1, e / wf->radius), Vector3Scale(t2, nn / wf->radius))));
+                        const float ground = wf->elevation(d, 0.0f);
+                        ++cols;
+                        float lowest = 0.0f;
+                        for (float down = 2.0f; down <= 40.0f; down += 1.0f) {
+                            const Vector3 q = Vector3Scale(d, wf->radius + ground - down);
+                            if (wf->baseDensity(q) < ISO_LEVEL) lowest = down;
+                        }
+                        if (lowest > 0.0f) { ++open; if (lowest > deepest) { deepest = lowest; oe = e; on = nn; oground = ground; } }
+                    }
+                printf("bench: probe water: open under the height map: %ld of %ld columns, deepest %.0f m under ground %.1f at %+.0f E %+.0f N m\n",
+                       open, cols, deepest, oground, oe, on);
             }
             probeWaterR = 0.0f;
         }
@@ -4090,7 +4106,7 @@ int main(int argc, char** argv)
                             const int clay0 = inventory.count("clay");
                             for (int k = 0; k < 12; ++k) TerrainTool_DigAt(*p, Vector3Subtract(bed, Vector3Scale(waterDir, 0.4f * k)));
                             const int clay = inventory.count("clay") - clay0;
-                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Clay || m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel || m == VoxelMaterial::Pebbles); // #206: clay beds (under river stones and sand too, #595)
+                            const bool pass = under && !above && clay > 0 && (m == VoxelMaterial::Clay || m == VoxelMaterial::Sand || m == VoxelMaterial::Gravel || m == VoxelMaterial::Pebbles || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud); // (#940: slow reaches are silt or mud) #206: clay beds (under river stones and sand too, #595)
                             printf("bench: water: surface %.1f m, bed %.1f m (%s); underwater 0.3 m down: %s, 1 m up: %s; 12 digs in the bed: %d clay -> %s\n",
                                    waterLevel, bedE, VoxelMaterialName(m), under ? "yes" : "no", above ? "yes" : "no", clay, pass ? "PASS" : "FAIL");
                             benchWater = false;
@@ -9008,7 +9024,7 @@ int main(int argc, char** argv)
                     if (walkSettleFrames >= 30) {
                         walkLegReady = true; player.autoWalk = true;
                         walkLegStart = GetTime(); walkLegPath = walkPath; walkLast = start->toLocalD(player.position);
-                        walkLegGrounded = walkLegFrames = 0; walkLegSlope = 0.0;
+                        walkLegGrounded = walkLegFrames = walkLegWater = 0; walkLegSlope = 0.0;
                     }
                 } else if (WorldIdle() && benchWalkSeconds > 0.0) {
                     // Scripted walk: spawn on the surface and walk forward; checks gravity + collision.
@@ -9031,7 +9047,7 @@ int main(int argc, char** argv)
                     walkMaxDensity = std::max(walkMaxDensity, d);
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
-                    walkLegFrames++; walkLegGrounded += player.grounded ? 1 : 0;
+                    walkLegFrames++; walkLegGrounded += player.grounded ? 1 : 0; walkLegWater += player.inWater ? 1 : 0;
                     if (walkLegs > 0) {
                         // Deaths (falls off what the walker strides into) lose the leg, not the test (user, 2026-11-14).
                         if (survival.dead) walkLegDied = true;
@@ -9121,8 +9137,8 @@ int main(int argc, char** argv)
                         const double legM = walkPath - walkLegPath, legS = GetTime() - walkLegStart;
                         const double legGround = 100.0 * walkLegGrounded / std::max(1, walkLegFrames);
                         walkLegsDone += legM >= kWalkLegM && walkLegJumps == 0 && !walkLegDied ? 1 : 0;
-                        printf("bench: planet walk leg %d/%d: %.0f m in %.1f s at %.0f m elevation, grounded %.0f%%, unstuck %d times, steepest ground %.0f deg%s%s\n",
-                               walkLeg + 1, walkLegs, legM, legS, pfw ? pfw->elevation(here) : 0.0f, legGround, walkUnsticks, walkLegSlope,
+                        printf("bench: planet walk leg %d/%d: %.0f m in %.1f s at %.0f m elevation, grounded %.0f%%, in water %.0f%%, unstuck %d times, steepest ground %.0f deg, ends at %.4f %.4f%s%s\n",
+                               walkLeg + 1, walkLegs, legM, legS, pfw ? pfw->elevation(here) : 0.0f, legGround, 100.0 * walkLegWater / std::max(1, walkLegFrames), walkUnsticks, walkLegSlope, asinf(here.y) * RAD2DEG, atan2f(here.z, here.x) * RAD2DEG,
                                walkLegDied ? " (died)" : legM >= kWalkLegM ? "" : " (timed out)", walkLegJumps ? " (displaced mid-leg)" : "");
                         if (++walkLeg < walkLegs) {
                             // The next place: land drawn from the seed; every other leg prefers ground above 300 m (slopes).
