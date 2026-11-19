@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "utils/logger.h"
+#include "profiler.h"
 
 // glad's GL entry points, as raylib loads them (the same trick as viewmodel.cpp's glClear).
 extern "C" {
@@ -63,6 +64,7 @@ namespace {
             glad_glGetQueryObjectui64v(s.q[i], kResult, &ns);
             const double ms = (double)ns / 1e6;
             AddTo(sums, s.name[i], ms);
+            if (Profiler_On()) Profiler_Sample((std::string("gpu:") + s.name[i]).c_str(), ms); // (#871) the run summary's GPU passes
             if (i < s.used) frame += ms; // the tail (GPU idle between frames included) shows as its own column, outside the total
         }
         totalMs += frame;
@@ -70,7 +72,10 @@ namespace {
     }
 }
 
+static bool gGpuTimerKeepOn = false; // GpuTimer_KeepOn (#871)
+void GpuTimer_KeepOn(bool on) { gGpuTimerKeepOn = on; if (on) GpuTimer_Enable(true); }
 void GpuTimer_Enable(bool on) {
+    on = on || gGpuTimerKeepOn;
     // Turned off with a query open (#180): end it, or it stays open (and the next frame's tail would read a running query).
     if (!on && enabled && open) { rlDrawRenderBatchActive(); glad_glEndQuery(kTimeElapsed); open = false; }
     enabled = on && Ready();
@@ -147,6 +152,7 @@ void GpuTimer_CpuMark(const char* name) {
     const auto now = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(now - cpuLast).count();
     AddTo(cpuSums, name, ms);
+    if (Profiler_On()) Profiler_Sample((std::string("cpu:") + name).c_str(), ms); // (#871) and its CPU passes
     frameMarks.push_back({ name, ms }); frameMs += ms;
     cpuLast = now;
 }

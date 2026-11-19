@@ -349,20 +349,70 @@ float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits.get());
 }
 
+// BodyRotationD with double angles (deg): r maps body-local into world (dirToWorld's matrix). (#872)
+static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]) {
+    const double ax = -rx * DEG2RAD, ay = -ry * DEG2RAD, az = -rz * DEG2RAD;
+    const double cx = cos(ax), sx = sin(ax), cy = cos(ay), sy = sin(ay), cz = cos(az), sz = sin(az);
+    r[0][0] = cz * cy;                 r[0][1] = sz * cy;                 r[0][2] = -sy;
+    r[1][0] = cz * sy * sx - sz * cx;  r[1][1] = sz * sy * sx + cz * cx;  r[1][2] = cy * sx;
+    r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
+}
+
+// Omega (rad/s, world) of a body with these Euler angles turning at `spin` deg/s: the skew part of dR/dt * R^T, dR/dt
+// by a central difference over +-1 ms of the angles, all in double (#872: the float quaternion route, 2 acos(w) with w
+// within 4e-7 of 1, lost up to 1.5% for bodies spinning about several axes).
+static DVec3 AngularVelocityD(Vector3 rotation, Vector3 spin) {
+    constexpr double h = 1e-3;
+    double r0[3][3], rp[3][3], rm[3][3];
+    BodyRotationDd(rotation.x, rotation.y, rotation.z, r0);
+    BodyRotationDd(rotation.x + (double)spin.x * h, rotation.y + (double)spin.y * h, rotation.z + (double)spin.z * h, rp);
+    BodyRotationDd(rotation.x - (double)spin.x * h, rotation.y - (double)spin.y * h, rotation.z - (double)spin.z * h, rm);
+    double w[3][3] = {};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            for (int k = 0; k < 3; ++k) w[i][j] += (rp[i][k] - rm[i][k]) / (2.0 * h) * r0[j][k];
+    return DVec3{ 0.5 * (w[2][1] - w[1][2]), 0.5 * (w[0][2] - w[2][0]), 0.5 * (w[1][0] - w[0][1]) };
+}
+
 Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
-    // The body's own motion (orbit) plus its spin: omega x (point - centre). Omega comes from the
-    // rotation change over one second (rotation is Euler angles, so any spin axis works); taking it
-    // as a vector keeps this exact far from the centre (differentiating positions in float lost
-    // ~0.4 m/s at 60 km).
+    // The body's own motion (orbit) plus its spin: omega x (point - centre), omega taken as a vector (differentiating
+    // positions in float lost ~0.4 m/s at 60 km), in double (#872).
     if (spin.x == 0.0f && spin.y == 0.0f && spin.z == 0.0f) return linearVelocity;
-    const Vector3 r1 = Vector3Add(rotation, spin);
-    const Quaternion q0 = rotationQuat();
-    const Quaternion q1 = QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * r1.x, DEG2RAD * r1.y, DEG2RAD * r1.z }));
-    Vector3 axis; float angle;
-    QuaternionToAxisAngle(QuaternionNormalize(QuaternionMultiply(q1, QuaternionInvert(q0))), &axis, &angle);
-    if (angle > PI) angle -= 2.0f * PI;
-    const Vector3 omega = Vector3Scale(axis, angle); // rad/s
-    return Vector3Add(linearVelocity, Vector3CrossProduct(omega, Vector3Subtract(renderPoint, position)));
+    const DVec3 w = AngularVelocityD(rotation, spin);
+    const double dx = (double)renderPoint.x - position.x, dy = (double)renderPoint.y - position.y, dz = (double)renderPoint.z - position.z;
+    return Vector3Add(linearVelocity, Vector3{ (float)(w.y * dz - w.z * dy), (float)(w.z * dx - w.x * dz), (float)(w.x * dy - w.y * dx) });
+}
+
+bool SurfaceVelocity_SelfTest() { // (#872) every orientation and spin: omega x r against the motion of a surface point
+    uint32_t rng = 777; auto rnd = [&rng] { rng = rng * 1664525u + 1013904223u; return (rng >> 8) / 16777216.0f; };
+    double worst = 0.0, worstY = 0.0, worstFrame = 0.0;
+    for (int i = 0; i < 1000; ++i) {
+        const Vector3 rot = { rnd() * 360.0f, rnd() * 360.0f, rnd() * 360.0f };
+        const bool yOnly = i < 500;
+        const Vector3 spin = yOnly ? Vector3{ 0, 0.004f + 0.02f * rnd(), 0 } : Vector3{ (rnd() - 0.5f) * 2.0f, (rnd() - 0.5f) * 2.0f, (rnd() - 0.5f) * 2.0f };
+        const double L[3] = { (rnd() - 0.5) * 2.0, (rnd() - 0.5) * 2.0, (rnd() - 0.5) * 2.0 };
+        const double len = sqrt(L[0] * L[0] + L[1] * L[1] + L[2] * L[2]);
+        auto worldAt = [&](double t, double out[3]) { // the surface point (59 km out) at time t, the angles advanced by spin * t
+            double m[3][3];
+            BodyRotationDd(rot.x + spin.x * t, rot.y + spin.y * t, rot.z + spin.z * t, m);
+            for (int a = 0; a < 3; ++a) out[a] = (m[a][0] * L[0] + m[a][1] * L[1] + m[a][2] * L[2]) / len * 59000.0;
+        };
+        double a[3], b[3], c[3];
+        worldAt(-0.01, a); worldAt(0.01, b); worldAt(0.0, c);
+        const DVec3 w = AngularVelocityD(rot, spin);
+        const double v[3] = { w.y * c[2] - w.z * c[1], w.z * c[0] - w.x * c[2], w.x * c[1] - w.y * c[0] };
+        const double ref[3] = { (b[0] - a[0]) / 0.02, (b[1] - a[1]) / 0.02, (b[2] - a[2]) / 0.02 };
+        const double rl = sqrt(ref[0] * ref[0] + ref[1] * ref[1] + ref[2] * ref[2]);
+        const double err = sqrt((v[0] - ref[0]) * (v[0] - ref[0]) + (v[1] - ref[1]) * (v[1] - ref[1]) + (v[2] - ref[2]) * (v[2] - ref[2])) / std::max(rl, 1e-9);
+        if (yOnly) worstY = std::max(worstY, err); else worst = std::max(worst, err);
+        // the frame: BodyRotationDd is dirToWorld's matrix (the body's real local -> world)
+        double r[3][3]; BodyRotationD(rot, r); double m[3][3]; BodyRotationDd(rot.x, rot.y, rot.z, m);
+        for (int x = 0; x < 3; ++x) for (int y = 0; y < 3; ++y) worstFrame = std::max(worstFrame, fabs(r[x][y] - m[x][y]));
+    }
+    const bool ok = worst < 1e-3 && worstY < 1e-3 && worstFrame < 1e-9;
+    printf("bench: surface velocity: worst error %.5f%% (spin about Y), %.5f%% (about all three axes) over 500 orientations each; frame %.1e: %s\n",
+           worstY * 100.0, worst * 100.0, worstFrame, ok ? "PASS" : "FAIL");
+    return ok;
 }
 
 // Directions only rotate (no translation): transforming two points and subtracting lost ~0.2 deg in

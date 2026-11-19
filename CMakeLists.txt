@@ -163,7 +163,10 @@ function(add_game target dir)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces)
     endif()
-    add_executable(${target} ${dir}/main.cpp)
+    # Tier 2 scenarios (#870): tests/scenarios/*.cpp register themselves with SCENARIO(...), so they are compiled into the
+    # exe itself (not the object library's archive, whose unreferenced members game_tests' linker would drop).
+    file(GLOB SCENARIO_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tests/scenarios/*.cpp)
+    add_executable(${target} ${dir}/main.cpp ${SCENARIO_SOURCES})
     target_include_directories(${target} PRIVATE ${dir})
     target_link_libraries(${target} PRIVATE ${target}_objs engine)
     # Version for the window title (#501): branch + commit, regenerated at every build (cmake/game_version.cmake).

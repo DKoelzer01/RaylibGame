@@ -49,6 +49,7 @@
 #include "glcaps.h"
 #include "buildtool.h"
 #include "recorder.h"
+#include "scenario.h"
 #include "slideshow.h"
 #include "bugreport.h"
 #include "progression_test.h"
@@ -437,6 +438,7 @@ static void OcclusionScan(Scene& world, bool print, std::unordered_set<const Chu
 
 int main(int argc, char** argv)
 {
+    Scenario_PrepareArgs(argc, argv); // (#870) --scenario NAME: the scenario's own flags added to argv (scenario.h)
     // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
     // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
     // (Line buffering is full buffering in the Windows CRT.)
@@ -481,6 +483,7 @@ int main(int argc, char** argv)
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-claims") return Claims_SelfTest() ? 0 : 1; // (#343) the claim rules: no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-surface-velocity") return SurfaceVelocity_SelfTest() ? 0 : 1; // (#872): no window, no world
     if (argc >= 3 && std::string(argv[1]) == "--port-free") { const bool f = HostProcess_PortFree(atoi(argv[2])); printf("port %s: %s\n", argv[2], f ? "free" : "in use"); return f ? 0 : 1; } // (#341)
     if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
@@ -636,6 +639,9 @@ int main(int argc, char** argv)
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
     bool benchShotGraves = false; int graveShotPhase = 0;  // --shot-graves (#804)
+    bool benchShotClaims = false; int claimShotPhase = 0;  // --shot-claims (#343)
+    bool benchShotLimb = false; int limbShotPhase = 0;     // --shot-limb (#142)
+    bool benchShotClouds = false; int cloudShotPhase = 0;  // --shot-clouds (#142)
     const bool avatarSelf = getenv("RAYLIBGAME_AVATAR_SELF") && atoi(getenv("RAYLIBGAME_AVATAR_SELF")) != 0;
     bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
@@ -1017,6 +1023,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-animals") benchShotAnimals = true;
         if (std::string(argv[i]) == "--shot-avatar") benchShotAvatar = true;
         if (std::string(argv[i]) == "--shot-graves") benchShotGraves = true;
+        if (std::string(argv[i]) == "--shot-claims") benchShotClaims = true;
+        if (std::string(argv[i]) == "--shot-limb") benchShotLimb = true;
+        if (std::string(argv[i]) == "--shot-clouds") benchShotClouds = true;
         if (std::string(argv[i]) == "--shot-machines") benchShotMachines = true;
         if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
@@ -1174,6 +1183,7 @@ int main(int argc, char** argv)
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
     if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
+    Scenario_Setup(); // (#870) a scenario saves to its run's scratch dir
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     bool msaa = true;
@@ -1502,7 +1512,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world); };
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2163,6 +2173,7 @@ int main(int argc, char** argv)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
             } else if (benchStart < 0.0) {
+                if (Scenario_Frame(world)) {} else // (#870) a running scenario holds the bench start, as the tests below do
                 if (WorldIdle() && benchDigStrokes > 0) {
                     // Scripted edit test: carve a shaft straight down under the player.
                     TerrainHit hit;
@@ -5116,6 +5127,104 @@ int main(int argc, char** argv)
                             graveShotPhase = 2;
                         }
                         if (t > 6.5 && graveShotPhase == 2) { TakeScreenshot("bench_graves_nobed.png"); printf("bench: graves: bench_graves_nobed.png (the bed removed)\n"); benchShotGraves = false; }
+                    }
+                } else if (benchShotClouds && (cloudShotPhase > 0 || WorldIdle())) {
+                    // --shot-clouds (#142): the sky from the ground, 15 deg up toward the sun's bearing (clouds against it), with
+                    // the sun at 45, 8, 2 and -3 deg: bench_clouds_45 / _8 / _2 / _m3.png, 4 s each.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 up{}, fwd{};
+                    static const float kElev[4] = { 45.0f, 8.0f, 2.0f, -3.0f };
+                    static const char* kNames[4] = { "bench_clouds_45.png", "bench_clouds_8.png", "bench_clouds_2.png", "bench_clouds_m3.png" };
+                    if (!pf) benchShotClouds = false;
+                    else {
+                        if (cloudShotPhase == 0) {
+                            up = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                            fwd = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                            Weather_Force(1); // cloudy (0.55 cover): clouds enough to judge their light
+                            cloudShotPhase = 1; t0 = GetTime();
+                        }
+                        const Vector3 eye = Vector3Scale(up, pf->radius + pf->elevation(up) + 2.0f);
+                        const float pitch = 15.0f * DEG2RAD;
+                        const Vector3 look = Vector3Add(Vector3Scale(fwd, cosf(pitch)), Vector3Scale(up, sinf(pitch)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 100.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const int shot = cloudShotPhase - 1;
+                        const float a = kElev[shot] * DEG2RAD;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Scale(up, sinf(a)), Vector3Scale(Vector3Normalize(Vector3Add(fwd, Vector3Scale(Vector3CrossProduct(fwd, up), 0.35f))), cosf(a)))));
+                        if (GetTime() - t0 > 4.0) {
+                            TakeScreenshot(kNames[shot]); printf("bench: clouds: %s\n", kNames[shot]);
+                            t0 = GetTime();
+                            if (++cloudShotPhase > 4) benchShotClouds = false;
+                        }
+                    }
+                } else if (benchShotLimb && (limbShotPhase > 0 || WorldIdle())) {
+                    // --shot-limb (#142): the planet's limb from orbit, the camera RAYLIBGAME_LIMB_ALT m (120 km) over the start looking
+                    // along the horizon, slightly down: the sun behind the camera (the day side's rim), to the side (the terminator
+                    // across the view), and behind the planet (backlit). bench_limb_day / _side / _back.png, 8 s each.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 up{}, fwd{}, side{};
+                    if (!pf) benchShotLimb = false;
+                    else {
+                        const float alt = getenv("RAYLIBGAME_LIMB_ALT") ? (float)atof(getenv("RAYLIBGAME_LIMB_ALT")) : 120000.0f;
+                        if (limbShotPhase == 0) {
+                            up = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                            fwd = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })); side = Vector3CrossProduct(fwd, up);
+                            limbShotPhase = 1; t0 = GetTime();
+                        }
+                        const float r = pf->radius + alt;
+                        const float dip = acosf(pf->radius / r); // the horizon's dip below level
+                        const Vector3 eye = Vector3Scale(up, r);
+                        const Vector3 look = Vector3Normalize(Vector3Add(Vector3Scale(fwd, cosf(dip * 0.85f)), Vector3Scale(up, -sinf(dip * 0.85f))));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 1000.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const int shot = limbShotPhase - 1; // 0 day, 1 side, 2 back
+                        const Vector3 sunL = shot == 0 ? Vector3Normalize(Vector3Add(Vector3Scale(fwd, -0.6f), Vector3Scale(up, 0.8f)))
+                                           : shot == 1 ? Vector3Normalize(Vector3Add(side, Vector3Scale(fwd, 0.15f)))
+                                                       : Vector3Normalize(Vector3Add(fwd, Vector3Scale(up, -0.08f)));
+                        sunOverride = true; sunArg = p->dirToWorld(sunL);
+                        if (GetTime() - t0 > 8.0) {
+                            static const char* names[3] = { "bench_limb_day.png", "bench_limb_side.png", "bench_limb_back.png" };
+                            TakeScreenshot(names[shot]); printf("bench: limb: %s (%.0f km up)\n", names[shot], alt / 1000.0f);
+                            t0 = GetTime();
+                            if (++limbShotPhase > 3) benchShotLimb = false;
+                        }
+                    }
+                } else if (benchShotClaims && (claimShotPhase > 0 || WorldIdle())) {
+                    // --shot-claims (#343): the four claim banners in a row 4 m ahead, and another team's claim (a client's mirror,
+                    // as NetMsg 41 gives it) whose edge crosses the view 7 m ahead: its border wall (bench_claims.png); then the
+                    // map with its circle (bench_claims_map.png).
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 me{}, t1{}, t2{};
+                    auto ground = [&](Vector3 q) { const Vector3 d = Vector3Normalize(q); return Vector3Scale(d, pf->radius + pf->elevation(d)); };
+                    if (!pf) benchShotClaims = false;
+                    else {
+                        if (claimShotPhase == 0) {
+                            player.flyMode = true;
+                            me = p->toLocal((player.position - world.renderOrigin).toFloat());
+                            const Vector3 up = Vector3Normalize(me);
+                            t1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })); t2 = Vector3CrossProduct(t1, up);
+                            sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(Vector3Subtract(t1, t2), 0.5f))));
+                            if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                            for (int k = 0; k < 4; ++k) {
+                                const Vector3 at = Vector3Add(ground(Vector3Add(me, Vector3Add(Vector3Scale(t2, 4.0f), Vector3Scale(t1, (k - 1.5f) * 1.5f)))), Vector3Scale(up, 0.05f));
+                                if (Plot* pl = p->plots->plotFor(at, 0.0f, true)) pl->place(Part{ (PartType)((int)PartType::ClaimBanner + k), pl->cellAt(pl->toPlot(at)), 0, 0 });
+                            }
+                            ClaimView v; v.id = 1; v.team = 2; v.teamName = "rangers"; v.colour = Claims_TeamColour(2, 0); v.body = p->name;
+                            v.centre = ground(Vector3Add(me, Vector3Scale(t2, 57.0f))); v.radius = 50.0f;
+                            Claims_SetMirror({ v });
+                            claimShotPhase = 1; t0 = GetTime();
+                        }
+                        const double t = GetTime() - t0;
+                        const Vector3 centre = ground(Vector3Add(me, Vector3Scale(t2, 6.0f))), up = Vector3Normalize(centre);
+                        const Vector3 eye = Vector3Add(ground(Vector3Subtract(me, Vector3Scale(t2, 1.0f))), Vector3Scale(up, 1.9f));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(centre, Vector3Scale(up, 1.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        player.nearest = p; // (the map draws for the body the player is on)
+                        if (t > 3.0 && claimShotPhase == 1) { TakeScreenshot("bench_claims.png"); printf("bench: claims: bench_claims.png\n"); Nav_ToggleMap(); claimShotPhase = 2; }
+                        if (claimShotPhase == 2 && (Nav_MapImageReady() && t > 4.0 || t > 25.0)) { TakeScreenshot("bench_claims_map.png"); printf("bench: claims: bench_claims_map.png\n"); Nav_CloseMap(); benchShotClaims = false; }
                     }
                 } else if (benchShotMachines && (machineShotPhase > 0 || WorldIdle())) {
                     // --shot-machines (Plan 5): every machine type in two rows on a plot ahead (bench_machines.png).
@@ -10705,7 +10814,9 @@ int main(int argc, char** argv)
             static double ripeAt = -1.0;
             if (feller && hasCrop && growth >= 1.0f && ripeAt < 0.0) ripeAt = GetTime();
             if (feller && hasCrop && ripeAt >= 0.0 && GetTime() - ripeAt > 3.0 && !harvested) { grain0 = inventory.count("grain"); harvested = Farm_Harvest(*pb, *farm, farmPart) > 0; }
-            if (GetTime() - t0 > (getenv("RAYLIBGAME_PLANTS_SECONDS") ? atof(getenv("RAYLIBGAME_PLANTS_SECONDS")) : 40.0)) {
+            const double plantsSecs = getenv("RAYLIBGAME_PLANTS_SECONDS") ? atof(getenv("RAYLIBGAME_PLANTS_SECONDS")) : 40.0;
+            // (the watcher reports once it has seen it all: its clock started apart from the feller's, which may load slower)
+            if (feller ? GetTime() - t0 > plantsSecs : (cropGone && gJoin.plantsRemoved >= 1) || GetTime() - t0 > 1.75 * plantsSecs) {
                 Plant still;
                 const bool standing = pb && pb->trees && plantId && pb->trees->findPlant(plantId, still);
                 std::string ids;
@@ -10720,36 +10831,45 @@ int main(int argc, char** argv)
             }
         }
         // --test-net-claims (#343; with --join; tools/test_net_claims.sh): RAYLIBGAME_NET_CLAIMS_ROLE owner | other (two teams of
-        // one). The owner claims where it stands (/claim) and places a chest 2 m away. The other (3 m off, inside the claim)
-        // then tries to dig by the chest, build there, open the chest and remove it: each is refused (Claim). The owner
-        // unclaims after RAYLIBGAME_CLAIMS_UNCLAIM_AT s (25); the other hears it leave the claim and removes the chest. Both
-        // report after RAYLIBGAME_CLAIMS_SECONDS (40).
+        // one). The owner raises a claim banner 2 m off (100 m across) and places a chest on the other side. The other (3 m off,
+        // inside the claim) hears it entered, sees the claim in its list (NetMsg 41: not allowed), then tries to dig by the chest,
+        // build there, open the chest and break it, and to break the banner: each is refused. At RAYLIBGAME_CLAIMS_ALLY_AT s (25)
+        // the owner allies the other's team (/claim ally other): the other sees the claim allowed and breaks the chest (refunded).
+        // At RAYLIBGAME_CLAIMS_BREAK_AT s (32) the owner breaks its banner: the claim goes (both lists empty). Both report after
+        // RAYLIBGAME_CLAIMS_SECONDS (40).
         if (benchNetClaims && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
             static double t0 = -1.0;
-            static bool claimSent = false, claimed = false, chestSent = false, tried = false, unclaimSent = false, entered = false, left = false, openRefused = false, removeSent = false;
-            static int chests0 = -1;
+            static bool bannerSent = false, chestSent = false, tried = false, allySent = false, breakSent = false, entered = false, openRefused = false, allied = false, removeSent = false, bannerGone = false;
+            static int chests0 = -1, claimsSeen = 0, bannerRefusals = -1;
+            static bool sawNotAllowed = false, sawAllowed = false;
             const char* role = getenv("RAYLIBGAME_NET_CLAIMS_ROLE");
             const bool owner = role && !strcmp(role, "owner");
             if (t0 < 0.0) t0 = GetTime();
+            auto envAt = [](const char* n, double d) { return getenv(n) ? atof(getenv(n)) : d; };
             Planetoid* cb = player.nearest;
             const Vector3 me = cb ? cb->toLocalD(player.position).toFloat() : Vector3{};
-            for (const std::string& text : benchChatHeard) { const MsgChat m{ 0, text };
-                if (m.text.find("claimed the land") != std::string::npos) claimed = true;
-                if (m.text.rfind("Entering ", 0) == 0 && m.text.find("can't build") != std::string::npos) entered = true;
-                if (m.text == "Leaving the claim") left = true;
-                if (m.text.find("has claimed this land") != std::string::npos) openRefused = true;
+            for (const std::string& text : benchChatHeard) {
+                if (text.rfind("Entering ", 0) == 0 && text.find("can't build") != std::string::npos) entered = true;
+                if (text.find("has claimed this land") != std::string::npos) openRefused = true;
+                if (text.find("lets your team build") != std::string::npos) allied = true;
+                if (text.find("its banner was broken") != std::string::npos) bannerGone = true;
             }
-            Plot* chestPl = nullptr; int chestPart = -1;
+            claimsSeen = std::max(claimsSeen, (int)Claims_Mirror().size());
+            for (const ClaimView& v : Claims_Mirror()) { if (!v.ours && !v.allowed) sawNotAllowed = true; if (!v.ours && v.allowed) sawAllowed = true; }
+            Plot* chestPl = nullptr; int chestPart = -1; Plot* bannerPl = nullptr; int bannerPart = -1;
             if (cb && cb->plots)
                 for (auto& pl : cb->plots->plots)
-                    for (int k = 0; k < (int)pl->parts.size() && !chestPl; ++k) if (pl->parts[k].type == PartType::Chest) { chestPl = pl.get(); chestPart = k; }
+                    for (int k = 0; k < (int)pl->parts.size(); ++k) {
+                        if (pl->parts[k].type == PartType::Chest && !chestPl) { chestPl = pl.get(); chestPart = k; }
+                        if (pl->parts[k].type == PartType::ClaimBanner && !bannerPl) { bannerPl = pl.get(); bannerPart = k; }
+                    }
             const Vector3 up = Vector3Normalize(me);
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-            const double unclaimAt = getenv("RAYLIBGAME_CLAIMS_UNCLAIM_AT") ? atof(getenv("RAYLIBGAME_CLAIMS_UNCLAIM_AT")) : 25.0;
-            if (owner && cb && !claimSent && GetTime() - t0 > 3.0) { NetClient_SendChat(gJoin, "/claim"); claimSent = true; }
-            if (owner && cb && claimed && !chestSent) chestSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, 2.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
-            if (owner && claimed && !unclaimSent && GetTime() - t0 > unclaimAt) { NetClient_SendChat(gJoin, "/unclaim"); unclaimSent = true; }
-            if (!owner && cb && chestPl && !tried && entered) { // everything near the chest, at once: each is refused
+            if (owner && cb && !bannerSent && GetTime() - t0 > 4.0) bannerSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, 2.0f)), Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            if (owner && cb && bannerPl && !chestSent) chestSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, -2.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
+            if (owner && bannerPl && !allySent && GetTime() - t0 > envAt("RAYLIBGAME_CLAIMS_ALLY_AT", 25.0)) { NetClient_SendChat(gJoin, "/claim ally other"); allySent = true; }
+            if (owner && cb && bannerPl && !breakSent && GetTime() - t0 > envAt("RAYLIBGAME_CLAIMS_BREAK_AT", 32.0)) breakSent = NetClient_RequestPart(gJoin, *cb, bannerPl, Vector3{}, Part{}, true, bannerPart) != 0;
+            if (!owner && cb && chestPl && bannerPl && !tried && entered && sawNotAllowed) { // everything near the chest, at once: each is refused
                 const Int3 c = chestPl->parts[chestPart].origin;
                 const Vector3 at = chestPl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
                 const Vector3 beside = Vector3Add(at, Vector3Scale(Vector3Normalize(Vector3Subtract(me, at)), 1.0f));
@@ -10760,14 +10880,19 @@ int main(int argc, char** argv)
                 NetClient_RequestPart(gJoin, *cb, nullptr, beside, Part{ PartType::Campfire, { 0, 0, 0 }, 0, 0 }, false, -1);
                 NetClient_MachineAction(gJoin, cb->netId, chestPl->id, chestPart, 6, "", 0, 0, 0); // open it (watch)
                 NetClient_RequestPart(gJoin, *cb, chestPl, Vector3{}, Part{}, true, chestPart); // break it
+                NetClient_RequestPart(gJoin, *cb, bannerPl, Vector3{}, Part{}, true, bannerPart); // and the banner
                 tried = true;
             }
-            if (!owner && cb && chestPl && tried && left && !removeSent) { chests0 = inventory.count("chest"); removeSent = NetClient_RequestPart(gJoin, *cb, chestPl, Vector3{}, Part{}, true, chestPart) != 0; }
-            if (GetTime() - t0 > (getenv("RAYLIBGAME_CLAIMS_SECONDS") ? atof(getenv("RAYLIBGAME_CLAIMS_SECONDS")) : 40.0)) {
+            if (!owner && cb && chestPl && tried && allied && sawAllowed && !removeSent) { bannerRefusals = gJoin.partsRefused; chests0 = inventory.count("chest"); removeSent = NetClient_RequestPart(gJoin, *cb, chestPl, Vector3{}, Part{}, true, chestPart) != 0; }
+            // (the other reports once it has seen it all: its clock started apart from the owner's, which may load slower)
+            static double doneAt = -1.0;
+            if (!owner && doneAt < 0.0 && removeSent && sawAllowed && Claims_Mirror().empty()) doneAt = GetTime();
+            if (owner ? GetTime() - t0 > envAt("RAYLIBGAME_CLAIMS_SECONDS", 40.0) : (doneAt > 0.0 && GetTime() - doneAt > 1.0) || GetTime() - t0 > 1.75 * envAt("RAYLIBGAME_CLAIMS_SECONDS", 40.0)) {
                 const unsigned editClaim = 1u << (unsigned)NetEditRefusal::Claim, partClaim = 1u << (unsigned)NetPartRefusal::Claim;
-                printf("bench: net claims (%s, #343): claimed %d, chest placed %d; entered %d, tried %d: dig refused (claim) %d, build/break refused (claim) %d (%d parts refused), open refused %d; left %d, removed after the unclaim %d: chests %d -> %d, chest standing %d\n",
-                       role ? role : "?", (int)claimed, (int)chestSent, (int)entered, (int)tried, (gJoin.refusedWhy & editClaim) ? 1 : 0, (gJoin.partRefusedWhy & partClaim) ? 1 : 0, gJoin.partsRefused,
-                       (int)openRefused, (int)left, (int)removeSent, chests0, inventory.count("chest"), (int)(chestPl != nullptr));
+                printf("bench: net claims (%s, #343): banner %d, chest placed %d; claims listed %d (not allowed %d, then allowed %d), now %d; entered %d, tried %d: dig refused (claim) %d, build/break refused (claim) %d (%d parts refused), open refused %d; allied %d, removed as an ally %d: chests %d -> %d, chest standing %d; banner broken %d, standing %d\n",
+                       role ? role : "?", (int)bannerSent, (int)chestSent, claimsSeen, (int)sawNotAllowed, (int)sawAllowed, (int)Claims_Mirror().size(), (int)entered, (int)tried,
+                       (gJoin.refusedWhy & editClaim) ? 1 : 0, (gJoin.partRefusedWhy & partClaim) ? 1 : 0, bannerRefusals, (int)openRefused, (int)allied, (int)removeSent, chests0, inventory.count("chest"),
+                       (int)(chestPl != nullptr), (int)bannerGone, (int)(bannerPl != nullptr));
                 NetClient_Disconnect(gJoin);
                 benchNetClaims = false;
             }
@@ -12237,6 +12362,7 @@ int main(int argc, char** argv)
         PROFILE_FRAME();
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
+    Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
     if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists

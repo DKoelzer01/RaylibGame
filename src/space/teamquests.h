@@ -23,6 +23,7 @@ void TeamQuests_Obtained(int team, const std::string& item, double n);
 int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius); // the team's total when it grew, else 0
 double TeamQuests_Explored(int team);
 void TeamQuests_Visit(int team, bool moon);           // a moon visited (else the ring)
+int TeamQuests_BodiesReached(int team);              // (#343) planets and moons the team has explored ground on (claim budget)
 // Teams forming and splitting (#604): a team's book and explored tiles copied to another (a join, a split), or dropped (an emptied
 // team; its record goes too). Use these rather than copying TeamQuests_Book: the tiles live beside the book.
 void TeamQuests_Copy(int from, int to);
