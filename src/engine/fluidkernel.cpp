@@ -733,3 +733,115 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
 }
 
 } // namespace FluidKernel
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the CPU fluid kernel on a few bricks: exact conservation, determinism, the 255 clamp ----
+#include "unit_helpers.h"
+
+namespace {
+using namespace FluidKernel;
+constexpr uint32_t kSolidFlag = 1u; // flags bit 0 (fluid_step.comp's SOLID)
+inline uint32_t Cell(uint32_t fill, uint32_t flags = 0u) { return (fill & 255u) | (flags << 8); }
+inline int Idx(int x, int y, int z) { return x + 16 * y + 256 * z; }
+
+// Params as the game sets them for water (fluid.cpp: kindVisc 5, kindMinSpread 10, KindFriction) on 0.25 m cells.
+Params WaterParams() {
+    Params p;
+    for (int k = 0; k < 8; ++k) { p.minSpread[k] = 10; p.visc[k] = 5; p.frictionLin[k] = 0.05f; p.frictionQuad[k] = 0.005f; }
+    p.dt = 1.0f / 120.0f;
+    p.setCell(0.25f, 32);
+    p.evaporate = false;
+    return p;
+}
+
+// `n` bricks in a row along x (each one's +x face to the next), every one processed; a solid floor at z = 0 and a dam
+// of solid cells at x = 8 of brick 0 (rows y 0..15) holding a block of water behind it, which `removeDam` takes away.
+Grid DamBreak(int n, bool removeDam) {
+    Grid g;
+    g.resize(n);
+    for (int s = 0; s < n; ++s) {
+        g.processed[s] = 1;
+        if (s > 0) g.nbr[(size_t)s * 6 + 0] = s - 1;
+        if (s + 1 < n) g.nbr[(size_t)s * 6 + 1] = s + 1;
+        for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x) g.a[(size_t)s * 4096 + Idx(x, y, 0)] = Cell(0, kSolidFlag);
+    }
+    for (int z = 1; z < 12; ++z) for (int y = 0; y < 16; ++y) for (int x = 0; x < 8; ++x) g.a[Idx(x, y, z)] = Cell(255);
+    if (!removeDam) for (int z = 1; z < 16; ++z) for (int y = 0; y < 16; ++y) g.a[Idx(8, y, z)] = Cell(0, kSolidFlag);
+    g.b = g.a;
+    return g;
+}
+uint64_t TotalFill(const Grid& g) { uint64_t t = 0; for (uint32_t c : g.a) t += c & 255u; return t; }
+std::vector<int> AllSlots(int n) { std::vector<int> l(n); for (int i = 0; i < n; ++i) l[i] = i; return l; }
+void RunSubsteps(Grid& g, const Params& p, int substeps) {
+    const std::vector<int> list = AllSlots((int)g.processed.size());
+    BeginTick(g, list, (int)g.processed.size());
+    for (int k = 0; k < substeps; ++k) Substep(g, p, list);
+}
+}
+
+// Water moves but is neither made nor lost: the total fill is the same to the unit after every substep (#840).
+TEST(FluidKernel, DamBreakConservesWaterExactly) {
+    const Params p = WaterParams();
+    Grid g = DamBreak(3, true);
+    const uint64_t before = TotalFill(g);
+    ASSERT_EQ(before, 11ull * 16 * 8 * 255);
+    const std::vector<int> list = AllSlots(3);
+    BeginTick(g, list, 3);
+    int moved = 0;
+    for (int k = 0; k < 600; ++k) { // 5 s
+        Substep(g, p, list);
+        ASSERT_EQ(TotalFill(g), before) << "substep " << k;
+    }
+    for (int x = 9; x < 16; ++x) moved += (int)(g.a[Idx(x, 8, 1)] & 255u);
+    uint64_t inLater = 0;
+    for (size_t i = 4096; i < g.a.size(); ++i) inLater += g.a[i] & 255u;
+    EXPECT_GT(moved, 0) << "the water left the dam";
+    EXPECT_GT(inLater, 0u) << "and crossed into the next brick";
+}
+
+// The same state stepped twice gives the same bits (the kernel splits slots across threads; the order must not matter).
+TEST(FluidKernel, IsDeterministic) {
+    const Params p = WaterParams();
+    Grid g1 = DamBreak(3, true), g2 = DamBreak(3, true);
+    RunSubsteps(g1, p, 240);
+    RunSubsteps(g2, p, 240);
+    EXPECT_TRUE(g1.a == g2.a) << "cells differ";
+    bool facesSame = g1.faceP.size() == g2.faceP.size();
+    for (size_t i = 0; facesSame && i < g1.faceP.size(); ++i)
+        facesSame = memcmp(&g1.faceP[i], &g2.faceP[i], sizeof(Vec4)) == 0;
+    EXPECT_TRUE(facesSame) << "face momenta differ";
+}
+
+// Water held by a dam stays put: still water at rest doesn't creep through solid cells or drift.
+TEST(FluidKernel, DammedWaterStaysBehindTheDam) {
+    const Params p = WaterParams();
+    Grid g = DamBreak(2, false);
+    const uint64_t before = TotalFill(g);
+    RunSubsteps(g, p, 360);
+    EXPECT_EQ(TotalFill(g), before);
+    uint64_t past = 0;
+    for (int s = 0; s < 2; ++s) for (int z = 0; z < 16; ++z) for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x)
+        if (s == 1 || x >= 8) past += g.a[(size_t)s * 4096 + Idx(x, y, z)] & 255u;
+    EXPECT_EQ(past, 0u);
+}
+
+// No cell ever holds more than its capacity (255 less its ground share), even under a tall column's pressure.
+TEST(FluidKernel, CellsNeverOverfill) {
+    const Params p = WaterParams();
+    Grid g = DamBreak(1, true);
+    for (int z = 1; z < 16; ++z) for (int y = 6; y < 10; ++y) for (int x = 10; x < 14; ++x) g.a[Idx(x, y, z)] = Cell(255);
+    g.b = g.a;
+    const uint64_t before = TotalFill(g);
+    const std::vector<int> list = AllSlots(1);
+    BeginTick(g, list, 1);
+    for (int k = 0; k < 300; ++k) {
+        Substep(g, p, list);
+        for (uint32_t c : g.a) {
+            const uint32_t fill = c & 255u, share = c >> 24;
+            ASSERT_LE(fill, 255u - share);
+            if ((c >> 8) & kSolidFlag) ASSERT_EQ(fill, 0u) << "water inside a solid cell";
+        }
+    }
+    EXPECT_EQ(TotalFill(g), before);
+}
+#endif
