@@ -310,7 +310,7 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
 }
 
 void Survival_DrawHUD() {
-    hudS = GameUI_HudScale(); // (#925) the bars at the HUD's size (the pinned quests keep GameUI_Scale)
+    hudS = GameUI_HudScale(); // (#925) the bars at the HUD's size
     const float s = hudS;
     const int x = (int)(20 * s), y = GetScreenHeight() - (int)(192 * s);
     // The oxygen and power bars grow with the suit's capacity (basic suit: 260 px).
@@ -591,7 +591,7 @@ void Objectives_DrawHUD() {
     pins.erase(std::remove_if(pins.begin(), pins.end(), [](const std::pair<int, int>& p) { return QuestBook_TaskDone(p.first, p.second); }), pins.end());
     // (#827) Laid out twice: measured, then drawn over a dark backing (white text over bright sky was hard to read); the
     // interface size scales it.
-    const float s = GameUI_Scale();
+    const float s = GameUI_HudScale(); // (#925, the user: the 2x tracker "looks out of place now") the HUD's size
     const int x = (int)(12 * s), top = (int)(64 * s), big = (int)(16 * s), mid = (int)(15 * s), small = (int)(13 * s);
     auto layout = [&](bool draw) {
         int y = top;

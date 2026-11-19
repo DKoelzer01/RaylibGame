@@ -70,7 +70,7 @@ float GameUI_Scale() {
     return base * (settings.uiScale > 0.0f ? settings.uiScale : 1.0f);
 }
 // (#925, the user: the 2x HUD "crowds the screen") The HUD outside the game window keeps the pre-#891 size: the screen's
-// height over 1080 p times the Interface size setting, half the menus' scale. The pinned quests stay at GameUI_Scale().
+// height over 1080 p times the Interface size setting, half the menus' scale (the pinned quests too).
 float GameUI_HudScale() {
     return std::clamp(GetScreenHeight() / 1080.0f, 0.6f, 2.0f) * (settings.uiScale > 0.0f ? settings.uiScale : 1.0f);
 }
