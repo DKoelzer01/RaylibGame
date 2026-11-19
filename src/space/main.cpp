@@ -818,7 +818,7 @@ int main(int argc, char** argv)
     int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0, walkLegWater = 0;
     bool walkLegReady = true;
     double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
-    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
+    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0, walkSolidRun = 0, walkSolidMax = 0; float walkDeepest = 0.0f; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
@@ -2475,6 +2475,7 @@ int main(int argc, char** argv)
                         } else {
                             if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
+                            if (chopSwings == 3) { TakeScreenshot("bench_chop_aim.png"); printf("bench: chop: bench_chop_aim.png (the hover: size and species, #528)\n"); }
                             if (TerrainTool_Chop()) {
                                 const int wood = inventory.count("any_log") - chopWood0;
                                 printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
@@ -9059,7 +9060,7 @@ int main(int argc, char** argv)
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
-                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0; walkSolidRun = walkSolidMax = 0; walkDeepest = 0.0f; walkFellThrough = 0;
                         walkLast = walkFrom; walkPath = 0.0;
                         walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
                         walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
@@ -9069,6 +9070,9 @@ int main(int argc, char** argv)
                     const float d = start->densityAt(start->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
                     walkMinDensity = std::min(walkMinDensity, d);
                     walkMaxDensity = std::max(walkMaxDensity, d);
+                    // Inside solid ground (#941): the body centre in rock for frames on end (one frame touching the surface is not).
+                    walkSolidRun = d >= ISO_LEVEL ? walkSolidRun + 1 : 0;
+                    walkSolidMax = std::max(walkSolidMax, walkSolidRun);
                     static const bool walkLog = getenv("RAYLIBGAME_WALK_LOG") != nullptr; // #941: the swimmer each second
                     static double walkLogT = -1.0;
                     if (walkLog && GetTime() - walkLogT >= 1.0)
@@ -9088,11 +9092,16 @@ int main(int argc, char** argv)
                     if (walkLegs > 0) {
                         // Deaths (falls off what the walker strides into) lose the leg, not the test (user, 2026-11-14).
                         if (survival.dead) walkLegDied = true;
-                        // Falling through the world is the failure: the body 30 m under the height-map surface.
+                        // Depth under the height-map surface, reported, not failed (user, #941): open space under it (caves,
+                        // overhangs, cave mouths, a swimmer sinking into a flooded cave) is real terrain, not a fall through the world.
                         if (const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get())) {
                             const Vector3 lp = start->toLocal(feet);
                             const float alt = Vector3Length(lp);
-                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            if (alt > 1.0f) {
+                                const float under = pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - alt;
+                                walkDeepest = std::max(walkDeepest, under);
+                                if (under > 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            }
                         }
                     }
                     if (player.grounded) walkLegSlope = std::max(walkLegSlope, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
@@ -9199,11 +9208,16 @@ int main(int argc, char** argv)
                         } else {
                             player.autoWalk = false;
                             const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
-                            // Pass (user, 2026-11-14): most legs walked, and never through the world (body under the surface
-                            // or inside solid ground). Steep or deadly legs are part of the terrain, not failures.
-                            const bool pass = walkLegsDone * 2 > walkLegs && walkFellThrough == 0 && walkMaxDensity < ISO_LEVEL;
-                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%, %d frames under the surface, deepest body density %.2f (solid >= %.2f): %s\n",
-                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkFellThrough, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            // Pass (user, 2026-11-14; #941, 2026-11-19): most legs walked, and never inside solid ground - the body
+                            // centre in rock for kSolidFrames frames on end (touching the surface for a frame is not). Depth under the
+                            // height map is reported only: caves, overhangs and flooded caves are open space under it. Steep or deadly
+                            // legs are part of the terrain, not failures.
+                            constexpr int kSolidFrames = 6; // 0.1 s at 60 FPS
+                            const bool pass = walkLegsDone * 2 > walkLegs && walkSolidMax < kSolidFrames;
+                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%; inside solid at most %d frames on end "
+                                   "(fail >= %d), deepest body density %.2f (solid >= %.2f); under the height map: deepest %.1f m, %d frames over 30 m (open space, reported): %s\n",
+                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkSolidMax, kSolidFrames, walkMaxDensity, ISO_LEVEL,
+                                   walkDeepest, walkFellThrough, pass ? "PASS" : "FAIL");
                             walkTargetM = 0.0; walkLegs = 0; benchWalkSeconds = 0.0;
                         }
                     } else if (walkLegs == 0 && (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM))) {
@@ -10247,7 +10261,14 @@ int main(int argc, char** argv)
         if (testBugReport > 0 && gameState == 1 && !loading && WorldIdle()) {
             if (testBugReport == 1) BugReport_TestSend(world);
             ++testBugReport;
-            if (testBugReport > 3 && !BugReport_Sending()) { printf("bench: bug report: sent (see the 'bug report:' line)\n"); testBugReport = 0; }
+            if (testBugReport > 3 && !BugReport_Sending()) { // (a frame later than the answer: its toast or notice is up)
+                static int after = 0;
+                if (++after == 3) {
+                    TakeScreenshot("bench_bug_report.png"); // (#617: a failed send's notice)
+                    printf("bench: bug report: sent (see the 'bug report:' line); %d waiting in the outbox; bench_bug_report.png\n", BugReport_Unsent());
+                    testBugReport = 0;
+                }
+            }
         }
         // --test-container-cursor (#192): a chest placed 6 m ahead; its slots behave as the inventory's (cursor, halves, ones, Shift).
         if (testContainerCursor && gameState == 1 && !loading && WorldIdle()) {
@@ -10380,19 +10401,24 @@ int main(int argc, char** argv)
             static bool minimapWithMap = false, minimapWithout = true;
             static int noMapAt = 1 << 30;
             if (f >= 45 && noMapAt == (1 << 30) && (Nav_MinimapShown() || f >= 900)) { // (the minimap's image is built a few seconds in)
-                minimapWithMap = Nav_MinimapShown(); TakeScreenshot("bench_hud_creative.png"); // (read before the slow screenshot) terrainTool.creative = false;
+                minimapWithMap = Nav_MinimapShown(); TakeScreenshot("bench_hud_creative.png"); terrainTool.creative = false; // (read before the slow screenshot)
                 inventory.removeAmount("map", inventory.count("map")); noMapAt = f;
             }
             if (f == noMapAt + 60) { // (a second on: past Nav_MinimapShown's 0.25 s)
                 minimapWithout = Nav_MinimapShown();
                 TakeScreenshot("bench_hud_nomap.png");
+                GameUI_TierBanner(1); // (#226) the tier banner, as tier 1 is reached
+                Audio_Play(Sfx::Fanfare, 0.8f);
+            }
+            if (f == noMapAt + 90) { // (half a second on: slid in)
+                TakeScreenshot("bench_hud_tier.png");
                 inventory.grid()[Inventory::kOffHand] = InvSlot{ "lantern", 100 }; // (#836) its steady light, after the torch's
             }
-            if (f == noMapAt + 80) {
+            if (f == noMapAt + 110) {
                 TakeScreenshot("bench_hud_lantern.png");
                 settings.keyHints = 0;
                 const bool ok = gKeyHintsHook && minimapWithMap && !minimapWithout; // (#937: the flying bench camera has its minimap now)
-                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
+                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png, bench_hud_tier.png, bench_hud_lantern.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
                        minimapWithMap, minimapWithout, ok ? "PASS" : "FAIL");
                 shotHud = false;
             }
@@ -12266,6 +12292,7 @@ int main(int argc, char** argv)
             if (ff == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
             if (ff >= 8 && ff < 30) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.5f)));
             if (ff == 30) TerrainTool_TestFill();
+            if (ff == 50) TerrainTool_TestFillOffHand(); // (#836)
             if (ff == 70) { TakeScreenshot("bench_fill.png"); printf("bench: fill: bench_fill.png\n"); benchFill = false; }
         }
         // --test-lamps (#139): at the dawn start (dark), 100 lamp cubes on a 2 m grid round the player light the ground.

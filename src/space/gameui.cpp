@@ -1855,8 +1855,36 @@ static void DrawTeamStrip() {
     }
 }
 
+// (#226) A tier reached: a banner across the top for 6 s (it slides in, then fades): the tier, its name and the first
+// sentence of what it is about. The fanfare and the sparkles are the caller's (survival.cpp, where the tier advances).
+namespace { int bannerTier = -1; double bannerAt = -1e9; }
+void GameUI_TierBanner(int tier) { bannerTier = tier; bannerAt = GetTime(); }
+static void DrawTierBanner() {
+    const double age = GetTime() - bannerAt;
+    if (bannerTier < 0 || age > 6.0) return;
+    const float s = GameUI_HudScale();
+    const float in = (float)std::min(1.0, age / 0.3), alpha = (float)std::clamp((6.0 - age) / 1.0, 0.0, 1.0);
+    const int w = GetScreenWidth();
+    const int fsBig = (int)(44 * s), fsName = (int)(30 * s), fsText = (int)(18 * s), pad = (int)(16 * s);
+    std::string text = QuestBook_TierText(bannerTier);
+    if (const size_t dot = text.find(". "); dot != std::string::npos) text = text.substr(0, dot + 1); // the first sentence
+    const char* head = TextFormat("TIER %d REACHED", bannerTier);
+    const char* name = QuestBook_TierName(bannerTier);
+    int tw = std::max({ MeasureText(head, fsBig), MeasureText(name, fsName), MeasureText(text.c_str(), fsText) });
+    tw = std::min(tw, w - 4 * pad);
+    const int bw = tw + 2 * pad, bh = fsBig + fsName + fsText + 4 * pad;
+    const int x = (w - bw) / 2, y = (int)(GetScreenHeight() * 0.16f - (1.0f - in) * 40.0f * s);
+    DrawRectangle(x, y, bw, bh, Fade(Color{ 16, 20, 28, 255 }, 0.82f * alpha));
+    DrawRectangleLinesEx(Rectangle{ (float)x, (float)y, (float)bw, (float)bh }, 2.0f * s, Fade(Color{ 236, 196, 92, 255 }, alpha));
+    int ty = y + pad;
+    DrawText(head, (w - MeasureText(head, fsBig)) / 2, ty, fsBig, Fade(Color{ 250, 214, 110, 255 }, alpha)); ty += fsBig + pad;
+    DrawText(name, (w - MeasureText(name, fsName)) / 2, ty, fsName, Fade(RAYWHITE, alpha)); ty += fsName + pad;
+    DrawText(text.c_str(), (w - std::min(MeasureText(text.c_str(), fsText), tw)) / 2, ty, fsText, Fade(Color{ 200, 206, 216, 255 }, alpha));
+}
+
 void GameUI_DrawHUD(Scene& world) {
     DrawTeamStrip();
+    DrawTierBanner(); // (#226)
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
     // world velocity includes the planet's spin and orbit, which read as 60-90 m/s while hovering (#239).
     // On the ground the player's velocity is already relative to the surface (Player::stepPhysics): only

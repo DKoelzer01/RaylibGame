@@ -24,6 +24,7 @@ bool GameUI_QueueRecursive(int recipe, int count, int* steps = nullptr); // (#92
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 bool GameUI_ClosePopout();                     // (#921) Esc: closes an open pop-out (a recipe's page, a quest tier); false: none was open
+void GameUI_TierBanner(int tier);              // (#226) a tier reached: its banner across the HUD for a few seconds
 #include <string>
 #include <functional>
 // (#866) Set while joined (main.cpp): creative items from the server (the Catalog, a creative middle-click; "" clears the inventory).
