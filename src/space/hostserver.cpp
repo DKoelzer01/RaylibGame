@@ -699,6 +699,15 @@ namespace {
             ++skillStatesSent;
         }
     }
+    // (#920) XP for a remote player's event (skills.txt's xp lines), at the world's rate; creative earns none. Sent with the
+    // next SkillState (a level-up at once).
+    void RemoteXp(uint32_t session, const char* event, double n = 1.0) {
+        auto it = remotes.find(session);
+        if (it == remotes.end() || it->second.creative) return;
+        const int ups = Skills_Event(it->second.skills, event, n, worldXpRate);
+        it->second.skillsDirty = true;
+        if (ups > 0) it->second.skillsSentAt = -1e9;
+    }
     // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
     uint64_t SkillCell(Vector3 local) {
         const auto q = [](float v) { return (uint64_t)(uint32_t)(int32_t)std::floor(v) & 0x1FFFFFull; };
