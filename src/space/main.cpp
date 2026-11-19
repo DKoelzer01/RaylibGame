@@ -5735,10 +5735,11 @@ int main(int argc, char** argv)
                         if (!p->plots) p->plots = std::make_unique<PlotSet>();
                         Plot* plot = p->plots->plotFor(th.local, 0.0f, true);
                         roomPlot = plot->id;
-                        constexpr int kY = 4; // two metres up: no ground inside the room
+                        static const bool noFloor = getenv("RAYLIBGAME_ROOM_NOFLOOR") && getenv("RAYLIBGAME_ROOM_NOFLOOR")[0] == '1'; // (#908) on the ground, no floor: the terrain under the roof
+                        const int kY = noFloor ? -1 : 4; // two metres up: no ground inside the room (or standing on it, the floor row in the ground)
                         int placed = 0;
                         auto put = [&](int x, int y, int z) { if (BuildTool_Place(*p, *plot, { PartType::Cube, { x, y + kY, z }, 0 }, false)) ++placed; };
-                        for (int z = 0; z < 10; ++z) for (int x = 0; x < 10; ++x) { put(x, 0, z); put(x, 7, z); } // floor and roof
+                        for (int z = 0; z < 10; ++z) for (int x = 0; x < 10; ++x) { if (!noFloor) put(x, 0, z); put(x, 7, z); } // floor and roof
                         for (int y = 1; y <= 6; ++y)
                             for (int k = 0; k < 10; ++k) {
                                 put(k, y, 9); put(0, y, k); put(9, y, k);

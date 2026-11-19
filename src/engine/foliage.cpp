@@ -98,6 +98,7 @@ static std::shared_ptr<const GrassBlockers> BlockersOf(const DensityField* field
     auto it = gBlockers.find(field);
     return it == gBlockers.end() ? nullptr : it->second;
 }
+std::shared_ptr<const GrassBlockers> Grass_BlockersOf(const DensityField* field) { return BlockersOf(field); } // (#908)
 
 void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
     // Nodes at 1 m resolution or finer (the old level 0 and the finer ones around the player).
@@ -119,6 +120,11 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
             const Int3 cell = { (int)floorf(Vector3DotProduct(r, b->east) / kCellSize), (int)floorf(Vector3DotProduct(r, b->up) / kCellSize),
                                 (int)floorf(Vector3DotProduct(r, b->north) / kCellSize) };
             if (b->cells.count(cell)) return true;
+            // (#908) Under a built roof (a solid cell straight overhead within 6 m): no grass grows in the dark of a shelter
+            // or a floorless house. RAYLIBGAME_ROOF_SKY=0: grass as before.
+            static const bool roofOn = !(getenv("RAYLIBGAME_ROOF_SKY") && getenv("RAYLIBGAME_ROOF_SKY")[0] == '0');
+            if (roofOn && !b->solid.empty())
+                for (int k = 1; k <= 12; ++k) if (b->solid.count(Int3{ cell.x, cell.y + k, cell.z })) return true;
         }
         return false;
     };

@@ -460,6 +460,7 @@ static void SyncGrassBlockers(Planetoid& p) {
         g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
         for (const auto& kv : pl->cells) {
             g.cells.insert(kv.first);
+            if (PartBlocksSky(pl->parts[kv.second.part])) g.solid.insert(kv.first); // (#908) roofs shade the ground
             const Int3 c = kv.first;
             g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
         }
@@ -474,7 +475,7 @@ static void SyncGrassBlockers(Planetoid& p) {
             lo = Vector3Min(lo, at); hi = Vector3Max(hi, at);
         }
         pl->changedCells.clear();
-        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize, 1.0f);
+        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize + 8.0f, 1.0f); // (#908) +8 m: the ground under a roof (its sky)
     }
 }
 

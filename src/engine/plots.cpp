@@ -310,6 +310,7 @@ static unsigned char PartPatternOf(const Part& p) {
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
+bool PartBlocksSky(const Part& p) { return IsShape(p.type) && PartPatternOf(p) != PatGlass; } // (#908)
 
 // Cells of a part in part space, each with its shape.
 static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) {
