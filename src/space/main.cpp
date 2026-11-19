@@ -663,6 +663,7 @@ int main(int argc, char** argv)
     bool benchPump = false; int pumpPhase = 0, pumpCable = -1; double pumpT0 = 0.0, pumpedAtCut = 0.0; uint32_t pumpPlot = 0; Vector3 pumpBasin{}; float pumpRise = 0.0f; // --test-pump
     bool benchBucket = false; int bucketPhase = 0, bucketTrips = 0; double bucketT0 = 0.0; Vector3 bucketWater{}, bucketBasin{}, bucketField{}; // --test-bucket
     float benchFluidLoad = 0.0f; int flPhase = 0; double flT0 = 0.0; Vector3 flMid{}, flE{}, flN{}; // --test-fluid-load S (#638/#642 perf)
+    bool benchFluidSettle = false; // --test-fluid-settle S (#855): the fluid-load basin gets 1 m of still water and must fall asleep
     bool benchDamBreak = false; int dbPhase = 0; double dbT0 = 0.0; float dbPoured = 0.0f, dbFloor = -2.5f; // --test-dam-break (#680: Ritter dam break, physics reference)
     bool benchLeak = false; int lkPhase = 0; double lkT0 = 0.0; float lkPoured = 0.0f; // --test-leak (#680: a hole low in a wall)
     bool benchLeakParts = false; Plot* lkPlot = nullptr; std::vector<int> lkHole; // --test-leak-parts (#692): the wall is placed stone blocks
@@ -1001,6 +1002,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-water-speed") benchWaterSpeed = true;
         if (std::string(argv[i]) == "--sandbox") gSandboxWorld = true; // #662: a flat test plane
         if (std::string(argv[i]) == "--test-fluid-load" && i + 1 < argc) benchFluidLoad = (float)atof(argv[i + 1]); // basin side (m)
+        if (std::string(argv[i]) == "--test-fluid-settle" && i + 1 < argc) { benchFluidLoad = (float)atof(argv[i + 1]); benchFluidSettle = true; } // #855: the basin poured once, then asleep?
         if (std::string(argv[i]) == "--test-dam-break") benchDamBreak = true; // best with --sandbox
         if (std::string(argv[i]) == "--test-leak") benchLeak = true; // best with --sandbox
         if (std::string(argv[i]) == "--test-leak-parts") benchLeak = benchLeakParts = true; // #692: the wall is placed blocks
@@ -6426,7 +6428,36 @@ int main(int argc, char** argv)
                         world.camera.position = p->toWorld(Vector3Add(tile(0.0f, -0.3f * benchFluidLoad, 0.0f), Vector3Scale(Vector3Normalize(flMid), 12.0f + 0.9f * benchFluidLoad)));
                         world.camera.target = p->toWorld(flMid); world.camera.up = p->dirToWorld(Vector3Normalize(flMid));
                         player.position = world.renderOrigin + world.camera.position;
-                        if (flPhase == 1 && t > 1.0 && WorldIdle()) {
+                        if (benchFluidSettle && flPhase >= 1) {
+                            // --test-fluid-settle (#855): 1 m of water poured over the basin (0.5 m^3 a frame on a 2 m grid, round
+                            // robin: no mounds), then still. PASS: asleep within 60 s of the last pour, or at most a tenth of the
+                            // bricks still awake then (the shore's films can drain for longer: the column model has left 2-6 of 50
+                            // awake in some runs; before #855 it kept all 50 awake for good). Awake bricks every 5 s, to compare
+                            // the fluid models (FLUID_COLUMNS).
+                            static int k = 0; static float poured = 0.0f; static double pourEnd = -1.0, nextPrint = 5.0;
+                            const int n = std::max(1, (int)(benchFluidLoad / 2.0f));
+                            const float target = benchFluidLoad * benchFluidLoad * 1.0f;
+                            if (flPhase == 1 && t > 1.0 && WorldIdle()) { flPhase = 2; flT0 = GetTime(); }
+                            else if (flPhase == 2 && poured < target) {
+                                const float x = -0.5f * benchFluidLoad + 2.0f * ((k % n) + 0.5f), y = -0.5f * benchFluidLoad + 2.0f * (((k / n) % n) + 0.5f);
+                                ++k;
+                                poured += Fluid::Pour(*p, tile(x, y, 2.0f), 0.5f);
+                                if (poured >= target) { pourEnd = SimTime(); printf("bench: fluid-settle: %.0f m^3 poured after %.1f s\n", poured, t); }
+                            } else if (flPhase == 2) {
+                                const double ts = SimTime() - pourEnd;
+                                const Fluid::Stats s = Fluid::GetStats();
+                                if (ts >= nextPrint) {
+                                    nextPrint += 5.0;
+                                    printf("bench: fluid-settle: %.0f s after the pour: %d of %d bricks awake (%d steady flow), %d settled; wakes by the step %lld, by the CPU %lld; %.1f m^3 (%.1f found no room)\n",
+                                           ts, s.activeBricks, s.bricks, s.steadyBricks, s.settled, s.wakes[0], s.wakes[1], s.volume, Fluid::PourDropped());
+                                }
+                                if (Fluid::Asleep() || ts > 60.0) {
+                                    printf("bench: fluid-settle: %s %.1f s after the pour (%d of %d bricks awake, %.1f of %.0f m^3) -> %s\n", Fluid::Asleep() ? "asleep" : "still awake",
+                                           ts, s.activeBricks, s.bricks, s.volume, poured, Fluid::Asleep() || s.activeBricks * 10 <= s.bricks ? "PASS" : "FAIL");
+                                    benchFluidLoad = 0.0f;
+                                }
+                            }
+                        } else if (flPhase == 1 && t > 1.0 && WorldIdle()) {
                             const int tiles = std::max(1, (int)lroundf(benchFluidLoad / 16.0f));
                             for (int i = 0; i < tiles; ++i)
                                 for (int j = 0; j < tiles; ++j)
