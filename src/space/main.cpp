@@ -10261,16 +10261,15 @@ int main(int argc, char** argv)
             static bool minimapWithMap = false, minimapWithout = true;
             static int noMapAt = 1 << 30;
             if (f >= 45 && noMapAt == (1 << 30) && (Nav_MinimapShown() || f >= 900)) { // (the minimap's image is built a few seconds in)
-                TakeScreenshot("bench_hud_creative.png"); minimapWithMap = Nav_MinimapShown(); terrainTool.creative = false;
+                minimapWithMap = Nav_MinimapShown(); TakeScreenshot("bench_hud_creative.png"); // (read before the slow screenshot) terrainTool.creative = false;
                 inventory.removeAmount("map", inventory.count("map")); noMapAt = f;
             }
-            if (f == noMapAt + 15) {
-                TakeScreenshot("bench_hud_nomap.png");
+            if (f == noMapAt + 60) { // (a second on: past Nav_MinimapShown's 0.25 s)
                 minimapWithout = Nav_MinimapShown();
+                TakeScreenshot("bench_hud_nomap.png");
                 settings.keyHints = 0;
-                // (The minimap's image does not finish in this bench yet: #937. With a map it is only reported.)
-                const bool ok = gKeyHintsHook && !minimapWithout;
-                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d (not required: #937), without %d) -> %s\n",
+                const bool ok = gKeyHintsHook && minimapWithMap && !minimapWithout; // (#937: the flying bench camera has its minimap now)
+                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
                        minimapWithMap, minimapWithout, ok ? "PASS" : "FAIL");
                 shotHud = false;
             }
