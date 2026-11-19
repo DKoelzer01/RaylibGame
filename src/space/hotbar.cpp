@@ -135,8 +135,13 @@ namespace {
             buildTool.part = (int)t;
             return;
         }
-        GameUI_Toast(TextFormat("%s can't be used from the hotbar", ShortName(id)));
-        Audio_Play(Sfx::Error, 0.3f);
+        // (#534, the user) Anything else is just held: LMB punches (bare hands), RMB does nothing unless it has a use (the
+        // telescope's RMB raises it: Telescope_Update).
+        if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+        take();
+        buildTool.active = false;
+        terrainTool.heldTool.clear();
+        terrainTool.holdingItem = true;
     }
 }
 
@@ -187,7 +192,12 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     static std::string lastId;
     if (buildTool.active && cur.empty() && lastSlot == H().selected && !lastId.empty()) buildTool.active = false;
     lastSlot = H().selected; lastId = cur;
-    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur);
+    // (#534) An item with no use from the hand (not a tool, filler, block or part) stays in hand too: just held.
+    auto plainHeldId = [](const std::string& id) {
+        return !id.empty() && ToolOf(id).type == ToolType::Hands && !TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0 && PartForItem(id) == PartType::Count &&
+               id != "bucket" && id != "water_bucket" && id != "fishing_rod" && !Survival_IsUsable(id);
+    };
+    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur) || plainHeldId(cur);
     if (!buildTool.active && !inHand) {
         for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { H().selected = i; break; }
         terrainTool.heldTool.clear();
@@ -207,7 +217,11 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
     const bool torchHeld = !buildTool.active && (Hotbar_IsLight(CellId(H().selected)) || Hotbar_IsPlaceable(CellId(H().selected))) && inventory.count(CellId(H().selected)) > 0;
-    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
+    // (#534, the user) Any other item in hand that is not a tool, a filler or a bucket is just held: RMB does nothing with it
+    // (unless it has a use: the telescope's RMB, Telescope_Update), LMB punches (bare hands).
+    const std::string& selId = CellId(H().selected);
+    const bool plainItem = !buildTool.active && inventory.count(selId) > 0 && plainHeldId(selId);
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || plainItem || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
     if (torchHeld && !piloting && in.hit(Act::Secondary)) Hotbar_PlaceTorch();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
     UpdateEating(GameFrameTime(), !piloting && in.down(Act::Secondary));

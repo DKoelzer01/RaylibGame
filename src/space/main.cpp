@@ -8413,6 +8413,21 @@ int main(int argc, char** argv)
                         const bool flyDropped = !player.flyMode;
                         terrainTool.creative = creative0; player.flyMode = fly0; player.flyAllowed = true;
                         printf("bench: hotbar: F out of creative flies %d, in creative %d, creative off mid-flight lands %d (#531)\n", (int)!flyLocked, (int)flyCreative, (int)flyDropped);
+                        // (#534) An item with no use in hand is just held (RMB builds nothing, LMB is bare hands); so is the
+                        // telescope (its RMB is its own: Telescope_Update).
+                        bool plainHeld = false, scopeHeld = false;
+                        {
+                            auto& g = inventory.grid();
+                            const InvSlot s7 = g[Inventory::kGrid + 7], s8 = g[Inventory::kGrid + 8];
+                            g[Inventory::kGrid + 7] = InvSlot{ "fibre", 300 };     // (no use from the hand: not a tool, filler, part or material)
+                            g[Inventory::kGrid + 8] = InvSlot{ "telescope", 100 };
+                            Hotbar_Press(7, false); Hotbar_Update(world, PlayerInput::None(), false);
+                            plainHeld = Hotbar_Selected() == 7 && terrainTool.holdingItem && terrainTool.heldTool.empty() && !buildTool.active;
+                            Hotbar_Press(8, false); Hotbar_Update(world, PlayerInput::None(), false);
+                            scopeHeld = Hotbar_Selected() == 8 && terrainTool.holdingItem && terrainTool.heldTool.empty() && !buildTool.active;
+                            g[Inventory::kGrid + 7] = s7; g[Inventory::kGrid + 8] = s8;
+                        }
+                        printf("bench: hotbar: fibre in hand is just held (RMB builds nothing) %d, the telescope too %d (#534)\n", (int)plainHeld, (int)scopeHeld);
                         Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -8424,7 +8439,7 @@ int main(int argc, char** argv)
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
                                     if (PartItem(part) == std::string("concrete")) ++concreteParts;
                                 }
-                        ok = lastEnds && flyLocked && flyCreative && flyDropped && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
                         printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
                                concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
                     }
@@ -9722,7 +9737,8 @@ int main(int argc, char** argv)
                 const std::string id = inventory.offHand().id;
                 if (id.empty()) GameUI_Toast("Your off hand is empty: put food or an oxygen canister there (the inventory, beside you)");
                 else if (Survival_IsFood(id) || Survival_IsUsable(id)) { if (!Survival_UseItem(id) && Survival_IsFood(id)) GameUI_Toast("You're not hungry"); }
-                else GameUI_Toast(TextFormat("%s uses food or a consumable from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
+                else if (id == "telescope" && !ship.piloted) { Telescope_SetActive(world, !telescope.active); Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f); } // (#534)
+                else GameUI_Toast(TextFormat("%s uses food, a consumable or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
