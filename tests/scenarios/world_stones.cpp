@@ -1,6 +1,6 @@
 // world/stones-per-biome (#893): loose stones (tree-system variant 9: the tier-0 quest's first 4 stone) lie in every biome
 // but on the mountaintops. On the planet at seed 42, for each land biome: the nearest deep patch of it (the --bench-biome
-// override of findSpawnDir), and the scatter as generated within 200 m of it (Trees_CountScatter: no edits or removals).
+// search, PlanetField::nearestBiomeDir), and the scatter as generated within 200 m of it (Trees_CountScatter: no edits or removals).
 // Each biome must have at least 4 stones there (alpine is only reported: its high ground is bare by design). The trees and
 // bushes are reported too. Before #893 the swamp (clay and mud underfoot) and the desert (sand) had none.
 #include "scenario.h"
@@ -20,9 +20,7 @@ SCENARIO("world/stones-per-biome") {
         const unsigned seed = c.body->trees ? c.field->foliageSeed : 0u;
         for (int b = (int)Biome::Jungle; b <= (int)Biome::Alpine; ++b) {
             const char* name = BiomeName((Biome)b);
-            gSpawnBiome = b;
-            const Vector3 dir = c.field->findSpawnDir(c.body->seed);
-            gSpawnBiome = -1;
+            const Vector3 dir = c.field->nearestBiomeDir(c.field->findSpawnDir(c.body->seed), (Biome)b); // (not gSpawnBiome: it caches one per field)
             const float e = c.field->elevation(dir);
             if (c.field->biomeAt(dir, e) != (Biome)b) { c.note(std::string("no patch of ") + name + " found (skipped)"); continue; }
             int trees = 0, bushes = 0, stones = 0;
