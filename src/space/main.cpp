@@ -818,7 +818,7 @@ int main(int argc, char** argv)
     int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0, walkLegWater = 0;
     bool walkLegReady = true;
     double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
-    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
+    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0, walkSolidRun = 0, walkSolidMax = 0; float walkDeepest = 0.0f; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
@@ -9058,7 +9058,7 @@ int main(int argc, char** argv)
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
-                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0;
+                        walkMinDensity = 1e9f; walkMaxDensity = -1e9f; walkGroundedFrames = walkFrames = 0; walkSolidRun = walkSolidMax = 0; walkDeepest = 0.0f; walkFellThrough = 0;
                         walkLast = walkFrom; walkPath = 0.0;
                         walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
                         walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
@@ -9068,6 +9068,9 @@ int main(int argc, char** argv)
                     const float d = start->densityAt(start->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
                     walkMinDensity = std::min(walkMinDensity, d);
                     walkMaxDensity = std::max(walkMaxDensity, d);
+                    // Inside solid ground (#941): the body centre in rock for frames on end (one frame touching the surface is not).
+                    walkSolidRun = d >= ISO_LEVEL ? walkSolidRun + 1 : 0;
+                    walkSolidMax = std::max(walkSolidMax, walkSolidRun);
                     static const bool walkLog = getenv("RAYLIBGAME_WALK_LOG") != nullptr; // #941: the swimmer each second
                     static double walkLogT = -1.0;
                     if (walkLog && GetTime() - walkLogT >= 1.0)
@@ -9087,11 +9090,16 @@ int main(int argc, char** argv)
                     if (walkLegs > 0) {
                         // Deaths (falls off what the walker strides into) lose the leg, not the test (user, 2026-11-14).
                         if (survival.dead) walkLegDied = true;
-                        // Falling through the world is the failure: the body 30 m under the height-map surface.
+                        // Depth under the height-map surface, reported, not failed (user, #941): open space under it (caves,
+                        // overhangs, cave mouths, a swimmer sinking into a flooded cave) is real terrain, not a fall through the world.
                         if (const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get())) {
                             const Vector3 lp = start->toLocal(feet);
                             const float alt = Vector3Length(lp);
-                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            if (alt > 1.0f) {
+                                const float under = pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - alt;
+                                walkDeepest = std::max(walkDeepest, under);
+                                if (under > 30.0f) { ++walkFellThrough; ++walkLegUnder; }
+                            }
                         }
                     }
                     if (player.grounded) walkLegSlope = std::max(walkLegSlope, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
@@ -9198,11 +9206,16 @@ int main(int argc, char** argv)
                         } else {
                             player.autoWalk = false;
                             const double pct = 100.0 * walkGroundedFrames / std::max(1, walkFrames);
-                            // Pass (user, 2026-11-14): most legs walked, and never through the world (body under the surface
-                            // or inside solid ground). Steep or deadly legs are part of the terrain, not failures.
-                            const bool pass = walkLegsDone * 2 > walkLegs && walkFellThrough == 0 && walkMaxDensity < ISO_LEVEL;
-                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%, %d frames under the surface, deepest body density %.2f (solid >= %.2f): %s\n",
-                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkFellThrough, walkMaxDensity, ISO_LEVEL, pass ? "PASS" : "FAIL");
+                            // Pass (user, 2026-11-14; #941, 2026-11-19): most legs walked, and never inside solid ground - the body
+                            // centre in rock for kSolidFrames frames on end (touching the surface for a frame is not). Depth under the
+                            // height map is reported only: caves, overhangs and flooded caves are open space under it. Steep or deadly
+                            // legs are part of the terrain, not failures.
+                            constexpr int kSolidFrames = 6; // 0.1 s at 60 FPS
+                            const bool pass = walkLegsDone * 2 > walkLegs && walkSolidMax < kSolidFrames;
+                            printf("bench: planet walk %d of %d legs of %.0f m completed in %.1f s, grounded %.0f%%; inside solid at most %d frames on end "
+                                   "(fail >= %d), deepest body density %.2f (solid >= %.2f); under the height map: deepest %.1f m, %d frames over 30 m (open space, reported): %s\n",
+                                   walkLegsDone, walkLegs, kWalkLegM, GetTime() - walkStart, pct, walkSolidMax, kSolidFrames, walkMaxDensity, ISO_LEVEL,
+                                   walkDeepest, walkFellThrough, pass ? "PASS" : "FAIL");
                             walkTargetM = 0.0; walkLegs = 0; benchWalkSeconds = 0.0;
                         }
                     } else if (walkLegs == 0 && (GetTime() - walkStart > benchWalkSeconds || (walkTargetM > 0.0 && walkPath >= walkTargetM))) {
