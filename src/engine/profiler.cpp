@@ -314,7 +314,7 @@ bool Profiler_WriteSession(const std::string& dir, std::string& path) {
         fprintf(f, "  %-32s %9.3f %9.3f %9.3f %9.3f %9.2f %10llu\n", z.first.c_str(), gFrames.count ? z.second->sumNs / gFrames.count / 1e6 : 0.0,
                 z.second->pct(0.5) / 1e6, z.second->pct(0.95) / 1e6, z.second->pct(0.99) / 1e6, z.second->maxNs / 1e6, (unsigned long long)z.second->count);
     const std::string kept = gHitchesOver > gHitches.size() ? " (the first " + std::to_string(gHitches.size()) + " of " + std::to_string(gHitchesOver) + ")" : "";
-    fprintf(f, "\nHitches (frames over 20 ms)%s: when, how long, the zones that took most of that frame, and what was going on\n", kept.c_str());
+    fprintf(f, "\nHitches (frames over 20 ms)%s: when, how long, the zones that took most of that frame (ms summed over all threads: the chunk builds run on the workers, so they can add up past the frame), and what was going on\n", kept.c_str());
     for (const Hitch& h : gHitches) {
         char when[48];
         if (h.gameS >= 0.0) snprintf(when, sizeof when, "game %d:%04.1f", (int)(h.gameS / 60.0), fmod(h.gameS, 60.0));
