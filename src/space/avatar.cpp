@@ -268,11 +268,20 @@ void Avatar_DrawPreview(Scene& world, const AvatarState& a, RenderTexture2D& tar
     cam.position = eye; cam.target = at; cam.up = up; cam.fovy = 32.0f; cam.projection = CAMERA_PERSPECTIVE;
     const Camera3D saved = world.camera;
     world.camera = cam; // (the batch lights from the camera's place: the preview's)
+    // (#913 review) A studio light, not the world's: at night the world-lit figure was near-black on the dark panel. A key
+    // light from the camera's side and above, bright ambient, no fog; the world's lighting comes back after.
+    const Vector3 sun0 = world.frameSun, amb0 = world.frameAmbient, ambUp0 = world.frameAmbientUp, fade0 = world.sunFade, light0 = world.lightDirection;
+    const float fog0 = world.frameFogDensity, moon0 = world.moonLight;
+    const Vector3 key = Vector3Normalize(Vector3Add(Vector3Normalize(Vector3Subtract(eye, at)), Vector3Scale(up, 0.8f)));
+    world.frameSun = key; world.lightDirection = key; world.sunFade = { 0, 0, 0 }; world.moonLight = 0.0f;
+    world.frameAmbient = { 0.32f, 0.33f, 0.36f }; world.frameAmbientUp = { 0.40f, 0.42f, 0.46f }; world.frameFogDensity = 0.0f;
     BeginMode3D(cam);
     const std::vector<AvatarState> one{ a };
     Avatar_Draw3D(world, one);
     InstanceBatch_Flush(world);
     EndMode3D();
+    world.frameSun = sun0; world.frameAmbient = amb0; world.frameAmbientUp = ambUp0; world.sunFade = fade0; world.lightDirection = light0;
+    world.frameFogDensity = fog0; world.moonLight = moon0;
     world.camera = saved;
     EndTextureMode();
 }

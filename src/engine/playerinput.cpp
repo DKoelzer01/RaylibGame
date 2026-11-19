@@ -133,3 +133,37 @@ int PlayerInput_PressedCode() {
     for (int m = MOUSE_BUTTON_LEFT; m <= MOUSE_BUTTON_BACK; ++m) if (IsMouseButtonPressed(m)) return kMouse + m;
     return -1;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#895): a held button that broke something strikes nothing more until pressed again ----
+#include "unit_helpers.h"
+
+TEST(HoldLatch, HeldDiggingIsNeverInterrupted) {
+    HoldLatch l;
+    for (int f = 0; f < 120; ++f) EXPECT_TRUE(l.allows(true)) << "frame " << f;
+}
+
+TEST(HoldLatch, ABreakUsesUpTheHeldButtonUntilItIsPressedAgain) {
+    HoldLatch l;
+    EXPECT_TRUE(l.allows(true));
+    l.consume(); // a block broke while the button was held
+    for (int f = 0; f < 60; ++f) EXPECT_FALSE(l.allows(true)) << "still held: nothing behind it is struck (frame " << f << ")";
+    EXPECT_FALSE(l.allows(false)) << "released";
+    EXPECT_TRUE(l.allows(true)) << "pressed again: strikes again";
+}
+
+TEST(HoldLatch, AReleaseInTheSameFrameAsTheBreakClearsIt) {
+    HoldLatch l;
+    l.consume();
+    EXPECT_FALSE(l.allows(false));
+    EXPECT_FALSE(l.latched);
+}
+
+TEST(HoldLatch, EatingKeepsLmbDeadUntilAReleaseAfterIt) { // (#896) eating consumes it every frame
+    HoldLatch l;
+    for (int f = 0; f < 30; ++f) { l.consume(); EXPECT_FALSE(l.allows(f >= 10)) << "pressed while eating (frame " << f << ")"; }
+    EXPECT_FALSE(l.allows(true)) << "eating stopped, LMB still held from before: still nothing";
+    EXPECT_FALSE(l.allows(false));
+    EXPECT_TRUE(l.allows(true)) << "pressed again after eating";
+}
+#endif

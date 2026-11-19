@@ -19,6 +19,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "recipebook.h"
+#include "skills.h"
 #include "netid.h"
 
 #include <cstdint>
@@ -34,6 +35,7 @@ struct PlayerSession {
     SuitState suit;
     ToolWearState toolWear;
     RecipeBookState recipes;
+    SkillState skills;               // (#883) XP and perks (skills.h)
     PlayerInput input;               // the last step's input (filled by the server from the network later)
 };
 

@@ -35,12 +35,20 @@ struct TerrainToolSettings {
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
 };
 extern TerrainToolSettings& terrainTool; // the local PlayerSession's (#313)
+inline float gHudScale = 1.0f; // (#891) the interface scale for the crosshair's text (the game sets it each frame)
+// Skills (#883): the game sets these (unset: no XP, every multiplier 1, as a server and tests run). A stroke's events go
+// out (rock_stroke, ore_stroke, soil_stroke, gem, chop, tree_felled; `local`: the body-local point, for the anti-farming
+// cell); the perks' multipliers come in (rock_speed, ore_speed, rock_radius, gem_chance, ore_yield, stone_yield).
+inline std::function<void(const char* event, double n, Vector3 local)> gSkillEvent;
+inline std::function<float(const char* stat)> gSkillStat;
+inline float SkillStat(const char* stat) { return gSkillStat ? gSkillStat(stat) : 1.0f; }
 
 struct PlayerInput;
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = true); // once per frame before drawing (input: #312); editEnabled=false keeps save/load (F5/F9) only
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
 float TerrainTool_Cooldown();                              // 1 just after a swing .. 0 ready for the next
+float TerrainTool_StrokeRate();                            // strokes a second at the aimed ground with the tool in hand (#883: with the perks)
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
 bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pour (RMB; scripted tests call it after aiming)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
@@ -64,7 +72,7 @@ struct DigYield {
     const char* seed = nullptr;  // grass turned up a seed (+1)
     bool ore = false;            // some ore came out (a vein may be nearly done)
 };
-DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, int gemBoost);
+DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost); // gemBoost: x the gem odds (tests, perks)
 int TerrainTool_FillerMaterial(const std::string& item); // the VoxelMaterial a filler places (-1: not a filler)
 const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material); // the item a material there digs out (ore: its kind)
 // Set while joined to a server (#329): a dig or place stroke is sent as a request instead of applied and paid here;

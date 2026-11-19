@@ -295,7 +295,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         survival.deathTime = SimTime();
         survival.deaths++;
         player.autoWalk = false;
-        if (local) Combat_OnDeath(LocalSession()); // what is lost, by difficulty (#165; a server's remote player: #337 slice 2)
+        if (local) { Combat_OnDeath(LocalSession()); Skills_OnDeath(LocalSession().skills); } // (#883: some XP toward the next level, never a level) // what is lost, by difficulty (#165; a server's remote player: #337 slice 2)
     }
 }
 

@@ -1739,7 +1739,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
 // up to the stride where the probe stops (a ring).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
-                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev) {
+                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev, bool verifyOutside = false) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
@@ -1776,7 +1776,7 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
             if (blockSolid(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), inside)) blocked = true;
             if (!inside) break;
         }
-        if (!blocked && !inside && r == 0 && mayRoof) { // the up ray beyond the block: the rest from the field
+        if (!blocked && !inside && r == 0 && (mayRoof || verifyOutside)) { // the up ray beyond the block: the rest from the field (#898: also for a buried vertex)
             // Straight up stays in this vertex's column, so with the column known (the block's grid) the surface is too:
             // densityNear skips the height map, which made full density() calls here the bulk of a build in the 3D band
             // (no erosion: "Preparing spawn" 8 s -> 40 s, #387).
@@ -1789,9 +1789,17 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
                 blocked = v >= ISO_LEVEL;
             }
         }
-        if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+        if (!blocked && !inside && verifyOutside && r != 0) {
+            // (#898) a buried vertex: a ray that left the block is open only if the ground beyond really is (else cave walls
+            // at a block's edge would read as lit), from the field itself.
+            const float fp = std::max(stride, 1.0f);
+            for (; k < 8 && !blocked; k += 2) blocked = field.density(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), &deltas, fp) >= ISO_LEVEL; // (every other: the cost)
+        }
+        if (!blocked) open += r == 0 ? 3.0f : 1.0f; // (#899) the sky overhead weighs most
     }
-    return std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f);
+    // (#899) Open ground and ground by one wall stay 1; under an overhang (only the up ray blocked) 0.71, in an alcove 0.54. With
+    // the old weights (up 2, x1.5) an overhang open at the sides read as full sky.
+    return std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2405,7 +2413,17 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
-                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
+                if (gSkyProbes && stride <= 2.0f) {
+                    const PlanetField::Column3D* pc = hinted ? &gCol : nullptr; const float* pe = hinted ? &gElev : nullptr;
+                    // (#898) Under the surface (the depth term < 1) and less than 40 m down: light comes in where the sky can be
+                    // seen (a cave mouth, a shaft, a pit): at least 0.6 x (1 - depth / 40 m) of the open share (0.42 at 12 m: walls stay
+                    // under the open ground and fall off deeper in), the rays checked past the block. The
+                    // depth term alone cut to black ~10 m down, under an opening or not; a closed tunnel stays black.
+                    const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p) : 1e9f;
+                    static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
+                    if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
+                    else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
+                }
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
                 // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and

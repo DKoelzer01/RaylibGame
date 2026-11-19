@@ -99,6 +99,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "ring.h"
 #include "factory.h"
 #include "machineact.h"
+#include "skillplay.h"
 #include "fluid.h"
 #include "watersurface.h"
 #include "waterfield.h"
@@ -289,6 +290,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        LocalSession().skills = SkillState{}; // (#883)
         RecipeBook_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -312,7 +314,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
     }
     // The starting kit by difficulty (a save restores its own inventory and difficulty).
-    if (reset) worldDifficulty = settings.difficulty;
+    if (reset) { worldDifficulty = settings.difficulty; worldXpRate = settings.xpRate; } // (xp: #883)
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1);
     if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1); // hard: find your own way
     if (reset && worldDifficulty == 0) inventory.add("berries", 6);
@@ -605,6 +607,10 @@ int main(int argc, char** argv)
     bool benchDatabase = false;      // --test-database (#826): the database pop-up at an item's page
     bool shotHud = false;            // --shot-hud (#827): the HUD at 100% and 150% (pinned quests, the off hand, key hints)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
+    bool benchSkills = false;         // --test-skills (#883): real strokes earn XP, a level-up, a perk speeds strokes up
+    bool benchInventoryFps = false;   // --bench-inventory-fps (#887): frame time with the game window closed, then open on the Inventory screen
+    float benchUiScale = 0.0f;        // --ui-scale S (#891): the interface size for benches and shots (benches read no settings: 0 = auto)
+    bool benchClaimOffline = false;   // --test-claim-offline (#900): a banner placed in single player claims its land
     bool benchJoinedItems = false;    // --test-joined-items (#865, #866, with --host): creative gives and drops through the server
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
     bool benchIdleDrift = false;     // --test-idle-drift (#856, with --host): a joiner that sends nothing yet stays put in the planet's frame
@@ -960,6 +966,10 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-database") benchDatabase = true;
         if (std::string(argv[i]) == "--shot-hud") shotHud = true;
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
+        if (std::string(argv[i]) == "--test-skills") benchSkills = true;
+        if (std::string(argv[i]) == "--bench-inventory-fps") benchInventoryFps = true;
+        if (std::string(argv[i]) == "--ui-scale" && i + 1 < argc) benchUiScale = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-claim-offline") benchClaimOffline = true;
         if (std::string(argv[i]) == "--test-joined-items") benchJoinedItems = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
         if (std::string(argv[i]) == "--test-idle-drift") benchIdleDrift = true;
@@ -1315,6 +1325,7 @@ int main(int argc, char** argv)
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)
+    SkillPlay_Init(); // (#883) skills: the terrain tool's XP events and the perks' multipliers
     GameUI_InstallKeyHints(); // (#827)
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-compute") {
@@ -1530,6 +1541,7 @@ int main(int argc, char** argv)
     if (!benchAtSave && !hostLoaded && !world.objects.empty()) StartNewWorld(world, false, !bench);
     if (!hostSave.empty() && !hostLoaded) SaveWorld(world);
     if (!bench) Settings_Load();
+    if (benchUiScale > 0.0f) settings.uiScale = benchUiScale; // (#891 shots)
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     NewWorldChoice pendingNewWorld; // the New World screen's choice, handled at the start of the next frame (#504)
@@ -5859,6 +5871,18 @@ int main(int argc, char** argv)
                                 if (dist < best) { best = dist; mouthAt = Vector3Scale(d, s); }
                             }
                         printf("bench: cave mouth: %d of %d land columns within 3 km open 2-6 m down; nearest %.0f m from the start\n", mouths, probes, best);
+                        // (#898 captures) RAYLIBGAME_MOUTH_AT="lat lon h": a given spot instead (feet h m over the reference radius,
+                        // as the HUD shows it); RAYLIBGAME_MOUTH_VIEW=in|out then holds an eye-height camera there looking into the
+                        // cave or back out of it (the side with the most open air at the feet is "out").
+                        if (const char* at = getenv("RAYLIBGAME_MOUTH_AT")) {
+                            float la = 0, lo = 0, h = 0;
+                            if (sscanf(at, "%f %f %f", &la, &lo, &h) == 3) {
+                                la *= DEG2RAD; lo *= DEG2RAD;
+                                const Vector3 d = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) };
+                                mouthAt = Vector3Scale(d, pf->radius + h + 3.0f); best = 0.0f; // the "out" search below samples 3 m under mouthAt
+                                printf("bench: cave mouth: at the given spot (elevation there %.1f m)\n", pf->elevation(d));
+                            }
+                        }
                         if (best > 1e29f) { printf("bench: cave mouth: none found -> FAIL\n"); benchCaveMouth = false; }
                         else {
                             const Vector3 up = Vector3Normalize(mouthAt);
@@ -5889,8 +5913,19 @@ int main(int argc, char** argv)
                             printf("\n");
                             player.flyMode = true; sunOverride = true;
                             sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(mouthOut, 0.5f)))); // light into the mouth
+                            if (const char* se = getenv("RAYLIBGAME_MOUTH_SUN")) { const float a = (float)atof(se) * DEG2RAD; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Scale(up, sinf(a)), Vector3Scale(mouthOut, cosf(a))))); } // (#898) sun elevation, degrees, from the open side
                             mouthPhase = 1; mouthT0 = GetTime();
                         }
+                    } else if (const char* view = getenv("RAYLIBGAME_MOUTH_VIEW")) {
+                        const Vector3 up = Vector3Normalize(mouthAt);
+                        const bool in = view[0] == 'i';
+                        const Vector3 feet = Vector3Subtract(mouthAt, Vector3Scale(up, 3.0f));
+                        const Vector3 eye = Vector3Add(feet, Vector3Scale(up, 1.6f));
+                        const float pitch = getenv("RAYLIBGAME_MOUTH_PITCH") ? tanf((float)atof(getenv("RAYLIBGAME_MOUTH_PITCH")) * DEG2RAD) : -0.15f; // (#898) degrees up
+                        const Vector3 look = Vector3Add(Vector3Scale(mouthOut, in ? -1.0f : 1.0f), Vector3Scale(up, pitch));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 10.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        if (mouthPhase == 1 && t > 4.0 && WorldIdle()) { TakeScreenshot(in ? "bench_mouth_in.png" : "bench_mouth_out.png"); printf("bench: cave mouth: view %s shot\n", view); mouthPhase = 2; }
                     } else {
                         const Vector3 up = Vector3Normalize(mouthAt);
                         const float r = kMouthDist[mouthPhase - 1];
@@ -9048,7 +9083,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9816,7 +9851,7 @@ int main(int argc, char** argv)
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
             if (terrainTool.swings > lastSwings && !terrainTool.creative && !terrainTool.terraform && !terrainTool.heldTool.empty())
-                ToolWear_OnStroke(terrainTool.heldTool, terrainTool.swings - lastSwings);
+                ToolWear_OnStroke(terrainTool.heldTool, SkillPlay_WearStrokes(terrainTool.heldTool, terrainTool.swings - lastSwings)); // (#883: Light Hands)
             lastSwings = terrainTool.swings;
         }
 
@@ -9848,6 +9883,98 @@ int main(int argc, char** argv)
                 for (int k = 0; k < 5; ++k) { const float d = fabsf(p->densityAt(outside[k]) - before[k]); worst = std::max(worst, d); kept &= d < 0.02f; }
                 printf("bench: foundation: placed %s, its cell cleared %s, ground 0.3 m outside unchanged %s (largest change %.3f) -> %s\n",
                        placed ? "yes" : "NO", cleared ? "yes" : "NO", kept ? "yes" : "NO", worst, placed && cleared && kept ? "PASS" : "FAIL");
+            }
+        }
+        // --bench-inventory-fps (#887; the user saw 30 FPS with the window open): 3 s with the game window closed, then 3 s open
+        // on the Inventory screen (the preview renders), 1 s to settle before each; the mean and worst frame of each.
+        if (benchInventoryFps && gameState == 1 && !loading && WorldIdle()) {
+            static int phase = 0;
+            static double t0 = -1.0, sum = 0.0, worst = 0.0, closedMean = 0.0, closedWorst = 0.0;
+            static int n = 0;
+            if (t0 < 0.0) t0 = GetTime();
+            const double t = GetTime() - t0, dt = GetFrameTime() * 1000.0;
+            if (phase == 0 && t > 1.0) { sum = worst = 0.0; n = 0; phase = 1; }
+            else if (phase == 1) { sum += dt; worst = std::max(worst, dt); ++n; if (t > 4.0) { closedMean = sum / std::max(1, n); closedWorst = worst; GameUI_ShowScreen(GameScreen::Inventory); phase = 2; } }
+            else if (phase == 2 && t > 5.0) { sum = worst = 0.0; n = 0; phase = 3; }
+            else if (phase == 3) {
+                sum += dt; worst = std::max(worst, dt); ++n;
+                if (t > 8.0) {
+                    const double openMean = sum / std::max(1, n);
+                    printf("bench: inventory fps (#887): window closed %.2f ms a frame (worst %.1f, %.0f FPS); open on the Inventory screen %.2f ms (worst %.1f, %.0f FPS): +%.2f ms\n",
+                           closedMean, closedWorst, 1000.0 / std::max(0.01, closedMean), openMean, worst, 1000.0 / std::max(0.01, openMean), openMean - closedMean);
+                    GameUI_ToggleInventory();
+                    benchInventoryFps = false;
+                }
+            }
+        }
+        // --test-skills (#883): a stone pickaxe in hand, looking at the ground at the feet; Mining set just short of level 5
+        // (the world at 5x XP). Real strokes (TerrainTool_Stroke) dig down: soil pays Digging, rock pays Mining, until Mining
+        // reaches 5 (a level-up and its toast). Then Quick Pick is learnt at the rock: strokes there 10% faster.
+        if (benchSkills && gameState == 1 && !loading && WorldIdle()) {
+            static int phase = 0, strokes = 0, frames = 0;
+            static double mining0 = 0.0, digging0 = 0.0, rate0 = 0.0, rate1 = 0.0;
+            static int levelUps0 = 0;
+            SkillState& sk = LocalSession().skills;
+            if (phase == 0) {
+                if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); }
+                inventory.add("stone_pickaxe", 1); terrainTool.heldTool = "stone_pickaxe"; terrainTool.creative = false;
+                worldXpRate = 5.0f;
+                double toFive = 0.0; for (int k = 1; k <= 5; ++k) toFive += Skills_XpForLevel(k);
+                sk = SkillState{}; sk.xp["mining"] = toFive - 15.0; // 3 rock strokes at 5x short of level 5
+                mining0 = sk.xp["mining"]; digging0 = 0.0; levelUps0 = SkillPlay_LevelUps();
+                phase = 1;
+            } else if (phase == 1) {
+                player.forward = Vector3Normalize(Vector3Add(Vector3Scale(player.up, -0.9f), Vector3Scale(player.forward, 0.4f))); // at the feet
+                if (++frames > 3 && TerrainTool_Stroke(true)) ++strokes; // (a few frames to aim)
+                if (Skills_Level(sk, "mining") >= 5 || frames > 600) { phase = 2; frames = 0; }
+            } else if (phase == 2 && ++frames > 3) {
+                rate0 = TerrainTool_StrokeRate();
+                Skills_Buy(sk, "quick_pick");
+                rate1 = TerrainTool_StrokeRate();
+                const bool levelled = Skills_Level(sk, "mining") >= 5 && SkillPlay_LevelUps() > levelUps0;
+                const bool soilPaid = sk.xp["digging"] > digging0, rockPaid = sk.xp["mining"] > mining0;
+                const bool faster = rate0 > 0.0 && fabs(rate1 / rate0 - 1.1) < 0.01;
+                const bool ok = levelled && soilPaid && rockPaid && faster && sk.ranks["quick_pick"] == 1;
+                printf("bench: skills (#883): %d real strokes; Digging XP %.0f (soil), Mining XP %.0f -> %.0f (rock), level %d, level-ups %d; Quick Pick learnt %d: "
+                       "strokes at rock %.2f -> %.2f /s (x%.3f, want 1.1) -> %s\n",
+                       strokes, sk.xp["digging"], mining0, sk.xp["mining"], Skills_Level(sk, "mining"), SkillPlay_LevelUps() - levelUps0, sk.ranks["quick_pick"],
+                       rate0, rate1, rate0 > 0.0 ? rate1 / rate0 : 0.0, ok ? "PASS" : "FAIL");
+                worldXpRate = 1.0f;
+                benchSkills = false;
+            }
+        }
+        // --test-claim-offline (#900): in single player, a claim banner placed 4 m ahead (BuildTool_Place, the build tool's own
+        // path) claims its land for the player's team (a team of one made for them): Claims_At there finds it, and the map's
+        // mirror shows it as ours. Its claim goes with the save (the claims and team lines), so a hosted copy keeps it.
+        if (benchClaimOffline && gameState == 1 && !loading && WorldIdle()) {
+            static int frames = 0;
+            if (frames++ == 0)
+                if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); } // (standing on the body)
+            if (frames > 600) { printf("bench: claim offline (#900): no body under the player after 600 frames -> FAIL\n"); benchClaimOffline = false; }
+            else if (frames >= 30 && player.nearest) { // (a body under the feet)
+                Planetoid* b = player.nearest;
+                bool placed = false, claimed = false, ours = false, mirrored = false;
+                int team = 0;
+                if (b) {
+                    const Vector3 me = b->toLocalD(player.position).toFloat();
+                    const Vector3 up = Vector3Normalize(me);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 at = Vector3Add(me, Vector3Scale(t1, 4.0f));
+                    if (!b->plots) b->plots = std::make_unique<PlotSet>();
+                    Plot* pl = b->plots->plotFor(at, 0.0f, true);
+                    inventory.add(PartItem(Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }), 4);
+                    placed = pl && BuildTool_Place(*b, *pl, Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, true);
+                    team = Teams_Of(PlayerId_Local());
+                    const Claim* c = Claims_At(b->name, pl ? pl->toBody(Vector3{ 0.5f * kCellSize, 0.5f * kCellSize, 0.5f * kCellSize }) : at);
+                    claimed = c != nullptr;
+                    ours = c && team != 0 && c->team == team;
+                    BuildTool_Update(world, PlayerInput::None(), true); // (the mirror refreshes on the build tool's update)
+                    for (const ClaimView& v : Claims_Mirror()) mirrored = mirrored || (v.ours && c && v.id == c->id);
+                }
+                const bool ok = placed && claimed && ours && mirrored;
+                printf("bench: claim offline (#900): banner placed %d; its land claimed %d, for the player's team %d (team %d); on the map as ours %d -> %s\n",
+                       placed, claimed, ours, team, mirrored, ok ? "PASS" : "FAIL");
+                benchClaimOffline = false;
             }
         }
         if (testInvCursor && gameState == 1 && !loading && WorldIdle()) {
@@ -12391,7 +12518,7 @@ int main(int argc, char** argv)
                 if (!worldFresh) {
                     if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
                     else NewWorld_Apply(nw);           // the seed, and <save>.worldgen: generateWorld reads it
-                    if (!bench) { settings.difficulty = nw.difficulty; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
+                    if (!bench) { settings.difficulty = nw.difficulty; settings.xpRate = nw.xpRate; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
                     regenerateWorld(world);            // the erosion bake (or its cache) behind its progress screen
                     StartNewWorld(world, true, !bench);
                 }
@@ -12547,6 +12674,7 @@ int main(int argc, char** argv)
             if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
                 if (gameState == 1) GameUI_PrepareFrame(world); // (#822) the inventory screen's player preview, rendered before ImGui
+                GameUI_ApplyStyleScale(); // (#891) the interface scale (fonts, padding) before the frame
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);

@@ -28,6 +28,8 @@
 #include "ambience.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "playersession.h"
+#include "skills.h"
 #include "recipebook.h"
 #include "station.h"
 
@@ -97,6 +99,7 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         Suit_Save(f);
         ToolWear_Save(f);
         QuestBook_SavePins(f); // (#825) the player's pinned quests
+        fputs(Skills_SaveText(LocalSession().skills).c_str(), f); // (#883) XP and perks
     } else fputs(t.kept.c_str(), f);
     fprintf(f, "survival %f %f %f %d\n", t.sv.oxygen, t.sv.power, t.sv.health, t.sv.deaths);
     fprintf(f, "food %f\n", t.sv.food);
@@ -119,6 +122,11 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         if (Suit_LoadLine(tok, f)) return true;
         if (ToolWear_LoadLine(tok, f)) return true;
         if (QuestBook_LoadPinLine(tok, f)) return true; // (#825)
+        if (strcmp(tok, "skill_xp") == 0 || strcmp(tok, "perk") == 0) { // (#883) the rest of the line is the skill's or perk's
+            char rest[256] = {};
+            if (fgets(rest, sizeof(rest), f)) Skills_LoadLine(LocalSession().skills, (std::string(tok) + rest).c_str());
+            return true;
+        }
     }
     if (strcmp(tok, "player") == 0) {
         int fly = 0;
@@ -283,6 +291,7 @@ void GameSave_Register() {
         Rocket_Save(f);
         Station_Save(f);
         fprintf(f, "difficulty %d\n", worldDifficulty);
+        fprintf(f, "xp_rate %g\n", worldXpRate); // (#883)
         // Teams and their quest books (#346: quests and tiers are a team's); this game's player is in one (a team of one to
         // start with), and the world's owner is whoever saved it first.
         // A server that loaded a format 12 save writes its player as the owner (a new id), so nothing is lost: single player
@@ -320,6 +329,7 @@ void GameSave_Register() {
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        LocalSession().skills = SkillState{}; // (#883)
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Claims_Reset();
@@ -329,6 +339,7 @@ void GameSave_Register() {
         survival.hasBed = false; // #800: the record's (or a format 12 save's) bed line sets it
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
+        worldXpRate = 1.0f; // (#883) likewise: 1x
         playerLoaded = false;
         bodyFramed = false;
         recordFirstSeen = recordPlayTime = 0.0;
@@ -351,6 +362,7 @@ void GameSave_Register() {
             if (Rocket_LoadLine(tok, f)) continue;
             if (Station_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
+            if (strcmp(tok, "xp_rate") == 0) { float x = 1.0f; if (fscanf(f, " %f", &x) == 1) worldXpRate = std::clamp(x, 0.5f, 5.0f); continue; } // (#883)
             if (ReadPlayerLine(tok, f, LocalTarget())) continue; // format 12: the player's lines were the save's own
             if (strcmp(tok, "ship") == 0) { // old saves: the placeholder ship is gone (its line is read and dropped)
                 char rest[512]; if (!fgets(rest, sizeof(rest), f)) break;

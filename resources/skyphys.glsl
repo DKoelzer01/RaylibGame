@@ -104,6 +104,8 @@ vec3 SkyPhysSky(vec3 v, vec3 up, vec3 sun, bool aboveHorizon)
     if (aboveHorizon) za = min(za, zr - 0.02);
     za = za < zr ? za * zv / zr : zv + (za - zr) * (kPi - zv) / max(kPi - zr, 1e-4);
     // Brightness held near today's as the eye adapts (captures, #142): 0.7x from 17 deg up, a 5 deg sun 1x, dusk up to 3.5x.
-    float adapt = s < 0.087 ? mix(3.5, 1.0, smoothstep(-0.05, 0.087, s)) : mix(1.0, 0.7, smoothstep(0.087, 0.3, s));
+    // (#897) and back to 1x as night falls (-3 to -11.5 deg): held at 3.5x all night, it lifted the night sky and, through the
+    // haze LUT, every lit surface.
+    float adapt = s < 0.087 ? mix(3.5, 1.0, smoothstep(-0.05, 0.087, s)) * mix(1.0 / 3.5, 1.0, smoothstep(-0.2, -0.05, s)) : mix(1.0, 0.7, smoothstep(0.087, 0.3, s));
     return texture(skyViewLut, SkyViewUv(vh, cos(za), lightViewCos)).rgb * skyPhysExposure * adapt;
 }

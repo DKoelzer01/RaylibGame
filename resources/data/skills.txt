@@ -1,0 +1,60 @@
+# Skills (#167, #883): use-based XP, a perk point per level, trees in three tiers. Never gates tech; no level cap.
+# The user's answers (2026-11-18): about +10% per rank, capped by ranks; perks and suit modules stack; death costs some XP
+# toward the next level (never a level); respec with a craftable item; an XP-rate world setting.
+#
+#   skill <id> "<name>"                          a skill (the tab lists them in this order)
+#   xp <skill> <event> <xp>                      XP per event (the events the game counts: see skills.h)
+#   perk <id> <skill> <tier 1-3> <cost> <ranks> "<name>" "<what one rank does>"
+#   needs <perk> <perk it needs>                 a prerequisite (its first rank)
+#   effect <perk> <stat> <per rank>              a stat multiplier: 1 + ranks x per rank (stats: skills.h)
+#   ability <perk> <ability id>                  an action with its own key (slice 3)
+# Tiers open at skill level 5, 15 and 30.
+
+skill mining "Mining"
+skill digging "Digging"
+skill woodcutting "Woodcutting"
+skill foraging "Foraging"
+skill farming "Farming"
+skill building "Building"
+skill athletics "Athletics"
+skill survival "Survival"
+
+# ---- XP per event (slice 1: the events counted today) ----
+xp mining rock_stroke 1
+xp mining ore_stroke 3
+xp mining gem 25
+xp digging soil_stroke 1
+xp woodcutting chop 2
+xp woodcutting tree_felled 10
+xp foraging bush 3
+xp foraging loose_stone 2
+xp farming till 2
+xp farming plant 2
+xp farming harvest 4
+xp building part_kept 3
+xp athletics walk_10m 1
+xp athletics soft_landing 5
+xp survival night 40
+xp survival eat 2
+
+# ---- Mining's tree (slice 1; the other trees come in slice 2) ----
+perk quick_pick mining 1 1 3 "Quick Pick" "Rock strokes 10% faster"
+effect quick_pick rock_speed 0.10
+perk ore_sense mining 1 1 3 "Ore Sense" "10% more ore per stroke"
+effect ore_sense ore_yield 0.10
+perk light_hands mining 1 1 2 "Light Hands" "Picks wear 10% slower"
+effect light_hands pick_wear -0.10
+perk gem_eye mining 2 2 2 "Gem Eye" "Gems turn up 25% more often"
+needs gem_eye ore_sense
+effect gem_eye gem_chance 0.25
+perk vein_follower mining 2 2 2 "Vein Follower" "Ore strokes 15% faster"
+needs vein_follower quick_pick
+effect vein_follower ore_speed 0.15
+perk stone_skin mining 2 1 2 "Stone Mason" "10% more stone of the rock's own kind"
+effect stone_skin stone_yield 0.10
+perk deep_core mining 3 3 1 "Deep Core" "Rock strokes reach 15% farther"
+needs deep_core vein_follower
+effect deep_core rock_radius 0.15
+perk ground_slam mining 3 3 1 "Ground Slam" "An ability: one wide stroke (slice 3)"
+needs ground_slam deep_core
+ability ground_slam ground_slam

@@ -71,4 +71,14 @@ const char* PlayerInput_KeyName(int code); // "W", "Left Shift", "Mouse 1", ...
 int PlayerInput_PressedCode();            // a key or mouse button pressed this frame (rebinding), -1 none
 bool PlayerInput_BindingPressed(Act a);   // its key went down this frame, whatever the gameplay input (menus, the game window)
 
+// (#895) A held button that just broke something (a part, a plant felled, a loose stone picked up) is used up: nothing else
+// is struck until it is released and pressed again, so holding LMB through a broken block doesn't mine what was behind it.
+// Ordinary held digging never uses it up.
+struct HoldLatch {
+    bool latched = false;
+    void consume() { latched = true; }
+    bool allows(bool held) { if (!held) latched = false; return held && !latched; } // what the button counts as now
+};
+inline HoldLatch gPrimaryLatch; // the local player's primary (LMB)
+
 #endif

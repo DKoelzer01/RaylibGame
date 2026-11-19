@@ -13,7 +13,9 @@ struct NewWorldChoice {
     unsigned int seed = 0;
     WorldGenParams params;
     int difficulty = 1; // 0 peaceful, 1 normal, 2 hard: chosen here and kept by the world for good (#526)
+    float xpRate = 1.0f; // (#883) the world's skill XP rate: 0.5, 1, 2 or 5
 };
+inline constexpr float kXpRates[4] = { 0.5f, 1.0f, 2.0f, 5.0f }; // (#883) the XP rates the New World screen offers
 
 void NewWorld_Open();               // a random seed, default parameters, the preview starts building
 NewWorldChoice NewWorld_Draw();     // each frame while the screen is up; None until a button is pressed
