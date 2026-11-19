@@ -37,6 +37,7 @@
 #include "avatar.h"
 #include "netclient.h"
 #include "gamesave.h"
+#include "slotrules.h"
 #include <raymath.h>
 
 namespace {
@@ -218,54 +219,214 @@ static void DropCursor(int64_t centi) {
     if (cursorStack.centi <= 0) cursorStack = InvSlot{};
     Audio_Play(Sfx::Pickup, 0.4f, 0.6f);
 }
-// Puts up to `centi` of the cursor stack into a cell (empty, or the same item up to its stack limit).
-static void DropInto(InvSlot& cell, int64_t centi) {
-    if (cursorStack.empty()) return;
-    if (!cell.empty() && cell.id != cursorStack.id) return;
-    const int64_t room = (int64_t)StackLimit(cursorStack.id) * 100 - (cell.empty() ? 0 : cell.centi);
-    const int64_t put = std::min({ centi, cursorStack.centi, room });
-    if (put <= 0) return;
-    if (cell.empty()) { cell.id = cursorStack.id; cell.centi = 0; cell.heat = 0.0f; }
-    cell.heat = (float)((cell.heat * cell.centi + cursorStack.heat * put) / (double)(cell.centi + put)); // by amount, as merges do (#580)
-    cell.centi += put;
-    cursorStack.centi -= put;
-    if (cursorStack.centi <= 0) cursorStack = InvSlot{};
-}
-// Shift+click: the stack to the other part (grid <-> hotbar), onto the same item first, then an empty cell.
-static void QuickMove(std::vector<InvSlot>& grid, int i) {
-    if (grid[i].empty()) return;
-    const bool toHotbar = i < Inventory::kGrid;
-    const int from = toHotbar ? Inventory::kGrid : 0, to = toHotbar ? Inventory::kSlots : Inventory::kGrid;
-    InvSlot moving = grid[i];
-    grid[i] = InvSlot{};
-    const int64_t cap = (int64_t)StackLimit(moving.id) * 100;
-    for (int pass = 0; pass < 2 && moving.centi > 0; ++pass)
-        for (int k = from; k < to && moving.centi > 0; ++k) {
-            InvSlot& c = grid[k];
-            if (pass == 0 ? (c.empty() || c.id != moving.id) : !c.empty()) continue;
-            if (c.empty()) { c.id = moving.id; c.centi = 0; }
-            const int64_t put = std::min(moving.centi, cap - c.centi);
-            c.centi += put; moving.centi -= put;
-        }
-    if (moving.centi > 0) { if (grid[i].empty()) grid[i] = moving; else { cursorStack = moving; ReturnCursorStack(); } } // no room: it stays
-}
 
-// One click on cell i of the player's inventory (#192): left picks up / puts down / merges / swaps (Shift: quick-move to the other
-// part), right takes half or, holding a stack, puts one down.
-static void CellClick(int i, bool right, bool shift) {
-    auto& grid = inventory.grid();
-    if (right) {
-        if (cursorStack.empty() && !grid[i].empty()) { // half of it (whole units; the larger half stays)
-            const int64_t half = (grid[i].centi / 100 / 2) * 100;
-            if (half > 0) { cursorStack.id = grid[i].id; cursorStack.centi = half; grid[i].centi -= half; }
-        } else if (!cursorStack.empty()) DropInto(grid[i], std::min<int64_t>(100, cursorStack.centi)); // one unit (or what fraction is left)
-        return;
+// ---- The slot grids the item rules act on (#862: slotrules.h, Minecraft's rules + Mouse Tweaks') ----
+// The player's cells (grid, hotbar, off hand). Moves among them change no totals, so they stay here even when joined; what
+// goes to or comes from a container is a request (MachineAct_*), what is dropped a pile at the feet (Combat_Drop).
+struct PlayerGrid : SlotGrid {
+    int size() const override { return Inventory::kCells; }
+    InvSlot at(int i) const override { return inventory.grid()[i]; }
+    int64_t room(int i, const std::string& id) const override {
+        const InvSlot& c = inventory.grid()[i];
+        if (!c.empty() && c.id != id) return 0;
+        return (int64_t)StackLimit(id) * 100 - (c.empty() ? 0 : c.centi);
     }
-    if (cursorStack.empty() && shift) QuickMove(grid, i);
-    else if (cursorStack.empty()) { if (!grid[i].empty()) { cursorStack = grid[i]; grid[i] = InvSlot{}; } } // picked up
-    else if (grid[i].empty() || grid[i].id == cursorStack.id) DropInto(grid[i], cursorStack.centi); // put down / merged (what doesn't fit stays held)
-    else std::swap(grid[i], cursorStack); // swapped: the cell's stack is held now
+    int64_t put(int i, const InvSlot& held, int64_t centi) override {
+        InvSlot& c = inventory.grid()[i];
+        const int64_t k = std::min(centi, room(i, held.id));
+        if (k <= 0) return 0;
+        if (c.empty()) { c.id = held.id; c.centi = 0; c.heat = 0.0f; }
+        c.heat = (float)((c.heat * c.centi + held.heat * k) / (double)(c.centi + k)); // by amount, as merges do (#580)
+        c.centi += k;
+        return k;
+    }
+    int64_t take(int i, int64_t centi, InvSlot& held) override {
+        InvSlot& c = inventory.grid()[i];
+        if (c.empty() || (!held.empty() && held.id != c.id)) return 0;
+        const int64_t k = std::min(centi, c.centi);
+        if (held.empty()) { held.id = c.id; held.centi = 0; held.heat = c.heat; }
+        held.heat = (float)((held.heat * held.centi + c.heat * k) / (double)(held.centi + k));
+        held.centi += k;
+        c.centi -= k;
+        if (c.centi <= 0) c = InvSlot{};
+        return k;
+    }
+    // To the open container (machines hold whole units), else between the grid and the hotbar (the off hand: to the grid).
+    void moveOut(int i, int64_t centi) override {
+        InvSlot& c = inventory.grid()[i];
+        if (c.empty()) return;
+        if (GameUI_ContainerOpen()) {
+            const std::string id = c.id;
+            if (!ContainerTakes(id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str())); return; }
+            const int n = (int)(std::min(centi, c.centi) / 100);
+            if (n <= 0) return;
+            c.centi -= (int64_t)n * 100;
+            if (c.centi <= 0) c = InvSlot{};
+            MachineAct_Insert(container.body, container.plot, container.part, id, n);
+            Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+            return;
+        }
+        const bool toHotbar = i < Inventory::kGrid;
+        const int from = toHotbar ? Inventory::kGrid : 0, to = toHotbar ? Inventory::kSlots : Inventory::kGrid;
+        int64_t left = std::min(centi, c.centi);
+        for (int pass = 0; pass < 2 && left > 0; ++pass) // onto the same item first, then an empty cell
+            for (int k = from; k < to && left > 0; ++k) {
+                const InvSlot& t = inventory.grid()[k];
+                if (pass == 0 ? (t.empty() || t.id != c.id) : !t.empty()) continue;
+                const int64_t n = put(k, c, std::min(left, room(k, c.id)));
+                left -= n; c.centi -= n;
+            }
+        if (c.centi <= 0) c = InvSlot{};
+    }
+    // That item into cell i: from the open chest (it arrives on the next tick, merging with the item's cells), else from the
+    // other part (grid <-> hotbar).
+    void pullIn(int i, int64_t centi) override {
+        const InvSlot c = inventory.grid()[i];
+        if (c.empty()) return;
+        if (GameUI_ContainerOpen()) {
+            if (container.type == PartType::Chest) MachineAct_Take(container.body, container.plot, container.part, c.id, (int)std::max<int64_t>(1, centi / 100));
+            return;
+        }
+        const bool fromHotbar = i < Inventory::kGrid;
+        const int from = fromHotbar ? Inventory::kGrid : 0, to = fromHotbar ? Inventory::kSlots : Inventory::kGrid;
+        for (int k = from; k < to; ++k) {
+            InvSlot& s = inventory.grid()[k];
+            if (s.empty() || s.id != c.id) continue;
+            const int64_t n = std::min({ centi, s.centi, room(i, c.id) });
+            if (n <= 0) return;
+            InvSlot part = s; part.centi = n;
+            put(i, part, n);
+            s.centi -= n;
+            if (s.centi <= 0) s = InvSlot{};
+            return;
+        }
+    }
+    void swapCell(int i, int cell) override { if (i != cell) inventory.swapSlots(i, cell); }
+    void drop(int i, int64_t centi) override {
+        InvSlot& c = inventory.grid()[i];
+        if (c.empty()) return;
+        InvSlot s = c; s.centi = std::min(centi, c.centi);
+        if (!Combat_Drop(LocalSession(), s)) return;
+        c.centi -= s.centi;
+        if (c.centi <= 0) c = InvSlot{};
+        Audio_Play(Sfx::Pickup, 0.4f, 0.6f);
+    }
+};
+// One part of the open container's screen (which: 0 inputs / a chest's storage, 1 outputs, 2 fuel), as of the view taken
+// this frame. Machines hold whole units and answer on the factory's next tick: a take comes onto the hand through the
+// cursor sink (CursorSink), a put's leftovers back into the inventory.
+struct ContainerGrid : SlotGrid {
+    int which = 0;
+    std::vector<std::pair<std::string, int>> slots;
+    explicit ContainerGrid(int w) : which(w) {}
+    int size() const override { return (int)slots.size(); }
+    InvSlot at(int i) const override {
+        InvSlot s;
+        if (i >= 0 && i < (int)slots.size() && slots[i].second > 0) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100; }
+        return s;
+    }
+    int64_t room(int i, const std::string& id) const override {
+        if (which == 1 || id.empty()) return 0; // outputs only give
+        const InvSlot s = at(i);
+        if (which == 2) {
+            const auto fuels = Factory::FuelsOf(container.type);
+            if (std::find(fuels.begin(), fuels.end(), id) == fuels.end()) return 0;
+        } else if (!ContainerTakes(id)) return 0;
+        if (container.type == PartType::Chest || which == 2) { if (!s.empty() && s.id != id) return 0; return (int64_t)StackLimit(id) * 100 - s.centi; }
+        return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
+    }
+    int64_t put(int i, const InvSlot& held, int64_t centi) override {
+        const int n = (int)(std::min(centi, held.centi) / 100);
+        if (n <= 0 || room(i, held.id) <= 0) return 0;
+        if (which == 2) MachineAct_Insert(container.body, container.plot, container.part, held.id, n, true);
+        else if (container.type == PartType::Chest) MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, n, i);
+        else MachineAct_Insert(container.body, container.plot, container.part, held.id, n);
+        Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+        return (int64_t)n * 100;
+    }
+    int64_t take(int i, int64_t centi, InvSlot& held) override {
+        const InvSlot s = at(i);
+        if (s.empty() || (!held.empty() && held.id != s.id)) return 0;
+        const int n = (int)std::clamp<int64_t>(centi / 100, 1, s.centi / 100);
+        MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, n);
+        Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
+        return 0; // (next tick, onto the hand)
+    }
+    void moveOut(int i, int64_t centi) override { // to the inventory
+        const InvSlot s = at(i);
+        if (s.empty()) return;
+        if (centi < s.centi && container.type == PartType::Chest && which == 0) MachineAct_Take(container.body, container.plot, container.part, s.id, (int)std::max<int64_t>(1, centi / 100));
+        else MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); // (a machine's slot: all of it)
+        Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
+    }
+    void pullIn(int i, int64_t centi) override { // that item from the inventory into this slot
+        const InvSlot s = at(i);
+        if (s.empty() || which == 1) return;
+        const int n = (int)std::min<double>(std::max<int64_t>(1, centi / 100), std::floor(inventory.count(s.id)));
+        if (n <= 0 || !inventory.remove(s.id, n)) return;
+        InvSlot h = s; h.centi = (int64_t)n * 100;
+        if (put(i, h, h.centi) == 0) { ++inventory.muted; inventory.add(s.id, n); --inventory.muted; }
+    }
+    void swapCell(int i, int cell) override { // the slot's stack to the inventory, that cell's stack into the slot
+        InvSlot& c = inventory.grid()[cell];
+        const InvSlot s = at(i);
+        if (!c.empty() && room(i, c.id) <= 0 && s.empty()) return;
+        if (!s.empty()) MachineAct_TakeSlot(container.body, container.plot, container.part, i, which);
+        if (!c.empty() && which != 1) {
+            const InvSlot moving = c;
+            c = InvSlot{};
+            if (put(i, moving, moving.centi) < moving.centi) { ++inventory.muted; inventory.addAmount(moving.id, moving.amount(), moving.heat); --inventory.muted; }
+        }
+    }
+};
+// The creative Catalog: every item, free. A take gives a stack; a held stack put on it is deleted (as in Minecraft).
+struct CatalogGrid : SlotGrid {
+    std::vector<std::string> ids; // the items shown (the search applied)
+    int size() const override { return (int)ids.size(); }
+    InvSlot at(int i) const override { InvSlot s; s.id = ids[i]; s.centi = 100; return s; }
+    int64_t room(int, const std::string&) const override { return 0; }
+    int64_t put(int, const InvSlot& held, int64_t) override { return held.centi; }
+    int64_t take(int i, int64_t centi, InvSlot& held) override {
+        if (!held.empty() && held.id != ids[i]) return 0;
+        const int64_t k = std::min(centi, capOf(ids[i]) - (held.empty() ? 0 : held.centi));
+        if (k <= 0) return 0;
+        if (held.empty()) { held = InvSlot{}; held.id = ids[i]; }
+        held.centi += k;
+        return k;
+    }
+    void moveOut(int i, int64_t) override { ++inventory.muted; inventory.add(ids[i], StackLimit(ids[i])); --inventory.muted; } // Shift-click: a stack into the inventory
+    void pullIn(int, int64_t) override {}
+    bool infinite() const override { return true; }
+};
+static PlayerGrid playerGrid;
+static ContainerGrid containerIn(0), containerOut(1), containerFuel(2);
+static CatalogGrid catalogGrid;
+// The slot under the mouse this frame (set while the grids are drawn, read once after: GameUI_Draw).
+static SlotGrid* hoverGrid = nullptr;
+static int hoverSlot = -1;
+static void NoteHover(SlotGrid* g, int i) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) { hoverGrid = g; hoverSlot = i; }
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY); // the wheel moves items over a slot, not the page (#862)
 }
+// The drag preview (a split in progress): the share a slot would get, drawn on it.
+static void DrawDragShare(ImDrawList* dl, const SlotGrid* g, int i, ImVec2 p, ImVec2 q) {
+    for (const SlotDragPreview& d : SlotRules_DragPreview())
+        if (d.grid == g && d.slot == i) {
+            dl->AddRectFilled(p, q, IM_COL32(255, 220, 120, 50), 4.0f);
+            const char* t = TextFormat("+%lld", (long long)(d.centi / 100));
+            dl->AddText(ImVec2(p.x + 3, q.y - ImGui::GetTextLineHeight() - 2), IM_COL32(255, 220, 120, 255), t);
+        }
+}
+// A whole click (press and release) through the rules: what the tests use, and what a click on a cell means.
+static void RulesClick(SlotGrid* g, int i, bool right, bool shift) {
+    SlotRules_SetHeld(&cursorStack);
+    SlotInput p; p.shift = shift; (right ? p.rPress : p.lPress) = true; (right ? p.rDown : p.lDown) = true;
+    SlotRules_Frame(p, g, i);
+    SlotInput r; r.shift = shift; (right ? r.rRelease : r.lRelease) = true;
+    SlotRules_Frame(r, g, i);
+}
+// One click on cell i of the player's inventory (#192, #862's rules).
+static void CellClick(int i, bool right, bool shift) { SlotRules_SetGrids({ &playerGrid }); RulesClick(&playerGrid, i, right, shift); }
 
 static void SlotClick(int i, int which, bool right, bool shift, int have);
 bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int part, int partType) {
@@ -378,24 +539,11 @@ static void DrawCell(int i, float cw, float cell) {
     const bool hotbar = i >= Inventory::kGrid && i < Inventory::kSlots;
     ImGui::PushID(i);
     const ImVec2 p = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("cell", ImVec2(cw, cell)) && !OpenIfAlt(grid[i].id)) {
-        const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
-        if (GameUI_ContainerOpen() && shift && cursorStack.empty() && !grid[i].empty()) {
-            // Shift+click with a container open (#192: the quick-move, as everywhere): the stack goes into it (machines
-            // route it: recipe inputs, else fuel; what doesn't fit comes back next tick). To force a fuel slot, drop
-            // the held stack on it.
-            const std::string id = grid[i].id;
-            const int n = (int)grid[i].amount();
-            if (!ContainerTakes(id)) GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str()));
-            else if (n > 0 && inventory.remove(id, n)) {
-                MachineAct_Insert(container.body, container.plot, container.part, id, n);
-                Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
-            }
-        } else CellClick(i, false, shift && !GameUI_ContainerOpen());
-    }
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) CellClick(i, true, false);
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Middle)) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577)
-    const bool hover = ImGui::IsItemHovered();
+    ImGui::InvisibleButton("cell", ImVec2(cw, cell), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+    if (ImGui::IsItemClicked()) OpenIfAlt(grid[i].id); // (#826; the rules skip alt-clicks)
+    NoteHover(&playerGrid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Middle) && !terrainTool.creative) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577; creative: a full stack, the rules)
+    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     const InvSlot& s = grid[i];
     const ImVec2 q(p.x + cw, p.y + cell);
     dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
@@ -410,14 +558,12 @@ static void DrawCell(int i, float cw, float cell) {
             dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
             dl->AddText(ImVec2(q.x - sz.x - 4, p.y + 2), IM_COL32(255, 255, 255, 255), amt.c_str());
         }
-        if (hover) {
-            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(%s; 1-0: hotbar slot)", d ? d->name.c_str() : s.id.c_str(),
+        if (hover && cursorStack.empty())
+            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
                               KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
-                              GameUI_ContainerOpen() ? TextFormat("click to put it in the %s", PartName(container.type)) : "click to move");
-            const int k = Hotbar_KeySlot();
-            if (k >= 0) inventory.swapSlots(i, Inventory::kGrid + k); // into that hotbar slot (its stack comes here)
-        }
+                              GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
     }
+    DrawDragShare(dl, &playerGrid, i, p, q);
     if (hotbar) dl->AddText(ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
     const ImU32 edge = hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255);
     dl->AddRect(p, q, edge, 4.0f, 0, 1.0f);
@@ -676,38 +822,29 @@ static void DrawCrafting() {
 // One click on slot i of the open container (#192: the same slot behaviour as the player's inventory). which: 0 inputs,
 // 1 outputs, 2 fuel; have: the count in it (as of the last tick). Machine slots change on the factory's next tick, so a
 // pick-up arrives on the cursor a tick later (Factory::TakeSlotToCursor -> CursorSink).
-static void SlotClick(int i, int which, bool right, bool shift, int have) {
-    auto putDown = [&](int units) { // the held stack (or `units` of it) into the inputs, or the fuel slot when that was clicked
-        if (which == 1) { GameUI_Toast("Outputs only give"); return; }
-        if (!ContainerTakes(cursorStack.id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(cursorStack.id) ? itemDB.find(cursorStack.id)->name.c_str() : cursorStack.id.c_str())); return; }
-        const int n = std::min<int>(units, (int)(cursorStack.centi / 100)); // machines hold whole units
-        if (n <= 0) return;
-        if (which == 2) MachineAct_Insert(container.body, container.plot, container.part, cursorStack.id, n, true);
-        else MachineAct_Insert(container.body, container.plot, container.part, cursorStack.id, n);
-        cursorStack.centi -= (int64_t)n * 100;
-        if (cursorStack.centi <= 0) cursorStack = InvSlot{};
-        Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
-    };
-    if (!right) {
-        if (shift && have > 0) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); } // to the inventory
-        else if (!cursorStack.empty()) putDown(1 << 30);
-        else if (have > 0) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, 0); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
-    } else {
-        if (!cursorStack.empty()) putDown(1);
-        else if (have > 0) MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, std::max(1, have / 2));
-    }
+static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOut : which == 2 ? containerFuel : containerIn; }
+// (the tests: as a click on the screen, with the slots as the view has them now)
+static void SlotClick(int i, int which, bool right, bool shift, int) {
+    const MachineView v = Factory::View(container.body, container.plot, container.part);
+    containerIn.slots = v.inSlots; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
+    RulesClick(&ContainerPart(which), i, right, shift);
 }
 
 static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false) { // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float cell = 54.0f, gap = 4.0f;
+    ContainerGrid& grid = ContainerPart(which);
+    grid.slots = slots; // (this frame's view: what the rules see)
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
-        const bool clicked = ImGui::InvisibleButton("slot", ImVec2(cell, cell)) && !OpenIfAlt(slots[i].second > 0 ? slots[i].first : std::string());
-        const bool hover = ImGui::IsItemHovered();
+        ImGui::InvisibleButton("slot", ImVec2(cell, cell), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+        if (ImGui::IsItemClicked()) OpenIfAlt(slots[i].second > 0 ? slots[i].first : std::string()); // (#826; the rules skip alt-clicks)
+        NoteHover(&grid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
+        const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         if (slots[i].second > 0) DrawGlow(dl, p, q, Item_GlowOf(slots[i].first, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
         const auto& s = slots[i];
@@ -719,10 +856,9 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
             const ImVec2 sz = ImGui::CalcTextSize(amt);
             dl->AddRectFilled(ImVec2(q.x - sz.x - 6, p.y + 2), ImVec2(q.x - 2, p.y + sz.y + 2), IM_COL32(0, 0, 0, 160), 2.0f);
             dl->AddText(ImVec2(q.x - sz.x - 4, p.y + 2), IM_COL32(255, 255, 255, 255), amt);
-            if (hover) ImGui::SetTooltip("%s x%d\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory)", d ? d->name.c_str() : s.first.c_str(), s.second, d ? d->description.c_str() : "");
+            if (hover && cursorStack.empty()) ImGui::SetTooltip("%s x%d\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory  wheel: move one)", d ? d->name.c_str() : s.first.c_str(), s.second, d ? d->description.c_str() : "");
         }
-        if (clicked) SlotClick(i, which, false, IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT), s.second);
-        else if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) SlotClick(i, which, true, false, s.second);
+        DrawDragShare(dl, &grid, i, p, q);
         dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255), 4.0f, 0, 1.0f);
         ImGui::PopID();
     }
@@ -827,35 +963,54 @@ static void DrawCreative() {
         }
     }
     ImGui::Separator();
+    // Every item as an icon grid (#862, as Minecraft's creative menu): click takes a full stack, right-click one, Shift+click a
+    // stack into the inventory; a held stack put on the grid is deleted. Kinds as tabs over it; the search narrows them.
+    static int kindTab = -1; // -1 all, else an ItemKind
+    {
+        const char* kinds[] = { "All", "Resources", "Blocks", "Tools" };
+        for (int k = -1; k < 3; ++k) {
+            if (k > -1) ImGui::SameLine();
+            const bool on = kindTab == k;
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            if (ImGui::Button(kinds[k + 1])) kindTab = k;
+            if (on) ImGui::PopStyleColor();
+        }
+    }
     std::string f = filter;
     for (char& c : f) c = (char)tolower(c);
-    ImGui::BeginChild("creativeitems");
-    int shown = 0;
+    catalogGrid.ids.clear();
     for (const ItemDef& d : itemDB.items()) {
         if (IsWildcardItem(d.id)) continue; // tags, not items (#269)
+        if (kindTab >= 0 && (int)d.kind != kindTab) continue;
         std::string name = d.name;
         for (char& c : name) c = (char)tolower(c);
         if (!f.empty() && name.find(f) == std::string::npos && d.id.find(f) == std::string::npos) continue;
-        ImGui::PushID(d.id.c_str());
-        ImGui::ColorButton("##c", ToImColor(d.color), ImGuiColorEditFlags_NoTooltip, ImVec2(14, 14));
-        ImGui::SameLine();
-        ImGui::Text("%-20s", d.name.c_str());
-        if (ImGui::IsItemClicked() && ImGui::GetIO().KeyAlt) OpenIfAlt(d.id); // (#826)
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s (%s, %d per slot)\n%s", d.id.c_str(), KindName(d.kind), StackLimit(d.id), d.description.c_str());
-        ImGui::SameLine(260.0f);
-        if (ImGui::SmallButton("+1")) inventory.add(d.id, 1);
-        if (d.kind != ItemKind::Tool) {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("+10")) inventory.add(d.id, 10);
-            ImGui::SameLine();
-            if (ImGui::SmallButton("stack")) inventory.add(d.id, StackLimit(d.id));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("have %.2f", inventory.amount(d.id));
-        ImGui::PopID();
-        ++shown;
+        catalogGrid.ids.push_back(d.id);
     }
-    if (shown == 0) ImGui::TextDisabled("No items match");
+    ImGui::BeginChild("creativeitems");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float cell = 54.0f, gap = 4.0f;
+    const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell + gap)));
+    for (int i = 0; i < (int)catalogGrid.ids.size(); ++i) {
+        const ItemDef* d = itemDB.find(catalogGrid.ids[i]);
+        if (i % cols != 0) ImGui::SameLine(0.0f, gap);
+        ImGui::PushID(i);
+        const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
+        ImGui::InvisibleButton("item", ImVec2(cell, cell), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
+        if (ImGui::IsItemClicked()) OpenIfAlt(catalogGrid.ids[i]); // (#826)
+        NoteHover(&catalogGrid, i);
+        const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
+        DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, catalogGrid.ids[i]);
+        CellName(dl, p, q, d ? d->name : catalogGrid.ids[i], hover);
+        if (hover && cursorStack.empty() && d)
+            ImGui::SetTooltip("%s (%s, %d per slot)\n%s\nhave %.2f\n(click: a stack  right-click: one  Shift+click: a stack into the inventory)",
+                              d->name.c_str(), KindName(d->kind), StackLimit(d->id), d->description.c_str(), inventory.amount(d->id));
+        else if (hover && !cursorStack.empty()) ImGui::SetTooltip("Click: delete the held stack");
+        dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255), 4.0f, 0, 1.0f);
+        ImGui::PopID();
+    }
+    if (catalogGrid.ids.empty()) ImGui::TextDisabled("No items match");
     ImGui::EndChild();
 }
 
@@ -1111,9 +1266,10 @@ void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
     RunCraftQueue(); // (#824) queued crafts, window open or not
-    if (!inventoryOpen) { ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
+    if (!inventoryOpen) { SlotRules_Cancel(); ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
+    hoverGrid = nullptr; hoverSlot = -1; // (set again as the grids are drawn: #862)
     if (container.open && screen != GameScreen::Inventory) screen = GameScreen::Inventory; // a chest or machine opens beside your items
     const ImGuiIO& io = ImGui::GetIO();
     const float s = GameUI_Scale();
@@ -1197,6 +1353,28 @@ void GameUI_Draw(Scene& world) {
         }
         ImGui::End();
         ImGui::PopStyleColor();
+    }
+    // The item rules (#862), once a frame: the mouse and keys with the slot under the mouse (Alt-clicks open the database).
+    if (!io.KeyAlt && !databaseOpen) {
+        SlotInput in;
+        in.lPress = ImGui::IsMouseClicked(ImGuiMouseButton_Left); in.rPress = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        in.mPress = ImGui::IsMouseClicked(ImGuiMouseButton_Middle);
+        in.lDown = ImGui::IsMouseDown(ImGuiMouseButton_Left); in.rDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+        in.lRelease = ImGui::IsMouseReleased(ImGuiMouseButton_Left); in.rRelease = ImGui::IsMouseReleased(ImGuiMouseButton_Right);
+        in.lDouble = ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+        in.wheel = hoverGrid ? io.MouseWheel : 0.0f;
+        in.shift = io.KeyShift; in.ctrl = io.KeyCtrl;
+        in.hotbarKey = hoverGrid && !io.WantTextInput ? Hotbar_KeySlot() : -1;
+        in.offHandKey = !io.WantTextInput && PlayerInput_BindingPressed(Act::SwapOffHand);
+        in.dropKey = !io.WantTextInput && PlayerInput_BindingPressed(Act::DropItem);
+        in.creative = terrainTool.creative;
+        in.wheelInvert = settings.invertSlotWheel;
+        std::vector<SlotGrid*> grids = { &playerGrid };
+        if (container.open) { grids.push_back(&containerIn); grids.push_back(&containerOut); grids.push_back(&containerFuel); }
+        if (screen == GameScreen::Catalog) grids.push_back(&catalogGrid);
+        SlotRules_SetHeld(&cursorStack);
+        SlotRules_SetGrids(grids);
+        SlotRules_Frame(in, hoverGrid, hoverSlot);
     }
     // A click outside every window drops the held stack (right-click: one unit) at the feet (#564).
     if (!cursorStack.empty() && !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {

@@ -95,9 +95,9 @@ bool SlotRules_Frame(const SlotInput& in, SlotGrid* g, int i) {
     if (in.lPress && g) {
         did = true;
         if (in.lDouble && !held->empty()) { Gather(); drag = Drag::None; visited.clear(); }
-        else if (in.shift && held->empty()) {
+        else if (in.shift && (held->empty() || !at.empty())) { // (holding a stack: the slot moves, the hand keeps it)
             if (!at.empty() && !g->infinite()) g->moveOut(i, at.centi);
-            if (!g->infinite()) { drag = Drag::Shift; visited = { { g, i } }; }
+            if (!g->infinite() && held->empty()) { drag = Drag::Shift; visited = { { g, i } }; }
         } else if (held->empty()) {
             if (!at.empty()) {
                 g->take(i, g->infinite() ? g->capOf(at.id) : at.centi, *held);
@@ -310,6 +310,14 @@ TEST_F(SlotRulesTest, ShiftClickQuickMovesOntoTheSameItemFirst) {
     EXPECT_TRUE(A.cells[0].empty());
     EXPECT_EQ(N(B.cells[4], "stone"), 64);
     EXPECT_EQ(N(B.cells[0], "stone"), 6);
+}
+
+TEST_F(SlotRulesTest, ShiftClickHoldingAStackMovesTheSlotAndKeepsTheHand) {
+    hand = S("oak_log", 2); A.cells[0] = S("stone", 10);
+    Click(&A, 0, false, true);
+    EXPECT_TRUE(A.cells[0].empty());
+    EXPECT_EQ(N(B.cells[0], "stone"), 10);
+    EXPECT_EQ(N(hand, "oak_log"), 2);
 }
 
 TEST_F(SlotRulesTest, DoubleClickGathersPartialStacksFirstUpToAStack) {
