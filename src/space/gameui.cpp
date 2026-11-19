@@ -1601,6 +1601,7 @@ struct HeadlessImGui { // a context with a 1280 x 720 display and the mouse inje
         ImGui::SetCurrentContext(ctx);
         ImGuiIO& io = ImGui::GetIO();
         io.DisplaySize = ImVec2(1280.0f, 720.0f); io.DeltaTime = 1.0f / 60.0f; io.IniFilename = nullptr;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // (as rlImGui sets: the 1.92 font atlas builds as fonts are used)
         io.Fonts->AddFontDefault();
     }
     ~HeadlessImGui() { ImGui::DestroyContext(ctx); ImGui::SetCurrentContext(prev); }
