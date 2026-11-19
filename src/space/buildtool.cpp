@@ -145,7 +145,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     const int part = hitPlot->partAt(hitCell);
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
-    if (!in.down(Act::Primary)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
+    if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
     if (breakHeld < kBreakHold) return;
@@ -155,6 +155,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
         breakPart = -1;
         breakHeld = -0.15f;
+        gPrimaryLatch.consume(); // (#895) the held button is used up
         return;
     }
     if (hitPlot->remove(part)) {
@@ -168,7 +169,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
     }
     breakPart = -1;
-    breakHeld = -0.15f; // a breath before the next part (holding on clears a wall part by part)
+    breakHeld = -0.15f;
+    gPrimaryLatch.consume(); // (#895, the user: holding on mined what was behind) the next part needs a new press
 }
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
