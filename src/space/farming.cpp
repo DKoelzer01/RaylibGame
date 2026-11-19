@@ -1,5 +1,6 @@
 #include "farming.h"
 #include "gamerng.h"
+#include "terraintool.h"
 #include "fluid.h"
 #include "audio.h"
 #include "buildtool.h"
@@ -145,20 +146,23 @@ bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) 
         return false;
     }
     QuestBook_Count("plant");
+    if (gSkillEvent) gSkillEvent("plant", 1.0, Vector3{}); // (#919) Farming XP
     Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
     return true;
 }
-int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why) {
+int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why, bool local) {
     auto it = fields.find(Key(body, plot, part));
     if (it == fields.end()) return 0;
     const CropDef* c = Crop(it->second.crop);
     if (!c) { fields.erase(it); return 0; }
     if (it->second.growth < 1.0f) { if (why) *why = TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f); return 0; }
-    const int seeds = 1 + (GameRng_Int(0, 1));
-    inv.add(c->yield, c->yieldCount);
+    // (#919) Farming's perks: more crop and seed (the local player's; a server's remote players: #920)
+    const int seeds = local ? SkillScaled(1 + GameRng_Int(0, 1), "seed_yield") : 1 + GameRng_Int(0, 1);
+    const int crops = local ? SkillScaled(c->yieldCount, "crop_yield") : c->yieldCount;
+    inv.add(c->yield, crops);
     inv.add(c->seed, seeds);
     fields.erase(it);
-    return c->yieldCount + seeds;
+    return crops + seeds;
 }
 int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
     if (gFarmRequest) { // joined (#335)
@@ -170,10 +174,11 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
         return 1;
     }
     std::string why;
-    const int got = Farm_HarvestFor(inventory, body, plot, part, &why);
+    const int got = Farm_HarvestFor(inventory, body, plot, part, &why, true);
     if (!why.empty()) GameUI_Toast(why.c_str());
     if (got <= 0) return 0;
     QuestBook_Count("harvest");
+    if (gSkillEvent) gSkillEvent("harvest", 1.0, Vector3{}); // (#919) Farming XP
     Audio_Play(Sfx::Pickup, 0.5f);
     return got;
 }
@@ -238,6 +243,7 @@ bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
     if (!plot->canPlace(part)) return false;
     if (!BuildTool_Place(body, *plot, part, false)) return false;
     QuestBook_Count("till");
+    if (gSkillEvent) gSkillEvent("till", 1.0, Vector3{}); // (#919) Farming XP
     return true;
 }
 void Farm_Draw3D(Scene& world) {

@@ -9504,6 +9504,7 @@ int main(int argc, char** argv)
             } else {
                 ship.update(world, PlayerInput::None(), simDt);
                 Suit_Apply(world, simDt); // the worn suit and modules: walk, jetpack, grip, the scanner
+                if (playing) SkillPlay_Step(world, simDt); // (#919) Athletics (walking) and Survival (nights) XP
                 {
                     // The loading screen (#901): player.update is skipped while it is up (a load, a spawn, a teleport), so
                     // nothing carried the player with the turning planet. Held in the body's frame instead, as a death is, and

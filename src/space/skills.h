@@ -68,7 +68,10 @@ bool Skills_Buy(SkillState& s, const std::string& perk);
 void Skills_Respec(SkillState& s, const std::string& skill); // every point of that tree back (the cost is the caller's: an item)
 
 // A stat's multiplier: 1 + the sum over perks of ranks x per rank (negative for wear: 1 - 0.1 x ranks, never below 0.1).
-// Stats in slice 1: rock_speed, ore_speed, ore_yield, stone_yield, gem_chance, pick_wear, rock_radius.
+// Stats in slice 1: rock_speed, ore_speed, ore_yield, stone_yield, gem_chance, pick_wear, rock_radius. (#919) Slice 2a:
+// soil_speed, soil_radius, shovel_wear (Digging); chop_speed, log_yield, axe_wear (Woodcutting); fibre_yield, stone_find
+// (Foraging); crop_yield, seed_yield (Farming); break_speed (Building); walk_speed, fall_safe (Athletics); hunger, cold
+// (Survival). All act for the local player only until the server reads them (#920).
 double Skills_Stat(const SkillState& s, const std::string& stat);
 
 // The world's XP rate (Q6: 0.5, 1, 2 or 5; saved with the world as "xp_rate", new worlds take the New World screen's).

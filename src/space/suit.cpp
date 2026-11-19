@@ -1,5 +1,6 @@
 #include "suit.h"
 #include "playersession.h"
+#include "skills.h"
 #include "audio.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -184,7 +185,7 @@ void Suit_Apply(Scene& world, float dt) {
     (void)dt;
     Load();
     if (S().fitted.empty() && !FindSuit(S().worn)) Suit_Reset();
-    player.walkSpeed = kWalk * S().stats.walk;
+    player.walkSpeed = kWalk * S().stats.walk * (float)Skills_Stat(LocalSession().skills, "walk_speed"); // (#919: Athletics stacks with the suit)
     player.jetpackFuelPerSec = kJetFuel / S().stats.jetFuel;
     player.canHover = S().stats.hover; // #163
     player.jetpackAccel = S().stats.jetpack && S().stats.powered ? kJetAccel * S().stats.jetThrust : 0.0f; // #217: no thruster pack (or no power), no jetpack

@@ -17,6 +17,8 @@
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
+#include "skills.h"
+#include "terraintool.h"
 #include "plots.h"
 
 #include <algorithm>
@@ -97,9 +99,12 @@ float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.f
 // ~79, 30 m ~108 (fatal); servo legs make ~6 m safe. A landing that would take 15 or less takes nothing (#536: minor
 // falls are ignored), so on Terra about 5 m is safe.
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local) {
-    const float safe = stats.servo ? 8.5f : 6.0f; // servo legs soften landings
+    const float safe = (stats.servo ? 8.5f : 6.0f) * (local ? (float)Skills_Stat(LocalSession().skills, "fall_safe") : 1.0f); // servo legs soften landings; (#919) Athletics too
     constexpr float kGrace = 15.0f; // health points
     const float damage = (impactSpeed - safe) * 8.5f;
+    // (#919) Athletics XP: a real drop (over 6 m/s: ~3 m on Terra) landed without harm, at most one every 10 s (no hopping).
+    static double lastSoft = -1e9;
+    if (local && damage <= kGrace && impactSpeed > 6.0f && SimTime() - lastSoft > 10.0 && gSkillEvent) { lastSoft = SimTime(); gSkillEvent("soft_landing", 1.0, Vector3{}); }
     if (damage <= kGrace || survival.dead) return;
     survival.health -= damage;
     survival.fallDamageTaken += damage;
@@ -266,9 +271,10 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
-        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * stats.food * Difficulty_HungerScale();
+        const SkillState* sk = local ? &LocalSession().skills : nullptr; // (#919) Survival's perks stack with the suit's (the local player's: #920 for remote ones)
+        float drain = survival.foodDrainPerSec * (active ? 1.6f : 1.0f) * stats.food * (sk ? (float)Skills_Stat(*sk, "hunger") : 1.0f) * Difficulty_HungerScale();
         const float T = survival.temperature;
-        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + stats.cold * (5.0f - T) / 15.0f; // insulation, the regulator
+        if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + stats.cold * (sk ? (float)Skills_Stat(*sk, "cold") : 1.0f) * (5.0f - T) / 15.0f; // insulation, the regulator
         if (SimTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
         if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
@@ -651,7 +657,7 @@ bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Invento
         const Food& food = foods[id];
         if (survival.food < 98.0f && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
-            if (local) QuestBook_Count("eat");
+            if (local) { QuestBook_Count("eat"); if (gSkillEvent) gSkillEvent("eat", 1.0, Vector3{}); } // (#919) Survival XP
             if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; if (local) GameUI_Toast("You feel sick: cook your meat"); }
             if (local) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
             return true;

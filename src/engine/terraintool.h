@@ -38,10 +38,14 @@ extern TerrainToolSettings& terrainTool; // the local PlayerSession's (#313)
 inline float gHudScale = 1.0f; // (#891) the interface scale for the crosshair's text (the game sets it each frame)
 // Skills (#883): the game sets these (unset: no XP, every multiplier 1, as a server and tests run). A stroke's events go
 // out (rock_stroke, ore_stroke, soil_stroke, gem, chop, tree_felled; `local`: the body-local point, for the anti-farming
-// cell); the perks' multipliers come in (rock_speed, ore_speed, rock_radius, gem_chance, ore_yield, stone_yield).
+// cell); the perks' multipliers come in (rock_speed, ore_speed, rock_radius, gem_chance, ore_yield, stone_yield; #919:
+// soil_speed, soil_radius, chop_speed, log_yield, fibre_yield, stone_find).
 inline std::function<void(const char* event, double n, Vector3 local)> gSkillEvent;
 inline std::function<float(const char* stat)> gSkillStat;
 inline float SkillStat(const char* stat) { return gSkillStat ? gSkillStat(stat) : 1.0f; }
+// (#919) n items times a yield stat: the whole part, and the fraction left by chance (the gameplay RNG): x1.1 on 3 logs
+// gives 3 most times and 4 one time in three.
+int SkillScaled(int n, const char* stat);
 
 struct PlayerInput;
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = true); // once per frame before drawing (input: #312); editEnabled=false keeps save/load (F5/F9) only

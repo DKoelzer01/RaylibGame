@@ -93,7 +93,14 @@ namespace {
             return true;
         }
         plantBody->trees->remove(p.id);
-        GiveDrops(TerrainTool_PlantDrops(*plantBody, p));
+        { // (#919) Woodcutting: logs; Foraging: fibre from bushes, stones off the ground (joined, the server credits them: #920)
+            PlantDrops d = TerrainTool_PlantDrops(*plantBody, p);
+            for (auto& [item, n] : d.items) {
+                const char* stat = p.tree() ? (item != "rubber" ? "log_yield" : nullptr) : p.stone() ? "stone_find" : item == "fibre" ? "fibre_yield" : nullptr;
+                if (stat) n = SkillScaled(n, stat);
+            }
+            GiveDrops(d);
+        }
         if (gSkillEvent) { // (#883) XP: chops at a tree, a tree down, a bush, a loose stone
             if (p.tree()) { gSkillEvent("chop", (double)HitsToFell(p), p.base); gSkillEvent("tree_felled", 1.0, p.base); }
             else gSkillEvent(p.stone() ? "loose_stone" : "bush", 1.0, p.base);
@@ -254,7 +261,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     if (now < nextStrokeAt) return;
     const double base = now - nextStrokeAt < 0.1 ? nextStrokeAt : now; // held on: keep the beat (frame-rate independent)
     if (digging && hasPlant) {
-        const float chop = 0.3f; // an axe (or hand) swing at a trunk or bush
+        const float chop = 0.3f / std::max(0.2f, SkillStat("chop_speed")); // an axe (or hand) swing at a trunk or bush (#919: Woodcutting)
         const bool felled = Chop();
         terrainTool.swingTime = chop;
         nextStrokeAt = base + (felled ? 0.45 : chop);
@@ -414,16 +421,24 @@ static bool BrushStroke(bool digging) {
 static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
 static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
 static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
+int SkillScaled(int n, const char* stat) {
+    const double v = n * (double)SkillStat(stat);
+    const int whole = (int)std::floor(v);
+    return whole + (GameRng_Unit() < v - whole ? 1 : 0);
+}
+
 // Strokes a second for the aimed ground with the tool in hand: the tool's rule, and (#883) Mining's perks on a pick at rock
-// and ore (Quick Pick, Vein Follower).
+// and ore (Quick Pick, Vein Follower); (#919) Digging's on soil.
 float TerrainTool_StrokeRate() {
     float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
     if (!terrainTool.terraform && PickOnRock()) rate *= SkillStat("rock_speed") * (HitOre() ? SkillStat("ore_speed") : 1.0f);
+    else if (!terrainTool.terraform && hasHit && !HitRock() && !HitOre()) rate *= SkillStat("soil_speed"); // (#919) Digging
     return rate;
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
-    return PickOnRock() ? r * SkillStat("rock_radius") : r;
+    if (PickOnRock()) return r * SkillStat("rock_radius");
+    return !terrainTool.terraform && hasHit && !HitRock() && !HitOre() ? r * SkillStat("soil_radius") : r; // (#919) Digging
 }
 
 // Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so

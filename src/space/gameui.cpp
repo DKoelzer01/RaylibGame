@@ -1533,7 +1533,13 @@ static void DrawYou() {
 static const char* PerkStatName(const std::string& stat) {
     static const struct { const char* id; const char* name; } kNames[] = {
         { "rock_speed", "Rock strokes" }, { "ore_speed", "Ore strokes" }, { "rock_radius", "Rock stroke reach" }, { "ore_yield", "Ore per stroke" },
-        { "stone_yield", "Stone of the rock's kind" }, { "gem_chance", "Gem odds" }, { "pick_wear", "Pick wear" } };
+        { "stone_yield", "Stone of the rock's kind" }, { "gem_chance", "Gem odds" }, { "pick_wear", "Pick wear" },
+        // (#919) the other trees
+        { "soil_speed", "Soil strokes" }, { "soil_radius", "Soil stroke reach" }, { "shovel_wear", "Shovel wear" },
+        { "chop_speed", "Chops" }, { "log_yield", "Logs per tree" }, { "axe_wear", "Axe wear" },
+        { "fibre_yield", "Fibre per bush" }, { "stone_find", "Loose stone" }, { "crop_yield", "Crop per harvest" },
+        { "seed_yield", "Seeds per harvest" }, { "break_speed", "Taking parts down" }, { "walk_speed", "Walk" },
+        { "fall_safe", "Safe landing speed" }, { "hunger", "Hunger" }, { "cold", "Cold felt" } };
     for (const auto& n : kNames) if (stat == n.id) return n.name;
     return stat.c_str();
 }
