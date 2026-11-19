@@ -872,6 +872,9 @@ const RiverNetwork* PlanetField::rivers() const {
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
+            // #903: the biomes' regional reshaping (swamps pulled ~24 m down) moves the water with the ground; at a coarse
+            // footprint only the regional part counts (dunes are bumps the channel cuts through). A/B: =1 the old levels.
+            if (!EnvFlag("RAYLIBGAME_RIVER_SHIFT_OLD")) rp.regionalShift = [this](Vector3 d, float h) { return biomeShape(d, h, 512.0f); };
             riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
         } else
         // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),

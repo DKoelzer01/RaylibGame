@@ -517,6 +517,7 @@ int main(int argc, char** argv)
     bool mineStarted = false, mineStoppedEarly = false;
     int minePhase = 0, minedStrokes = 0, mineCrafted = 0;
     bool benchWaterStats = false; // --water-stats: how much the water shaping raises/cuts the ground (#251)
+    float probeWaterLat = 0.0f, probeWaterLon = 0.0f, probeWaterR = 0.0f; // --probe-water LAT LON R (#903): generated water standing above its ground
     bool benchPreloadSpawn = false; double preloadT0 = -1.0; // --preload-spawn: time the spawn preload ring (#294)
     float benchUnfocus = 0.0f;    // --bench-unfocus S (#510): unfocused S s during the spawn preload, and while playing (FPS before/after)
     int unfocusPhase = 0; double unfocusT0 = 0.0; long unfocusFrames = 0; double unfocusFpsBefore = 0.0;
@@ -895,6 +896,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-fly" && i + 1 < argc) benchFlySpeed = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-fly-back") benchFlyBack = true;
         if (std::string(argv[i]) == "--water-stats") benchWaterStats = true;
+        if (std::string(argv[i]) == "--probe-water" && i + 3 < argc) { probeWaterLat = (float)atof(argv[i + 1]); probeWaterLon = (float)atof(argv[i + 2]); probeWaterR = (float)atof(argv[i + 3]); }
         if (std::string(argv[i]) == "--bench-height" && i + 1 < argc) benchViewHeight = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-turn" && i + 1 < argc) benchTurn = (float)atof(argv[i + 1]);
@@ -2066,6 +2068,71 @@ int main(int argc, char** argv)
                            zone[z], n[z] * cell, fill1[z] * cell, fill3[z] * cell, fill6[z] * cell, maxFill[z], cut3[z] * cell);
             }
             benchWaterStats = false;
+        }
+        if (probeWaterR < 0.0f) {
+            // --probe-water 0 0 -1 (#903): every river on the planet, every 10 m along its centreline: where its bed (level -
+            // depth) stands over the ground there (the channel cuts nothing: water in the air), by the biome it runs through.
+            Planetoid* wp = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const PlanetField* wf = wp ? dynamic_cast<const PlanetField*>(wp->field.get()) : nullptr;
+            if (const RiverNetwork* net = wf ? wf->rivers() : nullptr) {
+                long n[(int)Biome::Count] = {}, over1[(int)Biome::Count] = {}, over3[(int)Biome::Count] = {};
+                float worst[(int)Biome::Count] = {};
+                net->forEachCentrePoint(10.0f, [&](Vector3 d, float level, float depth) {
+                    float lv, lo;
+                    if (net->lakeAt(d, lv, lo) && lo < RiverNetwork::kLakeMargin) return; // a lake's water
+                    const float ground = wf->elevation(d, 0.0f), over = level - depth - ground;
+                    const int b = (int)wf->biomeAt(d, ground);
+                    ++n[b];
+                    if (over > 1.0f) ++over1[b];
+                    if (over > 3.0f) ++over3[b];
+                    worst[b] = std::max(worst[b], over);
+                });
+                long tn = 0, t3 = 0;
+                for (int b = 0; b < (int)Biome::Count; ++b) {
+                    if (!n[b]) continue;
+                    tn += n[b]; t3 += over3[b];
+                    printf("bench: probe rivers: %-9s %7ld samples, bed > 1 m over the ground %6ld, > 3 m %6ld (worst %.1f m)\n",
+                           BiomeName((Biome)b), n[b], over1[b], over3[b], worst[b]);
+                }
+                printf("bench: probe rivers: all %ld samples, bed > 3 m over the ground %ld\n", tn, t3);
+            }
+            probeWaterR = 0.0f;
+        }
+        if (probeWaterR > 0.0f) {
+            // --probe-water LAT LON R (#903): around a spot, where the generated water (river, lake, pond) stands above the
+            // ground under it (a sheet in the air). Samples every 4 m; the worst places with their lat/lon.
+            Planetoid* wp = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const PlanetField* wf = wp ? dynamic_cast<const PlanetField*>(wp->field.get()) : nullptr;
+            if (wf) {
+                const float la = probeWaterLat * DEG2RAD, lo = probeWaterLon * DEG2RAD;
+                const Vector3 c = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) };
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(c, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, c);
+                struct Bad { float over, level, ground, base, e, n; int kind; };
+                std::vector<Bad> bad;
+                long n[4] = {}, over1[4] = {}, over3[4] = {};
+                const float step = 4.0f;
+                for (float e = -probeWaterR; e <= probeWaterR; e += step)
+                    for (float nn = -probeWaterR; nn <= probeWaterR; nn += step) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(c, Vector3Add(Vector3Scale(t1, e / wf->radius), Vector3Scale(t2, nn / wf->radius))));
+                        const PlanetField::WaterSource ws = wf->waterSourceAt(d);
+                        if (ws.kind <= 0 || ws.kind > 3 || ws.level <= PlanetField::kNoWater * 0.5f) continue;
+                        const float ground = wf->elevation(d, 0.0f), over = ws.level - ground;
+                        ++n[ws.kind];
+                        if (over > 1.0f) ++over1[ws.kind];
+                        if (over > 3.0f) { ++over3[ws.kind]; bad.push_back({ over, ws.level, ground, wf->elevationBase(d, 0.0f), e, nn, ws.kind }); }
+                    }
+                const char* kname[4] = { "", "river", "lake", "pond" };
+                for (int k = 1; k <= 3; ++k)
+                    printf("bench: probe water: %s: %ld samples, level > 1 m over the ground %ld, > 3 m %ld\n", kname[k], n[k], over1[k], over3[k]);
+                std::sort(bad.begin(), bad.end(), [](const Bad& a, const Bad& b) { return a.over > b.over; });
+                for (size_t i = 0; i < bad.size() && i < 12; ++i) {
+                    const Bad& b = bad[i];
+                    const Vector3 d = Vector3Normalize(Vector3Add(c, Vector3Add(Vector3Scale(t1, b.e / wf->radius), Vector3Scale(t2, b.n / wf->radius))));
+                    printf("bench: probe water:   %s %.1f m over: level %.1f, ground %.1f (before water %.1f) at %.4f %.4f (%+.0f E %+.0f N m)\n",
+                           kname[b.kind], b.over, b.level, b.ground, b.base, asinf(d.y) * RAD2DEG, atan2f(d.z, d.x) * RAD2DEG, b.e, b.n);
+                }
+            }
+            probeWaterR = 0.0f;
         }
     }
 
