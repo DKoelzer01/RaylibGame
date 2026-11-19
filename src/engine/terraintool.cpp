@@ -318,6 +318,9 @@ static int FillerMaterial(const std::string& item) {
 static bool PayFiller(int& paint) {
     const std::string& held = terrainTool.heldTool;
     if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.remove(held, 1))) { paint = FillerMaterial(held); return true; }
+    // (#836) A block stack in the off hand: RMB places it while the main hand holds a tool.
+    const std::string off = inventory.offHand().id;
+    if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.remove(off, 1))) { paint = FillerMaterial(off); return true; }
     if (terrainTool.creative) { paint = -1; return true; }
     static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
     for (const char* f : fillers) if (inventory.remove(f, 1)) { paint = FillerMaterial(f); return true; }
@@ -661,6 +664,7 @@ bool TerrainTool_Stroke(bool dig) {
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
         if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler (the one in hand, else the best carried)
             std::string pay = FillerMaterial(terrainTool.heldTool) >= 0 ? terrainTool.heldTool : std::string();
+            if (pay.empty() && FillerMaterial(inventory.offHand().id) >= 0) pay = inventory.offHand().id; // (#836) the off hand's stack next
             static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
             for (const char* f : fillers) if (pay.empty() && inventory.count(f) > 0) pay = f;
             if (pay.empty() || inventory.count(pay) <= 0) { Toast("Need stone, dirt, regolith, gravel, sand or concrete to build"); Audio_Play(Sfx::Error, 0.5f); return false; }
@@ -780,7 +784,14 @@ void TerrainTool_DrawHUD() {
     const int fsL = (int)(20 * hs), fsS = (int)(18 * hs), ox = cx + (int)(14 * hs), oy1 = cy + (int)(10 * hs), oy2 = cy + (int)(34 * hs), oy3 = cy + (int)(58 * hs);
     if (hasPlant) {
         const Plant& p = plantHit.plant;
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : p.stone() ? "stones" : "bush", plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
+        std::string what = p.tree() ? "tree" : p.stone() ? "stones" : "bush";
+        if (p.tree()) { // (#528, the user) its size class (#274) and species: "large oak"
+            static const char* kSize[] = { "small", "medium", "large", "giant" };
+            std::string species = WoodSpeciesInfo(SpeciesOfVariant(p.variant)).name;
+            for (char& ch : species) ch = (char)tolower((unsigned char)ch);
+            what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
+        }
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
         if (chopId == p.id && chopHits > 0) {
             const float f = (float)chopHits / HitsToFell(p);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
@@ -958,6 +969,24 @@ bool TerrainTool_TestFill() {
     printf("bench: fill: a 1 m sphere of dirt cost %.2f (paid %.2f; a whole sphere would be 8.38), air left inside %.2f, sharp edge %d, solid inside %d -> %s\n",
            cost, paid, left, (int)edge, (int)inside, ok ? "PASS" : "FAIL");
     terrainTool.sphereFill = false;
+    return ok;
+}
+
+bool TerrainTool_TestFillOffHand() {
+    // (#836) A tool in hand, gravel in the off hand, stone carried (stone comes first in the carried order): RMB places
+    // the off hand's gravel, and the stone is not touched.
+    if (!hasHit || !hit.planetoid) { printf("bench: fill (off hand): nothing aimed at -> FAIL\n"); return false; }
+    terrainTool.heldTool = "stone_pickaxe";
+    if (inventory.count("stone_pickaxe") <= 0) inventory.add("stone_pickaxe", 1);
+    inventory.add("stone", 5);
+    inventory.grid()[Inventory::kOffHand] = InvSlot{ "gravel", 1000 };
+    const int gravel0 = inventory.count("gravel"), stone0 = inventory.count("stone");
+    const bool stroke = TerrainTool_Stroke(false);
+    const int gravelUsed = gravel0 - inventory.count("gravel"), stoneUsed = stone0 - inventory.count("stone");
+    const bool ok = stroke && gravelUsed == 1 && stoneUsed == 0;
+    printf("bench: fill (off hand, #836): a pickaxe in hand, gravel in the off hand: placed %d, gravel used %d, stone used %d -> %s\n",
+           (int)stroke, gravelUsed, stoneUsed, ok ? "PASS" : "FAIL");
+    terrainTool.heldTool.clear();
     return ok;
 }
 

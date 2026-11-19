@@ -1,6 +1,7 @@
 #include "audio.h"
 
 #include <raylib.h>
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -44,6 +45,15 @@ void Audio_Init() {
     sounds[(int)Sfx::Jump] = Synth(0.2f, [&](float t, float u) { lp += (n(rng) - lp) * (0.05f + 0.3f * u); return lp * 0.9f * sinf(3.1416f * u) + sinf(6.2832f * (200 + 300 * u) * t) * 0.1f; });
     sounds[(int)Sfx::Pickup] = Synth(0.08f, [&](float t, float u) { return sinf(6.2832f * 1320.0f * t) * 0.35f * (1.0f - u); });
     sounds[(int)Sfx::Error] = Synth(0.2f, [&](float t, float u) { return (fmodf(t * 180.0f, 1.0f) < 0.5f ? 0.3f : -0.3f) * (1.0f - u); });
+    // (#226) A tier reached: a rising arpeggio (C E G, then a long high C), each note a struck bell (fast attack, decay).
+    sounds[(int)Sfx::Fanfare] = Synth(1.6f, [&](float t, float) {
+        static const float kNotes[4] = { 523.25f, 659.25f, 783.99f, 1046.5f };
+        const int i = std::min(3, (int)(t / 0.18f));
+        const float s = t - i * 0.18f;                        // time into this note
+        const float env = std::min(1.0f, s * 200.0f) * expf(-s * (i == 3 ? 2.2f : 6.0f));
+        const float f = kNotes[i];
+        return (sinf(6.2832f * f * t) * 0.45f + sinf(6.2832f * 2.0f * f * t) * 0.12f) * env;
+    });
     ready = true;
 }
 

@@ -10,6 +10,7 @@
 #include "player.h"
 #include "ship.h"
 #include "audio.h"
+#include "particles.h"
 #include "gameui.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -499,7 +500,17 @@ void QuestBook_Update() {
         ++Q().tier;
         if (Q().tier < (int)tiers.size()) {
             const char* news = TextFormat("Tier %d: %s", Q().tier, tiers[Q().tier].name.c_str());
-            if (gQuestNews) gQuestNews(news); else GameUI_Toast(news);
+            if (gQuestNews) gQuestNews(news); // (a server: the team hears it)
+            else { // (#226) the player's own book: a banner, a fanfare and a burst of golden sparkles round the player
+                GameUI_TierBanner(Q().tier);
+                Audio_Play(Sfx::Fanfare, 0.8f);
+                if (player.nearest) {
+                    ParticleBurst b;
+                    b.kind = ParticleKind::Spark; b.color = { 255, 214, 110, 255 };
+                    b.count = 60; b.size = 0.06f; b.life = 1.6f; b.speed = 3.5f; b.spread = 1.0f;
+                    Particles_EmitWorld(*player.nearest, player.position + DVec3(Vector3Scale(player.up, 1.2f)), b, player.up, Vector3{ 0, 0, 0 }); // (no base velocity: a grounded player's is surface-relative)
+                }
+            }
         }
     }
     QuestTree_Update(); // the side lines
