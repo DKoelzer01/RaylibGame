@@ -82,4 +82,8 @@ void MachineAct_TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int w
     else Factory::TakeSlot(body, plot, part, slot, which);
 }
 
+void MachineAct_ExpectOnCursor(const std::string& item, int count) {
+    if (count > 0 && !item.empty()) cursorTakes.push_back({ item, count, inventory.count(item), GetTime() + 3.0 });
+}
+
 int MachineAct_CursorMoves() { return cursorMoves; }

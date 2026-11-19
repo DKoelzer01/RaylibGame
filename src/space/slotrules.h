@@ -39,6 +39,8 @@ struct SlotGrid {
     virtual void swapCell(int i, int cell) {}                          // with the player's inventory cell (1-0, the off hand)
     virtual void drop(int i, int64_t centi) {}                         // on the ground at the feet (Q)
     virtual bool infinite() const { return false; }                   // the Catalog: takes are free, a put deletes the stack
+    // Creative middle-click: a full stack of slot i's item onto the empty hand (a joined game asks the server: it arrives later)
+    virtual void cloneStack(int i, InvSlot& held) { held = at(i); held.centi = capOf(held.id); }
     virtual int64_t capOf(const std::string& id) const { return (int64_t)StackLimit(id) * 100; } // a full stack (centi)
 };
 

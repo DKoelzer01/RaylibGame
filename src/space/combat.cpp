@@ -197,18 +197,22 @@ bool Combat_OnDeathFor(Inventory& inv, ToolWearState* wear, const Player& p, con
 
 static void PickUpGraves(PlayerSession& s) {
     if (gNetRole == NetRole::Client) return; // (#804) the server picks up for us; our list is only its mirror
-    Combat_PickUpGravesFor(s.player, s.inventory, std::string(), s.survival.dead, true);
+    if (s.player.nearest) Combat_PickUpGravesFor(s.player.nearest->name, s.player.nearest->toLocalD(s.player.position), s.inventory, std::string(), s.survival.dead, true);
 }
 
-bool Combat_PickUpGravesFor(const Player& p, Inventory& inv, const std::string& who, bool dead, bool local) {
-    if (!p.nearest || dead) return false;
-    const DVec3 me = p.nearest->toLocalD(p.position);
+bool Combat_PickUpGravesFor(const std::string& body, const DVec3& me, Inventory& inv, const std::string& who, bool dead, bool local) {
+    if (body.empty() || dead) return false;
     const int64_t now = WallNow();
     bool moved = false;
     for (size_t gi = 0; gi < graves.size();) {
         Grave& g = graves[gi];
-        const bool near = g.body == p.nearest->name && (g.local - me).length() <= kGraveReach;
-        if (g.dropped && !g.armed) { if (!near) g.armed = true; ++gi; continue; } // walked away: it can be picked up now
+        const bool near = g.body == body && (g.local - me).length() <= kGraveReach;
+        // A dropped pile waits until its dropper has walked away from it (the dropper's own walk arms it: on a server another
+        // player's pass must not, #865); anyone else may take it 2 s after the drop, as in Minecraft.
+        if (g.dropped && !g.armed) {
+            if (who == g.owner) { if (!near) g.armed = true; ++gi; continue; }
+            if (now - g.diedAt < 2) { ++gi; continue; }
+        }
         if (!near) { ++gi; continue; }
         // (#804) whose: the owner and their team at once, others after 15 minutes and never inside the owner's team claim
         if (!g.dropped && !Combat_CanLoot(g.owner, g.diedAt, who, now, gInOwnerTeamClaim && gInOwnerTeamClaim(g.owner, g.body, g.local))) { ++gi; continue; }
@@ -229,10 +233,11 @@ bool Combat_PickUpGravesFor(const Player& p, Inventory& inv, const std::string& 
                 Nav_RemoveWaypoint(g.body, g.name);
                 GameUI_Toast(TextFormat("You took everything back from %s", g.name.c_str()));
             }
-            if (!g.dropped) ++graveVersion;
+            ++graveVersion; // (a dropped pile too: clients see it go, #865)
             graves.erase(graves.begin() + gi);
             continue;
         }
+        if (g.items.size() != left.size()) ++graveVersion;
         g.items = std::move(left); g.offHand = -1;
         if (local) {
             if (g.dropped) GameUI_Toast("No room: the rest stays on the ground");
@@ -258,8 +263,14 @@ int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now
 
 std::vector<GraveInfo> Combat_GraveList() {
     std::vector<GraveInfo> out;
-    for (const Grave& g : graves)
-        if (!g.dropped) out.push_back({ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt });
+    for (const Grave& g : graves) {
+        GraveInfo gi{ g.id, g.body, g.local, g.owner, g.name, g.style, g.diedAt };
+        if (g.dropped) { // (#865) dropped piles too, with what they hold for their bundle's colours
+            gi.dropped = true;
+            for (size_t k = 0; k < g.items.size() && k < 3; ++k) gi.items.push_back(g.items[k].id);
+        }
+        out.push_back(std::move(gi));
+    }
     return out;
 }
 
@@ -276,17 +287,21 @@ void Combat_TestAddGrave(const std::string& body, const DVec3& local, uint8_t st
 }
 
 void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string& me) {
-    // A client: the server's graves replace ours (dropped piles of our own stay: they are local). New ones of our own or our
-    // team's get a waypoint (and our own a toast); ones gone lose theirs.
-    std::vector<Grave> keep;
-    for (Grave& g : graves) if (g.dropped) keep.push_back(std::move(g));
+    // A client: the server's graves and dropped piles (#865: everyone's, drawn here; the server picks them up) replace ours.
+    // New graves of our own or our team's get a waypoint (and our own a toast); ones gone lose theirs.
     std::vector<Grave> before;
     for (Grave& g : graves) if (!g.dropped) before.push_back(std::move(g));
-    graves = std::move(keep);
+    graves.clear();
     auto mine = [&](const std::string& owner) { return !owner.empty() && Combat_SameTeam(owner, me); };
     for (const GraveInfo& gi : list) {
         Grave g;
         g.id = gi.id; g.body = gi.body; g.local = gi.local; g.owner = gi.owner; g.name = gi.name; g.style = gi.style % 3; g.diedAt = gi.diedAt;
+        if (gi.dropped) {
+            g.dropped = true;
+            for (const std::string& id : gi.items) g.items.push_back(InvSlot{ id, 100 }); // (for its colours: the server has the amounts)
+            graves.push_back(std::move(g));
+            continue;
+        }
         const bool known = std::any_of(before.begin(), before.end(), [&](const Grave& b) { return b.id == gi.id; });
         if (!known && mine(g.owner)) {
             Nav_AddWaypoint(g.body, Vector3{ (float)g.local.x, (float)g.local.y, (float)g.local.z }, g.name, false);
@@ -303,23 +318,37 @@ void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string
 
 int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
 
-bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
-    Player& p = s.player;
-    if (stack.empty() || !p.nearest) return false;
-    const DVec3 at = p.nearest->toLocalD(p.position); // at the feet
-    for (Grave& g : graves) // onto a pile just dropped here
-        if (g.dropped && !g.armed && g.body == p.nearest->name && (g.local - at).length() < kDropMerge) {
+bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& stack, const std::string& who) {
+    if (stack.empty() || body.empty()) return false;
+    ++graveVersion; // (#865: a server's clients see it)
+    for (Grave& g : graves) // onto a pile this player just dropped here
+        if (g.dropped && !g.armed && g.owner == who && g.body == body && (g.local - at).length() < kDropMerge) {
             auto it = std::find_if(g.items.begin(), g.items.end(), [&](const InvSlot& c) { return c.id == stack.id; });
             if (it != g.items.end()) it->centi += stack.centi; else g.items.push_back(stack);
+            g.diedAt = WallNow();
             return true;
         }
+    static uint32_t dropCounter = 0;
     Grave g;
-    g.body = p.nearest->name;
+    g.body = body;
     g.local = at;
     g.items.push_back(stack);
     g.dropped = true; g.armed = false;
+    g.owner = who; g.diedAt = WallNow();          // who dropped it, and when (others may take it 2 s later)
+    g.id = 0x80000000u | ++dropCounter;           // (apart from graves' ids, which also number their names)
     graves.push_back(std::move(g));
     return true;
+}
+
+bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
+    if (stack.empty() || !s.player.nearest) return false;
+    if (gNetRole == NetRole::Client) { // (#865) the server drops it from the inventory it keeps; its delta takes it from ours
+        if (!gDropRequest) return false;
+        ++s.inventory.muted; s.inventory.addAmount(stack.id, stack.amount(), stack.heat); --s.inventory.muted; // (back first, as MachineAct_Insert)
+        gDropRequest(stack.id, stack.centi);
+        return true;
+    }
+    return Combat_DropFor(s.player.nearest->name, s.player.nearest->toLocalD(s.player.position), stack, std::string()); // (at the feet)
 }
 
 int Combat_DroppedPiles() { return (int)graves.size() - Combat_GraveCount(); }

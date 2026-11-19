@@ -239,6 +239,20 @@ static void DropCursor(int64_t centi) {
 }
 
 // ---- The slot grids the item rules act on (#862: slotrules.h, Minecraft's rules + Mouse Tweaks') ----
+// Creative items onto the hand (the Catalog, a middle-click): here at once; joined, the server gives them (#866) and they
+// move from the inventory onto the hand when its delta brings them. Returns the centi on the hand now.
+static int64_t CreativeTake(const std::string& id, int64_t centi, InvSlot& held) {
+    if (centi <= 0 || id.empty() || (!held.empty() && held.id != id)) return 0;
+    if (gCreativeGive) {
+        const int n = (int)std::max<int64_t>(1, centi / 100);
+        gCreativeGive(id, n);
+        MachineAct_ExpectOnCursor(id, n);
+        return 0;
+    }
+    if (held.empty()) { held = InvSlot{}; held.id = id; }
+    held.centi += centi;
+    return centi;
+}
 // The player's cells (grid, hotbar, off hand). Moves among them change no totals, so they stay here even when joined; what
 // goes to or comes from a container is a request (MachineAct_*), what is dropped a pile at the feet (Combat_Drop).
 struct PlayerGrid : SlotGrid {
@@ -320,6 +334,7 @@ struct PlayerGrid : SlotGrid {
         }
     }
     void swapCell(int i, int cell) override { if (i != cell) inventory.swapSlots(i, cell); }
+    void cloneStack(int i, InvSlot& held) override { const InvSlot s = at(i); if (!s.empty()) CreativeTake(s.id, capOf(s.id), held); } // (#866)
     void drop(int i, int64_t centi) override {
         InvSlot& c = inventory.grid()[i];
         if (c.empty()) return;
@@ -385,6 +400,7 @@ struct ContainerGrid : SlotGrid {
         InvSlot h = s; h.centi = (int64_t)n * 100;
         if (put(i, h, h.centi) == 0) { ++inventory.muted; inventory.add(s.id, n); --inventory.muted; }
     }
+    void cloneStack(int i, InvSlot& held) override { const InvSlot s = at(i); if (!s.empty()) CreativeTake(s.id, capOf(s.id), held); } // (#866)
     void swapCell(int i, int cell) override { // the slot's stack to the inventory, that cell's stack into the slot
         InvSlot& c = inventory.grid()[cell];
         const InvSlot s = at(i);
@@ -406,13 +422,12 @@ struct CatalogGrid : SlotGrid {
     int64_t put(int, const InvSlot& held, int64_t) override { return held.centi; }
     int64_t take(int i, int64_t centi, InvSlot& held) override {
         if (!held.empty() && held.id != ids[i]) return 0;
-        const int64_t k = std::min(centi, capOf(ids[i]) - (held.empty() ? 0 : held.centi));
-        if (k <= 0) return 0;
-        if (held.empty()) { held = InvSlot{}; held.id = ids[i]; }
-        held.centi += k;
-        return k;
+        return CreativeTake(ids[i], std::min(centi, capOf(ids[i]) - (held.empty() ? 0 : held.centi)), held);
     }
-    void moveOut(int i, int64_t) override { ++inventory.muted; inventory.add(ids[i], StackLimit(ids[i])); --inventory.muted; } // Shift-click: a stack into the inventory
+    void moveOut(int i, int64_t) override { // Shift-click: a stack into the inventory (joined: the server's, #866)
+        if (gCreativeGive) { gCreativeGive(ids[i], StackLimit(ids[i])); return; }
+        ++inventory.muted; inventory.add(ids[i], StackLimit(ids[i])); --inventory.muted;
+    }
     void pullIn(int, int64_t) override {}
     bool infinite() const override { return true; }
 };
@@ -956,7 +971,7 @@ static void DrawCreative() {
     ImGui::SetNextItemWidth(220.0f);
     ImGui::InputTextWithHint("##filter", "search items", filter, sizeof(filter));
     ImGui::SameLine();
-    if (ImGui::Button("Clear inventory")) inventory.clear();
+    if (ImGui::Button("Clear inventory")) { if (gCreativeGive) gCreativeGive("", 0); else inventory.clear(); } // (joined: the server's, #866)
     {   // Creatures at the crosshair (#529): any species, on the ground the view's centre is on (within 200 m).
         static int kind = 0, count = 1;
         static const auto list = Animals_SpeciesList();
@@ -1767,6 +1782,7 @@ TEST(GameUiPreview, DraggingAcrossItTurnsThePlayer) {
     io.DisplaySize = ImVec2(800.0f, 600.0f);
     io.DeltaTime = 1.0f / 60.0f;
     io.IniFilename = nullptr;
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // (as rlImGui sets: the 1.92 font atlas builds as fonts are used)
     io.Fonts->AddFontDefault();
     float turn = 0.0f;
     auto frame = [&](float mx, float my, bool down) {

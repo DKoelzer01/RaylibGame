@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 30; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343)
+constexpr uint32_t kNetProtocol = 31; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -62,6 +62,8 @@ enum class NetMsg : uint8_t {
     Plants = 39,        // server -> client (#335): plants removed (id, world time: regrowth runs on the shared clock), at the join and as they go
     FarmFields = 40,    // server -> client (#335): the crops on farmland near the client (crop, growth), when they change
     Claims = 41,        // server -> client (#343): the land claims (team, colour, where, how far; ours / allowed), when they change
+    DropItems = 42,     // client -> server (#865): drop some of an item at the feet (the server makes the pile; 41 is #343's Claims)
+    CreativeGive = 43,  // client -> server (#866): creative items into the inventory the server keeps ("" clears it)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -224,10 +226,13 @@ struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 
 struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
 struct NetFarmField { uint32_t plot = 0; int32_t part = -1; std::string crop; float growth = 0.0f; };
 struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
+struct MsgDropItems { std::string item; int64_t centi = 0; };        // #865: hundredths of a unit
+struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" = clear the inventory
 struct NetClaim { uint32_t id = 0; int32_t team = 0; std::string teamName; uint32_t colour = 0; uint64_t body = 0; float centre[3] = {}; float radius = 0.0f; uint8_t flags = 0; }; // flags: 1 ours, 2 we may build there (ours or an ally's)
 struct MsgClaims { std::vector<NetClaim> claims; }; // (#343) every claim (the full list: replaces)
 struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
-    struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0; };
+    struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
+                    bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile: what it holds, up to 3 ids (its bundle's colours)
     std::vector<Entry> graves;
 };
 struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
@@ -386,6 +391,10 @@ void NetWrite(NetWriter& w, const MsgPlants& m);
 bool NetRead(NetReader& r, MsgPlants& m);
 void NetWrite(NetWriter& w, const MsgFarmFields& m);
 bool NetRead(NetReader& r, MsgFarmFields& m);
+void NetWrite(NetWriter& w, const MsgDropItems& m);
+bool NetRead(NetReader& r, MsgDropItems& m);
+void NetWrite(NetWriter& w, const MsgCreativeGive& m);
+bool NetRead(NetReader& r, MsgCreativeGive& m);
 void NetWrite(NetWriter& w, const MsgClaims& m);
 bool NetRead(NetReader& r, MsgClaims& m);
 bool NetRead(NetReader& r, MsgGraves& m);

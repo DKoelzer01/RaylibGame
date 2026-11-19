@@ -22,6 +22,9 @@ void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting que
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 #include <string>
+#include <functional>
+// (#866) Set while joined (main.cpp): creative items from the server (the Catalog, a creative middle-click; "" clears the inventory).
+inline std::function<void(const std::string& item, int count)> gCreativeGive;
 void GameUI_OpenDatabase(const std::string& itemId); // (#826) the database pop-up, at an item's page ("" where it was)
 bool GameUI_DatabaseOpen();
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
