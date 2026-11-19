@@ -609,6 +609,7 @@ int main(int argc, char** argv)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
     bool benchSkills = false;         // --test-skills (#883): real strokes earn XP, a level-up, a perk speeds strokes up
     bool benchInventoryFps = false;   // --bench-inventory-fps (#887): frame time with the game window closed, then open on the Inventory screen
+    float benchUiScale = 0.0f;        // --ui-scale S (#891): the interface size for benches and shots (benches read no settings: 0 = auto)
     bool benchClaimOffline = false;   // --test-claim-offline (#900): a banner placed in single player claims its land
     bool benchJoinedItems = false;    // --test-joined-items (#865, #866, with --host): creative gives and drops through the server
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
@@ -963,6 +964,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
         if (std::string(argv[i]) == "--test-skills") benchSkills = true;
         if (std::string(argv[i]) == "--bench-inventory-fps") benchInventoryFps = true;
+        if (std::string(argv[i]) == "--ui-scale" && i + 1 < argc) benchUiScale = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-claim-offline") benchClaimOffline = true;
         if (std::string(argv[i]) == "--test-joined-items") benchJoinedItems = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
@@ -1517,6 +1519,7 @@ int main(int argc, char** argv)
     if (!benchAtSave && !hostLoaded && !world.objects.empty()) StartNewWorld(world, false, !bench);
     if (!hostSave.empty() && !hostLoaded) SaveWorld(world);
     if (!bench) Settings_Load();
+    if (benchUiScale > 0.0f) settings.uiScale = benchUiScale; // (#891 shots)
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     NewWorldChoice pendingNewWorld; // the New World screen's choice, handled at the start of the next frame (#504)

@@ -737,21 +737,23 @@ void TerrainTool_DrawHUD() {
 
     const int y = GetScreenHeight() - 60;
     const std::string held = tool.type == ToolType::Hands ? std::string("hands") : std::string(ToolTierName(tool.tier)) + " " + ToolTypeName(tool.type);
+    const float hs = gHudScale; // (#891) the crosshair's text at the interface scale
+    const int fsL = (int)(20 * hs), fsS = (int)(18 * hs), ox = cx + (int)(14 * hs), oy1 = cy + (int)(10 * hs), oy2 = cy + (int)(34 * hs), oy3 = cy + (int)(58 * hs);
     if (hasPlant) {
         const Plant& p = plantHit.plant;
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : p.stone() ? "stones" : "bush", plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), cx + 14, cy + 10, 20, RAYWHITE);
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : p.stone() ? "stones" : "bush", plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
         if (chopId == p.id && chopHits > 0) {
             const float f = (float)chopHits / HitsToFell(p);
-            DrawRectangle(cx + 14, cy + 34, 120, 6, Fade(BLACK, 0.5f));
-            DrawRectangle(cx + 14, cy + 34, (int)(120 * f), 6, ORANGE);
+            DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
+            DrawRectangle(ox, oy2, (int)(120 * hs * f), (int)(6 * hs), ORANGE);
         }
     } else if (hasHit) {
         const char* name = hit.material == VoxelMaterial::Regolith && HasSoil(*hit.planetoid) ? "dirt" : VoxelMaterialName(hit.material);
         if (terrainTool.terraform)
-            DrawText(TextFormat("%s  %.1f m   brush %.1f (debug terraform)", name, hit.distance, terrainTool.brushRadius), cx + 14, cy + 10, 20, RAYWHITE);
+            DrawText(TextFormat("%s  %.1f m   brush %.1f (debug terraform)", name, hit.distance, terrainTool.brushRadius), ox, oy1, fsL, RAYWHITE);
         else {
-            DrawText(TextFormat("%s  %.1f m   %s", hit.material == VoxelMaterial::Ore ? hitItem.c_str() : name, hit.distance, held.c_str()), cx + 14, cy + 10, 20, RAYWHITE);
-            if (!rule.can) DrawText(rule.why.c_str(), cx + 14, cy + 34, 18, Color{ 255, 120, 90, 255 });
+            DrawText(TextFormat("%s  %.1f m   %s", hit.material == VoxelMaterial::Ore ? hitItem.c_str() : name, hit.distance, held.c_str()), ox, oy1, fsL, RAYWHITE);
+            if (!rule.can) DrawText(rule.why.c_str(), ox, oy2, fsS, Color{ 255, 120, 90, 255 });
             if (FillerMaterial(terrainTool.heldTool) >= 0) { // #228: the fill mode, and what a sphere here costs
                 if (terrainTool.sphereFill) {
                     Planetoid& p = *hit.planetoid;
@@ -759,8 +761,8 @@ void TerrainTool_DrawHUD() {
                     static double costAt = -1.0; static float cost = 0.0f;
                     if (GetTime() - costAt > 0.2) { costAt = GetTime(); cost = FillCost(p, FillCentre(p, r), r, 2); } // an estimate (the stroke counts exactly)
                     DrawText(TextFormat("sphere fill %.2f m: %.1f %s (have %.1f)   Ctrl+wheel: shape", terrainTool.fillRadius, cost, terrainTool.heldTool.c_str(), inventory.amount(terrainTool.heldTool)),
-                             cx + 14, cy + 58, 18, Color{ 140, 230, 255, 255 });
-                } else DrawText("fill shape: soft blob   Ctrl+wheel: shape", cx + 14, cy + 58, 18, Fade(RAYWHITE, 0.6f));
+                             ox, oy3, fsS, Color{ 140, 230, 255, 255 });
+                } else DrawText("fill shape: soft blob   Ctrl+wheel: shape", ox, oy3, fsS, Fade(RAYWHITE, 0.6f));
             }
         }
     }

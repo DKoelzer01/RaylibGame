@@ -35,6 +35,7 @@ struct TerrainToolSettings {
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
 };
 extern TerrainToolSettings& terrainTool; // the local PlayerSession's (#313)
+inline float gHudScale = 1.0f; // (#891) the interface scale for the crosshair's text (the game sets it each frame)
 // Skills (#883): the game sets these (unset: no XP, every multiplier 1, as a server and tests run). A stroke's events go
 // out (rock_stroke, ore_stroke, soil_stroke, gem, chop, tree_felled; `local`: the body-local point, for the anti-farming
 // cell); the perks' multipliers come in (rock_speed, ore_speed, rock_radius, gem_chance, ore_yield, stone_yield).
