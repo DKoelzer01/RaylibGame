@@ -52,12 +52,13 @@ void CommandLine_Update(Scene& world) {
 }
 
 void CommandLine_Draw() {
-    const float s = GameUI_Scale();
+    const float s = GameUI_HudScale(); // (#925) the HUD's size, not the menus'
     if (!open) {
         if (!lastReply.empty() && GetTime() < replyUntil) { // the last answer, for a while
             ImGui::SetNextWindowPos(ImVec2(20 * s, ImGui::GetIO().DisplaySize.y - 200 * s));
             ImGui::SetNextWindowBgAlpha(0.55f);
             ImGui::Begin("##cmdreply", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+            ImGui::SetWindowFontScale(GameUI_HudScale() / GameUI_Scale()); // (#925: the style's fonts are at the menus' 2x)
             ImGui::TextUnformatted(lastReply.c_str());
             ImGui::End();
         }
@@ -68,6 +69,7 @@ void CommandLine_Draw() {
     ImGui::SetNextWindowSize(ImVec2(std::min(760.0f * s, io.DisplaySize.x - 40 * s), 0.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::Begin("##cmdline", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::SetWindowFontScale(GameUI_HudScale() / GameUI_Scale()); // (#925: the style's fonts are at the menus' 2x)
     const bool joined = gNetClient && gNetClient->state == NetClient::State::Joined;
     ImGui::TextDisabled(joined ? "Say something, or a /command (Enter sends, Esc closes)" : "A /command (Enter runs it, Esc closes; /help lists them)");
     if (focusNext) { ImGui::SetKeyboardFocusHere(); focusNext = false; }

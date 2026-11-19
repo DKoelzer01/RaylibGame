@@ -69,6 +69,11 @@ float GameUI_Scale() {
     const float base = 2.0f * std::clamp(GetScreenHeight() / 1080.0f, 0.6f, 2.0f);
     return base * (settings.uiScale > 0.0f ? settings.uiScale : 1.0f);
 }
+// (#925, the user: the 2x HUD "crowds the screen") The HUD outside the game window keeps the pre-#891 size: the screen's
+// height over 1080 p times the Interface size setting, half the menus' scale. The pinned quests stay at GameUI_Scale().
+float GameUI_HudScale() {
+    return std::clamp(GetScreenHeight() / 1080.0f, 0.6f, 2.0f) * (settings.uiScale > 0.0f ? settings.uiScale : 1.0f);
+}
 // (#891) Every ImGui window at the interface scale: the fonts (FontScaleMain: rasterized at that size by the dynamic atlas,
 // so they stay crisp; tooltips and pop-ups too) and the padding and spacing (the style's base sizes x the scale). Before
 // each ImGui frame; it changes the style only when the scale does.
@@ -79,7 +84,7 @@ void GameUI_ApplyStyleScale() {
     if (!ImGui::GetCurrentContext()) return;
     if (!haveBase) { base = ImGui::GetStyle(); haveBase = true; }
     const float s = GameUI_Scale();
-    gHudScale = s; // (#891) the engine's HUD text (the crosshair) follows it too
+    gHudScale = GameUI_HudScale(); // (#925) the engine's HUD text (the crosshair) at the HUD's size
     if (std::fabs(s - applied) < 1e-4f) return;
     ImGuiStyle st = base;
     st.ScaleAllSizes(s);
@@ -1712,7 +1717,7 @@ namespace {
     void DrawPickups() {
         const double now = GetTime();
         pickups.erase(std::remove_if(pickups.begin(), pickups.end(), [&](const Pickup& p) { return now - p.t > kPickupShow; }), pickups.end());
-        const float m = GameUI_Scale(); // (#891) at the interface scale, above the (scaled) hotbar
+        const float m = GameUI_HudScale(); // (#925) at the HUD's size, above the hotbar
         const int w = GetScreenWidth(), h = GetScreenHeight(), line = (int)(26 * m), icon = (int)(22 * m), fs = (int)(20 * m);
         const size_t first = pickups.size() > kPickupLines ? pickups.size() - kPickupLines : 0;
         int y = h - (int)(140 * m) - (int)(pickups.size() - first) * line;
@@ -1750,7 +1755,7 @@ void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; Factory::SetCursorS
 static void DrawTeamStrip() {
     const NetClient* c = gNetClient && gNetClient->state == NetClient::State::Joined ? gNetClient : nullptr;
     if (!c || c->team.members.size() < 2) return;
-    const float s = GameUI_Scale();
+    const float s = GameUI_HudScale(); // (#925) the HUD's size
     const int x = (int)(12 * s), w = (int)(150 * s), h = (int)(10 * s), fs = (int)(14 * s), row = fs + h + (int)(8 * s);
     int y = (int)(GetScreenHeight() * 0.36f);
     int n = 0; for (const auto& m : c->team.members) n += !m.you;
@@ -1803,7 +1808,7 @@ void GameUI_DrawHUD(Scene& world) {
     DrawPickups(); // #208
     if (ship.piloted) {
         DrawText(TextFormat("SHIP  %.0f m/s", relSpeed(ship.velocity)), w - 220, 70, 20, SKYBLUE);
-        if (GetTime() < toastUntil) { const int fs = (int)(20 * GameUI_Scale()); DrawText(toast.c_str(), (GetScreenWidth() - MeasureText(toast.c_str(), fs)) / 2, (int)(GetScreenHeight() * 0.70f), fs, YELLOW); } // (#891: at the scale, above the hotbar)
+        if (GetTime() < toastUntil) { const int fs = (int)(20 * GameUI_HudScale()); DrawText(toast.c_str(), (GetScreenWidth() - MeasureText(toast.c_str(), fs)) / 2, (int)(GetScreenHeight() * 0.70f), fs, YELLOW); } // (#891: at the scale, above the hotbar)
         return;
     }
     // Jetpack fuel bar (top right): only with a jetpack (a thruster pack and suit power, #217).
@@ -1816,7 +1821,7 @@ void GameUI_DrawHUD(Scene& world) {
     // are in; world kilometres out in space), then speed and gravity, then the biome and the weather.
     {
         int ly = 384; // the minimap and its scale line end at ~372
-        const int lfs = (int)(16 * GameUI_Scale()); auto line = [&](const char* t, Color c) { DrawText(t, w - 20 - MeasureText(t, lfs), ly, lfs, c); ly += lfs + 4; }; // (#891: at the scale) // right-aligned with the minimap
+        const int lfs = (int)(16 * GameUI_HudScale()); auto line = [&](const char* t, Color c) { DrawText(t, w - 20 - MeasureText(t, lfs), ly, lfs, c); ly += lfs + 4; }; // (#891: at the scale) // right-aligned with the minimap
         bool rotate = false;
         Planetoid* ref = player.nearest ? player.nearest : player.flyReference(world, rotate);
         const DVec3 local = ref ? ref->toLocalD(player.position) : DVec3{};
@@ -1837,7 +1842,7 @@ void GameUI_DrawHUD(Scene& world) {
         if (player.jetpackAccel > 0.0f) // only with a jetpack: nothing else uses them (#531)
             line(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), player.dampeners ? RAYWHITE : ORANGE);
     }
-    if (GetTime() < toastUntil) { const int fs = (int)(20 * GameUI_Scale()); DrawText(toast.c_str(), (GetScreenWidth() - MeasureText(toast.c_str(), fs)) / 2, (int)(GetScreenHeight() * 0.70f), fs, YELLOW); } // (#891: at the scale, above the hotbar)
+    if (GetTime() < toastUntil) { const int fs = (int)(20 * GameUI_HudScale()); DrawText(toast.c_str(), (GetScreenWidth() - MeasureText(toast.c_str(), fs)) / 2, (int)(GetScreenHeight() * 0.70f), fs, YELLOW); } // (#891: at the scale, above the hotbar)
 }
 
 // (#824) the crafting queue from outside (tests; later, e.g. a recipe's "craft" from the database pop-up, #826)
@@ -1868,7 +1873,7 @@ static void DrawKeyHints(int x, int y) {
     line += TextFormat("  %s build  1-0 hotbar  %s inventory  %s telescope  %s lamp", K(Act::BuildMode).c_str(), K(Act::Inventory).c_str(), K(Act::Telescope).c_str(), K(Act::Headlamp).c_str());
     if (terrainTool.creative) line += TextFormat("  %s fly", K(Act::Fly).c_str()); // fly is creative only (#531)
     line += TextFormat("  %s save  %s commands", K(Act::Save).c_str(), K(Act::Chat).c_str());
-    const float s = GameUI_Scale();
+    const float s = GameUI_HudScale(); // (#925) the HUD's size
     int fs = (int)(20 * s);
     while (fs > 12 && x + MeasureText(line.c_str(), fs) > GetScreenWidth() - (int)(8 * s)) fs -= 2; // (#891: as large as the screen's width allows)
     DrawText(line.c_str(), x, std::min(y, GetScreenHeight() - fs - (int)(8 * s)), fs, Fade(RAYWHITE, alpha)); // (larger text: kept on screen)

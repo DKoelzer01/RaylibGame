@@ -238,7 +238,7 @@ static void DrawOffHand(int x, int y, int size, float sc) {
 }
 
 void Hotbar_DrawHUD(bool piloting) {
-    const float sc = GameUI_Scale(); // (#827) the interface size
+    const float sc = GameUI_HudScale(); // (#827, #925) the HUD's size
     const int n = kHotbarSlots, size = (int)(64 * sc), gap = (int)(6 * sc);
     const int w = n * size + (n - 1) * gap;
     const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - (int)(44 * sc);

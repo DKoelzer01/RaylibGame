@@ -310,7 +310,7 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
 }
 
 void Survival_DrawHUD() {
-    hudS = GameUI_Scale();
+    hudS = GameUI_HudScale(); // (#925) the bars at the HUD's size (the pinned quests keep GameUI_Scale)
     const float s = hudS;
     const int x = (int)(20 * s), y = GetScreenHeight() - (int)(192 * s);
     // The oxygen and power bars grow with the suit's capacity (basic suit: 260 px).
