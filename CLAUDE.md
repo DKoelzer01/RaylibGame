@@ -194,7 +194,7 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   bit-exactly (the grid is 2 vec4 per node; the second is unused since the cliff terraces and lips went, #543);
   `--test-terrain-gpu` checks it. Plan 9 (#586): steep terrain comes from formations in the bake input, not post-bake steps.
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
-  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.25
+  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.12 (#897; was 0.25)
   (`RAYLIBGAME_MOONLIGHT`).
 - HDR (#131, scenetarget.cpp): the scene target is RGBA16F; world shaders still write display-encoded colour (pow 1/2.2),
   now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:
