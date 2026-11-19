@@ -637,6 +637,8 @@ int main(int argc, char** argv)
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
     bool benchShotGraves = false; int graveShotPhase = 0;  // --shot-graves (#804)
     bool benchShotClaims = false; int claimShotPhase = 0;  // --shot-claims (#343)
+    bool benchShotLimb = false; int limbShotPhase = 0;     // --shot-limb (#142)
+    bool benchShotClouds = false; int cloudShotPhase = 0;  // --shot-clouds (#142)
     const bool avatarSelf = getenv("RAYLIBGAME_AVATAR_SELF") && atoi(getenv("RAYLIBGAME_AVATAR_SELF")) != 0;
     bool benchShotMachines = false; int machineShotPhase = 0; // --shot-machines
     bool benchParticles = false; int particlePhase = 0; double particleT0 = 0.0; Vector3 particleEye{}, particleAt{}; // --shot-particles
@@ -1019,6 +1021,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--shot-avatar") benchShotAvatar = true;
         if (std::string(argv[i]) == "--shot-graves") benchShotGraves = true;
         if (std::string(argv[i]) == "--shot-claims") benchShotClaims = true;
+        if (std::string(argv[i]) == "--shot-limb") benchShotLimb = true;
+        if (std::string(argv[i]) == "--shot-clouds") benchShotClouds = true;
         if (std::string(argv[i]) == "--shot-machines") benchShotMachines = true;
         if (std::string(argv[i]) == "--shot-biomes") benchShotBiomes = 0;
         if (std::string(argv[i]) == "--shot-far-forest") benchFarForest = true;
@@ -5118,6 +5122,69 @@ int main(int argc, char** argv)
                             graveShotPhase = 2;
                         }
                         if (t > 6.5 && graveShotPhase == 2) { TakeScreenshot("bench_graves_nobed.png"); printf("bench: graves: bench_graves_nobed.png (the bed removed)\n"); benchShotGraves = false; }
+                    }
+                } else if (benchShotClouds && (cloudShotPhase > 0 || WorldIdle())) {
+                    // --shot-clouds (#142): the sky from the ground, 15 deg up toward the sun's bearing (clouds against it), with
+                    // the sun at 45, 8, 2 and -3 deg: bench_clouds_45 / _8 / _2 / _m3.png, 4 s each.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 up{}, fwd{};
+                    static const float kElev[4] = { 45.0f, 8.0f, 2.0f, -3.0f };
+                    static const char* kNames[4] = { "bench_clouds_45.png", "bench_clouds_8.png", "bench_clouds_2.png", "bench_clouds_m3.png" };
+                    if (!pf) benchShotClouds = false;
+                    else {
+                        if (cloudShotPhase == 0) {
+                            up = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                            fwd = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 }));
+                            Weather_Force(1); // cloudy (0.55 cover): clouds enough to judge their light
+                            cloudShotPhase = 1; t0 = GetTime();
+                        }
+                        const Vector3 eye = Vector3Scale(up, pf->radius + pf->elevation(up) + 2.0f);
+                        const float pitch = 15.0f * DEG2RAD;
+                        const Vector3 look = Vector3Add(Vector3Scale(fwd, cosf(pitch)), Vector3Scale(up, sinf(pitch)));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 100.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const int shot = cloudShotPhase - 1;
+                        const float a = kElev[shot] * DEG2RAD;
+                        sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Scale(up, sinf(a)), Vector3Scale(Vector3Normalize(Vector3Add(fwd, Vector3Scale(Vector3CrossProduct(fwd, up), 0.35f))), cosf(a)))));
+                        if (GetTime() - t0 > 4.0) {
+                            TakeScreenshot(kNames[shot]); printf("bench: clouds: %s\n", kNames[shot]);
+                            t0 = GetTime();
+                            if (++cloudShotPhase > 4) benchShotClouds = false;
+                        }
+                    }
+                } else if (benchShotLimb && (limbShotPhase > 0 || WorldIdle())) {
+                    // --shot-limb (#142): the planet's limb from orbit, the camera RAYLIBGAME_LIMB_ALT m (120 km) over the start looking
+                    // along the horizon, slightly down: the sun behind the camera (the day side's rim), to the side (the terminator
+                    // across the view), and behind the planet (backlit). bench_limb_day / _side / _back.png, 8 s each.
+                    Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+                    const PlanetField* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+                    static double t0 = 0.0; static Vector3 up{}, fwd{}, side{};
+                    if (!pf) benchShotLimb = false;
+                    else {
+                        const float alt = getenv("RAYLIBGAME_LIMB_ALT") ? (float)atof(getenv("RAYLIBGAME_LIMB_ALT")) : 120000.0f;
+                        if (limbShotPhase == 0) {
+                            up = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+                            fwd = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })); side = Vector3CrossProduct(fwd, up);
+                            limbShotPhase = 1; t0 = GetTime();
+                        }
+                        const float r = pf->radius + alt;
+                        const float dip = acosf(pf->radius / r); // the horizon's dip below level
+                        const Vector3 eye = Vector3Scale(up, r);
+                        const Vector3 look = Vector3Normalize(Vector3Add(Vector3Scale(fwd, cosf(dip * 0.85f)), Vector3Scale(up, -sinf(dip * 0.85f))));
+                        world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 1000.0f))); world.camera.up = p->dirToWorld(up);
+                        player.position = world.renderOrigin + world.camera.position;
+                        const int shot = limbShotPhase - 1; // 0 day, 1 side, 2 back
+                        const Vector3 sunL = shot == 0 ? Vector3Normalize(Vector3Add(Vector3Scale(fwd, -0.6f), Vector3Scale(up, 0.8f)))
+                                           : shot == 1 ? Vector3Normalize(Vector3Add(side, Vector3Scale(fwd, 0.15f)))
+                                                       : Vector3Normalize(Vector3Add(fwd, Vector3Scale(up, -0.08f)));
+                        sunOverride = true; sunArg = p->dirToWorld(sunL);
+                        if (GetTime() - t0 > 8.0) {
+                            static const char* names[3] = { "bench_limb_day.png", "bench_limb_side.png", "bench_limb_back.png" };
+                            TakeScreenshot(names[shot]); printf("bench: limb: %s (%.0f km up)\n", names[shot], alt / 1000.0f);
+                            t0 = GetTime();
+                            if (++limbShotPhase > 3) benchShotLimb = false;
+                        }
                     }
                 } else if (benchShotClaims && (claimShotPhase > 0 || WorldIdle())) {
                     // --shot-claims (#343): the four claim banners in a row 4 m ahead, and another team's claim (a client's mirror,
