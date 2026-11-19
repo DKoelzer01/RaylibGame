@@ -481,6 +481,7 @@ int main(int argc, char** argv)
     if (argc >= 5 && std::string(argv[1]) == "--seed-survey") return SeedSurvey_Run(argc, argv);
     if (argc >= 2 && std::string(argv[1]) == "--test-netproto") return NetProto_Test() ? 0 : 1; // the wire protocol (#320): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-claims") return Claims_SelfTest() ? 0 : 1; // (#343) the claim rules: no window, no world
+    if (argc >= 2 && std::string(argv[1]) == "--test-surface-velocity") return SurfaceVelocity_SelfTest() ? 0 : 1; // (#872): no window, no world
     if (argc >= 3 && std::string(argv[1]) == "--port-free") { const bool f = HostProcess_PortFree(atoi(argv[2])); printf("port %s: %s\n", argv[2], f ? "free" : "in use"); return f ? 0 : 1; } // (#341)
     if (argc >= 2 && std::string(argv[1]) == "--test-net-guard") return NetGuard_Test() ? 0 : 1; // the server's message limits (#349): no window, no world
     if (argc >= 2 && std::string(argv[1]) == "--test-server-admin") return Admin_Test() ? 0 : 1; // server admin lists (#345): no window, no world
