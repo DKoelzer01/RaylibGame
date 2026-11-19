@@ -10273,7 +10273,7 @@ int main(int argc, char** argv)
             static int f = 0;
             static bool previewOk = false, moduleOk = false; // (#822) the inventory screen: the preview drawn, a module fitted, the off-hand torch
             static const struct { const char* name; GameScreen s; const char* tab; } shots[] = {
-                { "inventory", GameScreen::Inventory, nullptr }, { "crafting", GameScreen::Crafting, nullptr }, { "quests", GameScreen::Quests, "Quests" },
+                { "inventory", GameScreen::Inventory, nullptr }, { "crafting", GameScreen::Crafting, nullptr }, { "craftpage", GameScreen::Crafting, nullptr }, { "quests", GameScreen::Quests, "Quests" },
                 { "questtree", GameScreen::Quests, "Quest tree" }, { "skills", GameScreen::Skills, nullptr }, { "team", GameScreen::Team, nullptr }, { "catalog", GameScreen::Catalog, nullptr }, { "help", GameScreen::Inventory, "Help" } }; // (catalog: #862, creative; before the help pop-up, which stays open)
             constexpr int kShots = (int)(sizeof(shots) / sizeof(shots[0]));
             if (f == 0) { inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12); inventory.add("copper_ingot", 6);
@@ -10284,6 +10284,10 @@ int main(int argc, char** argv)
                     terrainTool.creative = shots[k].s == GameScreen::Catalog;
                     QuestTree_TestOpenTier(!strcmp(shots[k].name, "questtree") ? 0 : -1); // (#890: the tree's pop-out, tier 0's objectives)
                     if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s);
+                    int pick = -1; // (#921) the recipe page pop-up: copper wire's (known: the copper ingots)
+                    if (!strcmp(shots[k].name, "craftpage"))
+                        for (size_t i = 0; i < itemDB.recipes().size(); ++i) if (itemDB.recipes()[i].output == "copper_wire") pick = (int)i;
+                    GameUI_SelectRecipe(pick);
                 }
                 if (phase == 15 && k == 0) { previewOk = GameUI_PreviewDrawn(); int n = 0; for (const std::string& m : Suit_Modules()) n += !m.empty(); moduleOk = n == 1 && inventory.offHand().id == "torch"; }
                 if (phase == 15) { TakeScreenshot(TextFormat("bench_window_%s.png", shots[k].name)); printf("bench: game window: bench_window_%s.png (screen %d)\n", shots[k].name, (int)GameUI_Screen()); }
@@ -12539,7 +12543,7 @@ int main(int argc, char** argv)
             if (gameState == 1 && !loading && m.action == MenuAction::None && escPressed) {
                 if (CommandLine_Open()) {} // (#823) the command line closes itself on Esc
                 else if (Nav_MapOpen()) Nav_CloseMap();
-                else if (GameUI_InventoryOpen()) GameUI_ToggleInventory();
+                else if (GameUI_InventoryOpen()) { if (!GameUI_ClosePopout()) GameUI_ToggleInventory(); } // (#921) a pop-out first
                 else if (buildTool.active) buildTool.active = false;
                 else { ShowCursor(); Menu_ResetPause(); gameState = 2; justPaused = true; }
             }

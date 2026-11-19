@@ -688,6 +688,12 @@ namespace {
     double nextCraftAt = 0.0;
     constexpr double kCraftEvery = 0.3; // s between queued crafts (you see them come)
     int selectedRecipe = -1;
+    // (#921) The selected recipe's page is a pop-up beside the recipe clicked: open or not (Esc and GameUI_SelectRecipe set
+    // it), whether ImGui showed it last frame (so a click outside, which ImGui closes it on, is seen), a click on another
+    // recipe that should keep it open on that one, and the clicked recipe's cell (the anchor) and the page's last height.
+    bool recipePageOpen = false, recipePageShown = false, recipePageReopen = false;
+    ImVec2 recipeAnchorMin{}, recipeAnchorMax{};
+    float recipePageH = 0.0f;
 }
 
 // The queue runs whether the window is open or not (GameUI_Draw calls it every frame).
@@ -748,11 +754,19 @@ static void DrawCrafting() {
         else if (GetTime() > pendingUntil) { GameUI_Toast("The chests no longer hold enough"); pending = -1; }
     }
     if (selectedRecipe >= (int)recipes.size() || (selectedRecipe >= 0 && !RecipeBook_Known(recipes[selectedRecipe]))) selectedRecipe = -1;
+    // (#921) ImGui closed the page last frame (a click outside it): closed, unless that click picked another recipe.
+    if (recipePageShown && !ImGui::IsPopupOpen("##recipepage") && !recipePageReopen) recipePageOpen = false;
+    recipePageReopen = false;
+    if (selectedRecipe < 0) recipePageOpen = false;
 
-    // (#889) A column beside the items: the recipes as large icons, a few to a row (greyed: can't make now), and under them
-    // the selected recipe's page and the queue, filling the height.
+    // (#889) A column beside the items: the recipes as icons, a few to a row (greyed: can't make now), filling the height
+    // but for the queue under them. (#921) A click on one opens its page in a pop-up beside it.
+    const int queueRows = std::min(6, 1 + (int)craftQueue.size());
+    const float queueH = queueRows * ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f + 4.0f;
+    struct CellHit { ImVec2 a, b; int recipe; };
+    std::vector<CellHit> cellsDrawn; // (the pop-up's clicks on other recipes)
     int hidden = 0, shown = 0;
-    ImGui::BeginChild("recipes", ImVec2(0.0f, ImGui::GetContentRegionAvail().y * 0.42f));
+    ImGui::BeginChild("recipes", ImVec2(0.0f, std::max(ImGui::GetFrameHeight() * 3.0f, ImGui::GetContentRegionAvail().y - queueH)));
     const float gap = 6.0f;
     // (#889 follow-up, the user: "around the same size as the inventory slots, maybe a little smaller") 0.9 of the grid's cell.
     const float want = gGridCell > 0.0f ? gGridCell * 0.9f : 72.0f * GameUI_Scale();
@@ -767,14 +781,15 @@ static void DrawCrafting() {
         const bool can = canMake(r);
         if (cat == CraftCat::CanMake && !can) continue;
         if (cat != CraftCat::All && cat != CraftCat::CanMake && CategoryOf(r.output) != cat) continue;
-        if (selectedRecipe < 0) selectedRecipe = (int)i;
         if (shown % cols != 0) ImGui::SameLine(0.0f, gap);
         ++shown;
         const ItemDef* out = itemDB.find(r.output);
         ImGui::PushID((int)i);
         const ImVec2 p = ImGui::GetCursorScreenPos(), qd(p.x + cell, p.y + cell);
-        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell)) && !OpenIfAlt(r.output)) selectedRecipe = (int)i;
-        const bool hover = ImGui::IsItemHovered(), sel = selectedRecipe == (int)i;
+        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell)) && !OpenIfAlt(r.output)) { selectedRecipe = (int)i; recipePageOpen = true; }
+        const bool hover = ImGui::IsItemHovered(), sel = recipePageOpen && selectedRecipe == (int)i;
+        if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
+        if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
         if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) craftQueue.push_back({ (int)i, 1 }); // double-click: craft one
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
@@ -793,10 +808,39 @@ static void DrawCrafting() {
         ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
         ImGui::PopTextWrapPos();
     }
+    if (shown > 0) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Click a recipe for its page; double-click crafts one"); ImGui::PopTextWrapPos(); }
     ImGui::EndChild();
 
-    ImGui::BeginChild("recipepage", ImVec2(0.0f, 0.0f), true); // (#889: under the recipes)
-    if (selectedRecipe >= 0) {
+    // (#921) The selected recipe's page: a pop-up beside its cell (to the right while it stays in the crafting column, else
+    // to the left, over the items; kept on screen), a fixed width in characters. Closes on Esc, a click outside or the same
+    // recipe again; a click on another recipe moves it there.
+    if (recipePageOpen && !ImGui::IsPopupOpen("##recipepage")) ImGui::OpenPopup("##recipepage");
+    {
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const float w = ImGui::GetFontSize() * 24.0f, m = 8.0f;
+        const float colRight = ImGui::GetWindowPos().x + ImGui::GetWindowWidth(); // (the crafting column: this child window)
+        float x = recipeAnchorMax.x + m;
+        if (x + w > colRight) x = recipeAnchorMin.x - m - w;
+        const float y = std::clamp(recipeAnchorMin.y, m, std::max(m, disp.y - recipePageH - m));
+        ImGui::SetNextWindowPos(ImVec2(std::max(m, x), y), ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(w, disp.y - 2.0f * m));
+    }
+    recipePageShown = false;
+    if (ImGui::BeginPopup("##recipepage")) {
+      recipePageShown = true;
+      if (!recipePageOpen || selectedRecipe < 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) { recipePageOpen = false; ImGui::CloseCurrentPopup(); }
+      else {
+        // A click outside the page: on another recipe, the page goes there (ImGui closes it this frame; it opens again on
+        // that one next frame); on the same recipe, or anywhere else, it closes.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            for (const CellHit& c : cellsDrawn)
+                if (mp.x >= c.a.x && mp.x < c.b.x && mp.y >= c.a.y && mp.y < c.b.y) {
+                    if (c.recipe == selectedRecipe) recipePageOpen = false;
+                    else { selectedRecipe = c.recipe; recipePageReopen = true; recipeAnchorMin = c.a; recipeAnchorMax = c.b; }
+                    break;
+                }
+        }
         const Recipe& r = recipes[selectedRecipe];
         const ItemDef* out = itemDB.find(r.output);
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -860,10 +904,13 @@ static void DrawCrafting() {
         }
         if (uses == 0) ImGui::TextDisabled("nothing you know yet");
         else if (uses % 3 != 0) ImGui::NewLine();
-    } else ImGui::TextDisabled("Pick a recipe");
+      }
+      recipePageH = ImGui::GetWindowHeight();
+      ImGui::EndPopup();
+    }
     // The queue: what's being crafted, next first.
-    ImGui::Separator();
-    ImGui::TextUnformatted(craftQueue.empty() ? "Queue: empty" : "Queue:");
+    ImGui::BeginChild("craftqueue", ImVec2(0.0f, 0.0f), true);
+    if (craftQueue.empty()) ImGui::TextDisabled("Queue: empty"); else ImGui::TextUnformatted("Queue:");
     for (size_t k = 0; k < craftQueue.size(); ++k) {
         const QueuedCraft& c = craftQueue[k];
         const ItemDef* d = c.recipe >= 0 && c.recipe < (int)recipes.size() ? itemDB.find(recipes[c.recipe].output) : nullptr;
@@ -1796,7 +1843,11 @@ void GameUI_DrawHUD(Scene& world) {
 // (#824) the crafting queue from outside (tests; later, e.g. a recipe's "craft" from the database pop-up, #826)
 void GameUI_QueueCraft(int recipe, int count) { if (count > 0) craftQueue.push_back({ recipe, count }); }
 int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }
-void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; }
+void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; recipePageOpen = recipe >= 0; } // (#921: its page open)
+bool GameUI_ClosePopout() { // (#921) Esc: a pop-out closes before the window does
+    if (inventoryOpen && recipePageOpen && screen == GameScreen::Crafting) { recipePageOpen = false; return true; }
+    return inventoryOpen && screen == GameScreen::Quests && QuestTree_ClosePopout();
+}
 
 // (#826) the database pop-up from outside the window's clicks (tests; later a key or a link from quests)
 void GameUI_OpenDatabase(const std::string& id) { inventoryOpen = true; if (!id.empty()) HelpManual_OpenItem(id); databaseOpen = true; }

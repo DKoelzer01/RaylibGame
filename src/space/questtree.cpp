@@ -146,6 +146,7 @@ bool QuestTree_LoadLine(const char* tok, FILE* f) {
 
 static int openTier = -1; // (#890) the tier whose objectives are open in the pop-out (-1: none)
 void QuestTree_TestOpenTier(int tier) { openTier = tier; } // (shots and tests)
+bool QuestTree_ClosePopout() { if (openTier < 0) return false; openTier = -1; return true; }
 
 void QuestTree_DrawTab() {
     Load();
