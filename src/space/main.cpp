@@ -2475,6 +2475,7 @@ int main(int argc, char** argv)
                         } else {
                             if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
+                            if (chopSwings == 3) { TakeScreenshot("bench_chop_aim.png"); printf("bench: chop: bench_chop_aim.png (the hover: size and species, #528)\n"); }
                             if (TerrainTool_Chop()) {
                                 const int wood = inventory.count("any_log") - chopWood0;
                                 printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");

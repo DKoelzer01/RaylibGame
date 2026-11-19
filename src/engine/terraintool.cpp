@@ -756,7 +756,14 @@ void TerrainTool_DrawHUD() {
     const int fsL = (int)(20 * hs), fsS = (int)(18 * hs), ox = cx + (int)(14 * hs), oy1 = cy + (int)(10 * hs), oy2 = cy + (int)(34 * hs), oy3 = cy + (int)(58 * hs);
     if (hasPlant) {
         const Plant& p = plantHit.plant;
-        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", p.tree() ? "tree" : p.stone() ? "stones" : "bush", plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
+        std::string what = p.tree() ? "tree" : p.stone() ? "stones" : "bush";
+        if (p.tree()) { // (#528, the user) its size class (#274) and species: "large oak"
+            static const char* kSize[] = { "small", "medium", "large", "giant" };
+            std::string species = WoodSpeciesInfo(SpeciesOfVariant(p.variant)).name;
+            for (char& ch : species) ch = (char)tolower((unsigned char)ch);
+            what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
+        }
+        DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
         if (chopId == p.id && chopHits > 0) {
             const float f = (float)chopHits / HitsToFell(p);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
