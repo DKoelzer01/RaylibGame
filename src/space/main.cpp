@@ -49,6 +49,7 @@
 #include "glcaps.h"
 #include "buildtool.h"
 #include "recorder.h"
+#include "scenario.h"
 #include "slideshow.h"
 #include "bugreport.h"
 #include "progression_test.h"
@@ -437,6 +438,7 @@ static void OcclusionScan(Scene& world, bool print, std::unordered_set<const Chu
 
 int main(int argc, char** argv)
 {
+    Scenario_PrepareArgs(argc, argv); // (#870) --scenario NAME: the scenario's own flags added to argv (scenario.h)
     // Scripted runs (--bench, --test-*, --shot-*): stdout unbuffered, before any output, so a run killed by a timeout
     // still shows every result line it reached (#556: the last lines were lost and a finished test looked hung).
     // (Line buffering is full buffering in the Windows CRT.)
@@ -1181,6 +1183,7 @@ int main(int argc, char** argv)
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
     if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
+    Scenario_Setup(); // (#870) a scenario saves to its run's scratch dir
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
     bool msaa = true;
@@ -2170,6 +2173,7 @@ int main(int argc, char** argv)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
             } else if (benchStart < 0.0) {
+                if (Scenario_Frame(world)) {} else // (#870) a running scenario holds the bench start, as the tests below do
                 if (WorldIdle() && benchDigStrokes > 0) {
                     // Scripted edit test: carve a shaft straight down under the player.
                     TerrainHit hit;
@@ -12343,6 +12347,7 @@ int main(int argc, char** argv)
         PROFILE_FRAME();
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
+    Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
     if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists

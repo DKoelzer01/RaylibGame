@@ -26,6 +26,11 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   never defines it). `cmake --build build/check --target game_tests` then `ctest --test-dir build/check -j 4` (or
   `build/check/bin/game_tests.exe` from the repo root); the suite stays under 30 s. Re-run `cmake build/check` after adding
   the first test block to a file. No window or GL in them (`UnitTest::FieldOnlyScene()` for code that reads only renderOrigin).
+- **Scenarios (Tier 2, #870):** one file per scenario in `tests/scenarios/` (`SCENARIO("area/name") { s.step(...); }`, see
+  src/space/scenario.h). `game.exe --scenario NAME` (or `tag:fluid`, `all`, `a,b`; `--scenario-list`) runs with fixed dt, lockstep
+  fluids, seed 42, a scratch save dir, a heartbeat every 5 s and a low-res recording (deleted on PASS, kept on FAIL); results go
+  to `<--scenario-out DIR>/<name>/results.json`. `game.exe --scenario-report DIR [out.html]` makes the HTML report and appends to
+  the history on the share. Several names or a tag run each scenario in its own process. New tests are scenarios, not flags.
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)
