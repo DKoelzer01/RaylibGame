@@ -9902,16 +9902,17 @@ int main(int argc, char** argv)
             static bool previewOk = false, moduleOk = false; // (#822) the inventory screen: the preview drawn, a module fitted, the off-hand torch
             static const struct { const char* name; GameScreen s; const char* tab; } shots[] = {
                 { "inventory", GameScreen::Inventory, nullptr }, { "crafting", GameScreen::Crafting, nullptr }, { "quests", GameScreen::Quests, "Quests" },
-                { "questtree", GameScreen::Quests, "Quest tree" }, { "skills", GameScreen::Skills, nullptr }, { "team", GameScreen::Team, nullptr }, { "help", GameScreen::Inventory, "Help" } };
+                { "questtree", GameScreen::Quests, "Quest tree" }, { "skills", GameScreen::Skills, nullptr }, { "team", GameScreen::Team, nullptr }, { "catalog", GameScreen::Catalog, nullptr }, { "help", GameScreen::Inventory, "Help" } }; // (catalog: #862, creative; before the help pop-up, which stays open)
             constexpr int kShots = (int)(sizeof(shots) / sizeof(shots[0]));
             if (f == 0) { inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12); inventory.add("copper_ingot", 6);
                 inventory.add("oxygen_tank_module", 2); Suit_Fit("oxygen_tank_module"); inventory.add("field_suit", 1); settings.mpSuit = 0x3E86D8; inventory.grid()[Inventory::kOffHand] = InvSlot{ "torch", 400 }; } // (#822) a module fitted, one carried; a torch in the off hand
             const int k = f / 20, phase = f % 20;
             if (k < kShots) {
-                if (phase == 0) { if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s); }
+                if (phase == 0) { terrainTool.creative = shots[k].s == GameScreen::Catalog; if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s); }
                 if (phase == 15 && k == 0) { previewOk = GameUI_PreviewDrawn(); int n = 0; for (const std::string& m : Suit_Modules()) n += !m.empty(); moduleOk = n == 1 && inventory.offHand().id == "torch"; }
                 if (phase == 15) { TakeScreenshot(TextFormat("bench_window_%s.png", shots[k].name)); printf("bench: game window: bench_window_%s.png (screen %d)\n", shots[k].name, (int)GameUI_Screen()); }
             } else {
+                terrainTool.creative = false;
                 bool tables = true;
                 std::set<std::string> ids;
                 for (int a = 0; a < (int)Act::Count; ++a) {
@@ -10811,6 +10812,18 @@ int main(int argc, char** argv)
             }
             auto recipeIdx = [](const char* out) { for (size_t k = 0; k < itemDB.recipes().size(); ++k) if (itemDB.recipes()[k].output == out) return (int)k; return -1; };
             if (feeder && stored && !craftedFromChest && GetTime() - t0 > 20.0) { planks0 = inventory.count("oak_planks"); Crafting_Request(recipeIdx("oak_planks"), 2); craftedFromChest = true; }
+            // (#862) the item rules' chest requests: 2 planks into chest slot 7 (MachineAction 8), then the 2 taken back out
+            // (9); the server's deltas show each (8 -> 6 -> 8), so the planks check above still ends at 8
+            static int planksPut = -1, planksBack = -1;
+            static bool slotPut = false, slotTook = false;
+            static double slotPutAt = 0.0;
+            if (feeder && chestPl && craftedFromChest && !slotPut && GetTime() - t0 > 24.0 && inventory.count("oak_planks") >= 2) {
+                inventory.remove("oak_planks", 2); MachineAct_InsertSlot(mb->id, chestPl->id, chestPart, "oak_planks", 2, 7); slotPut = true; slotPutAt = GetTime();
+            }
+            if (feeder && slotPut && !slotTook && GetTime() - slotPutAt > 3.0) {
+                planksPut = inventory.count("oak_planks"); MachineAct_Take(mb->id, chestPl->id, chestPart, "oak_planks", 2); slotTook = true;
+            }
+            if (feeder && slotTook) planksBack = inventory.count("oak_planks");
             auto fireCount = [&](bool outputs, const char* item) { int n = 0; if (fire) for (const auto& s : (outputs ? Factory::View(mb->id, fire->id, firePart).outSlots : Factory::View(mb->id, fire->id, firePart).inSlots)) if (s.first == item) n += s.second; return n; };
             // the feeder puts one more root in once the outputs have been taken (the view shows them empty)
             if (feeder && fire && !refed && craftedFromChest && GetTime() - t0 > 30.0 && fireCount(true, "roasted_roots") == 0 && inventory.count("roots") >= 1) { inventory.remove("roots", 1); MachineAct_Insert(mb->id, fire->id, firePart, "roots", 1); refed = true; }
@@ -10834,6 +10847,8 @@ int main(int argc, char** argv)
                 printf("bench: net machines 2 (%s, #854): cursor moves %d; crafted from the chest %d: planks %d -> %d; removed the campfire %d: roots %d -> %d, campfires %d -> %d\n",
                        role ? role : "?", MachineAct_CursorMoves(), (int)craftedFromChest, planks0, inventory.count("oak_planks"),
                        (int)removed, roots1, inventory.count("roots"), campfires1, inventory.count("campfire"));
+                if (feeder) printf("bench: net machines 3 (%s, #862): into chest slot 7 %d: planks -> %d; taken back %d: planks -> %d\n",
+                                   role ? role : "?", (int)slotPut, planksPut, (int)slotTook, planksBack);
                 NetClient_Disconnect(gJoin);
                 benchNetMachines = false;
             }
