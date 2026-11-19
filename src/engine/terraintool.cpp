@@ -88,11 +88,13 @@ namespace {
         if (gPlantRequest) { // joined (#335): the server fells it for everyone and credits the drops; its removal comes back
             gPlantRequest(*plantBody, p.id);
             pendingFell = p.id; pendingFellUntil = GetTime() + 1.5; // (no new swings at it while the answer is on its way)
+            gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
             chopId = 0; chopHits = 0; hasPlant = false;
             return true;
         }
         plantBody->trees->remove(p.id);
         GiveDrops(TerrainTool_PlantDrops(*plantBody, p));
+        gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
         chopId = 0; chopHits = 0;
         hasPlant = false;
         return true;
@@ -236,7 +238,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     const bool bucket = terrainTool.heldTool == "bucket" || terrainTool.heldTool == "water_bucket";
     if (bucket && in.hit(Act::Secondary)) TerrainTool_Bucket(world);
 
-    digging = in.down(Act::Primary);
+    digging = gPrimaryLatch.allows(in.down(Act::Primary)); // (#895: not after a break, until the button is pressed again)
     adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
