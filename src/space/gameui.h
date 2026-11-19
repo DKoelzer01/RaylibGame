@@ -21,6 +21,7 @@ bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this
 void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
+bool GameUI_ClosePopout();                     // (#921) Esc: closes an open pop-out (a recipe's page, a quest tier); false: none was open
 #include <string>
 #include <functional>
 // (#866) Set while joined (main.cpp): creative items from the server (the Catalog, a creative middle-click; "" clears the inventory).
