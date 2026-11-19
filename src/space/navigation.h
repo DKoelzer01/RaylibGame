@@ -43,6 +43,7 @@ void Nav_AddWaypoint(const std::string& body, Vector3 localDir, const std::strin
 void Nav_RemoveWaypoint(const std::string& body, const std::string& name);
 int Nav_WaypointCount();
 bool Nav_MinimapReady();
+bool Nav_MinimapShown(); // (#932) the minimap is on screen (it drew within the last 0.1 s)
 bool Nav_MapImageReady();
 
 #endif
