@@ -1,4 +1,4 @@
-// The A/B runner (#871): one scenario run 2N times, A and B interleaved (A B A B ...: drift in the machine's load hits both
+// The A/B runner (#871): one scenario run 2N times, A and B interleaved in pairs (each pair's order random, #881: drift and position effects hit both
 // alike), each in its own process with its side's environment. Compares every metric the runs report (the perf scenarios'
 // frame times, the fluid scenarios' numbers) as mean +- standard deviation and the change from A to B.
 //   game.exe --scenario-ab NAME --ab-a "K=V[;K=V]" --ab-b "K=V[;K=V]" [--ab-runs N] [--ab-max-delta PCT [--ab-metric NAME]]
@@ -73,6 +73,8 @@ int ScenarioAB_Main(int argc, char** argv) {
     std::string name, envA, envB, outDir, metricName = "frame mean";
     int runs = 3;
     double maxDelta = -1.0;
+    bool randomOrder = true;       // --ab-order random|fixed (#881): each pair's order drawn by a coin
+    unsigned orderSeed = (unsigned)std::time(nullptr); // --ab-seed N: repeat an order
     std::vector<std::string> pass;
     for (int i = 0; i < argc; ++i) {
         const std::string a = argv[i];
@@ -81,6 +83,8 @@ int ScenarioAB_Main(int argc, char** argv) {
         else if (a == "--ab-runs" && i + 1 < argc) runs = std::max(1, atoi(argv[++i]));
         else if (a == "--ab-max-delta" && i + 1 < argc) maxDelta = atof(argv[++i]);
         else if (a == "--ab-metric" && i + 1 < argc) metricName = argv[++i];
+        else if (a == "--ab-order" && i + 1 < argc) randomOrder = std::string(argv[++i]) != "fixed";
+        else if (a == "--ab-seed" && i + 1 < argc) orderSeed = (unsigned)strtoul(argv[++i], nullptr, 10);
         else if (a == "--scenario-out" && i + 1 < argc) outDir = argv[++i];
         else if (name.empty() && a[0] != '-') name = a;
         else pass.push_back(a);
@@ -99,8 +103,17 @@ int ScenarioAB_Main(int argc, char** argv) {
     std::map<std::string, std::vector<double>> va, vb;
     const std::string exe = ScenarioProc_Exe();
     int bad = 0;
+    // (#881) Each pair's order is a coin flip by default: two quiet-window A/Bs (2026-11-19) both read their last run 7-9%
+    // fast, always the same side with a fixed A B A B. A random order spreads such position effects over both sides.
+    std::vector<bool> aFirst((size_t)runs, true);
+    { unsigned s = orderSeed * 2654435761u + 1u; for (int p = 0; p < runs; ++p) { s = s * 1664525u + 1013904223u; aFirst[p] = !randomOrder || (s >> 16) & 1u; } }
+    {
+        std::string order;
+        for (int p = 0; p < runs; ++p) order += aFirst[p] ? "AB " : "BA ";
+        printf("ab: order %s(%s, seed %u: --ab-seed to repeat, --ab-order fixed for A B A B)\n", order.c_str(), randomOrder ? "random" : "fixed", orderSeed);
+    }
     for (int r = 0; r < runs * 2; ++r) {
-        const bool isA = r % 2 == 0;
+        const bool isA = (r % 2 == 0) == aFirst[r / 2];
         // The other side's keys are cleared to empty first (a key only one side names would leak into the next run).
         for (const auto& kv : a) SetEnv(kv.first, "");
         for (const auto& kv : b) SetEnv(kv.first, "");
