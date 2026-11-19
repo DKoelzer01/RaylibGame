@@ -63,5 +63,7 @@ std::string Profiler_SummaryJson();      // "" when off or nothing was recorded
 void Profiler_PrintSummary();            // "profile: ..." lines
 // Microbenchmark for the overhead check: ns per zone (on), and per zone while off.
 void Profiler_MeasureZoneCost(double& onNs, double& offNs);
+double Profiler_CommitMB();               // the process's commit charge now (MB; tests, #902)
+double Profiler_VramUsedMB();             // GPU memory in use now (MB; NVIDIA only, else 0)
 
 #endif

@@ -463,7 +463,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr) { 
 
 // ---------------------------------------------------------------------------------------------
 
-void Animals_Reset() { animals.clear(); spawnedTiles.clear(); aimed = -1; }
+void Animals_Reset() { animals.clear(); spawnedTiles.clear(); aimed = -1; gSearch.active = false; gSearch.body = nullptr; } // (#902: the search held the old world's body)
 int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }

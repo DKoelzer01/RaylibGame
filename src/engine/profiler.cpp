@@ -343,3 +343,24 @@ TEST(Profiler, OffRecordsNothingAndCostsLittle) {
 }
 #endif
 #endif
+
+// Memory now (tests: reloads, #902), in both builds: the process's commit charge and the GPU memory in use (NVIDIA's
+// NVX_gpu_memory_info: total minus available; 0 elsewhere).
+extern "C" {
+    typedef void (*PfnGetIntegervMem)(unsigned int, int*);
+    extern PfnGetIntegervMem glad_glGetIntegerv;
+}
+double Profiler_CommitMB() {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return pmc.PagefileUsage / 1048576.0;
+#endif
+    return 0.0;
+}
+double Profiler_VramUsedMB() {
+    if (!glad_glGetIntegerv) return 0.0;
+    int total = 0, avail = 0;
+    glad_glGetIntegerv(0x9048, &total);
+    glad_glGetIntegerv(0x9049, &avail);
+    return total > 0 && avail > 0 && total >= avail ? (total - avail) / 1024.0 : 0.0;
+}

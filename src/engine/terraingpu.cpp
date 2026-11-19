@@ -409,4 +409,8 @@ void TerrainGpu_Unload() {
     S.field = nullptr;
     S.verified.clear();
     S.disabled = false;
+    // The old world's GPU memory freed now, not when the driver gets round to it (#902): unloadWorld deletes the terrain
+    // arena (GBs after a long play) and these buffers, and the next world reserves its own arena a moment later - with
+    // both resident a third load ran the machine out of memory. One wait behind the loading screen.
+    glFinish();
 }

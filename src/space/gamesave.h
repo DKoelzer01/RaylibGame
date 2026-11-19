@@ -2,6 +2,7 @@
 #define GAMESAVE_H
 
 #include <functional>
+#include "dvec3.h"
 
 // Registers save/load hooks for gameplay state with the world save file: the world's own state in the save, the player's in
 // their record beside it (#346, playerrecord.h).
@@ -9,6 +10,9 @@ void GameSave_Register();
 // Whether the last load found this game's player (their record, or a format 12 save's player lines).
 bool GameSave_PlayerLoaded();
 double GameSave_PlayTime();   // (#827) seconds this player has played in this world (their record's, plus this session)
+// (#901) The local player's place from the world just loaded, in its body's frame (the body by NetId), once: the loading
+// screen holds the player there exactly (a frame later the planet has turned ~1.5 m).
+bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local);
 // Called by a load that found no player of ours (a world from a dedicated server, say): put a new player at the world's
 // start with the starting kit. The world's own state (quests, difficulty) is the save's.
 void GameSave_SetNewPlayerHook(std::function<void()> hook);

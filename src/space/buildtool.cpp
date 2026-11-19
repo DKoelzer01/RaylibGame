@@ -646,3 +646,6 @@ void Machine_DrawHUD() {
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
+
+// The world is going (#902): the aim points into its bodies and plots.
+void BuildTool_ForgetWorld() { aim = {}; }

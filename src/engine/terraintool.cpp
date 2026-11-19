@@ -882,3 +882,10 @@ bool TerrainTool_TestFill() {
     terrainTool.sphereFill = false;
     return ok;
 }
+
+// The world is going (#902): the last hit and the plant under the crosshair point into its bodies - drawing goes on while the
+// next world loads, and TerrainTool_Draw3D drew the old hit on a freed planet.
+void TerrainTool_ForgetWorld() {
+    hit = TerrainHit{}; hasHit = false; digging = adding = false;
+    hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopHits = 0;
+}

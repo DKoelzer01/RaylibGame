@@ -207,6 +207,10 @@ bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".
 extern std::function<void(FILE*)> saveExtrasHook;
 extern std::function<void(FILE*)> loadExtrasHook;
+extern std::function<void()> loadDoneHook; // the end of a load, every body back in its saved state (#901: player records go to world space then)
+// Run by unloadWorld before the old world's bodies are freed (#902): modules that keep a body, plot or hit pointer between
+// frames drop it there - drawing goes on while the next world loads, and a pointer into the freed world crashed a reload.
+void World_AddUnloadHook(std::function<void()> hook);
 bool LoadWorldSave(Scene& world);
 
 #endif

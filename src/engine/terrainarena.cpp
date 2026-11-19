@@ -144,7 +144,12 @@ namespace {
         glGenBuffers(1, &b);
         glBindBuffer(GL_COPY_WRITE_BUFFER, b);
         GpuMemTag gm130_("terrain arena"); // VRAM accounting (#302)
+        while (glGetError() != GL_NO_ERROR) {} // (earlier errors are not this allocation's)
         glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, usage);
+        // Out of video memory (#902): said so, not a buffer with no storage that later draws and copies run into.
+        if (glGetError() == GL_OUT_OF_MEMORY)
+            LOG_FATAL("Arena", "out of video memory growing the terrain arena to %.0f MB (from %.0f MB; %.0f MB of GPU memory tracked in use)\n",
+                      newBytes / 1048576.0, oldBytes / 1048576.0, GpuMem_Total() / 1048576.0);
         if (old && oldBytes) {
             glBindBuffer(GL_COPY_READ_BUFFER, old);
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)oldBytes);

@@ -15,7 +15,10 @@ namespace {
     constexpr float kPeriod = 512.0f;   // metres the texture spans (it tiles)
 
     bool enabled = true, envRead = false;
-    const Planetoid* body = nullptr;
+    // The body by id (#902): a pointer outlived a reload - the next frame drew with the old world's freed planet (a crash on
+    // the third load of a session, Wind_Bind -> toWorldD). Ids are never reused: a body gone resolves to none.
+    uint64_t bodyId = 0;
+    const Planetoid* Body() { return bodyId ? Planetoid::find(bodyId) : nullptr; }
     Vector3 anchor{}, e1{ 1, 0, 0 }, e2{ 0, 0, 1 }; // body-local anchor on the surface near the player, and its tangent basis
     double shiftX = 0.0, shiftY = 0.0;                // how far the air has moved (m, along e1/e2), wrapped to the period
     Vector3 mean{};                                   // body-local mean wind (m/s) with the daily cycle and weather in
@@ -102,11 +105,11 @@ void Wind_SetFrame(const Planetoid* b, Vector3 playerLocal, Vector3 meanLocal, f
     ReadEnv();
     Build();
     const float len = Vector3Length(playerLocal);
-    if (!b || len < 1.0f) { body = nullptr; return; }
+    if (!b || len < 1.0f) { bodyId = 0; return; }
     const Vector3 up = Vector3Scale(playerLocal, 1.0f / len);
     // A new anchor when the player is 2 km from the old one (or on another body): the gust pattern restarts there.
-    if (b != body || Vector3Distance(anchor, playerLocal) > 2000.0f) {
-        body = b; anchor = playerLocal; Basis(up);
+    if (b->id != bodyId || Vector3Distance(anchor, playerLocal) > 2000.0f) {
+        bodyId = b->id; anchor = playerLocal; Basis(up);
         shiftX = shiftY = 0.0;
     }
     storm = std::clamp(s, 0.0f, 1.0f);
@@ -118,7 +121,7 @@ void Wind_SetFrame(const Planetoid* b, Vector3 playerLocal, Vector3 meanLocal, f
 }
 
 Vector3 Wind_At(const Planetoid& b, Vector3 local, float heightAboveGround, bool withTerrain) {
-    if (!ReadEnv() || &b != body || texels.empty()) return { 0, 0, 0 };
+    if (!ReadEnv() || b.id != bodyId || texels.empty()) return { 0, 0, 0 };
     const Vector3 rel = Vector3Subtract(local, anchor);
     const float u = (float)((Vector3DotProduct(rel, e1) - shiftX) / kPeriod), v = (float)((Vector3DotProduct(rel, e2) - shiftY) / kPeriod);
     float s[3]; Sample(u, v, s);
@@ -154,7 +157,7 @@ Vector3 Wind_At(const Planetoid& b, Vector3 local, float heightAboveGround, bool
 }
 
 float Wind_Gust01(const Planetoid& b, Vector3 local) {
-    if (!ReadEnv() || &b != body || texels.empty()) return 0.0f;
+    if (!ReadEnv() || b.id != bodyId || texels.empty()) return 0.0f;
     const Vector3 rel = Vector3Subtract(local, anchor);
     float s[3]; Sample((float)((Vector3DotProduct(rel, e1) - shiftX) / kPeriod), (float)((Vector3DotProduct(rel, e2) - shiftY) / kPeriod), s);
     float factor, swing, burst; Shape(s, factor, swing, burst);
@@ -163,6 +166,7 @@ float Wind_Gust01(const Planetoid& b, Vector3 local) {
 
 void Wind_Bind(Shader s, DVec3 renderOrigin, int slot) {
     const int onLoc = GetShaderLocation(s, "windOn");
+    const Planetoid* body = Body();
     const float on = (ReadEnv() && body && !texels.empty()) ? 1.0f : 0.0f;
     if (onLoc >= 0) rlSetUniform(onLoc, &on, RL_SHADER_UNIFORM_FLOAT, 1);
     if (on == 0.0f) return;
