@@ -45,7 +45,6 @@
 #include "combat.h"
 #include "claims.h"
 #include "teamquests.h"
-#include "slotrules.h"
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
@@ -1295,7 +1294,6 @@ int main(int argc, char** argv)
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
-    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-slot-rules") { CloseWindow(); return SlotRules_SelfTest() ? 0 : 1; } // (#862) the item rules on made-up grids
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)

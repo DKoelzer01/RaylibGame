@@ -65,4 +65,3 @@ void SlotRules_Cancel();                                   // the window closed:
 // A drag in progress, for drawing its preview: the slots dragged across and what each would get (centi; a split's share).
 struct SlotDragPreview { const SlotGrid* grid; int slot; int64_t centi; };
 std::vector<SlotDragPreview> SlotRules_DragPreview();
-bool SlotRules_SelfTest();                                 // --test-slot-rules: every rule on two made-up grids
