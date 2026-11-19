@@ -9772,8 +9772,6 @@ int main(int argc, char** argv)
                     Plot* pl = b->plots->plotFor(at, 0.0f, true);
                     inventory.add(PartItem(Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }), 4);
                     placed = pl && BuildTool_Place(*b, *pl, Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, true);
-                    printf("bench: claim offline: on %s, a plot %d, the cell free %d, %d banner items\n", b->name.c_str(), pl ? 1 : 0, (int)fits,
-                           inventory.count(PartItem(Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 })));
                     team = Teams_Of(PlayerId_Local());
                     const Claim* c = Claims_At(b->name, pl ? pl->toBody(Vector3{ 0.5f * kCellSize, 0.5f * kCellSize, 0.5f * kCellSize }) : at);
                     claimed = c != nullptr;
