@@ -12258,6 +12258,7 @@ int main(int argc, char** argv)
             if (ff == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
             if (ff >= 8 && ff < 30) player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 0.8f), Vector3Scale(player.up, 0.5f)));
             if (ff == 30) TerrainTool_TestFill();
+            if (ff == 50) TerrainTool_TestFillOffHand(); // (#836)
             if (ff == 70) { TakeScreenshot("bench_fill.png"); printf("bench: fill: bench_fill.png\n"); benchFill = false; }
         }
         // --test-lamps (#139): at the dawn start (dark), 100 lamp cubes on a 2 m grid round the player light the ground.
