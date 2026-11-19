@@ -610,6 +610,10 @@ void Scene::drawScene(int gamestate) {
     // lights shadows a little (sky ambient); both fade with altitude and at night. Under the sea the
     // camera sees a dense dark-blue fog instead.
     const Vector3 sun = Vector3Normalize(sunDirection);
+    // The fixed base ambient (1/255) under an atmosphere (#897): it was a night floor (~10/255 on screen) that the moonlight
+    // scale could not go under, so 0.25 / 0.12 / 0.06 looked alike. It fades out with the air (the moonlit sky ambient is the
+    // night light there) and stays on airless bodies. RAYLIBGAME_AMBIENT_BASE = its strength under the air (A/B: 1 = before).
+    static const float baseAmbAir = getenv("RAYLIBGAME_AMBIENT_BASE") ? (float)atof(getenv("RAYLIBGAME_AMBIENT_BASE")) : 0.0f;
     Vector3 effFog = fogColor, effAmbient = ambientColor, skyHorizon = { 0, 0, 0 };
     float effFogDensity = fogDensity, atmDensity = 0.0f;
     Vector3 atmUp = { 0, 1, 0 };
@@ -619,6 +623,7 @@ void Scene::drawScene(int gamestate) {
         atmUp = d > 1e-3f ? Vector3Scale(rel, 1.0f / d) : Vector3{ 0, 1, 0 };
         const float alt = d - atmosphere.radius;
         atmDensity = powf(std::clamp(1.0f - alt / atmosphere.height, 0.0f, 1.0f), 1.5f);
+        effAmbient = Vector3Scale(effAmbient, 1.0f - atmDensity * (1.0f - baseAmbAir));
         const float s = Vector3DotProduct(atmUp, sun);
         // The day sky as atmosphere.fs (#276): full from just before sunrise to just after sunset.
         const float t = std::clamp((s + 0.10f) / 0.12f, 0.0f, 1.0f);
