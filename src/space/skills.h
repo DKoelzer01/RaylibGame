@@ -69,6 +69,9 @@ void Skills_Respec(SkillState& s, const std::string& skill); // every point of t
 // Stats in slice 1: rock_speed, ore_speed, ore_yield, stone_yield, gem_chance, pick_wear, rock_radius.
 double Skills_Stat(const SkillState& s, const std::string& stat);
 
+// The world's XP rate (Q6: 0.5, 1, 2 or 5; saved with the world as "xp_rate", new worlds take the New World screen's).
+inline float worldXpRate = 1.0f;
+
 // Saves and player records: "skill_xp <id> <xp>" and "perk <id> <rank>" lines.
 std::string Skills_SaveText(const SkillState& s);
 bool Skills_LoadLine(SkillState& s, const char* line);     // true when it was one of ours

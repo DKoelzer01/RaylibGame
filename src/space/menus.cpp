@@ -346,6 +346,7 @@ void Settings_Load() {
             else if (!strcmp(key, "showhands")) settings.showHands = v != 0.0f;
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
+            else if (!strcmp(key, "xprate")) settings.xpRate = std::clamp((float)v, 0.5f, 5.0f); // (#883)
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
@@ -367,6 +368,7 @@ void Settings_Save() {
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
+    fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)

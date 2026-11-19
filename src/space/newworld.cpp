@@ -30,6 +30,7 @@ namespace {
     bool seedFocus = false;
     WorldGenParams params;
     int difficulty = 1;           // #526: set at creation, kept by the world
+    int xpRate = 1;               // (#883) 0.5x, 1x, 2x, 5x: an index into kXpRates
     double changedAt = 0.0;       // the last input change (the preview rebuilds 0.35 s after it)
     bool dirty = true;
     float spin = 0.0f;
@@ -256,6 +257,7 @@ void NewWorld_Open() {
     InitGpu();
     params = WorldGenParams{};
     difficulty = std::clamp(settings.difficulty, 0, 2);
+    xpRate = 1; for (int k = 0; k < 4; ++k) if (fabsf(settings.xpRate - kXpRates[k]) < 0.01f) xpRate = k;
     seedFocus = false;
     haveMap = false;
     RollSeed();
@@ -343,10 +345,22 @@ NewWorldChoice NewWorld_Draw() {
             if (Button(b, names[k])) difficulty = k;
             if (k == difficulty) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
         }
+        y += rowH + gap;
+    }
+    {   // XP rate (#883, the user on #167): how fast skills level in this world; kept by the world.
+        static const char* names[] = { "0.5x", "1x", "2x", "5x" };
+        const int fs = (int)(rowH * 0.5f);
+        const float bx = px + pw * 0.34f, bw = pw * 0.15f;
+        DrawText("Skill XP", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
+        for (int k = 0; k < 4; ++k) {
+            const Rectangle b = { bx + k * (bw + gap * 0.5f), y, bw, rowH };
+            if (Button(b, names[k])) xpRate = k;
+            if (k == xpRate) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
+        }
     }
     // The bottom row: Create World, Cancel, Defaults (#637: a Defaults row under the sliders ran into it once they were 11).
     const float by = H * 0.18f + kPanelH * H - rowH - 40 * s;
-    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; r.difficulty = difficulty; }
+    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; r.difficulty = difficulty; r.xpRate = kXpRates[xpRate]; }
     if (Button({ px + pw * 0.43f, by, pw * 0.3f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
     if (Button({ px + pw * 0.76f, by, pw * 0.24f, rowH * 1.15f }, "Defaults")) { params = WorldGenParams{}; Changed(); }
 

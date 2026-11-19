@@ -99,6 +99,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "ring.h"
 #include "factory.h"
 #include "machineact.h"
+#include "skillplay.h"
 #include "fluid.h"
 #include "watersurface.h"
 #include "waterfield.h"
@@ -289,6 +290,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
+        LocalSession().skills = SkillState{}; // (#883)
         RecipeBook_Reset();
     }
     Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -312,7 +314,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         if (start->trees) start->trees->addClearing(start->toLocal(feet), 14.0f);
     }
     // The starting kit by difficulty (a save restores its own inventory and difficulty).
-    if (reset) worldDifficulty = settings.difficulty;
+    if (reset) { worldDifficulty = settings.difficulty; worldXpRate = settings.xpRate; } // (xp: #883)
     if (inventory.count("telescope") == 0) inventory.add("telescope", 1);
     if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1); // hard: find your own way
     if (reset && worldDifficulty == 0) inventory.add("berries", 6);
@@ -1309,6 +1311,7 @@ int main(int argc, char** argv)
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
     GameUI_InitPickupFeed(); // "+N item" in the bottom right (#208)
+    SkillPlay_Init(); // (#883) skills: the terrain tool's XP events and the perks' multipliers
     GameUI_InstallKeyHints(); // (#827)
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-compute") {
@@ -9711,7 +9714,7 @@ int main(int argc, char** argv)
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
             if (terrainTool.swings > lastSwings && !terrainTool.creative && !terrainTool.terraform && !terrainTool.heldTool.empty())
-                ToolWear_OnStroke(terrainTool.heldTool, terrainTool.swings - lastSwings);
+                ToolWear_OnStroke(terrainTool.heldTool, SkillPlay_WearStrokes(terrainTool.heldTool, terrainTool.swings - lastSwings)); // (#883: Light Hands)
             lastSwings = terrainTool.swings;
         }
 
@@ -12205,7 +12208,7 @@ int main(int argc, char** argv)
                 if (!worldFresh) {
                     if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
                     else NewWorld_Apply(nw);           // the seed, and <save>.worldgen: generateWorld reads it
-                    if (!bench) { settings.difficulty = nw.difficulty; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
+                    if (!bench) { settings.difficulty = nw.difficulty; settings.xpRate = nw.xpRate; Settings_Save(); } // the world keeps it (#526); the next New World screen starts from it
                     regenerateWorld(world);            // the erosion bake (or its cache) behind its progress screen
                     StartNewWorld(world, true, !bench);
                 }
