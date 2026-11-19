@@ -259,8 +259,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         strokeLength = (float)(nextStrokeAt - now);
         return;
     }
-    float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
-    if (!terrainTool.terraform && PickOnRock()) rate *= SkillStat("rock_speed") * (HitOre() ? SkillStat("ore_speed") : 1.0f); // (#883) Mining's perks
+    const float rate = TerrainTool_StrokeRate();
     const float interval = 1.0f / rate;
     if (!TerrainTool_Stroke(digging)) { nextStrokeAt = now + 0.4; strokeLength = 0.4f; return; }
     terrainTool.swingTime = interval;
@@ -413,6 +412,13 @@ static bool BrushStroke(bool digging) {
 static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
 static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
 static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
+// Strokes a second for the aimed ground with the tool in hand: the tool's rule, and (#883) Mining's perks on a pick at rock
+// and ore (Quick Pick, Vein Follower).
+float TerrainTool_StrokeRate() {
+    float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
+    if (!terrainTool.terraform && PickOnRock()) rate *= SkillStat("rock_speed") * (HitOre() ? SkillStat("ore_speed") : 1.0f);
+    return rate;
+}
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
     return PickOnRock() ? r * SkillStat("rock_radius") : r;
@@ -558,6 +564,7 @@ static bool FillStroke(Planetoid& p) {
     e.center = c; e.radius = r; e.fill = true; e.paint = paint;
     StrokeParticles(p, hit.local, hit.material, false);
     ApplyTerrainEdit(p, e);
+    if (gSkillEvent) gSkillEvent("fill", 0.0, e.center); // (#883) ground we placed: dug out again soon, it pays little XP
     Audio_Play(Sfx::Build, 0.6f, 0.8f);
     return true;
 }
@@ -626,6 +633,7 @@ bool TerrainTool_Stroke(bool dig) {
         e.paint = paint;
         StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);
+        if (gSkillEvent) gSkillEvent("fill", 0.0, e.center); // (#883) ground we placed: dug out again soon, it pays little XP
         Audio_Play(Sfx::Build, 0.6f);
         return true;
     }

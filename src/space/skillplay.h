@@ -10,3 +10,4 @@
 void SkillPlay_Init();                                              // once at start-up: sets the terrain tool's hooks
 // Tool wear for `strokes` strokes with `toolId` in hand, after the perks (pick_wear for picks): the strokes that wear it.
 int SkillPlay_WearStrokes(const std::string& toolId, int strokes);
+int SkillPlay_LevelUps();                                           // (tests) level-ups the local player has had since start-up

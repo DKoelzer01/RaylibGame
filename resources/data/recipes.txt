@@ -93,6 +93,7 @@ titanium_claim_banner 1 = titanium_alloy_plate 4, advanced_circuit 2
 # Environmental suit (milestone 13).
 cloth 1              = fibre 4
 cloth 2              = wool 3
+retraining_manual 1  = cloth 2, charcoal 2, any_planks 1
 field_suit 1         = steel_plate 6, cloth 6, hide 2
 explorer_suit 1      = titanium_alloy_ingot 6, advanced_circuit 2, cloth 4
 oxygen_tank_module 1 = iron_plate 4, glass 2

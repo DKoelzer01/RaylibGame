@@ -47,6 +47,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = 
 bool TerrainTool_Stroke(bool dig);                         // one dig/build stroke at the last crosshair hit
 bool TerrainTool_IsFiller(const std::string& item);        // bulk ground placed with RMB (dirt, gravel, sand, stone...)
 float TerrainTool_Cooldown();                              // 1 just after a swing .. 0 ready for the next
+float TerrainTool_StrokeRate();                            // strokes a second at the aimed ground with the tool in hand (#883: with the perks)
 bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); true when it came down
 bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pour (RMB; scripted tests call it after aiming)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);

@@ -338,25 +338,18 @@ NewWorldChoice NewWorld_Draw() {
         // it, it ran into the note.
         static const char* names[] = { "Peaceful", "Normal", "Hard" };
         const int fs = (int)(rowH * 0.5f);
-        const float bx = px + pw * 0.34f, bw = pw * 0.2f;
+        const float bx = px + pw * 0.34f, bw = pw * 0.155f;
         DrawText("Difficulty", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
         for (int k = 0; k < 3; ++k) {
             const Rectangle b = { bx + k * (bw + gap * 0.5f), y, bw, rowH };
             if (Button(b, names[k])) difficulty = k;
             if (k == difficulty) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
         }
-        y += rowH + gap;
-    }
-    {   // XP rate (#883, the user on #167): how fast skills level in this world; kept by the world.
-        static const char* names[] = { "0.5x", "1x", "2x", "5x" };
-        const int fs = (int)(rowH * 0.5f);
-        const float bx = px + pw * 0.34f, bw = pw * 0.15f;
-        DrawText("Skill XP", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
-        for (int k = 0; k < 4; ++k) {
-            const Rectangle b = { bx + k * (bw + gap * 0.5f), y, bw, rowH };
-            if (Button(b, names[k])) xpRate = k;
-            if (k == xpRate) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
-        }
+        // Skill XP rate (#883, the user on #167): how fast skills level in this world, kept by it; one button in the same row
+        // (a row of its own ran into the bottom buttons) that steps through 0.5x, 1x, 2x, 5x.
+        static const char* rates[] = { "XP 0.5x", "XP 1x", "XP 2x", "XP 5x" };
+        const float xx = bx + 3 * (bw + gap * 0.5f) + gap * 0.5f;
+        if (Button({ xx, y, px + pw - xx, rowH }, rates[xpRate])) xpRate = (xpRate + 1) % 4;
     }
     // The bottom row: Create World, Cancel, Defaults (#637: a Defaults row under the sliders ran into it once they were 11).
     const float by = H * 0.18f + kPanelH * H - rowH - 40 * s;

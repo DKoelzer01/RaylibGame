@@ -99,14 +99,16 @@ int Skills_Event(SkillState& s, const std::string& event, double n, double rate,
     return up;
 }
 
-double Skills_CellShare(SkillState& s, uint64_t cell, double now) {
-    constexpr double kWindow = 60.0;   // s
-    if (s.recentCells.size() > 4096)   // (old ones out now and then: the map stays small)
-        for (auto it = s.recentCells.begin(); it != s.recentCells.end();) { if (now - it->second > kWindow) it = s.recentCells.erase(it); else ++it; }
-    auto it = s.recentCells.find(cell);
-    const bool recent = it != s.recentCells.end() && now - it->second < kWindow;
-    s.recentCells[cell] = now;
-    return recent ? 0.1 : 1.0;
+namespace { constexpr double kFillWindow = 600.0; } // s: ground the player filled stays "theirs" this long
+void Skills_NoteFill(SkillState& s, uint64_t cell, double now) {
+    if (s.filledCells.size() > 4096) // (old ones out now and then: the map stays small)
+        for (auto it = s.filledCells.begin(); it != s.filledCells.end();) { if (now - it->second > kFillWindow) it = s.filledCells.erase(it); else ++it; }
+    s.filledCells[cell] = now;
+}
+
+double Skills_DigShare(const SkillState& s, uint64_t cell, double now) {
+    auto it = s.filledCells.find(cell);
+    return it != s.filledCells.end() && now - it->second < kFillWindow ? 0.1 : 1.0;
 }
 
 void Skills_OnDeath(SkillState& s, double share) {
@@ -234,12 +236,14 @@ TEST_F(SkillsTest, EventsPayEverySkillThatCountsThemAtTheWorldRate) {
     EXPECT_EQ(Skills_AddXp(s, "no_such_skill", 1000.0), 0);
 }
 
-TEST_F(SkillsTest, TheSameCellDugAgainWithinAMinutePaysLittle) {
+TEST_F(SkillsTest, GroundYouFilledPaysLittleWhenDugOutAgain) {
     SkillState s;
-    EXPECT_DOUBLE_EQ(Skills_CellShare(s, 42, 0.0), 1.0);
-    EXPECT_DOUBLE_EQ(Skills_CellShare(s, 42, 30.0), 0.1) << "dug again 30 s later";
-    EXPECT_DOUBLE_EQ(Skills_CellShare(s, 43, 31.0), 1.0) << "another cell";
-    EXPECT_DOUBLE_EQ(Skills_CellShare(s, 42, 100.0), 1.0) << "over a minute after its last stroke";
+    EXPECT_DOUBLE_EQ(Skills_DigShare(s, 42, 0.0), 1.0) << "untouched ground pays in full";
+    EXPECT_DOUBLE_EQ(Skills_DigShare(s, 42, 1.0), 1.0) << "digging the same spot again (a hole going down) still pays";
+    Skills_NoteFill(s, 42, 10.0);
+    EXPECT_DOUBLE_EQ(Skills_DigShare(s, 42, 70.0), 0.1) << "ground you filled, dug out again within 10 minutes";
+    EXPECT_DOUBLE_EQ(Skills_DigShare(s, 43, 70.0), 1.0) << "another cell";
+    EXPECT_DOUBLE_EQ(Skills_DigShare(s, 42, 700.0), 1.0) << "after 10 minutes it is ground like any other";
 }
 
 TEST_F(SkillsTest, DeathCostsProgressNeverALevel) {

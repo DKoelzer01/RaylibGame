@@ -27,8 +27,9 @@ struct PerkDef {
 struct SkillState {
     std::map<std::string, double> xp;                     // by skill id
     std::map<std::string, int> ranks;                     // by perk id
-    // Anti-farming (not saved): recent dig cells (a key) and when, so the same cell dug again within a minute pays little.
-    std::unordered_map<uint64_t, double> recentCells;
+    // Anti-farming (not saved): ground this player filled (a cell key) and when, so filling a hole and digging it out again
+    // pays little (digging on into the same spot, a hole going down, pays in full).
+    std::unordered_map<uint64_t, double> filledCells;
 };
 
 // The tables (resources/data/skills.txt), loaded once. Tests may load their own text.
@@ -50,9 +51,10 @@ int Skills_AddXp(SkillState& s, const std::string& skill, double xp, double rate
 // An event the game counted (rock_stroke, ore_stroke, gem, chop, ...): every skill that pays for it gains its XP x n.
 // Returns the levels gained across skills; levelled (if given) gets each skill that levelled.
 int Skills_Event(SkillState& s, const std::string& event, double n = 1.0, double rate = 1.0, std::vector<std::string>* levelled = nullptr);
-// A dig stroke at a cell (any stable key: the cell's coordinates hashed), now (s): what share of its XP it pays.
-// 1 for a fresh cell, 0.1 for one dug in the last minute (digging a hole and filling it back in pays little).
-double Skills_CellShare(SkillState& s, uint64_t cell, double now);
+// Cells are any stable key (a 1 m cell's coordinates packed); now in seconds. A fill notes its cell; a dig stroke pays
+// 0.1 of its XP in a cell this player filled within the last 10 minutes, else all of it.
+void Skills_NoteFill(SkillState& s, uint64_t cell, double now);
+double Skills_DigShare(const SkillState& s, uint64_t cell, double now);
 // Death (Q2): loses `share` of the progress toward the next level in every skill, never a level.
 void Skills_OnDeath(SkillState& s, double share = 0.25);
 
