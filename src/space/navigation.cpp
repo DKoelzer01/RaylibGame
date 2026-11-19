@@ -273,6 +273,8 @@ void Nav_ToggleMap() {
 int Nav_ExploredTiles(const std::string& body) { auto it = explored.find(body); return it == explored.end() ? 0 : (int)it->second.size(); }
 int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
+static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
+bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.1; }
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
@@ -441,6 +443,7 @@ void Nav_DrawHUD(Scene& world) {
     }
     // Minimap (with a Map): north-up image turned so the view points up; a circle.
     if (!HasMap() || !minimap.tex.id || !minimap.shown || minimapBody != h.body->name) return;
+    minimapDrawnAt = GetTime();
     const MapImage& m = *minimap.shown;
     const float size = 200.0f, rad = size * 0.5f;
     const Vector2 c = { sw - rad - 20.0f, 150.0f + rad };

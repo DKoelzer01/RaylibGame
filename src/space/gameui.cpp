@@ -12,6 +12,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "questtree.h"
+#include "navigation.h"
 #include "recipebook.h"
 #include "net.h"
 #include "storage.h"
@@ -1818,8 +1819,9 @@ void GameUI_DrawHUD(Scene& world) {
         DrawText("JET", w - 260, 68, 16, RAYWHITE);
     }
     // Under the minimap (#574): where you are (latitude, longitude and height over the body whose sphere of influence you
-    // are in; world kilometres out in space), then speed and gravity, then the biome and the weather.
-    {
+    // are in; world kilometres out in space), then speed and gravity, then the biome and the weather. (#932, the user) Only
+    // while the minimap is on screen (a Map carried): it reads as the map's caption.
+    if (Nav_MinimapShown()) {
         int ly = 384; // the minimap and its scale line end at ~372
         const int lfs = (int)(16 * GameUI_HudScale()); auto line = [&](const char* t, Color c) { DrawText(t, w - 20 - MeasureText(t, lfs), ly, lfs, c); ly += lfs + 4; }; // (#891: at the scale) // right-aligned with the minimap
         bool rotate = false;
@@ -1834,7 +1836,7 @@ void GameUI_DrawHUD(Scene& world) {
             const DVec3 p = player.position;
             line(TextFormat("%.1f  %.1f  %.1f km", p.x / 1000.0, p.y / 1000.0, p.z / 1000.0), RAYWHITE);
         }
-        const char* mode = player.flyMode ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE";
+        const char* mode = player.flyMode && terrainTool.creative ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE"; // (#932: fly is creative only)
         line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), RAYWHITE);
         const char* biome = Survival_BiomeName();
         const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
