@@ -88,6 +88,7 @@ constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
 // Fill units for 1.6 cm (4 at 1 m, 16 at 0.25 m: in units a quarter-metre cell's resting water never settled, W4c #674).
 const int kSettleDiff = std::max(4, (int)lroundf(0.016f * 255.0f / WaterField::CellSize()));
+constexpr int kSettleOutliers = 16; // cells of a brick (of 4096) that may swing more and still let it sleep (#855)
 // A brick with its levels held is steady flow (kept running) only with a net current of at least this (cm/s, #680); below it,
 // at rest. RAYLIBGAME_STEADY_NET=0: any GPU change counts as flow (the old rule), for A/B.
 const float kSteadyNet = [] { const char* e = getenv("RAYLIBGAME_STEADY_NET"); return e ? (float)atof(e) : 5.0f; }();
@@ -151,6 +152,7 @@ struct Brick {
     int blockRelease = -1, blocked = 0; // cells of ground added into that released reach's river (the dam: #656 follow-up)
     long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
     bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
+    bool zeroFaces = false;         // GPU mode: its slot's momentum is cleared before the next step (an inactive brick holds none, #855)
     // Steady flow (#674): levels stable over a settle window while water keeps moving through (the GPU reported changes in at
     // least half its ticks). It keeps running - the water still reaches what is downstream - but is read back and published
     // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
@@ -160,6 +162,20 @@ struct Brick {
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
+// How far a brick's cells moved from its check copy, for settling (#366): the largest change, except that a few cells
+// (kSettleOutliers, by at most 4 x kSettleDiff) may swing more and count as kSettleDiff (#855: where the lattice rounds a
+// basin's floor and walls into partly solid cells, single cells trade a few cm with their neighbours for good, and one such
+// cell kept its brick - and through the wake rules a ring of bricks around it - awake). Used by the settle window and by the
+// checks that keep a settled brick asleep, so a brick that slept with its outliers is not woken by them.
+int SettleDrift(const Brick& b) {
+    int maxd = 0, over = 0;
+    for (int i = 0; i < B3; ++i) {
+        const int d = abs((int)b.fill[i] - (int)b.check[i]);
+        maxd = std::max(maxd, d);
+        over += d > kSettleDiff ? 1 : 0;
+    }
+    return maxd > kSettleDiff && over <= kSettleOutliers && maxd <= 4 * kSettleDiff ? kSettleDiff : maxd;
+}
 
 
 struct Site {
@@ -1042,8 +1058,8 @@ void RunJob() {
                 ++b.winTicks;
                 if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
-                    int maxd = 0;
-                    for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
+                    const int maxd = SettleDrift(b); // a few outlier cells allowed (#855); the volume check below still catches
+                                                     // water that is really going somewhere
                     // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
                     // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
                     // Passing through means a net current too (#680): at 0.25 m cells resting water jitters a fill unit nearly
@@ -1066,7 +1082,10 @@ void RunJob() {
                     // would lag the GPU, and CPU and GPU runs drifted apart at the first steady brick, #680.)
                     static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
                     if (maxd <= 2 * kSettleDiff && flowing && volumeHeld && gpuMode && !lockstep) b.steady = true; // a moving surface wobbles more than a still one
-                    else if (maxd <= kSettleDiff && volumeHeld) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
+                    else if (maxd <= kSettleDiff && volumeHeld) {
+                        b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true;
+                        b.faces.clear(); b.zeroFaces = true; // at rest: no momentum (#855: as a GPU slot given back and taken again)
+                    }
                     else b.steady = false;
                     b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther;
                 }
@@ -1496,14 +1515,12 @@ void GpuReadback() {
                     if (!takes((size_t)li)) continue;
                     Brick* br = G.owner[G.lastList[li]];
                     const uint32_t* pc = packed + (size_t)li * (kCellsPerBrick / 2);
-                    int dr = 0;
                     for (int i = 0; i < B3; ++i) {
                         const uint32_t v = (pc[i >> 1] >> ((i & 1) * 16)) & 0xFFFFu; // fill | kind << 8 (fluid_pack.comp)
                         br->fill[i] = (uint8_t)(v & 255u);
                         br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((v >> 8) & 7u) << kKindShift));
-                        if (br->settled) dr = std::max(dr, abs((int)br->fill[i] - (int)br->check[i]));
                     }
-                    drift[li] = dr;
+                    drift[li] = br->settled ? SettleDrift(*br) : 0;
                 }
             };
             std::atomic<int> left{ parts - 1 };
@@ -1531,19 +1548,31 @@ void GpuReadback() {
                     for (int i = 0; i < B3; ++i) {
                         br->fill[i] = (uint8_t)(cells[i] & 255u);
                         br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
-                        if (br->settled) drift[li] = std::max(drift[li], abs((int)br->fill[i] - (int)br->check[i]));
                     }
+                    if (br->settled) drift[li] = SettleDrift(*br);
                 }
-                if (br->settled && drift[li] <= kSettleDiff) { br->changed = true; continue; } // a resting brick at the edge of a dispatch: stays asleep (#366)
-                if (br->settled) { ++wakeGpu; br->settled = false; }
-                Touch(br);
-                for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
+                if (br->settled && drift[li] <= kSettleDiff) br->changed = true; // a resting brick at the edge of a dispatch: stays asleep (#366)
+                else {
+                    if (br->settled) { ++wakeGpu; br->settled = false; }
+                    Touch(br);
+                    for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
+                }
             } else if (br->active && (br->idle += G.lastN) > kSleepSteps) {
                 br->active = false;
             }
+            // A face request: the neighbour brick is made if missing, woken if asleep - as the CPU tick does (#855: here it was
+            // only made, so the column pairs' requests never woke a sleeping brick on the GPU, and CPU and GPU parted once
+            // bricks slept; nor did a resting brick at a dispatch's edge pass its requests on).
             for (int face = 0; face < 6; ++face)
-                if (fl & (2u << face)) site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+                if (fl & (2u << face)) {
+                    if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
+                    else site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+                }
         }
+        // An inactive brick holds no momentum (#855): a slot given back and taken again starts at rest (GpuUploadBrick), so a
+        // brick that ran asleep (at a dispatch's edge) drops what it carried, here and in the CPU tick alike.
+        for (size_t li = 0; li < G.lastList.size(); ++li)
+            if (Brick* br = G.owner[G.lastList[li]]; br && !br->active) br->zeroFaces = true;
         static std::vector<unsigned> zeros;
         zeros.assign(G.capacity, 0u);
         G.flags.upload(zeros.data(), G.capacity * 4);
@@ -1653,6 +1682,17 @@ void GpuTick(int n) {
             for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
     }
+    // 3b. Bricks that went to sleep hold no momentum (#855; the CPU tick clears its copies): their slots' face records cleared.
+    {
+        static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f);
+        for (auto& s : sites)
+            for (auto& kv : s->bricks) {
+                Brick& br = *kv.second;
+                if (!br.zeroFaces) continue;
+                br.zeroFaces = false;
+                if (br.slot >= 0) G.faceP.upload(noFlow.data(), kCellsPerBrick * kFacePBytes, br.slot * kCellsPerBrick * kFacePBytes);
+            }
+    }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
     std::vector<unsigned> inS(G.capacity, 0u);
     std::vector<int> list;
@@ -1692,7 +1732,7 @@ void GpuTick(int n) {
     G.step.setInt("kColumnCells", ColumnCells());
     { // fill units per m^3 / per metre, the CPU kernel's own floats (#680: the shader divided them itself, not correctly rounded)
         FluidKernel::Params kp; kp.setCell(cellSize, ColumnCells());
-        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu);
+        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits);
     }
     static const bool advectOn = !EnvFlag("FLUID_NOADVECT");
     G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
@@ -1752,6 +1792,8 @@ void GpuTick(int n) {
             G.flowPack.setUint("count", (unsigned)list.size());
             const float cs = WaterField::CellSize();
             rlSetUniform(G.flowPack.uniform("cellSize"), &cs, RL_SHADER_UNIFORM_FLOAT, 1);
+            G.flowPack.setInt("columns", G.colOn ? 1 : 0); // #855: column records sit at run bottoms, with the units moved
+            { FluidKernel::Params kp; kp.setCell(cs, ColumnCells()); G.flowPack.setFloat("unitFlow", 1.0f / ((kGpuSubstepSeconds / SubstepScale()) * kp.units)); }
             G.a.bind(0); G.list.bind(3); G.faceN.bind(9); G.flowPacked.bind(13);
             G.flowPack.dispatch(1, bricks);
         }
@@ -1832,7 +1874,9 @@ void CpuTick(int n) {
             Brick* b = kv.second.get();
             if (!b->ready || !b->active) continue;
             add(b, s.get());
-            for (Brick* o : b->nbr) add(o, s.get());
+            // Its neighbours run too, as on the GPU (GpuTick 4.): not a brick of solid rock or a dry one above (#669) - those
+            // are read-only ring here as there (#855: once bricks slept, running them here and not there parted CPU and GPU).
+            for (int fc = 0; fc < 6; ++fc) if (Brick* o = b->nbr[fc]; o && (o->active || RunsBeside(*o, fc))) add(o, s.get());
         }
     const int processedCount = (int)slots.size();
     for (int i = 0; i < processedCount; ++i) list.push_back(i);
@@ -1893,8 +1937,8 @@ void CpuTick(int n) {
             for (int k = 0; k < B3; ++k) {
                 br->fill[k] = (uint8_t)(c[k] & 255u);
                 br->flags[k] = (uint8_t)((br->flags[k] & ~kKindMask) | (((c[k] >> 8) & 255u) & kKindMask));
-                if (br->settled) drift = std::max(drift, abs((int)br->fill[k] - (int)br->check[k]));
             }
+            if (br->settled) drift = SettleDrift(*br);
         }
         slotDrift[i] = drift;
     });
@@ -1920,6 +1964,7 @@ void CpuTick(int n) {
                 else slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
             }
     }
+    for (int i = 0; i < processedCount; ++i) if (!slots[i]->active) slots[i]->faces.clear(); // asleep: no momentum (#855, GpuTick)
     for (Brick* b : slots) b->cpuSlot = -1;
 }
 
