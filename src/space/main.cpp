@@ -7601,7 +7601,7 @@ int main(int argc, char** argv)
                                 printf("bench: flow dbg shaft %+.0f m: %s  density %.2f\n", h, Fluid::DebugCell(*p, q).c_str(), p->densityAt(q));
                             }
                         }
-                        if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 120.0) {
+                        if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 240.0) { // #935: the sites settle in ~220-230 s once the phantom current is gone
                             TakeScreenshot("bench_flow_end.png");
                             const Fluid::Stats s = Fluid::GetStats();
                             const float caveTop = Fluid::SurfaceAbove(*p, flowCave, 16.0f);
