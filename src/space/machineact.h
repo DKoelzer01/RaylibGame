@@ -22,6 +22,9 @@ void MachineAct_Take(uint64_t bodyId, uint32_t plotId, int part, const std::stri
 void MachineAct_TakeSlot(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int cursorCount = -1);
 bool MachineAct_Remote();                         // a joined game: actions go to the server
 void MachineAct_Update();                        // once a frame (#854: a joined client's cursor takes, once their items arrive)
+// (#866) `count` of item is coming into the inventory from the server (a creative take): move it onto the cursor once its
+// delta has brought it (as the cursor takes above).
+void MachineAct_ExpectOnCursor(const std::string& item, int count);
 int MachineAct_CursorMoves();                    // (#854 tests) cursor takes completed (the items moved onto the cursor)
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.

@@ -609,6 +609,9 @@ int main(int argc, char** argv)
     bool benchTeams = false;         // --test-teams (#604, with --host): invite, accept, team state, team chat, kick
     bool benchSkills = false;         // --test-skills (#883): real strokes earn XP, a level-up, a perk speeds strokes up
     bool benchInventoryFps = false;   // --bench-inventory-fps (#887): frame time with the game window closed, then open on the Inventory screen
+    float benchUiScale = 0.0f;        // --ui-scale S (#891): the interface size for benches and shots (benches read no settings: 0 = auto)
+    bool benchClaimOffline = false;   // --test-claim-offline (#900): a banner placed in single player claims its land
+    bool benchJoinedItems = false;    // --test-joined-items (#865, #866, with --host): creative gives and drops through the server
     bool shotTeam = false;           // --shot-team (#604): the Team screen and the HUD strip, from a sample team (no server)
     bool benchIdleDrift = false;     // --test-idle-drift (#856, with --host): a joiner that sends nothing yet stays put in the planet's frame
     bool benchDungeon = false; int dungeonFrame = 0; // --test-dungeon (#719)
@@ -961,6 +964,9 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-teams") benchTeams = true;
         if (std::string(argv[i]) == "--test-skills") benchSkills = true;
         if (std::string(argv[i]) == "--bench-inventory-fps") benchInventoryFps = true;
+        if (std::string(argv[i]) == "--ui-scale" && i + 1 < argc) benchUiScale = (float)atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--test-claim-offline") benchClaimOffline = true;
+        if (std::string(argv[i]) == "--test-joined-items") benchJoinedItems = true;
         if (std::string(argv[i]) == "--shot-team") shotTeam = true;
         if (std::string(argv[i]) == "--test-idle-drift") benchIdleDrift = true;
         if (std::string(argv[i]) == "--test-dungeon") benchDungeon = true;
@@ -1465,6 +1471,8 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
+        gDropRequest = [](const std::string& item, int64_t centi) { NetClient_DropItems(gJoin, item, centi); }; // (#865)
+        gCreativeGive = [](const std::string& item, int count) { NetClient_CreativeGive(gJoin, item, count); }; // (#866)
         gCraftRequest = [](int index, const std::string& output, int count, bool useChests) { NetClient_Craft(gJoin, index, output, count, useChests); }; // (#338) and our crafting
         // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
         gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
@@ -1511,6 +1519,7 @@ int main(int argc, char** argv)
     if (!benchAtSave && !hostLoaded && !world.objects.empty()) StartNewWorld(world, false, !bench);
     if (!hostSave.empty() && !hostLoaded) SaveWorld(world);
     if (!bench) Settings_Load();
+    if (benchUiScale > 0.0f) settings.uiScale = benchUiScale; // (#891 shots)
     bool worldFresh = !world.objects.empty() && !loadSaveAtStart; // a bench's world generated at launch: New Game uses it as it is
     MenuResult pendingMenu;
     NewWorldChoice pendingNewWorld; // the New World screen's choice, handled at the start of the next frame (#504)
@@ -9029,7 +9038,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchSkills && !benchInventoryFps && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9808,6 +9817,40 @@ int main(int argc, char** argv)
                        rate0, rate1, rate0 > 0.0 ? rate1 / rate0 : 0.0, ok ? "PASS" : "FAIL");
                 worldXpRate = 1.0f;
                 benchSkills = false;
+            }
+        }
+        // --test-claim-offline (#900): in single player, a claim banner placed 4 m ahead (BuildTool_Place, the build tool's own
+        // path) claims its land for the player's team (a team of one made for them): Claims_At there finds it, and the map's
+        // mirror shows it as ours. Its claim goes with the save (the claims and team lines), so a hosted copy keeps it.
+        if (benchClaimOffline && gameState == 1 && !loading && WorldIdle()) {
+            static int frames = 0;
+            if (frames++ == 0)
+                if (Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get())) { player.flyMode = false; player.spawnOn(world, *p0, StartSpawnDir(*p0)); } // (standing on the body)
+            if (frames > 600) { printf("bench: claim offline (#900): no body under the player after 600 frames -> FAIL\n"); benchClaimOffline = false; }
+            else if (frames >= 30 && player.nearest) { // (a body under the feet)
+                Planetoid* b = player.nearest;
+                bool placed = false, claimed = false, ours = false, mirrored = false;
+                int team = 0;
+                if (b) {
+                    const Vector3 me = b->toLocalD(player.position).toFloat();
+                    const Vector3 up = Vector3Normalize(me);
+                    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 at = Vector3Add(me, Vector3Scale(t1, 4.0f));
+                    if (!b->plots) b->plots = std::make_unique<PlotSet>();
+                    Plot* pl = b->plots->plotFor(at, 0.0f, true);
+                    inventory.add(PartItem(Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }), 4);
+                    placed = pl && BuildTool_Place(*b, *pl, Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, true);
+                    team = Teams_Of(PlayerId_Local());
+                    const Claim* c = Claims_At(b->name, pl ? pl->toBody(Vector3{ 0.5f * kCellSize, 0.5f * kCellSize, 0.5f * kCellSize }) : at);
+                    claimed = c != nullptr;
+                    ours = c && team != 0 && c->team == team;
+                    BuildTool_Update(world, PlayerInput::None(), true); // (the mirror refreshes on the build tool's update)
+                    for (const ClaimView& v : Claims_Mirror()) mirrored = mirrored || (v.ours && c && v.id == c->id);
+                }
+                const bool ok = placed && claimed && ours && mirrored;
+                printf("bench: claim offline (#900): banner placed %d; its land claimed %d, for the player's team %d (team %d); on the map as ours %d -> %s\n",
+                       placed, claimed, ours, team, mirrored, ok ? "PASS" : "FAIL");
+                benchClaimOffline = false;
             }
         }
         if (testInvCursor && gameState == 1 && !loading && WorldIdle()) {
@@ -11502,6 +11545,51 @@ int main(int argc, char** argv)
         //   - autosave: with a short --autosave-minutes (<= 1) the test waits for one autosave;
         //   - the connection lifecycle (#321) with clients opened in this process over loopback (below): the welcome's world
         //     description (seed, fingerprint) and shower must match the host's. That part SKIPs without ENABLE_GNS.
+        // --test-joined-items (#865, #866, with --host <save>): "maker" (made creative) and "plain" join over loopback (clients in
+        // this process). maker takes 20 stone from the Catalog (CreativeGive): the server's inventory gets them; plain's give is
+        // refused. maker drops 5 (DropItems): the server takes them and makes a pile both clients hear of (Graves, dropped).
+        // maker stands on it and doesn't take it back (only walking away arms it); plain, at the same spot, takes it 2 s later.
+        if (benchJoinedItems && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
+            static NetClient maker, plain;
+            static int step = 0;
+            static double t0 = -1.0, stepAt = 0.0;
+            static bool given = false, refused = false, dropped = false, heard = false, keptByDropper = false, takenByOther = false;
+            static double apart = -1.0;
+            static int plainGraves0 = 0;
+            if (t0 < 0.0) t0 = GetTime();
+            for (NetClient* c : { &maker, &plain }) NetClient_Update(*c);
+            const uint32_t ms = maker.welcome.session, ps = plain.welcome.session;
+            auto pileOf = [](const std::string& owner) { for (const GraveInfo& g : Combat_GraveList()) if (g.dropped && g.owner == owner) return true; return false; };
+            if (step == 0) { NetClient_Connect(maker, TextFormat("127.0.0.1:%d", hostPort), "maker"); NetClient_Connect(plain, TextFormat("127.0.0.1:%d", hostPort), "plain"); step = 1; }
+            else if (step == 1 && maker.state == NetClient::State::Joined && plain.state == NetClient::State::Joined && Host_SetCreative("maker", true)) {
+                NetClient_CreativeGive(maker, "stone", 20); NetClient_CreativeGive(plain, "stone", 20); stepAt = GetTime(); step = 2;
+            } else if (step == 2 && ((Host_ItemCount(ms, "stone") == 20 && Host_CreativeRefused() >= 1) || GetTime() - stepAt > 5.0)) {
+                given = Host_ItemCount(ms, "stone") == 20; refused = Host_CreativeRefused() >= 1 && Host_ItemCount(ps, "stone") <= 0;
+                apart = Host_PlayersApart(world, ms, ps);
+                plainGraves0 = plain.gravesMsgs;
+                NetClient_DropItems(maker, "stone", 500); stepAt = GetTime(); step = 3;
+            } else if (step == 3 && ((Host_ItemCount(ms, "stone") == 15 && pileOf("maker") && plain.gravesMsgs > plainGraves0) || GetTime() - stepAt > 5.0)) {
+                dropped = Host_ItemCount(ms, "stone") == 15 && Host_DropsMade() >= 1 && pileOf("maker");
+                heard = plain.gravesMsgs > plainGraves0 && plain.lastGraves >= 1;
+                Host_TestPutPlayerAt(world, ps, ms); // plain onto maker's spot, by the pile (they joined 3 m apart; a pickup reaches 2.5 m)
+                apart = Host_PlayersApart(world, ms, ps);
+                stepAt = GetTime(); step = 4;
+            } else if (step == 4 && GetTime() - stepAt > 1.0) { // within 2 s: nobody has it yet, the dropper standing on it least of all
+                keptByDropper = Host_ItemCount(ms, "stone") == 15 && pileOf("maker");
+                stepAt = GetTime(); step = 5;
+            } else if (step == 5 && ((Host_ItemCount(ps, "stone") == 5 && !pileOf("maker")) || GetTime() - stepAt > 6.0)) {
+                takenByOther = Host_ItemCount(ps, "stone") == 5 && !pileOf("maker") && Host_ItemCount(ms, "stone") == 15;
+                step = 6;
+            }
+            if (step == 6 || GetTime() - t0 > 60.0) {
+                const bool ok = given && refused && dropped && heard && keptByDropper && takenByOther;
+                printf("bench: joined items (#865, #866): creative give reached the server %d, a survival player's refused %d; drop made a pile and left the server's "
+                       "inventory %d, the other client heard of it %d; the dropper on it kept off %d, the other player, moved onto it, took it after 2 s %d (players then %.1f m apart); step %d -> %s\n",
+                       given, refused, dropped, heard, keptByDropper, takenByOther, apart, step, ok ? "PASS" : "FAIL");
+                for (NetClient* c : { &maker, &plain }) NetClient_Disconnect(*c);
+                benchJoinedItems = false;
+            }
+        }
         // --test-teams (#604, with --host <save>): alice, bob and carol join over loopback (clients in this process); alice
         // invites bob, bob sees it and accepts; both hear a team of two (bob online, with his health); bob's team chat reaches
         // alice, not carol; carol (not the owner, another team) can't kick; alice kicks bob: a team of one again.
@@ -12184,7 +12272,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
@@ -12426,6 +12514,7 @@ int main(int argc, char** argv)
             if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
                 if (gameState == 1) GameUI_PrepareFrame(world); // (#822) the inventory screen's player preview, rendered before ImGui
+                GameUI_ApplyStyleScale(); // (#891) the interface scale (fonts, padding) before the frame
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);

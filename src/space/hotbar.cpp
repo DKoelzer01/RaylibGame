@@ -34,6 +34,7 @@ namespace {
         if (!held || food.empty() || !Survival_IsFood(food)) { H().eatProgress = 0.0f; H().eatBlocked = false; return; }
         if (H().eatBlocked) return;
         if (H().eatProgress == 0.0f && survival.food >= 98.0f) { GameUI_Toast("You are full"); H().eatBlocked = true; return; }
+        gPrimaryLatch.consume(); // (#896) eating: LMB strikes nothing, and one held now waits for a release afterwards
         H().eatProgress += dt / kEatSeconds;
         if (H().eatProgress >= 1.0f) {
             if (Survival_UseItem(food)) ++H().eatenCount;

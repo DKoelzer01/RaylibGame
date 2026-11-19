@@ -58,7 +58,6 @@ void CommandLine_Draw() {
             ImGui::SetNextWindowPos(ImVec2(20 * s, ImGui::GetIO().DisplaySize.y - 200 * s));
             ImGui::SetNextWindowBgAlpha(0.55f);
             ImGui::Begin("##cmdreply", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-            ImGui::SetWindowFontScale(s);
             ImGui::TextUnformatted(lastReply.c_str());
             ImGui::End();
         }
@@ -69,7 +68,6 @@ void CommandLine_Draw() {
     ImGui::SetNextWindowSize(ImVec2(std::min(760.0f * s, io.DisplaySize.x - 40 * s), 0.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::Begin("##cmdline", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::SetWindowFontScale(s);
     const bool joined = gNetClient && gNetClient->state == NetClient::State::Joined;
     ImGui::TextDisabled(joined ? "Say something, or a /command (Enter sends, Esc closes)" : "A /command (Enter runs it, Esc closes; /help lists them)");
     if (focusNext) { ImGui::SetKeyboardFocusHere(); focusNext = false; }

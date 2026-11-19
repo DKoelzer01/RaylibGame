@@ -335,7 +335,7 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, g)) return;
                 ++c.gravesMsgs;
                 std::vector<GraveInfo> list;
-                for (const auto& e : g.graves) list.push_back({ e.id, e.body, e.local, e.owner, e.name, e.style, e.diedAt });
+                for (const auto& e : g.graves) { GraveInfo gi{ e.id, e.body, e.local, e.owner, e.name, e.style, e.diedAt }; gi.dropped = e.dropped; gi.items = e.items; list.push_back(std::move(gi)); }
                 c.lastGraves = (int)list.size();
                 if (gNetRole == NetRole::Client) Combat_SetGraveMirror(list, c.name); // (a host in this process has the real list)
                 return;
@@ -787,6 +787,16 @@ void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, cons
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests) { // (#338)
     if (c.state != NetClient::State::Joined || index < 0 || output.empty()) return;
     MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64); q.useChests = useChests;
+    SendMsg(c, q);
+}
+void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi) { // (#865)
+    if (c.state != NetClient::State::Joined || item.empty() || centi <= 0) return;
+    MsgDropItems q; q.item = item; q.centi = centi;
+    SendMsg(c, q);
+}
+void NetClient_CreativeGive(NetClient& c, const std::string& item, int count) { // (#866)
+    if (c.state != NetClient::State::Joined) return;
+    MsgCreativeGive q; q.item = item; q.count = (uint32_t)std::max(0, count);
     SendMsg(c, q);
 }
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) { // (#332)

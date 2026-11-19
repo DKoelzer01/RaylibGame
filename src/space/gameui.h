@@ -15,12 +15,16 @@ GameScreen GameUI_Screen();               // the screen shown (or shown last)
 void GameUI_ShowTab(const char* tab);     // older names: "Crafting", "Quest tree" (Quests, tree view), "Suit" (Inventory), "Help"
 bool GameUI_TextInputActive();            // a text field in the window has the keyboard (the window's keys don't apply)
 float GameUI_Scale();                     // the interface size (Settings; auto by the screen's height)
+void GameUI_ApplyStyleScale();             // (#891) before each ImGui frame: fonts, padding and spacing at the interface scale
 void GameUI_PrepareFrame(Scene& world);  // (#822) before ImGui, after the world: renders the inventory screen's player preview
 bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this frame (tests)
 void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 #include <string>
+#include <functional>
+// (#866) Set while joined (main.cpp): creative items from the server (the Catalog, a creative middle-click; "" clears the inventory).
+inline std::function<void(const std::string& item, int count)> gCreativeGive;
 void GameUI_OpenDatabase(const std::string& itemId); // (#826) the database pop-up, at an item's page ("" where it was)
 bool GameUI_DatabaseOpen();
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
