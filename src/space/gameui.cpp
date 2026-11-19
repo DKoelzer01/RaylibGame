@@ -1334,6 +1334,17 @@ static void ModuleSlot(int i, float cell) {
     ImGui::PopID();
 }
 
+// The turning player preview (#822). An InvisibleButton takes the mouse and the image is drawn over it (#892: as a plain
+// ImGui::Image it took no input, so IsItemActive was never true and dragging never turned the player). Dragging turns it
+// 0.012 rad a pixel.
+static void PreviewWidget(ImTextureID tex, ImVec2 size, float& turn) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##preview", size);
+    ImGui::GetWindowDrawList()->AddImage(tex, p, ImVec2(p.x + size.x, p.y + size.y), ImVec2(0, 1), ImVec2(1, 0));
+    if (ImGui::IsItemActive()) turn += ImGui::GetIO().MouseDelta.x * 0.012f;
+    if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("Drag to turn");
+}
+
 // The player panel (#822; #887: sized to its area, the top right of the Inventory screen): the suit and the off hand on the
 // left, the turning preview filling the rest, the module slots under it, and what else is carried.
 static void DrawYou() {
@@ -1357,12 +1368,8 @@ static void DrawYou() {
     // render target's next frame: GameUI_PrepareFrame).
     const float lineH = ImGui::GetTextLineHeightWithSpacing();
     previewWant = ImVec2(std::max(120.0f, avW - leftW - 24.0f), std::max(160.0f, avH - lineH * 4.0f - cell - 12.0f));
-    if (previewDrawn) {
-        const ImVec2 size((float)preview.texture.width, (float)preview.texture.height);
-        ImGui::Image((ImTextureID)(intptr_t)preview.texture.id, size, ImVec2(0, 1), ImVec2(1, 0));
-        if (ImGui::IsItemActive()) previewTurn += ImGui::GetIO().MouseDelta.x * 0.012f;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to turn");
-    } else ImGui::Dummy(previewWant);
+    if (previewDrawn) PreviewWidget((ImTextureID)(intptr_t)preview.texture.id, ImVec2((float)preview.texture.width, (float)preview.texture.height), previewTurn);
+    else ImGui::Dummy(previewWant);
     const int slots = (int)Suit_Modules().size();
     int fitted = 0; for (const std::string& m : Suit_Modules()) fitted += m.empty() ? 0 : 1;
     ImGui::TextDisabled("Suit modules (%d of %d fitted)", fitted, slots);
@@ -1747,3 +1754,42 @@ static void DrawKeyHints(int x, int y) {
     DrawText(line.c_str(), x, std::min(y, GetScreenHeight() - fs - (int)(8 * s)), fs, Fade(RAYWHITE, alpha)); // (larger text: kept on screen)
 }
 void GameUI_InstallKeyHints() { gKeyHintsHook = DrawKeyHints; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#892): dragging over the player preview turns it (a headless ImGui context, the mouse injected) ----
+#include "unit_helpers.h"
+
+TEST(GameUiPreview, DraggingAcrossItTurnsThePlayer) {
+    ImGuiContext* prev = ImGui::GetCurrentContext();
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGui::SetCurrentContext(ctx);
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.0f, 600.0f);
+    io.DeltaTime = 1.0f / 60.0f;
+    io.IniFilename = nullptr;
+    io.Fonts->AddFontDefault();
+    float turn = 0.0f;
+    auto frame = [&](float mx, float my, bool down) {
+        io.AddMousePosEvent(mx, my);
+        io.AddMouseButtonEvent(0, down);
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(800.0f, 600.0f));
+        ImGui::Begin("preview test", nullptr, ImGuiWindowFlags_NoDecoration);
+        ImGui::SetCursorScreenPos(ImVec2(100.0f, 100.0f));
+        PreviewWidget((ImTextureID)1, ImVec2(200.0f, 300.0f), turn);
+        ImGui::End();
+        ImGui::Render();
+    };
+    frame(200.0f, 250.0f, false);                         // over it
+    frame(200.0f, 250.0f, true);                          // pressed
+    for (int k = 1; k <= 10; ++k) frame(200.0f + 10.0f * k, 250.0f, true); // dragged 100 px right
+    frame(300.0f, 250.0f, false);                         // released
+    EXPECT_NEAR(turn, 1.2f, 0.05f) << "100 px at 0.012 rad a pixel";
+    const float after = turn;
+    frame(500.0f, 250.0f, false); frame(600.0f, 250.0f, false); // moving without the button: no turn
+    EXPECT_FLOAT_EQ(turn, after);
+    ImGui::DestroyContext(ctx);
+    ImGui::SetCurrentContext(prev);
+}
+#endif
