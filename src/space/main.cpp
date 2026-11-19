@@ -1382,6 +1382,25 @@ int main(int argc, char** argv)
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
+    // (#886) RAYLIBGAME_PROFILE=1 in a play session (not a scenario): the GPU passes as zones too, every hitch stamped with
+    // the game time and what was going on, and the summary written on quit (saves/logs/profile-<date-time>.txt and .json).
+    if (Profiler_On() && !Scenario_Active()) {
+        GpuTimer_KeepOn(true);
+        Profiler_SetHitchCap(5000);
+        Profiler_SetHitchStamp([]() { return SimTime(); }, []() {
+            std::string s;
+            if (Planetoid* b = player.nearest) {
+                const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
+                const double alt = b->toLocalD(player.position).length() - (pf ? pf->radius : 0.0);
+                s = TextFormat("%s, %.0f m up, %.1f m/s%s", b->name.c_str(), alt, Vector3Length(player.velocity), player.flyMode ? ", flying" : "");
+            }
+            const WorldStats& ws = GetWorldStats();
+            s += TextFormat("%s%d chunk jobs queued, %d chunks", s.empty() ? "" : "; ", ws.queuedJobs, ws.nodes);
+            if (WorldIdle()) s += ", world idle";
+            return s;
+        });
+        printf("profile: on for this session; the summary goes to saves/logs/ when the game quits\n");
+    }
     // (#346) a loaded world with no player of ours in it (no record, no owner's to continue as): a new player at the
     // world's start with the starting kit; the world's quests and difficulty stay the save's.
     GameSave_SetNewPlayerHook([&world] {
@@ -8431,6 +8450,21 @@ int main(int argc, char** argv)
                         const bool flyDropped = !player.flyMode;
                         terrainTool.creative = creative0; player.flyMode = fly0; player.flyAllowed = true;
                         printf("bench: hotbar: F out of creative flies %d, in creative %d, creative off mid-flight lands %d (#531)\n", (int)!flyLocked, (int)flyCreative, (int)flyDropped);
+                        // (#534) An item with no use in hand is just held (RMB builds nothing, LMB is bare hands); so is the
+                        // telescope (its RMB is its own: Telescope_Update).
+                        bool plainHeld = false, scopeHeld = false;
+                        {
+                            auto& g = inventory.grid();
+                            const InvSlot s7 = g[Inventory::kGrid + 7], s8 = g[Inventory::kGrid + 8];
+                            g[Inventory::kGrid + 7] = InvSlot{ "fibre", 300 };     // (no use from the hand: not a tool, filler, part or material)
+                            g[Inventory::kGrid + 8] = InvSlot{ "telescope", 100 };
+                            Hotbar_Press(7, false); Hotbar_Update(world, PlayerInput::None(), false);
+                            plainHeld = Hotbar_Selected() == 7 && terrainTool.holdingItem && terrainTool.heldTool.empty() && !buildTool.active;
+                            Hotbar_Press(8, false); Hotbar_Update(world, PlayerInput::None(), false);
+                            scopeHeld = Hotbar_Selected() == 8 && terrainTool.holdingItem && terrainTool.heldTool.empty() && !buildTool.active;
+                            g[Inventory::kGrid + 7] = s7; g[Inventory::kGrid + 8] = s8;
+                        }
+                        printf("bench: hotbar: fibre in hand is just held (RMB builds nothing) %d, the telescope too %d (#534)\n", (int)plainHeld, (int)scopeHeld);
                         Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
@@ -8442,7 +8476,7 @@ int main(int argc, char** argv)
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
                                     if (PartItem(part) == std::string("concrete")) ++concreteParts;
                                 }
-                        ok = lastEnds && flyLocked && flyCreative && flyDropped && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
                         printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
                                concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
                     }
@@ -9754,7 +9788,8 @@ int main(int argc, char** argv)
                 if (id.empty()) GameUI_Toast("Your off hand is empty: put food or an oxygen canister there (the inventory, beside you)");
                 else if (Survival_IsFood(id) || Survival_IsUsable(id)) { if (!Survival_UseItem(id) && Survival_IsFood(id)) GameUI_Toast("You're not hungry"); }
                 else if (id == "bucket" || id == "water_bucket") TerrainTool_BucketFromOffHand(world); // (#836) scoop or pour where you aim
-                else GameUI_Toast(TextFormat("%s uses food, a consumable or a bucket from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
+                else if (id == "telescope" && !ship.piloted) { Telescope_SetActive(world, !telescope.active); Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f); } // (#534)
+                else GameUI_Toast(TextFormat("%s uses food, a consumable, a bucket or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
@@ -9969,7 +10004,7 @@ int main(int argc, char** argv)
             // Always (not only with the log): an arena that grows during play (after the loading screens) prints the same
             // breakdown once, tagged GREW, so a playtest log says what drove it (#916 couldn't be reproduced since #901).
             static int lastCap = 0;
-            const int capNow = TerrainArena_Available() ? TerrainArena_Stats().vertexCapacity : 0;
+            const int capNow = gameState == 1 && !world.objects.empty() && TerrainArena_Available() ? TerrainArena_Stats().vertexCapacity : lastCap; // (#973) only in play: Available() creates the arena (it stayed alive behind the menus)
             const bool grewInPlay = lastCap >= 16000000 && capNow > lastCap && gameState == 1 && !loading && TerrainArena_Stats().vertices > 0; // (not the first reserve from the small initial arena, 4.2 M)
             if (capNow != lastCap) lastCap = capNow;
             if (grewInPlay) printf("arena: GREW in play to %.1f M vertices; what holds them:\n", capNow / 1e6);
@@ -13034,6 +13069,14 @@ int main(int argc, char** argv)
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
     Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
+    if (Profiler_On() && !Scenario_Active()) { // (#886) the play session's profile
+        std::error_code ec;
+        std::filesystem::create_directories("saves/logs", ec);
+        std::string path;
+        Profiler_PrintSummary();
+        if (Profiler_WriteSession("saves/logs", path)) printf("profile: session summary written: %s (and .json beside it)\n", std::filesystem::absolute(path, ec).string().c_str());
+        else printf("profile: nothing recorded this session\n");
+    }
     if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists

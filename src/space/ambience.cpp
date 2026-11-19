@@ -319,4 +319,64 @@ void Ambience_GatherLights(Scene& world) {
             world.localLights.push_back(L);
         }
     }
+    // (#972, user 2026-11-19) Room bounce light: sunlit floor patches under a roof (the sun in through a door or a window)
+    // light the room a little. Every half second, the plots within 40 m: each building-block cell with air over it, a roof
+    // over that (a solid cell within 6 m straight up) and a clear line to the sun through the plot (12 m) is a sunlit
+    // indoor floor cell; they are binned into 2 m squares, each a faint, wide point light 0.4 m over the patch in the sun's
+    // colour times the floor's, strength by its sunlit area, the sun's height and the cloud cover. RAYLIBGAME_ROOM_BOUNCE=0:
+    // off. The lights are cached between updates (they follow the sun slowly).
+    static const bool bounceOn = !(getenv("RAYLIBGAME_ROOM_BOUNCE") && getenv("RAYLIBGAME_ROOM_BOUNCE")[0] == '0');
+    static std::vector<LocalLight> bounce; // positions BODY-LOCAL: the body spins between updates (render space drifted off)
+    static double nextBounce = 0.0;
+    if (bounceOn && GetTime() >= nextBounce) {
+        nextBounce = GetTime() + 0.5;
+        const double bt0 = GetTime(); int bounceCells = 0;
+        bounce.clear();
+        const Vector3 sunL = body->dirToLocal(Vector3Normalize(world.sunDirection));
+        const float cloud = std::clamp(world.weatherCloud, 0.0f, 1.0f);
+        for (auto& plot : body->plots->plots) {
+            if (plot->cells.empty() || Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 40.0f + 0.5f * kCellSize * 64.0f) continue;
+            const Vector3 s = { Vector3DotProduct(sunL, plot->east), Vector3DotProduct(sunL, plot->up), Vector3DotProduct(sunL, plot->north) };
+            if (s.y < 0.05f) continue;                                      // the sun is down (for this plot)
+            const float sunK = std::min(1.0f, s.y * 3.0f) * (1.0f - 0.8f * cloud);
+            auto solid = [&](int x, int y, int z) {
+                auto it = plot->cells.find(Int3{ x, y, z });
+                return it != plot->cells.end() && PartBlocksSky(plot->parts[it->second.part]);
+            };
+            struct Bin { int n = 0; Vector3 sum{}, col{}; };
+            std::unordered_map<long long, Bin> bins;
+            for (const auto& [c, ref] : plot->cells) {
+                if (!PartBlocksSky(plot->parts[ref.part]) || solid(c.x, c.y + 1, c.z)) continue; // a floor: solid, air over it
+                const Vector3 top = { (c.x + 0.5f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 0.5f) * kCellSize };
+                if (Vector3Distance(plot->toBody(top), cam) > 40.0f) continue;
+                bool roofed = false;
+                for (int k = 2; k <= 12 && !roofed; ++k) roofed = solid(c.x, c.y + k, c.z);
+                if (!roofed) continue;                                       // outdoors: the sky's ambient covers it
+                bool lit = true;
+                for (float t = 0.6f; t <= 24.0f && lit; t += 0.5f) {         // cells: 12 m toward the sun
+                    const Vector3 q = { c.x + 0.5f + s.x * t, c.y + 1.05f + s.y * t, c.z + 0.5f + s.z * t };
+                    lit = !solid((int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z));
+                }
+                if (!lit) continue;
+                Bin& b = bins[((long long)(c.x >> 2) * 73856093LL) ^ ((long long)(c.y) * 19349663LL) ^ ((long long)(c.z >> 2) * 83492791LL)];
+                const Color mc = GetBuildMaterial(plot->parts[ref.part].material).color;
+                ++bounceCells; b.n++; b.sum = Vector3Add(b.sum, top); b.col = Vector3Add(b.col, { mc.r / 255.0f, mc.g / 255.0f, mc.b / 255.0f });
+            }
+            for (const auto& [k, b] : bins) {
+                if (bounce.size() >= 24) break;
+                LocalLight L;
+                const Vector3 at = Vector3Add(plot->toBody(Vector3Scale(b.sum, 1.0f / b.n)), Vector3Scale(plot->up, 0.4f));
+                L.position = at; // body-local (to render space each frame, below)
+                static const float brange = getenv("RAYLIBGAME_ROOM_BOUNCE_RANGE") ? (float)atof(getenv("RAYLIBGAME_ROOM_BOUNCE_RANGE")) : 4.0f; L.range = brange;
+                const Vector3 alb = Vector3Scale(b.col, 1.0f / b.n);
+                L.color = { 1.0f * alb.x, 0.96f * alb.y, 0.88f * alb.z };   // the sun's warm white off the floor
+                static const float gain = getenv("RAYLIBGAME_ROOM_BOUNCE_GAIN") ? (float)atof(getenv("RAYLIBGAME_ROOM_BOUNCE_GAIN")) : 1.0f; // tuning
+                L.intensity = 0.012f * std::min(b.n, 16) * sunK * gain;              // a full 2 m patch: ~0.19 at noon (small and faded: the user, #972)
+                bounce.push_back(L);
+            }
+        }
+        static const bool bounceLog = getenv("RAYLIBGAME_ROOM_BOUNCE_LOG") && getenv("RAYLIBGAME_ROOM_BOUNCE_LOG")[0] == '1';
+        if (bounceLog) printf("room bounce: %zu lights from %d sunlit indoor floor cells in %.3f ms (cloud %.2f)\n", bounce.size(), bounceCells, (GetTime() - bt0) * 1000.0, cloud);
+    }
+    if (bounceOn) for (LocalLight L : bounce) { L.position = body->toWorld(L.position); world.localLights.push_back(L); }
 }

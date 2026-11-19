@@ -15,7 +15,7 @@ struct Block {
     ivec4 a;   // S, nu, nv, grid offset (nodes)
     ivec4 b;   // island offset (islands), island count, output offset (samples), -
 };
-layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // two per node: elevation, 3D mask, f, - | unused (the cliff lip went with the terraces, #543)
+layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // two per node: elevation, 3D mask, f, wet (#971) | unused (the cliff lip went with the terraces, #543)
 layout(std430, binding = 1) readonly buffer Islands { vec4 islands[]; }; // 3 per island
 layout(std430, binding = 2) writeonly buffer Out { float density[]; };
 layout(std430, binding = 3) readonly buffer Blocks { Block blocks[]; };
@@ -39,7 +39,7 @@ void main() {
     precise float d = vlen(p);
     if (d > outerR + 4.0) { density[outI] = ISO_LEVEL + DENSITY_GRADIENT * (outerR - d); return; }
     precise float surface = innerR;
-    precise float cmask = 0.0, cf = 0.0;
+    precise float cmask = 0.0, cf = 0.0, cwet = 0.0;
     if (d >= innerR - 4.0) {
         precise float s = vdot(p, B.n.xyz);
         precise float fu = clamp(xdiv(xdiv(vdot(p, B.t1.xyz), s) - B.t1.w, B.s.x), 0.0, float(nu - 1) - 1e-3);
@@ -51,6 +51,7 @@ void main() {
         surface = planetRadius + (a0.x * (1.0 - au) + b0.x * au) * (1.0 - av) + (a1.x * (1.0 - au) + b1.x * au) * av;
         cmask = (a0.y * (1.0 - au) + b0.y * au) * (1.0 - av) + (a1.y * (1.0 - au) + b1.y * au) * av;
         cf = (a0.z * (1.0 - au) + b0.z * au) * (1.0 - av) + (a1.z * (1.0 - au) + b1.z * au) * av;
+        cwet = (a0.w * (1.0 - au) + b0.w * au) * (1.0 - av) + (a1.w * (1.0 - au) + b1.w * au) * av; // (#971)
     }
-    density[outI] = densityNear(p, d, surface, fp, cmask, cf);
+    density[outI] = densityNear(p, d, surface, fp, cmask, cf, cwet);
 }

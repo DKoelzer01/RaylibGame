@@ -1029,6 +1029,25 @@ PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) cons
     return c;
 }
 
+// (#971, user 2026-11-19) Wet lowlands keep their cave roofs: in swamps (the climate's swamp rule, smoothed: moist > ~0.74
+// under ~90 m) and on rivers' floodplains (within ~120 m of a real river's edge, under ~8 m over its level) a tunnel just
+// under the ground stays closed instead of collapsing into a trench (#549). RAYLIBGAME_WET_CAVE_ROOF=0: off.
+float PlanetField::caveWetColumn(Vector3 dir, float elev) const {
+    static const bool on = !(getenv("RAYLIBGAME_WET_CAVE_ROOF") && getenv("RAYLIBGAME_WET_CAVE_ROOF")[0] == '0');
+    if (!on || moon || elev <= 0.0f) return 0.0f;
+    const Climate cl = climateAt(dir, elev);
+    const float swamp = Smoothstep(0.70f, 0.78f, cl.moist) * (1.0f - Smoothstep(75.0f, 95.0f, elev));
+    float flood = 0.0f;
+    if (const RiverNetwork* net = rivers()) {
+        const RiverNetwork::Hit rh = net->nearest(dir, 160.0f);
+        if (rh.found) {
+            const float edge = std::max(0.0f, rh.dist - rh.halfWidth), over = elev - rh.level;
+            flood = (1.0f - Smoothstep(60.0f, 120.0f, edge)) * (1.0f - Smoothstep(4.0f, 8.0f, over));
+        }
+    }
+    return std::max(swamp, flood);
+}
+
 float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     if (moon || d < 1e-3f) return 0.0f;
     const float h = d - surface;
@@ -1171,7 +1190,12 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
     float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
-    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) {
+        mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z));
+        // (#971) wet lowlands keep their roofs: no mouth there (the GPU reads the same interpolated column, terrain.glsl)
+        if (mouth > 0.0f) mouth = mouth * (1.0f - (col ? col->wet : caveWetColumn(Vector3Scale(p, 1.0f / d), surface - radius)));
+        caveTop = 5.0f - 7.5f * mouth;
+    }
     // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
     // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
     // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
@@ -1299,6 +1323,7 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
             const float e = elevation(gdir, fp);
             Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
+            col.wet = caveWetColumn(gdir, e); // (#971)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -1326,6 +1351,7 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c0 = &g.cols[(size_t)iv * g.nu + iu];
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+    col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
     return true;
 }
@@ -1358,6 +1384,7 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c0 = &cols[(size_t)iv * nu + iu];
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+                    col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
                 }
                 out[idx] = densityNear(p, d, surface, fp, &col);
