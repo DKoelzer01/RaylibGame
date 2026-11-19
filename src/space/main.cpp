@@ -818,7 +818,7 @@ int main(int argc, char** argv)
     int walkLegs = 0, walkLeg = 0, walkLegsDone = 0, walkSettleFrames = 0, walkLegGrounded = 0, walkLegFrames = 0, walkLegWater = 0;
     bool walkLegReady = true;
     double walkLegStart = 0.0, walkLegPath = 0.0, walkLegSlope = 0.0;
-    int walkLegJumps = 0, walkFellThrough = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
+    int walkLegJumps = 0, walkFellThrough = 0, walkLegUnder = 0; bool walkLegDied = false; Vector3 walkPickDir{ 0, 1, 0 };
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
@@ -9024,7 +9024,7 @@ int main(int argc, char** argv)
                     if (walkSettleFrames >= 30) {
                         walkLegReady = true; player.autoWalk = true;
                         walkLegStart = GetTime(); walkLegPath = walkPath; walkLast = start->toLocalD(player.position);
-                        walkLegGrounded = walkLegFrames = walkLegWater = 0; walkLegSlope = 0.0;
+                        walkLegGrounded = walkLegFrames = walkLegWater = walkLegUnder = 0; walkLegSlope = 0.0;
                     }
                 } else if (WorldIdle() && benchWalkSeconds > 0.0) {
                     // Scripted walk: spawn on the surface and walk forward; checks gravity + collision.
@@ -9045,6 +9045,19 @@ int main(int argc, char** argv)
                     const float d = start->densityAt(start->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
                     walkMinDensity = std::min(walkMinDensity, d);
                     walkMaxDensity = std::max(walkMaxDensity, d);
+                    static const bool walkLog = getenv("RAYLIBGAME_WALK_LOG") != nullptr; // #941: the swimmer each second
+                    static double walkLogT = -1.0;
+                    if (walkLog && GetTime() - walkLogT >= 1.0)
+                        if (const PlanetField* pfl = dynamic_cast<const PlanetField*>(start->field.get())) {
+                            walkLogT = GetTime();
+                            const Vector3 lp = start->toLocal(feet);
+                            const float alt = Vector3Length(lp);
+                            const Vector3 u = Vector3Scale(lp, 1.0f / alt);
+                            const Vector3 rel = Vector3Subtract(player.velocity, start->surfaceVelocity(feet));
+                            printf("bench: walk log t %.0f at %.4f %.4f: feet %.2f m under the ground (elev %.1f), body density %.2f, in water %d, grounded %d, up speed %.2f m/s\n",
+                                   GetTime() - walkStart, asinf(u.y) * RAD2DEG, atan2f(u.z, u.x) * RAD2DEG, pfl->radius + pfl->elevation(u) - alt,
+                                   pfl->elevation(u), d, (int)player.inWater, (int)player.grounded, Vector3DotProduct(rel, player.up));
+                        }
                     walkFrames++;
                     walkGroundedFrames += player.grounded ? 1 : 0;
                     walkLegFrames++; walkLegGrounded += player.grounded ? 1 : 0; walkLegWater += player.inWater ? 1 : 0;
@@ -9055,7 +9068,7 @@ int main(int argc, char** argv)
                         if (const PlanetField* pfw = dynamic_cast<const PlanetField*>(start->field.get())) {
                             const Vector3 lp = start->toLocal(feet);
                             const float alt = Vector3Length(lp);
-                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) ++walkFellThrough;
+                            if (alt > 1.0f && alt < pfw->radius + pfw->elevation(Vector3Scale(lp, 1.0f / alt)) - 30.0f) { ++walkFellThrough; ++walkLegUnder; }
                         }
                     }
                     if (player.grounded) walkLegSlope = std::max(walkLegSlope, (double)acosf(std::clamp(Vector3DotProduct(player.groundNormal, player.up), -1.0f, 1.0f)) * RAD2DEG);
@@ -9137,8 +9150,8 @@ int main(int argc, char** argv)
                         const double legM = walkPath - walkLegPath, legS = GetTime() - walkLegStart;
                         const double legGround = 100.0 * walkLegGrounded / std::max(1, walkLegFrames);
                         walkLegsDone += legM >= kWalkLegM && walkLegJumps == 0 && !walkLegDied ? 1 : 0;
-                        printf("bench: planet walk leg %d/%d: %.0f m in %.1f s at %.0f m elevation, grounded %.0f%%, in water %.0f%%, unstuck %d times, steepest ground %.0f deg, ends at %.4f %.4f%s%s\n",
-                               walkLeg + 1, walkLegs, legM, legS, pfw ? pfw->elevation(here) : 0.0f, legGround, 100.0 * walkLegWater / std::max(1, walkLegFrames), walkUnsticks, walkLegSlope, asinf(here.y) * RAD2DEG, atan2f(here.z, here.x) * RAD2DEG,
+                        printf("bench: planet walk leg %d/%d: %.0f m in %.1f s at %.0f m elevation, grounded %.0f%%, in water %.0f%%, %d frames under the surface, unstuck %d times, steepest ground %.0f deg, ends at %.4f %.4f%s%s\n",
+                               walkLeg + 1, walkLegs, legM, legS, pfw ? pfw->elevation(here) : 0.0f, legGround, 100.0 * walkLegWater / std::max(1, walkLegFrames), walkLegUnder, walkUnsticks, walkLegSlope, asinf(here.y) * RAD2DEG, atan2f(here.z, here.x) * RAD2DEG,
                                walkLegDied ? " (died)" : legM >= kWalkLegM ? "" : " (timed out)", walkLegJumps ? " (displaced mid-leg)" : "");
                         if (++walkLeg < walkLegs) {
                             // The next place: land drawn from the seed; every other leg prefers ground above 300 m (slopes).
