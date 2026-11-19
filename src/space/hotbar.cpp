@@ -336,6 +336,7 @@ bool Hotbar_PlaceTorch() {
     const Part part{ id == "snare" ? PartType::Snare : PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };
     if (!pl->canPlace(part)) { GameUI_Toast(TextFormat("No room for a %s there", id.c_str())); Audio_Play(Sfx::Error, 0.3f); return false; }
     if (!BuildTool_Place(*body, *pl, part, true)) return false;
+    BuildTool_NotePlacedByPlayer(*body, *pl, part); // (#919) Building XP once it has stood
     Audio_Play(Sfx::Build, 0.5f, 1.3f);
     return true;
 }

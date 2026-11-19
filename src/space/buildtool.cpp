@@ -14,6 +14,7 @@
 #include "terraintool.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "simclock.h"
 #include "factory.h"
 #include "blueprint.h"
 #include "claims.h"
@@ -158,18 +159,19 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
     return true;
 }
 
-// Breaking built parts: LMB held on a part for kBreakHold seconds (in build mode or out of it; a
+// Breaking built parts: LMB held on a part for BreakHold() seconds (in build mode or out of it; a
 // part in front of the ground takes the click from the terrain tool). A short hold, so a stray click
 // never deletes a wall.
 namespace {
-    constexpr float kBreakHold = 0.45f;
+    constexpr float kBreakHold0 = 0.45f;
+    float BreakHold() { return kBreakHold0 / std::max(0.2f, SkillStat("break_speed")); } // (#919) Building's perks: a shorter hold
     const Plot* breakPlot = nullptr;
     int breakPart = -1;
     float breakHeld = 0.0f;
     bool breakAiming = false;
 }
 
-float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
+float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / BreakHold()) : 0.0f; }
 bool BuildTool_AimingPart() { return breakAiming; }
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
@@ -196,7 +198,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
-    if (breakHeld < kBreakHold) return;
+    if (breakHeld < BreakHold()) return;
     const Part removed = hitPlot->parts[part];
     if (gBuildToolNetEdit) { // joined (#330): the server removes it, refunds, and tells everyone
         gBuildToolNetEdit(*body, hitPlot, Vector3{}, removed, true, part);
@@ -223,7 +225,31 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     gPrimaryLatch.consume(); // (#895, the user: holding on mined what was behind) the next part needs a new press
 }
 
+// (#919) Building XP: a part the player placed pays once it has stood 5 minutes (placing and breaking again pays nothing).
+namespace {
+    struct Placed { uint64_t body; uint32_t plot; Int3 origin; PartType type; double at; }; // (the body's id: never a pointer kept)
+    std::vector<Placed> placedByPlayer;
+    constexpr double kPartKept = 300.0; // s
+    void TickPlacedParts(Scene& world) {
+        if (placedByPlayer.empty() || SimTime() - placedByPlayer.front().at < kPartKept) return;
+        const Placed p = placedByPlayer.front();
+        placedByPlayer.erase(placedByPlayer.begin());
+        for (auto& o : world.objects) {
+            auto* b = dynamic_cast<Planetoid*>(o.get());
+            if (!b || b->id != p.body || !b->plots) continue;
+            const Plot* plot = b->plots->byId(p.plot);
+            const int idx = plot ? plot->partAt(p.origin) : -1;
+            if (idx >= 0 && plot->parts[idx].type == p.type && plot->parts[idx].origin == p.origin && gSkillEvent) gSkillEvent("part_kept", 1.0, Vector3{});
+            break;
+        }
+    }
+}
+void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part) {
+    if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, part.origin, part.type, SimTime() });
+}
+
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
+    TickPlacedParts(world);
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
@@ -416,7 +442,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             if (!body->plots) body->plots = std::make_unique<PlotSet>();
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
-        if (BuildTool_Place(*body, *target, aim.part, true)) Audio_Play(Sfx::Build, 0.5f, 1.2f);
+        if (BuildTool_Place(*body, *target, aim.part, true)) { Audio_Play(Sfx::Build, 0.5f, 1.2f); BuildTool_NotePlacedByPlayer(*body, *target, aim.part); }
     } // LMB on a part: UpdateBreak (a short hold)
 }
 

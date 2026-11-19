@@ -316,4 +316,32 @@ TEST(SkillsData, TheShippedTableLoadsCleanly) {
         for (const std::string& q : p.needs) EXPECT_NE(Skills_FindPerk(q), nullptr) << p.id << " needs " << q;
     }
 }
+
+#include <set>
+TEST(SkillsData, EverySkillHasATreeAndEveryStatIsReadByTheGame) { // (#919)
+    ASSERT_TRUE(Skills_Load("resources/data/skills.txt"));
+    // The stats the game reads (terraintool, skillplay, buildtool, farming, suit, survival): a typo in skills.txt would
+    // be a perk that does nothing.
+    static const std::set<std::string> kRead = { "rock_speed", "ore_speed", "rock_radius", "ore_yield", "stone_yield", "gem_chance", "pick_wear",
+        "soil_speed", "soil_radius", "shovel_wear", "chop_speed", "log_yield", "axe_wear", "fibre_yield", "stone_find", "crop_yield", "seed_yield",
+        "break_speed", "walk_speed", "fall_safe", "hunger", "cold" };
+    std::set<std::string> withTree;
+    for (const PerkDef& p : Skills_Perks()) {
+        withTree.insert(p.skill);
+        for (const auto& [stat, per] : p.effects) EXPECT_TRUE(kRead.count(stat)) << p.id << ": " << stat << " is read nowhere";
+        for (const std::string& q : p.needs) { const PerkDef* n = Skills_FindPerk(q); if (n) EXPECT_EQ(n->skill, p.skill) << p.id << " needs " << q << " of another skill"; }
+    }
+    for (const SkillDef& s : Skills_All()) EXPECT_TRUE(withTree.count(s.id)) << s.id << " has no perks";
+}
+
+TEST(SkillsData, TheNewTreesStackRankByRank) { // (#919) about +10% a rank, added across perks (then times the suit's)
+    ASSERT_TRUE(Skills_Load("resources/data/skills.txt"));
+    SkillState s;
+    EXPECT_DOUBLE_EQ(Skills_Stat(s, "walk_speed"), 1.0) << "no perks: no change";
+    s.ranks["long_stride"] = 3; s.ranks["marathon"] = 1;
+    EXPECT_NEAR(Skills_Stat(s, "walk_speed"), 1.25, 1e-9) << "Long Stride 3 and Marathon";
+    s.ranks["iron_stomach"] = 3; s.ranks["hardy"] = 1;
+    EXPECT_LT(Skills_Stat(s, "hunger"), 0.8) << "hunger perks slow it";
+    EXPECT_GT(Skills_Stat(s, "hunger"), 0.5);
+}
 #endif

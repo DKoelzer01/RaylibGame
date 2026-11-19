@@ -41,6 +41,7 @@ const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin);
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
+void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part); // (#919) Building XP once the part has stood 5 min
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,

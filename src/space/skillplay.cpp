@@ -5,6 +5,9 @@
 #include "tools.h"
 #include "gameui.h"
 #include "simclock.h"
+#include "world.h"
+#include "player.h"
+#include <algorithm>
 #include <raymath.h>
 #include <cmath>
 #include <cstring>
@@ -49,11 +52,35 @@ void SkillPlay_Init() {
 
 int SkillPlay_WearStrokes(const std::string& toolId, int strokes) {
     if (strokes <= 0) return 0;
-    if (ToolOf(toolId).type != ToolType::Pickaxe) return strokes;
-    wearCarry += strokes * Skills_Stat(LocalSession().skills, "pick_wear"); // Light Hands: fewer strokes wear the pick
+    // Each tool's wear stat: Mining's Light Hands (picks), (#919) Digging's for shovels and hoes, Woodcutting's for axes.
+    const ToolType t = ToolOf(toolId).type;
+    const char* stat = t == ToolType::Pickaxe ? "pick_wear" : t == ToolType::Shovel || t == ToolType::Hoe ? "shovel_wear" : t == ToolType::Axe ? "axe_wear" : nullptr;
+    if (!stat) return strokes;
+    wearCarry += strokes * Skills_Stat(LocalSession().skills, stat); // fewer strokes wear the tool
     const int n = (int)wearCarry;
     wearCarry -= n;
     return n;
 }
 
 int SkillPlay_LevelUps() { return levelUps; }
+
+// (#919) Athletics and Survival XP from the player's own step: distance walked on the ground (not flying, not in a
+// vehicle: this runs on foot only), and a night lived through.
+void SkillPlay_Step(Scene& world, float dt) {
+    static double walked = 0.0, nightFor = 0.0;
+    static bool night = false;
+    Player& p = LocalSession().player;
+    if (LocalSession().survival.dead) { nightFor = 0.0; night = false; return; } // (a death breaks the night)
+    if (p.grounded && !p.flyMode) {
+        const Vector3 flat = Vector3Subtract(p.velocity, Vector3Scale(p.up, Vector3DotProduct(p.velocity, p.up)));
+        walked += std::min(Vector3Length(flat), 20.0f) * dt; // (capped: a fling across the ground is not a walk)
+        while (walked >= 10.0) { walked -= 10.0; if (gSkillEvent) gSkillEvent("walk_10m", 1.0, Vector3{}); }
+    }
+    // The sun's height over the player's horizon: down below -0.05, up over +0.05 (the band between: dusk and dawn).
+    const float sunUp = Vector3DotProduct(Vector3Normalize(p.up), Vector3Normalize(world.sunDirection));
+    if (sunUp < -0.05f) { night = true; nightFor += dt; }
+    else if (sunUp > 0.05f && night) {
+        if (nightFor >= 60.0 && gSkillEvent) gSkillEvent("night", 1.0, Vector3{});
+        night = false; nightFor = 0.0;
+    }
+}
