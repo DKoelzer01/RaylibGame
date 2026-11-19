@@ -620,8 +620,12 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     }
     const int M = (int)nodeCell.size();
     st.riverCells = M;
+    // The bake's heights as the runtime ground has them (#903): biomes reshape the ground after the bake (a swamp pulled 24 m
+    // down left its rivers standing in the air), so every height a level comes from moves with it.
+    auto shifted = [&](int g, float h) { return params.regionalShift ? h + params.regionalShift(ero.flowDir(g), h) : h; };
+    auto groundOf = [&](int g) { return shifted(g, ero.flowHeight(g)); };
     std::unordered_map<int, float> fillLevel;
-    for (const auto& fc : ero.filledCells()) fillLevel[fc.first] = fc.second;
+    for (const auto& fc : ero.filledCells()) fillLevel[fc.first] = shifted(fc.first, fc.second);
     // Lakes: the flood's filled basins deeper than params.lakeDepth (level: the basin's highest filled height - the flood's
     // jitter climbs across a basin's flat floor, and the lowest stood under the ground at its far side: dry lake beds).
     {
@@ -631,13 +635,13 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
             if (comp.count(fc.first)) continue;
             std::vector<int> cells(1, fc.first);
             comp[fc.first] = fc.first;
-            float level = fc.second, lowest = ero.flowHeight(fc.first);
+            float level = fillLevel[fc.first], lowest = groundOf(fc.first);
             for (size_t i = 0; i < cells.size(); ++i) {
                 ero.flowNeighbours(cells[i], nb);
                 for (int k = 0; k < 8; ++k)
                     if (nb[k] >= 0 && !comp.count(nb[k]) && fillLevel.count(nb[k])) { comp[nb[k]] = fc.first; cells.push_back(nb[k]); }
                 level = std::max(level, fillLevel[cells[i]]);
-                lowest = std::min(lowest, ero.flowHeight(cells[i]));
+                lowest = std::min(lowest, groundOf(cells[i]));
             }
             if (level - lowest <= params.lakeDepth || level <= 1.0f) continue;
             LakeInfo li; Vector3 sum{ 0, 0, 0 };
@@ -665,7 +669,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const auto fl = fillLevel.find(g);
         // A head starts as a seep (#625): its water rises from the ground with the drainage (none at riverArea, the full 0.8 of
         // the incision at 4x it).
-        own[k] = fl != fillLevel.end() ? fl->second : ero.flowHeight(g) + 0.8f * PlanetErosion::IncisionDepth(area[k]) * headRamp(area[k]);
+        own[k] = fl != fillLevel.end() ? fl->second : groundOf(g) + 0.8f * PlanetErosion::IncisionDepth(area[k]) * headRamp(area[k]);
         const int r = ero.flowReceiver(g);
         const auto it = r >= 0 ? nodeOf.find(r) : nodeOf.end();
         if (it != nodeOf.end()) { nodeParent[k] = it->second; ++indeg[it->second]; }
