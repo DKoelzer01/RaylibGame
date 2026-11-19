@@ -4787,6 +4787,16 @@ int main(int argc, char** argv)
                         }
                         fclose(f);
                     }
+                    // (#939) World structures' loot (#164): what a ruin, wreck or dungeon holds is had from the world.
+                    std::set<std::string> loot;
+                    if (FILE* f = fopen("resources/data/loot.txt", "r")) {
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#' || buf[0] == '\n' || buf[0] == '\r') continue;
+                            const auto c = split(buf, '|');
+                            for (size_t k = 1; k < c.size(); ++k) { char id[64] = {}; if (sscanf(c[k].c_str(), "%63s", id) == 1) { have.insert(id); loot.insert(id); } }
+                        }
+                        fclose(f);
+                    }
                     for (bool grew = true; grew;) {
                         grew = false;
                         for (const Rule& u : rules) {
@@ -4799,6 +4809,12 @@ int main(int argc, char** argv)
                         }
                     }
                     for (const Rule& u : rules) { for (const std::string& in : u.in) used.insert(in); if (!u.machine.empty() && u.machine[0] != '#') used.insert(u.machine); }
+                    // (#939) End products by design: items only loot gives (the ancient relic, a trophy), and items the game
+                    // spends itself (the retraining manual: the Skills tab's respec, #883).
+                    std::set<std::string> made;
+                    for (const Rule& u : rules) for (const std::string& o : u.out) made.insert(o);
+                    for (const std::string& id : loot) if (!made.count(id)) used.insert(id);
+                    used.insert("retraining_manual");
                     std::vector<std::string> missing, unused;
                     for (const ItemDef& d : itemDB.items()) {
                         if (!have.count(d.id)) missing.push_back(d.id);
