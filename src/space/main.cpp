@@ -10403,9 +10403,14 @@ int main(int argc, char** argv)
             if (f == noMapAt + 60) { // (a second on: past Nav_MinimapShown's 0.25 s)
                 minimapWithout = Nav_MinimapShown();
                 TakeScreenshot("bench_hud_nomap.png");
+                GameUI_TierBanner(1); // (#226) the tier banner, as tier 1 is reached
+                Audio_Play(Sfx::Fanfare, 0.8f);
+            }
+            if (f == noMapAt + 90) { // (half a second on: slid in)
+                TakeScreenshot("bench_hud_tier.png");
                 settings.keyHints = 0;
                 const bool ok = gKeyHintsHook && minimapWithMap && !minimapWithout; // (#937: the flying bench camera has its minimap now)
-                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
+                printf("bench: hud (#827, #932): bench_hud_100.png, bench_hud_150.png, bench_hud_creative.png, bench_hud_nomap.png, bench_hud_tier.png (pinned quests on a backing, the off hand left of the hotbar, key hints from the bindings; minimap with a map %d, without %d) -> %s\n",
                        minimapWithMap, minimapWithout, ok ? "PASS" : "FAIL");
                 shotHud = false;
             }

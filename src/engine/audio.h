@@ -2,7 +2,7 @@
 #define AUDIO_H
 
 // Tiny procedural sound-effect set: generated at startup, no audio assets needed yet.
-enum class Sfx { Dig, Build, Craft, Jump, Pickup, Error, Count };
+enum class Sfx { Dig, Build, Craft, Jump, Pickup, Error, Fanfare, Count }; // Fanfare: a tier reached (#226)
 
 void Audio_Init();
 void Audio_Shutdown();
