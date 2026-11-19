@@ -239,7 +239,7 @@ struct LayoutMsg {
     std::vector<Int3> conveyors, cables;
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all) // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -771,13 +771,23 @@ void SimLoop() {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
-                    if (im.kind == 0) back.push_back({ im.item, im.count, im.to });
+                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
                     if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     if (im.kind == 7) filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     continue;
                 }
                 Machine& m = p->machines[it->second];
-                if (im.kind == 0 || im.kind == 2 || im.kind == 6) {
+                if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
+                    int left = im.count;
+                    if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
+                        Stack& s = m.in[im.amount];
+                        if (s.count <= 0 || s.item == im.item) {
+                            const int k = std::min(left, tables.cap(im.item) - std::max(0, s.count));
+                            if (k > 0) { if (s.count <= 0) { s = Stack{}; s.item = im.item; } s.count += k; left -= k; }
+                        }
+                    }
+                    if (left > 0) back.push_back({ im.item, left, im.to });
+                } else if (im.kind == 0 || im.kind == 2 || im.kind == 6 || im.kind == 9) { // (9 on a machine: routed, as Insert)
                     int buckets = 0;
                     const int left = InsertInto(m, im.item, im.count, im.kind == 6, buckets);
                     if (left > 0 && im.kind != 2) back.push_back({ im.item, left, im.to });
@@ -961,6 +971,12 @@ void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot,
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 8, body, plot, part, which == 2 ? 0 : slot, which };
     m.amount = count; m.to = to; // (#854) a server: that player's inventory (its client puts it on its cursor)
+    itemQueue.push_back(m);
+}
+void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    ItemMsg m{ 9, body, plot, part, tables.item(item), count };
+    m.amount = slot; m.to = to;
     itemQueue.push_back(m);
 }
 void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }

@@ -47,6 +47,9 @@ chk "$(echo "$f" | grep -q "roasted roots -1 -> 0" && echo 1)" "and the feeder g
 f2=$(grep -h "^bench: net machines 2 (feeder" "$tmp/feeder.log"); t2=$(grep -h "^bench: net machines 2 (taker" "$tmp/taker.log"); echo "$f2"; echo "$t2"
 chk "$(echo "$t2" | grep -q "cursor moves 1" && echo 1)" "one went onto its cursor (the server put it in its inventory; the client moved it)"
 chk "$(echo "$f2" | grep -q "crafted from the chest 1: planks 0 -> 8" && echo 1)" "the feeder crafted planks twice from the logs in its chest (the server pulled them)"
+# #862: the item rules' chest requests (MachineAction 8 into one slot, 9 some of an item back)
+f3=$(grep -h "^bench: net machines 3 (feeder" "$tmp/feeder.log"); echo "$f3"
+chk "$(echo "$f3" | grep -q "into chest slot 7 1: planks -> 6; taken back 1: planks -> 8" && echo 1)" "the feeder put 2 planks into chest slot 7 and took them back (the server's deltas)"
 rm=$(echo "$t2" | grep -o "roots [0-9-]* -> [0-9-]*, campfires [0-9-]* -> [0-9-]*")
 chk "$(echo "$rm" | awk '{exit !($4 + 0 == $2 + 1 && $8 + 0 == $6 + 1)}' && echo 1)" "the taker removed the campfire: the root inside and the campfire came back to it, not the host ($rm)"
 echo "=== test_net_machines: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"

@@ -19,6 +19,7 @@ constexpr int kDefault[(int)Act::Count] = {
     KEY_T, KEY_J, KEY_Q, KEY_N, KEY_B, KEY_MINUS, KEY_EQUAL,
     KEY_Q,
     KEY_ENTER,
+    KEY_Q, KEY_F,
 };
 int binding[(int)Act::Count] = {}; // the live bindings (filled from kDefault on first use)
 bool bindingsReady = false;
@@ -40,6 +41,7 @@ constexpr ActInfo kActs[(int)Act::Count] = {
     { "blueprint_cycle", "Next blueprint" }, { "blueprint_save", "Save a blueprint" }, { "zoom_out", "Minimap: zoom out" }, { "zoom_in", "Minimap: zoom in" },
     { "offhand_use", "Use the off hand (food, oxygen)" },
     { "chat", "Command line / chat" },
+    { "drop_item", "Inventory: drop from the slot (Ctrl: all)" }, { "swap_offhand", "Inventory: swap the slot with the off hand" },
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");
