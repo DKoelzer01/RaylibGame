@@ -539,6 +539,10 @@ void Planetoid::draw(const RenderContext& ctx) {
         const long long pyramidFrame = SceneTarget_HiZFrame();
         if (pyramidFrame >= 0 && hizBodyFrame == pyramidFrame && SceneTarget_HiZ(tex, w, h, levels, vp)) {
             cull.hizTex = tex; cull.hizW = w; cull.hizH = h; cull.hizLevels = levels; cull.hizViewProj = vp; cull.hizBody = hizBody;
+            // (#910) Not the nodes near the camera: walking moves the eye between frames, and ground hidden from last frame's eye
+            // was culled for a frame while visible from this one (grass over nothing). RAYLIBGAME_HIZ_NEAR (m, default 64).
+            static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f;
+            cull.hizCam = toLocal(ctx.cameraPos); cull.hizNear = hizNear;
         }
     }
     const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, bodyNow, cull);
