@@ -5,6 +5,8 @@
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
+#include <array>
+#include <map>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -630,6 +632,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     if (s.mesh.vaoId) UnloadMesh(s.mesh);
     s.mesh = Mesh{};
     s.dirty = false;
+    std::map<std::array<int, 6>, float> vertexSky; // (#922) probed corners
     std::vector<float> pos, nrm, sky; // per vertex u = how buried (1 - sky exposure; parts.vs / parts.fs, #216)
     std::vector<unsigned char> col;
     const Int3 lo = { key.x * kSectionCells, key.y * kSectionCells, key.z * kSectionCells };
@@ -645,28 +648,60 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         // Under a roof (#369): five rays from each face through the plot's own cells (up, and four tilted 45 degrees,
         // 0.5-12 m); building blocks stop them, glass and small parts let light by. The open share (the up ray counts
         // double) dims a room's walls and floor, black a few metres from a window or a door.
+        // (#922) The face's view of the sky over its hemisphere: straight up, rings of 12 at 50 and 20 degrees up, and a ring at
+        // 20 degrees down (light off the ground outside), each ray weighted by the cosine to the face and the ring's brightness.
+        // The roof stops the upward rays; rays out through a doorway or window give the inside a little light that falls off
+        // with distance and angle (the share of the hemisphere the opening covers), the ceiling a little ground bounce. Open
+        // faces stay at 1. A roof open at the sides still reads dim (#899: the overhead rays carry most of the weight).
+        struct SkyRay { Vector3 d; float w; };
+        static const std::vector<SkyRay> kSkyRays = [] {
+            std::vector<SkyRay> r{ { { 0, 1, 0 }, 1.0f } };
+            const float elev[3] = { 50.0f, 20.0f, -20.0f }, bright[3] = { 1.0f, 0.8f, 0.35f };
+            for (int e = 0; e < 3; ++e)
+                for (int a = 0; a < 12; ++a) {
+                    const float el = elev[e] * DEG2RAD, az = (a + 0.5f * e) * (2.0f * PI / 12.0f);
+                    r.push_back({ { cosf(el) * cosf(az), sinf(el), cosf(el) * sinf(az) }, bright[e] });
+                }
+            return r;
+        }();
         auto faceSky = [&](Vector3 centre, Vector3 n) {
             if (!gSkyProbes) return cellSky;
-            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
-            static const float dist[8] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 10.0f, 16.0f }; // cells (0.5 m)
+            static const float dist[10] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f, 6.5f, 8.0f, 11.0f, 16.0f }; // cells (0.5 m)
             const Vector3 o = Vector3Add(centre, Vector3Scale(n, 0.6f));
-            float open = 0.0f;
-            for (int r = 0; r < 5; ++r) {
+            float open = 0.0f, total = 0.0f;
+            for (const SkyRay& ray : kSkyRays) {
+                const float w = Vector3DotProduct(ray.d, n) * ray.w;
+                if (w <= 0.02f) continue;
+                total += w;
                 bool blocked = false;
                 for (float s : dist) {
-                    const Vector3 q = Vector3Add(o, Vector3Scale(dirs[r], s));
+                    const Vector3 q = Vector3Add(o, Vector3Scale(ray.d, s));
                     const Int3 qc = { (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) };
                     auto it = cells.find(qc);
                     if (it == cells.end()) continue;
                     const Part& bp = parts[it->second.part];
                     if (IsShape(bp.type) && PartPatternOf(bp) != PatGlass) { blocked = true; break; }
                 }
-                if (!blocked) open += r == 0 ? 3.0f : 1.0f; // (#899, as the terrain's)
+                if (!blocked) open += w;
             }
-            return std::min(cellSky, std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f)); // (#899: a roof open at the sides no longer reads as sky)
+            return std::min(cellSky, total > 0.0f ? open / total : 1.0f);
         };
         size_t emitted = pos.size() / 3;
-        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(0.0f); } emitted = pos.size() / 3; };
+        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky); } emitted = pos.size() / 3; };
+        // (#922) Per vertex (a little in from the corner, toward the face's middle), so the light grades smoothly across the
+        // 0.5 m faces instead of stepping; corners shared by faces with the same normal are probed once.
+        auto pushSkyVerts = [&](Vector3 faceMid, Vector3 n) {
+            for (size_t v = emitted; v < pos.size() / 3; ++v) {
+                const Vector3 vp = { lo.x + pos[3 * v], lo.y + pos[3 * v + 1], lo.z + pos[3 * v + 2] };
+                const Vector3 q = Vector3Lerp(vp, faceMid, 0.15f);
+                const std::array<int, 6> key = { (int)lroundf(vp.x * 8.0f), (int)lroundf(vp.y * 8.0f), (int)lroundf(vp.z * 8.0f),
+                                                 (int)lroundf(n.x * 64.0f), (int)lroundf(n.y * 64.0f), (int)lroundf(n.z * 64.0f) };
+                auto it = vertexSky.find(key);
+                const float fs = it != vertexSky.end() ? it->second : (vertexSky[key] = faceSky(q, n));
+                sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky);
+            }
+            emitted = pos.size() / 3;
+        };
         auto polyCentre = [](const std::vector<Vector3>& poly) { Vector3 m{}; for (const Vector3& v : poly) m = Vector3Add(m, v); return Vector3Scale(m, 1.0f / (float)poly.size()); };
         const Vector3 cellLo = { (float)c.x, (float)c.y, (float)c.z };
         const size_t firstVertex = pos.size() / 3;
@@ -690,7 +725,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
             Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
-            pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]));
+            pushSkyVerts(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]);
         }
         // Caps on the cutting planes.
         for (int i = 0; i < shape.planes; ++i) {
@@ -707,7 +742,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
             EmitPoly(poly, n, base, color, pos, nrm, col);
-            if (!poly.empty()) pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), n)); else pushSky(cellSky);
+            if (!poly.empty()) pushSkyVerts(Vector3Add(cellLo, polyCentre(poly)), n); else pushSky(cellSky);
         }
         pushSky(cellSky); // anything emitted without a face of its own; "buried" = 1 - sky (meshes without it read 0 = open)
         (void)firstVertex;
