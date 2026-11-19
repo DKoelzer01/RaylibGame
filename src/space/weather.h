@@ -27,7 +27,7 @@ struct WeatherState {
 
 // The weather at a body-local direction on the start planet at a world time (pure; any thread).
 WeatherState Weather_At(Scene& world, Vector3 dir, double time);
-void Weather_Update(Scene& world, float dt);   // the weather at the player: the sky, particles, lightning
+void Weather_Update(Scene& world, float dt, float realDt = -1.0f); // the weather at the player (dt: world time); realDt: real seconds (the gusts travel at the wind's speed whatever the time speed, #888; < 0: dt)
 void Weather_Draw3D(Scene& world);             // rain or snow around the camera
 void Weather_DrawHUD();                        // the weather's name and lightning flashes
 const WeatherState& Weather_Here();            // as of the last update (smoothed)
