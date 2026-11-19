@@ -661,9 +661,9 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
                     const Part& bp = parts[it->second.part];
                     if (IsShape(bp.type) && PartPatternOf(bp) != PatGlass) { blocked = true; break; }
                 }
-                if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+                if (!blocked) open += r == 0 ? 3.0f : 1.0f; // (#899, as the terrain's)
             }
-            return std::min(cellSky, std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f));
+            return std::min(cellSky, std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f)); // (#899: a roof open at the sides no longer reads as sky)
         };
         size_t emitted = pos.size() / 3;
         auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(0.0f); } emitted = pos.size() / 3; };
