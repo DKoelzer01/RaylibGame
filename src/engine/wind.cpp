@@ -73,7 +73,7 @@ namespace {
         const float waves = s[0] * 2.0f - 1.0f;
         const float thr = 0.80f - 0.14f * storm; // bursts: the burst field's peaks, more of them in a storm
         burst = Smooth(thr, thr + 0.1f, s[1]);
-        factor = std::max(0.15f, 1.0f + 0.8f * waves + 1.0f * burst);
+        factor = std::max(0.15f, 1.0f + 0.5f * waves + 0.8f * burst); // (#888: gentler swings, the waves roll rather than pump)
         swing = 0.35f * (s[2] * 2.0f - 1.0f);
     }
     bool ReadEnv() {
@@ -113,7 +113,7 @@ void Wind_SetFrame(const Planetoid* b, Vector3 playerLocal, Vector3 meanLocal, f
         shiftX = shiftY = 0.0;
     }
     storm = std::clamp(s, 0.0f, 1.0f);
-    mean = Vector3Scale(meanLocal, daily * (1.0f + 0.5f * storm));
+    mean = Vector3Scale(meanLocal, daily * (1.0f + 1.2f * storm)); // (#888: x2.2 in a storm, as the surface wind is gentler)
     if (dt > 0.0f) {
         shiftX = fmod(shiftX + Vector3DotProduct(mean, e1) * dt, (double)kPeriod);
         shiftY = fmod(shiftY + Vector3DotProduct(mean, e2) * dt, (double)kPeriod);

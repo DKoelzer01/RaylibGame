@@ -140,7 +140,10 @@ void Weather_Update(Scene& world, float dt) {
         stormEased += (stormTarget - stormEased) * k;
         if (forced >= 0) stormEased = stormTarget;
         const float daily = len > 1.0f ? Wind_DailyFactor(Vector3Scale(local, 1.0f / len), Vector3Normalize(p->dirToLocal(world.sunDirection)), { 0, 1, 0 }) : 1.0f;
-        Wind_SetFrame(p, local, here.wind, stormEased, daily, dt);
+        // (#888) at the ground the wind is a fraction of the weather's (that moves the clouds and fronts): 8-12 m/s made every
+        // day a fresh breeze with gale bursts, the grass pumping; the surface sees ~2-5 m/s, storms still blow hard (wind.cpp).
+        constexpr float kSurfaceWind = 0.45f;
+        Wind_SetFrame(p, local, Vector3Scale(here.wind, kSurfaceWind), stormEased, daily, dt);
     } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, dt);
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {

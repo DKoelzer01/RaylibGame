@@ -21,7 +21,7 @@ vec4 windAt(vec3 p)
     float waves = s.r * 2.0 - 1.0;
     float thr = 0.80 - 0.14 * windStorm;
     float burst = smoothstep(thr, thr + 0.1, s.g);
-    float factor = max(0.15, 1.0 + 0.8 * waves + 1.0 * burst);
+    float factor = max(0.15, 1.0 + 0.5 * waves + 0.8 * burst); // (#888, as wind.cpp)
     float swing = 0.35 * (s.b * 2.0 - 1.0);
     float ms = length(windMean);
     if (ms < 1e-4) return vec4(0.0, 0.0, 0.0, burst);
