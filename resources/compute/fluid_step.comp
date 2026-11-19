@@ -646,6 +646,7 @@ void main() {
         uint inKind = kind;
         int nf = colApply(g, c, inKind);
         if (f == 0 && nf > 0) kind = inKind;
+        if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // a sink's net intake (#656, #875: the columns counted none)
         if ((fl & SOURCE) != 0u) nf = int(TG(c));
         else if (evaporate != 0 && nf > 0 && nf <= 2 && col[g].delta == 0 && onGround(slot, x, y, z)) nf = 0;
         if (F(outC[g]) != uint(nf)) atomicOr(flagsOut[slot], 1u);
@@ -704,7 +705,9 @@ void main() {
     storeP(g, applied);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
-    if ((fl & (SOURCE | SINK)) == (SOURCE | SINK) && nf > int(TG(c))) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // what a released reach's sink takes in (#656)
+    // What a released reach's sink takes in (#656), net (#875: a sink held at the natural level gives into a drained reach and
+    // takes it back; counting only the intake read that loop as outflow). Two's complement: what it gives counts against.
+    if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) atomicAdd(sinkOut[slot], uint(nf - int(TG(c))));
     if ((fl & SOURCE) != 0u) nf = int(TG(c));                            // sources hold their level
     // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
     // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold

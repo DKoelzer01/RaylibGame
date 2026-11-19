@@ -1454,7 +1454,7 @@ void creditSinks(const unsigned* units, int slots) {
     for (int slot = 0; slot < slots && slot < (int)G.owner.size(); ++slot) {
         const Brick* br = G.owner[slot];
         Site* st = G.ownerSite[slot];
-        if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += units[slot];
+        if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += (double)(int32_t)units[slot]; // net, signed (#875)
     }
 }
 
@@ -1945,7 +1945,7 @@ void CpuTick(int n) {
     for (int i = 0; i < processedCount; ++i) {
         Brick* br = slots[i];
         const uint32_t fl = g.flags[i];
-        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
+        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += (double)(int32_t)g.sinkOut[i]; // net, signed (#875) // #656
         if (fl & 1u) {
             const int drift = slotDrift[i];
             if (br->settled && drift <= kSettleDiff) br->changed = true; // a resting brick at the edge: stays asleep (#366)
