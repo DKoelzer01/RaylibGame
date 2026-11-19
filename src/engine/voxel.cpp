@@ -1789,9 +1789,11 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
                 blocked = v >= ISO_LEVEL;
             }
         }
-        if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+        if (!blocked) open += r == 0 ? 3.0f : 1.0f; // (#899) the sky overhead weighs most
     }
-    return std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f);
+    // (#899) Open ground and ground by one wall stay 1; under an overhang (only the up ray blocked) 0.71, in an alcove 0.54. With
+    // the old weights (up 2, x1.5) an overhang open at the sides read as full sky.
+    return std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------------------------
