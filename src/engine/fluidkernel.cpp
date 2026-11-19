@@ -443,11 +443,12 @@ struct Pass {
         static const bool quarter = EnvFlag("FLUID_COL_QUARTER");
         const int units = (int)std::floor(std::min({ plan, (float)avail / (quarter ? 4.0f : 1.0f), (float)room / (quarter ? 4.0f : 1.0f) }));
         if (units <= 0) { return q * 0.5f; }
-        // A slow pair's momentum is what it moved (#855): below kMatchPlan units a substep, keeping the fraction floor() left
-        // behind carried momentum the water never had - it stuck, then slipped a unit too far - and a basin at rest rocked
-        // by a few cm for good (no pond slept). Faster pairs keep it: a thin front moves a few units a substep, and dropping
-        // up to one every substep stalled the dam-break's front at 5 m.
-        if ((float)units < std::floor(plan) || ((float)units < plan && plan < kMatchPlan)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
+        // A slow, nearly level pair's momentum is what it moved (#855): below kMatchPlan units a substep and 2 x wakeUnits of
+        // head (3 cm), keeping the fraction floor() left behind carried momentum the water never had - it stuck, then slipped
+        // a unit too far - and a basin at rest rocked by a few cm for good (no pond slept). Other pairs keep it: a thin front
+        // moves a few units a substep (dropping up to one every substep stalled the dam-break's front at 5 m), and a stream on
+        // a slope plans as few (dropping it there, the flow meter read a 1 m^3/s stream as 1.4).
+        if ((float)units < std::floor(plan) || ((float)units < plan && plan < kMatchPlan && dH < 2 * p.wakeUnits)) q = (aGives ? 1.0f : -1.0f) * (float)units / (p.dt * p.units);
         if (quarter) {
             __atomic_fetch_sub(&g.delta[giverTop], units, __ATOMIC_RELAXED);
             __atomic_fetch_add(&g.delta[taker], units, __ATOMIC_RELAXED);

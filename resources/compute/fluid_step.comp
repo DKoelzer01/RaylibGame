@@ -480,8 +480,8 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     if ((FL(cg) & SOURCE) != 0u && (FL(ct) & DUG) == 0u) return 0.0;
     int units = int(floor(min(plan, min(float(avail), float(room)))));
     if (units <= 0) return q * 0.5;
-    // A slow pair (under kMatchPlan units a substep) carries only the momentum it moved (#855, fluidkernel.cpp).
-    if (float(units) < floor(plan) || (float(units) < plan && plan < kMatchPlan)) q = divRN((aGives ? 1.0 : -1.0) * float(units), dt * UNITS);
+    // A slow, nearly level pair (under kMatchPlan units a substep, 2 x wakeUnits of head) carries only the momentum it moved (#855, fluidkernel.cpp).
+    if (float(units) < floor(plan) || (float(units) < plan && plan < kMatchPlan && dH < 2 * wakeUnits)) q = divRN((aGives ? 1.0 : -1.0) * float(units), dt * UNITS);
     int rowDiff = takerRow - giverRow;
     if (giverRow < -64 || giverRow > 191 || rowDiff < -110 || rowDiff > 17) return q; // out of the code's reach: no move
     planned = units;
