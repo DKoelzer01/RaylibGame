@@ -26,6 +26,7 @@ out float fragLatitude;
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
 out float fragHeight;
 out float fragFar;         // #745: 0 near .. 1 far (0 with the switch off)
+out float fragAo;          // (#933 layer 2) baked ambient occlusion (trees.cpp BakeFoliageAo): 1 open
 
 void main()
 {
@@ -65,6 +66,7 @@ void main()
     fragNormal = normalize(mat3(matModel) * n);
     fragLeaf = leaf;
     fragShade = vertexColor.g;
+    fragAo = vertexColor.a;
     fragStone = vertexColor.b;  // loose stones: grey rock
     fragHash = h;
     fragLatitude = abs(up.y);

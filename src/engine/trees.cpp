@@ -79,6 +79,52 @@ void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist
     Quad(m, A[0], A[1], A[2], A[3], centre, leaf, shade); // bottom
 }
 
+// (#933 layer 2) Ambient occlusion baked into the vertex colour's alpha (255 = open; trees.fs scales the ambient term
+// only). Leaves darken toward the crown's middle (the inner canopy sees little sky) and on their undersides; bark toward
+// its foot (the ground's contact) and where it stands under the crown; loose stones at the ground. Analytic, from the
+// variant's own geometry: no rays. RAYLIBGAME_FOLIAGE_AO=0: off (all 255).
+void BakeFoliageAo(VariantMesh& m, bool stone) {
+    static const bool on = !(getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0');
+    const size_t nv = m.pos.size() / 3;
+    if (!on || nv == 0) return;
+    // The crown: the leaf vertices' middle and their reach from it (horizontal and vertical apart: crowns are wide).
+    Vector3 c{}; int nl = 0; float top = 0.0f;
+    for (size_t i = 0; i < nv; ++i) {
+        top = std::max(top, m.pos[3 * i + 1]);
+        if (m.col[4 * i] > 127) { c = Vector3Add(c, { m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2] }); ++nl; }
+    }
+    float rh = 0.0f, rv = 0.0f, lowLeaf = 1e9f;
+    if (nl > 0) {
+        c = Vector3Scale(c, 1.0f / nl);
+        for (size_t i = 0; i < nv; ++i) if (m.col[4 * i] > 127) {
+            const float dx = m.pos[3 * i] - c.x, dz = m.pos[3 * i + 2] - c.z;
+            rh = std::max(rh, sqrtf(dx * dx + dz * dz)); rv = std::max(rv, fabsf(m.pos[3 * i + 1] - c.y));
+            lowLeaf = std::min(lowLeaf, m.pos[3 * i + 1]);
+        }
+    }
+    auto ss = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    for (size_t i = 0; i < nv; ++i) {
+        const Vector3 p = { m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2] };
+        const float ny = m.nrm[3 * i + 1];
+        float ao = 1.0f;
+        if (stone) {
+            ao = 0.6f + 0.4f * ss(0.0f, 0.25f, p.y);                                   // the stone's foot against the ground
+        } else if (m.col[4 * i] > 127 && nl > 0) {
+            const float dx = (p.x - c.x) / std::max(rh, 0.1f), dz = (p.z - c.z) / std::max(rh, 0.1f), dy = (p.y - c.y) / std::max(rv, 0.1f);
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz);                          // 0 in the crown's middle, ~1 at its edge
+            ao = 0.5f + 0.5f * ss(0.15f, 0.95f, d);
+            if (ny < -0.5f) ao *= 0.78f;                                                 // leaf undersides face the dark ground
+        } else {
+            ao = 0.55f + 0.45f * ss(-0.2f, 0.9f, p.y);                                   // the trunk's foot
+            if (nl > 0 && p.y > lowLeaf - 0.5f) {                                        // bark up in the crown
+                const float dx = p.x - c.x, dz = p.z - c.z;
+                if (dx * dx + dz * dz < rh * rh) ao *= 0.72f;
+            }
+        }
+        m.col[4 * i + 3] = (unsigned char)std::clamp((int)lroundf(ao * 255.0f), 0, 255);
+    }
+}
+
 float U(std::mt19937& r) { return std::uniform_real_distribution<float>(0.0f, 1.0f)(r); }
 unsigned char Shade(std::mt19937& r) { return (unsigned char)(90 + (int)(U(r) * 140.0f)); }
 
@@ -235,6 +281,8 @@ void BuildVariants() {
         if (v == kStoneVariant) gVariants[1][v] = m; // already a few prisms (and no crown for FarFrom to fit)
         else FarFrom(m, v, gVariants[1][v]);
         gVariants[1][v].vertexCount = (int)(gVariants[1][v].pos.size() / 3);
+        BakeFoliageAo(gVariants[0][v], v == kStoneVariant);
+        BakeFoliageAo(gVariants[1][v], v == kStoneVariant);
     }
 }
 const VariantMesh& Variant(int v, int lod = 0) { std::call_once(gVariantsOnce, BuildVariants); return gVariants[lod][v]; }

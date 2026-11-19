@@ -14,6 +14,7 @@ in float fragLatitude;
 in vec3 fragClimate;   // temperature (C), moisture, 1 if known (Plan 5 B biomes)
 in float fragHeight;
 in float fragFar;      // #745: 0 near .. 1 far (always 0 with RAYLIBGAME_FAR_FOREST off)
+in float fragAo;       // (#933 layer 2) baked AO: scales the ambient only
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;
@@ -86,7 +87,8 @@ void main()
     vec3 ns = (fragLeaf > 0.5 && ndl < 0.0) ? -n : n;
     float direct = sunVis * sunShadowNormal(fragPosition, ns, sunDir, 4) * clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
     float sky = hemiOn() ? 1.0 : 0.7 + 0.3 * n.y; // a little more sky from above (world y: wrong on a sphere; #130 hemisphere instead)
-    vec3 color = albedo * (hemiAmbient(ambient, n) * 1.6 * sky + vec3(1.0, 0.96, 0.88) * sunTint() * direct + lampLight(fragPosition, n));
+    albedo *= mix(1.0, fragAo, 0.35); // (#933) the inner canopy and the trunk's foot read in direct light too (stylized, as the terrain's AO)
+    vec3 color = albedo * (hemiAmbient(ambient, n) * 1.6 * sky * fragAo + vec3(1.0, 0.96, 0.88) * sunTint() * direct + lampLight(fragPosition, n));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {
