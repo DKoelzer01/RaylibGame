@@ -1168,6 +1168,66 @@ int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vecto
     return (int)out.size();
 }
 
+// (#615 step 1) The caves: worm tunnels (with #549's mouth regions and their collapsing thin roofs, kept closed in wet
+// lowlands by #971) and caverns. The same operations in the same order as terrain.glsl's caveDistance (bit-exact).
+float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit) const {
+    // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
+    // its own distance field in metres, combined with min(): rock density grows with depth, so
+    // subtracting a fixed amount would only carve shallow caves.
+    // - Worm tunnels (~14 m radius) where both cave fields cross zero: at 1/150 m the fields change
+    //   ~0.01 per metre, so (t - kTunnelLevel) * 100 ~ metres from the tunnel wall.
+    // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
+    // Coarse LOD samples can't resolve them, so both fade out there.
+    const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
+    // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
+    // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
+    float caveTop = 5.0f;
+    float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) {
+        mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z));
+        // (#971) wet lowlands keep their roofs: no mouth there (the GPU reads the same interpolated column, terrain.glsl)
+        if (mouth > 0.0f) mouth = mouth * (1.0f - (col ? col->wet : caveWetColumn(Vector3Scale(p, 1.0f / d), surface - radius)));
+        caveTop = 5.0f - 7.5f * mouth;
+    }
+    if (hit) hit->mouth = mouth;
+    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
+    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
+    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
+    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
+    // tops of tors (14 m) so slabs over a collapsed roof go too.
+    constexpr float kRoof = 4.0f;
+    const float gate = mouth > 0.0f ? -14.0f : caveTop;
+    float m = 1e9f;                                            // metres to the nearest cave wall (< 0 inside)
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
+        const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
+        // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
+        const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
+        if ((a - kTunnelLevel) * 100.0f <= reach) {
+            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
+            top = top + (1.0f - top) * mouth;
+            const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
+            m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+            if (hit) hit->kind = 1;
+            if (mouth > 0.0f && m > 0.0f) {
+                const float roof = depth + m;
+                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
+                m = m + (-2.0f - m) * c;
+                if (hit && c > 0.0f) hit->collapsed = true;
+            }
+        }
+        if (depth > 30.0f && d > mantleRadius + 40.0f) {
+            const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
+            const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z); // a little flattened: wider than tall
+            const float mc = (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f;
+            if (hit && mc < m) hit->kind = 2;
+            m = std::min(m, mc);
+        }
+    }
+    return m;
+}
+
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);

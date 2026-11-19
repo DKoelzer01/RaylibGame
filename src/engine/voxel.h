@@ -323,6 +323,11 @@ public:
     // (#971) 0..1: a wet lowland (swamp, or a river's floodplain), where cave roofs never collapse into trenches (#549's mouths
     // stay closed). Once per height-map grid node (cached with the column) and for single samples in a mouth region only.
     float caveWetColumn(Vector3 dir, float elev) const;
+    // (#615 step 1) All the caves in one place: metres from p to the nearest cave wall (< 0 inside a cave; 1e9 where no cave
+    // reaches). densityNear carves where it is under its meshing reach; terrain.glsl's caveDistance is the same, bit-exact.
+    // hit (tools: --cave-stats): what made the distance.
+    struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
+    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr) const;
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

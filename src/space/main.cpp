@@ -1664,6 +1664,55 @@ int main(int argc, char** argv)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
+            // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
+            // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
+            // #549 roof collapse opened, and the trench metric: columns open to the sky through a cave (a cave sample within
+            // 4 m under the surface with no rock above it: a roof under 4 m). Plus an FNV hash of the full density there
+            // (refactors must leave it unchanged).
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            long long tunnel = 0, cavern = 0, samples = 0, land = 0, collapsedCols = 0, trenchCols = 0, caveCols = 0;
+            uint64_t hash = 1469598103934665603ull;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (float a = -R; a <= R; a += 2.0f)
+                for (float b = -R; b <= R; b += 2.0f) {
+                    if (a * a + b * b > R * R) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                    const float e = pf->elevation(dir);
+                    if (e < 0.0f) continue;
+                    ++land;
+                    const float surface = pf->radius + e;
+                    bool anyCave = false, collapsed = false, rockAbove = false, trench = false;
+                    for (float h = 14.0f; h >= -80.0f; h -= 0.5f) {
+                        const Vector3 q = Vector3Scale(dir, surface + h);
+                        const float dens = pf->baseDensity(q);
+                        uint32_t bits; memcpy(&bits, &dens, 4);
+                        hash = (hash ^ bits) * 1099511628211ull;
+                        ++samples;
+                        PlanetField::CaveHit hit;
+                        const float m = pf->caveDistance(q, surface + h, -h, surface, 0.0f, nullptr, &hit);
+                        const bool open = dens < ISO_LEVEL, caveOpen = open && m < 0.0f;
+                        if (caveOpen) { anyCave = true; if (hit.kind == 1) ++tunnel; else if (hit.kind == 2) ++cavern; if (hit.collapsed) collapsed = true; }
+                        if (h <= 0.0f && !open) rockAbove = true;
+                        if (caveOpen && -h < 4.0f && h <= 0.0f && !rockAbove) trench = true;
+                    }
+                    caveCols += anyCave; collapsedCols += collapsed; trenchCols += trench;
+                }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave stats: R %.0f m, %lld land columns (2 m), %lld samples (0.5 m, +14..-80 m) in %.0f ms\n", R, land, samples, ms);
+            printf("bench: cave stats: open cave samples: tunnel %lld, cavern %lld (%.2f%% of samples); columns with a cave %lld (%.1f%%)\n",
+                   tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
+            printf("bench: cave stats: columns a #549 roof collapse opened %lld; trench columns (open to the sky through a cave, roof < 4 m) %lld = %.0f m^2 (%.2f%% of land)\n",
+                   collapsedCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--test-terrain-gpu") {
             // Plan 6 step 3 (#146): the GPU port of the height map (resources/compute/terrain.glsl) against
             // PlanetField::elevationBase over 1M points: random directions (half near the start, half anywhere)
