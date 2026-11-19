@@ -6879,9 +6879,25 @@ int main(int argc, char** argv)
                         const bool basinWet = Fluid::WaterAt(*p, bucketBasin, 1.6f) >= 1.0f;
                         const bool field = Fluid::StandingWaterNear(*p, bucketField, 4.0f);
                         const float vol = (float)Fluid::GetStats().volume;
-                        const bool pass = basinWet && field && QuestBook_CountOf("pour") >= 2.0 && inventory.count("bucket") == 1;
-                        printf("bench: bucket: basin %s, field 3 m away watered %s, pour events %.0f, %.1f m^3 of moving water -> %s\n", basinWet ? "wet" : "dry", field ? "yes" : "no",
-                               QuestBook_CountOf("pour"), vol, pass ? "PASS" : "FAIL");
+                        const bool bucketsBack = inventory.count("bucket") == 1;
+                        // (#836) The bucket in the off hand, a pickaxe in the main hand: the off-hand key scoops at the water.
+                        bool offScoop = false;
+                        if (inventory.remove("bucket", 1)) {
+                            inventory.grid()[Inventory::kOffHand] = InvSlot{ "bucket", 100 };
+                            if (inventory.count("stone_pickaxe") <= 0) inventory.add("stone_pickaxe", 1);
+                            terrainTool.heldTool = "stone_pickaxe";
+                            const Vector3 up = Vector3Normalize(bucketWater);
+                            const Vector3 outDir = Vector3Normalize(Vector3Subtract(bucketBasin, bucketWater));
+                            const Vector3 flat = Vector3Normalize(Vector3Subtract(outDir, Vector3Scale(up, Vector3DotProduct(outDir, up))));
+                            Vector3 stand = Vector3Add(bucketWater, Vector3Scale(flat, 2.5f));
+                            stand = Vector3Scale(Vector3Normalize(stand), pf->radius + pf->elevation(Vector3Normalize(stand)) + 0.3f);
+                            lookFrom(stand, bucketWater);
+                            TerrainTool_BucketFromOffHand(world);
+                            offScoop = inventory.offHand().id == "water_bucket" && inventory.count("bucket") == 0 && terrainTool.heldTool == "stone_pickaxe";
+                        }
+                        const bool pass = basinWet && field && QuestBook_CountOf("pour") >= 2.0 && bucketsBack && offScoop;
+                        printf("bench: bucket: basin %s, field 3 m away watered %s, pour events %.0f, %.1f m^3 of moving water; from the off hand (pickaxe in hand) a scoop filled it %d -> %s\n",
+                               basinWet ? "wet" : "dry", field ? "yes" : "no", QuestBook_CountOf("pour"), vol, offScoop, pass ? "PASS" : "FAIL");
                         benchBucket = false;
                     }
                 } else if (benchPond && (pondPhase > 0 || WorldIdle())) {
@@ -9722,7 +9738,8 @@ int main(int argc, char** argv)
                 const std::string id = inventory.offHand().id;
                 if (id.empty()) GameUI_Toast("Your off hand is empty: put food or an oxygen canister there (the inventory, beside you)");
                 else if (Survival_IsFood(id) || Survival_IsUsable(id)) { if (!Survival_UseItem(id) && Survival_IsFood(id)) GameUI_Toast("You're not hungry"); }
-                else GameUI_Toast(TextFormat("%s uses food or a consumable from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
+                else if (id == "bucket" || id == "water_bucket") TerrainTool_BucketFromOffHand(world); // (#836) scoop or pour where you aim
+                else GameUI_Toast(TextFormat("%s uses food, a consumable or a bucket from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
             if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
             if (!loading) Events_Update(world, frameDt); // meteor showers (#177)

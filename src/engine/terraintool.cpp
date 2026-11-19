@@ -142,6 +142,30 @@ static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
 
 // The bucket in hand (Plan 4, F5): empty, it scoops 1 m^3 from the first water along the view within
 // reach (static or flowing); full, it pours where you look. Uses the aim of the last TerrainTool_Update.
+// (#836) The off hand's bucket, used where the player aims (the off-hand key) while the main hand holds something else.
+// Its own bucket is the one used: other stacks of it are set aside for the action. What it turns into (a water bucket,
+// an empty bucket, another fluid's bucket) goes back into the off hand.
+bool TerrainTool_BucketFromOffHand(Scene& world) {
+    auto& g = inventory.grid();
+    const std::string off = g[Inventory::kOffHand].id;
+    if (off != "bucket" && off != "water_bucket") return false;
+    std::vector<std::pair<int, InvSlot>> aside;
+    for (int i = 0; i < Inventory::kCells; ++i) if (i != Inventory::kOffHand && g[i].id == off) { aside.push_back({ i, g[i] }); g[i] = InvSlot{}; }
+    const auto before = inventory.all();
+    const std::string held = terrainTool.heldTool;
+    terrainTool.heldTool = off;
+    const bool used = TerrainTool_Bucket(world);
+    terrainTool.heldTool = held;
+    // What it turned into: the item that grew (into a free cell): back to the off hand, if that is empty now.
+    std::string result;
+    for (const auto& [id, n] : inventory.all()) { auto it = before.find(id); if (n > (it == before.end() ? 0 : it->second)) result = id; }
+    if (!result.empty() && g[Inventory::kOffHand].empty())
+        for (int i = 0; i < Inventory::kCells; ++i)
+            if (i != Inventory::kOffHand && g[i].id == result) { g[Inventory::kOffHand] = InvSlot{ result, 100, g[i].heat }; g[i].centi -= 100; if (g[i].centi <= 0) g[i] = InvSlot{}; break; }
+    for (auto& [i, s] : aside) { if (g[i].empty()) g[i] = s; else inventory.addAmount(s.id, s.centi / 100.0); } // (back where they were)
+    return used;
+}
+
 bool TerrainTool_Bucket(Scene& world) {
     Planetoid* bodyP = player.nearest ? player.nearest : (hasHit ? hit.planetoid : nullptr); // nearest is set by the next update after a teleport
     if (!bodyP || (terrainTool.heldTool != "bucket" && terrainTool.heldTool != "water_bucket")) return false;
