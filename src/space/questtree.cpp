@@ -173,14 +173,26 @@ void QuestTree_DrawTab() {
                 dl->AddLine(ImVec2(pb.x + bw * 0.5f, pb.y + bh), to, Done().count(r) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 120), 2.0f);
             }
     }
-    // The main line: one box per tier.
+    // The main line: one box per tier (done / now / locked). A click opens its objectives in a pop-out beside it (#890).
+    static int openTier = -1;
+    static ImVec2 openAt{};
+    bool tierClicked = false;
     for (int t = 0; t < QuestBook_TierCount(); ++t) {
         const ImVec2 b = boxAt(0.0f, (float)t);
+        const ImVec2 e(b.x + bw, b.y + bh);
+        const bool hover = ImGui::IsMouseHoveringRect(b, e) && ImGui::IsWindowHovered();
         const ImU32 fill = t < cur ? IM_COL32(40, 90, 40, 255) : t == cur ? IM_COL32(70, 70, 30, 255) : IM_COL32(35, 35, 40, 255);
-        dl->AddRectFilled(b, ImVec2(b.x + bw, b.y + bh), fill, 6.0f);
-        dl->AddRect(b, ImVec2(b.x + bw, b.y + bh), IM_COL32(230, 210, 140, 255), 6.0f, 0, t == cur ? 2.5f : 1.0f);
+        dl->AddRectFilled(b, e, hover ? IM_COL32(80, 80, 60, 255) : fill, 6.0f);
+        dl->AddRect(b, e, IM_COL32(230, 210, 140, 255), 6.0f, 0, t == cur || t == openTier ? 2.5f : 1.0f);
         dl->AddText(ImVec2(b.x + 8, b.y + 5), IM_COL32(240, 230, 200, 255), TextFormat("Tier %d", t));
+        const char* state = t < cur ? "done" : t == cur ? "now" : "locked";
+        dl->AddText(ImVec2(e.x - ImGui::CalcTextSize(state).x - 8, b.y + 5), t < cur ? IM_COL32(150, 230, 150, 255) : t == cur ? IM_COL32(240, 220, 120, 255) : IM_COL32(140, 140, 140, 255), state);
         dl->AddText(ImVec2(b.x + 8, b.y + 24), IM_COL32(220, 220, 220, 255), QuestBook_TierName(t));
+        if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            openTier = openTier == t ? -1 : t; // the same tier again closes it
+            openAt = ImVec2(e.x + 8.0f, b.y);
+            tierClicked = true;
+        }
     }
     // Side nodes.
     for (const Node& n : nodes) {
@@ -207,4 +219,42 @@ void QuestTree_DrawTab() {
         }
     }
     ImGui::EndChild();
+    // (#890) The open tier's objectives: a semi-transparent pop-out beside its box, each with its progress and a pin box
+    // (up to kMaxPins pinned to the HUD, the player's own). Esc, a click outside it or the tier again closes it.
+    if (openTier >= 0 && openTier < QuestBook_TierCount()) {
+        ImGui::SetNextWindowPos(openAt, ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.82f);
+        bool keep = true;
+        const ImGuiWindowFlags f = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("##tierobjectives", nullptr, f)) {
+            const int t = openTier;
+            ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.55f, 1.0f), "Tier %d: %s", t, QuestBook_TierName(t));
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
+            ImGui::TextDisabled("%s", QuestBook_TierText(t));
+            ImGui::PopTextWrapPos();
+            ImGui::Separator();
+            for (int k = 0; k < QuestBook_TaskCount(t); ++k) {
+                const bool kd = QuestBook_TaskDone(t, k);
+                ImGui::PushID(k);
+                if (!kd && t <= cur) {
+                    bool pinned = QuestBook_Pinned(t, k);
+                    const bool full = !pinned && (int)QuestBook_Pins().size() >= kMaxPins;
+                    ImGui::BeginDisabled(full);
+                    if (ImGui::Checkbox("##pin", &pinned)) QuestBook_Pin(t, k, pinned);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(full ? "Three are pinned: unpin one first" : pinned ? "Pinned to the HUD" : "Pin to the HUD");
+                    ImGui::SameLine();
+                } else { ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0f)); ImGui::SameLine(); }
+                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : t <= cur ? ImVec4(0.95f, 0.95f, 0.95f, 1.0f) : ImVec4(0.6f, 0.6f, 0.62f, 1.0f),
+                                   "%s%s", QuestBook_TaskText(t, k), kd ? "   (done)" : "");
+                ImGui::PopID();
+            }
+            if (t > cur) ImGui::TextDisabled("Locked: finish tier %d first", t - 1);
+            const bool outside = !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !tierClicked;
+            if (outside || ImGui::IsKeyPressed(ImGuiKey_Escape)) keep = false;
+        }
+        ImGui::End();
+        if (!keep) openTier = -1;
+    }
 }

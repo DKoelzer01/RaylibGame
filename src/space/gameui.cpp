@@ -47,7 +47,6 @@ namespace {
     struct Container { bool open = false; uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; } container;
     // The game window (#821): the screen shown; Quests' view; the database pop-up (#826: alt-click an item).
     GameScreen screen = GameScreen::Inventory;
-    bool questTree = false;
     bool databaseOpen = false;
 }
 
@@ -148,7 +147,7 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     databaseOpen = false; // (a named screen: the pop-up only when asked for, below)
     const std::string t = tab;
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
-    else if (t == "Quest tree" || t == "Quests") { GameUI_ShowScreen(GameScreen::Quests); questTree = t == "Quest tree"; }
+    else if (t == "Quest tree" || t == "Quests") GameUI_ShowScreen(GameScreen::Quests); // (#890: one view)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
@@ -1033,37 +1032,6 @@ static void DrawTeamProgress() {
     else ImGui::TextDisabled("every tier done");
 }
 
-// The main quest line: done tiers collapsed, the current one open, the next shown. Each open task has a pin: up to
-// kMaxPins show on the HUD (#825).
-static void DrawQuestList() {
-    const int cur = QuestBook_Tier();
-    for (int i = 0; i < QuestBook_TierCount() && i <= cur + 1; ++i) {
-        ImGui::PushID(i);
-        const bool done = i < cur;
-        const char* name = QuestBook_TierName(i);
-        ImGui::SetNextItemOpen(i == cur, ImGuiCond_Appearing);
-        if (ImGui::CollapsingHeader(TextFormat("%s Tier %d: %s", done ? "[done]" : i == cur ? "[now]" : "[next]", i, name))) {
-            ImGui::TextWrapped("%s", QuestBook_TierText(i));
-            for (int k = 0; k < QuestBook_TaskCount(i); ++k) {
-                const bool kd = QuestBook_TaskDone(i, k);
-                ImGui::PushID(k);
-                if (!kd) {
-                    bool pinned = QuestBook_Pinned(i, k);
-                    const bool full = !pinned && (int)QuestBook_Pins().size() >= kMaxPins;
-                    ImGui::BeginDisabled(full);
-                    if (ImGui::Checkbox("##pin", &pinned)) QuestBook_Pin(i, k, pinned);
-                    ImGui::EndDisabled();
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip(full ? "Three are pinned: unpin one first" : pinned ? "Pinned to the HUD" : "Pin to the HUD");
-                    ImGui::SameLine();
-                } else ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), 0.0f)), ImGui::SameLine();
-                ImGui::TextColored(kd ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : ImVec4(0.95f, 0.95f, 0.95f, 1.0f), "%s%s", QuestBook_TaskText(i, k), kd ? "   (done)" : ""); // (the pin box is the only box: no "[ ]" beside it)
-                ImGui::PopID();
-            }
-        }
-        ImGui::PopID();
-    }
-}
-
 // The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
 static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
     const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
@@ -1493,11 +1461,8 @@ void GameUI_Draw(Scene& world) {
             case GameScreen::Crafting: DrawCraftingScreen(); break; // (#889) the items panel and the crafting column
             case GameScreen::Quests:
                 DrawTeamProgress(); // (#825)
-                if (ImGui::RadioButton("List", !questTree)) questTree = false;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Tree", questTree)) questTree = true;
                 ImGui::Separator();
-                if (questTree) QuestTree_DrawTab(); else DrawQuestList();
+                QuestTree_DrawTab(); // (#890: the tree is the Quests screen; a tier's objectives and pins open in a pop-out)
                 break;
             case GameScreen::Skills: DrawSkills(); break; // (#883)
             case GameScreen::Team: DrawTeam(); break;
