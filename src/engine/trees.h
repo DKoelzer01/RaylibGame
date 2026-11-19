@@ -116,6 +116,9 @@ struct TreeTile {
     bool pending = false;                      // a rebuild is queued
 };
 
+// (#893 tests) the scatter around dir as generated (no edits or removals), counted within range m: trees, bushes, loose stones.
+class PlanetField;
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones);
 class TreeSystem {
 public:
     TreeSystem(std::shared_ptr<const PlanetField> field, unsigned int seed);
