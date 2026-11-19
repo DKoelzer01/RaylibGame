@@ -52,6 +52,7 @@ uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
+uniform int forestFloorAo;     // (#933 layer 2) 1: the forest floor under the real trees takes less sky light (RAYLIBGAME_FOLIAGE_AO=0: 0)
 uniform float farForest;        // #745: 1 = deeper canopy tint, starting earlier and denser (RAYLIBGAME_FAR_FOREST)
 
 out vec4 finalColor;
@@ -452,7 +453,11 @@ void main()
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
     float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);
-    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky * occlusionAO + direct + emissive;
+    // (#933 layer 2) Under the real trees (to where the painted canopy takes over), the forest floor's sky is mostly crowns:
+    // its ambient drops with the canopy cover (direct sun there comes from the shadow maps already).
+    float floorAo = 1.0;
+    if (forestFloorAo == 1 && fragCanopy.x > 0.01) floorAo = 1.0 - 0.45 * fragCanopy.x * (1.0 - smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition)));
+    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky * occlusionAO * floorAo + direct + emissive;
     // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
     // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
     float fogDist = length(viewPos - fragPosition);
