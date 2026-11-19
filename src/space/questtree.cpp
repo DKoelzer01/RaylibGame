@@ -142,9 +142,14 @@ bool QuestTree_LoadLine(const char* tok, FILE* f) {
     return true;
 }
 
+static int openTier = -1; // (#890) the tier whose objectives are open in the pop-out (-1: none)
+void QuestTree_TestOpenTier(int tier) { openTier = tier; } // (shots and tests)
+
 void QuestTree_DrawTab() {
     Load();
-    const float cw = 232.0f, ch = 74.0f, bw = 210.0f, bh = 46.0f, pad = 12.0f;
+    // (#891) the boxes in font heights (they were sized for a 13 px font: at 2x the text ran out of them)
+    const float fh = ImGui::GetFontSize();
+    const float cw = fh * 17.8f, ch = fh * 5.7f, bw = fh * 16.2f, bh = fh * 3.6f, pad = fh;
     float maxX = 0.0f, maxY = (float)QuestBook_TierCount();
     for (const Node& n : nodes) { maxX = std::max(maxX, n.x); maxY = std::max(maxY, n.y + 1.0f); }
     // Legend: the lines' colours.
@@ -174,8 +179,6 @@ void QuestTree_DrawTab() {
             }
     }
     // The main line: one box per tier (done / now / locked). A click opens its objectives in a pop-out beside it (#890).
-    static int openTier = -1;
-    static ImVec2 openAt{};
     bool tierClicked = false;
     for (int t = 0; t < QuestBook_TierCount(); ++t) {
         const ImVec2 b = boxAt(0.0f, (float)t);
@@ -184,13 +187,12 @@ void QuestTree_DrawTab() {
         const ImU32 fill = t < cur ? IM_COL32(40, 90, 40, 255) : t == cur ? IM_COL32(70, 70, 30, 255) : IM_COL32(35, 35, 40, 255);
         dl->AddRectFilled(b, e, hover ? IM_COL32(80, 80, 60, 255) : fill, 6.0f);
         dl->AddRect(b, e, IM_COL32(230, 210, 140, 255), 6.0f, 0, t == cur || t == openTier ? 2.5f : 1.0f);
-        dl->AddText(ImVec2(b.x + 8, b.y + 5), IM_COL32(240, 230, 200, 255), TextFormat("Tier %d", t));
+        dl->AddText(ImVec2(b.x + 8, b.y + fh * 0.35f), IM_COL32(240, 230, 200, 255), TextFormat("Tier %d", t));
         const char* state = t < cur ? "done" : t == cur ? "now" : "locked";
-        dl->AddText(ImVec2(e.x - ImGui::CalcTextSize(state).x - 8, b.y + 5), t < cur ? IM_COL32(150, 230, 150, 255) : t == cur ? IM_COL32(240, 220, 120, 255) : IM_COL32(140, 140, 140, 255), state);
-        dl->AddText(ImVec2(b.x + 8, b.y + 24), IM_COL32(220, 220, 220, 255), QuestBook_TierName(t));
+        dl->AddText(ImVec2(e.x - ImGui::CalcTextSize(state).x - 8, b.y + fh * 0.35f), t < cur ? IM_COL32(150, 230, 150, 255) : t == cur ? IM_COL32(240, 220, 120, 255) : IM_COL32(140, 140, 140, 255), state);
+        dl->AddText(ImVec2(b.x + 8, b.y + fh * 1.85f), IM_COL32(220, 220, 220, 255), QuestBook_TierName(t));
         if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             openTier = openTier == t ? -1 : t; // the same tier again closes it
-            openAt = ImVec2(e.x + 8.0f, b.y);
             tierClicked = true;
         }
     }
@@ -204,8 +206,8 @@ void QuestTree_DrawTab() {
         dl->AddRectFilled(b, ImVec2(b.x + bw, b.y + bh), fill, 6.0f);
         dl->AddRect(b, ImVec2(b.x + bw, b.y + bh), lc, 6.0f, 0, open ? 2.5f : 1.0f);
         const ImU32 tc = isDone ? IM_COL32(170, 240, 170, 255) : open ? IM_COL32(240, 240, 240, 255) : IM_COL32(130, 130, 130, 255);
-        dl->AddText(ImVec2(b.x + 8, b.y + 5), tc, n.title.c_str());
-        dl->AddText(ImVec2(b.x + 8, b.y + 24), IM_COL32(170, 170, 170, 255), isDone ? "done" : open ? TaskText(n).c_str() : "locked");
+        dl->AddText(ImVec2(b.x + 8, b.y + fh * 0.35f), tc, n.title.c_str());
+        dl->AddText(ImVec2(b.x + 8, b.y + fh * 1.85f), IM_COL32(170, 170, 170, 255), isDone ? "done" : open ? TaskText(n).c_str() : "locked");
         if (ImGui::IsMouseHoveringRect(b, ImVec2(b.x + bw, b.y + bh))) {
             ImGui::BeginTooltip();
             ImGui::Text("%s  (%s)", n.title.c_str(), l ? l->name.c_str() : n.line.c_str());
@@ -222,8 +224,8 @@ void QuestTree_DrawTab() {
     // (#890) The open tier's objectives: a semi-transparent pop-out beside its box, each with its progress and a pin box
     // (up to kMaxPins pinned to the HUD, the player's own). Esc, a click outside it or the tier again closes it.
     if (openTier >= 0 && openTier < QuestBook_TierCount()) {
-        ImGui::SetNextWindowPos(openAt, ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.82f);
+        { const ImVec2 b = boxAt(0.0f, (float)openTier); ImGui::SetNextWindowPos(ImVec2(b.x + bw + 8.0f, b.y), ImGuiCond_Always); } // (beside its box, wherever the tree is scrolled)
+        ImGui::SetNextWindowBgAlpha(0.93f); // (semi-transparent, but the tree behind must not show through the text)
         bool keep = true;
         const ImGuiWindowFlags f = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
@@ -234,6 +236,7 @@ void QuestTree_DrawTab() {
             ImGui::TextDisabled("%s", QuestBook_TierText(t));
             ImGui::PopTextWrapPos();
             ImGui::Separator();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f); // (long objectives wrap: one ran off the screen)
             for (int k = 0; k < QuestBook_TaskCount(t); ++k) {
                 const bool kd = QuestBook_TaskDone(t, k);
                 ImGui::PushID(k);
@@ -250,6 +253,7 @@ void QuestTree_DrawTab() {
                                    "%s%s", QuestBook_TaskText(t, k), kd ? "   (done)" : "");
                 ImGui::PopID();
             }
+            ImGui::PopTextWrapPos();
             if (t > cur) ImGui::TextDisabled("Locked: finish tier %d first", t - 1);
             const bool outside = !ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !tierClicked;
             if (outside || ImGui::IsKeyPressed(ImGuiKey_Escape)) keep = false;
