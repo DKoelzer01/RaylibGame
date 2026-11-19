@@ -25,8 +25,9 @@ bool GameSave_TestSplit(Scene& world); // --test-save-split (#346)
 #include <vector>
 struct Player; class Inventory; struct SurvivalState;
 struct PlayerRecordMeta { std::string uuid, name; double firstSeen = 0.0, playTime = 0.0; std::string kept; };
-bool PlayerRecord_Read(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta);
-bool PlayerRecord_Write(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, double sessionSeconds);
+struct SkillState;
+bool PlayerRecord_Read(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, SkillState* skills = nullptr);
+bool PlayerRecord_Write(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, double sessionSeconds, SkillState* skills = nullptr); // skills (#920): a remote player's
 std::vector<PlayerRecordMeta> PlayerRecord_List(); // the uuid and name of every record beside the save (a server's name claims)
 
 #endif

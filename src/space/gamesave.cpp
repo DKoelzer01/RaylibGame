@@ -72,7 +72,7 @@ bool LocalPlayer() { return !Headless() && gNetRole != NetRole::Client; }
 // Whose lines: a player, their inventory and survival; `local` also the game's own (hotbar, help, map pins, suit, tool
 // wear, creative), which a server does not hold for a remote player: those lines are kept as text and written back as
 // they were (a record made in single player keeps its hotbar when the world is hosted).
-struct RecordTarget { Player& p; Inventory& inv; SurvivalState& sv; bool local; std::string& kept; };
+struct RecordTarget { Player& p; Inventory& inv; SurvivalState& sv; bool local; std::string& kept; SkillState* skills = nullptr; }; // skills (#920): a server's remote player's, read and written as lines
 
 void WritePlayerLines(FILE* f, RecordTarget t) {
     fprintf(f, "player %.6f %.6f %.6f %f %f %f %d %f\n", t.p.position.x, t.p.position.y, t.p.position.z,
@@ -100,7 +100,10 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         ToolWear_Save(f);
         QuestBook_SavePins(f); // (#825) the player's pinned quests
         fputs(Skills_SaveText(LocalSession().skills).c_str(), f); // (#883) XP and perks
-    } else fputs(t.kept.c_str(), f);
+    } else {
+        fputs(t.kept.c_str(), f);
+        if (t.skills) fputs(Skills_SaveText(*t.skills).c_str(), f); // (#920) a server's remote player's XP and perks
+    }
     fprintf(f, "survival %f %f %f %d\n", t.sv.oxygen, t.sv.power, t.sv.health, t.sv.deaths);
     fprintf(f, "food %f\n", t.sv.food);
     if (t.sv.hasBed) fprintf(f, "bed %s %u %d %d %d\n", t.sv.bedBody.c_str(), t.sv.bedPlot, t.sv.bedCell[0], t.sv.bedCell[1], t.sv.bedCell[2]); // #800: the player's spawn bed
@@ -112,6 +115,11 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
     if (strcmp(tok, "bed") == 0) { // #800: the spawn bed
         char b[64] = {}; unsigned pl = 0; int x = 0, y = 0, z = 0;
         if (fscanf(f, " %63s %u %d %d %d", b, &pl, &x, &y, &z) == 5) { t.sv.hasBed = true; t.sv.bedBody = b; t.sv.bedPlot = pl; t.sv.bedCell[0] = x; t.sv.bedCell[1] = y; t.sv.bedCell[2] = z; }
+        return true;
+    }
+    if (!t.local && t.skills && (strcmp(tok, "skill_xp") == 0 || strcmp(tok, "perk") == 0)) { // (#920) a remote player's skills, not kept as text
+        char rest[256] = {};
+        if (fgets(rest, sizeof(rest), f)) Skills_LoadLine(*t.skills, (std::string(tok) + rest).c_str());
         return true;
     }
     if (t.local) {
@@ -244,12 +252,12 @@ bool WriteRecord(const std::string& uuid) {
 } // namespace
 
 // A remote player's record on a server (#346 step 2): their player, inventory and survival; the rest kept as text.
-bool PlayerRecord_Read(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta) {
+bool PlayerRecord_Read(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, SkillState* skills) {
     meta.kept.clear();
-    return ReadRecordInto(path, RecordTarget{ p, inv, sv, false, meta.kept }, meta);
+    return ReadRecordInto(path, RecordTarget{ p, inv, sv, false, meta.kept, skills }, meta);
 }
-bool PlayerRecord_Write(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, double sessionSeconds) {
-    return WriteRecordFrom(path, RecordTarget{ p, inv, sv, false, meta.kept }, meta, sessionSeconds);
+bool PlayerRecord_Write(const std::string& path, Player& p, Inventory& inv, SurvivalState& sv, PlayerRecordMeta& meta, double sessionSeconds, SkillState* skills) {
+    return WriteRecordFrom(path, RecordTarget{ p, inv, sv, false, meta.kept, skills }, meta, sessionSeconds);
 }
 std::vector<PlayerRecordMeta> PlayerRecord_List() {
     std::vector<PlayerRecordMeta> out;
@@ -587,6 +595,30 @@ TEST_F(SaveTest, PlayerRecordRoundTrip) {
     EXPECT_TRUE(sv2.hasBed); EXPECT_EQ(sv2.bedBody, "terra"); EXPECT_EQ(sv2.bedPlot, 4u); EXPECT_EQ(sv2.bedCell[0], -2); EXPECT_EQ(sv2.bedCell[2], 9);
     EXPECT_NE(m2.kept.find("hotbar 0 45"), std::string::npos) << "a line the server doesn't hold is kept: " << m2.kept;
     EXPECT_NE(m2.kept.find("map_pin 1 2 3 home"), std::string::npos) << m2.kept;
+}
+
+// (#920) A remote player's skills in their record: read into their SkillState, written from it, never kept as text too.
+TEST_F(SaveTest, PlayerRecordSkillsRoundTrip) {
+    ASSERT_TRUE(Skills_Load("resources/data/skills.txt"));
+    Player p; p.forward = { 0, 0, 1 };
+    Inventory inv; SurvivalState sv;
+    PlayerRecordMeta meta; meta.uuid = PlayerId_FromName("skilled"); meta.name = "skilled"; meta.kept = "hotbar 0 45\n";
+    SkillState sk; sk.xp["mining"] = 2478.5; sk.xp["digging"] = 12.25; sk.ranks["quick_pick"] = 2;
+    const std::string path = PlayerRecord_Path(meta.uuid);
+    ASSERT_TRUE(PlayerRecord_Write(path, p, inv, sv, meta, 0.0, &sk));
+    Player p2; Inventory inv2; SurvivalState sv2; PlayerRecordMeta m2; SkillState sk2;
+    ASSERT_TRUE(PlayerRecord_Read(path, p2, inv2, sv2, m2, &sk2));
+    EXPECT_NEAR(sk2.xp["mining"], 2478.5, 1e-3);
+    EXPECT_NEAR(sk2.xp["digging"], 12.25, 1e-3);
+    EXPECT_EQ(sk2.ranks["quick_pick"], 2);
+    EXPECT_EQ(m2.kept.find("skill_xp"), std::string::npos) << "the skills are not kept as text as well: " << m2.kept;
+    EXPECT_EQ(m2.kept.find("perk"), std::string::npos) << m2.kept;
+    // Written again (the server's autosave) without losing or doubling them.
+    ASSERT_TRUE(PlayerRecord_Write(path, p2, inv2, sv2, m2, 0.0, &sk2));
+    SkillState sk3; PlayerRecordMeta m3; Player p3; Inventory inv3; SurvivalState sv3;
+    ASSERT_TRUE(PlayerRecord_Read(path, p3, inv3, sv3, m3, &sk3));
+    EXPECT_NEAR(sk3.xp["mining"], 2478.5, 1e-3);
+    EXPECT_EQ(sk3.ranks["quick_pick"], 2);
 }
 
 TEST_F(SaveTest, TeamLinesRoundTrip) {

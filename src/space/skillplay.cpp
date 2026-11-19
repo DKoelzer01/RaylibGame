@@ -5,6 +5,7 @@
 #include "tools.h"
 #include "gameui.h"
 #include "simclock.h"
+#include "net.h"
 #include "world.h"
 #include "player.h"
 #include <algorithm>
@@ -23,6 +24,7 @@ namespace {
     int levelUps = 0;
 
     void OnEvent(const char* event, double n, Vector3 local) {
+        if (gNetRole == NetRole::Client) return; // (#920) joined: the server counts our XP (its SkillState replaces ours)
         SkillState& s = LocalSession().skills;
         if (!strcmp(event, "fill")) { // (no XP: it marks the ground as ours: the cells round its centre, where a dig would hit it)
             for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx)
