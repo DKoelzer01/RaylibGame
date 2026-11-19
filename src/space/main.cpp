@@ -10648,8 +10648,13 @@ int main(int argc, char** argv)
                     if (!cb) return false;
                     const Ray ray = GetScreenToWorldRay({ x * sx, y * sy }, world.camera);
                     const Vector3 o = cb->toLocal(ray.position), d = cb->dirToLocal(ray.direction);
-                    for (float s = 0.5f; s < 3000.0f; s += 0.5f + s * 0.03f)
-                        if (cb->densityAt(Vector3Add(o, Vector3Scale(d, s))) >= ISO_LEVEL) return false;
+                    // Solid right at the start (the eye against a crevice wall: the field and the mesh differ by a few cm) is
+                    // skipped: only ground the ray meets after it has been in open air counts.
+                    bool aired = false;
+                    for (float s = 0.3f; s < 3000.0f; s += 0.5f + s * 0.03f) {
+                        const bool solid = cb->densityAt(Vector3Add(o, Vector3Scale(d, s))) >= ISO_LEVEL;
+                        if (!solid) aired = true; else if (aired || s > 2.0f) return false;
+                    }
                     return true;
                 };
                 long skyMasked = 0;
@@ -10666,6 +10671,7 @@ int main(int argc, char** argv)
                     printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
                            crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
                     if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
+                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); } } // every flagged frame (the first 24)
                 }
                 UnloadImage(shot);
             }
