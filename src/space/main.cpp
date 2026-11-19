@@ -526,6 +526,7 @@ int main(int argc, char** argv)
     bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
     bool benchSweepLook = false; // --sweep-look
+    bool spawnDirLocal = false;  // --spawn-latlon: spawnDir is in the body's frame (the HUD's lat/lon), not the world's
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
@@ -932,7 +933,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--sweep-look") benchSweepLook = true; // (#904/#910) with --test-walk: look left and right, 20-40 deg down, while walking
-        if (std::string(argv[i]) == "--spawn-latlon" && i + 2 < argc) { const float la = (float)atof(argv[i + 1]) * DEG2RAD, lo = (float)atof(argv[i + 2]) * DEG2RAD; hasSpawnDir = true; spawnDir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) }; }
+        if (std::string(argv[i]) == "--spawn-latlon" && i + 2 < argc) { const float la = (float)atof(argv[i + 1]) * DEG2RAD, lo = (float)atof(argv[i + 2]) * DEG2RAD; hasSpawnDir = true; spawnDirLocal = true; spawnDir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) }; } // body-local: turned with the body at the spawn
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
@@ -9688,7 +9689,7 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDirLocal ? start->dirToWorld(spawnDir) : spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
