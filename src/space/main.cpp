@@ -10004,7 +10004,7 @@ int main(int argc, char** argv)
             // Always (not only with the log): an arena that grows during play (after the loading screens) prints the same
             // breakdown once, tagged GREW, so a playtest log says what drove it (#916 couldn't be reproduced since #901).
             static int lastCap = 0;
-            const int capNow = TerrainArena_Available() ? TerrainArena_Stats().vertexCapacity : 0;
+            const int capNow = gameState == 1 && !world.objects.empty() && TerrainArena_Available() ? TerrainArena_Stats().vertexCapacity : lastCap; // (#973) only in play: Available() creates the arena (it stayed alive behind the menus)
             const bool grewInPlay = lastCap >= 16000000 && capNow > lastCap && gameState == 1 && !loading && TerrainArena_Stats().vertices > 0; // (not the first reserve from the small initial arena, 4.2 M)
             if (capNow != lastCap) lastCap = capNow;
             if (grewInPlay) printf("arena: GREW in play to %.1f M vertices; what holds them:\n", capNow / 1e6);
