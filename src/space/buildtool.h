@@ -30,6 +30,7 @@ extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
 void BuildTool_Draw3D(Scene& world);
+void BuildTool_ForgetWorld(); // drop the aim's pointers into a world being unloaded (#902)
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)

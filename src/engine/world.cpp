@@ -41,6 +41,9 @@ const int CHUNK_SIZE = 32;
 WorldGenSettings worldGen;
 std::function<void(FILE*)> saveExtrasHook;
 std::function<void(FILE*)> loadExtrasHook;
+std::function<void()> loadDoneHook;
+static std::vector<std::function<void()>>& UnloadHooks() { static std::vector<std::function<void()>> h; return h; }
+void World_AddUnloadHook(std::function<void()> hook) { UnloadHooks().push_back(std::move(hook)); }
 LodSettings lodSettings;
 std::unordered_set<const Chunk*> gOcclusionSkip; // #134 experiment (main.cpp RAYLIBGAME_OCC_SKIP)
 std::unordered_set<uint32_t> gOcclusionSkipPlots; // #134 experiment: plot ids left out (parts and machines)
@@ -2044,6 +2047,7 @@ void World_ClearStreamingQueues() {
 }
 
 void unloadWorld(Scene& world) {
+    for (auto& h : UnloadHooks()) h(); // (#902) pointers into the old world dropped before it goes
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     World_ClearStreamingQueues(); // #387 (first: nothing queued to wait for; again below for what lands meanwhile)
     // The builds already running on the workers (CPU only: a GPU density block is a callback on the main thread, never a
@@ -2591,6 +2595,9 @@ bool LoadWorldSave(Scene& world) {
     fclose(f);
     if (loadProfile) printf("load: %.0f ms: regenerate the world %.0f, region deltas %.0f, plots + machines %.0f, fluid %.0f, rest %.0f\n",
                             lms(lt0), regenMs, regionsMs, plotsMs, fluidMs, lms(lt0) - regenMs - regionsMs - plotsMs - fluidMs);
+    // Every body is in its saved state now (rotation above): positions kept in a body's frame go back to world space here
+    // (#901: the player's record was read in the extras, before the rotation came back, and stood on the wrong ground).
+    if (loadDoneHook) loadDoneHook();
     LOG_INFO("World", "loaded %s (seed %u)\n", SAVE_PATH, seed);
     return true;
 }

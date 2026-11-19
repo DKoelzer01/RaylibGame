@@ -796,6 +796,8 @@ int main(int argc, char** argv)
     float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
     bool dumpSystem = false;       // --dump-system: print every body after generation
     bool loadSaveAtStart = false;  // --load: load saves/world.sav before starting
+    bool benchLoadHold = false; int loadHoldStage = 0; DVec3 loadHoldFrom{}; // --test-load-hold (#901): after a load the player stays on the saved ground
+    int benchReload = 0; // --test-reload N (#902): load the save again N times in one session, memory checked
     bool benchAtSave = false;      // --at-save
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
     float spinRate = 30.0f;        // --spin-rate DEG_PER_SEC
@@ -909,6 +911,8 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
         if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
         if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
+        if (std::string(argv[i]) == "--test-load-hold") { loadSaveAtStart = true; benchAtSave = true; benchLoadHold = true; } // #901 (with --bench)
+        if (std::string(argv[i]) == "--test-reload" && i + 1 < argc) { loadSaveAtStart = true; benchReload = atoi(argv[i + 1]); } // #902 (with --bench)
         if (std::string(argv[i]) == "--at-save") { loadSaveAtStart = true; benchAtSave = true; } // --load, and bench from the save's own camera (no respawn)
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-park" || std::string(argv[i]) == "--test-fly") { printf("bench: %s was removed with the placeholder ship\n", argv[i]); if (i + 1 < argc && argv[i + 1][0] != '-') ++i; }
@@ -1370,6 +1374,9 @@ int main(int argc, char** argv)
                fresh, g0.strength, g0.color.r, g0.color.g, g0.color.b, mixed, stone, cooled, inv.grid()[0].heat, g1.strength, ok ? "PASS" : "FAIL");
     }
     GameSave_Register();
+    // (#902) Pointers into a world being unloaded (a body, a plot, a hit) dropped before its bodies go: frames go on drawing
+    // while the next world loads, and a reload crashed in TerrainTool_Draw3D / Wind_Bind on the old, freed planet.
+    World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); });
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
@@ -1403,6 +1410,21 @@ int main(int argc, char** argv)
         SetWorldSavePath("saves/world.sav");
         if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
         if (bench) SetWorldSavePath("saves/bench.sav");
+        if (benchLoadHold) { // --test-load-hold (#901): where the player was saved, body-local, from the record itself
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            for (const auto& e : fs::directory_iterator("saves/world.sav.players", ec)) {
+                FILE* pf = fopen(e.path().string().c_str(), "r");
+                if (!pf) continue;
+                char line[256];
+                unsigned long long id = 0;
+                while (fgets(line, sizeof line, pf))
+                    if (sscanf(line, "player_body %llu %lf %lf %lf", &id, &loadHoldFrom.x, &loadHoldFrom.y, &loadHoldFrom.z) == 4) break;
+                fclose(pf);
+                if (loadHoldFrom.length() > 0.0) break;
+            }
+            printf("bench: load-hold: the player was saved %.2f m from the body's centre\n", loadHoldFrom.length());
+        }
     }
     if (dumpSystem) {
         for (auto& obj : world.objects)
@@ -9061,7 +9083,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -9392,6 +9414,48 @@ int main(int argc, char** argv)
             } else {
                 ship.update(world, PlayerInput::None(), simDt);
                 Suit_Apply(world, simDt); // the worn suit and modules: walk, jetpack, grip, the scanner
+                {
+                    // The loading screen (#901): player.update is skipped while it is up (a load, a spawn, a teleport), so
+                    // nothing carried the player with the turning planet. Held in the body's frame instead, as a death is, and
+                    // moving with its surface: a load left the player at rest in world space (the record zeroes the velocity)
+                    // while the ground under them moved at ~93 m/s with the planet's spin, and the first step threw them 50 m
+                    // across it and through the edited floor they had saved on, into the cave below.
+                    static uint64_t loadBodyId = 0;
+                    static DVec3 loadLocal{};
+                    static Vector3 loadForward{}, loadUp{};
+                    static double heldFor = -1.0; // the loadStart this hold belongs to
+                    // Before the step (it runs ahead of player.update) and once more on the frame the screen ends, so the first
+                    // step starts from where the body has just carried the player (after it: a step late, 1.5 m off at the spin).
+                    if ((loading || heldFor >= 0.0) && gameState == 1) {
+                        if (loading && heldFor != loadStart) {
+                            heldFor = loadStart;
+                            Planetoid* b = player.nearest;
+                            if (!b) { // right after a load: the body whose surface is nearest
+                                double best = 1e300;
+                                for (auto& o : world.objects)
+                                    if (Planetoid* q = dynamic_cast<Planetoid*>(o.get())) {
+                                        const double d = q->toLocalD(player.position).length() - q->radius;
+                                        if (d < best) { best = d; b = q; }
+                                    }
+                            }
+                            unsigned long long savedBody = 0; DVec3 savedLocal{};
+                            if (GameSave_TakeLoadedFrame(savedBody, savedLocal)) // a save just loaded: the record's spot exactly
+                                if (Planetoid* sb = Planetoid::findNet((NetId)savedBody)) b = sb;
+                            loadBodyId = b ? b->id : 0;
+                            if (b) {
+                                loadLocal = savedBody && b->netId == (NetId)savedBody ? savedLocal : b->toLocalD(player.position);
+                                loadForward = b->dirToLocal(player.forward); loadUp = b->dirToLocal(player.up);
+                            }
+                        }
+                        if (Planetoid* b = loadBodyId ? Planetoid::find(loadBodyId) : nullptr) {
+                            player.position = b->toWorldD(loadLocal);
+                            player.forward = b->dirToWorld(loadForward);
+                            if (Vector3LengthSqr(loadUp) > 0.5f) player.up = b->dirToWorld(loadUp);
+                            player.velocity = b->surfaceVelocity((player.position - world.renderOrigin).toFloat()); // with the ground
+                        }
+                        if (!loading) heldFor = -1.0; // released: this frame's step goes on from here
+                    } else heldFor = -1.0;
+                }
                 if (alive && !loading) {
                     // Benches drive the player through the same input struct as the keyboard (#312): autoWalk holds W,
                     // autoJump presses Space once.
@@ -9408,6 +9472,43 @@ int main(int argc, char** argv)
                     RenderOriginScope frame(world, player.position);
                     if (gJoinSynced && gJoin.state == NetClient::State::Joined) NetClient_Step(gJoin, world, player, moveIn); // --join: send, predict, reconcile (#327)
                     else if (joinAddr.empty()) player.update(world, moveIn, simDt); // (a client waits for its first state)
+                    if (benchLoadHold && loadHoldStage == 2 && !world.objects.empty()) {
+                        // --test-load-hold (#901): from the first step after the pause menu's Load (its loading screen), 20 s
+                        // walking mode where the record put the player (body-local, from the record itself): never 0.5 m under or
+                        // beside it, never with the body in solid ground. A 1 Hz trace.
+                        static double holdT0 = -1.0, lastPrint = -1.0, firstDropT = -1.0, firstSolidT = -1.0;
+                        static double deepest = 0.0, widest = 0.0; static float maxDens = -1e9f;
+                        Planetoid* p0 = dynamic_cast<Planetoid*>(world.objects[0].get());
+                        if (p0) {
+                            if (holdT0 < 0.0) { holdT0 = GetTime(); player.flyMode = false; printf("bench: load-hold: the loading screen ended; holding 20 s\n"); }
+                            const double t = GetTime() - holdT0;
+                            const DVec3 lp = p0->toLocalD(player.position);
+                            const double drop = loadHoldFrom.length() - lp.length();
+                            // Beside it: the distance along the surface between the two directions (a body turned under the
+                            // player leaves the radius alone).
+                            const double cosA = std::clamp((lp.x * loadHoldFrom.x + lp.y * loadHoldFrom.y + lp.z * loadHoldFrom.z) / std::max(1e-9, lp.length() * loadHoldFrom.length()), -1.0, 1.0);
+                            const double beside = acos(cosA) * loadHoldFrom.length();
+                            widest = std::max(widest, beside);
+                            const Vector3 feet = (player.position - world.renderOrigin).toFloat();
+                            const float dens = p0->densityAt(p0->toLocal(Vector3Add(feet, Vector3Scale(player.up, 0.9f)))); // body centre
+                            if (drop > deepest) deepest = drop;
+                            maxDens = std::max(maxDens, dens);
+                            if (drop >= 2.0 && firstDropT < 0.0) firstDropT = t;
+                            if (dens >= ISO_LEVEL && firstSolidT < 0.0) firstSolidT = t;
+                            if (t - lastPrint >= 1.0) {
+                                lastPrint = t;
+                                const ArenaStats a = TerrainArena_Stats();
+                                printf("bench: load-hold t=%4.1f s: %.2f m under the saved spot, %.2f m beside it, body density %.2f, grounded %d, vel %.1f m/s; arena %.1f of %.1f M vertices\n",
+                                       t, drop, beside, dens, player.grounded ? 1 : 0, Vector3Length(player.velocity), a.vertices / 1e6, a.vertexCapacity / 1e6);
+                            }
+                            if (t > 20.0) {
+                                const bool pass = deepest < 0.5 && widest < 0.5 && maxDens < ISO_LEVEL; // (a step late was 1.5 m: caught)
+                                printf("bench: load-hold: deepest %.2f m under the saved spot (first 2 m at %.1f s), %.2f m beside it at most, body density at most %.2f (solid >= %.2f, first at %.1f s) -> %s\n",
+                                       deepest, firstDropT, widest, maxDens, ISO_LEVEL, firstSolidT, pass ? "PASS" : "FAIL");
+                                benchLoadHold = false;
+                            }
+                        }
+                    }
                 }
                 {
                     // Dead (until the respawn): the view stays exactly where the player died, held in the frame of the
@@ -12278,8 +12379,9 @@ int main(int argc, char** argv)
                 gameState = 1;
                 mainMenu.isActive = false;
                 world.isActive = true;
-                loading = !bench; loadStart = GetTime(); // the loading screen until the terrain around you is in
-                if (fresh && !bench) BeginSpawnPreload(); // a new or loaded world: the ring around the spawn first (#294)
+                const bool realLoad = !bench || benchLoadHold || benchReload > 0; // (#901, #902: those tests load as the player does)
+                loading = realLoad; loadStart = GetTime(); // the loading screen until the terrain around you is in
+                if (fresh && realLoad) BeginSpawnPreload(); // a new or loaded world: the ring around the spawn first (#294)
             };
             auto toMenu = [&] {
                 ShowCursor();
@@ -12300,6 +12402,41 @@ int main(int argc, char** argv)
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
+            if (benchLoadHold && gameState == 1) { // --test-load-hold (#901): the save loaded again as the pause menu's Load does
+                if (loadHoldStage == 0 && !loading && WorldIdle() && pendingMenu.action == MenuAction::None) {
+                    pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/world.sav"; loadHoldStage = 1;
+                    printf("bench: load-hold: loading the save from the game\n");
+                } else if (loadHoldStage == 1 && loading) { loadHoldStage = 2; printf("bench: load-hold: its loading screen is up\n"); } // hold once it ends
+                static double lastState = 0.0;
+                if (loadHoldStage == 2 && GetTime() - lastState > 2.0) { lastState = GetTime(); printf("bench: load-hold: waiting: loading %d, dead %d, idle %d\n", loading ? 1 : 0, survival.dead ? 1 : 0, WorldIdle() ? 1 : 0); }
+            }
+            if (benchReload > 0 && gameState == 1 && pendingMenu.action == MenuAction::None) {
+                // --test-reload N (#902): load saves/world.sav again from the game N times, as the pause menu's Load does,
+                // each once the last one is built and idle (3 s on). After each: the commit charge, the GPU memory, the arena.
+                // PASS: no crash, and the commit after the last load within 15% (+300 MB) of the first reload's (the start-up load runs no
+                // spawn ring: lighter). The GPU memory is the whole device's (NVX): printed, not judged (other games skew it).
+                static int done = 0;
+                static double readyT = -1.0, commit0 = 0.0, vram0 = 0.0;
+                if (!loading && WorldIdle()) {
+                    if (readyT < 0.0) {
+                        readyT = GetTime();
+                        const ArenaStats a = TerrainArena_Stats();
+                        const double commit = Profiler_CommitMB(), vram = Profiler_VramUsedMB();
+                        if (done == 1) { commit0 = commit; vram0 = vram; }
+                        printf("bench: reload %d: commit %.0f MB, GPU memory %.0f MB (tracked %.0f MB), arena %.1f M of %.1f M vertices, %.1f M of %.1f M indices\n",
+                               done, commit, vram, GpuMem_Total() / 1048576.0, a.vertices / 1e6, a.vertexCapacity / 1e6, a.indices / 1e6, a.indexCapacity / 1e6);
+                        if (done == benchReload) {
+                            const bool ok = benchReload >= 2 && commit <= commit0 * 1.15 + 300.0;
+                            printf("bench: reload: %d loads in one session; commit %.0f -> %.0f MB, GPU memory %.0f -> %.0f MB -> %s\n", benchReload, commit0, commit, vram0, vram, ok ? "PASS" : "FAIL");
+                            benchReload = 0;
+                        }
+                    } else if (GetTime() - readyT > 3.0 && done < benchReload) {
+                        pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/world.sav";
+                        ++done; readyT = -1.0;
+                        printf("bench: reload: loading the save again (%d of %d)\n", done, benchReload);
+                    }
+                }
+            }
             const MenuResult m = pendingMenu;
             pendingMenu = MenuResult{};
             switch (m.action) {

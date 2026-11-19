@@ -1,4 +1,5 @@
 #include "gamesave.h"
+#include "fishing.h"
 #include "structures.h"
 #include "trapping.h"
 #include "combat.h"
@@ -48,6 +49,20 @@ static double recordFirstSeen = 0.0, recordPlayTime = 0.0, recordLoadedAt = 0.0;
 static std::function<void()> newPlayerHook;
 static std::string legacyOwner;   // a server that loaded a format 12 save: the id its player is saved under as the owner
 static bool bodyFramed = false;  // the record being read gave a player_body line (its up and velocity are rebuilt)
+// Body-frame positions read during a world load (#901): the records are read in the save's extras, before the load puts the
+// bodies back in their saved rotation, so the conversion to world space waits for loadDoneHook. Outside a load (a record
+// read for a joining player) the bodies are as they are and the conversion at once is right.
+struct PendingFrame { Player* p; unsigned long long body; DVec3 local; };
+static std::vector<PendingFrame> pendingFrames;
+static bool inWorldLoad = false;
+static bool loadedFrameSet = false; // the local player's frame from the last load, for the loading screen's hold (once)
+static unsigned long long loadedFrameBody = 0;
+static DVec3 loadedFrameLocal{};
+bool GameSave_TakeLoadedFrame(unsigned long long& bodyNetId, DVec3& local) {
+    if (!loadedFrameSet) return false;
+    loadedFrameSet = false; bodyNetId = loadedFrameBody; local = loadedFrameLocal;
+    return true;
+}
 
 namespace {
 // This game has a player of its own to save (not a dedicated server, which has none; not a joined client, whose world
@@ -128,7 +143,10 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
     if (strcmp(tok, "player_body") == 0) { // (#346) the body's frame wins over the absolute position
         unsigned long long id = 0; DVec3 l{};
         if (fscanf(f, " %llu %lf %lf %lf", &id, &l.x, &l.y, &l.z) == 4)
-            if (const Planetoid* b = Planetoid::findNet((NetId)id)) { t.p.position = b->toWorldD(l); t.p.up = { 0, 0, 0 }; bodyFramed = true; }
+            if (const Planetoid* b = Planetoid::findNet((NetId)id)) {
+                t.p.position = b->toWorldD(l); t.p.up = { 0, 0, 0 }; bodyFramed = true;
+                if (inWorldLoad) pendingFrames.push_back({ &t.p, id, l }); // again once the body has its saved rotation
+            }
         return true;
     }
     if (strcmp(tok, "player_up") == 0) { Vector3 u{}; fscanf(f, " %f %f %f", &u.x, &u.y, &u.z); if (!bodyFramed) t.p.up = u; return true; } // (with player_body: rebuilt from the body)
@@ -287,7 +305,17 @@ void GameSave_Register() {
         // The player's own record, beside the world (the world file never holds it).
         if (!me.empty() && !WriteRecord(me)) TraceLog(LOG_WARNING, "save: could not write the player record %s", PlayerRecord_Path(me).c_str());
     };
+    loadDoneHook = [] { // (#901) body-frame positions back to world space with the bodies in their saved state
+        for (const PendingFrame& pf : pendingFrames)
+            if (const Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
+                pf.p->position = b->toWorldD(pf.local);
+                if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
+            }
+        pendingFrames.clear();
+        inWorldLoad = false;
+    };
     loadExtrasHook = [](FILE* f) {
+        pendingFrames.clear(); inWorldLoad = true; // (#901) a world load: body frames converted again at its end
         inventory.clear();
         terrainTool.creative = false;
         Hotbar_Reset();
@@ -295,6 +323,7 @@ void GameSave_Register() {
         QuestBook_Reset();
         Farm_Reset();
         Animals_Reset();
+        Fishing_Reset(); // (#902) a line cast in the old world held its body
         Particles_Clear();
         Ambience_Reset();
         Station_Reset();
