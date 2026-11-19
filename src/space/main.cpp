@@ -7242,7 +7242,10 @@ int main(int argc, char** argv)
                                 // stands over the pool's start), and for --test-dam-divert under 6 m of drop to the reach it watches 200 m
                                 // downstream, clear of the sea (a reach the sea backs up never dries). After bake v26 seed 42's pick fell
                                 // 4 m over 24 m: the pool stood over the crest from the start.
-                                if (pf->waterSourceAt(off(d, dn, -12.0f)).level - pf->waterSourceAt(off(d, dn, 12.0f)).level > 0.6f) continue;
+                                // Both probe points on this river (#942: a pick whose point 12 m upstream lay off the channel, level -1e9,
+                                // passed this check by a huge negative difference; the probe there never saw the pool rise).
+                                const PlanetField::WaterSource wsU = pf->waterSourceAt(off(d, dn, -12.0f)), wsD = pf->waterSourceAt(off(d, dn, 12.0f));
+                                if (wsU.kind != 1 || wsD.kind != 1 || wsU.level - wsD.level > 0.6f) continue;
                                 if (benchDamDivert) {
                                     Vector3 w = d;
                                     for (int s = 0; s < 20; ++s) { const RiverNetwork::Hit hw = net->nearest(w, 1e4f); w = off(w, hw.down, 10.0f); }
