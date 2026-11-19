@@ -33,6 +33,8 @@ bool Wind_Enabled();
 
 // Bind the wind texture and uniforms on a foliage shader (grass, trees): windTex on texture slot `slot`.
 void Wind_Bind(Shader s, DVec3 renderOrigin, int slot);
+// (#888 A/B) RAYLIBGAME_WIND_888=0: the pre-#888 foliage wind (full weather wind at the ground, faster flutter, harder gusts)
+inline bool Wind_Old888() { static const bool old = getenv("RAYLIBGAME_WIND_888") && getenv("RAYLIBGAME_WIND_888")[0] == '0'; return old; }
 void Wind_Unload();
 
 #endif

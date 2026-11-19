@@ -48,7 +48,7 @@ void main()
         float speed = length(wf);
         vec3 wdir = speed > 1e-3 ? wf / speed : t0;
         float bend = min(speed * speed / 144.0, 1.7);                  // 12 m/s = 1
-        float flutter = sin(time * (2.0 + 0.2 * speed) + h * 40.0) * (0.015 + 0.008 * speed); // (#888) ~0.5 Hz in a breeze, ~1 Hz in storm bursts
+        float flutter = windOld > 0.5 ? sin(time * (2.5 + 0.35 * speed) + h * 40.0) * (0.02 + 0.012 * speed) : sin(time * (2.0 + 0.2 * speed) + h * 40.0) * (0.015 + 0.008 * speed); // (#888) ~0.5 Hz in a breeze, ~1 Hz in storm bursts
         vec3 side = cross(up, wdir);
         sway = (wdir * (0.06 + 0.32 * bend + flutter) + side * flutter * 0.5) * y * y;
         sway -= up * (0.22 * bend * bend) * y * y;                    // a bent blade is shorter, not just leaning

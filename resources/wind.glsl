@@ -10,6 +10,7 @@ uniform vec2 windShift;   // metres the air has moved along e1/e2 (wrapped to th
 uniform vec2 windMean;    // mean wind along e1/e2 (m/s): weather, daily cycle and storms in
 uniform float windStorm;  // 0 calm .. 1 storm
 uniform float windPeriod; // the texture's span (m)
+uniform float windOld;    // (#888 A/B) 1: the pre-#888 swings (RAYLIBGAME_WIND_888=0)
 
 // xyz: the wind at p (render space, m/s), w: how much of a burst is passing (0..1).
 vec4 windAt(vec3 p)
@@ -21,7 +22,7 @@ vec4 windAt(vec3 p)
     float waves = s.r * 2.0 - 1.0;
     float thr = 0.80 - 0.14 * windStorm;
     float burst = smoothstep(thr, thr + 0.1, s.g);
-    float factor = max(0.15, 1.0 + 0.5 * waves + 0.8 * burst); // (#888, as wind.cpp)
+    float factor = windOld > 0.5 ? max(0.15, 1.0 + 0.8 * waves + 1.0 * burst) : max(0.15, 1.0 + 0.5 * waves + 0.8 * burst); // (#888, as wind.cpp)
     float swing = 0.35 * (s.b * 2.0 - 1.0);
     float ms = length(windMean);
     if (ms < 1e-4) return vec4(0.0, 0.0, 0.0, burst);
