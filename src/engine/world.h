@@ -212,5 +212,8 @@ extern std::function<void()> loadDoneHook; // the end of a load, every body back
 // frames drop it there - drawing goes on while the next world loads, and a pointer into the freed world crashed a reload.
 void World_AddUnloadHook(std::function<void()> hook);
 bool LoadWorldSave(Scene& world);
+// (#943) The last LoadWorldSave's phases (ms): the world regenerated from the seed, and the saved edits (region deltas).
+struct LoadPhases { double regenMs = 0.0, regionsMs = 0.0, plotsMs = 0.0, fluidMs = 0.0; };
+const LoadPhases& LastLoadPhases();
 
 #endif

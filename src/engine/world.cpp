@@ -2459,6 +2459,9 @@ void BackupSave() {
     for (size_t i = 0; i + keep < all.size(); ++i) fs::remove_all(all[i], ec); // the oldest beyond the newest `keep`
 }
 
+static LoadPhases gLastLoad;
+const LoadPhases& LastLoadPhases() { return gLastLoad; }
+
 bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
@@ -2597,6 +2600,7 @@ bool LoadWorldSave(Scene& world) {
         else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
     fclose(f);
+    gLastLoad = { regenMs, regionsMs, plotsMs, fluidMs };
     if (loadProfile) printf("load: %.0f ms: regenerate the world %.0f, region deltas %.0f, plots + machines %.0f, fluid %.0f, rest %.0f\n",
                             lms(lt0), regenMs, regionsMs, plotsMs, fluidMs, lms(lt0) - regenMs - regionsMs - plotsMs - fluidMs);
     // Every body is in its saved state now (rotation above): positions kept in a body's frame go back to world space here
