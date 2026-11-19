@@ -5879,6 +5879,7 @@ int main(int argc, char** argv)
                             printf("\n");
                             player.flyMode = true; sunOverride = true;
                             sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(up, Vector3Scale(mouthOut, 0.5f)))); // light into the mouth
+                            if (const char* se = getenv("RAYLIBGAME_MOUTH_SUN")) { const float a = (float)atof(se) * DEG2RAD; sunArg = p->dirToWorld(Vector3Normalize(Vector3Add(Vector3Scale(up, sinf(a)), Vector3Scale(mouthOut, cosf(a))))); } // (#898) sun elevation, degrees, from the open side
                             mouthPhase = 1; mouthT0 = GetTime();
                         }
                     } else if (const char* view = getenv("RAYLIBGAME_MOUTH_VIEW")) {
@@ -5886,7 +5887,8 @@ int main(int argc, char** argv)
                         const bool in = view[0] == 'i';
                         const Vector3 feet = Vector3Subtract(mouthAt, Vector3Scale(up, 3.0f));
                         const Vector3 eye = Vector3Add(feet, Vector3Scale(up, 1.6f));
-                        const Vector3 look = Vector3Add(Vector3Scale(mouthOut, in ? -1.0f : 1.0f), Vector3Scale(up, -0.15f));
+                        const float pitch = getenv("RAYLIBGAME_MOUTH_PITCH") ? tanf((float)atof(getenv("RAYLIBGAME_MOUTH_PITCH")) * DEG2RAD) : -0.15f; // (#898) degrees up
+                        const Vector3 look = Vector3Add(Vector3Scale(mouthOut, in ? -1.0f : 1.0f), Vector3Scale(up, pitch));
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(eye, Vector3Scale(look, 10.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         if (mouthPhase == 1 && t > 4.0 && WorldIdle()) { TakeScreenshot(in ? "bench_mouth_in.png" : "bench_mouth_out.png"); printf("bench: cave mouth: view %s shot\n", view); mouthPhase = 2; }

@@ -197,7 +197,8 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.12 (#897; was 0.25)
   (`RAYLIBGAME_MOONLIGHT`). Night light = that moonlit-sky ambient alone: the fixed 1/255 base ambient fades out under the
   air (#897: it was a ~10/255 floor that hid the moonlight setting; `RAYLIBGAME_AMBIENT_BASE=1` = before). Within 40 m
-  under the surface, cave mouths and shafts get at least 0.6 of their open sky (#898; `RAYLIBGAME_CAVE_MOUTH_SKY=0` = off).
+  under the surface, cave mouths and shafts get at least 0.6 x (1 - depth/40 m) of their open sky (#898; `RAYLIBGAME_CAVE_MOUTH_SKY=0` = off;
+  `RAYLIBGAME_SHOW_SKY=1` draws fragSky as grey).
   Captures at a spot: `--load --shot-cave-mouth` with `RAYLIBGAME_MOUTH_AT="lat lon h"` and `RAYLIBGAME_MOUTH_VIEW=in|out`.
 - HDR (#131, scenetarget.cpp): the scene target is RGBA16F; world shaders still write display-encoded colour (pow 1/2.2),
   now unclamped. The composite decodes, applies auto-exposure (log-average of a 64x36 sample grid, never brightens:

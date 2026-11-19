@@ -2416,11 +2416,12 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 if (gSkyProbes && stride <= 2.0f) {
                     const PlanetField::Column3D* pc = hinted ? &gCol : nullptr; const float* pe = hinted ? &gElev : nullptr;
                     // (#898) Under the surface (the depth term < 1) and less than 40 m down: light comes in where the sky can be
-                    // seen (a cave mouth, a shaft, a pit): at least 0.6 of the open share, the rays checked past the block. The
+                    // seen (a cave mouth, a shaft, a pit): at least 0.6 x (1 - depth / 40 m) of the open share (0.42 at 12 m: walls stay
+                    // under the open ground and fall off deeper in), the rays checked past the block. The
                     // depth term alone cut to black ~10 m down, under an opening or not; a closed tunnel stays black.
                     const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p) : 1e9f;
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
-                    if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
+                    if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
                 }
                 out.tangents[v * 4 + 3] = sky;
