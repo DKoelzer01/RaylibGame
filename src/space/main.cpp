@@ -10539,6 +10539,32 @@ int main(int argc, char** argv)
                 }
             }
         }
+        {   // (#904/#910) --crack-check with RAYLIBGAME_CRACK_EVERY=N: every Nth frame of any phase (the loading screen and spawn
+            // included, as LODs change), count the holes (magenta enclosed by drawn pixels); a frame with any is logged with the
+            // time, the camera's place and the chunk counts, and the worst one saved (bench_holes_worst.png).
+            static const int crackEvery = getenv("RAYLIBGAME_CRACK_EVERY") ? std::max(1, atoi(getenv("RAYLIBGAME_CRACK_EVERY"))) : 0;
+            static long crackFrame = 0;
+            static long worstCrack = 0;
+            if (crackCheck && crackEvery > 0 && gameState == 1 && (++crackFrame % crackEvery) == 0) {
+                Image shot = LoadImageFromScreen();
+                Color* px = LoadImageColors(shot);
+                const long holes = CrackHoles(px, shot.width, shot.height, 2, nullptr);
+                UnloadImageColors(px);
+                if (holes > 20) {
+                    const WorldStats& s = GetWorldStats();
+                    std::string where = "?";
+                    if (Planetoid* b = player.nearest) {
+                        const DVec3 l = b->toLocalD(world.renderOrigin + world.camera.position);
+                        const double r = l.length();
+                        where = TextFormat("%.4f %.4f, %.1f m from the centre", asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r);
+                    }
+                    printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
+                           crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+                    if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
+                }
+                UnloadImage(shot);
+            }
+        }
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
