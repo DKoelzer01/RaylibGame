@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <string>
@@ -31,6 +32,9 @@ std::string Profiler_SummaryJson() { return ""; }
 void Profiler_PrintSummary() {}
 void Profiler_MeasureZoneCost(double& onNs, double& offNs) { onNs = offNs = 0.0; }
 void Profiler_Reset() {}
+void Profiler_SetHitchStamp(double (*)(), std::string (*)()) {}
+void Profiler_SetHitchCap(size_t) {}
+bool Profiler_WriteSession(const std::string&, std::string&) { return false; }
 #else
 
 extern "C" {
@@ -75,7 +79,10 @@ std::map<const char*, Stat*> gZoneByPtr;
 struct Counter { uint64_t n = 0; double sum = 0.0, max = -1e300, last = 0.0; };
 std::map<std::string, Counter> gCounters;
 Stat gFrames;
-struct Hitch { double atS, ms; std::vector<std::pair<std::string, double>> top; };
+struct Hitch { double atS, ms; std::vector<std::pair<std::string, double>> top; double gameS = -1.0; std::string context; };
+double (*gGameClock)() = nullptr;          // (#886) stamped on each hitch: the game time, and what was going on
+std::string (*gHitchContext)() = nullptr;
+size_t gHitchCap = 200;
 std::vector<Hitch> gHitches;
 uint64_t gHitchesOver = 0;
 std::vector<std::pair<const char*, double>> gFrameZones; // this frame's zone totals (ms)
@@ -169,8 +176,10 @@ void Frame() {
         gFrames.add(ms * 1e6);
         if (ms > 20.0) {
             ++gHitchesOver;
-            if (gHitches.size() < 200) {
+            if (gHitches.size() < gHitchCap) {
                 Hitch h{ (double)(now - gTsc0) * gNsPerTick / 1e9, ms, {} };
+                if (gGameClock) h.gameS = gGameClock();
+                if (gHitchContext) h.context = gHitchContext();
                 std::sort(gFrameZones.begin(), gFrameZones.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
                 for (size_t i = 0; i < gFrameZones.size() && i < 3; ++i) h.top.push_back({ gFrameZones[i].first, gFrameZones[i].second });
                 gHitches.push_back(std::move(h));
@@ -243,7 +252,8 @@ std::string Profiler_SummaryJson() {
     j += "    \"hitches\": [";
     for (size_t i = 0; i < gHitches.size(); ++i) {
         const Hitch& h = gHitches[i];
-        j += std::string(i ? ",\n      " : "\n      ") + "{\"at_s\": " + N(h.atS) + ", \"ms\": " + N(h.ms) + ", \"top\": [";
+        j += std::string(i ? ",\n      " : "\n      ") + "{\"at_s\": " + N(h.atS) + ", \"ms\": " + N(h.ms) +
+             (h.gameS >= 0.0 ? ", \"game_s\": " + N(h.gameS) : std::string()) + (h.context.empty() ? std::string() : ", \"context\": \"" + Esc(h.context) + "\"") + ", \"top\": [";
         for (size_t k = 0; k < h.top.size(); ++k) j += std::string(k ? ", " : "") + "{\"zone\": \"" + Esc(h.top[k].first) + "\", \"ms\": " + N(h.top[k].second) + "}";
         j += "]}";
     }
@@ -270,6 +280,57 @@ void Profiler_PrintSummary() {
     for (size_t i = 0; i < zs.size() && i < 12; ++i)
         printf("profile: %-28s %7.3f ms/frame  n %-7llu p50 %.3f p95 %.3f p99 %.3f max %.3f ms\n", zs[i].first.c_str(), zs[i].second->sumNs / gFrames.count / 1e6,
                (unsigned long long)zs[i].second->count, zs[i].second->pct(0.5) / 1e6, zs[i].second->pct(0.95) / 1e6, zs[i].second->pct(0.99) / 1e6, zs[i].second->maxNs / 1e6);
+}
+
+void Profiler_SetHitchStamp(double (*gameClock)(), std::string (*context)()) { gGameClock = gameClock; gHitchContext = context; }
+void Profiler_SetHitchCap(size_t cap) { gHitchCap = cap; }
+
+// (#886) A play session's summary: <dir>/profile-<date-time>.json (Profiler_SummaryJson with the session around it) and
+// .txt (the same, to read: frames, the zones by time per frame, every hitch with its game time and what was going on).
+bool Profiler_WriteSession(const std::string& dir, std::string& path) {
+    const std::string summary = Profiler_SummaryJson();
+    if (summary.empty()) return false;
+    Calibrate();
+    char stamp[32]; const time_t now = time(nullptr); strftime(stamp, sizeof stamp, "%Y-%m-%d_%H%M%S", localtime(&now));
+    const std::string base = dir + "/profile-" + stamp;
+    const double wallS = std::chrono::duration<double>(std::chrono::steady_clock::now() - gWall0).count();
+    if (FILE* f = fopen((base + ".json").c_str(), "w")) {
+        fprintf(f, "{\n  \"kind\": \"play session\",\n  \"ended\": \"%s\",\n  \"wall_s\": %.1f,\n  \"profile\": %s\n}\n", stamp, wallS, summary.c_str());
+        fclose(f);
+    } else return false;
+    FILE* f = fopen((base + ".txt").c_str(), "w");
+    if (!f) return false;
+    fprintf(f, "RaylibGame profile, a play session ending %s (%.0f s of wall time)\n\n", stamp, wallS);
+    const double mean = gFrames.count ? gFrames.sumNs / gFrames.count / 1e6 : 0.0;
+    fprintf(f, "Frames: %llu, mean %.2f ms (%.0f FPS), p50 %.2f, p95 %.2f, p99 %.2f, max %.2f ms; %llu frames over 20 ms\n",
+            (unsigned long long)gFrames.count, mean, mean > 0.0 ? 1000.0 / mean : 0.0, gFrames.pct(0.5) / 1e6, gFrames.pct(0.95) / 1e6,
+            gFrames.pct(0.99) / 1e6, gFrames.maxNs / 1e6, (unsigned long long)gHitchesOver);
+    fprintf(f, "Peak commit %.0f MB, peak VRAM %.0f MB%s\n\n", PeakCommitMB(), gPeakVramMB, gPeakVramMB > 0.0 ? "" : " (not reported by this driver)");
+    std::vector<std::pair<std::string, const Stat*>> zs;
+    for (const auto& kv : gZones) if (kv.second.count) zs.push_back({ kv.first, &kv.second });
+    std::sort(zs.begin(), zs.end(), [](const auto& a, const auto& b) { return a.second->sumNs > b.second->sumNs; });
+    fprintf(f, "Zones, by time per frame (ms):\n  %-32s %9s %9s %9s %9s %9s %10s\n", "zone", "/frame", "p50", "p95", "p99", "max", "count");
+    for (const auto& z : zs)
+        fprintf(f, "  %-32s %9.3f %9.3f %9.3f %9.3f %9.2f %10llu\n", z.first.c_str(), gFrames.count ? z.second->sumNs / gFrames.count / 1e6 : 0.0,
+                z.second->pct(0.5) / 1e6, z.second->pct(0.95) / 1e6, z.second->pct(0.99) / 1e6, z.second->maxNs / 1e6, (unsigned long long)z.second->count);
+    const std::string kept = gHitchesOver > gHitches.size() ? " (the first " + std::to_string(gHitches.size()) + " of " + std::to_string(gHitchesOver) + ")" : "";
+    fprintf(f, "\nHitches (frames over 20 ms)%s: when, how long, the zones that took most of that frame (ms summed over all threads: the chunk builds run on the workers, so they can add up past the frame), and what was going on\n", kept.c_str());
+    for (const Hitch& h : gHitches) {
+        char when[48];
+        if (h.gameS >= 0.0) snprintf(when, sizeof when, "game %d:%04.1f", (int)(h.gameS / 60.0), fmod(h.gameS, 60.0));
+        else snprintf(when, sizeof when, "wall %.1f s", h.atS);
+        fprintf(f, "  %-16s %7.1f ms  ", when, h.ms);
+        for (size_t k = 0; k < h.top.size(); ++k) fprintf(f, "%s%s %.1f", k ? ", " : "", h.top[k].first.c_str(), h.top[k].second);
+        if (!h.context.empty()) fprintf(f, "   [%s]", h.context.c_str());
+        fprintf(f, "\n");
+    }
+    if (gHitches.empty()) fprintf(f, "  none\n");
+    fprintf(f, "\nCounters (mean / max / last):\n");
+    for (const auto& kv : gCounters) fprintf(f, "  %-32s %12.4g %12.4g %12.4g\n", kv.first.c_str(), kv.second.sum / std::max<uint64_t>(1, kv.second.n), kv.second.max, kv.second.last);
+    if (gCounters.empty()) fprintf(f, "  none\n");
+    fclose(f);
+    path = base + ".txt";
+    return true;
 }
 
 void Profiler_MeasureZoneCost(double& onNs, double& offNs) {

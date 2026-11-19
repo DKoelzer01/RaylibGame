@@ -36,6 +36,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   over 20 ms with their top zones, gputimer's cpu:/gpu: passes, counters, peak commit/VRAM). A/B timing:
   `game.exe --scenario-ab perf/planet-view --ab-a K=V --ab-b K=V --ab-runs 3` (interleaved; quiet window only). Perf policy: the
   report always shows the numbers and fails only on +15% mean frame time or a new hitch over 30 ms against recent passes.
+  In play (not a scenario), `RAYLIBGAME_PROFILE=1` writes the session's summary on quit to saves/logs/profile-<date-time>.txt and
+  .json (#886): zones, GPU passes, the frame histogram, and every hitch with its game time, top zones and what was going on.
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)

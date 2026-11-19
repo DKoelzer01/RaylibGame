@@ -1382,6 +1382,25 @@ int main(int argc, char** argv)
     {   // Scenes own GPU resources: keep them in a scope that ends before CloseWindow().
     Scene mainMenu("mainMenu", true); // Main menu scene;
     Scene world("world", false);
+    // (#886) RAYLIBGAME_PROFILE=1 in a play session (not a scenario): the GPU passes as zones too, every hitch stamped with
+    // the game time and what was going on, and the summary written on quit (saves/logs/profile-<date-time>.txt and .json).
+    if (Profiler_On() && !Scenario_Active()) {
+        GpuTimer_KeepOn(true);
+        Profiler_SetHitchCap(5000);
+        Profiler_SetHitchStamp([]() { return SimTime(); }, []() {
+            std::string s;
+            if (Planetoid* b = player.nearest) {
+                const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
+                const double alt = b->toLocalD(player.position).length() - (pf ? pf->radius : 0.0);
+                s = TextFormat("%s, %.0f m up, %.1f m/s%s", b->name.c_str(), alt, Vector3Length(player.velocity), player.flyMode ? ", flying" : "");
+            }
+            const WorldStats& ws = GetWorldStats();
+            s += TextFormat("%s%d chunk jobs queued, %d chunks", s.empty() ? "" : "; ", ws.queuedJobs, ws.nodes);
+            if (WorldIdle()) s += ", world idle";
+            return s;
+        });
+        printf("profile: on for this session; the summary goes to saves/logs/ when the game quits\n");
+    }
     // (#346) a loaded world with no player of ours in it (no record, no owner's to continue as): a new player at the
     // world's start with the starting kit; the world's quests and difficulty stay the save's.
     GameSave_SetNewPlayerHook([&world] {
@@ -13050,6 +13069,14 @@ int main(int argc, char** argv)
     }
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
     Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
+    if (Profiler_On() && !Scenario_Active()) { // (#886) the play session's profile
+        std::error_code ec;
+        std::filesystem::create_directories("saves/logs", ec);
+        std::string path;
+        Profiler_PrintSummary();
+        if (Profiler_WriteSession("saves/logs", path)) printf("profile: session summary written: %s (and .json beside it)\n", std::filesystem::absolute(path, ec).string().c_str());
+        else printf("profile: nothing recorded this session\n");
+    }
     if (!hostSave.empty()) Host_SaveOnShutdown(world); // --host: the world on disk before it goes away
 
     }   // scenes destroyed here, while the GL context still exists
