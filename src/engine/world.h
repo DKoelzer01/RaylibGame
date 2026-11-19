@@ -117,6 +117,7 @@ inline double gTimeSkipSeconds = 0.0;
 // World seconds until the sun (scene.sunDirection) stands at elevDeg over a body-local point's horizon, rising (true) or
 // setting, from the body's spin alone (within one rotation; -1 when the body doesn't spin or the sun never gets there).
 // The sign of the spin and BodyRotationD's conventions are handled numerically: sampled over a day, then bisected.
+bool SurfaceVelocity_SelfTest(); // (#872) omega x r against a surface point's motion, any orientation and spin: --test-surface-velocity
 double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising);
 // The same for the camera's spot on the body it is nearest (debug UI: dawn / noon / dusk); -1 when there is none.
 double SecondsToSunElevationAtCamera(const Scene& world, float elevDeg, bool rising);

@@ -237,3 +237,10 @@ void TeamQuests_Merge(int from, int into) {
 }
 
 void TeamQuests_Forget(int team) { books.erase(team); tiles.erase(team); }
+
+int TeamQuests_BodiesReached(int team) { // (#343) planets and moons with explored ground (only PlanetField bodies explore)
+    TeamQuests_Book(team);
+    int n = 0;
+    for (const auto& [body, set] : tiles[team]) if (!set.empty()) ++n;
+    return n;
+}

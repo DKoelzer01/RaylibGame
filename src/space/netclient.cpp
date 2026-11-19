@@ -7,6 +7,7 @@
 #include "teamquests.h"
 #include "factory.h"
 #include "farming.h"
+#include "claims.h"
 #include "trees.h"
 #include <process.h>
 #include "survival.h"
@@ -59,7 +60,7 @@ namespace {
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
         const NetMsg kind = NetPeek(m.data);
-        if (c.syncHold && (kind == NetMsg::SyncIndex || kind == NetMsg::SyncData || kind == NetMsg::SyncDone || kind == NetMsg::Plants || kind == NetMsg::FarmFields)) { c.syncHeld.push_back(m); return; } // (#776; #335: plants and fields need the bodies too)
+        if (c.syncHold && (kind == NetMsg::SyncIndex || kind == NetMsg::SyncData || kind == NetMsg::SyncDone || kind == NetMsg::Plants || kind == NetMsg::FarmFields || kind == NetMsg::Claims)) { c.syncHeld.push_back(m); return; } // (#776; #335: plants and fields need the bodies too)
         NetReader r(m.data.data() + (m.data.empty() ? 0 : 1), m.data.empty() ? 0 : m.data.size() - 1);
         switch (kind) {
             case NetMsg::Welcome: {
@@ -297,6 +298,21 @@ namespace {
                 const bool mine = p.session != 0 && p.session == c.welcome.session;
                 if (p.removed.size() == 1) TerrainTool_PlantRemoved(*b, p.removed[0].first, p.removed[0].second, mine);
                 else b->trees->mergeRemovals(p.removed);
+                return;
+            }
+            case NetMsg::Claims: { // (#343) the land claims: the map's circles and the border near another team's
+                MsgClaims k;
+                if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;
+                ++c.claimLists;
+                std::vector<ClaimView> list;
+                for (const NetClaim& n : k.claims) {
+                    Planetoid* b = Planetoid::findNet(n.body);
+                    if (!b) continue;
+                    ClaimView v; v.id = n.id; v.team = n.team; v.teamName = n.teamName; v.colour = n.colour; v.body = b->name;
+                    v.centre = { n.centre[0], n.centre[1], n.centre[2] }; v.radius = n.radius; v.ours = n.flags & 1; v.allowed = n.flags & 2;
+                    list.push_back(std::move(v));
+                }
+                Claims_SetMirror(list);
                 return;
             }
             case NetMsg::FarmFields: { // (#335) the crops near us as the server grows them
