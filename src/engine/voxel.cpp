@@ -1578,7 +1578,10 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         // stones in fast reaches, sand with gravel bars at a moderate pace, silt and sand in slow ones, clay under the skin
         // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
         constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
-        if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+        // Under sea level only a bed with inland water over it (#940: a river reaching the coast through a swamp, its bed
+        // a metre under the sea's level, read as beach sand - no clay to dig); the sea floor by a river mouth stays the sea's.
+        auto inlandBedBelowSea = [&] { if (e <= -12.0f || !inlandWaterNear(up, 0.0f)) return false; const float w0 = waterElevation(up, fp); return w0 != kNoWater && w0 > 0.0f && e < w0; };
+        if ((e > 0.0f || inlandBedBelowSea()) && inlandWaterNear(up, kWetReach)) {
             const RiverNetwork::NaturalScope natural; // a river dried by a dam keeps its bed and banks (#656)
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
