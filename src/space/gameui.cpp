@@ -65,9 +65,27 @@ static bool OpenIfAlt(const std::string& id) {
 GameScreen GameUI_Screen() { return screen; }
 bool GameUI_TextInputActive() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput; }
 float GameUI_Scale() {
-    // Settings' interface size (0: auto, by the screen's height: 1080 p is 100%).
-    if (settings.uiScale > 0.0f) return settings.uiScale;
-    return std::clamp(GetScreenHeight() / 1080.0f, 0.75f, 2.0f);
+    // (#891, the user: "the font and icon scale needs to be at least doubled") Twice the old base at 1080 p, following the
+    // screen's height (720 p: 1.33); the Interface size setting multiplies it (0: auto = 100%).
+    const float base = 2.0f * std::clamp(GetScreenHeight() / 1080.0f, 0.6f, 2.0f);
+    return base * (settings.uiScale > 0.0f ? settings.uiScale : 1.0f);
+}
+// (#891) Every ImGui window at the interface scale: the fonts (FontScaleMain: rasterized at that size by the dynamic atlas,
+// so they stay crisp; tooltips and pop-ups too) and the padding and spacing (the style's base sizes x the scale). Before
+// each ImGui frame; it changes the style only when the scale does.
+void GameUI_ApplyStyleScale() {
+    static ImGuiStyle base;
+    static bool haveBase = false;
+    static float applied = -1.0f;
+    if (!ImGui::GetCurrentContext()) return;
+    if (!haveBase) { base = ImGui::GetStyle(); haveBase = true; }
+    const float s = GameUI_Scale();
+    if (std::fabs(s - applied) < 1e-4f) return;
+    ImGuiStyle st = base;
+    st.ScaleAllSizes(s);
+    st.FontScaleMain = s;
+    ImGui::GetStyle() = st;
+    applied = s;
 }
 void GameUI_OpenContainer(uint64_t body, uint32_t plot, int part, int partType) {
     container = { true, body, plot, part, (PartType)partType };
@@ -612,9 +630,9 @@ static void DrawGrid(float cell = 54.0f) {
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
-        DrawGlow(fg, ImVec2(m.x - 20.0f, m.y - 20.0f), ImVec2(m.x + 20.0f, m.y + 20.0f), Item_Glow(cursorStack)); // (#580)
-        DrawItemIcon(fg, ImVec2(m.x - 18.0f, m.y - 18.0f), 36.0f, cursorStack.id);
-        if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 12.0f, m.y + 8.0f), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
+        DrawGlow(fg, ImVec2(m.x - 17.0f * GameUI_Scale(), m.y - 17.0f * GameUI_Scale()), ImVec2(m.x + 17.0f * GameUI_Scale(), m.y + 17.0f * GameUI_Scale()), Item_Glow(cursorStack)); // (#580)
+        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, cursorStack.id); } // (#891: at the interface scale)
+        if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 10.0f * GameUI_Scale(), m.y + 6.0f * GameUI_Scale()), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
     }
 }
 
@@ -838,7 +856,7 @@ static void SlotClick(int i, int which, bool right, bool shift, int) {
 static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false) { // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float cell = 54.0f, gap = 4.0f;
+    const float gap = 4.0f, cell = std::min(54.0f * GameUI_Scale(), (ImGui::GetContentRegionAvail().x - (cols - 1) * gap) / (float)cols); // (#891: at the scale, fitting the column)
     ContainerGrid& grid = ContainerPart(which);
     grid.slots = slots; // (this frame's view: what the rules see)
     for (int i = 0; i < (int)slots.size(); ++i) {
@@ -993,7 +1011,7 @@ static void DrawCreative() {
     }
     ImGui::BeginChild("creativeitems");
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float cell = 54.0f, gap = 4.0f;
+    const float cell = 48.0f * GameUI_Scale(), gap = 4.0f; // (#891)
     const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell + gap)));
     for (int i = 0; i < (int)catalogGrid.ids.size(); ++i) {
         const ItemDef* d = itemDB.find(catalogGrid.ids[i]);
@@ -1449,13 +1467,15 @@ void GameUI_Draw(Scene& world) {
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin("Game window", nullptr, flags)) {
-        ImGui::SetWindowFontScale(s);
         // The tabs (#810's order; Catalog beside Inventory in creative only, #823), their keys from the bindings; at the right
         // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
         static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
                                     { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
-        const float tabH = 46.0f * s, tabW = 190.0f * s;
+        // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
+        const float smallW = 90.0f * s, tabH = 34.0f * s;
+        const int nTabs = terrainTool.creative ? 6 : 5;
+        const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
         if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
         for (const Tab& t : tabs) {
             if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
@@ -1464,7 +1484,6 @@ void GameUI_Draw(Scene& world) {
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
-        const float smallW = 120.0f * s;
         ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
         if (ScreenTab("Database", "", databaseOpen, smallW, tabH)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
         ImGui::SameLine(0.0f, 6.0f * s);
@@ -1478,10 +1497,10 @@ void GameUI_Draw(Scene& world) {
         if (items) {
             ImGui::Columns(2, "inv", true);
             static float colW = -1.0f;
-            if (colW != s) { ImGui::SetColumnWidth(0, (Inventory::kCols * 58.0f + 24.0f) * s); colW = s; }
+            { const float w = ImGui::GetWindowContentRegionMax().x * 0.5f; if (fabsf(colW - w) > 1.0f) { ImGui::SetColumnWidth(0, w); colW = w; } } // (#891: half, at any scale)
             ImGui::TextUnformatted("Items");
             ImGui::Separator();
-            DrawGrid();
+            DrawGrid(std::min(54.0f * s, (ImGui::GetColumnWidth() - 24.0f - (Inventory::kCols - 1) * 4.0f) / (float)Inventory::kCols)); // (#891: fitting the column)
             ImGui::NextColumn();
         }
         switch (screen) {
@@ -1515,7 +1534,6 @@ void GameUI_Draw(Scene& world) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.52f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.11f, 0.16f, 1.0f)); // opaque: the screen under it doesn't show through
         if (ImGui::Begin("Database (alt-click any item)", &databaseOpen, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
-            ImGui::SetWindowFontScale(s);
             HelpManual_DrawTab();
         }
         ImGui::End();

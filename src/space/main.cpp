@@ -12426,6 +12426,7 @@ int main(int argc, char** argv)
             if (gameState != 0 && !gHeadless) {
                 GpuTimer_Mark("hud");
                 if (gameState == 1) GameUI_PrepareFrame(world); // (#822) the inventory screen's player preview, rendered before ImGui
+                GameUI_ApplyStyleScale(); // (#891) the interface scale (fonts, padding) before the frame
                 rlImGuiBegin();
                 DebugUI_Draw(world);
                 GameUI_Draw(world);
