@@ -667,10 +667,12 @@ static void DrawCrafting() {
     static int pending = -1;           // a craft waiting for items pulled from chests
     static double pendingUntil = 0.0;
     const auto& recipes = itemDB.recipes();
-    ImGui::SetNextItemWidth(260.0f);
+    ImGui::SetNextItemWidth(-1.0f); // (#889: the crafting column's width)
     ImGui::InputTextWithHint("##recipesearch", "search recipes", query, sizeof(query));
-    for (int c = 0; c < (int)CraftCat::Count; ++c) { // the category chips
-        ImGui::SameLine();
+    const float chipsRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (int c = 0; c < (int)CraftCat::Count; ++c) { // the category chips, wrapping in the column
+        const float w = ImGui::CalcTextSize(kCraftCatNames[c]).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        if (c > 0 && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w < chipsRight) ImGui::SameLine();
         const bool on = (int)cat == c;
         if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.88f, 0.66f, 0.25f, 1.0f)), ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.08f, 0.02f, 1.0f));
         if (ImGui::SmallButton(kCraftCatNames[c])) cat = (CraftCat)c;
@@ -699,12 +701,13 @@ static void DrawCrafting() {
     }
     if (selectedRecipe >= (int)recipes.size() || (selectedRecipe >= 0 && !RecipeBook_Known(recipes[selectedRecipe]))) selectedRecipe = -1;
 
-    // Left: the recipes as icons (greyed: can't make now). Right: the selected recipe's page and the queue.
-    const float pageW = std::min(420.0f, ImGui::GetContentRegionAvail().x * 0.48f);
+    // (#889) A column beside the items: the recipes as large icons, a few to a row (greyed: can't make now), and under them
+    // the selected recipe's page and the queue, filling the height.
     int hidden = 0, shown = 0;
-    ImGui::BeginChild("recipes", ImVec2(ImGui::GetContentRegionAvail().x - pageW - 8.0f, 0.0f));
-    const float cell = 60.0f, gap = 6.0f;
-    const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell + gap)));
+    ImGui::BeginChild("recipes", ImVec2(0.0f, ImGui::GetContentRegionAvail().y * 0.42f));
+    const float gap = 6.0f;
+    const int cols = std::clamp((int)(ImGui::GetContentRegionAvail().x / (110.0f * GameUI_Scale())), 3, 5);
+    const float cell = std::max(56.0f, (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ScrollbarSize - (cols - 1) * gap) / (float)cols);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (size_t i = 0; i < recipes.size(); ++i) {
         const Recipe& r = recipes[i];
@@ -736,9 +739,8 @@ static void DrawCrafting() {
     if (shown == 0) ImGui::TextDisabled(cat == CraftCat::CanMake ? "Nothing you can make right now" : "No known recipe matches");
     if (hidden > 0) ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
     ImGui::EndChild();
-    ImGui::SameLine();
 
-    ImGui::BeginChild("recipepage", ImVec2(pageW, 0.0f), true);
+    ImGui::BeginChild("recipepage", ImVec2(0.0f, 0.0f), true); // (#889: under the recipes)
     if (selectedRecipe >= 0) {
         const Recipe& r = recipes[selectedRecipe];
         const ItemDef* out = itemDB.find(r.output);
@@ -1388,20 +1390,34 @@ static void DrawStats() {
     ImGui::TextDisabled("None now (team bonuses and timed effects will show here)");
 }
 
-// The Inventory screen with no container open (#887, the user's layout): the grid and hotbar scaled to fill the left 72%,
-// the player at the top right (55% of the height), the stats under it.
-static void DrawInventoryScreen() {
+// The items panel of the Inventory and Crafting screens (#887, #889): the left 72%, the grid and hotbar with cells sized to
+// fill it (10 across; down: 6 rows of cells, the hotbar's label, the bin's row and the gaps).
+static void DrawItemsPanel() {
     const float leftW = ImGui::GetContentRegionAvail().x * 0.72f;
     ImGui::BeginChild("invgrid", ImVec2(leftW, 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    {   // cells to fill it: 10 across; 6 rows (the grid and the hotbar), the hotbar's label, the bin's row and the gaps down
-        const ImVec2 a = ImGui::GetContentRegionAvail();
-        const float gap = 4.0f, line = ImGui::GetTextLineHeightWithSpacing(), binRow = std::max(64.0f * GameUI_Scale(), ImGui::GetFrameHeight());
-        const float cw = (a.x - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
-        const float ch = (a.y - line * 2.0f - binRow - 6.0f * gap - 8.0f) / (float)(Inventory::kRows + 1);
-        ImGui::TextUnformatted("Items");
-        DrawGrid(std::clamp(std::min(cw, ch), 40.0f, 200.0f));
-    }
+    const ImVec2 a = ImGui::GetContentRegionAvail();
+    const float gap = 4.0f, line = ImGui::GetTextLineHeightWithSpacing(), binRow = std::max(64.0f * GameUI_Scale(), ImGui::GetFrameHeight());
+    const float cw = (a.x - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
+    const float ch = (a.y - line * 2.0f - binRow - 6.0f * gap - 8.0f) / (float)(Inventory::kRows + 1);
+    ImGui::TextUnformatted("Items");
+    DrawGrid(std::clamp(std::min(cw, ch), 40.0f, 200.0f));
     ImGui::EndChild();
+}
+
+// The Crafting screen (#889, the user's layout): the items panel as on the Inventory screen, and the crafting column beside
+// it (search and chips, the recipes as large icons, the selected recipe's page and the queue under them).
+static void DrawCraftingScreen() {
+    DrawItemsPanel();
+    ImGui::SameLine();
+    ImGui::BeginChild("craftcol", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoScrollbar);
+    DrawCrafting();
+    ImGui::EndChild();
+}
+
+// The Inventory screen with no container open (#887, the user's layout): the items panel on the left, the player at the
+// top right (55% of the height), the stats under it.
+static void DrawInventoryScreen() {
+    DrawItemsPanel();
     ImGui::SameLine();
     ImGui::BeginChild("invright", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_NoScrollbar);
     const float h = ImGui::GetContentRegionAvail().y;
@@ -1457,7 +1473,7 @@ void GameUI_Draw(Scene& world) {
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
         // Crafting, the Catalog and an open container show your items on the left; the Inventory screen alone lays itself out
         // (#887); the others use the whole width.
-        const bool ownLayout = screen == GameScreen::Inventory && !container.open;
+        const bool ownLayout = (screen == GameScreen::Inventory && !container.open) || screen == GameScreen::Crafting; // (#887, #889)
         const bool items = !ownLayout && (screen == GameScreen::Inventory || screen == GameScreen::Crafting || screen == GameScreen::Catalog);
         if (items) {
             ImGui::Columns(2, "inv", true);
@@ -1474,7 +1490,7 @@ void GameUI_Draw(Scene& world) {
                 if (container.open) DrawContainer();
                 else DrawInventoryScreen(); // (#887) the grid scaled up, the player (#822) and the stats
                 break;
-            case GameScreen::Crafting: DrawCrafting(); break;
+            case GameScreen::Crafting: DrawCraftingScreen(); break; // (#889) the items panel and the crafting column
             case GameScreen::Quests:
                 DrawTeamProgress(); // (#825)
                 if (ImGui::RadioButton("List", !questTree)) questTree = false;
