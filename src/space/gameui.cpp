@@ -699,6 +699,7 @@ namespace {
     bool recipePageOpen = false, recipePageShown = false, recipePageReopen = false;
     ImVec2 recipeAnchorMin{}, recipeAnchorMax{};
     float recipePageH = 0.0f;
+    struct { ImVec2 firstCell{}; int firstRecipe = -1; ImVec2 pageMin{}, pageMax{}, craft1{}; } recipeTest; // (unit tests: where things were drawn)
 }
 
 // The queue runs whether the window is open or not (GameUI_Draw calls it every frame).
@@ -795,6 +796,7 @@ static void DrawCrafting() {
         const bool hover = ImGui::IsItemHovered(), sel = recipePageOpen && selectedRecipe == (int)i;
         if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
         if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
+        if (shown == 1) { recipeTest.firstCell = ImVec2((p.x + qd.x) * 0.5f, (p.y + qd.y) * 0.5f); recipeTest.firstRecipe = (int)i; }
         if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) craftQueue.push_back({ (int)i, 1 }); // double-click: craft one
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
@@ -872,7 +874,9 @@ static void DrawCrafting() {
         const int most = maxFromInventory(r);
         ImGui::Spacing();
         ImGui::BeginDisabled(!can || pending >= 0);
-        if (ImGui::Button("Craft 1")) {
+        const bool craft1 = ImGui::Button("Craft 1");
+        { const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax(); recipeTest.craft1 = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f); }
+        if (craft1) {
             if (creative || gNetRole == NetRole::Client || inventory.canCraft(r)) craftQueue.push_back({ selectedRecipe, 1 });
             else if (uiWorld) { // short in the inventory: pulled from nearby chests first (#338: not when joined)
                 bool ok = true;
@@ -911,6 +915,8 @@ static void DrawCrafting() {
         else if (uses % 3 != 0) ImGui::NewLine();
       }
       recipePageH = ImGui::GetWindowHeight();
+      recipeTest.pageMin = ImGui::GetWindowPos();
+      recipeTest.pageMax = ImVec2(recipeTest.pageMin.x + ImGui::GetWindowWidth(), recipeTest.pageMin.y + recipePageH);
       ImGui::EndPopup();
     }
     // The queue: what's being crafted, next first.
@@ -1971,5 +1977,57 @@ TEST(GameUiCursor, AClickOutsideEveryWindowIsOutside) {
     ui.Frame(1000.0f, 650.0f, false, [] {});
     ui.Frame(1000.0f, 650.0f, true, [&] { outside = PointerOutsideWindows(); });
     EXPECT_TRUE(outside) << "past the window: a held stack is dropped at the feet";
+}
+
+// ---- Unit tests (#921): the recipe page pop-up's clicks (creative: every recipe known, crafts free) ----
+TEST(GameUiRecipePage, AClickOpensItBesideTheRecipeCraftOneQueuesAndEscClosesItFirst) {
+    UnitTest::EnsureItemDB();
+    HeadlessImGui ui;
+    const bool creative0 = terrainTool.creative;
+    terrainTool.creative = true;
+    craftQueue.clear(); recipePageOpen = false; selectedRecipe = -1;
+    GameUI_ShowScreen(GameScreen::Crafting);
+    auto frame = [&](ImVec2 m, bool down) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddMousePosEvent(m.x, m.y); io.AddMouseButtonEvent(0, down);
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f)); ImGui::SetNextWindowSize(ImVec2(1280.0f, 720.0f));
+        ImGui::Begin("game window", nullptr, ImGuiWindowFlags_NoDecoration);
+        ImGui::SetCursorPosX(640.0f); // the crafting column on the right half, as the Crafting screen lays it out
+        ImGui::BeginChild("craftcol", ImVec2(0.0f, 0.0f));
+        DrawCrafting();
+        ImGui::EndChild();
+        ImGui::End();
+        ImGui::Render();
+    };
+    auto click = [&](ImVec2 m) { frame(m, false); frame(m, true); frame(m, false); frame(m, false); };
+    const ImVec2 away(5.0f, 5.0f);
+    frame(away, false); frame(away, false);
+    EXPECT_FALSE(recipePageOpen) << "nothing open until a recipe is clicked";
+    ASSERT_GE(recipeTest.firstRecipe, 0) << "creative: recipes are drawn";
+
+    click(recipeTest.firstCell);
+    EXPECT_TRUE(recipePageOpen);
+    EXPECT_EQ(selectedRecipe, recipeTest.firstRecipe);
+    EXPECT_TRUE(recipePageShown) << "the pop-up is drawn";
+    const float cellX = recipeTest.firstCell.x;
+    EXPECT_TRUE(recipeTest.pageMax.x <= cellX || recipeTest.pageMin.x >= cellX) << "beside the recipe, not over it";
+    EXPECT_NEAR(recipeTest.pageMin.y, recipeAnchorMin.y, 2.0f) << "level with the recipe's cell";
+
+    const int queued0 = GameUI_CraftQueueLength();
+    click(recipeTest.craft1);
+    EXPECT_EQ(GameUI_CraftQueueLength(), queued0 + 1) << "Craft 1 queues one";
+    EXPECT_TRUE(recipePageOpen) << "crafting keeps the page open";
+
+    EXPECT_TRUE(GameUI_ClosePopout()) << "Esc: the pop-up closes first";
+    frame(away, false); frame(away, false);
+    EXPECT_FALSE(recipePageOpen);
+    EXPECT_FALSE(recipePageShown);
+    EXPECT_TRUE(GameUI_InventoryOpen()) << "the window stays";
+    EXPECT_FALSE(GameUI_ClosePopout()) << "Esc again: nothing open, the window closes (main.cpp toggles it)";
+
+    craftQueue.clear(); selectedRecipe = -1;
+    GameUI_ToggleInventory();
+    terrainTool.creative = creative0;
 }
 #endif
