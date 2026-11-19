@@ -10280,7 +10280,11 @@ int main(int argc, char** argv)
                 inventory.add("oxygen_tank_module", 2); Suit_Fit("oxygen_tank_module"); inventory.add("field_suit", 1); settings.mpSuit = 0x3E86D8; inventory.grid()[Inventory::kOffHand] = InvSlot{ "torch", 400 }; } // (#822) a module fitted, one carried; a torch in the off hand
             const int k = f / 20, phase = f % 20;
             if (k < kShots) {
-                if (phase == 0) { terrainTool.creative = shots[k].s == GameScreen::Catalog; if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s); }
+                if (phase == 0) {
+                    terrainTool.creative = shots[k].s == GameScreen::Catalog;
+                    QuestTree_TestOpenTier(!strcmp(shots[k].name, "questtree") ? 0 : -1); // (#890: the tree's pop-out, tier 0's objectives)
+                    if (shots[k].tab) GameUI_ShowTab(shots[k].tab); else GameUI_ShowScreen(shots[k].s);
+                }
                 if (phase == 15 && k == 0) { previewOk = GameUI_PreviewDrawn(); int n = 0; for (const std::string& m : Suit_Modules()) n += !m.empty(); moduleOk = n == 1 && inventory.offHand().id == "torch"; }
                 if (phase == 15) { TakeScreenshot(TextFormat("bench_window_%s.png", shots[k].name)); printf("bench: game window: bench_window_%s.png (screen %d)\n", shots[k].name, (int)GameUI_Screen()); }
             } else {
