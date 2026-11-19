@@ -10243,7 +10243,14 @@ int main(int argc, char** argv)
         if (testBugReport > 0 && gameState == 1 && !loading && WorldIdle()) {
             if (testBugReport == 1) BugReport_TestSend(world);
             ++testBugReport;
-            if (testBugReport > 3 && !BugReport_Sending()) { printf("bench: bug report: sent (see the 'bug report:' line)\n"); testBugReport = 0; }
+            if (testBugReport > 3 && !BugReport_Sending()) { // (a frame later than the answer: its toast or notice is up)
+                static int after = 0;
+                if (++after == 3) {
+                    TakeScreenshot("bench_bug_report.png"); // (#617: a failed send's notice)
+                    printf("bench: bug report: sent (see the 'bug report:' line); %d waiting in the outbox; bench_bug_report.png\n", BugReport_Unsent());
+                    testBugReport = 0;
+                }
+            }
         }
         // --test-container-cursor (#192): a chest placed 6 m ahead; its slots behave as the inventory's (cursor, halves, ones, Shift).
         if (testContainerCursor && gameState == 1 && !loading && WorldIdle()) {

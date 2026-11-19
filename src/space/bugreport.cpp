@@ -7,6 +7,7 @@
 
 #include "imgui.h"
 #include <raylib.h>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -38,7 +39,21 @@ namespace {
 
     std::atomic<bool> sending{ false }, done{ false };
     std::mutex resultM;
-    std::string result;                 // the relay's answer or the error, for the toast
+    std::string result;                 // the relay's answer or the error, for the toast ("" after a quiet retry)
+    std::string logLine;                // the same for log.txt, in full (the folder path too: #617)
+    std::string notice;                 // (#617) a failed send: shown until dismissed
+    int unsent = -1;                    // reports in the outbox (-1: not counted yet)
+
+    // (#617) Unsent reports wait in an outbox under saves/ (not %TEMP%, which gets cleaned): one folder each, with a
+    // fields.txt listing what curl sends; they are sent again at start-up and every few minutes, and removed once sent.
+    fs::path OutboxDir() { return fs::path("saves") / "bug-outbox"; }
+    int CountOutbox() {
+        std::error_code ec;
+        int n = 0;
+        if (fs::exists(OutboxDir(), ec))
+            for (const auto& e : fs::directory_iterator(OutboxDir(), ec)) n += e.is_directory(ec) && fs::exists(e.path() / "fields.txt", ec) ? 1 : 0;
+        return n;
+    }
 
     std::string RelayUrl() {
         const char* e = getenv("RAYLIBGAME_BUG_RELAY");
@@ -55,7 +70,7 @@ namespace {
 
     // Everything the relay gets, as files in a fresh folder (text goes in files too: no quoting problems on the
     // command line), then curl -F name=@file / name=<file.
-    void Send(fs::path dir, std::vector<std::pair<std::string, std::string>> fields) {
+    void Send(fs::path dir, std::vector<std::pair<std::string, std::string>> fields, bool retry) {
 #ifdef _WIN32
         std::string cmd = "curl.exe -s -S -m 60";
 #else
@@ -73,26 +88,60 @@ namespace {
             if (rc != 0 && out.empty()) out = "curl failed (" + std::to_string(rc) + ")";
         } else out = "could not run curl.exe";
         // The relay answers {"url": "...", "number": N}; anything else is an error to show.
-        std::string msg;
+        std::string msg, log, note;
         const size_t u = out.find("\"url\"");
         if (u != std::string::npos) {
             const size_t a = out.find('"', out.find(':', u) + 1), b = a == std::string::npos ? a : out.find('"', a + 1);
-            msg = "Bug reported: " + (b != std::string::npos ? out.substr(a + 1, b - a - 1) : std::string("(no link)"));
+            const std::string link = b != std::string::npos ? out.substr(a + 1, b - a - 1) : std::string("(no link)");
+            msg = (retry ? "An unsent bug report was sent: " : "Bug reported: ") + link;
+            log = msg + " (from " + dir.string() + ")";
+            std::error_code ec;
+            fs::remove_all(dir, ec); // sent: out of the outbox
         } else {
-            msg = "Bug report not sent: " + out.substr(0, 160) + " (kept in " + dir.string() + ")";
+            while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+            log = "Bug report not sent: " + out.substr(0, 400) + " (kept in " + fs::absolute(dir).string() + ")"; // (the path in full: #617)
+            if (!retry) { // (a retry that fails again stays quiet: the first failure said it)
+                msg = "Bug report not sent: the relay is offline";
+                note = "Not sent: the bug relay is offline. Kept in the outbox; it will be sent when the relay is back.";
+            }
         }
-        { std::lock_guard<std::mutex> lk(resultM); result = msg; }
+        { std::lock_guard<std::mutex> lk(resultM); result = msg; logLine = log; if (!note.empty()) notice = note; }
         done = true;
         sending = false;
+    }
+
+    // (#617) The oldest report in the outbox, sent again.
+    bool ResendOne() {
+        std::error_code ec;
+        if (!fs::exists(OutboxDir(), ec)) return false;
+        std::vector<fs::path> dirs;
+        for (const auto& e : fs::directory_iterator(OutboxDir(), ec)) if (e.is_directory(ec) && fs::exists(e.path() / "fields.txt", ec)) dirs.push_back(e.path());
+        if (dirs.empty()) return false;
+        std::sort(dirs.begin(), dirs.end()); // (folders are named by time)
+        std::vector<std::pair<std::string, std::string>> fields;
+        if (FILE* f = fopen((dirs.front() / "fields.txt").string().c_str(), "rb")) {
+            char line[2048];
+            while (fgets(line, sizeof line, f)) {
+                std::string s = line;
+                while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+                const size_t tab = s.find('\t');
+                if (tab != std::string::npos) fields.push_back({ s.substr(0, tab), s.substr(tab + 1) });
+            }
+            fclose(f);
+        }
+        if (fields.empty()) return false;
+        sending = true;
+        done = false;
+        std::thread(Send, dirs.front(), fields, true).detach();
+        return true;
     }
 
     void Submit() {
         char stamp[32];
         const std::time_t now = std::time(nullptr);
         std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
-        const char* tmp = getenv("TEMP");
-        const fs::path dir = fs::path(tmp && tmp[0] ? tmp : ".") / "raylibgame-bug" / stamp;
         std::error_code ec;
+        const fs::path dir = fs::absolute(OutboxDir() / stamp, ec); // (#617: kept until sent; not %TEMP%)
         fs::create_directories(dir, ec);
         std::vector<std::pair<std::string, std::string>> fields;
         WriteText(dir / "title.txt", title);
@@ -118,19 +167,26 @@ namespace {
             if (FILE* f = fopen("log.txt", "rb")) { char buf[8192]; size_t k; while ((k = fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, k); fclose(f); }
             if (!text.empty() && WriteText(dir / "log.txt", text)) fields.push_back({ "log", "@" + (dir / "log.txt").string() });
         }
-        if (attachCapture) {
+        if (attachCapture) { // (#617) copied in: the outbox folder holds everything a later resend needs
             const std::string cap = Recorder_LastDir();
             for (const char* f : { "sheet.png", "capture.gif" })
-                if (!cap.empty() && fs::exists(fs::path(cap) / f, ec)) fields.push_back({ std::string("capture_") + (f[0] == 's' ? "sheet" : "gif"), "@" + (fs::path(cap) / f).string() });
+                if (!cap.empty() && fs::exists(fs::path(cap) / f, ec) && fs::copy_file(fs::path(cap) / f, dir / f, fs::copy_options::overwrite_existing, ec))
+                    fields.push_back({ std::string("capture_") + (f[0] == 's' ? "sheet" : "gif"), "@" + (dir / f).string() });
         }
         if (attachSave && fs::exists(WorldSavePath(), ec)) {
             fs::copy_file(WorldSavePath(), dir / "world.sav", fs::copy_options::overwrite_existing, ec);
             fields.push_back({ "save", "@" + (dir / "world.sav").string() });
         }
+        { // (#617) what curl sends, for a resend: name TAB spec, one a line
+            std::string list;
+            for (const auto& [name, spec] : fields) list += name + "\t" + spec + "\n";
+            WriteText(dir / "fields.txt", list);
+        }
+        unsent = -1;
 
         sending = true;
         done = false;
-        std::thread(Send, dir, fields).detach(); // (detached: a send still running at exit must not abort the game)
+        std::thread(Send, dir, fields, false).detach(); // (detached: a send still running at exit must not abort the game)
         GameUI_Toast("Sending the bug report...");
     }
 }
@@ -154,8 +210,21 @@ void BugReport_Open(Scene& w) {
 bool BugReport_IsOpen() { return open; }
 
 void BugReport_Draw() {
-    if (!open) return;
     const ImGuiIO& io = ImGui::GetIO();
+    { // (#617) a failed send's notice: it stays until dismissed (a 2.5 s toast went unnoticed)
+        std::string text;
+        { std::lock_guard<std::mutex> lk(resultM); text = notice; }
+        if (!text.empty()) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.12f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+            ImGui::SetNextWindowBgAlpha(0.92f);
+            if (ImGui::Begin("##bugnotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing)) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "%s", text.c_str());
+                if (ImGui::Button("OK")) { std::lock_guard<std::mutex> lk(resultM); notice.clear(); }
+            }
+            ImGui::End();
+        }
+    }
+    if (!open) return;
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_Appearing);
     if (ImGui::Begin("Report a bug", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -197,9 +266,21 @@ void BugReport_TestSend(Scene& w) {
 bool BugReport_Sending() { return sending; }
 
 void BugReport_Update() {
+    // (#617) The outbox: one report sent again at start-up (the first call) and every 5 minutes while any wait.
+    static double nextRetry = 0.0;
+    if (!sending && GetTime() >= nextRetry) {
+        nextRetry = GetTime() + 300.0;
+        ResendOne();
+    }
     if (!done.exchange(false)) return;
+    unsent = -1; // (recounted)
     std::lock_guard<std::mutex> lk(resultM);
-    GameUI_Toast(result.c_str());
-    printf("bug report: %s\n", result.c_str()); // stdout too: --test-bugreport reads it
-    if (result.rfind("Bug report not sent", 0) == 0) LOG_WARN("BugReport", "%s", result.c_str()); else LOG_INFO("BugReport", "%s", result.c_str());
+    if (!result.empty()) GameUI_Toast(result.c_str());
+    printf("bug report: %s\n", logLine.c_str()); // stdout too: --test-bugreport reads it
+    if (logLine.rfind("Bug report not sent", 0) == 0) LOG_WARN("BugReport", "%s", logLine.c_str()); else LOG_INFO("BugReport", "%s", logLine.c_str());
+}
+
+int BugReport_Unsent() { // (#617) for the pause menu
+    if (unsent < 0) unsent = CountOutbox();
+    return unsent;
 }
