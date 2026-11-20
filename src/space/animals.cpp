@@ -154,7 +154,11 @@ struct Animal {
     float pathAge = 0.0f, planWait = 0.0f;      // seconds on this route; no new plan before this runs out (s)
     // #334 a client's copy (replicated mode): the server's latest state of it, eased toward; when it was last heard of.
     Vector3 netPos{}; float netHeading = 0.0f; double netSeen = -1.0;
+    // (#1108) where it was lately (sim time, body-local; the last kTrailSeconds): a server checks a joined player's hit against
+    // where the animal was when that player saw it, not where it is by the time the hit arrives
+    std::vector<std::pair<double, Vector3>> trail;
 };
+constexpr double kTrailSeconds = 0.3;
 std::vector<Animal> animals;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
@@ -1018,7 +1022,26 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             break;
         }
     }
+    { // (#1108) the trail: where each animal was, for the server's rewound hit checks
+        const double now = SimTime();
+        for (Animal& a : animals) {
+            if (a.trail.empty() || a.trail.back().first < now) a.trail.push_back({ now, a.pos });
+            size_t drop = 0;
+            while (drop < a.trail.size() && a.trail[drop].first < now - kTrailSeconds) ++drop;
+            if (drop) a.trail.erase(a.trail.begin(), a.trail.begin() + (long)drop);
+        }
+    }
     lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+float Animals_RewindDistance(const std::vector<std::pair<double, Vector3>>& trail, Vector3 current, Vector3 from, double now, double window) {
+    float best = Vector3Distance(current, from);
+    for (const auto& [t, p] : trail) if (t >= now - window) best = std::min(best, Vector3Distance(p, from));
+    return best;
+}
+float Animals_HitDistance(int i, Vector3 from, double window) {
+    if (i < 0 || i >= (int)animals.size()) return 1e30f;
+    return Animals_RewindDistance(animals[i].trail, animals[i].pos, from, SimTime(), window);
 }
 
 // Aim along the crosshair and the player's actions on the aimed animal (#222). Called after the camera is placed
@@ -1382,3 +1405,18 @@ bool Animals_UseNet(uint64_t netId, int action, Inventory& inv, std::string& why
     }
     why = "unknown action"; return false;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+TEST(AnimalLagCompensation, AHitCountsWhereTheAnimalWasWithinTheRewind) { // (#1108)
+    // A deer fleeing at 6 m/s along x, its trail a sample every sim step (60 Hz) for 0.3 s; the hunter stands at x = -4.4,
+    // 4.4 m behind where the deer was 0.15 s ago, 5.3 m from where it is now (out of the 4.5 m reach).
+    std::vector<std::pair<double, Vector3>> trail;
+    const double now = 10.0;
+    for (int k = 18; k >= 1; --k) { const double t = now - k / 60.0; trail.push_back({ t, Vector3{ (float)(6.0 * (t - now)), 0.0f, 0.0f } }); }
+    const Vector3 current{ 0.0f, 0.0f, 0.0f }, hunter{ -5.3f, 0.0f, 0.0f };
+    EXPECT_NEAR(Animals_RewindDistance(trail, current, hunter, now, 0.0), 5.3f, 1e-4f) << "no rewind: where it is now";
+    EXPECT_LT(Animals_RewindDistance(trail, current, hunter, now, 0.2), 4.5f) << "within 0.2 s it was in reach";
+    EXPECT_GT(Animals_RewindDistance(trail, current, Vector3{ -7.0f, 0.0f, 0.0f }, now, 0.2), 4.5f) << "the rewind is capped: further back doesn't count";
+}
+#endif
