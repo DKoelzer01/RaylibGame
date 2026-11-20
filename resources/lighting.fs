@@ -369,6 +369,24 @@ void main()
         // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
         float macro = fragMacro; // per vertex (70-250 m features; #183)
         albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
+        // (#1022) Strata in buried rock: layers by height along the planet's up (distance from its centre, the fog shell's),
+        // so cave walls show beds cutting across a passage instead of the texture reading as rings around the bore. Uneven
+        // bed thickness and tone, thin dark bedding seams, fine laminations; the boundaries wander a little.
+        if (fogShell.w > 0.0 && fragSky < 0.95) {
+            float rockW = 0.0;
+            for (int i = 0; i < n; ++i) { int m = aid[i]; if (m == 0 || m == 3 || (m >= 9 && m <= 13)) rockW += aw[i]; }
+            rockW = clamp(rockW / max(total, 1e-4), 0.0, 1.0) * (1.0 - smoothstep(0.55, 0.95, fragSky));
+            if (rockW > 0.01) {
+                float h = length(fragPosition - fogShell.xyz) + 0.7 * (periodicNoise(fragTexPos, 0.12) - 0.5) + 0.25 * (periodicNoise(fragTexPos, 0.5) - 0.5);
+                float s = h / 1.9, bed = floor(s), f = fract(s);
+                float t1 = hash3(vec3(bed, 7.0, 3.0)), t2 = hash3(vec3(bed, 1.0, 11.0));
+                vec3 tone = mix(vec3(0.6, 0.59, 0.58), vec3(1.22, 1.17, 1.08), t1);
+                tone *= mix(vec3(1.0), vec3(1.12, 0.96, 0.82), step(0.68, t2));          // some beds warmer (iron-stained)
+                float seam = 1.0 - 0.45 * smoothstep(0.07, 0.0, min(f, 1.0 - f) * (0.7 + 0.6 * t2));
+                float lam = 0.94 + 0.12 * hash3(vec3(floor(h / 0.35), 5.0, 9.0));
+                albedo *= mix(vec3(1.0), tone * seam * lam, rockW);
+            }
+        }
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
