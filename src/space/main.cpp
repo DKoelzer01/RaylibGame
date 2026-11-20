@@ -6088,7 +6088,24 @@ int main(int argc, char** argv)
                         static bool graphInside = false; static Vector3 graphOut{}; bool graphMouth = false; // (#615 step 3)
                         Vector3 mouthNear = home; float mouthRange = 3000.0f; // RAYLIBGAME_CAVES_MOUTH="x y z" (#1022): the mouth there (the same one at any abundance)
                         if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
-                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut)) { // the nearest hillside mouth
+                        // RAYLIBGAME_CAVES_KARST=1 (#1052): the nearest karst sink, near the nearest strong karst ground (its
+                        // weight on a 500 m grid out to 30 km: karst regions are ~10 km apart, too far for a cave-cell search).
+                        const int mouthKind = getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1' ? 1 : -1;
+                        if (mouthKind == 1 && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                            const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
+                            float bestK = 1e30f;
+                            for (float a = -30000.0f; a <= 30000.0f; a += 500.0f)
+                                for (float b = -30000.0f; b <= 30000.0f; b += 500.0f) {
+                                    const float dd = a * a + b * b;
+                                    if (dd >= bestK) continue;
+                                    const Vector3 kd = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(k1, a), Vector3Scale(k2, b))));
+                                    if (pf->karstWeight(Vector3Scale(kd, pf->radius)) > 0.6f && pf->elevation(kd) > 10.0f) { bestK = dd; mouthNear = kd; }
+                                }
+                            mouthRange = 1500.0f;
+                            if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
+                            else printf("bench: caves: no karst ground within 30 km\n");
+                        }
+                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut, mouthKind)) { // the nearest hillside mouth (or karst sink)
                             graphMouth = true; best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
                             printf("bench: caves: graph mouth %.0f m from the start (outward %.2f %.2f %.2f)\n", best, graphOut.x, graphOut.y, graphOut.z);
                             { const int nm = pf->caveMouthsNear(home, 3000.0f); printf("bench: caves: %d mouths within 3 km of the start (%.2f per km^2: one per %.0f m on a square grid)\n", nm, nm / 28.27f, nm > 0 ? sqrtf(28.27e6f / nm) : 0.0f); }
