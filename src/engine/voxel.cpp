@@ -1248,7 +1248,20 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         auto add = [&](Vector3 a, Vector3 b, float ra, float rb, float fl, int kind) {
             CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
         };
-        add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, 3);
+        // (#1060) Five pieces, not one big segment: a centre one and four around it 0.45 r out (radius 0.6 r), each as tall as
+        // the whole (flat x r / 0.6 r, <= 1), so the floor (0.4 x radius x flat below each axis) stays one level and the roof
+        // one dome; the union's outline scallops a little between them. A piece's box (3 x its radius) holds ~1/5 the blocks
+        // the big one's did: fewer blocks carry a chamber (#1058 measured ~0.4 s of spawn preload).
+        {
+            const float rp = 0.6f * r, fp = std::min(1.0f, flat / 0.6f);
+            add(Vector3Subtract(c, Vector3Scale(hd, 0.1f * r)), Vector3Add(c, Vector3Scale(hd, 0.1f * r)), rp, rp, fp, 3);
+            for (int k = 0; k < 4; ++k) {
+                const float ak = 0.5f * PI * k + 0.25f * PI;
+                const Vector3 off = Vector3Add(Vector3Scale(hd, 0.45f * r * cosf(ak)), Vector3Scale(sd, 0.45f * r * sinf(ak)));
+                const Vector3 pc = Vector3Add(c, off);
+                add(Vector3Subtract(pc, Vector3Scale(hd, 0.1f * r)), Vector3Add(pc, Vector3Scale(hd, 0.1f * r)), rp, rp, fp, 3);
+            }
+        }
         data->mouths.push_back({ c, up, 3 });                            // (for tests: --test-caves RAYLIBGAME_CAVES_CHAMBER=1)
         const float floorH = -0.4f * r * flat;
         auto onFloor = [&](float dist, float ang, float h) {
