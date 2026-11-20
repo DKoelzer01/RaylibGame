@@ -1,4 +1,5 @@
 #include "fluid.h"
+#include "factory.h"
 #include "animals.h"
 #include "gamerng.h"
 #include "netid.h"
@@ -160,7 +161,12 @@ int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
 double simClock = 0.0; // seconds of animal steps (the sum of Animals_Update's dt): the bite wind-up and cooldown (#165), so tests that step animals many times in a frame still see time pass
-std::vector<Vector3> fires; // campfires near the player (body-local)
+std::vector<Vector3> fires; // light sources near the players (body-local): placed lights, and (#560) players carrying one
+// (#560, the user: dusk stalkers fear any light source, not only campfires) Placed: campfires, torches, lamp blocks, and fire
+// machines while they burn. Carried: a torch, fibre torch or lantern in hand (or the local player's off hand).
+// RAYLIBGAME_STALKER_ANY_LIGHT=0: campfires only, as before (A/B).
+bool AnyLightScares() { static const bool on = !(getenv("RAYLIBGAME_STALKER_ANY_LIGHT") && atoi(getenv("RAYLIBGAME_STALKER_ANY_LIGHT")) == 0); return on; }
+bool IsCarriedLight(const std::string& id) { return id == "torch" || id == "fibre_torch" || id == "lantern"; }
 bool threatsOn = true;     // off in bench runs except --test-threats
 bool naturalSpawns = true;  // herds placed around the player (SpawnHerds); tests that measure their own animals turn it off
 bool NearFire(Vector3 p, float r, Vector3& at) { for (const Vector3& f : fires) if (Vector3Distance(f, p) < r) { at = f; return true; } return false; }
@@ -619,30 +625,53 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const double now = WorldTime();
     // #334 the players animals react to: the local one (not a dedicated server's idle stand-in) and every remote player the
     // host lists (gAnimalTargets). Each animal minds the nearest on its body: flees it, follows its food, hunts it, bites it.
-    struct Tgt { Planetoid* body; Vector3 local; uint32_t session; bool vulnerable; std::string held; };
+    struct Tgt { Planetoid* body; Vector3 local; uint32_t session; bool vulnerable; std::string held; bool lit; };
     static std::vector<Tgt> targets; targets.clear();
-    if (here && !(gHeadless && gNetRole == NetRole::Host))
-        targets.push_back({ here, playerLocal, 0, !survival.dead && !player.flyMode && !Rocket_Boarded(), Hotbar_HeldFood() });
-    for (const AnimalTarget& t : gAnimalTargets) if (Planetoid* b = Planetoid::findNet(t.body)) targets.push_back({ b, t.local, t.session, t.vulnerable, t.held });
+    if (here && !(gHeadless && gNetRole == NetRole::Host)) {
+        // (#560) a light in hand, or in the off hand (as the game lights it: main.cpp's held torch)
+        const std::string inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
+        const std::string& off = inventory.offHand().id;
+        const bool lit = (IsCarriedLight(inHand) && inventory.count(inHand) > 0) || (IsCarriedLight(off) && inventory.count(off) > 0);
+        targets.push_back({ here, playerLocal, 0, !survival.dead && !player.flyMode && !Rocket_Boarded(), Hotbar_HeldFood(), lit });
+    }
+    for (const AnimalTarget& t : gAnimalTargets) if (Planetoid* b = Planetoid::findNet(t.body)) targets.push_back({ b, t.local, t.session, t.vulnerable, t.held, IsCarriedLight(t.held) }); // (remote: the main hand only)
     const Vector3 sun = Vector3Normalize(world.sunDirection);
-    // Campfires near the player (refreshed every second): night hunters keep away from them.
+    // Light sources near the players (placed ones refreshed every second; carried ones every step): night hunters keep away.
+    static std::vector<Vector3> placedLights;
     if (!targets.empty() && SimTime() - lastFireScan > 1.0) { // (#334: near every player, on each one's body)
         lastFireScan = SimTime();
-        fires.clear();
+        placedLights.clear();
+        static int lampMat = -2;
+        if (lampMat == -2) lampMat = BuildMaterialForItem("lamp");
+        static std::vector<std::pair<Int3, CellShape>> fp;
         std::vector<Planetoid*> scanned;
         for (const Tgt& t : targets) {
             if (!t.body->plots || std::find(scanned.begin(), scanned.end(), t.body) != scanned.end()) continue;
             scanned.push_back(t.body);
             for (const auto& pl : t.body->plots->plots)
-                for (const Part& p : pl->parts)
-                    if (p.type == PartType::Campfire) {
-                        const Vector3 c = pl->toBody({ (p.origin.x + 1.0f) * kCellSize, (p.origin.y + 0.5f) * kCellSize, (p.origin.z + 1.0f) * kCellSize });
-                        bool nearOne = false;
-                        for (const Tgt& u : targets) nearOne = nearOne || (u.body == t.body && Vector3Distance(c, u.local) < 200.0f);
-                        if (nearOne) fires.push_back(c);
+                for (size_t i = 0; i < pl->parts.size(); ++i) {
+                    const Part& p = pl->parts[i];
+                    bool light = p.type == PartType::Campfire;
+                    if (!light && AnyLightScares()) {
+                        const bool fireMachine = p.type == PartType::Kiln || p.type == PartType::CokeOven || p.type == PartType::BlastFurnace ||
+                                                 p.type == PartType::Furnace || p.type == PartType::AlloySmelter || p.type == PartType::ArcFurnace;
+                        light = p.type == PartType::Torch || (lampMat >= 0 && IsShape(p.type) && p.material == lampMat) ||
+                                (fireMachine && Factory::Working(t.body->id, pl->id, (int)i));
                     }
+                    if (!light) continue;
+                    Plot::Footprint(p, fp);
+                    if (fp.empty()) continue;
+                    Vector3 sum{};
+                    for (auto& cell : fp) sum = Vector3Add(sum, { (cell.first.x + 0.5f) * kCellSize, (cell.first.y + 0.5f) * kCellSize, (cell.first.z + 0.5f) * kCellSize });
+                    const Vector3 c = pl->toBody(Vector3Scale(sum, 1.0f / fp.size()));
+                    bool nearOne = false;
+                    for (const Tgt& u : targets) nearOne = nearOne || (u.body == t.body && Vector3Distance(c, u.local) < 200.0f);
+                    if (nearOne) placedLights.push_back(c);
+                }
         }
     }
+    fires = placedLights;
+    if (AnyLightScares()) for (const Tgt& t : targets) if (t.lit) fires.push_back(t.local); // (#560) a carried light moves with its player
     // Night threats (not on peaceful): every 12 s after dark, a dusk stalker comes out of the dark 45-60 m
     // away, up to 2 near the player (3 on hard) - not underground, flying, or by a campfire.
     if (!targets.empty() && threatsOn && Difficulty_ThreatScale() > 0.0f && SimTime() - lastNightSpawn > 12.0) {
