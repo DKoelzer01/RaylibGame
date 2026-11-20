@@ -24,6 +24,10 @@
 
 extern const char* kGameVersion;
 int ScenarioProc_Run(const std::string& cmdline, double timeoutSec);
+// (#1054) A scenario's timeout is sim time (fixed dt): a loaded machine ran fluid/flow-meter at a third of real time and it
+// timed out on the wall clock while simulating fine. Wall time is only a backstop for a run that stops advancing: this
+// many times the timeout (RAYLIBGAME_SCENARIO_WALL_X).
+static double WallFactor() { static const double f = getenv("RAYLIBGAME_SCENARIO_WALL_X") ? std::max(1.0, atof(getenv("RAYLIBGAME_SCENARIO_WALL_X"))) : 4.0; return f; }
 std::string ScenarioProc_Exe();
 int ScenarioProc_Pid();
 int ScenarioReport_Main(int argc, char** argv); // scenarioreport.cpp
@@ -204,8 +208,9 @@ int RunMany(const std::vector<ScenarioDef>& defs, const std::string& outDir, con
         printf("scenario: === %s\n", d.name.c_str());
         fflush(stdout);
         const auto t0 = std::chrono::steady_clock::now();
-        // The scenario's own timeout covers its run; loading (a planet's first bake ~80 s) and the exit get 240 s more.
-        const int rc = ScenarioProc_Run(cmd, d.timeout + 240.0);
+        // The scenario's own wall backstop covers its run (WallFactor x its sim timeout, #1054); loading (a planet's first bake
+        // ~80 s) and the exit get 240 s more.
+        const int rc = ScenarioProc_Run(cmd, d.timeout * WallFactor() + 240.0);
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::string safe = d.name;
         for (char& c : safe) if (c == ':') c = '_'; // (the name only: the out dir has a drive letter)
@@ -355,8 +360,10 @@ bool Scenario_Frame(Scene& world) {
     c.frame = R.frames++;
     c.stepIndex = R.step;
     if (!c.field) { Finish("ERROR", "no planet field (body 0)"); return false; }
-    if (now - R.wallStart > R.def.timeout) {
+    if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
+        const bool wall = c.T <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
+                              (wall ? " x " + Num(WallFactor()) + " of wall time (sim only " + Num(c.T) + " s: the run stopped advancing)" : " of sim time") +
                               (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
         return false;
     }
