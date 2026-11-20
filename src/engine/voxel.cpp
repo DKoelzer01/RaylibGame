@@ -138,6 +138,9 @@ static float SeedSpan(float frequency) {
 
 float NoiseSeedSpanUnits() { SeedSpan(1.0f); return gSeedSpanUnits; }
 
+// #1055: a process-wide counter for PlanetField::caveEpoch (never 0, so a default key never matches a field's).
+static uint32_t NextCaveEpoch() { static std::atomic<uint32_t> n{ 0 }; return ++n; }
+
 static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     const float span = SeedSpan(frequency);
@@ -228,6 +231,7 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     gridCache = std::make_shared<GridNodeCache>();
     erosionState = std::make_shared<ErosionState>();
     fieldSeed = seed;
+    caveEpoch = NextCaveEpoch();      // #1055
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -260,6 +264,7 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
 }
 
 void PlanetField::setGenParams(const WorldGenParams& p) {
+    caveEpoch = NextCaveEpoch();      // #1055: the land changes: cave cells built before must not be reused
     gen = p;
     if (moon) return;
     // land(): 200 m of gentle land + the ranges (1400 m x mountains) + hills (85 m x roughness) + detail; the default
@@ -269,6 +274,7 @@ void PlanetField::setGenParams(const WorldGenParams& p) {
 }
 
 void PlanetField::setSandbox() {
+    caveEpoch = NextCaveEpoch();      // #1055
     if (moon) return;
     sandbox = true;
     gen.erosion = false;               // no bake
@@ -1182,7 +1188,12 @@ constexpr int kCaveCellReach = 3;      // a passage and its branches run at most
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
 struct CaveMouth { Vector3 at, out; };   // (#615 step 3) a hillside entrance: its axis point at the slope face, outward (downhill)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
-struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
+// (#1055) A cell depends on more than (seed, cell): on the field's land (its gen params: caveEpoch, renewed by setGenParams /
+// setSandbox and unique per field) and on whether the erosion bake was visible when it was built. Both are in the key
+// (equality only: the hash and so the cell's random numbers stay (seed, cell)), so a read before the bake is attached, or
+// an earlier world with the same seed in this process, can no longer leave cells that later reads reuse.
+struct CaveCellKey { unsigned seed; int x, y, z; uint32_t epoch = 0; bool baked = false;
+    bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z && epoch == o.epoch && baked == o.baked; } };
 struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
 struct CaveCache {
     struct Shard { std::mutex m; std::unordered_map<CaveCellKey, std::shared_ptr<const CaveCellData>, CaveCellHash> map; };
@@ -1202,7 +1213,7 @@ struct CaveSegScope {
 // 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
 // wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
 static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
-    const CaveCellKey key{ seed, cx, cy, cz };
+    const CaveCellKey key{ seed, cx, cy, cz, f.caveEpoch, f.erosion() != nullptr };
     CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
     {
         std::lock_guard<std::mutex> lock(sh.m);
@@ -1593,10 +1604,10 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     constexpr float kBin = kCaveCell / kBins;
                     thread_local std::vector<float> own, binned;
                     thread_local std::vector<int> binStart;                     // kBins^3 + 1 offsets (in segments) into binned
-                    thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0; thread_local const void* kf = nullptr;
+                    thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0, kepoch = 0; thread_local bool kbaked = false; thread_local const void* kf = nullptr;
                     const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
                     const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
-                    if (!ok || cx != kx || cy != ky || cz != kz || kseed != fieldSeed || kf != this) {
+                    if (!ok || cx != kx || cy != ky || cz != kz || kseed != fieldSeed || kf != this || kepoch != caveEpoch || kbaked != (erosion() != nullptr)) { // (#1055: + epoch, bake)
                         GatherCaveSegs(*this, fieldSeed, lo, Vector3AddValue(lo, kCaveCell), 36.0f, own);
                         const int ns = (int)(own.size() / 24);
                         auto binRange = [&](const float* s, int a, int& b0, int& b1) {
@@ -1622,7 +1633,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                                 }
                             }
                         }
-                        ok = 1; kx = cx; ky = cy; kz = cz; kseed = fieldSeed; kf = this;
+                        ok = 1; kx = cx; ky = cy; kz = cz; kseed = fieldSeed; kf = this; kepoch = caveEpoch; kbaked = erosion() != nullptr;
                     }
                     const int bx = std::clamp((int)floorf((p.x - lo.x) / kBin), 0, kBins - 1);
                     const int by = std::clamp((int)floorf((p.y - lo.y) / kBin), 0, kBins - 1);

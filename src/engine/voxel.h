@@ -194,6 +194,7 @@ public:
     bool moon;
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
     WorldGenParams gen;           // the world's generation parameters (#504): defaults = the terrain as before
+    uint32_t caveEpoch = 0;       // #1055: unique per field and land (renewed by setGenParams / setSandbox): part of the cave cells' key
     // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
     void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
