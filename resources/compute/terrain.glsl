@@ -398,7 +398,7 @@ float floatingIsland(vec3 p, float d) {
 // (#615 step 2) The graph tunnels' distance at q: PlanetField's CaveGraphDistance (voxel.cpp), the same operations in the
 // same order: capsules flattened along their up, the radius roughened by one octave of cavesB.
 float caveGraphDistance(vec3 q) {
-    precise float wob = 1.0 + 0.3 * fractal(N_CAVES_B, 1, q.x * 0.15, q.y * 0.15, q.z * 0.15);
+    precise float wob = 1.0 + 0.45 * fractal(N_CAVES_B, 2, q.x * 0.12, q.y * 0.12, q.z * 0.12);
     precise float m = 1e9;
     for (int i = 0; i < caveSegCount; ++i) {
         vec4 A = caveSegData(i, 0), Bs = caveSegData(i, 1), U = caveSegData(i, 2);
@@ -411,8 +411,11 @@ float caveGraphDistance(vec3 q) {
         precise float v2 = xdiv(hv, U.w);
         precise float len = xsqrt(hhx * hhx + hhy * hhy + hhz * hhz + v2 * v2);
         precise float r = A.w + (Bs.w - A.w) * t;
-        m = min(m, len - r * wob);
+        precise float rw = r * wob;
+        precise float floorCut = (0.0 - hv) - 0.6 * rw * U.w;
+        m = min(m, max(len - rw, floorCut));
     }
+    m = m + 1.2 * fractal(N_DETAIL, 2, q.x * 0.35, q.y * 0.35, q.z * 0.35); // (#999) lumpy walls, as the CPU
     return m;
 }
 

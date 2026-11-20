@@ -1673,6 +1673,7 @@ int main(int argc, char** argv)
             // 4 m under the surface with no rock above it: a roof under 4 m). Plus an FNV hash of the full density there
             // (refactors must leave it unchanged).
             const float R = (float)atof(argv[i + 1]);
+            const float D = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 80.0f; // depth of the window (m)
             Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
@@ -1690,7 +1691,7 @@ int main(int argc, char** argv)
                     ++land;
                     const float surface = pf->radius + e;
                     bool anyCave = false, collapsed = false, rockAbove = false, trench = false;
-                    for (float h = 14.0f; h >= -80.0f; h -= 0.5f) {
+                    for (float h = 14.0f; h >= -D; h -= 0.5f) {
                         const Vector3 q = Vector3Scale(dir, surface + h);
                         const float dens = pf->baseDensity(q);
                         uint32_t bits; memcpy(&bits, &dens, 4);
@@ -1706,7 +1707,7 @@ int main(int argc, char** argv)
                     caveCols += anyCave; collapsedCols += collapsed; trenchCols += trench;
                 }
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            printf("bench: cave stats: R %.0f m, %lld land columns (2 m), %lld samples (0.5 m, +14..-80 m) in %.0f ms\n", R, land, samples, ms);
+            printf("bench: cave stats: R %.0f m, %lld land columns (2 m), %lld samples (0.5 m, +14..-%.0f m) in %.0f ms\n", R, land, samples, D, ms);
             printf("bench: cave stats: open cave samples: tunnel %lld, cavern %lld (%.2f%% of samples); columns with a cave %lld (%.1f%%)\n",
                    tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
             printf("bench: cave stats: columns a #549 roof collapse opened %lld; trench columns (open to the sky through a cave, roof < 4 m) %lld = %.0f m^2 (%.2f%% of land)\n",

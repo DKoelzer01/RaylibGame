@@ -1,3 +1,4 @@
+#include <functional>
 #include <unordered_map>
 #include <filesystem>
 #include <cstring>
@@ -1177,7 +1178,7 @@ bool PlanetField::CavesGraph() {
 }
 namespace {
 constexpr float kCaveCell = 256.0f;
-constexpr int kCaveCellReach = 2;      // a passage runs at most ~480 m: cells within 2 of a point can reach it
+constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; };
 struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
 struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
@@ -1209,47 +1210,57 @@ static std::shared_ptr<const std::vector<CaveSeg>> CaveCell(const PlanetField& f
     std::mt19937 rng((unsigned)(CaveCellHash{}(key) ^ 0x9E3779B9u));
     std::uniform_real_distribution<float> U(0.0f, 1.0f);
     const float R = f.radius;
-    for (int tries = 0; tries < 2; ++tries) {
-        const Vector3 s = { (cx + U(rng)) * kCaveCell, (cy + U(rng)) * kCaveCell, (cz + U(rng)) * kCaveCell };
-        const float sl = Vector3Length(s);
-        if (sl < 1.0f) continue;
-        Vector3 dir = Vector3Scale(s, 1.0f / sl);
-        const Vector3 onR = Vector3Scale(dir, R); // the start must project into this cell
-        if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
-        if (f.elevation(dir) < 5.0f) continue;     // land only
-        if (U(rng) < 0.35f) continue;              // not every cell
-        Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-        float ang = U(rng) * 2.0f * PI;
-        Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
-        float depth = 30.0f + 90.0f * U(rng), r = 2.0f + 6.0f * U(rng);
-        const float flat = 0.5f + 0.4f * U(rng);
-        auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
-        depth = std::max(depth, minDepth(r));
-        Vector3 pos = Vector3Scale(dir, R + f.elevation(dir) - depth);
-        const int n = 6 + (int)(U(rng) * 11.0f);
+    // A passage: a gently turning random walk of segments 15-30 m long, kept 25 m + its radius deep (never at the surface),
+    // the radius wandering in [rmin, 8] m. Main passages branch (25% of their vertices) into shorter, narrower side passages,
+    // so the tunnels form networks (#615, #999: spaghetti and noodle caves). Branches at 35% of main vertices.
+    auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
+    std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
+        Vector3 dir = Vector3Normalize(pos);
+        const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
         for (int k = 0; k < n; ++k) {
             const float L = 15.0f + 15.0f * U(rng);
             const float turn = (U(rng) - 0.5f) * 1.2f;                      // up to ~35 degrees a segment
             const Vector3 side = Vector3CrossProduct(dir, head);
             head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(side, sinf(turn))));
-            const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, 2.0f, 8.0f);
-            float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
-            Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
+            const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, rmin, rmax);
+            const float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
+            const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
             const float e2 = f.elevation(dir2);
             if (e2 < 0.0f) break;                                          // not under the sea
-            Vector3 pos2 = Vector3Scale(dir2, R + e2 - depth2);
+            const Vector3 pos2 = Vector3Scale(dir2, R + e2 - depth2);
             // The middle must stay deep too (the ground between may dip): else the passage ends here.
             const Vector3 mid = Vector3Scale(Vector3Add(pos, pos2), 0.5f);
             const float ml = Vector3Length(mid);
-            const Vector3 mdir = Vector3Scale(mid, 1.0f / ml);
-            if (R + f.elevation(mdir) - ml < minDepth(std::max(r, r2))) break;
+            if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml < minDepth(std::max(r, r2))) break;
             CaveSeg sg;
             sg.a = pos; sg.b = pos2; sg.ra = r; sg.rb = r2; sg.flat = flat;
             sg.up = Vector3Normalize(Vector3Add(pos, pos2));
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
+            if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
+                const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
+                const Vector3 s2 = Vector3CrossProduct(dir, head);
+                const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(s2, sinf(bt))));
+                walk(pos, bh, depth, std::min(r, 1.5f + 2.5f * U(rng)), std::clamp(flat + (U(rng) - 0.5f) * 0.2f, 0.45f, 0.95f), 3 + (int)(U(rng) * 5.0f), 1);
+            }
         }
+    };
+    for (int tries = 0; tries < 4; ++tries) {
+        const Vector3 s = { (cx + U(rng)) * kCaveCell, (cy + U(rng)) * kCaveCell, (cz + U(rng)) * kCaveCell };
+        const float sl = Vector3Length(s);
+        if (sl < 1.0f) continue;
+        const Vector3 dir = Vector3Scale(s, 1.0f / sl);
+        const Vector3 onR = Vector3Scale(dir, R); // the start must project into this cell
+        if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+        if (f.elevation(dir) < 5.0f) continue;     // land only
+        if (U(rng) < 0.1f) continue;               // not every start
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+        const float ang = U(rng) * 2.0f * PI;
+        const Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
+        const float r = 2.0f + 6.0f * U(rng);
+        const float depth = std::max(25.0f + 95.0f * U(rng), minDepth(r));
+        walk(Vector3Scale(dir, R + f.elevation(dir) - depth), head, depth, r, 0.5f + 0.4f * U(rng), 6 + (int)(U(rng) * 11.0f), 0);
     }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
@@ -1274,7 +1285,7 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
             for (int x = clo[0]; x <= chi[0]; ++x) {
                 const auto cell = CaveCell(f, seed, x, y, z);
                 for (const CaveSeg& s : *cell) {
-                    const float rr = 1.3f * std::max(s.ra, s.rb) / std::min(s.flat, 1.0f) + reach;
+                    const float rr = 1.45f * std::max(s.ra, s.rb) / std::min(s.flat, 1.0f) + reach + 1.2f; // (+ the bore swell and the wall lumps)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
                     const float e[12] = { s.a.x, s.a.y, s.a.z, s.ra, s.b.x, s.b.y, s.b.z, s.rb, s.up.x, s.up.y, s.up.z, s.flat };
@@ -1295,8 +1306,8 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 
 // The graph tunnels' distance at q (metres to the nearest wall): the capsules flattened along their up, the radius
 // roughened by one octave of the cavesB field. The same operations, in the same order, as terrain.glsl's caveGraphDistance.
-static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, Vector3 q, const float* segs, int n) {
-    const float wob = 1.0f + 0.3f * rough.fractal(1, q.x * 0.15f, q.y * 0.15f, q.z * 0.15f);
+static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, const SimplexNoise& fine, Vector3 q, const float* segs, int n) {
+    const float wob = 1.0f + 0.45f * rough.fractal(2, q.x * 0.12f, q.y * 0.12f, q.z * 0.12f); // the bore swells and narrows (+-45%)
     float m = 1e9f;
     for (int i = 0; i < n; ++i) {
         const float* s = segs + 12 * i;
@@ -1309,8 +1320,11 @@ static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, 
         const float v2 = hv / s[11];
         const float len = sqrtf(hhx * hhx + hhy * hhy + hhz * hhz + v2 * v2);
         const float r = s[3] + (s[7] - s[3]) * t;
-        m = std::min(m, len - r * wob);
+        const float rw = r * wob;
+        const float floorCut = (0.0f - hv) - 0.6f * rw * s[11];          // a flat floor 60% of the way down (sediment): rock below it
+        m = std::min(m, std::max(len - rw, floorCut));
     }
+    m = m + 1.2f * fine.fractal(2, q.x * 0.35f, q.y * 0.35f, q.z * 0.35f); // (#999) lumpy walls: ~3 m bumps, +-1.2 m
     (void)f;
     return m;
 }
@@ -1344,7 +1358,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                 }
                 const int n = (int)(segs->size() / 12);
                 if (n > 0) {
-                    m = CaveGraphDistance(*this, cavesB, p, segs->data(), n) + (1.0f - caveWeight) * 20.0f;
+                    m = CaveGraphDistance(*this, cavesB, detail, p, segs->data(), n) + (1.0f - caveWeight) * 20.0f;
                     if (hit && m < 1e8f) hit->kind = 1;
                 }
             }
