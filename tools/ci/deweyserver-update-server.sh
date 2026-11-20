@@ -14,10 +14,10 @@
 #                        raylibgame-server-<branch>-<run>.tar.gz   each fetched build (the newest 5 are kept)
 #                        raylibgame-server-<branch>.tar.gz         the newest, replaced atomically (the egg's DOWNLOAD_URL)
 #                        raylibgame-server-<branch>.json           run id, commit, time, sha256
-#   --branch B         the branch whose successful push runs count (default develop)
+#   --branch B         the branch whose push runs count (default develop): the newest one whose package job succeeded
 #   --force            fetch even when the newest run is the one already in DIR
 #
-# Exit codes: 0 updated or already current, 1 error, 3 no successful run with the artifact (expired after 5 days?).
+# Exit codes: 0 updated or already current, 1 error, 3 no run with a successful package job and the artifact (expired after 5 days?).
 # Needs: curl, jq, unzip (or bsdtar, or python3), sha256sum.
 set -euo pipefail
 
@@ -58,10 +58,17 @@ umask 077
 printf 'Authorization: Bearer %s\n' "$(tr -d '\r\n' < "$TOKEN_FILE")" > "$work/auth"
 api() { curl -fsSL --retry 3 -H @"$work/auth" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "$@"; }
 
-# The newest successful push run of the workflow on the branch that still has the artifact.
-runs="$(api "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&event=push&status=success&per_page=10")"
+# The newest finished push run of the workflow on the branch whose package job succeeded (#1028: the package is its own
+# job, so a failing scenario or regression test elsewhere in the run doesn't hold the server back; runs from before the
+# split count when the whole run succeeded) and that still has the artifact.
+runs="$(api "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&event=push&status=completed&per_page=10")"
 run_id=""; art_url=""; sha=""; when=""
 for id in $(echo "$runs" | jq -r '.workflow_runs[].id'); do
+    concl="$(echo "$runs" | jq -r --argjson i "$id" '.workflow_runs[] | select(.id == $i) | .conclusion')"
+    if [ "$concl" != success ]; then
+        pkg="$(api "https://api.github.com/repos/$REPO/actions/runs/$id/jobs" | jq -r '[.jobs[] | select(.name == "Linux server build, unit tests, package")][0].conclusion // empty')"
+        [ "$pkg" = success ] || continue
+    fi
     arts="$(api "https://api.github.com/repos/$REPO/actions/runs/$id/artifacts")"
     url="$(echo "$arts" | jq -r --arg n "$ARTIFACT" '[.artifacts[] | select(.name == $n and .expired == false)][0].archive_download_url // empty')"
     if [ -n "$url" ]; then
@@ -71,7 +78,7 @@ for id in $(echo "$runs" | jq -r '.workflow_runs[].id'); do
         break
     fi
 done
-[ -n "$run_id" ] || { echo "update-server: no successful $WORKFLOW push run on $BRANCH with an unexpired $ARTIFACT"; exit 3; }
+[ -n "$run_id" ] || { echo "update-server: no $WORKFLOW push run on $BRANCH with a successful package job and an unexpired $ARTIFACT"; exit 3; }
 
 meta="$DEST/raylibgame-server-$safe_branch.json"
 if [ "$FORCE" = 0 ] && [ -f "$meta" ] && [ "$(jq -r .run_id "$meta" 2>/dev/null)" = "$run_id" ]; then

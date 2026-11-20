@@ -26,12 +26,14 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
     game_tests, static checks (NetMsg ids / kNetProtocol, bake-version reminder). Don't rebuild and rerun unit tests
     locally just to check a PR: push and read CI. Never ask for a merge while "CI ok" is red or pending.
   - **Self-hosted on deweyserver (GPU, isolated from the LAN):** `--test-terrain-gpu` bit-exactness, headless scenarios
-    (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package. Runs on pushes to
-    m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run selfhosted.yml -r <branch>`
-    (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
+    (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package, and the headless
+    half of the regression (`tools/regression.sh planet --only headless`, #1028; nightly, or add `-f regression=headless`).
+    Runs on pushes to m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run
+    selfhosted.yml -r <branch>` (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
   - **This PC only:** what needs the Windows client with a real display/GPU or the user's machine: rendering, lighting,
     UI and any visual change (captures/screenshots), camera and movement feel, performance and timing (quiet windows),
-    the rendering half of the regression, playtest builds, and final validation of anything the user will see.
+    the local half of the regression (`tools/regression.sh planet --only local`), playtest builds, and final validation
+    of anything the user will see.
   - Read CI with REST (`gh api repos/DKoelzer01/RaylibGame/commits/<sha>/check-runs`, `gh run view <id> --log-failed`);
     wait with a deadline, never an open-ended poll loop.
 - Light tests per change: the scripted benches for the feature touched and its neighbours
@@ -74,7 +76,9 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   tests; full regressions wait for major milestones. Fluid perf: `--sandbox --test-fluid-load S` (an S x S m basin).
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
-  first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
+  first. It is split (#1028): each test is tagged headless or local (`tools/regression.sh planet --list`);
+  `--only headless` runs on the deweyserver runner (nightly, or `gh workflow run selfhosted.yml -r <branch> -f
+  regression=headless`), `--only local` (rendering, camera feel, perf and ms gates, menus) is what this PC runs. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
   Minor targeted tests are fine any time.
 - Known flaky: `--test-progression` (power chain, #372), `--test-animals` flee distance (#373). Re-run before
   treating a failure as a regression.

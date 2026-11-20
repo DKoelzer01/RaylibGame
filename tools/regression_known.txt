@@ -1,0 +1,10 @@
+# Known regression failures (#1028): a test's arguments exactly as on its "=== " line of tools/regression.sh, " | ", and
+# the issue that tracks it. tools/ci/regression_summary.sh reports these apart from new failures, and the self-hosted
+# nightly fails only on new ones. Remove a line when its issue is fixed (the summary says when a known test passes).
+# From the m84-integration 114ad5a regression (2026-11-19, #868); #939-#942 and #875, failing there, pass on the m84 tip
+# 2267880 (their fixes merged) and are not listed.
+--seed 42 --bench 3 --test-persist 100000 | #943
+--seed 42 --bench 3 --test-flow | #935
+--seed 42 --bench 5 --test-flow-sea | #935
+--seed 42 --bench 3 --test-progression | #372 (flaky)
+--seed 42 --bench 3 --test-animals | #373 (flaky)

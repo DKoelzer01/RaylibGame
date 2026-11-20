@@ -1,4 +1,4 @@
-# Self-hosted runner on deweyserver (#1016): GPU checks, headless scenarios and the Linux server package.
+# Self-hosted runner on deweyserver (#1016): GPU checks, headless scenarios, the headless regression and the Linux server package.
 # Trusted triggers ONLY: pushes to the integration branches, the nightly schedule and manual runs. Never pull_request or
 # pull_request_target: a PR from anyone must not run code on the home server.
 # Off until the repository variable SELF_HOSTED_ENABLED is "true" (Settings > Secrets and variables > Actions > Variables):
@@ -11,6 +11,23 @@ on:
   schedule:
     - cron: "0 5 * * *" # nightly, 05:00 UTC (the schedule fires from the default branch's copy of this file)
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch to build and test (empty: the branch the run was started on)"
+        required: false
+        default: ""
+        type: string
+      regression:
+        description: "Also run tools/regression.sh --only headless after the checks (the nightly does)"
+        required: false
+        default: none
+        type: choice
+        options: [none, headless]
+      regression_sets:
+        description: "Regression sets, space-separated (planet, eroded, multiplayer)"
+        required: false
+        default: planet
+        type: string
 
 permissions:
   contents: read
@@ -19,45 +36,37 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false # one GPU run at a time; a newer push waits instead of killing a run mid-test
 
+# The nightly run builds this branch (a schedule always starts on the default branch, main, which lags); a manual run
+# builds its `ref` input, else the branch it was started on.
+env:
+  REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref) }}
+
 jobs:
-  linux-gpu:
-    name: Linux GPU build, headless tests, server package
+  # The server package on its own (#1028): its result is what tools/ci/deweyserver-update-server.sh looks at, so a failing
+  # scenario or regression test never holds back a server build whose build and unit tests passed.
+  package:
+    name: Linux server build, unit tests, package
     if: ${{ vars.SELF_HOSTED_ENABLED == 'true' && github.repository == 'DKoelzer01/RaylibGame' }}
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
-    timeout-minutes: 150
-    env:
-      # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags).
-      REF: ${{ github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref }}
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.REF }}
           persist-credentials: false
       - name: Paths and version
-        run: |
-          # Outside the checkout (actions/checkout cleans it): GNS, FetchContent and ccache stay warm between runs.
-          root="$RUNNER_WORKSPACE/ci-persist"
-          mkdir -p "$root/out" "$root/run" "$root/ccache"
-          branch="${REF#refs/heads/}"
-          {
-            echo "OUT=$root/out"
-            echo "RUN=$root/run"
-            echo "CCACHE_DIR=$root/ccache"
-            echo "CCACHE_MAXSIZE=2G"
-            echo "RAYLIBGAME_VERSION=$branch $(git rev-parse --short HEAD)"
-          } >> "$GITHUB_ENV"
-          if command -v ccache > /dev/null; then
-            # CMake (3.17+) takes the launcher from the environment: tools/build_linux.sh needs no change.
-            { echo "CMAKE_C_COMPILER_LAUNCHER=ccache"; echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"; } >> "$GITHUB_ENV"
-          fi
+        run: bash tools/ci/selfhosted_env.sh
       - name: Build the server (tools/build_linux.sh --inside, with GNS) and game_tests
-        id: build
         timeout-minutes: 60
         run: |
           start=$SECONDS
           bash tools/build_linux.sh --inside --out "$OUT" --jobs "$(nproc)"
           cmake --build "$OUT/build" -j "$(nproc)" --target game_tests
           echo "build: $((SECONDS - start)) s ($RAYLIBGAME_VERSION)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Unit tests (game_tests)
+        timeout-minutes: 10
+        run: |
+          "$OUT/bin/game_tests" --gtest_brief=1
       - name: Upload the server package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -66,17 +75,31 @@ jobs:
           retention-days: 5
           compression-level: 0 # already gzipped
           if-no-files-found: error
+
+  linux-gpu:
+    name: GPU check, headless scenarios, server and join tests
+    needs: package
+    runs-on: [self-hosted, linux, raylibgame-linux, gpu]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+          persist-credentials: false
+      - name: Paths and version
+        run: bash tools/ci/selfhosted_env.sh
+      - name: Build (incremental; another branch's run may have used the build folder in between)
+        id: build
+        timeout-minutes: 60
+        run: |
+          bash tools/build_linux.sh --inside --out "$OUT" --jobs "$(nproc)"
       - name: Run folder
         run: |
           # The game reads resources/ and assets/ from the working directory; saves/ (the erosion bake cache) persists here.
           ln -sfn "$GITHUB_WORKSPACE/resources" "$RUN/resources"
           ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
-          rm -rf "$RUN/scenarios"
-      - name: Unit tests (game_tests)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        timeout-minutes: 10
-        run: |
-          "$OUT/bin/game_tests" --gtest_brief=1
+          rm -rf "$RUN/scenarios" "$RUN/join-logs"
+          mkdir -p "$RUN/join-logs"
       - name: GPU context (EGL on the NVIDIA runtime)
         id: gpu
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -112,6 +135,8 @@ jobs:
       - name: Dedicated server and multiplayer (test_server.sh, test_join.sh)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 20
+        env:
+          TMPDIR: ${{ env.RUN }}/join-logs # the scripts' mktemp -d folders (host and client logs) land in the uploaded results
         run: |
           EXE="$OUT/bin/game" bash tools/test_server.sh
           EXE="$OUT/bin/game" bash tools/test_join.sh
@@ -124,5 +149,76 @@ jobs:
             ${{ env.RUN }}/scenarios/
             ${{ env.RUN }}/terrain-gpu.log
             ${{ env.RUN }}/scenarios.log
+            ${{ env.RUN }}/join-logs/**/*.log
           retention-days: 7
+          if-no-files-found: ignore
+
+  # The headless half of the nightly regression (#1028): tools/regression.sh --only headless on the Linux build. The other
+  # half (--only local: rendering, camera feel, perf and timing) stays on the PC. Nightly, or a manual run with
+  # regression = headless; never on pushes. After the checks above, also when one of them failed. Split into 4 shards
+  # (--shard I/4, every 4th test), one job each of ~35-40 min on the runner, so other runs get the one GPU runner in
+  # between. A shard fails only on new failures: the ones in tools/regression_known.txt (with their issues) are reported apart.
+  regression:
+    name: Regression (--only headless, shard ${{ matrix.shard }}/4)
+    needs: [package, linux-gpu]
+    if: ${{ !cancelled() && needs.package.result == 'success' && (github.event_name == 'schedule' || inputs.regression == 'headless') }}
+    runs-on: [self-hosted, linux, raylibgame-linux, gpu]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SETS: ${{ inputs.regression_sets || 'planet' }}
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+          persist-credentials: false
+      - name: Paths and version
+        run: bash tools/ci/selfhosted_env.sh
+      - name: Build (incremental; another branch's run may have used the build folder in between)
+        timeout-minutes: 30
+        run: |
+          bash tools/build_linux.sh --inside --out "$OUT" --jobs "$(nproc)"
+      - name: Run folder
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/resources" "$RUN/resources"
+          ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
+      - name: tools/regression.sh --only headless --shard
+        timeout-minutes: 80
+        run: |
+          # The run folder keeps saves/ (the erosion bake of seed 42 is cached there after the first night).
+          for s in $SETS; do
+            case "$s" in planet|eroded|multiplayer) ;; *) echo "::error::unknown regression set '$s'"; exit 2 ;; esac
+          done
+          log="$RUN/regression-$SHARD.log"
+          set +e
+          start=$SECONDS
+          for s in $SETS; do
+            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
+          done 2>&1 | tee "$log"
+          {
+            echo "## Regression --only headless, shard $SHARD/4 ($SETS, $RAYLIBGAME_VERSION)"
+            echo "$(( (SECONDS - start) / 60 )) min in all"
+            echo
+            bash tools/ci/regression_summary.sh "$log" tools/regression_known.txt
+          } > "$RUN/regression-summary-$SHARD.md"
+          rc=$? # 1 when a failure is not in tools/regression_known.txt
+          set -e
+          cat "$RUN/regression-summary-$SHARD.md" >> "$GITHUB_STEP_SUMMARY"
+          if ! grep -q "^=== regression (" "$log"; then echo "::error::the regression did not finish"; exit 1; fi
+          if [ "$rc" -ne 0 ]; then echo "::error::new regression failures (not in tools/regression_known.txt): see the job summary"; fi
+          exit "$rc"
+      - name: Upload the regression log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: regression-headless-log-${{ matrix.shard }}
+          path: |
+            ${{ env.RUN }}/regression-${{ matrix.shard }}.log
+            ${{ env.RUN }}/regression-summary-${{ matrix.shard }}.md
+          retention-days: 14
           if-no-files-found: ignore
