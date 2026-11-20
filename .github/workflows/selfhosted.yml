@@ -11,6 +11,23 @@ on:
   schedule:
     - cron: "0 5 * * *" # nightly, 05:00 UTC (the schedule fires from the default branch's copy of this file)
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch to build and test (empty: the branch the run was started on)"
+        required: false
+        default: ""
+        type: string
+      regression:
+        description: "Also run tools/regression.sh --only headless after the checks (the nightly does)"
+        required: false
+        default: none
+        type: choice
+        options: [none, headless]
+      regression_sets:
+        description: "Regression sets, space-separated (planet, eroded, multiplayer)"
+        required: false
+        default: planet
+        type: string
 
 permissions:
   contents: read
@@ -26,8 +43,9 @@ jobs:
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 150
     env:
-      # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags).
-      REF: ${{ github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref }}
+      # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags); a manual
+      # run builds its `ref` input, else the branch it was started on.
+      REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,4 +143,79 @@ jobs:
             ${{ env.RUN }}/terrain-gpu.log
             ${{ env.RUN }}/scenarios.log
           retention-days: 7
+          if-no-files-found: ignore
+
+  # The headless half of the nightly regression (#1028): tools/regression.sh --only headless on the Linux build. The other
+  # half (--only local: rendering, camera feel, perf and timing) stays on the PC. Nightly, or a manual run with
+  # regression = headless. After the checks above (one GPU run at a time), also when one of them failed.
+  regression:
+    name: Regression (--only headless)
+    needs: linux-gpu
+    if: ${{ !cancelled() && vars.SELF_HOSTED_ENABLED == 'true' && github.repository == 'DKoelzer01/RaylibGame' && (github.event_name == 'schedule' || inputs.regression == 'headless') }}
+    runs-on: [self-hosted, linux, raylibgame-linux, gpu]
+    timeout-minutes: 300
+    env:
+      REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref) }}
+      SETS: ${{ inputs.regression_sets || 'planet' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.REF }}
+          persist-credentials: false
+      - name: Paths and version
+        run: |
+          root="$RUNNER_WORKSPACE/ci-persist"
+          mkdir -p "$root/out" "$root/run" "$root/ccache"
+          branch="${REF#refs/heads/}"
+          {
+            echo "OUT=$root/out"
+            echo "RUN=$root/run"
+            echo "CCACHE_DIR=$root/ccache"
+            echo "CCACHE_MAXSIZE=2G"
+            echo "RAYLIBGAME_VERSION=$branch $(git rev-parse --short HEAD)"
+          } >> "$GITHUB_ENV"
+          if command -v ccache > /dev/null; then
+            { echo "CMAKE_C_COMPILER_LAUNCHER=ccache"; echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"; } >> "$GITHUB_ENV"
+          fi
+      - name: Build (incremental; another branch's run may have used the build folder in between)
+        timeout-minutes: 60
+        run: |
+          bash tools/build_linux.sh --inside --out "$OUT" --jobs "$(nproc)"
+      - name: Run folder
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/resources" "$RUN/resources"
+          ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
+      - name: tools/regression.sh --only headless
+        timeout-minutes: 270
+        run: |
+          # The run folder keeps saves/ (the erosion bake of seed 42 is cached there after the first night).
+          for s in $SETS; do
+            case "$s" in planet|eroded|multiplayer) ;; *) echo "::error::unknown regression set '$s'"; exit 2 ;; esac
+          done
+          set +e
+          start=$SECONDS
+          (
+            rc=0
+            for s in $SETS; do
+              RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless || rc=1
+            done
+            exit $rc
+          ) 2>&1 | tee "$RUN/regression.log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            echo "## Regression --only headless ($SETS, $RAYLIBGAME_VERSION)"
+            echo "$(( (SECONDS - start) / 60 )) min in all"
+            echo
+            bash tools/ci/regression_summary.sh "$RUN/regression.log"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if ! grep -q "^=== regression (" "$RUN/regression.log"; then echo "::error::the regression did not finish"; exit 1; fi
+          exit "$rc"
+      - name: Upload the regression log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: regression-headless-log
+          path: ${{ env.RUN }}/regression.log
+          retention-days: 14
           if-no-files-found: ignore
