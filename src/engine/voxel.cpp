@@ -1168,6 +1168,153 @@ int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vecto
     return (int)out.size();
 }
 
+// ---- (#615 step 2) The cave graph ----
+// Passages are capsule chains generated per 256 m cell of the sea-level projection (as floating islands, in 3D cells of
+// the projected point), from the field's seed only: the GPU never repeats the random choices, it gets the segments.
+bool PlanetField::CavesGraph() {
+    static const bool on = getenv("RAYLIBGAME_CAVES") && getenv("RAYLIBGAME_CAVES")[0] == '1';
+    return on;
+}
+namespace {
+constexpr float kCaveCell = 256.0f;
+constexpr int kCaveCellReach = 2;      // a passage runs at most ~480 m: cells within 2 of a point can reach it
+struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; };
+struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
+struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
+struct CaveCache {
+    struct Shard { std::mutex m; std::unordered_map<CaveCellKey, std::shared_ptr<const std::vector<CaveSeg>>, CaveCellHash> map; };
+    Shard shards[32];
+};
+CaveCache& Caves() { static CaveCache c; return c; }
+// The cave field's own per-point list (single samples: collision, tests); blocks set theirs (sampleBlock).
+thread_local const std::vector<float>* tlCaveSegs = nullptr;
+struct CaveSegScope {
+    const std::vector<float>* prev;
+    explicit CaveSegScope(const std::vector<float>* s) : prev(tlCaveSegs) { tlCaveSegs = s; }
+    ~CaveSegScope() { tlCaveSegs = prev; }
+};
+} // namespace
+
+// One cell's passages: background tunnels (step 2), 0-2 per land cell, each a gently turning random walk of 6-16 segments
+// 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
+// wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
+static std::shared_ptr<const std::vector<CaveSeg>> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
+    const CaveCellKey key{ seed, cx, cy, cz };
+    CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
+    {
+        std::lock_guard<std::mutex> lock(sh.m);
+        if (auto it = sh.map.find(key); it != sh.map.end()) return it->second;
+    }
+    auto segs = std::make_shared<std::vector<CaveSeg>>();
+    std::mt19937 rng((unsigned)(CaveCellHash{}(key) ^ 0x9E3779B9u));
+    std::uniform_real_distribution<float> U(0.0f, 1.0f);
+    const float R = f.radius;
+    for (int tries = 0; tries < 2; ++tries) {
+        const Vector3 s = { (cx + U(rng)) * kCaveCell, (cy + U(rng)) * kCaveCell, (cz + U(rng)) * kCaveCell };
+        const float sl = Vector3Length(s);
+        if (sl < 1.0f) continue;
+        Vector3 dir = Vector3Scale(s, 1.0f / sl);
+        const Vector3 onR = Vector3Scale(dir, R); // the start must project into this cell
+        if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+        if (f.elevation(dir) < 5.0f) continue;     // land only
+        if (U(rng) < 0.35f) continue;              // not every cell
+        Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+        float ang = U(rng) * 2.0f * PI;
+        Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
+        float depth = 30.0f + 90.0f * U(rng), r = 2.0f + 6.0f * U(rng);
+        const float flat = 0.5f + 0.4f * U(rng);
+        auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
+        depth = std::max(depth, minDepth(r));
+        Vector3 pos = Vector3Scale(dir, R + f.elevation(dir) - depth);
+        const int n = 6 + (int)(U(rng) * 11.0f);
+        for (int k = 0; k < n; ++k) {
+            const float L = 15.0f + 15.0f * U(rng);
+            const float turn = (U(rng) - 0.5f) * 1.2f;                      // up to ~35 degrees a segment
+            const Vector3 side = Vector3CrossProduct(dir, head);
+            head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(side, sinf(turn))));
+            const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, 2.0f, 8.0f);
+            float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
+            Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
+            const float e2 = f.elevation(dir2);
+            if (e2 < 0.0f) break;                                          // not under the sea
+            Vector3 pos2 = Vector3Scale(dir2, R + e2 - depth2);
+            // The middle must stay deep too (the ground between may dip): else the passage ends here.
+            const Vector3 mid = Vector3Scale(Vector3Add(pos, pos2), 0.5f);
+            const float ml = Vector3Length(mid);
+            const Vector3 mdir = Vector3Scale(mid, 1.0f / ml);
+            if (R + f.elevation(mdir) - ml < minDepth(std::max(r, r2))) break;
+            CaveSeg sg;
+            sg.a = pos; sg.b = pos2; sg.ra = r; sg.rb = r2; sg.flat = flat;
+            sg.up = Vector3Normalize(Vector3Add(pos, pos2));
+            segs->push_back(sg);
+            pos = pos2; dir = dir2; r = r2; depth = depth2;
+            head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
+        }
+    }
+    std::lock_guard<std::mutex> lock(sh.m);
+    if (sh.map.size() > 4096) sh.map.clear();
+    return sh.map.emplace(key, segs).first->second;
+}
+
+// Segments of the cells within reach of a box (body-local), whose capsule (radius x 1.3 for the wall roughness) comes
+// within `reach` of it. (seed: fieldSeed; the cells by the box corners' sea-level projections, +-kCaveCellReach.)
+static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vector3 hi, float reach, std::vector<float>& out) {
+    out.clear();
+    int clo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, chi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) return;
+        const Vector3 s = Vector3Scale(q, f.radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - kCaveCellReach); chi[a] = std::max(chi[a], c[a] + kCaveCellReach); }
+    }
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x) {
+                const auto cell = CaveCell(f, seed, x, y, z);
+                for (const CaveSeg& s : *cell) {
+                    const float rr = 1.3f * std::max(s.ra, s.rb) / std::min(s.flat, 1.0f) + reach;
+                    const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
+                    if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
+                    const float e[12] = { s.a.x, s.a.y, s.a.z, s.ra, s.b.x, s.b.y, s.b.z, s.rb, s.up.x, s.up.y, s.up.z, s.flat };
+                    out.insert(out.end(), e, e + 12);
+                }
+            }
+}
+
+bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::vector<float>& out, int maxSegs) const {
+    out.clear();
+    if (!CavesGraph() || moon) return true;
+    if (2.0f - fp / 8.0f <= 0.0f) return true;            // caveWeight 0 at this footprint: no caves to carve
+    const float ext = stride * (float)(S - 1);
+    const float reach = 2.0f * std::max(fp, 1.0f) + 2.0f; // densityNear's meshing reach
+    GatherCaveSegs(*this, fieldSeed, o, Vector3AddValue(o, ext), reach, out);
+    return (int)(out.size() / 12) <= maxSegs;
+}
+
+// The graph tunnels' distance at q (metres to the nearest wall): the capsules flattened along their up, the radius
+// roughened by one octave of the cavesB field. The same operations, in the same order, as terrain.glsl's caveGraphDistance.
+static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, Vector3 q, const float* segs, int n) {
+    const float wob = 1.0f + 0.3f * rough.fractal(1, q.x * 0.15f, q.y * 0.15f, q.z * 0.15f);
+    float m = 1e9f;
+    for (int i = 0; i < n; ++i) {
+        const float* s = segs + 12 * i;
+        const float abx = s[4] - s[0], aby = s[5] - s[1], abz = s[6] - s[2];
+        const float apx = q.x - s[0], apy = q.y - s[1], apz = q.z - s[2];
+        const float t = std::clamp((apx * abx + apy * aby + apz * abz) / (abx * abx + aby * aby + abz * abz), 0.0f, 1.0f);
+        const float hx = apx - abx * t, hy = apy - aby * t, hz = apz - abz * t;
+        const float hv = hx * s[8] + hy * s[9] + hz * s[10];
+        const float hhx = hx - s[8] * hv, hhy = hy - s[9] * hv, hhz = hz - s[10] * hv;
+        const float v2 = hv / s[11];
+        const float len = sqrtf(hhx * hhx + hhy * hhy + hhz * hhz + v2 * v2);
+        const float r = s[3] + (s[7] - s[3]) * t;
+        m = std::min(m, len - r * wob);
+    }
+    (void)f;
+    return m;
+}
+
 // (#615 step 1) The caves: worm tunnels (with #549's mouth regions and their collapsing thin roofs, kept closed in wet
 // lowlands by #971) and caverns. The same operations in the same order as terrain.glsl's caveDistance (bit-exact).
 float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit) const {
@@ -1179,6 +1326,38 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
     // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
     // Coarse LOD samples can't resolve them, so both fade out there.
     const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
+    if (CavesGraph()) { // (#615 step 2) graph tunnels (never at the surface: no mouths yet) and the caverns
+        float m = 1e9f;
+        if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
+            if (depth > 10.0f) {
+                const std::vector<float>* segs = tlCaveSegs;
+                if (!segs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves)
+                    thread_local std::vector<float> own;
+                    thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0; thread_local const void* kf = nullptr;
+                    const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
+                    if (!ok || cx != kx || cy != ky || cz != kz || kseed != fieldSeed || kf != this) {
+                        const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
+                        GatherCaveSegs(*this, fieldSeed, lo, Vector3AddValue(lo, kCaveCell), 36.0f, own);
+                        ok = 1; kx = cx; ky = cy; kz = cz; kseed = fieldSeed; kf = this;
+                    }
+                    segs = &own;
+                }
+                const int n = (int)(segs->size() / 12);
+                if (n > 0) {
+                    m = CaveGraphDistance(*this, cavesB, p, segs->data(), n) + (1.0f - caveWeight) * 20.0f;
+                    if (hit && m < 1e8f) hit->kind = 1;
+                }
+            }
+            if (depth > 30.0f && d > mantleRadius + 40.0f) {
+                const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
+                const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z);
+                const float mc = (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f;
+                if (hit && mc < m) hit->kind = 2;
+                m = std::min(m, mc);
+            }
+        }
+        return m;
+    }
     // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
     // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
     float caveTop = 5.0f;
@@ -1373,6 +1552,9 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
 }
 
 void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const BlockGrid& g, float* out) const {
+    std::vector<float> caveSegs; // (#615 step 2) the block's cave segments: the same list the GPU gets (blockCaveSegs)
+    if (CavesGraph()) blockCaveSegs(o, stride, S, fp, caveSegs, INT32_MAX);
+    CaveSegScope caveScope(CavesGraph() ? &caveSegs : nullptr);
     const float outer = radius + maxElevation, inner = radius + minElevation;
     const Vector3 n = g.n, t1 = g.t1, t2 = g.t2;
     const float umin = g.umin, vmin = g.vmin, su = g.su, sv = g.sv;

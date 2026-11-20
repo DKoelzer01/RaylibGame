@@ -328,6 +328,12 @@ public:
     // hit (tools: --cave-stats): what made the distance.
     struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
     float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr) const;
+    // (#615 step 2) The cave graph: passages generated per 256 m cell (sea-level projection) from the seed, cached. A block
+    // gets the segments whose capsules can reach it, 3 vec4 each: (a, ra), (b, rb), (up, flat) (body-local metres). False
+    // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
+    // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
+    bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
+    static bool CavesGraph();
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

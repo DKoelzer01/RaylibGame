@@ -21,6 +21,7 @@ struct GpuBlockJob {
     ChunkBlock block;
     PlanetField::BlockGrid grid;
     std::vector<float> islands;                     // PlanetField::blockIslands
+    std::vector<float> caveSegs;                    // PlanetField::blockCaveSegs (#615 step 2)
     std::function<bool()> wanted;                   // false: dropped (superseded)
     float priority = 0.0f;                          // the build job's (lower first: edits are negative)
     // Main thread: the batch's samples (shared by its blocks) and this block's first one (E^3 floats).
@@ -38,7 +39,8 @@ void TerrainGpu_ClearQueued();                      // drop the queued blocks (a
 void TerrainGpu_SetBackground(float backgroundFrom, bool throttle);
 // Synchronous (tests): dispatch, wait, read back. False if unavailable.
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 origin, float stride, int S, float footprint,
-                            const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out);
+                            const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out,
+                            const std::vector<float>* caveSegs = nullptr); // (#615) the block's cave segments (blockCaveSegs)
 struct TerrainGpuStats { long long blocks = 0, batches = 0; double avgLatencyMs = 0.0; };
 TerrainGpuStats TerrainGpu_Stats();
 void TerrainGpu_Unload();

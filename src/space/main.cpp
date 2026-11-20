@@ -1773,11 +1773,11 @@ int main(int argc, char** argv)
             bin.destroy(); bout.destroy(); prog.unload();
             // Step 4 (#147): whole density blocks (as chunk builds sample them: CHUNK_SIZE + 4 per axis), CPU
             // PlanetField::sampleBlock vs the GPU, at every level of detail, around the start and anywhere.
-            int blocks = 0, skipped = 0;
+            int blocks = 0, skipped = 0, withCaves = 0; // withCaves: blocks with cave graph segments (#615)
             long long samples = 0, bOver = 0, bExact = 0;
             double bWorst = 0.0, cpuBlockMs = 0.0, gpuBlockMs = 0.0;
             const int E = CHUNK_SIZE + 4;
-            std::vector<float> cpuB((size_t)E * E * E), gpuB((size_t)E * E * E), isl;
+            std::vector<float> cpuB((size_t)E * E * E), gpuB((size_t)E * E * E), isl, cav;
             for (int b = 0; b < 240; ++b) {
                 const float stride = 0.25f * (float)(1 << (b % 9));  // 0.25 .. 64 m
                 Vector3 d;
@@ -1787,12 +1787,13 @@ int main(int argc, char** argv)
                 const Vector3 o = Vector3AddValue(Vector3Scale(d, r), -0.5f * stride * (E - 1));
                 const float fp = std::max(stride, 1.0f);
                 PlanetField::BlockGrid g;
-                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64)) { ++skipped; continue; }
+                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, 32)) { ++skipped; continue; }
                 const double c1 = GetTime();
                 pf->sampleBlock(o, stride, E, fp, g, cpuB.data());
                 cpuBlockMs += (GetTime() - c1) * 1000.0;
                 const double g1 = GetTime();
-                if (!TerrainGpu_SampleBlock(*pf, o, stride, E, fp, g, isl, gpuB.data())) { printf("bench: terrain gpu: block dispatch failed -> FAIL\n"); return 1; }
+                withCaves += !cav.empty();
+                if (!TerrainGpu_SampleBlock(*pf, o, stride, E, fp, g, isl, gpuB.data(), &cav)) { printf("bench: terrain gpu: block dispatch failed -> FAIL\n"); return 1; }
                 gpuBlockMs += (GetTime() - g1) * 1000.0;
                 ++blocks;
                 for (size_t k = 0; k < cpuB.size(); ++k) {
@@ -1800,8 +1801,8 @@ int main(int argc, char** argv)
                     bWorst = std::max(bWorst, e); bOver += e > 1e-4; bExact += e == 0.0; ++samples;
                 }
             }
-            printf("bench: terrain gpu: %d blocks (%d skipped: off the band), %lld samples, %lld exact, %lld over 1e-4, worst %.3g; per block cpu %.2f ms, gpu %.2f ms (sync, incl. upload + readback) -> %s\n",
-                   blocks, skipped, samples, bExact, bOver, bWorst, cpuBlockMs / std::max(1, blocks), gpuBlockMs / std::max(1, blocks), bOver == 0 ? "PASS" : "FAIL");
+            printf("bench: terrain gpu: %d blocks (%d skipped: off the band or too many segments; %d with cave segments), %lld samples, %lld exact, %lld over 1e-4, worst %.3g; per block cpu %.2f ms, gpu %.2f ms (sync, incl. upload + readback) -> %s\n",
+                   blocks, skipped, withCaves, samples, bExact, bOver, bWorst, cpuBlockMs / std::max(1, blocks), gpuBlockMs / std::max(1, blocks), bOver == 0 ? "PASS" : "FAIL");
             return over == 0 && bOver == 0 ? 0 : 1;
         }
     for (int i = 1; i < argc; ++i)
@@ -6068,6 +6069,19 @@ int main(int argc, char** argv)
                                 const float dist = sqrtf(a * a + b * b);
                                 if (dist < best) { best = dist; at = Vector3Scale(dd, s - 3.0f); }
                             }
+                        if (PlanetField::CavesGraph()) { // (#615 step 2) graph tunnels have no mouths yet: start inside the nearest passage
+                            std::vector<float> segs;
+                            const Vector3 c0 = Vector3Scale(home, pf->radius + pf->elevation(home));
+                            pf->blockCaveSegs(Vector3AddValue(c0, -400.0f), 800.0f, 2, 1.0f, segs, INT32_MAX);
+                            float bd = 1e30f;
+                            for (size_t s = 0; s + 12 <= segs.size(); s += 12) {
+                                const Vector3 mid = { 0.5f * (segs[s] + segs[s + 4]), 0.5f * (segs[s + 1] + segs[s + 5]), 0.5f * (segs[s + 2] + segs[s + 6]) };
+                                const float dd = Vector3Distance(mid, c0);
+                                if (dd < bd) { bd = dd; at = mid; }
+                            }
+                            best = bd < 1e29f ? bd : 1e30f;
+                            if (best < 1e29f) printf("bench: caves: graph tunnels (RAYLIBGAME_CAVES=1): %zu segments within 400 m, starting in the nearest\n", segs.size() / 12);
+                        }
                         if (best > 1e29f) { printf("bench: caves: no cave mouth within 3 km -> FAIL\n"); benchTestCaves = false; }
                         else {
                             const Vector3 up = Vector3Normalize(at);
@@ -6081,9 +6095,9 @@ int main(int argc, char** argv)
                                 if (open > bestOpen) { bestOpen = open; out = h; }
                             }
                             cavesPath.clear();
-                            const Vector3 start = Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f)));
+                            const Vector3 start = PlanetField::CavesGraph() ? at : Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f))); // (graph: already inside)
                             for (int k = 0; k <= 30; ++k) cavesPath.push_back(Vector3Lerp(start, at, k / 30.0f)); // the approach
-                            Vector3 pos = at, prev = Vector3Scale(out, -1.0f);
+                            Vector3 pos = at, prev = PlanetField::CavesGraph() ? out : Vector3Scale(out, -1.0f); // (graph: on along the most open way)
                             for (int k = 0; k < 60; ++k) {          // on along the passage
                                 Vector3 bestDir = prev; float bestD = 1e30f;
                                 for (int x = -1; x <= 1; ++x) for (int y = -1; y <= 1; ++y) for (int z = -1; z <= 1; ++z) {
@@ -6107,13 +6121,14 @@ int main(int argc, char** argv)
                             cavesPhase = 1; cavesT0 = GetTime();
                         }
                     } else {
-                        const float u = std::min(1.0f, (float)((GetTime() - cavesT0) / 12.0)) * (float)(cavesPath.size() - 2);
+                        if (cavesPhase == 1 && GetTime() - cavesT0 > 3.0 && WorldIdle()) { cavesPhase = 2; cavesT0 = GetTime(); } // hold at the start until it has loaded
+                        const float u = cavesPhase == 1 ? 0.0f : std::min(1.0f, (float)((GetTime() - cavesT0) / 12.0)) * (float)(cavesPath.size() - 2);
                         const int k = (int)u;
                         const Vector3 eye = Vector3Lerp(cavesPath[k], cavesPath[k + 1], u - k);
                         const Vector3 ahead = cavesPath[std::min(k + 4, (int)cavesPath.size() - 1)];
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(ahead); world.camera.up = p->dirToWorld(Vector3Normalize(eye));
                         player.position = world.renderOrigin + world.camera.position;
-                        if (GetTime() - cavesT0 > 12.5) {
+                        if (cavesPhase == 2 && GetTime() - cavesT0 > 12.5) {
                             const int inside = (int)cavesPath.size() - 31;
                             const bool ok = cavesOpen >= inside * 0.9f && cavesInside >= 10.0f;
                             printf("bench: caves: %d of %d path points inside are open space; deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesInside, ok ? "PASS" : "FAIL");
@@ -10166,6 +10181,7 @@ int main(int argc, char** argv)
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
+        if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
             static float burnt = 0.0f;
             Light& torch = world.lights[3];

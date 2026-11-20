@@ -14,11 +14,15 @@ struct Block {
     vec4 s;    // su, sv, -, -
     ivec4 a;   // S, nu, nv, grid offset (nodes)
     ivec4 b;   // island offset (islands), island count, output offset (samples), -
+    ivec4 c;   // (#615 step 2) cave segment offset (segments), count, graph caves on, -
 };
 layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // two per node: elevation, 3D mask, f, wet (#971) | unused (the cliff lip went with the terraces, #543)
 layout(std430, binding = 1) readonly buffer Islands { vec4 islands[]; }; // 3 per island
 layout(std430, binding = 2) writeonly buffer Out { float density[]; };
 layout(std430, binding = 3) readonly buffer Blocks { Block blocks[]; };
+layout(std430, binding = 4) readonly buffer Caves { vec4 caveSegs[]; };  // 3 per segment (#615 step 2)
+int gCaveOff = 0;
+vec4 caveSegData(int i, int k) { return caveSegs[(gCaveOff + i) * 3 + k]; }
 int gIslandOff = 0;
 vec4 islandData(int i, int k) { return islands[(gIslandOff + i) * 3 + k]; }
 
@@ -31,6 +35,7 @@ void main() {
     if (i >= uint(S * S * S)) return;
     gIslandOff = B.b.x;
     islandCount = B.b.y;
+    gCaveOff = B.c.x; caveSegCount = B.c.y; cavesGraph = B.c.z;
     uint outI = uint(B.b.z) + i;
     float stride = B.o.w, fp = B.n.w;
     int nu = B.a.y, nv = B.a.z, g0 = B.a.w;
