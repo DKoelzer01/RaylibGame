@@ -357,6 +357,7 @@ void GameSave_Register() {
                 if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
             }
         pendingFrames.clear();
+        Farm_LoadDone(); // (#1085) an old save's farmland parts become tilled ground, with their crops
         inWorldLoad = false;
     };
     loadExtrasHook = [](FILE* f) {

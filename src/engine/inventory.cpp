@@ -146,7 +146,7 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil) {
         case VoxelMaterial::Snow: return "ice";
         case VoxelMaterial::Clay: return "clay"; // #206
         case VoxelMaterial::Pebbles: return "gravel"; // river stones (#595)
-        case VoxelMaterial::Silt: case VoxelMaterial::Mud: return soil ? "dirt" : "regolith"; // floodplain silt, shore mud (#595)
+        case VoxelMaterial::Silt: case VoxelMaterial::Mud: case VoxelMaterial::Farmland: return soil ? "dirt" : "regolith"; // floodplain silt, shore mud (#595), tilled dirt (#1085)
         case VoxelMaterial::Granite: return "granite"; // #587: a stratum gives its own rock
         case VoxelMaterial::Basalt: return "basalt";
         case VoxelMaterial::Sandstone: return "sandstone";

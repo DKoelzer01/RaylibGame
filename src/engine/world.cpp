@@ -188,9 +188,6 @@ std::vector<Planetoid*> Planetoid::All() {
     return out;
 }
 
-Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
-Vector3 Planetoid::toWorld(Vector3 local) const { return Vector3Transform(local, localTransform()); }
-
 // The rotation of localTransform() (raymath's MatrixRotateXYZ) in double: world = R * (scale * local).
 static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
     const double ax = -(double)rotationDeg.x * DEG2RAD, ay = -(double)rotationDeg.y * DEG2RAD, az = -(double)rotationDeg.z * DEG2RAD;
@@ -199,6 +196,35 @@ static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
     r[0][0] = cz * cy;                 r[0][1] = sz * cy;                 r[0][2] = -sy;
     r[1][0] = cz * sy * sx - sz * cx;  r[1][1] = sz * sy * sx + cz * cx;  r[1][2] = cy * sx;
     r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
+}
+
+// The same rotation, cached per thread for the last body and angles: toLocal / toWorld run in hot loops (collision, tools,
+// chunk jobs), and six double cos/sin a call would add up.
+static const double (*BodyRotationCached(const Planetoid& p))[3] {
+    thread_local const Planetoid* body = nullptr;
+    thread_local Vector3 rot{ NAN, NAN, NAN };
+    thread_local double r[3][3];
+    if (body != &p || rot.x != p.rotation.x || rot.y != p.rotation.y || rot.z != p.rotation.z) { body = &p; rot = p.rotation; BodyRotationD(rot, r); }
+    return r;
+}
+
+// Render space <-> body-local in double (#1072): the float path (MatrixInvert(localTransform()), a float rotation applied to
+// a translation ~60 km from the render origin) was off by mm to ~2 cm, and differently every step as the planet turned, so
+// the player's collision - its solid test, push-out and ground probe, all sampling the density through toLocal - see-sawed
+// while standing still and the camera bobbed. Now R^T (c - position) / scale with the rotation in double: the body's render
+// position (a float) only changes its rounding when the render origin re-centres, so the samples hold still with the ground.
+Vector3 Planetoid::toLocal(Vector3 world) const {
+    const double (*r)[3] = BodyRotationCached(*this);
+    const double dx = (double)world.x - position.x, dy = (double)world.y - position.y, dz = (double)world.z - position.z;
+    const double inv = 1.0 / scale;
+    return { (float)((r[0][0] * dx + r[1][0] * dy + r[2][0] * dz) * inv), (float)((r[0][1] * dx + r[1][1] * dy + r[2][1] * dz) * inv),
+             (float)((r[0][2] * dx + r[1][2] * dy + r[2][2] * dz) * inv) };
+}
+Vector3 Planetoid::toWorld(Vector3 local) const {
+    const double (*r)[3] = BodyRotationCached(*this);
+    const double s = scale, lx = local.x, ly = local.y, lz = local.z;
+    return { (float)(position.x + (r[0][0] * lx + r[0][1] * ly + r[0][2] * lz) * s), (float)(position.y + (r[1][0] * lx + r[1][1] * ly + r[1][2] * lz) * s),
+             (float)(position.z + (r[2][0] * lx + r[2][1] * ly + r[2][2] * lz) * s) };
 }
 
 double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising) {
@@ -2783,6 +2809,24 @@ TEST(Frames, DoubleTransformMatchesTheModelMatrix) {
         EXPECT_LT(Vector3Distance(dw, dq), 1e-5f);
         EXPECT_LT(Vector3Distance(b->dirToLocal(dw), Vector3Normalize(l)), 1e-5f);
     }
+}
+
+// The float toLocal (render space -> body-local) is what collision samples the density through (#1072). A point near the
+// render origin, 60 km out from a turning body's centre, maps to body-local within a body-local float's rounding of the
+// double path, at every angle - the old float matrix inverse was off by mm to ~2 cm and differently from angle to angle.
+TEST(Frames, FloatToLocalMatchesTheDoublePathAt60km) {
+    auto b = MakeBody(DVec3(0.0, -60010.0, 0.0), { 0.0f, 0.0f, 0.0f });
+    b->position = { 0.0f, -60010.0f, 0.0f }; // render origin at the world origin: the body's centre 60 km below it
+    double worst = 0.0;
+    for (int k = 0; k < 400; ++k) {
+        b->rotation = { 0.0f, 200.0f + 0.003f * (float)k, 0.0f }; // a turning planet, ~1 m of surface travel a step
+        const Vector3 c = { 0.37f, 1.20f, -0.81f };              // a capsule sphere near the player (render space)
+        const DVec3 ref = b->toLocalD(DVec3(c.x, c.y, c.z));   // render origin = world origin here
+        const Vector3 l = b->toLocal(c);
+        worst = std::max(worst, (DVec3(l.x, l.y, l.z) - ref).length());
+        EXPECT_LT(Vector3Distance(b->toWorld(l), c), 0.01f);   // and back
+    }
+    EXPECT_LT(worst, 0.004); // body-local float rounding at 60 km: 0.8 mm measured (the old float matrix: 8.6 mm)
 }
 
 // A body-fixed point's velocity from the spin (surfaceVelocity) is the rate its world position changes: the player rides

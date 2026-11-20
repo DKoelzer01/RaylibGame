@@ -741,14 +741,14 @@ bool NetProto_Test() {
               && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.valid, "machine view"); samples.push_back(s11);
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
-        MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 9, 4, "grain_seeds" }, pb; std::vector<uint8_t> s13;
-        check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.plot == 9 && pb.part == 4 && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
+        MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 12.25f, 60001.5f, -3.75f, "grain_seeds" }, pb; std::vector<uint8_t> s13;
+        check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.x == 12.25f && pb.y == 60001.5f && pb.z == -3.75f && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
         MsgPlants la{ 5, 3, { { 0xFFEEDDCCBBAA9988ull, 12345.25 }, { 7, 0.5 } } }, lb; std::vector<uint8_t> s14;
         check(RoundTrip(la, lb, &s14) && lb.body == 5 && lb.session == 3 && lb.removed.size() == 2 && lb.removed[0].first == 0xFFEEDDCCBBAA9988ull && lb.removed[0].second == 12345.25, "plants"); samples.push_back(s14);
         MsgClaims ka, kb; NetClaim kc; kc.id = 7; kc.team = 3; kc.teamName = "rangers"; kc.colour = 0x3C8CE0u; kc.body = 0x2000000000000001ull; kc.centre[0] = 1.5f; kc.centre[1] = 60000.25f; kc.radius = 400.0f; kc.flags = 2; ka.claims.push_back(kc); std::vector<uint8_t> s16;
         check(RoundTrip(ka, kb, &s16) && kb.claims.size() == 1 && kb.claims[0].teamName == "rangers" && kb.claims[0].colour == 0x3C8CE0u && kb.claims[0].body == kc.body && kb.claims[0].centre[1] == 60000.25f && kb.claims[0].radius == 400.0f && kb.claims[0].flags == 2, "claims"); samples.push_back(s16);
-        MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 11, 3, "grain", 0.5f }, { 11, 4, "roots", 1.0f } }; std::vector<uint8_t> s15;
-        check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].part == 3, "farm fields"); samples.push_back(s15);
+        MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 1.5f, 60000.25f, -2.0f, "grain", 0.5f }, { 2.0f, 60000.3f, -2.0f, "roots", 1.0f } }; std::vector<uint8_t> s15;
+        check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].y == 60000.25f, "farm fields"); samples.push_back(s15);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgSkillState a{ "skill_xp mining 2478.5\nperk quick_pick 2\n" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.text == a.text, "skill state (#920)"); samples.push_back(s); }
@@ -947,12 +947,11 @@ bool NetRead(NetReader& r, MsgMachineStates& m) {
 
 // ---- Plants and farming (#335) ----
 void NetWrite(NetWriter& w, const MsgPlantAction& m) {
-    Id(w, NetMsg::PlantAction); w.u8(m.action); w.varu(m.body); w.u64(m.plant); w.u32(m.plot); w.vari(m.part); w.str(m.seed.substr(0, 64));
+    Id(w, NetMsg::PlantAction); w.u8(m.action); w.varu(m.body); w.u64(m.plant); w.f32(m.x); w.f32(m.y); w.f32(m.z); w.str(m.seed.substr(0, 64));
 }
 bool NetRead(NetReader& r, MsgPlantAction& m) {
-    m.action = r.u8(); m.body = r.varu(); m.plant = r.u64(); m.plot = r.u32(); const int64_t part = r.vari(); m.seed = r.str(64);
-    if (m.action < 1 || m.action > 3 || part < -1 || part > 1000000) r.ok = false;
-    m.part = (int32_t)part;
+    m.action = r.u8(); m.body = r.varu(); m.plant = r.u64(); m.x = r.f32(); m.y = r.f32(); m.z = r.f32(); m.seed = r.str(64);
+    if (m.action < 1 || m.action > 3 || !std::isfinite(m.x) || !std::isfinite(m.y) || !std::isfinite(m.z)) r.ok = false;
     return Done(r);
 }
 namespace { constexpr size_t kMaxPlantsPerMsg = 4096, kMaxFarmFields = 4096; }
@@ -976,7 +975,7 @@ void NetWrite(NetWriter& w, const MsgFarmFields& m) {
     w.varu(n);
     for (size_t i = 0; i < n; ++i) {
         const NetFarmField& f = m.fields[i];
-        w.u32(f.plot); w.vari(f.part); w.str(f.crop.substr(0, 64)); w.u16((uint16_t)lroundf(std::clamp(f.growth, 0.0f, 1.0f) * 65535.0f));
+        w.f32(f.x); w.f32(f.y); w.f32(f.z); w.str(f.crop.substr(0, 64)); w.u16((uint16_t)lroundf(std::clamp(f.growth, 0.0f, 1.0f) * 65535.0f));
     }
 }
 bool NetRead(NetReader& r, MsgFarmFields& m) {
@@ -985,9 +984,8 @@ bool NetRead(NetReader& r, MsgFarmFields& m) {
     if (n > kMaxFarmFields) { r.ok = false; return false; }
     m.fields.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) {
-        NetFarmField f; f.plot = r.u32(); const int64_t part = r.vari(); f.crop = r.str(64); f.growth = r.u16() / 65535.0f;
-        if (part < 0 || part > 1000000 || f.crop.empty()) r.ok = false;
-        f.part = (int32_t)part;
+        NetFarmField f; f.x = r.f32(); f.y = r.f32(); f.z = r.f32(); f.crop = r.str(64); f.growth = r.u16() / 65535.0f;
+        if (!std::isfinite(f.x) || !std::isfinite(f.y) || !std::isfinite(f.z) || f.crop.empty()) r.ok = false;
         m.fields.push_back(std::move(f));
     }
     return Done(r);
