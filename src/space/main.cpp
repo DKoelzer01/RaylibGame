@@ -9545,6 +9545,7 @@ int main(int argc, char** argv)
                     } else {
                         const int fillersBefore = inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete");
                         int built = 0;
+                        terrainTool.heldTool = inventory.count("stone") > 0 ? "stone" : "regolith"; // (#1098: placing takes a ground item in hand)
                         for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
                         std::string inv;
                         for (const ItemDef& d : itemDB.items()) if (inventory.amount(d.id) > 0.0) inv += " " + d.id + "=" + TextFormat("%.2f", inventory.amount(d.id));
