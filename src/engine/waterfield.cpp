@@ -458,4 +458,56 @@ TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
     EXPECT_TRUE(sampler.density(at(9), 0, w)) << "simulated water";
     EXPECT_TRUE(sampler.density(at(12), 0, w)) << "a drained column stays drained";
 }
+
+// #1091: a dug beach flooded to sea level - the bed slopes 0.3 cells per cell, every wet cell holds the water up to one level
+// (shut + fill), as the simulation levels it. The drawn surface must be that level across the pool (the user saw a field of
+// tilted 0.25 m facets there), for a resting brick and for one still awake.
+static void FloodedSlopeProfile(bool moving, int jitter, float& worst, std::string& profile) {
+    auto b = std::make_shared<Brick>();
+    const float L = 5.6f; // the water level, in cells
+    for (int y = 0; y < kBrick; ++y)
+        for (int x = 0; x < kBrick; ++x) {
+            const float g = 2.0f + 0.3f * x; // the ground's top in column x
+            // the column's level off by up to +-jitter 255ths (the simulation settles within ~16)
+            const int jx = jitter ? (int)(((unsigned)x * 2654435761u + (unsigned)y * 40503u) >> 13) % (2 * jitter + 1) - jitter : 0;
+            for (int z = 0; z < kBrick; ++z) {
+                const int i = CellIdx(x, y, z);
+                if (z + 1 <= g) { b->flags[i] = kSolid; continue; }        // under the ground
+                const int sh = z < g ? (int)lroundf((g - z) * 255.0f) : 0;  // the ground share of the bed's cell
+                const int f = std::clamp((int)lroundf((L - z) * 255.0f) + jx - sh, 0, 255 - sh);
+                b->flags[i] = kDug; b->shut[i] = (uint8_t)sh; b->fill[i] = b->drawn[i] = (uint8_t)f;
+            }
+        }
+    b->kinds = 1; b->moving = moving;
+    Snapshot snap;
+    Site s;
+    s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 };
+    const float cs = CellSize(), side = kBrick * cs;
+    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.bricks[BrickKey(0, 0, 0)] = b;
+    snap.sites.push_back(s);
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    worst = 0.0f;
+    char buf[64];
+    for (float fx = 0.5f; fx <= 11.0f; fx += 0.125f) {                    // wet columns (the bed under L - 0.1)
+        float top = -1.0f, w = 0.0f;
+        for (float fz = 0.0f; fz < 12.0f; fz += 0.005f) {
+            const bool any = sampler.density({ fx * cs, fz * cs, 3.5f * cs }, 0, w);
+            if (fz > 2.0f + 0.3f * floorf(fx) && (!any || w < ISO_LEVEL)) { top = fz; break; } // first dry sample over the bed
+        }
+        worst = std::max(worst, fabsf(top - L));
+        snprintf(buf, sizeof buf, "%.3f:%.3f ", fx, top);
+        profile += buf;
+    }
+}
+
+TEST(WaterField, FloodedDugSlopeDrawsALevelSurface) {
+    for (const int jitter : { 0, 12 })
+        for (const bool moving : { false, true }) {
+            float worst = 0.0f; std::string profile;
+            FloodedSlopeProfile(moving, jitter, worst, profile);
+            EXPECT_LT(worst, 0.06f + jitter / 255.0f) << (moving ? "moving" : "resting") << " brick, levels +-" << jitter
+                                                      << "/255: surface height by x (cells): " << profile;
+        }
+}
 #endif
