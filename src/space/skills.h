@@ -81,7 +81,7 @@ double Skills_Stat(const SkillState& s, const std::string& stat);
 inline float worldXpRate = 1.0f;
 
 // Team sharing (#920): a teammate `distance` m from the earner gets kTeamXpShare of the earner's event count n (the user's
-// answer on #167: 10%), within teamXpRange (a guess for review, #920; RAYLIBGAME_TEAM_XP_RANGE overrides it); 0 beyond.
+// answer on #167: 10%), within teamXpRange (64 m, the user's choice on #920, 2026-11-20; RAYLIBGAME_TEAM_XP_RANGE overrides it); 0 beyond.
 constexpr double kTeamXpShare = 0.10;
 inline double teamXpRange = 64.0; // m
 double Skills_TeamShare(double n, double distance);
