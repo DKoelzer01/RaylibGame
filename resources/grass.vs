@@ -47,8 +47,12 @@ void main()
         vec3 wf = w.xyz - up * dot(w.xyz, up);
         float speed = length(wf);
         vec3 wdir = speed > 1e-3 ? wf / speed : t0;
-        float bend = min(speed * speed / 144.0, 1.7);                  // 12 m/s = 1
-        float flutter = windOld > 0.5 ? sin(time * (2.5 + 0.35 * speed) + h * 40.0) * (0.02 + 0.012 * speed) : sin(time * (2.0 + 0.2 * speed) + h * 40.0) * (0.015 + 0.008 * speed); // (#888) ~0.5 Hz in a breeze, ~1 Hz in storm bursts
+        // (#1083, user: stronger wind should bend more, not sway faster; keep it minimal) The flutter runs at a fixed rate:
+        // a rate that grew with the speed also made every gust jerk the phase (time x speed), faster the longer the game ran.
+        // The wind sets only how far: the lean (speed^2, capped lower) and the flutter's size (capped), so storms stay
+        // subtle; gusts change it slowly as the wind texture drifts over.
+        float bend = windOld > 0.5 ? min(speed * speed / 144.0, 1.7) : min(speed * speed / 144.0, 1.0);   // 12 m/s = 1
+        float flutter = windOld > 0.5 ? sin(time * (2.5 + 0.35 * speed) + h * 40.0) * (0.02 + 0.012 * speed) : sin(time * 2.0 + h * 40.0) * min(0.015 + 0.006 * speed, 0.06);
         vec3 side = cross(up, wdir);
         sway = (wdir * (0.06 + 0.32 * bend + flutter) + side * flutter * 0.5) * y * y;
         sway -= up * (0.22 * bend * bend) * y * y;                    // a bent blade is shorter, not just leaning
