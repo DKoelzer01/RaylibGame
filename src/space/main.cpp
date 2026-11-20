@@ -283,6 +283,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Trapping_Reset();
         DungeonTraps_Reset();
         Combat_Reset();
+        Blueprint_ResetGhosts(); // (#1018)
         Claims_Reset(); // (#343)
         Events_Reset();
         Particles_Clear();
@@ -875,6 +876,7 @@ int main(int argc, char** argv)
             serverMode = true;
             hostSave = serverCfg.save; hostPort = (uint16_t)serverCfg.port; autosaveMinutes = serverCfg.autosaveMinutes;
             Host_SetPassword(serverCfg.password); Host_SetMaxPlayers(serverCfg.maxPlayers);
+            Admin_SetHostOwner(serverCfg.ownerId); // (#1086) a menu-hosted game: the hosting player owns it ("" on a dedicated server)
             if (serverCfg.seed != 0) { worldGen.seed = serverCfg.seed; seedGiven = true; }
             std::error_code ec; if (std::filesystem::path(hostSave).has_parent_path()) std::filesystem::create_directories(std::filesystem::path(hostSave).parent_path(), ec);
             ServerLog_Start(serverCfg.log);
@@ -1628,7 +1630,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world);
+        if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -2082,8 +2085,9 @@ int main(int argc, char** argv)
                 if (text[0] != '/') { printf("chat: %s: %s\n", name.c_str(), text.c_str()); Host_Say(text, session, 0); return; }
                 const std::string line = text.substr(1);
                 std::string reply;
-                if (Admin_Command(line, name, reply)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
-                else if (Admin_RoleOf(name) == AdminRole::Player) reply = "only ops can use commands";
+                const std::string uuid = Host_SessionUuid(session); // (#1086) a menu host's own player is the owner by id
+                if (Admin_Command(line, name, reply, uuid)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
+                else if (Admin_RoleOf(name, uuid) == AdminRole::Player) reply = "only ops can use commands";
                 else {
                     std::istringstream in(line); std::string cmd, who, rest; in >> cmd >> who; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
                     if (cmd == "kick" && !who.empty()) { reply = Host_Kick(who, rest) ? who + " was kicked" : who + " is not online"; Admin_Audit(name + ": " + line + " -> " + reply); }
@@ -6186,8 +6190,8 @@ int main(int argc, char** argv)
                         if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
                         // RAYLIBGAME_CAVES_KARST=1 (#1052): the nearest karst sink, near the nearest strong karst ground (its
                         // weight on a 500 m grid out to 30 km: karst regions are ~10 km apart, too far for a cave-cell search).
-                        const int mouthKind = getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1' ? 1 : -1;
-                        if (mouthKind == 1 && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                        const int mouthKind = (getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1') || (getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1') ? 1 : -1; // a shaft entrance (karst sink, tube skylight)
+                        if (mouthKind == 1 && getenv("RAYLIBGAME_CAVES_KARST") && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
                             const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
                             float bestK = 1e30f;
                             for (float a = -30000.0f; a <= 30000.0f; a += 500.0f)
@@ -6200,6 +6204,24 @@ int main(int argc, char** argv)
                             mouthRange = 1500.0f;
                             if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
                             else printf("bench: caves: no karst ground within 30 km\n");
+                        }
+                        // RAYLIBGAME_CAVES_TUBE=1 (#1063): a lava tube's skylight (kind 1) near the nearest volcano flank (its
+                        // weight 0.4-0.8 on a 1 km grid out to 60 km: volcanoes are ~20 km apart and few).
+                        const bool tubeMode = getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1';
+                        if (tubeMode && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                            const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
+                            float bestV = 1e30f;
+                            for (float a = -60000.0f; a <= 60000.0f; a += 1000.0f)
+                                for (float b = -60000.0f; b <= 60000.0f; b += 1000.0f) {
+                                    const float dd = a * a + b * b;
+                                    if (dd >= bestV) continue;
+                                    const Vector3 vd = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(k1, a), Vector3Scale(k2, b))));
+                                    const float w = pf->volcanoWeight(Vector3Scale(vd, pf->radius));
+                                    if (w > 0.4f && w < 0.8f && pf->elevation(vd) > 10.0f) { bestV = dd; mouthNear = vd; }
+                                }
+                            mouthRange = 3000.0f;
+                            if (bestV < 1e29f) printf("bench: caves: volcano flank %.0f m from the start\n", sqrtf(bestV));
+                            else printf("bench: caves: no volcano flank within 60 km\n");
                         }
                         const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
                         if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
@@ -8936,7 +8958,27 @@ int main(int argc, char** argv)
                         const bool saved = Blueprint_SaveFile(*plot, "saves/bench_blueprint.bp", "bench copy");
                         Blueprint back;
                         const bool loaded = Blueprint_LoadFile("saves/bench_blueprint.bp", back);
-                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size();
+                        // (#1018) Ghosts: the same preset 16 m the other way, one landing leg short: the leg stays a ghost; out of
+                        // reach it waits, in reach without the leg it waits, with the leg it builds itself.
+                        const Vector3 d2 = Vector3Normalize(Vector3Subtract(home, Vector3Scale(t1, 16.0f / pf->radius)));
+                        Plot* plot2 = p->plots->plotFor(Vector3Scale(d2, pf->radius + pf->elevation(d2)), 0.0f, true);
+                        inventory.clear();
+                        inventory.add("rocket_engine", 1); inventory.add("landing_leg", 3); inventory.add("fuel_tank", 4);
+                        inventory.add("guidance_computer", 1); inventory.add("cockpit", 1);
+                        Blueprint_ResetGhosts();
+                        std::string missing3;
+                        const int placed3 = Blueprint_Place(*p, *plot2, bp, { 0, 0, 0 }, true, missing3, true);
+                        const int ghosts0 = Blueprint_GhostCount();
+                        const Vector3 near2 = plot2->toBody({ 0, 0, 0 }), far2 = Vector3Scale(near2, 1.01f); // (1 % out: ~600 m away)
+                        const int farBuilt = Blueprint_UpdateGhosts(p, far2, 100.0);
+                        const int noLeg = Blueprint_UpdateGhosts(p, near2, 101.0);
+                        inventory.add("landing_leg", 1);
+                        const int built = Blueprint_UpdateGhosts(p, near2, 102.0);
+                        const bool ghostsOk = placed3 == 10 && ghosts0 == 1 && farBuilt == 0 && noLeg == 0 && built == 1 && Blueprint_GhostCount() == 0 &&
+                                              plot2->partCount() == (int)bp.parts.size() && inventory.count("landing_leg") == 0;
+                        printf("bench: blueprint (#1018): one leg short: placed %d, %d ghost; out of reach built %d, without the leg %d, with it %d; ghosts left %d, parts %d of %zu -> %s\n",
+                               placed3, ghosts0, farBuilt, noLeg, built, Blueprint_GhostCount(), plot2->partCount(), bp.parts.size(), ghostsOk ? "ok" : "FAIL");
+                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size() && ghostsOk;
                         printf("bench: blueprint: %s (%zu parts): placed %d (missing: %s), then %d more; saved and loaded %zu parts -> %s\n",
                                bp.name.c_str(), bp.parts.size(), first, missing.c_str(), second, back.parts.size(), ok ? "PASS" : "FAIL");
                     }
@@ -10179,6 +10221,8 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
+                Blueprint_UpdateGhosts(player.nearest, player.nearest->toLocal((player.position - world.renderOrigin).toFloat()), SimTime());
             GpuTimer_CpuMark("step: weather, factory");
             GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
@@ -10250,7 +10294,7 @@ int main(int argc, char** argv)
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") {
                         int n = 0;
-                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name)), p.address.c_str()); }
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, Host_SessionUuid(p.session))), p.address.c_str()); }
                         printf("server: %d player(s) online\n", n);
                     }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
@@ -13293,6 +13337,7 @@ int main(int argc, char** argv)
                     const std::string save = m.path.empty() ? Menu_NewSavePath() : m.path; // (the saves folder: it lists and loads like any save)
                     ServerConfig cfg;
                     cfg.save = save; cfg.port = m.port; cfg.maxPlayers = m.maxPlayers; cfg.password = m.password; cfg.log = save + ".server.log";
+                    cfg.ownerId = PlayerId_Local(); // (#1086) we host it: our player is its owner (by id: our client's Hello carries it)
                     const std::string cfgPath = save + ".server.cfg";
                     bool wrote = false;
                     if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }

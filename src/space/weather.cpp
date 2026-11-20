@@ -111,6 +111,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
         const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
         if (Vector3Length(local) > 1.0f) target = Weather_At(world, Vector3Normalize(local), WorldTime());
     }
+    { static const int envForce = getenv("RAYLIBGAME_WEATHER_FORCE") ? atoi(getenv("RAYLIBGAME_WEATHER_FORCE")) : -1; if (envForce >= 0) forced = envForce; } // (#1083 captures) 0 clear .. 3 storm (WeatherKind)
     if (forced >= 0) {
         target.kind = (WeatherKind)forced;
         target.cloud = forced == 0 ? 0.1f : forced == 1 ? 0.55f : forced == 5 ? 0.4f : forced == 3 ? 0.95f : 0.75f;

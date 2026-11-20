@@ -220,6 +220,7 @@ bool TerrainTool_Bucket(Scene& world) {
 
 static int FillerMaterial(const std::string& item); // below
 static bool HitOre();
+static void SetToolSphere(const Scene& world); // (#1089) below
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -238,6 +239,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         hitItem = ItemAt(*hit.planetoid, hit.local, hit.material);
         rule = DigRuleFor(tool, hit.material, hitItem.c_str());
     }
+    SetToolSphere(world);
 
     if (!in.enabled) { digging = adding = false; return; }
 
@@ -755,6 +757,28 @@ bool TerrainTool_Stroke(bool dig) {
     return true;
 }
 
+// (#1089, user 2026-11-20) The dig / fill preview: the terrain shader draws where the sphere that will be carved or filled
+// cuts the ground (a line on the real surface, over bumps, ledges and cave walls, and a faint tint inside), from this hint
+// set every update. Not while terraforming (its wire sphere), aiming at a plant, or with the camera in the sphere.
+// RAYLIBGAME_DIG_PREVIEW=ring: the old outline ring (#533 / #705) and fill wire sphere instead.
+static bool RingPreview() { static const bool ring = getenv("RAYLIBGAME_DIG_PREVIEW") && strcmp(getenv("RAYLIBGAME_DIG_PREVIEW"), "ring") == 0; return ring; }
+static void SetToolSphere(const Scene& world) {
+    gToolSphere.body = nullptr;
+    if (RingPreview() || !hasHit || hasPlant || terrainTool.terraform || !hit.planetoid) return;
+    Planetoid& p = *hit.planetoid;
+    if (terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0 && !digging) {
+        const float r = terrainTool.fillRadius / p.scale;
+        const Vector3 c = FillCentre(p, r);
+        if (Vector3Distance(p.toWorld(c), world.camera.position) < terrainTool.fillRadius * 1.05f) return;
+        gToolSphere = { &p, c, terrainTool.fillRadius, adding ? Color{ 120, 255, 160, 210 } : Color{ 120, 220, 255, 200 }, GetTime() };
+        return;
+    }
+    const float R = MiningRadius();
+    const Vector3 c = DigCentre(R);
+    if (Vector3Distance(p.toWorld(c), world.camera.position) < R * 1.05f) return;
+    gToolSphere = { &p, c, R, !rule.can ? Color{ 255, 80, 60, 220 } : digging ? Color{ 255, 220, 120, 220 } : Color{ 120, 220, 255, 200 }, GetTime() };
+}
+
 void TerrainTool_Draw3D() {
     if (!hasHit || hasPlant) return;
     if (terrainTool.terraform) {
@@ -763,6 +787,7 @@ void TerrainTool_Draw3D() {
         DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
         return;
     }
+    if (!RingPreview()) return; // (#1089) the terrain shader draws the preview
     if (terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0 && !digging) { // #228: the sphere it will add
         Planetoid& p = *hit.planetoid;
         const float r = terrainTool.fillRadius / p.scale;
@@ -1034,6 +1059,6 @@ bool TerrainTool_TestFillOffHand() {
 // The world is going (#902): the last hit and the plant under the crosshair point into its bodies - drawing goes on while the
 // next world loads, and TerrainTool_Draw3D drew the old hit on a freed planet.
 void TerrainTool_ForgetWorld() {
-    hit = TerrainHit{}; hasHit = false; digging = adding = false;
+    hit = TerrainHit{}; hasHit = false; digging = adding = false; gToolSphere = ToolSphereHint{}; // (#1089: never a freed body)
     hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopWork = 0.0f;
 }

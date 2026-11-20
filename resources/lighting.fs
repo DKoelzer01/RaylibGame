@@ -45,6 +45,8 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform int debugSky;        // RAYLIBGAME_SHOW_SKY=1: draw fragSky as grey (red = the #898 cave-mouth floor range, 0.55-0.65)
+uniform vec4 toolSphere;     // (#1089) the dig / fill sphere: render-space centre, radius (w = 0: none)
+uniform vec4 toolSphereColor;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
 uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
@@ -500,5 +502,14 @@ void main()
     float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
+    // (#1089) The dig / fill preview: where the sphere cuts the terrain, a line on the real surface (over bumps, ledges and
+    // cave walls, depth-tested by the terrain itself) and a faint tint inside. Only the planet terrain draws it.
+    if (toolSphere.w > 0.0 && palette == 2) {
+        float sd = length(fragPosition - toolSphere.xyz) - toolSphere.w;
+        float fw = max(fwidth(sd), 1e-4);
+        float line = 1.0 - smoothstep(0.75 * fw, 2.0 * fw, abs(sd));
+        float inside = sd < 0.0 ? 0.18 : 0.0;
+        finalColor.rgb = mix(finalColor.rgb, toolSphereColor.rgb, max(line * toolSphereColor.a, inside * toolSphereColor.a));
+    }
     if (debugSky == 1) finalColor = vec4(fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, 1.0);
 }
