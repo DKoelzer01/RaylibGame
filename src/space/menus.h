@@ -41,6 +41,7 @@ struct GameSettings {
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
     float uiScale = 0.0f;            // (#821) the interface size: 0 auto (by the screen's height), else 0.75-1.5
+    float tabWin[4] = { 0.15f, 0.15f, 0.7f, 0.7f }; // (#1080) the Tab window: x, y, width, height as fractions of the screen
     int keyHints = 0;                // (#827) the key hints line: 0 auto (fades after the first 2 hours played), 1 always, 2 off
     float xpRate = 1.0f;              // (#883) the last New World screen's skill XP rate (the next one's default)
     bool invertSlotWheel = false;     // (#862) the inventory's scroll wheel: false = down sends one to the other side, up pulls one in
