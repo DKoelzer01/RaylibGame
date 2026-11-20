@@ -96,6 +96,8 @@ namespace {
     }
 }
 
+float Strata_FaultField(Vector3 s, unsigned int seed, float* region) { float r = 0.0f; const float f = FaultField(s, seed, r); if (region) *region = r; return f; }
+
 float Strata_FaultUplift(Vector3 s, unsigned int seed) {
     float region = 0.0f;
     const float f = FaultField(s, seed, region);

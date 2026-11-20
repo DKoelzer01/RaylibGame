@@ -1532,6 +1532,77 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             kwalk(bot, up, head0, e0 - sdepth, 2.0f + 3.0f * rnd[7], slope, n, 0, keyLen);
         }
     }
+    // (#1076, Plan 10 step 7) Fault fissures: a cell on a fault line (#590: the fault region's weight > 0.3, a point in the
+    // cell projected onto the fault field's zero crossing with one gradient step, at most 300 m away) starts one at 6% x
+    // abundance (its own numbers): a slot (kind 4) along the fault's strike, 20 m steps each re-projected onto the line,
+    // 50-300 m each way; its top 4-10 m under the ground (closed), 15-60 m high, 1-4 m wide at the top and ~0.3 x that at
+    // the bottom; chockstones (solid boulders wedged in it) at both ends and at 15% of its steps. Registered (kind 5, not an
+    // entrance) for --test-caves RAYLIBGAME_CAVES_FISSURE=1.
+    {
+        std::mt19937 rq((unsigned)(CaveCellHash{}(key) ^ 0xF155C0DEu));
+        std::uniform_real_distribution<float> UQ(0.0f, 1.0f);
+        const float fisOdds = std::min(0.95f, 0.06f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float coin = UQ(rq), qx = UQ(rq), qy = UQ(rq), qz = UQ(rq);
+        const Vector3 s0 = { (cx + qx) * kCaveCell, (cy + qy) * kCaveCell, (cz + qz) * kCaveCell };
+        const float l0 = Vector3Length(s0);
+        float reg = 0.0f;
+        const Vector3 d0 = l0 > 1.0f ? Vector3Scale(s0, 1.0f / l0) : Vector3{ 0, 1, 0 };
+        const Vector3 on0 = Vector3Scale(d0, R);
+        const bool inCell = (int)floorf(on0.x / kCaveCell) == cx && (int)floorf(on0.y / kCaveCell) == cy && (int)floorf(on0.z / kCaveCell) == cz;
+        if (coin < fisOdds && inCell) Strata_FaultField(on0, seed, &reg);
+        if (coin < fisOdds && inCell && reg > 0.3f) {
+            // One gradient step onto the line (the field changes ~4e-5 per metre): the point and the strike there.
+            auto project = [&](Vector3 d, Vector3& onLine, Vector3& strike) {
+                const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d, fabsf(d.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 a2 = Vector3CrossProduct(d, a1);
+                const Vector3 p = Vector3Scale(d, R);
+                const float fv = Strata_FaultField(p, seed, nullptr);
+                const float g1 = (Strata_FaultField(Vector3Add(p, Vector3Scale(a1, 20.0f)), seed, nullptr) - Strata_FaultField(Vector3Subtract(p, Vector3Scale(a1, 20.0f)), seed, nullptr)) / 40.0f;
+                const float g2 = (Strata_FaultField(Vector3Add(p, Vector3Scale(a2, 20.0f)), seed, nullptr) - Strata_FaultField(Vector3Subtract(p, Vector3Scale(a2, 20.0f)), seed, nullptr)) / 40.0f;
+                const float gl2 = g1 * g1 + g2 * g2;
+                if (gl2 < 1e-14f) return false;
+                const Vector3 grad = Vector3Add(Vector3Scale(a1, g1), Vector3Scale(a2, g2));
+                const Vector3 step = Vector3Scale(grad, -fv / gl2);
+                if (Vector3Length(step) > 300.0f) return false;
+                onLine = Vector3Normalize(Vector3Add(p, step));
+                strike = Vector3Normalize(Vector3CrossProduct(onLine, grad));
+                return true;
+            };
+            Vector3 line0, strike0;
+            if (project(d0, line0, strike0) && f.elevation(line0) > 5.0f) {
+                const float top = 4.0f + 6.0f * UQ(rq), H = 15.0f + 45.0f * UQ(rq), wt = 0.5f + 1.5f * UQ(rq), wb = 0.3f * wt;
+                const int nA = 3 + (int)(12.0f * UQ(rq)), nB = 3 + (int)(12.0f * UQ(rq));
+                auto axisAt = [&](Vector3 d) { return Vector3Scale(d, R + f.elevation(d) - top - 0.5f * H); };
+                auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float fl, int kind) {
+                    CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                    segs->push_back(sg);
+                };
+                auto chock = [&](Vector3 axisPt) {                            // a block wedged in the slot at a random height
+                    const Vector3 up = Vector3Normalize(axisPt);
+                    const float u = 0.15f + 0.7f * UQ(rq), hgt = (u - 0.5f) * H, w = wb + (wt - wb) * u;
+                    const Vector3 c = Vector3Add(axisPt, Vector3Scale(up, hgt));
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, { 0.3f, 1.0f, 0.2f }));
+                    push(Vector3Subtract(c, Vector3Scale(side, 0.2f)), Vector3Add(c, Vector3Scale(side, 0.2f)), 1.4f * w + 0.4f, 1.4f * w + 0.4f, 0.8f, 2);
+                };
+                data->mouths.push_back({ axisAt(line0), line0, 5 });
+                for (int side = 0; side < 2; ++side) {                       // along the strike both ways from the start
+                    Vector3 d = line0, str = side ? Vector3Negate(strike0) : strike0;
+                    Vector3 prev = axisAt(d);
+                    const int steps = side ? nB : nA;
+                    for (int k = 0; k < steps; ++k) {
+                        const Vector3 dn = Vector3Normalize(Vector3Add(Vector3Scale(d, R), Vector3Scale(str, 20.0f)));
+                        Vector3 dl, sn;
+                        if (!project(dn, dl, sn) || f.elevation(dl) < 2.0f) break;
+                        if (Vector3DotProduct(sn, str) < 0.0f) sn = Vector3Negate(sn); // keep walking the same way
+                        const Vector3 cur = axisAt(dl);
+                        push(prev, cur, wt, wb, H, 4);
+                        if (k + 1 == steps || UQ(rq) < 0.15f) chock(cur);
+                        prev = cur; d = dl; str = sn;
+                    }
+                }
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
     return sh.map.emplace(key, data).first->second;
@@ -1558,7 +1629,7 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
                     // The box beyond which the shape can't reach: the skeleton at most 1.3 x 1.4 r (swell, the large-scale term), its
                     // centre wandering 0.4 of that sideways (2.55 r in all; the warp moves only the noise; solids 1.3 r); plus the reach.
                     const float rmax = std::max(s.ra, s.rb);
-                    const float rr = 3.0f * rmax + 2.0f + reach + std::max(0.0f, 0.8f * rmax - 6.4f); // (#1058: big chambers keep the single-sample bound)
+                    const float rr = 3.0f * rmax + 2.0f + reach + std::max(0.0f, 0.8f * rmax - 6.4f) + (s.kind == 4 ? 0.5f * s.flat : 0.0f); // (#1076: a slot's height) // (#1058: big chambers keep the single-sample bound)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
                     Vector3 side = Vector3CrossProduct(s.up, Vector3Subtract(s.b, s.a));     // across the passage, level
@@ -1668,7 +1739,17 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float hs = hhx * s[20] + hhy * s[21] + hhz * s[22];
         const float r = s[3] + (s[7] - s[3]) * t;
         const float kind = s[15];
-        const bool mouth = kind > 0.5f && kind < 1.5f, hall = kind > 2.5f; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        const bool mouth = kind > 0.5f && kind < 1.5f, hall = kind > 2.5f && kind < 3.5f; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058), 4 slot (#1076)
+        if (kind > 3.5f) { // (#1076) a slot: a vertical sheet along the line (axis at mid-height), height s[11], half-width from
+            const float H = s[11];                                        // s[7] at the bottom to s[3] at the top; no wall noise
+            const float un = hv + 0.5f * H;
+            const float u = std::clamp(un / H, 0.0f, 1.0f);
+            const float w = s[7] + (s[3] - s[7]) * u;
+            const float hh2 = hhx * hhx + hhy * hhy + hhz * hhz;
+            const float hhl = sqrtf(hh2);
+            m = std::min(m, std::max(hhl - w, fabsf(hv) - 0.5f * H));
+            continue;
+        }
         if (kind > 1.5f && kind < 2.5f) { // solid inside: a rubble apron, the lip over a mouth, a chamber's boulder or column
             const float va = hv / s[11];                                  // squashed: aprons 0.35, the lip over a mouth 0.2
             const float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;

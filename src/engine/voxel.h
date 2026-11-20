@@ -262,6 +262,7 @@ public:
     float canyonFault(float sx, float sy, float sz) const; // #544: 0..1 along the canyon lines
     float canyonLine(float sx, float sy, float sz) const;  // #544: |the ravine field| (0 on a canyon line; the notch is 0.02 wide)
     float faultUplift(Vector3 s) const { return Strata_FaultUplift(s, fieldSeed); } // #590: metres (s = surface point)
+    float faultField(Vector3 s, float* region = nullptr) const { return Strata_FaultField(s, fieldSeed, region); } // #1076: the fault line is its zero crossing
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres
     float karstWeight(Vector3 s) const { return gen.karst ? Strata_KarstWeight(s, fieldSeed) : 0.0f; } // #592: 0..1

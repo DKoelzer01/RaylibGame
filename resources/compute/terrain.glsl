@@ -452,7 +452,20 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float hs = hhx * Sd.x + hhy * Sd.y + hhz * Sd.z;
         precise float r = A.w + (Bs.w - A.w) * t;
         float kind = lo.w;
-        bool mouth = kind > 0.5 && kind < 1.5, hall = kind > 2.5;   // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        bool mouth = kind > 0.5 && kind < 1.5, hall = kind > 2.5 && kind < 3.5; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber, 4 slot
+        if (kind > 3.5) { // (#1076) a slot: as CaveGraphDistance
+            precise float H = U.w;
+            precise float un = hv + 0.5 * H;
+            precise float uq = xdiv(un, H);
+            precise float u = clamp(uq, 0.0, 1.0);
+            precise float w = Bs.w + (A.w - Bs.w) * u;
+            precise float hh2 = hhx * hhx + hhy * hhy + hhz * hhz;
+            precise float hhl = xsqrt(hh2);
+            precise float sv = abs(hv) - 0.5 * H;
+            precise float sh = hhl - w;
+            m = min(m, max(sh, sv));
+            continue;
+        }
         if (kind > 1.5 && kind < 2.5) {
             precise float va = xdiv(hv, U.w);
             precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;

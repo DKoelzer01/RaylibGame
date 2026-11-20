@@ -6113,7 +6113,26 @@ int main(int argc, char** argv)
                             else printf("bench: caves: no karst ground within 30 km\n");
                         }
                         const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
-                        if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
+                        const bool fissureMode = getenv("RAYLIBGAME_CAVES_FISSURE") && getenv("RAYLIBGAME_CAVES_FISSURE")[0] == '1';
+                        if (fissureMode) { // (#1076) RAYLIBGAME_CAVES_FISSURE=1: inside the nearest fissure, near the nearest fault line (1 km grid, 60 km)
+                            const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
+                            float bestF = 1e30f; Vector3 nearF = home;
+                            for (float a = -60000.0f; a <= 60000.0f; a += 1000.0f)
+                                for (float b = -60000.0f; b <= 60000.0f; b += 1000.0f) {
+                                    const float dd = a * a + b * b;
+                                    if (dd >= bestF) continue;
+                                    const Vector3 fd = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(k1, a), Vector3Scale(k2, b))));
+                                    float reg = 0.0f;
+                                    const float fv = pf->faultField(Vector3Scale(fd, pf->radius), &reg);
+                                    if (reg > 0.3f && fabsf(fv) < 0.003f && pf->elevation(fd) > 10.0f) { bestF = dd; nearF = fd; }
+                                }
+                            Vector3 co{};
+                            if (bestF < 1e29f && PlanetField::CavesGraph() && pf->nearestCaveMouth(nearF, 3000.0f, at, co, 5)) {
+                                graphInside = true;
+                                best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
+                                printf("bench: caves: fissure %.0f m from the start, %.1f m under the surface\n", best, pf->radius + pf->elevation(Vector3Normalize(at)) - Vector3Length(at));
+                            } else printf("bench: caves: no fissure near a fault line within 60 km\n");
+                        } else if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
                             Vector3 co{};
                             if (PlanetField::CavesGraph() && pf->nearestCaveMouth(home, 3000.0f, at, co, 3)) {
                                 graphInside = true;
