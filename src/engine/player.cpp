@@ -744,7 +744,7 @@ void Player::applyToCamera(Scene& world) const {
 // drop the velocity into the trunk, relative to the (moving) ground the tree stands on.
 void Player::collideTrunks(Vector3& feet) {
     if (!nearest || !nearest->trees) return;
-    static thread_local std::vector<Trunk> near;
+    static thread_local std::vector<Trunk>* nearP = nullptr; if (!nearP) nearP = new std::vector<Trunk>(); auto& near = *nearP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
     near.clear();
     const Vector3 local = nearest->toLocal(feet);
     nearest->trees->trunksNear(local, radius + 2.0f, near);

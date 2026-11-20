@@ -1753,8 +1753,8 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     // segments whose box holds q, and every one of those overlaps q's bin (min / max don't depend on order).
                     constexpr int kBins = 8;
                     constexpr float kBin = kCaveCell / kBins;
-                    thread_local std::vector<float> own, binned;
-                    thread_local std::vector<int> binStart;                     // kBins^3 + 1 offsets (in segments) into binned
+                    struct CaveBins { std::vector<float> own, binned; std::vector<int> binStart; }; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
+                    thread_local CaveBins* bins = nullptr; if (!bins) bins = new CaveBins(); auto& own = bins->own; auto& binned = bins->binned; auto& binStart = bins->binStart; // binStart: kBins^3 + 1 offsets (in segments) into binned
                     thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0, kepoch = 0; thread_local bool kbaked = false; thread_local const void* kf = nullptr;
                     const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
                     const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
