@@ -214,7 +214,7 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   bit-exactly (the grid is 2 vec4 per node; the second is unused since the cliff terraces and lips went, #543);
   `--test-terrain-gpu` checks it. Plan 9 (#586): steep terrain comes from formations in the bake input, not post-bake steps.
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
-  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.12 (#897; was 0.25)
+  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.09 (#1117; 0.12 before, #897; was 0.25)
   (`RAYLIBGAME_MOONLIGHT`). Night light = that moonlit-sky ambient alone: the fixed 1/255 base ambient fades out under the
   air (#897: it was a ~10/255 floor that hid the moonlight setting; `RAYLIBGAME_AMBIENT_BASE=1` = before). Within 40 m
   under the surface, cave mouths and shafts get at least 0.6 x (1 - depth/40 m) of their open sky (#898; `RAYLIBGAME_CAVE_MOUTH_SKY=0` = off;
