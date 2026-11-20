@@ -6213,7 +6213,7 @@ int main(int argc, char** argv)
                         if (cavesPhase == 2 && GetTime() - cavesT0 > 12.5) {
                             const int inside = (int)cavesPath.size() - 31;
                             const bool ok = inside > 0 && cavesOpen >= inside * 0.9f && cavesInside >= 10.0f && cavesReach >= 30.0f; // (#1058) and 30 m+ from the mouth through open space
-                            printf("bench: caves: %d of %d path points inside are open space; deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesInside, ok ? "PASS" : "FAIL");
+                            printf("bench: caves: %d of %d path points inside are open space; %.1f m from the mouth, deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesReach, cavesInside, ok ? "PASS" : "FAIL");
                             benchTestCaves = false;
                         }
                     }
