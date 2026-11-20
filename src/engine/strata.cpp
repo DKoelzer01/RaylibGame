@@ -180,6 +180,34 @@ float Strata_KarstRelief(Vector3 s, unsigned int seed) {
     return 0.0f;
 }
 
+void Strata_KarstDolines(Vector3 lo, Vector3 hi, float R, unsigned int seed, std::vector<KarstDoline>& out) {
+    // The doline features of Strata_KarstRelief (the same grid, jitter and kinds) whose surface centre (the feature
+    // projected onto the sphere of radius R) lies in [lo, hi] and where the bowl really dips (a nearer tower can own the
+    // spot instead): for the karst caves' sinks (#1052).
+    const float cell = 300.0f;
+    const int32_t x0 = (int32_t)floorf((lo.x - cell) / cell), x1 = (int32_t)floorf((hi.x + cell) / cell);
+    const int32_t y0 = (int32_t)floorf((lo.y - cell) / cell), y1 = (int32_t)floorf((hi.y + cell) / cell);
+    const int32_t z0 = (int32_t)floorf((lo.z - cell) / cell), z1 = (int32_t)floorf((hi.z + cell) / cell);
+    for (int32_t cz = z0; cz <= z1; ++cz)
+        for (int32_t cy = y0; cy <= y1; ++cy)
+            for (int32_t cx = x0; cx <= x1; ++cx) {
+                if (Rand01(cx, cy, cz, seed ^ 0x4A25Bu) <= 0.85f) continue;   // not a doline
+                const Vector3 F = { (cx + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A258u)) * cell,
+                                    (cy + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A259u)) * cell,
+                                    (cz + 0.15f + 0.7f * Rand01(cx, cy, cz, seed ^ 0x4A25Au)) * cell };
+                const float fl = sqrtf(F.x * F.x + F.y * F.y + F.z * F.z);
+                if (fl < 1.0f) continue;
+                const Vector3 dir = { F.x / fl, F.y / fl, F.z / fl };
+                const Vector3 onR = { dir.x * R, dir.y * R, dir.z * R };
+                if (onR.x < lo.x || onR.y < lo.y || onR.z < lo.z || onR.x >= hi.x || onR.y >= hi.y || onR.z >= hi.z) continue;
+                const float depth = -Strata_KarstRelief(onR, seed);
+                if (depth < 4.0f) continue;                                    // off the sphere's slice, or a tower's ground
+                const float size = Rand01(cx, cy, cz, seed ^ 0x4A25Cu);
+                const float r0 = 40.0f + 50.0f * size, off = fl - R;
+                out.push_back({ dir, sqrtf(std::max(0.0f, r0 * r0 - off * off)), depth, (uint32_t)Hash(cx, cy, cz, seed ^ 0x4A25Eu) });
+            }
+}
+
 float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* weight) {
     // A jittered 20 km grid; 2% of cells hold a volcano at their feature point (projected onto the sphere): ~10 on a
     // 47 km planet.

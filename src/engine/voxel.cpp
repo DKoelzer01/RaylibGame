@@ -1180,7 +1180,7 @@ namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
-struct CaveMouth { Vector3 at, out; };   // (#615 step 3) a hillside entrance: its axis point at the slope face, outward (downhill)
+struct CaveMouth { Vector3 at, out; int kind = 0; }; // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
 struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
 struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
@@ -1386,6 +1386,101 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             if (depth >= minDepth(r)) walk(pos, uphill, depth, r, flat, 4 + (int)(rn * 8.0f), 0); // on into the network
         }
     }
+    // (#1052, Plan 10 step 4) Karst river caves: in karst country (#592, New World "Karst"; weight > 0.3) a doline whose
+    // centre falls in this cell may be a sink: a round shaft from its floor down 10-30 m with a rubble cone at its foot, and
+    // from there a river passage following the drainage (the 240 m-scale downhill, not the bowl's own), its axis falling
+    // 1-5% of the way: keyhole sections first (a tube with a narrow slot above it, made of two stacked round tubes), then
+    // round tubes; level side passages at 40% of its vertices make mazes. Where the roof thins out after 100 m+ it has met
+    // a valley side: it opens there (a resurgence). At most ~640 m, inside the cells' reach (kCaveCellReach). Each doline
+    // draws its own numbers (seeded by its id): the same sinks at any abundance, more of them with more.
+    {
+        const Vector3 clo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
+        std::vector<KarstDoline> dolines;
+        Strata_KarstDolines(clo, Vector3AddValue(clo, kCaveCell), R, seed, dolines);
+        const float sinkOdds = std::min(0.95f, 0.6f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+        auto frame = [](Vector3 d0, Vector3& a1, Vector3& a2) {
+            a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            a2 = Vector3CrossProduct(d0, a1);
+        };
+        auto downhill = [&](Vector3 d0, Vector3 fallback) {               // the drainage direction at the 240 m scale
+            Vector3 a1, a2; frame(d0, a1, a2);
+            const float g1 = f.elevation(at(d0, Vector3Scale(a1, 120.0f))) - f.elevation(at(d0, Vector3Scale(a1, -120.0f)));
+            const float g2 = f.elevation(at(d0, Vector3Scale(a2, 120.0f))) - f.elevation(at(d0, Vector3Scale(a2, -120.0f)));
+            const Vector3 g = Vector3Add(Vector3Scale(a1, -g1), Vector3Scale(a2, -g2));
+            const float gl = Vector3Length(g);
+            return gl > 1.0f ? Vector3Scale(g, 1.0f / gl) : fallback;
+        };
+        auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+            CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+            segs->push_back(sg);
+        };
+        for (const KarstDoline& dl : dolines) {
+            if (f.karstWeight(Vector3Scale(dl.dir, R)) < 0.3f) continue;
+            const float e0 = f.elevation(dl.dir);
+            if (e0 < 3.0f) continue;                                         // a flooded hollow
+            std::mt19937 rk(dl.id ^ 0x6B4A57u);
+            std::uniform_real_distribution<float> UK(0.0f, 1.0f);
+            float rnd[8];
+            for (float& v : rnd) v = UK(rk);
+            if (rnd[0] >= sinkOdds) continue;
+            const Vector3 up = dl.dir;
+            Vector3 a1, a2; frame(up, a1, a2);
+            // The shaft: round, its walls vertical, from 3 m over the bowl's floor down to the passage; the cone on its floor.
+            const float sr = 3.0f + 3.0f * rnd[1], sdepth = 10.0f + 20.0f * rnd[2];
+            const Vector3 bot = Vector3Scale(up, R + e0 - sdepth);
+            push(Vector3Scale(up, R + e0 + 3.0f), bot, sr, 0.85f * sr, 1.0f, 0);
+            const Vector3 coneC = Vector3Scale(up, R + e0 - sdepth - 0.45f * sr);
+            push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.7f * sr, 0.7f * sr, 0.35f, 2);
+            data->mouths.push_back({ Vector3Scale(up, R + e0), up, 1 });
+            // The river passage.
+            const float slope = 0.01f + 0.04f * rnd[3];
+            const int n = 20 + (int)(12.0f * rnd[4]);
+            const float keyLen = (0.25f + 0.35f * rnd[5]) * n * 20.0f;
+            const float ang = rnd[6] * 2.0f * PI;
+            const Vector3 head0 = downhill(up, Vector3Add(Vector3Scale(a1, cosf(ang)), Vector3Scale(a2, sinf(ang))));
+            std::function<void(Vector3, Vector3, Vector3, float, float, float, int, int, float)> kwalk =
+                [&](Vector3 pos, Vector3 dir, Vector3 head, float h, float r, float fall, int steps, int level, float keyRun) {
+                float run = 0.0f;
+                for (int k = 0; k < steps; ++k) {
+                    const float L = 15.0f + 10.0f * UK(rk);
+                    const float turn = (UK(rk) - 0.5f) * 0.7f;
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                    if (level == 0) head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.7f), Vector3Scale(downhill(dir, head), 0.3f)));
+                    const float r2 = std::clamp(r + (UK(rk) - 0.5f) * 1.5f, level ? 1.2f : 2.0f, level ? 3.0f : 5.0f);
+                    const float h2 = h - fall * L;
+                    const Vector3 dir2 = at(dir, Vector3Scale(head, L));
+                    const float e2 = f.elevation(dir2);
+                    if (e2 < 0.0f) break;                                    // not under the sea
+                    const bool key = run < keyRun;
+                    const float topR = key ? 2.25f * r2 : 0.95f * r2;        // the section's top over the axis
+                    const Vector3 pos2 = Vector3Scale(dir2, R + h2);
+                    if (e2 - h2 - 1.5f * topR < 3.0f) {                      // the roof is thinning out (pockets x1.5)
+                        if (level == 0 && run > 100.0f) {                    // a valley side: a resurgence
+                            const Vector3 fwd = Vector3Normalize(Vector3Subtract(pos2, pos));
+                            push(pos, Vector3Add(pos2, Vector3Scale(fwd, 1.6f * r2)), r, 1.6f * r2, 0.8f, 1);
+                            data->mouths.push_back({ pos2, fwd, 2 });
+                        }
+                        break;
+                    }
+                    push(pos, pos2, r, r2, key ? 0.95f : 0.9f, 0);
+                    if (key) {                                               // the keyhole's slot: two stacked round tubes
+                        const Vector3 u1 = Vector3Normalize(pos), u2 = Vector3Normalize(pos2);
+                        push(Vector3Add(pos, Vector3Scale(u1, 1.0f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.0f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
+                        push(Vector3Add(pos, Vector3Scale(u1, 1.8f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.8f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
+                    }
+                    pos = pos2; dir = dir2; r = r2; h = h2; run += L;
+                    head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
+                    if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
+                        const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
+                        const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(bt))));
+                        kwalk(pos, dir, bh, h, std::min(r, 1.5f + 1.5f * UK(rk)), 0.0f, 3 + (int)(4.0f * UK(rk)), 1, 0.0f);
+                    }
+                }
+            };
+            kwalk(bot, up, head0, e0 - sdepth, 2.0f + 3.0f * rnd[7], slope, n, 0, keyLen);
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
     return sh.map.emplace(key, data).first->second;
@@ -1424,7 +1519,7 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
             }
 }
 
-bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward) const {
+bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind) const {
     if (!CavesGraph() || moon) return false;
     const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
     const int R = (int)ceilf(range / kCaveCell) + 1;
@@ -1438,6 +1533,7 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
                 if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue; // only cells on the surface shell
                 const auto cell = CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z);
                 for (const CaveMouth& m : cell->mouths) {
+                    if (kind >= 0 && m.kind != kind) continue;
                     const float dd = Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s);
                     if (dd < best) { best = dd; at = m.at; outward = m.out; found = true; }
                 }
@@ -1482,6 +1578,9 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 // (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
 // up only once one does. The same operations in the same order as terrain.glsl's caveGraphDistance (bit-exact).
 struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
+// RAYLIBGAME_CAVE_WALLS=0 (#1022 A/B): the cave walls as first merged (v22); default 1, the larger outcrops. The GPU gets it
+// per block (c.w).
+static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") && getenv("RAYLIBGAME_CAVE_WALLS")[0] == '0' ? 0 : 1;
 static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid, float shrink = 0.0f) {
     solid = -1e9f;
     bool any = false;
@@ -1553,9 +1652,16 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             if (hl > 1e-3f) {
                 const float sc = 0.1f + 0.9f * rw / hl;
                 const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
-                const float r3 = N.det.fractal(3, px * 24.5f + 101.0f, py * 24.5f, pz * 24.5f); // 3 octaves from ~3 m
-                const float r1 = N.b.fractal(2, px * 135.0f + 7.0f, py * 135.0f, pz * 135.0f);   // sharp ~1 m creases (|n|)
-                const float wn = std::max(0.0f, 0.35f + 2.6f * r3 + 1.4f * (0.3f - fabsf(r1)));
+                // (#1022, user 2026-11-20) Large irregular outcrops: rock forms ~9 m (2 octaves) and creases ~3.2 m (|n|: hard
+                // edges), weights 2.9 / 0.8. RAYLIBGAME_CAVE_WALLS=0: the walls as first merged (v22: ~3 m forms in 3 octaves,
+                // ~1 m creases in 2, 2.6 / 1.4).
+                const bool v22 = gCaveWalls == 0;
+                const int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
+                const float f3 = v22 ? 24.5f : 7.8f, f1 = v22 ? 135.0f : 47.0f;
+                const float g3 = v22 ? 2.6f : 2.9f, g1 = v22 ? 1.4f : 0.8f;
+                const float r3 = N.det.fractal(o3, px * f3 + 101.0f, py * f3, pz * f3);
+                const float r1 = N.b.fractal(o1, px * f1 + 7.0f, py * f1, pz * f1);
+                const float wn = std::max(0.0f, 0.35f + g3 * r3 + g1 * (0.3f - fabsf(r1)));
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
@@ -1635,9 +1741,11 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     float sol = -1e9f;
                     // (#1037) A single sample's list holds boxes grown by 36 m (any footprint that carves); a segment matters to
                     // this sample's density only within the meshing reach (2 x fp + 2, at least 4 m: the solids' -4 cut). Out of a
-                    // segment's shape box by d, its distance is >= 0.89 d + 1.78 and its solid < -4, so testing the box shrunk to
-                    // 1.2 x that reach + 2 m changes no density but skips most noise lookups in rock near caves. Blocks: 0.
-                    const float keep = std::max(2.0f * std::max(fp, 1.0f) + 2.0f, 4.0f) * 1.2f + 2.0f;
+                    // segment's shape box by d, its distance is >= 0.59 d - 2.57 and its solid < -4 (bores flat <= 1, so at most
+                    // x1.5 tall with roof pockets; radius <= 8 m; mouths' lopsided height x0.89; #1052 corrected the #1037 bound,
+                    // which assumed x1.05), so testing the box shrunk to 1.7 x that reach + 4.5 m changes no density but skips
+                    // most noise lookups in rock near caves. Blocks: 0.
+                    const float keep = std::max(2.0f * std::max(fp, 1.0f) + 2.0f, 4.0f) * 1.7f + 4.5f;
                     const float shrink = tlCaveSegs ? 0.0f : std::max(0.0f, 36.0f - keep);
                     m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segData, n, sol, shrink) + (1.0f - caveWeight) * 20.0f;
                     if (solidOut && sol > -1e8f) *solidOut = sol - (1.0f - caveWeight) * 20.0f;

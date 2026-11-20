@@ -35,7 +35,7 @@ void main() {
     if (i >= uint(S * S * S)) return;
     gIslandOff = B.b.x;
     islandCount = B.b.y;
-    gCaveOff = B.c.x; caveSegCount = B.c.y; cavesGraph = B.c.z;
+    gCaveOff = B.c.x; caveSegCount = B.c.y; cavesGraph = B.c.z; caveWalls = B.c.w;
     uint outI = uint(B.b.z) + i;
     float stride = B.o.w, fp = B.n.w;
     int nu = B.a.y, nv = B.a.z, g0 = B.a.w;
