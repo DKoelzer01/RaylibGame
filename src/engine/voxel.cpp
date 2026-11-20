@@ -1213,6 +1213,9 @@ struct CaveSegScope {
 // One cell's passages: background tunnels (step 2), 0-2 per land cell, each a gently turning random walk of 6-16 segments
 // 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
 // wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
+// (#1058) RAYLIBGAME_CAVE_CHAMBERS=0: no chambers (cost A/B; a skipped chamber draws no numbers, so the passages walked after
+// it in that cell come out differently: compare volumes and costs, not hashes).
+static bool CaveChambersOn() { static const bool on = !(getenv("RAYLIBGAME_CAVE_CHAMBERS") && getenv("RAYLIBGAME_CAVE_CHAMBERS")[0] == '0'); return on; }
 static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
     const CaveCellKey key{ seed, cx, cy, cz, f.caveEpoch, f.caveBaked() };
     CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
@@ -1286,7 +1289,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             sg.up = Vector3Normalize(Vector3Add(pos, pos2));
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
-            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
+            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
                 const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
@@ -1517,7 +1520,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                         push(Vector3Add(pos, Vector3Scale(u1, 1.8f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.8f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
                     }
                     pos = pos2; dir = dir2; r = r2; h = h2; run += L;
-                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.10f) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
+                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.10f && CaveChambersOn()) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
                     head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
                     if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
                         const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
@@ -1582,7 +1585,7 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
                 if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue; // only cells on the surface shell
                 const auto cell = CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z);
                 for (const CaveMouth& m : cell->mouths) {
-                    if (kind >= 0 && m.kind != kind) continue;
+                    if (kind >= 0 ? m.kind != kind : m.kind >= 3) continue; // "any" = entrances (not chamber centres, #1058)
                     const float dd = Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s);
                     if (dd < best) { best = dd; at = m.at; outward = m.out; found = true; }
                 }
