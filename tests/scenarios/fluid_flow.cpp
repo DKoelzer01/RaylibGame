@@ -66,11 +66,14 @@ SCENARIO("fluid/flow") {
             for (float h = S.level - 0.3f; h <= S.level + 4.0f; h += 1.2f) cut.push_back({ at(q, h), 1.6f, -1.0f, true });
         }
         const Vector3 endDir = Vector3Normalize(Vector3Add(S.dir, Vector3Scale(S.out, (S.shore + 14.0f) / pf->radius)));
-        for (float h = S.level - 1.0f; h >= S.level - 12.0f; h -= 0.8f) cut.push_back({ at(endDir, h), 1.3f, -1.0f, true });
-        cut.push_back({ at(endDir, S.level - 13.0f), 3.0f, -1.0f, true });
+        // A 6 m shaft to a 2 m chamber (#935 / #1032, user 2026-11-19: shrink the scene, keep ~2 min): ~200 m^3 of shaft and
+        // chamber settled only after ~220-230 s. The same scene as the legacy --test-flow (main.cpp kFlowShaftM...).
+        constexpr float kShaftM = 6.0f, kChamberR = 2.0f, kCaveM = 8.0f;
+        for (float h = S.level - 1.0f; h >= S.level - kShaftM; h -= 0.8f) cut.push_back({ at(endDir, h), 1.3f, -1.0f, true });
+        cut.push_back({ at(endDir, S.level - kShaftM - 1.0f), kChamberR, -1.0f, true });
         ApplyTerrainEdits(*c.body, cut.data(), cut.size());
         S.end = at(Vector3Normalize(Vector3Add(S.dir, Vector3Scale(S.out, (S.shore + 10.0f) / pf->radius))), S.level - 0.6f);
-        S.cave = at(endDir, S.level - 14.5f);
+        S.cave = at(endDir, S.level - kCaveM);
         return true;
     });
     s.step("flow", 125.0, [](ScenarioCtx& c) {
