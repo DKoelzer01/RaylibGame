@@ -29,7 +29,7 @@ struct TerrainToolSettings {
     float swingTime = 0.3f;      // how long the current swing takes (its cooldown): the hands animate over it
     int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke
     // A shovel's RMB on soft ground tills it into farmland (set by the game; returns true if it did).
-    std::function<bool(class Planetoid&, Vector3 localGround)> till;
+    std::function<bool(class Planetoid&, Vector3 localGround, float radius)> till; // (#1085) a free brush: body-local radius
     // The item in hand became another (an empty bucket filled, a full one emptied): the game rebinds
     // the hotbar slot and counts quest events ("scoop", "pour").
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;
@@ -58,6 +58,7 @@ bool TerrainTool_Chop();     // one swing at the aimed plant (scripted tests); t
 bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pour (RMB; scripted tests call it after aiming)
 bool TerrainTool_BucketFromOffHand(class Scene& world); // (#836) the off hand's bucket where the player aims (the off-hand key)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
+bool TerrainTool_AimedGround(class Planetoid** body, Vector3* local); // the ground the tool aims at (density-marched: no chunks needed), body-local
 float TerrainTool_ChopProgress(); // (#1094) the share of the aimed plant cut so far (0..1; 0: none being cut)
 bool TerrainTool_LastHit(class Planetoid*& body, Vector3& local, Vector3& normalWorld); // the crosshair's terrain hit (placing torches, #218)
 bool TerrainTool_TestFill(); // --test-fill (#228): an exact sphere of dirt, paid by volume
