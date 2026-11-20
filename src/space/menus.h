@@ -68,6 +68,9 @@ void Menu_TestSettings(int tab, bool pause); // --shot-settings (#512): open the
 void Menu_SettingsLayout(float& contentBottom, Rectangle& back); // the last drawn page: its rows' bottom and the Back button
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
+// (#1110) A world the menus offer to load or host: a .sav that isn't the bench's and isn't a joined game's cache of a
+// server's world (a .synced beside it; hosting one started a fresh world and player).
+bool Menu_IsWorldSave(const std::string& path);
 // Multiplayer (#341): back on the Join (or Host) page with why it failed (refused, timed out, the server didn't start).
 void Menu_MultiplayerFailed(bool host, const std::string& why);
 void Menu_RememberServer(const std::string& address); // a server joined: first in the recent list
