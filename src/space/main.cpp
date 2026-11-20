@@ -1432,7 +1432,14 @@ int main(int argc, char** argv)
     }
     if (loadSaveAtStart) { // the player's save, read-only; later bench saves still go to bench.sav
         SetWorldSavePath("saves/world.sav");
-        if (!LoadWorldSave(world)) printf("bench: --load: could not load saves/world.sav\n");
+        if (!LoadWorldSave(world)) {
+            // (#652) nothing to load: a bench stops here with a clear failure (it went on with no world and crashed); a
+            // game started with --load begins a new world instead
+            if (bench) { printf("bench: --load: could not load saves/world.sav (missing or unreadable) -> FAIL\n"); CloseWindow(); return 1; }
+            printf("--load: could not load saves/world.sav: a new world instead\n");
+            SetWorldSavePath("saves/world.sav");
+            generateWorld(world);
+        }
         if (bench) SetWorldSavePath("saves/bench.sav");
         if (benchLoadHold) { // --test-load-hold (#901): where the player was saved, body-local, from the record itself
             namespace fs = std::filesystem;
