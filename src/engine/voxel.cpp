@@ -2937,7 +2937,13 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
                     // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
                     Vector3 flow = simFlow; float speed = simSpeed;
-                    if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
+                    // (#1121, playtest: settled rivers lost their moving-water look) Simulated water whose solver current has
+                    // died down (its bricks settled or asleep: < 5 cm/s) is still a river where a river runs: it takes the river's
+                    // current as the generated water does. Ponds and lakes have no river there and stay still.
+                    // RAYLIBGAME_SETTLED_RIVER_FLOW=0: as before.
+                    static const bool settledRiver = !(getenv("RAYLIBGAME_SETTLED_RIVER_FLOW") && getenv("RAYLIBGAME_SETTLED_RIVER_FLOW")[0] == '0');
+                    const bool simHere = simKind && sim.covered(bp);
+                    if (kind == 0 && gen.inland && rivers && (!simHere || (settledRiver && simSpeed < 0.05f))) {
                         const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
                         if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
                             flow = Vector3Subtract(hr.down, Vector3Scale(radial, Vector3DotProduct(hr.down, radial))); // along the surface
