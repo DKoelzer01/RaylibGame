@@ -121,6 +121,12 @@ namespace {
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
+    void TeamXp(uint32_t session, const char* event, double n);         // (#920) and teammates' share of it (below)
+    // (#920) A remote player's perk multipliers by stat name (Skills_Stat on the skills the server keeps for them).
+    std::function<float(const char*)> StatsOf(const Remote& rm) {
+        const SkillState* s = &rm.skills;
+        return [s](const char* name) { return (float)Skills_Stat(*s, name); };
+    }
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
@@ -595,7 +601,9 @@ namespace {
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuse(nullptr); return; }
             rm.lastFellAt = SimTime();
-            for (const auto& [item, n] : TerrainTool_PlantDrops(*b, pl).items) rm.inventory.add(item, n);
+            PlantDrops drops = TerrainTool_PlantDrops(*b, pl);
+            TerrainTool_ScalePlantDrops(drops, pl, StatsOf(rm)); // (#920) the player's Woodcutting and Foraging perks
+            for (const auto& [item, n] : drops.items) rm.inventory.add(item, n);
             b->trees->remove(a.plant);
             plantsSeen[b->id] = b->trees->removalsShared(); // (sent here, with who felled it)
             SendPlants(0, b->netId, session, { { a.plant, b->trees->removals().at(a.plant) } });
@@ -614,7 +622,7 @@ namespace {
                 TeamEvent(session, "count", "plant");
                 RemoteXp(session, "plant"); // (#920) Farming
             } else {
-                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; }
+                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why, StatsOf(rm)) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; } // (#920) their Farming perks
                 TeamEvent(session, "count", "harvest");
                 RemoteXp(session, "harvest"); // (#920) Farming
             }
@@ -712,6 +720,23 @@ namespace {
         const int ups = Skills_Event(it->second.skills, event, n, worldXpRate);
         it->second.skillsDirty = true;
         if (ups > 0) it->second.skillsSentAt = -1e9;
+        TeamXp(session, event, n);
+    }
+    // (#920, the user's answer on #167) Teammates near the earner get a share of the XP (Skills_TeamShare: 10%, within
+    // teamXpRange). n: the earner's event count after the anti-farming share.
+    int teamXpGiven = 0; // tests: shares handed out
+    void TeamXp(uint32_t session, const char* event, double n) {
+        const auto me = remotes.find(session);
+        const int team = TeamOfSession(session);
+        if (me == remotes.end() || team == 0) return;
+        for (auto& [id, r] : remotes) {
+            if (id == session || r.creative || TeamOfSession(id) != team) continue;
+            const double share = Skills_TeamShare(n, (r.player.position - me->second.player.position).length());
+            if (share <= 0.0) continue;
+            if (Skills_Event(r.skills, event, share, worldXpRate) > 0) r.skillsSentAt = -1e9;
+            r.skillsDirty = true;
+            ++teamXpGiven;
+        }
     }
     // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
     uint64_t SkillCell(Vector3 local) {
@@ -1383,15 +1408,18 @@ namespace {
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
         const DigRule rule = DigRuleFor(tool, mat, TerrainTool_ItemAt(*p, hit, (int)mat));
-        const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) / p->scale;
+        // (#1043) The player's own perks scale the stroke as their client does (Mining on rock and ore, Digging on soil).
+        const auto stat = StatsOf(rm);
+        const DigPerkScale perks = TerrainTool_DigPerkScale(tool.type == ToolType::Pickaxe, (int)mat, stat);
+        const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) * perks.radius / p->scale;
         const bool dig = q.kind == NetEditKind::Dig;
         if (dig && !rule.can) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
         // The stroke's shape: the tool's sphere (place: 1.3x, the soft blob), its centre where the tool puts it.
         const float maxRadius = baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
         const float offset = Vector3Distance(hit, centre);
         if (q.radius > maxRadius || offset > q.radius * (dig ? 0.5f : 0.3f) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
-        // Rate: a token per cooldown (the tool's strokes a second, at least 2), up to a small burst.
-        const double rate = std::max(rule.strokesPerSecond, 2.0f);
+        // Rate: a token per cooldown (the tool's strokes a second, at least 2, with the perks), up to a small burst.
+        const double rate = std::max(rule.strokesPerSecond, 2.0f) * perks.rate;
         if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
         rm.editTokens = std::min(kEditBurst, rm.editTokens + (SimTime() - rm.editTokensAt) * rate);
         rm.editTokensAt = SimTime();
@@ -1403,7 +1431,8 @@ namespace {
         std::map<std::string, double> before;
         if (dig) {
             const bool softOnly = tool.type != ToolType::Pickaxe;
-            const DigYield got = TerrainTool_DigYield(*p, centre, q.radius, hit, softOnly, 1);
+            DigYield got = TerrainTool_DigYield(*p, centre, q.radius, hit, softOnly, stat("gem_chance")); // (#920) the player's perks
+            TerrainTool_ScaleYield(got, stat("ore_yield"), stat("stone_yield"));
             for (const auto& [item, amt] : got.items) { before.emplace(item, rm.inventory.amount(item)); }
             if (got.gem) before.emplace(got.gem, rm.inventory.amount(got.gem));
             if (got.seed) before.emplace(got.seed, rm.inventory.amount(got.seed));
@@ -1422,6 +1451,8 @@ namespace {
                 if (got.gem) ups += Skills_Event(rm.skills, "gem", 1.0, worldXpRate);
                 rm.skillsDirty = true;
                 if (ups > 0) rm.skillsSentAt = -1e9; // (a level-up goes out at once)
+                TeamXp(session, ev, share);
+                if (got.gem) TeamXp(session, "gem", 1.0);
             }
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
@@ -2200,6 +2231,22 @@ bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp) {
     return true;
 }
 bool Host_TestSetFood(uint32_t session, float food) { auto it = remotes.find(session); if (it == remotes.end()) return false; it->second.survival.food = food; return true; }
+bool Host_TestPerk(uint32_t session, const std::string& perk, int rank) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    it->second.skills.ranks[perk] = rank;
+    it->second.skillsDirty = true; it->second.skillsSentAt = -1e9;
+    return true;
+}
+bool Host_TestTeamUp(uint32_t a, uint32_t b) {
+    const Session *sa = nullptr, *sb = nullptr;
+    for (const Session& s : sessions) { if (s.id == a) sa = &s; if (s.id == b) sb = &s; }
+    if (!sa || !sb) return false;
+    const int team = Teams_Join(sa->uuid, sa->name, 0xFFFFFFFFu);
+    Teams_Move(sb->uuid, team);
+    return team != 0 && Teams_Of(sb->uuid) == team;
+}
+int Host_TeamXpGiven() { return teamXpGiven; }
 int Host_SkillSpends() { return skillSpends; }
 int Host_SkillSpendsRefused() { return skillSpendsRefused; }
 bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (tests) count < 0 takes
