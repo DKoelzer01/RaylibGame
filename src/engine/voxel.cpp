@@ -1476,7 +1476,7 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 // Organic shapes (#615 step 3, #1022; user 2026-11-19: "define the actual path and diameter, then apply heavy 3D noise
 // inwards"): the skeleton is the graph segment's bore (radius x a +-30% swell and a 10 m outline term, a gently flattened
 // ellipse whose centre wanders sideways, a floor 20-70% down that tilts across the passage, roof pockets). On it, heavy
-// domain-warped 3D noise (3 octaves from ~3 m plus sharp 1 m creases) only ever grows rock inward from the wall: none
+// domain-warped 3D noise (2 octaves from ~4 m plus a gentle ~2 m one) only ever grows rock inward from the wall: none
 // inside half the bore, so a clear core always runs through, and up to ~0.6 of the bore near the wall, so walls, ledges and
 // overhangs come out of the noise. Mouths: a larger outline term, taller on one side, a level floor with low rubble. Solids
 // (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
@@ -1485,7 +1485,7 @@ struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
 static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid) {
     solid = -1e9f;
     bool any = false;
-    float swell = 0.0f, wallN = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f, big = 0.0f;
+    float swell = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f, big = 0.0f;
     float m = 1e9f;
     for (int i = 0; i < n; ++i) {
         const float* s = segs + 24 * i;
@@ -1499,9 +1499,6 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             const float wy = q.y + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f + 29.0f, q.z * 13.5f);
             const float wz = q.z + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f, q.z * 13.5f + 41.0f);
             swell = 1.0f + 0.3f * N.b.fractal(1, wx * 15.0f, wy * 15.0f, wz * 15.0f);                     // the bore, +-30% over ~10 m
-            const float r3 = N.det.fractal(3, wx * 24.5f + 101.0f, wy * 24.5f, wz * 24.5f); // (#1022) wall roughness: 3 octaves
-            const float r1 = N.b.fractal(2, wx * 135.0f + 7.0f, wy * 135.0f, wz * 135.0f);   //   from ~3 m, plus creases (|n|: sharp)
-            wallN = std::max(0.0f, 0.35f + 2.6f * r3 + 1.4f * (0.3f - fabsf(r1)));       //   (>= 0: rock only ever grows inward)
             lev = 0.45f + 0.25f * N.cav.fractal(1, wx * 13.2f, wy * 13.2f, wz * 13.2f);    // floor level, ~17 m
             tilt = 0.6f * N.mou.fractal(1, wx * 35.0f + 7.0f, wy * 35.0f, wz * 35.0f);       // floor tilt, ~20 m
             pocket = std::max(0.0f, N.det.fractal(1, wx * 14.0f + 53.0f, wy * 14.0f, wz * 14.0f)); // roof pockets, ~5 m
@@ -1543,13 +1540,28 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float levK = kind > 0.5f ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
         const float tiltK = kind > 0.5f ? 0.0f : tilt;                     //   the opening meets the ground and stays open
         const float floorCut = (0.0f - hv) - levK * rw * s[11] + 0.5f * tiltK * hp + rubble;
-        // (#1022, user) Heavy 3D noise grows rock inward from the wall: none inside half the bore (a clear core to walk
-        // through, and the floor stays the floor), rising to a large fraction of the bore near the wall.
-        const float fa = (len - 0.5f * rw) / (0.4f * rw);
-        const float fc = std::clamp(fa, 0.0f, 1.0f);
-        const float fade = fc * fc * (3.0f - 2.0f * fc);
-        const float ak = kind > 0.5f ? 0.65f : 0.55f;
-        const float intrude = ak * rw * fade * wallN;
+        // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
+        // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
+        // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
+        // squeezed radially toward the skeleton's wall (radial distance x 0.25 around it), so it changes at full rate
+        // across the wall (jagged faces) but 4x slower outward (solid rock behind them, no shells or floating pieces).
+        // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
+        float intrude = 0.0f;
+        if (len > 0.5f * rw && len < rw + 40.0f) {
+            const float hl2 = hx * hx + hy * hy + hz * hz;
+            const float hl = sqrtf(hl2);
+            if (hl > 1e-3f) {
+                const float sc = 0.25f + 0.75f * rw / hl;
+                const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
+                const float r3 = N.det.fractal(3, px * 24.5f + 101.0f, py * 24.5f, pz * 24.5f); // 3 octaves from ~3 m
+                const float r1 = N.b.fractal(2, px * 135.0f + 7.0f, py * 135.0f, pz * 135.0f);   // sharp ~1 m creases (|n|)
+                const float wn = std::max(0.0f, 0.35f + 2.6f * r3 + 1.4f * (0.3f - fabsf(r1)));
+                const float fa = (len - 0.5f * rw) / (0.4f * rw);
+                const float fc = std::clamp(fa, 0.0f, 1.0f);
+                const float fade = fc * fc * (3.0f - 2.0f * fc);
+                intrude = (kind > 0.5f ? 0.65f : 0.55f) * rw * fade * wn;
+            }
+        }
         m = std::min(m, std::max(len - rw + intrude, floorCut));
     }
     return m;

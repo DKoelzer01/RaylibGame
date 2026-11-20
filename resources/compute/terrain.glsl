@@ -412,7 +412,7 @@ float floatingIsland(vec3 p, float d) {
 float caveGraphDistance(vec3 q, out float solid) {
     solid = -1e9;
     bool any = false;
-    precise float swell = 0.0, wallN = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0, big = 0.0;
+    precise float swell = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0, big = 0.0;
     precise float m = 1e9;
     for (int i = 0; i < caveSegCount; ++i) {
         vec4 lo = caveSegData(i, 3), hi = caveSegData(i, 4);
@@ -427,13 +427,6 @@ float caveGraphDistance(vec3 q, out float solid) {
             wy = q.y + 3.0 * fractal(N_CAVES_A, 1, qx, qy29, qz);
             wz = q.z + 3.0 * fractal(N_CAVES_A, 1, qx, qy, qz41);
             swell = 1.0 + 0.3 * fractal(N_CAVES_B, 1, wx * 15.0, wy * 15.0, wz * 15.0);
-            precise float w3x = wx * 24.5 + 101.0;
-            precise float r3 = fractal(N_DETAIL, 3, w3x, wy * 24.5, wz * 24.5);
-            precise float w1x = wx * 135.0 + 7.0;
-            precise float r1 = fractal(N_CAVES_B, 2, w1x, wy * 135.0, wz * 135.0);
-            precise float cr = 0.3 - abs(r1);
-            precise float wn0 = 0.35 + 2.6 * r3 + 1.4 * cr;
-            wallN = max(0.0, wn0);
             lev = 0.45 + 0.25 * fractal(N_CAVERNS, 1, wx * 13.2, wy * 13.2, wz * 13.2);
             precise float tx = wx * 35.0 + 7.0;
             tilt = 0.6 * fractal(N_CAVE_MOUTHS, 1, tx, wy * 35.0, wz * 35.0);
@@ -485,13 +478,33 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float levK = kind > 0.5 ? 0.45 : lev;
         precise float tiltK = kind > 0.5 ? 0.0 : tilt;
         precise float floorCut = (0.0 - hv) - levK * rw * U.w + 0.5 * tiltK * hp + rubble;
-        precise float fnum = len - 0.5 * rw;
-        precise float fden = 0.4 * rw;
-        precise float fa = xdiv(fnum, fden);
-        precise float fc = clamp(fa, 0.0, 1.0);
-        precise float fade = fc * fc * (3.0 - 2.0 * fc);
-        precise float ak = kind > 0.5 ? 0.65 : 0.55;
-        precise float intrude = ak * rw * fade * wallN;
+        // (#1022) Noise grows the wall inward, looked up at a point squeezed radially toward the wall (no voids behind it).
+        precise float intrude = 0.0;
+        precise float core = 0.5 * rw, far_ = rw + 40.0;
+        if (len > core && len < far_) {
+            precise float hl2 = hx * hx + hy * hy + hz * hz;
+            precise float hl = xsqrt(hl2);
+            if (hl > 1e-3) {
+                precise float rw75 = 0.75 * rw;
+                precise float sq = xdiv(rw75, hl);
+                precise float sc = 0.25 + sq;
+                precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
+                precise float p3x = px * 24.5 + 101.0;
+                precise float r3 = fractal(N_DETAIL, 3, p3x, py * 24.5, pz * 24.5);
+                precise float p1x = px * 135.0 + 7.0;
+                precise float r1 = fractal(N_CAVES_B, 2, p1x, py * 135.0, pz * 135.0);
+                precise float cr = 0.3 - abs(r1);
+                precise float wn0 = 0.35 + 2.6 * r3 + 1.4 * cr;
+                precise float wn = max(0.0, wn0);
+                precise float fnum = len - 0.5 * rw;
+                precise float fden = 0.4 * rw;
+                precise float fa = xdiv(fnum, fden);
+                precise float fc = clamp(fa, 0.0, 1.0);
+                precise float fade = fc * fc * (3.0 - 2.0 * fc);
+                precise float akk = kind > 0.5 ? 0.65 : 0.55;
+                intrude = akk * rw * fade * wn;
+            }
+        }
         precise float lw = len - rw + intrude;
         m = min(m, max(lw, floorCut));
     }
