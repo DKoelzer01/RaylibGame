@@ -29,6 +29,8 @@ struct DigRule {
 };
 DigRule DigRuleFor(ToolSpec tool, VoxelMaterial material, const char* item);
 bool IsSoft(VoxelMaterial m);
+bool IsTillable(VoxelMaterial m); // soil a till turns into farmland (#1085): grass, dirt, clay, silt, mud (and farmland)
+float TillRadius(ToolSpec tool);  // m: a till's brush (#1085); 0 for tools that don't till
 int PickTierFor(VoxelMaterial m, const char* item); // the pickaxe tier stone and each ore need
 
 // Swings to fell a tree, relative to an axe-less base count (bushes are unaffected).

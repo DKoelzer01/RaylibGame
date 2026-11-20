@@ -19,6 +19,7 @@
 namespace FluidKernel {
 
 struct Vec4 { float x = 0.0f, y = 0.0f, z = 0.0f, w = 0.0f; };
+float HalfRound(float f); // tests (#968): a float through IEEE half (nearest even), as the CPU kernel stores face flows
 
 struct Params {
     int minSpread[8] = {}, visc[8] = {};
