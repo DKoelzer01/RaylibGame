@@ -1512,7 +1512,7 @@ int main(int argc, char** argv)
     // compared once it has streamed in). The player starts where the server's state says (the main loop, once the first
     // own state arrives); gameplay is the server's: this process predicts its player (NetClient_Step), follows the world
     // clock (#339) and draws the others (gNetClient). It never writes the single-player save: anything saved goes to
-    // saves/client_<name>.sav. Returns "" when joined, else why not (the client is back offline).
+    // saves/mp_cache/client_<name>.sav (#1110). Returns "" when joined, else why not (the client is back offline).
     auto joinServer = [&](const std::string& addr, const std::string& name, const std::string& password, uint32_t suit, double retrySeconds, const std::string& waiting) -> std::string {
         std::string err;
         if (!Net_Init(err)) return "no network transport (" + err + ")";
@@ -1551,7 +1551,10 @@ int main(int argc, char** argv)
             if (ParseBodyDef(line, b, e)) sys.bodies.push_back(b); else printf("join: a body the server sent did not parse (%s): %s\n", e.c_str(), line.c_str());
         }
         if (!sys.bodies.empty()) { worldGen.system = sys; worldGen.systemLoaded = true; }
-        SetWorldSavePath(TextFormat("saves/client_%s.sav", joinName.c_str()));
+        // (#1110) The joined game's cache of the server's world, in its own folder: in saves/ it showed in the world lists like a
+        // real world, and the Host page (newest first) offered it: hosting it again started a fresh world and player.
+        { std::error_code ec; std::filesystem::create_directories("saves/mp_cache", ec); }
+        SetWorldSavePath(TextFormat("saves/mp_cache/client_%s.sav", joinName.c_str()));
         // #757: the server's world-gen settings become this save's sidecar (generateWorld reads it), and its sandbox flag.
         const WorldGenParams joinParams = WorldGenParams_FromText(gJoin.welcome.worldgen);
         WorldGenParams_Save(WorldSavePath(), joinParams);
