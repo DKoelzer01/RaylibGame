@@ -725,13 +725,22 @@ namespace {
     // (#920, the user's answer on #167) Teammates near the earner get a share of the XP (Skills_TeamShare: 10%, within
     // teamXpRange). n: the earner's event count after the anti-farming share.
     int teamXpGiven = 0; // tests: shares handed out
+    Scene* hostWorld = nullptr; // (#920) the world Host_Update runs, for body-local positions where no world is passed in
     void TeamXp(uint32_t session, const char* event, double n) {
         const auto me = remotes.find(session);
         const int team = TeamOfSession(session);
-        if (me == remotes.end() || team == 0) return;
+        if (me == remotes.end() || team == 0 || !hostWorld) return;
+        // Distances body-local, on the same body: a player not stepped for a while (no inputs) keeps a world position the
+        // planet has long turned away from (#844), but its body-local anchor is right (Player::netState).
+        Player::NetState mine;
+        if (!me->second.player.netState(*hostWorld, mine)) return;
+        const Planetoid* body = Planetoid::findNet(mine.body);
+        if (!body) return;
         for (auto& [id, r] : remotes) {
             if (id == session || r.creative || TeamOfSession(id) != team) continue;
-            const double share = Skills_TeamShare(n, (r.player.position - me->second.player.position).length());
+            Player::NetState theirs;
+            if (!r.player.netState(*hostWorld, theirs) || theirs.body != mine.body) continue;
+            const double share = Skills_TeamShare(n, (theirs.local - mine.local).length() * body->scale);
             if (share <= 0.0) continue;
             if (Skills_Event(r.skills, event, share, worldXpRate) > 0) r.skillsSentAt = -1e9;
             r.skillsDirty = true;
@@ -2067,6 +2076,7 @@ int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
 
 void Host_Update(Scene& world) {
+    hostWorld = &world;
     // Autosave (user, 2026-11-15: every 30 minutes by default; --autosave-minutes N, 0 = off). Wall-clock time: a
     // server's saves protect against crashes, whatever the game clock does.
     if (autosaveSeconds > 0.0 && lastSave >= 0.0 && GetTime() - lastSave >= autosaveSeconds) {
