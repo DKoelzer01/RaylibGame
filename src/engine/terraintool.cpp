@@ -36,7 +36,9 @@ namespace {
     PlantHit plantHit{};
     Planetoid* plantBody = nullptr;
     uint64_t chopId = 0;
-    int chopHits = 0;
+    // (#1094) The share of the aimed plant already cut (0..1): each swing adds 1 / the swings the tool in hand would take,
+    // so switching tools changes only what the next swings add (as a hit count over the tool's total, the bar jumped).
+    float chopWork = 0.0f;
     // The tool in hand and what it does to the aimed material.
     ToolSpec tool;
     DigRule rule;
@@ -67,7 +69,7 @@ namespace {
         if (!hasPlant || !plantBody || !plantBody->trees) return false;
         const Plant& p = plantHit.plant;
         if (p.id == pendingFell && GetTime() < pendingFellUntil) return false;
-        if (p.id != chopId) { chopId = p.id; chopHits = 0; }
+        if (p.id != chopId) { chopId = p.id; chopWork = 0.0f; }
         Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
         ++terrainTool.swings;
         {   // Chips off the trunk (leaves off a bush, grit off a stone).
@@ -77,7 +79,8 @@ namespace {
             chips.count = 6; chips.size = p.tree() ? 0.06f : 0.05f; chips.life = 1.4f; chips.speed = 2.5f; chips.spread = 0.8f;
             Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.tree() ? std::min(1.2f, p.height * 0.3f) : p.height * 0.5f)), chips);
         }
-        if (++chopHits < HitsToFell(p)) return false;
+        chopWork += 1.0f / (float)HitsToFell(p);
+        if (chopWork < 1.0f - 1e-4f) return false; // (the slack: n swings of 1/n each make 1 despite rounding)
         if (!p.stone()) {
             // It comes down: a burst of leaves from the crown.
             ParticleBurst leaves;
@@ -89,7 +92,7 @@ namespace {
             gPlantRequest(*plantBody, p.id);
             pendingFell = p.id; pendingFellUntil = GetTime() + 1.5; // (no new swings at it while the answer is on its way)
             gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
-            chopId = 0; chopHits = 0; hasPlant = false;
+            chopId = 0; chopWork = 0.0f; hasPlant = false;
             return true;
         }
         plantBody->trees->remove(p.id);
@@ -103,7 +106,7 @@ namespace {
             else gSkillEvent(p.stone() ? "loose_stone" : "bush", 1.0, p.base);
         }
         gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
-        chopId = 0; chopHits = 0;
+        chopId = 0; chopWork = 0.0f;
         hasPlant = false;
         return true;
     }
@@ -217,7 +220,6 @@ bool TerrainTool_Bucket(Scene& world) {
 
 static int FillerMaterial(const std::string& item); // below
 static bool HitOre();
-static bool PickOnRock(); // (#883: below)
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
@@ -444,7 +446,6 @@ static bool BrushStroke(bool digging) {
 // Rock and ore under the crosshair (skills: Mining's perks act on a pickaxe there, #883).
 static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
 static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
-static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
 int SkillScaled(int n, const char* stat, const std::function<float(const char*)>& by) {
     const double v = n * (double)(by ? by(stat) : SkillStat(stat));
     const int whole = (int)std::floor(v);
@@ -802,8 +803,8 @@ void TerrainTool_DrawHUD() {
             what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
         }
         DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
-        if (chopId == p.id && chopHits > 0) {
-            const float f = (float)chopHits / HitsToFell(p);
+        if (chopId == p.id && chopWork > 0.0f) {
+            const float f = std::min(chopWork, 1.0f);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
             DrawRectangle(ox, oy2, (int)(120 * hs * f), (int)(6 * hs), ORANGE);
         }
@@ -902,6 +903,7 @@ void TerrainTool_PlantRemoved(Planetoid& body, uint64_t id, double when, bool mi
     if (id == pendingFell) pendingFell = 0;
     body.trees->remove(id, when);
 }
+float TerrainTool_ChopProgress() { return hasPlant && chopId == plantHit.plant.id ? std::min(chopWork, 1.0f) : 0.0f; }
 bool TerrainTool_AimingPlant(uint64_t* id) {
     if (hasPlant && id) *id = plantHit.plant.id;
     return hasPlant;
@@ -1010,5 +1012,5 @@ bool TerrainTool_TestFillOffHand() {
 // next world loads, and TerrainTool_Draw3D drew the old hit on a freed planet.
 void TerrainTool_ForgetWorld() {
     hit = TerrainHit{}; hasHit = false; digging = adding = false;
-    hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopHits = 0;
+    hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopWork = 0.0f;
 }
