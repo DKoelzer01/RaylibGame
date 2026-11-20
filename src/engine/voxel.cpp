@@ -1338,7 +1338,8 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         float gridStep = 0.0f;                                             // the grid's spacing (m)
         std::vector<Vector3> steep;                                        // candidate directions, steepest first
         Vector3 pu1{}, pu2{};
-        if (cellHasMouth) {
+        static const bool mouthSearch = !(getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH") && getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH")[0] == '0'); // =0: random tries (A/B)
+        if (cellHasMouth && mouthSearch) {
             const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
             const float cl = Vector3Length(cc);
             if (cl > 1.0f) {
