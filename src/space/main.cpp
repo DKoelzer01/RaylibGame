@@ -5032,7 +5032,12 @@ int main(int argc, char** argv)
                         grew = false;
                         for (const Rule& u : rules) {
                             if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
-                            if (u.machine == "#farmland" && !have.count("farmland")) continue;
+                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe or shovel makes it
+                                bool till = false;
+                                for (const char* t : { "stone_hoe", "stone_shovel", "iron_hoe", "iron_shovel" }) till = till || have.count(t) > 0;
+                                if (!till) continue;
+                                have.insert("farmland");
+                            }
                             bool ok = true;
                             for (const std::string& in : u.in) ok = ok && (u.machine == "#tool" ? have.count(in) > 0 : have.count(in) > 0);
                             if (!ok) continue;
