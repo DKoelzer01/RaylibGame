@@ -151,7 +151,7 @@ namespace {
             b.s[0] = g.su; b.s[1] = g.sv;
             b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
-            b.c[0] = (int)(cav.size() / 12); b.c[1] = (int)(j.caveSegs.size() / 12); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; // (#615 step 2)
+            b.c[0] = (int)(cav.size() / 20); b.c[1] = (int)(j.caveSegs.size() / 20); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; // (#615 step 2)
             blocks.push_back(b);
             for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];
@@ -166,7 +166,7 @@ namespace {
             maxN = std::max(maxN, n);
         }
         if (isl.empty()) isl.assign(12, 0.0f);
-        if (cav.empty()) cav.assign(12, 0.0f);
+        if (cav.empty()) cav.assign(20, 0.0f);
         sl.outCount = out;
         Ensure(sl.grid, grid.size() * 4);
         Ensure(sl.islands, isl.size() * 4);

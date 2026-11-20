@@ -20,9 +20,9 @@ layout(std430, binding = 0) readonly buffer Grid { vec4 grid[]; };       // two 
 layout(std430, binding = 1) readonly buffer Islands { vec4 islands[]; }; // 3 per island
 layout(std430, binding = 2) writeonly buffer Out { float density[]; };
 layout(std430, binding = 3) readonly buffer Blocks { Block blocks[]; };
-layout(std430, binding = 4) readonly buffer Caves { vec4 caveSegs[]; };  // 3 per segment (#615 step 2)
+layout(std430, binding = 4) readonly buffer Caves { vec4 caveSegs[]; };  // 5 per segment (#615 step 2)
 int gCaveOff = 0;
-vec4 caveSegData(int i, int k) { return caveSegs[(gCaveOff + i) * 3 + k]; }
+vec4 caveSegData(int i, int k) { return caveSegs[(gCaveOff + i) * 5 + k]; }
 int gIslandOff = 0;
 vec4 islandData(int i, int k) { return islands[(gIslandOff + i) * 3 + k]; }
 

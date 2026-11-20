@@ -1246,7 +1246,11 @@ static std::shared_ptr<const std::vector<CaveSeg>> CaveCell(const PlanetField& f
             }
         }
     };
-    for (int tries = 0; tries < 4; ++tries) {
+    // (#615) Abundance (the New World "Caves" slider, step 11; RAYLIBGAME_CAVE_ABUNDANCE for now): 0 none, 1 as tuned, 2 ~3x.
+    // The first starts draw the same numbers at any abundance, so more caves add passages and keep the others.
+    static const float abundance = getenv("RAYLIBGAME_CAVE_ABUNDANCE") ? std::clamp((float)atof(getenv("RAYLIBGAME_CAVE_ABUNDANCE")), 0.0f, 2.0f) : 1.0f;
+    const int starts = (int)lroundf(4.0f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+    for (int tries = 0; tries < starts; ++tries) {
         const Vector3 s = { (cx + U(rng)) * kCaveCell, (cy + U(rng)) * kCaveCell, (cz + U(rng)) * kCaveCell };
         const float sl = Vector3Length(s);
         if (sl < 1.0f) continue;
@@ -1288,8 +1292,9 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
                     const float rr = 1.45f * std::max(s.ra, s.rb) / std::min(s.flat, 1.0f) + reach + 1.2f; // (+ the bore swell and the wall lumps)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
-                    const float e[12] = { s.a.x, s.a.y, s.a.z, s.ra, s.b.x, s.b.y, s.b.z, s.rb, s.up.x, s.up.y, s.up.z, s.flat };
-                    out.insert(out.end(), e, e + 12);
+                    const float e[20] = { s.a.x, s.a.y, s.a.z, s.ra, s.b.x, s.b.y, s.b.z, s.rb, s.up.x, s.up.y, s.up.z, s.flat,
+                                          slo.x, slo.y, slo.z, 0.0f, shi.x, shi.y, shi.z, 0.0f }; // + the box beyond which it can't carve
+                    out.insert(out.end(), e, e + 20);
                 }
             }
 }
@@ -1301,16 +1306,21 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
     const float ext = stride * (float)(S - 1);
     const float reach = 2.0f * std::max(fp, 1.0f) + 2.0f; // densityNear's meshing reach
     GatherCaveSegs(*this, fieldSeed, o, Vector3AddValue(o, ext), reach, out);
-    return (int)(out.size() / 12) <= maxSegs;
+    return (int)(out.size() / 20) <= maxSegs;
 }
 
-// The graph tunnels' distance at q (metres to the nearest wall): the capsules flattened along their up, the radius
-// roughened by one octave of the cavesB field. The same operations, in the same order, as terrain.glsl's caveGraphDistance.
+// The graph tunnels' distance at q (metres to the nearest wall): the capsules flattened along their up, the bore swelling
+// and narrowing, a flat floor, lumpy walls. A segment whose box (its reach: the list's, grown by the most the shape can add)
+// doesn't hold q is skipped (it can't carve here), and the noises are looked up only once one does: most of a block's
+// samples are near no passage. The same operations, in the same order, as terrain.glsl's caveGraphDistance (bit-exact).
 static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, const SimplexNoise& fine, Vector3 q, const float* segs, int n) {
-    const float wob = 1.0f + 0.45f * rough.fractal(2, q.x * 0.12f, q.y * 0.12f, q.z * 0.12f); // the bore swells and narrows (+-45%)
+    float wob = 0.0f;
+    bool any = false;
     float m = 1e9f;
     for (int i = 0; i < n; ++i) {
-        const float* s = segs + 12 * i;
+        const float* s = segs + 20 * i;
+        if (q.x < s[12] || q.y < s[13] || q.z < s[14] || q.x > s[16] || q.y > s[17] || q.z > s[18]) continue;
+        if (!any) { any = true; wob = 1.0f + 0.45f * rough.fractal(2, q.x * 0.12f, q.y * 0.12f, q.z * 0.12f); } // the bore swells and narrows (+-45%)
         const float abx = s[4] - s[0], aby = s[5] - s[1], abz = s[6] - s[2];
         const float apx = q.x - s[0], apy = q.y - s[1], apz = q.z - s[2];
         const float t = std::clamp((apx * abx + apy * aby + apz * abz) / (abx * abx + aby * aby + abz * abz), 0.0f, 1.0f);
@@ -1324,6 +1334,7 @@ static float CaveGraphDistance(const PlanetField& f, const SimplexNoise& rough, 
         const float floorCut = (0.0f - hv) - 0.6f * rw * s[11];          // a flat floor 60% of the way down (sediment): rock below it
         m = std::min(m, std::max(len - rw, floorCut));
     }
+    if (!any) return m;
     m = m + 1.2f * fine.fractal(2, q.x * 0.35f, q.y * 0.35f, q.z * 0.35f); // (#999) lumpy walls: ~3 m bumps, +-1.2 m
     (void)f;
     return m;
@@ -1356,7 +1367,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     }
                     segs = &own;
                 }
-                const int n = (int)(segs->size() / 12);
+                const int n = (int)(segs->size() / 20);
                 if (n > 0) {
                     m = CaveGraphDistance(*this, cavesB, detail, p, segs->data(), n) + (1.0f - caveWeight) * 20.0f;
                     if (hit && m < 1e8f) hit->kind = 1;

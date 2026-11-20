@@ -225,7 +225,10 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
-  together. `--cave-stats R` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest mouth).
+  together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
+  mouth). Step 2 (#995): `RAYLIBGAME_CAVES=1` = graph tunnels (per-256 m-cell passages, per-block segment lists, 5 vec4 each, to the GPU at
+  binding 4; <= 32 a block, else the CPU path), opt-in until step 3's mouths; `RAYLIBGAME_CAVE_ABUNDANCE` 0-2 (the New World slider to come);
+  `RAYLIBGAME_CAMERA_LIGHT=1` lights the view for cave captures.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
   SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
   dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.
