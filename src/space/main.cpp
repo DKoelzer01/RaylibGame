@@ -681,7 +681,7 @@ int main(int argc, char** argv)
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     constexpr float kFlowShaftM = 6.0f, kFlowChamberR = 2.0f, kFlowCaveM = 8.0f; // the flow tests' shaft depth, chamber radius, chamber point under the water (m, #935)
-    float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
+    float damDrift = 0.0f, damSpillL = 0.0f; // damSpillL: the dam's crest length over ground under the crest (m, #1039: the weir's width); // --test-dam: the current mid-channel (0: the check failed)
     bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
@@ -7512,8 +7512,10 @@ int main(int argc, char** argv)
                         {
                             // The dam: a wall across the river and 15 m into each bank, from under the bed up to the crest.
                             std::vector<TerrainEdit> wall;
+                            damSpillL = 0.0f;
                             for (float w = -(damHW + 15.0f); w <= damHW + 15.0f; w += 0.8f) {
                                 const Vector3 dw = off(damDir, damSide, w);
+                                if (pf->elevation(dw) < damCrest) damSpillL += 0.8f; // the weir's width: where the ground is under the crest (#1039)
                                 const float bed = std::min(pf->elevation(dw), damLevel - damDepth);
                                 for (float h = bed - 0.5f; h <= damCrest - 0.6f; h += 0.8f) wall.push_back({ at(dw, h), 1.3f, 5.0f, false });
                             }
@@ -7688,7 +7690,15 @@ int main(int argc, char** argv)
                             // Backs up to the crest; spills: the pool then holds there (water leaves over the crest) instead of rising
                             // on. The reach below keeps the downstream river's level (its sink holds it: a flat river backs up from
                             // below too), so it is reported, not judged.
-                            const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 0.35f;
+                            // How high it holds over the crest is a weir's head (#1039, by physics #690 - the fixed 0.35 m was tuned on
+                            // a site whose old caves drained part of the pool): Q = Cd L sqrt(2g) H^1.5 with the reach's natural inflow Q,
+                            // the crest's width over lower ground L and Cd ~ 0.6 (broad-crested), so H = (Q / (Cd L sqrt(2g)))^(2/3).
+                            // 1.5 H allowed: a margin for 0.25 m cells and the crest's rough top (a guess, not measured).
+                            const float weirQ = Fluid::ReleasedNaturalFlow(), weirL = std::max(damSpillL, 1.0f);
+                            const float weirH = weirQ > 0.0f ? powf(weirQ / (0.6f * weirL * sqrtf(2.0f * 9.81f)), 2.0f / 3.0f) : 0.35f;
+                            printf("bench: dam: weir: inflow Q %.2f m^3/s over a crest %.1f m wide -> head H %.2f m; the pool may hold up to %.2f m (crest + 1.5 H)\n",
+                                   weirQ, weirL, weirH, damCrest + 1.5f * weirH);
+                            const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 1.5f * weirH;
                             const bool around = bypassT >= 0.0; // rose, then held under the crest while fed: it went around (#666)
                             printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; %s; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
                                    released, damLvU, damMaxU, damCrest, spillT, su, around ? TextFormat("went around the dam (held at %.2f m from %.0f s)", stallLevel, stallT) : "did not go around",

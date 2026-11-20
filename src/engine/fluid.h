@@ -51,6 +51,7 @@ namespace Fluid {
     void OnTerrainEdit(Planetoid& body, Vector3 localCentre, float radius, bool adds = false);
     int ReleasedReaches(); // tests: river reaches released (#361)
     float ReleaseInflowScale(); // tests: the lowest flow share feeding a released reach's springs (1 natural, #656); -1: none
+    float ReleasedNaturalFlow(); // tests: the released reaches' natural inflow (their springs' m^3/s summed, #1039: a weir's head)
     // water.fs: the fluid kinds' colours (uniform arrays fluidColors / fluidGlows), with the shader bound. The chunks
     // draw every fluid surface (waterfield.h); a vertex carries its kind.
     void BindKindUniforms(const Shader& shader);
