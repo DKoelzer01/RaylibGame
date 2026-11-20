@@ -327,7 +327,7 @@ public:
     // reaches). densityNear carves where it is under its meshing reach; terrain.glsl's caveDistance is the same, bit-exact.
     // hit (tools: --cave-stats): what made the distance.
     struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
-    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr) const;
+    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr, float* solid = nullptr) const; // solid (#615 step 3): metres inside rubble aprons (densityNear adds them)
     // (#615 step 2) The cave graph: passages generated per 256 m cell (sea-level projection) from the seed, cached. A block
     // gets the segments whose capsules can reach it, 5 vec4 each: (a, ra), (b, rb), (up, flat), box lo, box hi. False
     // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of

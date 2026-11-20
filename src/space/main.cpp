@@ -6086,14 +6086,14 @@ int main(int argc, char** argv)
                             const Vector3 c0 = Vector3Scale(home, pf->radius + pf->elevation(home));
                             pf->blockCaveSegs(Vector3AddValue(c0, -400.0f), 800.0f, 2, 1.0f, segs, INT32_MAX);
                             float bd = 1e30f;
-                            if (const char* st = getenv("RAYLIBGAME_CAVES_START")) { Vector3 sp{}; if (sscanf(st, "%f %f %f", &sp.x, &sp.y, &sp.z) == 3) { segs.clear(); segs.insert(segs.end(), { sp.x, sp.y, sp.z, 0, sp.x, sp.y, sp.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }); } } // (captures: a fixed start)
-                            for (size_t s = 0; s + 20 <= segs.size(); s += 20) {
+                            if (const char* st = getenv("RAYLIBGAME_CAVES_START")) { Vector3 sp{}; if (sscanf(st, "%f %f %f", &sp.x, &sp.y, &sp.z) == 3) { segs.clear(); segs.insert(segs.end(), { sp.x, sp.y, sp.z, 0, sp.x, sp.y, sp.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }); } } // (captures: a fixed start)
+                            for (size_t s = 0; s + 24 <= segs.size(); s += 24) {
                                 const Vector3 mid = { 0.5f * (segs[s] + segs[s + 4]), 0.5f * (segs[s + 1] + segs[s + 5]), 0.5f * (segs[s + 2] + segs[s + 6]) };
                                 const float dd = Vector3Distance(mid, c0);
                                 if (dd < bd) { bd = dd; at = mid; }
                             }
                             best = bd < 1e29f ? bd : 1e30f;
-                            if (best < 1e29f) printf("bench: caves: graph tunnels (RAYLIBGAME_CAVES=1): %zu segments within 400 m, starting in the nearest at %.2f %.2f %.2f\n", segs.size() / 20, at.x, at.y, at.z);
+                            if (best < 1e29f) printf("bench: caves: graph tunnels (RAYLIBGAME_CAVES=1): %zu segments within 400 m, starting in the nearest at %.2f %.2f %.2f\n", segs.size() / 24, at.x, at.y, at.z);
                         }
                         if (best > 1e29f) { printf("bench: caves: no cave mouth within 3 km -> FAIL\n"); benchTestCaves = false; }
                         else {

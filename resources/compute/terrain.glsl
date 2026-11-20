@@ -63,6 +63,17 @@ float xsqrt(float x) {
     precise float s = sqrt(x);
     precise float r = fma(-s, s, x);
     precise float res = fma(r, 0.5 / s, s);
+    // (#1022) One Newton step can round the wrong way when the root lies near a midpoint between two floats (l2 = 64 + 1 ulp:
+    // the CPU's sqrtf gives 8, this gave 8 + 1 ulp). Settle it exactly: e = x - res^2 is exact (fma), and x lies above the
+    // midpoint res + u/2 iff e - res*u > 0 (every term is a multiple of u^2, so these compare exactly; u = the ulp up), below
+    // res - d/2 iff e + res*d <= 0 (d = the ulp down).
+    precise float e = fma(-res, res, x);
+    precise float up = uintBitsToFloat(floatBitsToUint(res) + 1u);
+    precise float dn = uintBitsToFloat(floatBitsToUint(res) - 1u);
+    precise float u = up - res, d = res - dn;
+    precise float eu = e - res * u, ed = e + res * d;
+    if (eu > 0.0) return up;
+    if (ed <= 0.0) return dn;
     return res;
 }
 
@@ -395,44 +406,90 @@ float floatingIsland(vec3 p, float d) {
 }
 
 // PlanetField::densityNear with the column given.
-// (#615 step 2) The graph tunnels' distance at q: PlanetField's CaveGraphDistance (voxel.cpp), the same operations in the
-// same order: a segment whose box doesn't hold q is skipped, the noises are looked up once one does.
-float caveGraphDistance(vec3 q) {
-    precise float wob = 0.0;
+// (#615 step 3) The graph tunnels' distance at q and `solid` (rubble aprons): PlanetField's CaveGraphDistance (voxel.cpp),
+// the same operations in the same order. Every sum handed to xdiv / xsqrt sits in a precise variable first (else the
+// compiler may fuse it into FMAs and miss the CPU by an ulp).
+float caveGraphDistance(vec3 q, out float solid) {
+    solid = -1e9;
     bool any = false;
+    precise float swell = 0.0, bulge = 0.0, bump = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0;
     precise float m = 1e9;
     for (int i = 0; i < caveSegCount; ++i) {
         vec4 lo = caveSegData(i, 3), hi = caveSegData(i, 4);
         if (q.x < lo.x || q.y < lo.y || q.z < lo.z || q.x > hi.x || q.y > hi.y || q.z > hi.z) continue;
-        if (!any) { any = true; wob = 1.0 + 0.45 * fractal(N_CAVES_B, 2, q.x * 0.12, q.y * 0.12, q.z * 0.12); }
-        vec4 A = caveSegData(i, 0), Bs = caveSegData(i, 1), U = caveSegData(i, 2);
+        if (!any) {
+            any = true; // every a * b + c handed to fractal() sits in a precise variable (arguments may be fused into FMAs)
+            precise float qx = q.x * 0.09, qy = q.y * 0.09, qz = q.z * 0.09;
+            precise float qx17 = qx + 17.0, qy29 = qy + 29.0, qz41 = qz + 41.0;
+            precise float wx, wy, wz;
+            wx = q.x + 3.0 * fractal(N_CAVES_A, 1, qx17, qy, qz);
+            wy = q.y + 3.0 * fractal(N_CAVES_A, 1, qx, qy29, qz);
+            wz = q.z + 3.0 * fractal(N_CAVES_A, 1, qx, qy, qz41);
+            swell = 1.0 + 0.5 * fractal(N_CAVES_B, 1, wx * 0.1, wy * 0.1, wz * 0.1);
+            bulge = 0.9 * fractal(N_DETAIL, 2, wx * 0.28, wy * 0.28, wz * 0.28);
+            precise float bx = wx * 0.9 + 31.0;
+            bump = 0.25 * fractal(N_DETAIL, 1, bx, wy * 0.9, wz * 0.9);
+            lev = 0.45 + 0.25 * fractal(N_CAVERNS, 1, wx * 0.06, wy * 0.06, wz * 0.06);
+            precise float tx = wx * 0.05 + 7.0;
+            tilt = 0.6 * fractal(N_CAVE_MOUTHS, 1, tx, wy * 0.05, wz * 0.05);
+            precise float px = wx * 0.2 + 53.0;
+            pocket = max(0.0, fractal(N_DETAIL, 1, px, wy * 0.2, wz * 0.2));
+            precise float rx = wx * 0.5 + 71.0;
+            rub = fractal(N_DETAIL, 1, rx, wy * 0.5, wz * 0.5);
+            precise float sx = wx * 0.04 + 13.0;
+            shift = 0.4 * fractal(N_CAVES_B, 1, sx, wy * 0.04, wz * 0.04);
+        }
+        vec4 A = caveSegData(i, 0), Bs = caveSegData(i, 1), U = caveSegData(i, 2), Sd = caveSegData(i, 5);
         precise float abx = Bs.x - A.x, aby = Bs.y - A.y, abz = Bs.z - A.z;
         precise float apx = q.x - A.x, apy = q.y - A.y, apz = q.z - A.z;
-        precise float t = clamp(xdiv(apx * abx + apy * aby + apz * abz, abx * abx + aby * aby + abz * abz), 0.0, 1.0);
+        precise float num = apx * abx + apy * aby + apz * abz;
+        precise float den = abx * abx + aby * aby + abz * abz;
+        precise float t = clamp(xdiv(num, den), 0.0, 1.0);
         precise float hx = apx - abx * t, hy = apy - aby * t, hz = apz - abz * t;
         precise float hv = hx * U.x + hy * U.y + hz * U.z;
         precise float hhx = hx - U.x * hv, hhy = hy - U.y * hv, hhz = hz - U.z * hv;
-        precise float v2 = xdiv(hv, U.w);
-        precise float len = xsqrt(hhx * hhx + hhy * hhy + hhz * hhz + v2 * v2);
+        precise float hs = hhx * Sd.x + hhy * Sd.y + hhz * Sd.z;
         precise float r = A.w + (Bs.w - A.w) * t;
-        precise float rw = r * wob;
-        precise float floorCut = (0.0 - hv) - 0.6 * rw * U.w;
+        float kind = lo.w;
+        if (kind > 1.5) {
+            precise float va = xdiv(hv, 0.35);
+            precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
+            precise float la = xsqrt(la2);
+            precise float rr = r * (1.0 + 0.5 * rub);
+            solid = max(solid, rr - la);
+            continue;
+        }
+        precise float mk = kind > 0.5 ? 2.0 : 1.0;
+        precise float rough = 1.0 + mk * bulge + mk * bump;
+        precise float rs = swell * rough;
+        precise float rw = r * max(0.7, rs);
+        precise float pk = hv > 0.0 ? pocket : 0.0;
+        precise float vfac = U.w * (1.0 + 0.5 * pk);
+        precise float hp = hs - shift * rw;
+        precise float hvM = hv - 0.5 * hp;
+        precise float hvT = kind > 0.5 ? hvM : hv;
+        precise float v2 = xdiv(hvT, vfac);
+        precise float lh = hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp;
+        precise float v22 = v2 * v2;
+        precise float l2 = max(0.0, lh) + v22;
+        precise float len = xsqrt(l2);
+        precise float rubble = kind > 0.5 ? max(0.0, rub) : 0.0;
+        precise float floorCut = (0.0 - hv) - lev * rw * U.w + 0.5 * tilt * hp + rubble;
         m = min(m, max(len - rw, floorCut));
     }
-    if (!any) return m;
-    m = m + 1.2 * fractal(N_DETAIL, 2, q.x * 0.35, q.y * 0.35, q.z * 0.35); // (#999) lumpy walls, as the CPU
     return m;
 }
 
 // (#615 step 1) The caves in one place, bit-exact with PlanetField::caveDistance (voxel.cpp): metres to the nearest cave
 // wall (< 0 inside; 1e9 where none reaches). Worm tunnels with #549's mouth regions (thin roofs collapse; #971: not in wet
 // lowlands, cwet) and caverns.
-float caveDistance(vec3 p, float d, float depth, float fp, float cwet) {
+float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float solid) {
+    solid = -1e9;
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     if (cavesGraph == 1) { // (#615 step 2) graph tunnels (no mouths yet) and the caverns: as PlanetField::caveDistance
         precise float mg = 1e9;
         if (caveWeight > 0.0 && depth > -8.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
-            if (depth > -8.0 && caveSegCount > 0) mg = caveGraphDistance(p) + (1.0 - caveWeight) * 20.0;
+            if (depth > -8.0 && caveSegCount > 0) { precise float sol; mg = caveGraphDistance(p, sol) + (1.0 - caveWeight) * 20.0; if (sol > -1e8) { precise float so = sol - (1.0 - caveWeight) * 20.0; solid = so; } }
             if (depth > 30.0 && d > mantleRadius + 40.0) {
                 precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
                 precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
@@ -482,9 +539,11 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
         if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     { // caves (#615 step 1: caveDistance, bit-exact with the CPU's)
-        precise float m = caveDistance(p, d, depth, fp, cwet);
+        precise float solid;
+        precise float m = caveDistance(p, d, depth, fp, cwet, solid);
         precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
         if (m < near_) v = min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+        if (solid > -4.0) { precise float vs = ISO_LEVEL + DENSITY_GRADIENT * solid; v = max(v, vs); } // (#615 step 3) rubble aprons, after the carve
     }
     if (depth < -15.0 && planetMoon == 0) {
         precise float m = floatingIsland(p, d);
