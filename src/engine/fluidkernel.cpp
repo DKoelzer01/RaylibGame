@@ -762,6 +762,8 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     RunPass(g, p, list, 2);
 }
 
+float HalfRound(float f) { return H(f); } // tests (#968): the half rounding the shader's packHalf2x16 must match
+
 } // namespace FluidKernel
 
 #ifdef RAYLIBGAME_UNIT_TESTS

@@ -43,6 +43,7 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Pebbles: return "pebbles";
         case VoxelMaterial::Silt: return "silt";
         case VoxelMaterial::Mud: return "mud";
+        case VoxelMaterial::Farmland: return "farmland";
         default: return "?";
     }
 }
@@ -1857,8 +1858,8 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     // segments whose box holds q, and every one of those overlaps q's bin (min / max don't depend on order).
                     constexpr int kBins = 8;
                     constexpr float kBin = kCaveCell / kBins;
-                    thread_local std::vector<float> own, binned;
-                    thread_local std::vector<int> binStart;                     // kBins^3 + 1 offsets (in segments) into binned
+                    struct CaveBins { std::vector<float> own, binned; std::vector<int> binStart; }; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
+                    thread_local CaveBins* bins = nullptr; if (!bins) bins = new CaveBins(); auto& own = bins->own; auto& binned = bins->binned; auto& binStart = bins->binStart; // binStart: kBins^3 + 1 offsets (in segments) into binned
                     thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0, kepoch = 0; thread_local bool kbaked = false; thread_local const void* kf = nullptr;
                     const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
                     const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
@@ -2466,8 +2467,11 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f + 0.2f * rocks.fractal(2, p.x * 14.0f + 97.0f, p.y * 14.0f, p.z * 14.0f)) return VoxelMaterial::Clay; // ragged edges (#609)
             if (!skin) return VoxelMaterial::Clay;
         }
-        // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
-        // from the height map, which used to bare patches of dirt); dug ground is dirt.
+        // Grassland. Grass is a state of the generated surface (#1085): the band within ~1 m of the density surface, and the
+        // height map's 0.6 m skin, read as turf (the mesh strays from the height map, which used to bare patches of dirt); an
+        // edit that exposes or makes ground writes bare dirt over it in the material channel (TerrainDeltas::apply), so a dig
+        // never shows turf. (The skin stays: the spawn search, trees and other height-map samplers read it - without it seed
+        // 42's start moved to frozen tundra.)
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
         if (skin) return VoxelMaterial::Grass;
@@ -2960,7 +2964,13 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
                     // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
                     Vector3 flow = simFlow; float speed = simSpeed;
-                    if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
+                    // (#1121, playtest: settled rivers lost their moving-water look) Simulated water whose solver current has
+                    // died down (its bricks settled or asleep: < 5 cm/s) is still a river where a river runs: it takes the river's
+                    // current as the generated water does. Ponds and lakes have no river there and stay still.
+                    // RAYLIBGAME_SETTLED_RIVER_FLOW=0: as before.
+                    static const bool settledRiver = !(getenv("RAYLIBGAME_SETTLED_RIVER_FLOW") && getenv("RAYLIBGAME_SETTLED_RIVER_FLOW")[0] == '0');
+                    const bool simHere = simKind && sim.covered(bp);
+                    if (kind == 0 && gen.inland && rivers && (!simHere || (settledRiver && simSpeed < 0.05f))) {
                         const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
                         if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
                             flow = Vector3Subtract(hr.down, Vector3Scale(radial, Vector3DotProduct(hr.down, radial))); // along the surface
@@ -3343,7 +3353,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
                 // their nearest (clay as dirt).
                 const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
-                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith
+                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland) ? (int)VoxelMaterial::Regolith
                              : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;

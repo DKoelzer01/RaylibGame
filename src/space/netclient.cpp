@@ -130,7 +130,7 @@ namespace {
                 if (!p) return;
                 TerrainEdit e{};
                 e.center = t.center.toFloat(); e.radius = t.radius; e.strength = t.strength; e.paint = t.paint;
-                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0;
+                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0; e.till = (t.flags & 16) != 0;
                 if (e.box) {
                     e.half = { t.hx, t.hy, t.hz };
                     e.ax = { t.ax[0], t.ax[1], t.ax[2] }; e.ay = { t.ay[0], t.ay[1], t.ay[2] };
@@ -830,8 +830,8 @@ void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, in
     a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
     SendMsg(c, a);
 }
-void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed) { // (#335)
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed) { // (#335; #1085: the ground)
     if (c.state != NetClient::State::Joined) return;
-    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.plot = plot; a.part = part; a.seed = seed;
+    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.x = ground.x; a.y = ground.y; a.z = ground.z; a.seed = seed;
     SendMsg(c, a);
 }

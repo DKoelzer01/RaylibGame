@@ -140,6 +140,11 @@ private:
     bool blend = true; // blend columns (#423): only in fine chunks (samples finer than a cell); coarse ones gain nothing (#381)
     const Brick* brickPtr(int si, int bi, int bj, int bk) const; // by brick coordinates, through the dense cache
     bool brickAt(int si, int ci, int cj, int ck) const { return brickPtr(si, ci >> 4, cj >> 4, ck >> 4) != nullptr; }
+    // A column of a brick holding only generated infinite water as generated (#1091): some cell holds water, every wet cell
+    // is a kStatic source (held at the generated level), none is dug. The mesher draws it as the generated water (its
+    // smooth shore band), not with the simulation's film and sheet rules. Memoised per (site, column, brick layer).
+    bool generatedColumn(int si, int ci, int cj, int ck) const;
+    mutable std::unordered_map<int64_t, bool> genMemo;
     bool cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags) const; // Site::cell through the cache
     bool cellAt(int si, int ci, int cj, int ck, uint8_t& fill, uint8_t& flags, uint8_t& shut) const; // with the ground share (#454)
     float surface(int si, int ci, int cj, int ck, int kind);

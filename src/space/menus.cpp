@@ -152,7 +152,7 @@ namespace {
         std::error_code ec;
         if (!fs::exists("saves", ec)) return;
         for (const auto& e : fs::directory_iterator("saves", ec)) {
-            if (!e.is_regular_file() || e.path().extension() != ".sav" || e.path().filename() == "bench.sav") continue;
+            if (!e.is_regular_file() || !Menu_IsWorldSave(e.path().string())) continue;
             SaveEntry s;
             s.path = "saves/" + e.path().filename().string();
             s.name = e.path().stem().string();
@@ -330,6 +330,7 @@ void Settings_Load() {
             if (!strcmp(key, "player_uuid")) { settings.playerUuid = val; continue; } // (#346)
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
+            if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -375,6 +376,7 @@ void Settings_Save() {
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
+    for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
@@ -406,6 +408,12 @@ void Settings_Apply() {
     player.smoothMotion = settings.reduceMotion;
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;
+}
+
+bool Menu_IsWorldSave(const std::string& path) {
+    const fs::path p(path);
+    std::error_code ec;
+    return p.extension() == ".sav" && p.filename() != "bench.sav" && !fs::exists(path + ".synced", ec);
 }
 
 std::string Menu_NewSavePath() {
@@ -668,3 +676,19 @@ MenuResult Menu_Pause() {
     if (Button(Row(4), "Save & Quit to Menu")) r.action = MenuAction::SaveAndQuit;
     return r;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+TEST(Menus, AJoinedGamesCacheIsNotAWorldToHost) { // (#1110: hosting the client's cache started a fresh world and player)
+    const fs::path dir = fs::temp_directory_path() / "raylibgame_1110";
+    std::error_code ec;
+    fs::remove_all(dir, ec); fs::create_directories(dir, ec);
+    auto touch = [&](const char* name) { if (FILE* f = fopen((dir / name).string().c_str(), "w")) fclose(f); };
+    touch("world_25.sav"); touch("client_player.sav"); touch("client_player.sav.synced"); touch("bench.sav");
+    EXPECT_TRUE(Menu_IsWorldSave((dir / "world_25.sav").string())) << "a world";
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "client_player.sav").string())) << "a joined game's cache (a .synced beside it)";
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "bench.sav").string())) << "the bench's";
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "world_25.sav.synced").string())) << "not a .sav";
+    fs::remove_all(dir, ec);
+}
+#endif

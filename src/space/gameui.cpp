@@ -663,7 +663,10 @@ static void DrawGrid(float cell = 54.0f) {
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled(!cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
+    // (#1080: the window can be narrow now) wrapped in the room left beside the buttons, not cut at the panel's edge
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("%s", !cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
+    ImGui::PopStyleColor();
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
@@ -1482,7 +1485,7 @@ static void PreviewWidget(ImTextureID tex, ImVec2 size, float& turn) {
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##preview", size);
     ImGui::GetWindowDrawList()->AddImage(tex, p, ImVec2(p.x + size.x, p.y + size.y), ImVec2(0, 1), ImVec2(1, 0));
-    if (ImGui::IsItemActive()) turn += ImGui::GetIO().MouseDelta.x * 0.012f;
+    if (ImGui::IsItemActive()) turn -= ImGui::GetIO().MouseDelta.x * 0.012f; // (#1073) the side you drag to is the side it turns to
     if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("Drag to turn");
 }
 
@@ -1649,25 +1652,42 @@ static bool PointerOutsideWindows() {
     return !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_AllowWhenBlockedByPopup);
 }
 
+static bool tabWindowJustOpened = true, tabWindowUnsaved = false; // (#1080) place it from settings on opening; a move or resize to save
 void GameUI_Draw(Scene& world) {
     uiWorld = &world;
     RecipeBook_Update(); // new recipes: a toast
     RunCraftQueue(); // (#824) queued crafts, window open or not
-    if (!inventoryOpen) { SlotRules_Cancel(); ReturnCursorStack(); binned = InvSlot{}; container.open = false; return; } // a stack still held goes back in (#192)
+    if (!inventoryOpen) { SlotRules_Cancel(); ReturnCursorStack(); binned = InvSlot{}; container.open = false; tabWindowJustOpened = true; return; } // a stack still held goes back in (#192); (#1080) placed again when it opens
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
     hoverGrid = nullptr; hoverSlot = -1; // (set again as the grids are drawn: #862)
     if (container.open && screen != GameScreen::Inventory) screen = GameScreen::Inventory; // a chest or machine opens beside your items
     const ImGuiIO& io = ImGui::GetIO();
     const float s = GameUI_Scale();
-    // The whole screen but a margin, no title bar: the tabs are the window's header.
-    const float margin = 24.0f * s;
-    ImGui::SetNextWindowPos(ImVec2(margin, margin));
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - 2 * margin, io.DisplaySize.y - 2 * margin));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 1.0f)); // (#889 follow-up: opaque)
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
+    // (#1080) No title bar (the tabs are the window's header). It opens centred at 70% of the screen by default, moves (drag an
+    // empty part of it) and resizes (its corner) like the database window, and keeps its place and size in settings as
+    // fractions of the screen, so another resolution or interface size keeps the layout.
+    const ImVec2 D = io.DisplaySize;
+    static ImVec2 lastScreen{ 0.0f, 0.0f };
+    const bool place = tabWindowJustOpened || D.x != lastScreen.x || D.y != lastScreen.y;
+    tabWindowJustOpened = false; lastScreen = D;
+    if (place) {
+        float* f = settings.tabWin;
+        ImGui::SetNextWindowPos(ImVec2(f[0] * D.x, f[1] * D.y), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(f[2] * D.x, f[3] * D.y), ImGuiCond_Always);
+    }
+    ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(D.x, 0.45f * D.x + 120.0f * s), std::min(D.y, 0.45f * D.y + 80.0f * s)), D); // (the panels need room)
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.10f, 0.14f, 0.7f)); // (#1079) the world shows through at 30%; what's in it stays opaque
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin("Game window", nullptr, flags)) {
+        { // (#1080) moved or resized: kept (fractions of the screen), saved once the drag ends
+            const ImVec2 p = ImGui::GetWindowPos(), z = ImGui::GetWindowSize();
+            const float now[4] = { p.x / D.x, p.y / D.y, z.x / D.x, z.y / D.y };
+            bool moved = false;
+            for (int k = 0; k < 4; ++k) moved = moved || fabsf(now[k] - settings.tabWin[k]) > 0.002f;
+            if (moved) { for (int k = 0; k < 4; ++k) settings.tabWin[k] = std::clamp(now[k], 0.0f, 1.0f); tabWindowUnsaved = true; }
+            if (tabWindowUnsaved && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) { tabWindowUnsaved = false; Settings_Save(); }
+        }
         // The tabs (#810's order; Catalog beside Inventory in creative only, #823), their keys from the bindings; at the right
         // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
@@ -1731,6 +1751,7 @@ void GameUI_Draw(Scene& world) {
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const float fs = ImGui::GetFontSize();
         const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, toast.c_str());
+        const float margin = 24.0f * s; // (the screen's bottom margin, as the window had before #1080)
         const ImVec2 at((io.DisplaySize.x - sz.x) * 0.5f, io.DisplaySize.y - margin - sz.y * 0.5f);
         fg->AddRectFilled(ImVec2(at.x - 10, at.y - 4), ImVec2(at.x + sz.x + 10, at.y + sz.y + 4), IM_COL32(10, 14, 20, 235), 4.0f);
         fg->AddText(ImGui::GetFont(), fs, at, IM_COL32(255, 230, 90, 255), toast.c_str());
@@ -2036,7 +2057,7 @@ TEST(GameUiPreview, DraggingAcrossItTurnsThePlayer) {
     frame(200.0f, 250.0f, true);                          // pressed
     for (int k = 1; k <= 10; ++k) frame(200.0f + 10.0f * k, 250.0f, true); // dragged 100 px right
     frame(300.0f, 250.0f, false);                         // released
-    EXPECT_NEAR(turn, 1.2f, 0.05f) << "100 px at 0.012 rad a pixel";
+    EXPECT_NEAR(turn, -1.2f, 0.05f) << "100 px at 0.012 rad a pixel; dragging right lowers the turn (#1073: it had spun the other way)";
     const float after = turn;
     frame(500.0f, 250.0f, false); frame(600.0f, 250.0f, false); // moving without the button: no turn
     EXPECT_FLOAT_EQ(turn, after);

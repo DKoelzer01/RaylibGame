@@ -41,7 +41,7 @@ Water flows into holes and channels you dig next to it. Buckets scoop and pour 1
 Pumps lift water from under them into pipes; outlets pour it out and boilers fill from them. A hand pump (no power) pumps while you hold RMB on it.
 
 # Farming
-Till soil with a hoe to make farmland. Plant seeds on it (I) and harvest ripe crops (O). Fields near water grow better; buckets and outlets can water them.
+Till soil with a shovel or hoe (RMB) to make farmland where you aim. Plant seeds on it (I, half a metre apart) and harvest ripe crops (O). Fields near water grow better; buckets and outlets can water them.
 
 # Animals
 Animals live in herds. Hold a food an animal eats and it follows you; lead it into a pen of fences and gates (you can walk through a gate, animals can't).

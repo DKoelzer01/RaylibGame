@@ -41,6 +41,7 @@ struct GameSettings {
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
     float uiScale = 0.0f;            // (#821) the interface size: 0 auto (by the screen's height), else 0.75-1.5
+    float tabWin[4] = { 0.15f, 0.15f, 0.7f, 0.7f }; // (#1080) the Tab window: x, y, width, height as fractions of the screen
     int keyHints = 0;                // (#827) the key hints line: 0 auto (fades after the first 2 hours played), 1 always, 2 off
     float xpRate = 1.0f;              // (#883) the last New World screen's skill XP rate (the next one's default)
     bool invertSlotWheel = false;     // (#862) the inventory's scroll wheel: false = down sends one to the other side, up pulls one in
@@ -68,6 +69,9 @@ void Menu_TestSettings(int tab, bool pause); // --shot-settings (#512): open the
 void Menu_SettingsLayout(float& contentBottom, Rectangle& back); // the last drawn page: its rows' bottom and the Back button
 // A new save's file: saves/world.sav, else the first free saves/world_N.sav.
 std::string Menu_NewSavePath();
+// (#1110) A world the menus offer to load or host: a .sav that isn't the bench's and isn't a joined game's cache of a
+// server's world (a .synced beside it; hosting one started a fresh world and player).
+bool Menu_IsWorldSave(const std::string& path);
 // Multiplayer (#341): back on the Join (or Host) page with why it failed (refused, timed out, the server didn't start).
 void Menu_MultiplayerFailed(bool host, const std::string& why);
 void Menu_RememberServer(const std::string& address); // a server joined: first in the recent list

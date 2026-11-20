@@ -76,7 +76,7 @@ namespace std {
 // Ids 0-7 are the legacy weights (per-chunk draws); later ones ride the arena's per-chunk palette (#480: up to 256).
 enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8,
                                     Granite = 9, Basalt = 10, Sandstone = 11, Limestone = 12, Marble = 13,
-                                    Pebbles = 14, Silt = 15, Mud = 16, Count }; // 9-13: rock strata (#587); 14-16: river beds, floodplains, wet shores (#595)
+                                    Pebbles = 14, Silt = 15, Mud = 16, Farmland = 17, Count }; // 9-13: rock strata (#587); 14-16: river beds, floodplains, wet shores (#595); 17: tilled dirt (#1085)
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
@@ -108,6 +108,9 @@ struct TerrainEdit {
     // radius); `paint` colours what it adds. Strength unused.
     bool fill = false;
     int paint = -1;        // adding: the VoxelMaterial the added ground is made of (-1: the field's own)
+    // Till (#1085): no change to the ground's shape; soil (grass, dirt, clay, silt, mud) within `radius` of the centre and
+    // within half a metre under the surface (and the lattice points just over it) becomes Farmland. A free brush.
+    bool till = false;
     // Carve an oriented box instead of the sphere (#210: a part's cells, exactly): half extents along the unit axes
     // ax/ay/az (body-local), centred on `center`. Set `radius` to its bounding reach (the half extents' length): the
     // dirty-chunk, tree and fluid bounds use it.
