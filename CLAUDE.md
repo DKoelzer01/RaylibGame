@@ -226,9 +226,13 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   `Inventory::preferred` = the selected hotbar cell is used first.
 - Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
   together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
-  mouth). Step 2 (#995): `RAYLIBGAME_CAVES=1` = graph tunnels (per-256 m-cell passages, per-block segment lists, 5 vec4 each, to the GPU at
-  binding 4; <= 32 a block, else the CPU path), opt-in until step 3's mouths; `RAYLIBGAME_CAVE_ABUNDANCE` 0-2 (the New World slider to come);
-  `RAYLIBGAME_CAMERA_LIGHT=1` lights the view for cave captures.
+  mouth). Graph tunnels (step 2 #995, on by default since step 3 #1022; `RAYLIBGAME_CAVES=0` = the old noise caves): per-256 m-cell passages,
+  per-block segment lists (6 vec4 each, to the GPU at binding 4; <= 32 a block, else the CPU path); `RAYLIBGAME_CAVE_ABUNDANCE` 0-2 (the New
+  World slider to come). Shapes (#1022): the segment's bore is the skeleton; heavy 3D noise only grows the wall inward (none inside half the
+  bore), looked up squeezed radially (x0.1) so there are no voids behind the faces. Mouths only in real faces (5 m+ rise within 10 m, no tors in
+  front). Noise factors include each noise's own base frequency (1/70-1/700: forgetting it makes every term constant). Captures:
+  `RAYLIBGAME_CAMERA_LIGHT=1` (a light at the eye), `RAYLIBGAME_CAVES_VIEW=front` (eye-level frontal approach), `RAYLIBGAME_CAVES_MOUTH="x y z"`
+  (that mouth, at any abundance). In GLSL, store every a*b+c handed to a function (xdiv, xsqrt, fractal) in a `precise` variable first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
   SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
   dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.
