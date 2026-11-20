@@ -1183,7 +1183,7 @@ namespace {
         return 0;
     }
     std::string TeamName(int team) { const TeamRecord* t = Teams_Find(team); return t ? t->name : "another team"; }
-    bool IsOpSession(uint32_t session) { for (const Session& s : sessions) if (s.id == session) return Admin_RoleOf(s.name) != AdminRole::Player; return false; }
+    bool IsOpSession(uint32_t session) { for (const Session& s : sessions) if (s.id == session) return Admin_RoleOf(s.name, s.uuid) != AdminRole::Player; return false; } // (#1086: by id too)
     bool ClaimBlocks(uint32_t session, const Planetoid* b, Vector3 local, bool count) {
         if (!b) return false;
         const Claim* c = Claims_At(b->name, local);
@@ -2260,6 +2260,7 @@ double Host_PlayersApart(Scene& world, uint32_t a, uint32_t b) {
     if (ia == remotes.end() || ib == remotes.end() || !ia->second.player.netState(world, sa) || !ib->second.player.netState(world, sb) || sa.body != sb.body) return -1.0;
     return (sa.local - sb.local).length();
 }
+std::string Host_SessionUuid(uint32_t session) { for (const Session& s : sessions) if (s.id == session) return s.uuid; return std::string(); }
 int Host_ItemCount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? -1 : it->second.inventory.count(item);
