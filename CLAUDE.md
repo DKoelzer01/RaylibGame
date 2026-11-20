@@ -20,6 +20,22 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 ## Testing
 
+- **Where tests run (user, 2026-11-19, #1016; details in `.github/CI.md`).** Run each check where it belongs; this PC is
+  only for what can't run elsewhere or has to be validated here:
+  - **GitHub-hosted CI, every PR (required check "CI ok"):** the Windows build (w64devkit), the Linux server build,
+    game_tests, static checks (NetMsg ids / kNetProtocol, bake-version reminder). Don't rebuild and rerun unit tests
+    locally just to check a PR: push and read CI. Never ask for a merge while "CI ok" is red or pending.
+  - **Self-hosted on deweyserver (GPU, isolated from the LAN):** `--test-terrain-gpu` bit-exactness, headless scenarios
+    (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package, and the headless
+    half of the regression (`tools/regression.sh planet --only headless`, #1028; nightly, or add `-f regression=headless`).
+    Runs on pushes to m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run
+    selfhosted.yml -r <branch>` (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
+  - **This PC only:** what needs the Windows client with a real display/GPU or the user's machine: rendering, lighting,
+    UI and any visual change (captures/screenshots), camera and movement feel, performance and timing (quiet windows),
+    the local half of the regression (`tools/regression.sh planet --only local`), playtest builds, and final validation
+    of anything the user will see.
+  - Read CI with REST (`gh api repos/DKoelzer01/RaylibGame/commits/<sha>/check-runs`, `gh run view <id> --log-failed`);
+    wait with a deadline, never an open-ended poll loop.
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
 - **Unit tests (Tier 1, #869):** GoogleTest, at the end of the .cpp they test inside `#ifdef RAYLIBGAME_UNIT_TESTS` (the game
