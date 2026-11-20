@@ -123,9 +123,9 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 
 // MSAA sample count of the 3D pass (the scene target is made with the window's), read once: a glGet each frame
 // can stall the driver (#204, #267).
-// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). RAYLIBGAME_FAR_FOREST=1; default off.
+// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). On by default (user, 2026-11-19, stronger); RAYLIBGAME_FAR_FOREST=0: off.
 static float FarForestOn() {
-    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.0f : 0.0f; }();
+    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 0.0f : 1.0f; }();
     return on;
 }
 
@@ -662,7 +662,7 @@ void Scene::drawScene(int gamestate) {
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
-    { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 1.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
+    { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.
     for (int i = 0; i < MAX_LIGHTS; ++i) {

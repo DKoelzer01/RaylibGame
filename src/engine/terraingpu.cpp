@@ -18,8 +18,8 @@
 #include <mutex>
 
 namespace {
-    struct BlockGpu { float o[4], n[4], t1[4], t2[4], s[4]; int a[4], b[4]; }; // terrain_density.comp Block
-    static_assert(sizeof(BlockGpu) == 112, "std430 Block");
+    struct BlockGpu { float o[4], n[4], t1[4], t2[4], s[4]; int a[4], b[4], c[4]; }; // terrain_density.comp Block (c: #615 cave segments)
+    static_assert(sizeof(BlockGpu) == 128, "std430 Block");
 
     constexpr int kMaxBlocks = 32;          // per batch
     constexpr int kSlots = 2;               // batches in flight
@@ -62,7 +62,7 @@ namespace {
     }
 
     struct Slot {
-        ComputeBuffer grid, islands, out, blocks;
+        ComputeBuffer grid, islands, out, blocks, caves;
         int rb = -1;                        // the ring buffer this batch is copied into (-1: read back by copy)
         GLsync fence = nullptr;
         std::vector<GpuBlockJob> jobs;
@@ -137,7 +137,7 @@ namespace {
         const PlanetField& pf = *sl.jobs.front().field;
         SetField(pf);
         std::vector<BlockGpu> blocks;
-        std::vector<float> grid, isl;
+        std::vector<float> grid, isl, cav;
         sl.outOffset.clear();
         size_t out = 0;
         int maxN = 0;
@@ -151,28 +151,33 @@ namespace {
             b.s[0] = g.su; b.s[1] = g.sv;
             b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
+            b.c[0] = (int)(cav.size() / 20); b.c[1] = (int)(j.caveSegs.size() / 20); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; // (#615 step 2)
             blocks.push_back(b);
             for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];
-                const float v[8] = { g.h[k], c.mask, c.f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                const float v[8] = { g.h[k], c.mask, c.f, c.wet, 0.0f, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland
                 grid.insert(grid.end(), v, v + 8);
             }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
+            cav.insert(cav.end(), j.caveSegs.begin(), j.caveSegs.end());
             sl.outOffset.push_back(out);
             const int n = j.block.E * j.block.E * j.block.E;
             out += (size_t)n;
             maxN = std::max(maxN, n);
         }
         if (isl.empty()) isl.assign(12, 0.0f);
+        if (cav.empty()) cav.assign(20, 0.0f);
         sl.outCount = out;
         Ensure(sl.grid, grid.size() * 4);
         Ensure(sl.islands, isl.size() * 4);
+        Ensure(sl.caves, cav.size() * 4);
         Ensure(sl.out, out * 4);
         Ensure(sl.blocks, blocks.size() * sizeof(BlockGpu));
         sl.grid.upload(grid.data(), (unsigned)(grid.size() * 4));
         sl.islands.upload(isl.data(), (unsigned)(isl.size() * 4));
+        sl.caves.upload(cav.data(), (unsigned)(cav.size() * 4));
         sl.blocks.upload(blocks.data(), (unsigned)(blocks.size() * sizeof(BlockGpu)));
-        sl.grid.bind(0); sl.islands.bind(1); sl.out.bind(2); sl.blocks.bind(3);
+        sl.grid.bind(0); sl.islands.bind(1); sl.out.bind(2); sl.blocks.bind(3); sl.caves.bind(4);
         S.prog.use();
         rlComputeShaderDispatch((unsigned)((maxN + 63) / 64), (unsigned)blocks.size(), 1);
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -358,7 +363,7 @@ void TerrainGpu_Pump() {
 }
 
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 o, float stride, int SS, float fp,
-                            const PlanetField::BlockGrid& g, const std::vector<float>& islands, float* out) {
+                            const PlanetField::BlockGrid& g, const std::vector<float>& islands, float* out, const std::vector<float>* caveSegs) {
     if (!Init()) return false;
     // Tests only, with nothing streaming: refuse (the caller samples on the CPU) rather than share slot 0 with
     // queued or in-flight chunk builds.
@@ -373,6 +378,7 @@ bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 o, float stride, int 
     j.block.origin = o; j.block.stride = stride; j.block.E = SS; j.block.footprint = fp;
     j.grid = g;
     j.islands = islands;
+    if (caveSegs) j.caveSegs = *caveSegs;
     sl.jobs.push_back(std::move(j));
     Dispatch(sl);
     while (!Done(sl, 1000000000ull)) {}
@@ -400,7 +406,7 @@ void TerrainGpu_Unload() {
         sl.rb = -1;
         sl.jobs.clear();
         sl.outOffset.clear();
-        sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy();
+        sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy(); sl.caves.destroy();
     }
     S.prog.unload();
     std::lock_guard<std::mutex> lock(S.m);

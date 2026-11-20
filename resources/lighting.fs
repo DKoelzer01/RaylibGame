@@ -375,7 +375,7 @@ void main()
             float cdist = length(viewPos - fragPosition);
             float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, cdist);
             // #745: thin cover still reads as forest (cover^0.6), the tint starts earlier and its shade is deeper.
-            if (farForest > 0.5) c = pow(fragCanopy.x, 0.6) * smoothstep(0.5 * treeDistance, 0.85 * treeDistance, cdist);
+            if (farForest > 0.5) c = pow(fragCanopy.x, 0.5) * smoothstep(0.35 * treeDistance, 0.75 * treeDistance, cdist);
             float ct, cm;
             bool cl = decodeClimate(ct, cm);
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
@@ -384,7 +384,7 @@ void main()
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
-            albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.38 : 0.5), c); // crowns in their own shade read darker than open grass
+            albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.32 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);
         }
         rough = r;

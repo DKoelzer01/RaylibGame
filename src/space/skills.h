@@ -9,6 +9,7 @@
 // multipliers (Skills_Stat); the Skills tab draws from it; saves and player records keep it as text lines.
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -65,6 +66,8 @@ int Skills_PointsFree(const SkillState& s, const std::string& skill); // its lev
 // Perks. CanBuy explains why not ("" when it can).
 std::string Skills_CanBuy(const SkillState& s, const std::string& perk);
 bool Skills_Buy(SkillState& s, const std::string& perk);
+// (#920) Set while joined (main.cpp): a perk point is a request to the server (its SkillState answers), not spent here.
+inline std::function<void(const std::string& perk)> gSkillSpendRequest;
 void Skills_Respec(SkillState& s, const std::string& skill); // every point of that tree back (the cost is the caller's: an item)
 
 // A stat's multiplier: 1 + the sum over perks of ranks x per rank (negative for wear: 1 - 0.1 x ranks, never below 0.1).

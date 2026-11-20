@@ -20,6 +20,20 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 ## Testing
 
+- **Where tests run (user, 2026-11-19, #1016; details in `.github/CI.md`).** Run each check where it belongs; this PC is
+  only for what can't run elsewhere or has to be validated here:
+  - **GitHub-hosted CI, every PR (required check "CI ok"):** the Windows build (w64devkit), the Linux server build,
+    game_tests, static checks (NetMsg ids / kNetProtocol, bake-version reminder). Don't rebuild and rerun unit tests
+    locally just to check a PR: push and read CI. Never ask for a merge while "CI ok" is red or pending.
+  - **Self-hosted on deweyserver (GPU, isolated from the LAN):** `--test-terrain-gpu` bit-exactness, headless scenarios
+    (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package. Runs on pushes to
+    m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run selfhosted.yml -r <branch>`
+    (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
+  - **This PC only:** what needs the Windows client with a real display/GPU or the user's machine: rendering, lighting,
+    UI and any visual change (captures/screenshots), camera and movement feel, performance and timing (quiet windows),
+    the rendering half of the regression, playtest builds, and final validation of anything the user will see.
+  - Read CI with REST (`gh api repos/DKoelzer01/RaylibGame/commits/<sha>/check-runs`, `gh run view <id> --log-failed`);
+    wait with a deadline, never an open-ended poll loop.
 - Light tests per change: the scripted benches for the feature touched and its neighbours
   (`game.exe --seed 42 --bench 3 --test-<name>`), plus a screenshot (bench.png) when visuals change.
 - **Unit tests (Tier 1, #869):** GoogleTest, at the end of the .cpp they test inside `#ifdef RAYLIBGAME_UNIT_TESTS` (the game
@@ -36,6 +50,8 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   over 20 ms with their top zones, gputimer's cpu:/gpu: passes, counters, peak commit/VRAM). A/B timing:
   `game.exe --scenario-ab perf/planet-view --ab-a K=V --ab-b K=V --ab-runs 3` (interleaved; quiet window only). Perf policy: the
   report always shows the numbers and fails only on +15% mean frame time or a new hitch over 30 ms against recent passes.
+  In play (not a scenario), `RAYLIBGAME_PROFILE=1` writes the session's summary on quit to saves/logs/profile-<date-time>.txt and
+  .json (#886): zones, GPU passes, the frame histogram, and every hitch with its game time, top zones and what was going on.
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)
@@ -222,6 +238,11 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   the JoinInfo + shower (src/space/hostserver.*); `--test-host` (loopback client; SKIP without GNS), `--test-shower`.
 - Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
   `Inventory::preferred` = the selected hotbar cell is used first.
+- Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
+  together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
+  mouth). Step 2 (#995): `RAYLIBGAME_CAVES=1` = graph tunnels (per-256 m-cell passages, per-block segment lists, 5 vec4 each, to the GPU at
+  binding 4; <= 32 a block, else the CPU path), opt-in until step 3's mouths; `RAYLIBGAME_CAVE_ABUNDANCE` 0-2 (the New World slider to come);
+  `RAYLIBGAME_CAMERA_LIGHT=1` lights the view for cave captures.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);
   SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
   dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.

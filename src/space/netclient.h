@@ -12,6 +12,7 @@
 #include "netproto.h"
 #include "net.h"
 #include "playerinput.h"
+#include "skills.h"
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -70,6 +71,8 @@ struct NetClient {
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
+    SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
+    int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -164,6 +167,7 @@ void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false, bool recursive = false); // (#338) craft on the server
+void NetClient_SkillSpend(NetClient& c, const std::string& perk);                   // (#920) a perk point, as the server checks it
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)

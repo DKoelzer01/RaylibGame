@@ -39,9 +39,9 @@ void main()
     vec3 t = t0 * cos(a) + b0 * sin(a);
     vec3 b = cross(t, up);   // right-handed (t, up, b): keeps the mesh winding (front faces CCW)
     float s = instPosScale.w;
-    // #745: far trees grow up to +35% from 400 m to 1.6 km, so far forests keep their mass as they thin out.
-    float far = farForest * smoothstep(400.0, 1600.0, length(vec3(matModel * vec4(instPosScale.xyz, 1.0)) - viewPos));
-    s *= 1.0 + 0.35 * far;
+    // #745: far trees grow up to +70% from 300 m to 1.4 km, so far forests keep their mass as they thin out.
+    float far = farForest * smoothstep(300.0, 1400.0, length(vec3(matModel * vec4(instPosScale.xyz, 1.0)) - viewPos));
+    s *= 1.0 + 0.7 * far; // (stronger, user 2026-11-19: +70% by 1.4 km)
     vec3 v = vertexPosition;
     // Wind on leaves: a sway growing with height. With the wind field (#650) it grows with the local wind, and strong
     // wind (storms, bursts) leans the whole tree downwind, more toward the top, swaying with the gusts. No damage.

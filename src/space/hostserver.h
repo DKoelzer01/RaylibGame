@@ -59,6 +59,10 @@ bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an
 // Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every
 // player as a restart would (only with nobody online; their records stay on disk).
 int Host_ItemCount(uint32_t session, const std::string& item);
+bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp); // (#920 tests)
+bool Host_TestSetFood(uint32_t session, float food);                          // (#920 tests)
+int Host_SkillSpends();                                                        // (#920 tests) allowed
+int Host_SkillSpendsRefused();                                                 // (#920 tests) refused
 bool Host_TestGive(uint32_t session, const std::string& item, int count); // (tests) into a remote player's inventory; count < 0 takes
 double Host_PlayersApart(class Scene& world, uint32_t a, uint32_t b);          // (#865 tests) metres between two remote players
 bool Host_TestPutPlayerAt(class Scene& world, uint32_t who, uint32_t at); // (#865 tests) one remote player onto another's spot

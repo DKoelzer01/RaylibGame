@@ -26,6 +26,7 @@
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
+#include "skills.h"
 #include "playerrecord.h"
 #include "inventory.h"
 #include "farming.h"
@@ -111,11 +112,15 @@ namespace {
         double partTokens = 4.0, partTokensAt = -1.0; // building (#330): placing and breaking, a few a second
         PlayerRecordMeta record;    // (#346) their record's id, name, times, and the lines the server keeps as text
         bool creative = false;        // (#823) /gamemode creative (ops): building, digging and placing cost nothing; it may fly
+        SkillState skills;           // (#920) XP and perks, counted here from what the server sees (strokes); saved in the record
+        bool skillsDirty = true;     // (#920) to send (SkillState): at the join, after XP changes (at most every 2 s; a level-up at once)
+        double skillsSentAt = -1e9;
         double joinedAt = 0.0;      // (play time, added at the next write)
         double lastFellAt = -1e9;   // (#335) its last plant felled (the fell rate)
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
+    void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
@@ -595,6 +600,8 @@ namespace {
             plantsSeen[b->id] = b->trees->removalsShared(); // (sent here, with who felled it)
             SendPlants(0, b->netId, session, { { a.plant, b->trees->removals().at(a.plant) } });
             ++plantsFelled;
+            if (pl.tree()) { RemoteXp(session, "chop", (double)hits); RemoteXp(session, "tree_felled"); } // (#920) Woodcutting; Foraging
+            else RemoteXp(session, pl.stone() ? "loose_stone" : "bush");
         } else { // sow / harvest a farmland part
             Plot* plot = b->plots ? b->plots->byId(a.plot) : nullptr;
             if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::Farmland) { refuse("That farmland isn't there any more"); return; }
@@ -605,9 +612,11 @@ namespace {
             if (a.action == 2) {
                 if (!Farm_SowFor(rm.inventory, *b, *plot, a.part, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
                 TeamEvent(session, "count", "plant");
+                RemoteXp(session, "plant"); // (#920) Farming
             } else {
                 if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; }
                 TeamEvent(session, "count", "harvest");
+                RemoteXp(session, "harvest"); // (#920) Farming
             }
             for (auto& [s, r] : remotes) r.farmHash = 0; // (everyone near sees it at once)
             lastFarmTick = 0;
@@ -633,7 +642,7 @@ namespace {
                 if (sscanf(nt, "%lf,%lf", &a, &b) == 2) { const double t = GetTime() - firstJoin; dark = t >= a && t < b; }
             }
             if (dark && !r.inNight) { r.inNight = true; r.deathsAtDusk = r.survival.deaths; }
-            else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) TeamEvent(sid, "count", "nights"); }
+            else if (!dark && r.inNight) { r.inNight = false; if (r.survival.deaths == r.deathsAtDusk) { TeamEvent(sid, "count", "nights"); RemoteXp(sid, "night"); } }
             // (#338 slice 3) exploring and visiting, from the server's own view of the player: the map tiles around it (the
             // local map's tiles and radius) for its team, and a moon or the ring within two radii
             if (const int team = TeamOfSession(sid)) {
@@ -683,6 +692,32 @@ namespace {
     }
     uint32_t ConnOf(uint32_t session); // (below)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
+    int skillStatesSent = 0, skillSpends = 0, skillSpendsRefused = 0; // (#920 tests)
+    // (#920) Each player's skills, to that player, when they changed: at most every 2 s (a level-up or the join at once).
+    void SendSkills() {
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            if (rit == remotes.end() || !rit->second.skillsDirty || GetTime() - rit->second.skillsSentAt < 2.0) continue;
+            SendMsg(conn, MsgSkillState{ Skills_SaveText(rit->second.skills) });
+            rit->second.skillsDirty = false; rit->second.skillsSentAt = GetTime();
+            ++skillStatesSent;
+        }
+    }
+    // (#920) XP for a remote player's event (skills.txt's xp lines), at the world's rate; creative earns none. Sent with the
+    // next SkillState (a level-up at once).
+    void RemoteXp(uint32_t session, const char* event, double n) {
+        auto it = remotes.find(session);
+        if (it == remotes.end() || it->second.creative) return;
+        const int ups = Skills_Event(it->second.skills, event, n, worldXpRate);
+        it->second.skillsDirty = true;
+        if (ups > 0) it->second.skillsSentAt = -1e9;
+    }
+    // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
+    uint64_t SkillCell(Vector3 local) {
+        const auto q = [](float v) { return (uint64_t)(uint32_t)(int32_t)std::floor(v) & 0x1FFFFFull; };
+        return q(local.x) | (q(local.y) << 21) | (q(local.z) << 42);
+    }
     int animalBites = 0;
     // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
     // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
@@ -916,9 +951,10 @@ namespace {
     bool LoadRecord(Scene& world, uint32_t conn, const Session& s) { // true: their record was loaded
         Remote& rm = remotes[s.id];
         rm.record = PlayerRecordMeta{};
+        rm.skills = SkillState{}; rm.skillsDirty = true; rm.skillsSentAt = -1e9; // (#920) (sent with the next update)
         const std::string path = PlayerRecord_Path(s.uuid);
         bool loaded = false;
-        if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record)) {
+        if (FileExists(path.c_str()) && PlayerRecord_Read(path, rm.player, rm.inventory, rm.survival, rm.record, &rm.skills)) {
             loaded = true;
             rm.player.flyAllowed = false; // (#781) never for a client's server-side player
             // (#856) anchored where the record put them: until their first step (their client still loading) the server reports
@@ -940,7 +976,7 @@ namespace {
         if (it == remotes.end() || !PlayerId_Valid(it->second.record.uuid)) return false;
         Remote& rm = it->second;
         const double now = GetTime();
-        const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt);
+        const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt, &rm.skills);
         if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
         else printf("host: could not write the record of %s\n", rm.record.name.c_str());
         return ok;
@@ -1376,11 +1412,24 @@ namespace {
             if (got.seed) rm.inventory.add(got.seed, 1);
             e.carve = true; e.softOnly = softOnly;
             out.flags = 1 | (softOnly ? 8 : 0);
+            if (!rm.creative) { // (#920) Mining or Digging XP for the stroke, as a game run here counts it (#883); ground the
+                // player filled and dug out again soon pays little (the anti-farming share)
+                bool rock = false;
+                for (const auto& [item, amt] : got.items) rock = rock || ItemMatches("any_stone", item);
+                const char* ev = got.ore ? "ore_stroke" : (!softOnly && rock) ? "rock_stroke" : "soil_stroke";
+                const double share = Skills_DigShare(rm.skills, SkillCell(hit), SimTime());
+                int ups = Skills_Event(rm.skills, ev, share, worldXpRate);
+                if (got.gem) ups += Skills_Event(rm.skills, "gem", 1.0, worldXpRate);
+                rm.skillsDirty = true;
+                if (ups > 0) rm.skillsSentAt = -1e9; // (a level-up goes out at once)
+            }
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
             before.emplace(q.item, rm.inventory.amount(q.item));
             if (!rm.creative && !rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
+            for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) // (#920) our ground now
+                Skills_NoteFill(rm.skills, SkillCell(Vector3Add(hit, Vector3{ (float)dx, (float)dy, (float)dz })), SimTime());
             e.strength = 0.6f; e.paint = paint;
             out.strength = e.strength; out.paint = (int8_t)paint;
         }
@@ -1490,7 +1539,7 @@ namespace {
                 const int team = TeamOfSession(session);
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
-            if (till) TeamEvent(session, "count", "till"); // (#335)
+            if (till) { TeamEvent(session, "count", "till"); RemoteXp(session, "till"); } // (#335)
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
@@ -1728,7 +1777,7 @@ namespace {
                 std::map<std::string, double> before{ { u.item, rit->second.inventory.amount(u.item) } };
                 if (Survival_UseItemFor(u.item, rit->second.survival, rit->second.inventory, rit->second.suitStats, false)) {
                     SendInventoryDeltas(m.conn, rit->second.inventory, before);
-                    if (Survival_FoodValue(u.item) > 0.0f) TeamEvent(it->second.session, "count", "eat"); // (#338) "do eat" tasks
+                    if (Survival_FoodValue(u.item) > 0.0f) { TeamEvent(it->second.session, "count", "eat"); RemoteXp(it->second.session, "eat"); } // (#338) "do eat" tasks
                 }
                 else SendMsg(m.conn, MsgChat{ 0, "Can't use " + u.item + " now" });
                 ++itemsUsed;
@@ -1764,6 +1813,21 @@ namespace {
                 if (body && Combat_DropFor(body->name, feet.local, InvSlot{ q.item, centi }, name)) ++dropsMade;
                 else inv.addAmount(q.item, centi / 100.0); // (not on a body: it stays)
                 SendChangedItems(m.conn, inv, before);
+                return;
+            }
+            case NetMsg::SkillSpend: { // (#920) a point on a perk: the server's copy of the skills decides (points, tier, ranks, needs)
+                MsgSkillSpend q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end()) return;
+                if (!Skills_Buy(rit->second.skills, q.perk)) {
+                    ++skillSpendsRefused;
+                    const PerkDef* p = Skills_FindPerk(q.perk);
+                    SendMsg(m.conn, MsgChat{ 0, std::string("Can't learn ") + (p ? p->name : q.perk) + " now" });
+                    return;
+                }
+                ++skillSpends;
+                rit->second.skillsDirty = true; rit->second.skillsSentAt = -1e9; // (the new state at once)
                 return;
             }
             case NetMsg::CreativeGive: { // (#866) a creative player's Catalog: free items (or "" clears its inventory); refused otherwise
@@ -2006,6 +2070,7 @@ void Host_Update(Scene& world) {
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
     SendVitals();         // (#337) and each player's survival numbers, to that player
+    SendSkills();         // (#920) and their skills, when they changed
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
     StepGraves(world);         // (#804) deaths' drops, pickups, decay and the graves list to everyone
     StepTeamQuests(world); // (#338) team books: evaluate, pay, tell, send
@@ -2125,6 +2190,18 @@ int Host_ItemCount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
     return it == remotes.end() ? -1 : it->second.inventory.count(item);
 }
+// (#920 tests) XP into a remote player's skill (sent with the next SkillState); their food (so eating is not refused as full);
+// the perk spends the server allowed and refused.
+bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    Skills_AddXp(it->second.skills, skill, xp, 1.0);
+    it->second.skillsDirty = true; it->second.skillsSentAt = -1e9;
+    return true;
+}
+bool Host_TestSetFood(uint32_t session, float food) { auto it = remotes.find(session); if (it == remotes.end()) return false; it->second.survival.food = food; return true; }
+int Host_SkillSpends() { return skillSpends; }
+int Host_SkillSpendsRefused() { return skillSpendsRefused; }
 bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (tests) count < 0 takes
     auto it = remotes.find(session);
     if (it == remotes.end()) return false;

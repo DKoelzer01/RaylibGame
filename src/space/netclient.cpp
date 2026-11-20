@@ -9,7 +9,12 @@
 #include "farming.h"
 #include "claims.h"
 #include "trees.h"
-#include <process.h>
+#ifdef _WIN32
+#include <process.h> // _getpid
+#else
+#include <unistd.h>
+#define _getpid getpid // (#1025) the Linux server build
+#endif
 #include "survival.h"
 #include "playersession.h"
 #include "hostserver.h"
@@ -298,6 +303,21 @@ namespace {
                 const bool mine = p.session != 0 && p.session == c.welcome.session;
                 if (p.removed.size() == 1) TerrainTool_PlantRemoved(*b, p.removed[0].first, p.removed[0].second, mine);
                 else b->trees->mergeRemovals(p.removed);
+                return;
+            }
+            case NetMsg::SkillState: { // (#920) our skills as the server counts them: the whole state, replacing ours
+                MsgSkillState k;
+                if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;
+                SkillState s;
+                size_t a = 0;
+                while (a < k.text.size()) {
+                    size_t b = k.text.find('\n', a);
+                    if (b == std::string::npos) b = k.text.size();
+                    Skills_LoadLine(s, k.text.substr(a, b - a).c_str());
+                    a = b + 1;
+                }
+                c.skills = s;
+                ++c.skillStates;
                 return;
             }
             case NetMsg::Claims: { // (#343) the land claims: the map's circles and the border near another team's
@@ -787,6 +807,11 @@ void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, cons
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests, bool recursive) { // (#338)
     if (c.state != NetClient::State::Joined || index < 0 || output.empty()) return;
     MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64); q.useChests = useChests; q.recursive = recursive;
+    SendMsg(c, q);
+}
+void NetClient_SkillSpend(NetClient& c, const std::string& perk) { // (#920)
+    if (c.state != NetClient::State::Joined || perk.empty()) return;
+    MsgSkillSpend q; q.perk = perk;
     SendMsg(c, q);
 }
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi) { // (#865)

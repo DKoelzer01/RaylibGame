@@ -125,7 +125,7 @@ void BakeFoliageAo(VariantMesh& m, bool stone) {
                 if (dx * dx + dz * dz < rh * rh) ao *= 0.72f;
             }
         }
-        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 1.0f; // 1 = as tuned, 2 = twice as dark
+        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f; // (#933) 2 = the default (user, 2026-11-19); 1 = the first tuning
         ao = std::clamp(1.0f - strength * (1.0f - ao), 0.0f, 1.0f);
         m.col[4 * i + 3] = (unsigned char)std::clamp((int)lroundf(ao * 255.0f), 0, 255);
     }
@@ -824,8 +824,8 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, culledVbo[slot]);
             glUniform1ui(gTcN, (GLuint)count[0][slot]);
             glUniform1ui(gTcCmd, (GLuint)slot);
-            // #745: RAYLIBGAME_FAR_FOREST grows far trees up to 1.35x in trees.vs; pad the bound to match.
-            static const float farPad = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.35f : 1.0f; }();
+            // #745: the far-forest boost grows far trees up to 1.7x in trees.vs; pad the bound to match (RAYLIBGAME_FAR_FOREST=0: off).
+            static const float farPad = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 1.0f : 1.7f; }(); // on by default (user, 2026-11-19); up to 1.7x
             glUniform1f(gTcRadius, Variant(v, lod).boundRadius * farPad);
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }

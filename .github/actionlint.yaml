@@ -1,0 +1,8 @@
+# actionlint (https://github.com/rhysd/actionlint) settings for this repo's workflows (#1016).
+self-hosted-runner:
+  labels:
+    - raylibgame-linux # the runner on deweyserver (.github/CI.md)
+    - gpu
+config-variables:
+  - SELF_HOSTED_ENABLED # "true" turns the self-hosted workflow on
+  - NIGHTLY_BRANCH # the branch the nightly self-hosted run builds (default m84-integration)

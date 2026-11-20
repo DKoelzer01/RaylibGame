@@ -658,7 +658,8 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
             GpuBlockJob job;
             job.block = ChunkBlockOf(key);
             if (pf->prepareBlock(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.grid) &&
-                pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64)) {
+                pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64) &&
+                pf->blockCaveSegs(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.caveSegs, 32)) { // (#615) else the CPU path
                 const float prepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 job.keep = field;
                 job.field = pf;
