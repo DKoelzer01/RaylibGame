@@ -282,6 +282,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Trapping_Reset();
         DungeonTraps_Reset();
         Combat_Reset();
+        Blueprint_ResetGhosts(); // (#1018)
         Claims_Reset(); // (#343)
         Events_Reset();
         Particles_Clear();
@@ -1584,7 +1585,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world); };
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world);
+        if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
@@ -8776,7 +8778,27 @@ int main(int argc, char** argv)
                         const bool saved = Blueprint_SaveFile(*plot, "saves/bench_blueprint.bp", "bench copy");
                         Blueprint back;
                         const bool loaded = Blueprint_LoadFile("saves/bench_blueprint.bp", back);
-                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size();
+                        // (#1018) Ghosts: the same preset 16 m the other way, one landing leg short: the leg stays a ghost; out of
+                        // reach it waits, in reach without the leg it waits, with the leg it builds itself.
+                        const Vector3 d2 = Vector3Normalize(Vector3Subtract(home, Vector3Scale(t1, 16.0f / pf->radius)));
+                        Plot* plot2 = p->plots->plotFor(Vector3Scale(d2, pf->radius + pf->elevation(d2)), 0.0f, true);
+                        inventory.clear();
+                        inventory.add("rocket_engine", 1); inventory.add("landing_leg", 3); inventory.add("fuel_tank", 4);
+                        inventory.add("guidance_computer", 1); inventory.add("cockpit", 1);
+                        Blueprint_ResetGhosts();
+                        std::string missing3;
+                        const int placed3 = Blueprint_Place(*p, *plot2, bp, { 0, 0, 0 }, true, missing3, true);
+                        const int ghosts0 = Blueprint_GhostCount();
+                        const Vector3 near2 = plot2->toBody({ 0, 0, 0 }), far2 = Vector3Scale(near2, 1.01f); // (1 % out: ~600 m away)
+                        const int farBuilt = Blueprint_UpdateGhosts(p, far2, 100.0);
+                        const int noLeg = Blueprint_UpdateGhosts(p, near2, 101.0);
+                        inventory.add("landing_leg", 1);
+                        const int built = Blueprint_UpdateGhosts(p, near2, 102.0);
+                        const bool ghostsOk = placed3 == 10 && ghosts0 == 1 && farBuilt == 0 && noLeg == 0 && built == 1 && Blueprint_GhostCount() == 0 &&
+                                              plot2->partCount() == (int)bp.parts.size() && inventory.count("landing_leg") == 0;
+                        printf("bench: blueprint (#1018): one leg short: placed %d, %d ghost; out of reach built %d, without the leg %d, with it %d; ghosts left %d, parts %d of %zu -> %s\n",
+                               placed3, ghosts0, farBuilt, noLeg, built, Blueprint_GhostCount(), plot2->partCount(), bp.parts.size(), ghostsOk ? "ok" : "FAIL");
+                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size() && ghostsOk;
                         printf("bench: blueprint: %s (%zu parts): placed %d (missing: %s), then %d more; saved and loaded %zu parts -> %s\n",
                                bp.name.c_str(), bp.parts.size(), first, missing.c_str(), second, back.parts.size(), ok ? "PASS" : "FAIL");
                     }
@@ -10019,6 +10041,8 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
+                Blueprint_UpdateGhosts(player.nearest, player.nearest->toLocal((player.position - world.renderOrigin).toFloat()), SimTime());
             GpuTimer_CpuMark("step: weather, factory");
             GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up

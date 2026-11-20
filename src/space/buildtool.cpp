@@ -432,8 +432,17 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
         std::string missing;
-        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing);
-        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str()) : TextFormat("Placed %d parts; still need %s", n, missing.c_str()));
+        // (#1018) What can't be paid for stays as ghosts, built from the inventory when you come by; placing the same
+        // blueprint on its own ghosts again (nothing new to build) cancels them.
+        const int ghostsBefore = Blueprint_GhostsOn(*target, *bp, aim.part.origin);
+        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing, true);
+        if (n == 0 && ghostsBefore > 0) {
+            const int gone = Blueprint_RemoveGhosts(*target, *bp, aim.part.origin);
+            GameUI_Toast(TextFormat("Cancelled %d ghost part%s of %s", gone, gone == 1 ? "" : "s", bp->name.c_str()));
+            return;
+        }
+        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str())
+                                     : TextFormat("Placed %d parts; the rest are ghosts, built when you come by with %s (place again to cancel)", n, missing.c_str()));
         if (n > 0) Audio_Play(Sfx::Build, 0.5f, 1.0f);
         return;
     }
