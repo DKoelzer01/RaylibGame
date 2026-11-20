@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -109,6 +110,11 @@ void Skills_NoteFill(SkillState& s, uint64_t cell, double now) {
 double Skills_DigShare(const SkillState& s, uint64_t cell, double now) {
     auto it = s.filledCells.find(cell);
     return it != s.filledCells.end() && now - it->second < kFillWindow ? 0.1 : 1.0;
+}
+
+double Skills_TeamShare(double n, double distance) {
+    static const double range = getenv("RAYLIBGAME_TEAM_XP_RANGE") ? atof(getenv("RAYLIBGAME_TEAM_XP_RANGE")) : -1.0;
+    return n > 0.0 && distance <= (range >= 0.0 ? range : teamXpRange) ? n * kTeamXpShare : 0.0;
 }
 
 void Skills_OnDeath(SkillState& s, double share) {
@@ -343,5 +349,40 @@ TEST(SkillsData, TheNewTreesStackRankByRank) { // (#919) about +10% a rank, adde
     s.ranks["iron_stomach"] = 3; s.ranks["hardy"] = 1;
     EXPECT_LT(Skills_Stat(s, "hunger"), 0.8) << "hunger perks slow it";
     EXPECT_GT(Skills_Stat(s, "hunger"), 0.5);
+}
+
+TEST_F(SkillsTest, TeamShareIsATenthWithinRange) { // (#920)
+    EXPECT_DOUBLE_EQ(Skills_TeamShare(2.0, 10.0), 0.2);
+    EXPECT_DOUBLE_EQ(Skills_TeamShare(2.0, teamXpRange), 0.2) << "the edge counts";
+    EXPECT_DOUBLE_EQ(Skills_TeamShare(2.0, teamXpRange + 1.0), 0.0) << "too far: nothing";
+    EXPECT_DOUBLE_EQ(Skills_TeamShare(0.0, 1.0), 0.0);
+    SkillState earner, mate;
+    Skills_Event(earner, "rock_stroke", 10.0);
+    Skills_Event(mate, "rock_stroke", Skills_TeamShare(10.0, 5.0));
+    EXPECT_NEAR(mate.xp["mining"], 0.1 * earner.xp["mining"], 1e-9) << "a tenth of the XP";
+}
+
+#include "terraintool.h"
+#include "voxel.h"
+TEST(TerrainToolPerks, StrokeScaleFollowsTheMaterialAndTool) { // (#1043) shared by the local stroke and the server's check
+    const auto stat = [](const char* n) {
+        const std::string s = n;
+        return s == "rock_radius" ? 1.2f : s == "rock_speed" ? 1.3f : s == "ore_speed" ? 1.1f : s == "soil_speed" ? 1.4f : s == "soil_radius" ? 1.5f : 1.0f;
+    };
+    const DigPerkScale ore = TerrainTool_DigPerkScale(true, (int)VoxelMaterial::Ore, stat);
+    EXPECT_FLOAT_EQ(ore.radius, 1.2f);
+    EXPECT_NEAR(ore.rate, 1.43f, 1e-5f);
+    const DigPerkScale handsOnRock = TerrainTool_DigPerkScale(false, (int)VoxelMaterial::Granite, stat);
+    EXPECT_FLOAT_EQ(handsOnRock.radius, 1.0f) << "Mining's perks need a pick";
+    EXPECT_FLOAT_EQ(handsOnRock.rate, 1.0f);
+    const DigPerkScale soil = TerrainTool_DigPerkScale(true, (int)VoxelMaterial::Regolith, stat);
+    EXPECT_FLOAT_EQ(soil.radius, 1.5f);
+    EXPECT_FLOAT_EQ(soil.rate, 1.4f);
+    EXPECT_FLOAT_EQ(TerrainTool_DigPerkScale(true, (int)VoxelMaterial::Ore, nullptr).rate, 1.0f) << "no stats: no perks";
+    DigYield y;
+    y.items["granite"] = 1.0f; y.items["dirt"] = 1.0f;
+    TerrainTool_ScaleYield(y, 2.0f, 1.5f);
+    EXPECT_FLOAT_EQ(y.items["granite"], 1.5f);
+    EXPECT_FLOAT_EQ(y.items["dirt"], 1.0f);
 }
 #endif

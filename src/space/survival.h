@@ -20,6 +20,8 @@ class Scene;
 struct SurvivalState {
     float oxygen = 100.0f, power = 100.0f, health = 100.0f;   // 0..100
     float fallDamageTaken = 0.0f;   // health lost to hard landings so far (not saved; tests tell it from other damage, #439)
+    const char* lastHarm = "";      // (#844) what last took health: fall, hit, vacuum, suffocation, starvation, heat (not saved; logs)
+    float lastFallSpeed = 0.0f;     // (#844) m/s into the ground at the last harmful landing (logs)
     float oxygenDrainPerSec = 0.35f;                          // ~5 minutes per tank
     float powerDrainPerSec = 0.05f;                           // life support baseline
     float jetpackPowerPerTank = 25.0f;                        // suit power to recharge an empty jetpack tank

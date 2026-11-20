@@ -94,6 +94,14 @@ namespace {
     // step; none waiting: the last keys stay held). Kept across a reconnect: the player is where they left.
     struct Remote {
         Player player;
+        // (#844) The player's body-local state after its last step (or its spawn): a player is stepped only by its inputs,
+        // and in a gap (a client loading the world, a stall) its world-frame velocity doesn't turn with the planet, so the
+        // first step after it landed on ground that had moved on (a 36 m/s "fall" at --time-scale 60). Re-applied before a
+        // step after a gap, so the player rides its body through it. restSpawns: a respawn or teleport makes it stale.
+        Player::NetState rest{};
+        bool restValid = false;
+        int restSpawns = 0;
+        long long restTick = 0;
         std::deque<MsgInput> inputs;
         uint32_t lastApplied = 0;   // the client tick of the last input stepped (the owner replays the ones after)
         uint32_t lastQueued = 0;    // the newest input tick received (redundant copies of older ones are skipped)
@@ -126,6 +134,12 @@ namespace {
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
     void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
+    void TeamXp(uint32_t session, const char* event, double n);         // (#920) and teammates' share of it (below)
+    // (#920) A remote player's perk multipliers by stat name (Skills_Stat on the skills the server keeps for them).
+    std::function<float(const char*)> StatsOf(const Remote& rm) {
+        const SkillState* s = &rm.skills;
+        return [s](const char* name) { return (float)Skills_Stat(*s, name); };
+    }
     long long lastSnapshot = 0;
     constexpr int kSnapshotEvery = 2;                  // sim steps (60 Hz) per snapshot: 30 Hz (ADR #309)
     constexpr size_t kMaxQueuedInputs = 120;           // 2 s of inputs waiting: more and the oldest go (keeping their presses)
@@ -155,6 +169,8 @@ namespace {
     // caught up at once, but only as fast as real time allows (a budget earned per server tick, at most kMaxBudget), so
     // a client sending too many inputs can't run faster than anyone else. (Repeating the keys while an input was late,
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
+    constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
+    bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -164,6 +180,11 @@ namespace {
             while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
             // (#768) at most kMaxStepsPerFrame inputs a frame per player: after a slow frame the backlog is worked off over the
             // next frames, not all at once (all at once made the next frame slower still: the 31-40 ms catch-up bursts at 32 players).
+            if (!r.survival.dead && (!r.restValid || r.restSpawns != r.player.spawns)) { // (#844) just spawned or moved: its state now
+                RenderOriginScope frame(world, r.player.position);
+                r.restValid = r.player.netState(world, r.rest);
+                r.restSpawns = r.player.spawns; r.restTick = SimTick();
+            }
             int stepsThisFrame = 0;
             while (r.budget >= 1.0 && !r.inputs.empty() && stepsThisFrame++ < kMaxStepsPerFrame) {
                 r.budget -= 1.0;
@@ -177,7 +198,10 @@ namespace {
                 r.forwardLocal = { m.fx, m.fy, m.fz };
                 if (Planetoid* b = r.player.nearest ? r.player.nearest : StartBody(world)) r.player.forward = b->dirToWorld(r.forwardLocal);
                 RenderOriginScope frame(world, r.player.position);
+                if (!r.survival.dead && r.restValid && r.restSpawns == r.player.spawns && SimTick() - r.restTick > kRestGapTicks && !RestGapOff())
+                    r.player.applyNetState(world, r.rest); // (#844) back where its body has carried it, moving with it
                 if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
         }
@@ -307,6 +331,10 @@ namespace {
             online.push_back(name);
             if (r.survival.dead && !r.deathHandled) {
                 r.deathHandled = true;
+                // (#844) what killed them, for the log (a death on a peaceful world had no cause to go on)
+                printf("host: %s died (death %d): %s%s; food %.0f, oxygen %.0f, %s\n", name.c_str(), r.survival.deaths, r.survival.lastHarm[0] ? r.survival.lastHarm : "unknown",
+                       !strcmp(r.survival.lastHarm, "fall") ? TextFormat(" at %.1f m/s", r.survival.lastFallSpeed) : "", r.survival.food, r.survival.oxygen,
+                       r.player.flyMode ? "flying" : r.player.grounded ? "on the ground" : "in the air");
                 const auto before = AllAmounts(r.inventory);
                 if (Combat_OnDeathFor(r.inventory, nullptr, r.player, name, deathDrops, false)) ++gravesMade;
                 SendChangedItems(conn, r.inventory, before);
@@ -600,7 +628,9 @@ namespace {
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuse(nullptr); return; }
             rm.lastFellAt = SimTime();
-            for (const auto& [item, n] : TerrainTool_PlantDrops(*b, pl).items) rm.inventory.add(item, n);
+            PlantDrops drops = TerrainTool_PlantDrops(*b, pl);
+            TerrainTool_ScalePlantDrops(drops, pl, StatsOf(rm)); // (#920) the player's Woodcutting and Foraging perks
+            for (const auto& [item, n] : drops.items) rm.inventory.add(item, n);
             b->trees->remove(a.plant);
             plantsSeen[b->id] = b->trees->removalsShared(); // (sent here, with who felled it)
             SendPlants(0, b->netId, session, { { a.plant, b->trees->removals().at(a.plant) } });
@@ -619,7 +649,7 @@ namespace {
                 TeamEvent(session, "count", "plant");
                 RemoteXp(session, "plant"); // (#920) Farming
             } else {
-                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; }
+                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why, StatsOf(rm)) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; } // (#920) their Farming perks
                 TeamEvent(session, "count", "harvest");
                 RemoteXp(session, "harvest"); // (#920) Farming
             }
@@ -717,6 +747,32 @@ namespace {
         const int ups = Skills_Event(it->second.skills, event, n, worldXpRate);
         it->second.skillsDirty = true;
         if (ups > 0) it->second.skillsSentAt = -1e9;
+        TeamXp(session, event, n);
+    }
+    // (#920, the user's answer on #167) Teammates near the earner get a share of the XP (Skills_TeamShare: 10%, within
+    // teamXpRange). n: the earner's event count after the anti-farming share.
+    int teamXpGiven = 0; // tests: shares handed out
+    Scene* hostWorld = nullptr; // (#920) the world Host_Update runs, for body-local positions where no world is passed in
+    void TeamXp(uint32_t session, const char* event, double n) {
+        const auto me = remotes.find(session);
+        const int team = TeamOfSession(session);
+        if (me == remotes.end() || team == 0 || !hostWorld) return;
+        // Distances body-local, on the same body: a player not stepped for a while (no inputs) keeps a world position the
+        // planet has long turned away from (#844), but its body-local anchor is right (Player::netState).
+        Player::NetState mine;
+        if (!me->second.player.netState(*hostWorld, mine)) return;
+        const Planetoid* body = Planetoid::findNet(mine.body);
+        if (!body) return;
+        for (auto& [id, r] : remotes) {
+            if (id == session || r.creative || TeamOfSession(id) != team) continue;
+            Player::NetState theirs;
+            if (!r.player.netState(*hostWorld, theirs) || theirs.body != mine.body) continue;
+            const double share = Skills_TeamShare(n, (theirs.local - mine.local).length() * body->scale);
+            if (share <= 0.0) continue;
+            if (Skills_Event(r.skills, event, share, worldXpRate) > 0) r.skillsSentAt = -1e9;
+            r.skillsDirty = true;
+            ++teamXpGiven;
+        }
     }
     // (#920) A stroke's or fill's cell for the anti-farming share: the body-local point on a 1 m grid (as skillplay's).
     uint64_t SkillCell(Vector3 local) {
@@ -1388,15 +1444,18 @@ namespace {
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
         const DigRule rule = DigRuleFor(tool, mat, TerrainTool_ItemAt(*p, hit, (int)mat));
-        const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) / p->scale;
+        // (#1043) The player's own perks scale the stroke as their client does (Mining on rock and ore, Digging on soil).
+        const auto stat = StatsOf(rm);
+        const DigPerkScale perks = TerrainTool_DigPerkScale(tool.type == ToolType::Pickaxe, (int)mat, stat);
+        const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) * perks.radius / p->scale;
         const bool dig = q.kind == NetEditKind::Dig;
         if (dig && !rule.can) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
         // The stroke's shape: the tool's sphere (place: 1.3x, the soft blob), its centre where the tool puts it.
         const float maxRadius = baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
         const float offset = Vector3Distance(hit, centre);
         if (q.radius > maxRadius || offset > q.radius * (dig ? 0.5f : 0.3f) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
-        // Rate: a token per cooldown (the tool's strokes a second, at least 2), up to a small burst.
-        const double rate = std::max(rule.strokesPerSecond, 2.0f);
+        // Rate: a token per cooldown (the tool's strokes a second, at least 2, with the perks), up to a small burst.
+        const double rate = std::max(rule.strokesPerSecond, 2.0f) * perks.rate;
         if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
         rm.editTokens = std::min(kEditBurst, rm.editTokens + (SimTime() - rm.editTokensAt) * rate);
         rm.editTokensAt = SimTime();
@@ -1408,7 +1467,8 @@ namespace {
         std::map<std::string, double> before;
         if (dig) {
             const bool softOnly = tool.type != ToolType::Pickaxe;
-            const DigYield got = TerrainTool_DigYield(*p, centre, q.radius, hit, softOnly, 1);
+            DigYield got = TerrainTool_DigYield(*p, centre, q.radius, hit, softOnly, stat("gem_chance")); // (#920) the player's perks
+            TerrainTool_ScaleYield(got, stat("ore_yield"), stat("stone_yield"));
             for (const auto& [item, amt] : got.items) { before.emplace(item, rm.inventory.amount(item)); }
             if (got.gem) before.emplace(got.gem, rm.inventory.amount(got.gem));
             if (got.seed) before.emplace(got.seed, rm.inventory.amount(got.seed));
@@ -1427,6 +1487,8 @@ namespace {
                 if (got.gem) ups += Skills_Event(rm.skills, "gem", 1.0, worldXpRate);
                 rm.skillsDirty = true;
                 if (ups > 0) rm.skillsSentAt = -1e9; // (a level-up goes out at once)
+                TeamXp(session, ev, share);
+                if (got.gem) TeamXp(session, "gem", 1.0);
             }
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
@@ -2042,6 +2104,7 @@ int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
 
 void Host_Update(Scene& world) {
+    hostWorld = &world;
     // Autosave (user, 2026-11-15: every 30 minutes by default; --autosave-minutes N, 0 = off). Wall-clock time: a
     // server's saves protect against crashes, whatever the game clock does.
     if (autosaveSeconds > 0.0 && lastSave >= 0.0 && GetTime() - lastSave >= autosaveSeconds) {
@@ -2207,6 +2270,22 @@ bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp) {
     return true;
 }
 bool Host_TestSetFood(uint32_t session, float food) { auto it = remotes.find(session); if (it == remotes.end()) return false; it->second.survival.food = food; return true; }
+bool Host_TestPerk(uint32_t session, const std::string& perk, int rank) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    it->second.skills.ranks[perk] = rank;
+    it->second.skillsDirty = true; it->second.skillsSentAt = -1e9;
+    return true;
+}
+bool Host_TestTeamUp(uint32_t a, uint32_t b) {
+    const Session *sa = nullptr, *sb = nullptr;
+    for (const Session& s : sessions) { if (s.id == a) sa = &s; if (s.id == b) sb = &s; }
+    if (!sa || !sb) return false;
+    const int team = Teams_Join(sa->uuid, sa->name, 0xFFFFFFFFu);
+    Teams_Move(sb->uuid, team);
+    return team != 0 && Teams_Of(sb->uuid) == team;
+}
+int Host_TeamXpGiven() { return teamXpGiven; }
 int Host_SkillSpends() { return skillSpends; }
 int Host_SkillSpendsRefused() { return skillSpendsRefused; }
 bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (tests) count < 0 takes

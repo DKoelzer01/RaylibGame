@@ -11311,7 +11311,7 @@ int main(int argc, char** argv)
                     // A stroke every 0.6 s: five digs (bare hands get ~0.4 dirt a stroke; a place costs a whole one), each into
                     // the hole the last one left; then the place and the refusals.
                     constexpr int kDigs = 5;
-                    if (step <= kDigs + 3 && GetTime() - t0 > 0.6 * step) {
+                    if (step <= kDigs + 5 && GetTime() - t0 > 0.6 * step) {
                         if (step < kDigs) {
                             spot();
                             const Vector3 c = Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR));
@@ -11334,6 +11334,13 @@ int main(int argc, char** argv)
                             NetClient_UseItem(carol, "berries");                  // Survival XP for eating
                         } else if (step == kDigs + 3) {
                             NetClient_SkillSpend(bob, "quick_pick");              // allowed: the server's copy has the point
+                        } else if (step == kDigs + 4) { // (#1043) bob gets Wide Scoop 2 (soil strokes 20% wider); (#920) carol joins his team
+                            Host_TestPerk(bob.welcome.session, "wide_scoop", 2);
+                            Host_TestTeamUp(bob.welcome.session, carol.welcome.session);
+                        } else if (step == kDigs + 5) { // a stroke 20% wider than the bare-hand one: the server must take it
+                            spot();
+                            const float wide = digR * 1.2f;
+                            NetClient_RequestEdit(bob, NetEditKind::Dig, *body, hitPt, Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * wide)), wide, ""); ++requested;
                         }
                         ++step;
                         lastStepAt = GetTime();
@@ -11347,7 +11354,7 @@ int main(int argc, char** argv)
                         world.camera.position = Vector3Add(at, Vector3Add(Vector3Scale(body->dirToWorld(up), 3.0f), Vector3Scale(side, 4.0f)));
                         world.camera.target = at; world.camera.up = body->dirToWorld(up);
                     }
-                    if (step > kDigs + 3 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
+                    if (step > kDigs + 5 && GetTime() - lastStepAt > 2.5) { // settled: everything answered (slow frames delay the steps)
                         const int accepted = Host_EditsApplied();
                         const bool sameOrder = bob.editsSeen == carol.editsSeen && bob.editOrder == carol.editOrder && bob.editsSeen == accepted;
                         const bool dugOut = body && body->densityAt(firstCentre) < ISO_LEVEL;
@@ -11360,18 +11367,25 @@ int main(int argc, char** argv)
                         const bool placed = bob.placesSeen == 1 && carol.placesSeen == 1;
                         // (#920) bob's digs earned XP on the server, which sent his skills (carol, who dug nothing, has none)
                         auto xpOf = [](NetClient& c) { double x = 0.0; for (const auto& [id, v] : c.skills.xp) x += v; return x; };
-                        const double bobXp = xpOf(bob), carolXp = carol.skills.xp["digging"] + carol.skills.xp["mining"]; // (carol's own: eating, below)
+                        const double bobXp = xpOf(bob), carolXp = carol.skills.xp["mining"]; // (carol's own: eating, below; digging: the team share)
+                        // (#1043) the 20% wider stroke was taken (no Shape refusal); (#920) carol, his teammate 3 m off, got a tenth of
+                        // that stroke's Digging XP (and nothing from the strokes before the team-up)
+                        const bool wideOk = !(bob.refusedWhy & (1u << (unsigned)NetEditRefusal::Shape)) && accepted >= kDigs + 2;
+                        const double carolDig = carol.skills.xp["digging"];
+                        const bool shareOk = Host_TeamXpGiven() >= 1 && carolDig > 0.0 && carolDig < 0.2 * bob.skills.xp["digging"];
+                        printf("bench: net dig (#1043, #920): a stroke 20%% wider with Wide Scoop 2 taken %d; carol's team share %.2f digging XP of bob's %.1f (%d shares) -> %s\n",
+                               (int)wideOk, carolDig, bob.skills.xp["digging"], Host_TeamXpGiven(), wideOk && shareOk ? "ok" : "FAIL");
                         // (#920) perk spends: bob's (a point from the XP given) allowed, carol's (none) refused; carol's eating paid Survival XP
                         const bool spendOk = bob.skills.ranks["quick_pick"] == 1 && Host_SkillSpends() == 1 && Host_SkillSpendsRefused() >= 1;
                         const bool eatOk = carol.skills.xp["survival"] > 0.0;
                         printf("bench: net dig (#920): bob learnt Quick Pick %d (spends allowed %d, refused %d); carol ate: survival %.1f XP -> %s\n",
                                bob.skills.ranks["quick_pick"], Host_SkillSpends(), Host_SkillSpendsRefused(), carol.skills.xp["survival"], spendOk && eatOk ? "ok" : "FAIL");
-                        const bool skillsOk = bob.skillStates >= 1 && bobXp > 0.0 && carolXp == 0.0 && spendOk && eatOk;
+                        const bool skillsOk = bob.skillStates >= 1 && bobXp > 0.0 && carolXp == 0.0 && spendOk && eatOk && wideOk && shareOk;
                         // (#984) carol gets none of bob's yields (her own deltas are the starting kit a new player gets at the join)
                         const bool carolNone = carolInv.amount("dirt") == 0.0 && carolInv.amount("gravel") == 0.0;
                         printf("bench: net dig (#920): bob heard %d skill states, %.1f XP from his digs (digging %.1f, mining %.1f); carol %.1f XP -> %s\n",
                                bob.skillStates, bobXp, bob.skills.xp["digging"], bob.skills.xp["mining"], carolXp, skillsOk ? "ok" : "FAIL");
-                        const bool ok = accepted >= kDigs + 1 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carolNone && skillsOk;
+                        const bool ok = accepted >= kDigs + 2 && bob.editsOwn == accepted && sameOrder && dugOut && placed && worst < 0.005 && got && reach && rate && cost && bob.editsRefused <= 6 && carolNone && skillsOk;
                         printf("bench: net dig (#329, 100 ms round trip, 2%% loss): %d edits applied by the server (%d digs, a place, the burst's), bob saw %d (own %d), carol %d, same order %d; "
                                "ground at the first dig is air %d; the place reached both %d; bob carries dirt %.2f gravel %.2f (server's copy off by %.3f at worst, %d deltas; carol got none %d); "
                                "refused: reach %d, rate %d, cost %d (%d refusals) -> %s\n",

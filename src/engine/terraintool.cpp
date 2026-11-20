@@ -95,10 +95,7 @@ namespace {
         plantBody->trees->remove(p.id);
         { // (#919) Woodcutting: logs; Foraging: fibre from bushes, stones off the ground (joined, the server credits them: #920)
             PlantDrops d = TerrainTool_PlantDrops(*plantBody, p);
-            for (auto& [item, n] : d.items) {
-                const char* stat = p.tree() ? (item != "rubber" ? "log_yield" : nullptr) : p.stone() ? "stone_find" : item == "fibre" ? "fibre_yield" : nullptr;
-                if (stat) n = SkillScaled(n, stat);
-            }
+            TerrainTool_ScalePlantDrops(d, p);
             GiveDrops(d);
         }
         if (gSkillEvent) { // (#883) XP: chops at a tree, a tree down, a bush, a loose stone
@@ -448,24 +445,43 @@ static bool BrushStroke(bool digging) {
 static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
 static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
 static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
-int SkillScaled(int n, const char* stat) {
-    const double v = n * (double)SkillStat(stat);
+int SkillScaled(int n, const char* stat, const std::function<float(const char*)>& by) {
+    const double v = n * (double)(by ? by(stat) : SkillStat(stat));
     const int whole = (int)std::floor(v);
     return whole + (GameRng_Unit() < v - whole ? 1 : 0);
 }
 
 // Strokes a second for the aimed ground with the tool in hand: the tool's rule, and (#883) Mining's perks on a pick at rock
 // and ore (Quick Pick, Vein Follower); (#919) Digging's on soil.
+DigPerkScale TerrainTool_DigPerkScale(bool pickaxe, int material, const std::function<float(const char*)>& stat) {
+    const VoxelMaterial m = (VoxelMaterial)material;
+    const bool ore = m == VoxelMaterial::Ore;
+    const bool rock = m == VoxelMaterial::Rock || (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble);
+    const auto s = [&](const char* name) { return stat ? stat(name) : 1.0f; };
+    DigPerkScale k;
+    if (pickaxe && (rock || ore)) { k.rate = s("rock_speed") * (ore ? s("ore_speed") : 1.0f); k.radius = s("rock_radius"); }
+    else if (!rock && !ore) { k.rate = s("soil_speed"); k.radius = s("soil_radius"); } // (#919) Digging
+    return k;
+}
+static DigPerkScale AimedPerks() {
+    if (terrainTool.terraform || !hasHit) return {};
+    return TerrainTool_DigPerkScale(tool.type == ToolType::Pickaxe, (int)hit.material, SkillStat);
+}
 float TerrainTool_StrokeRate() {
-    float rate = terrainTool.terraform ? terrainTool.strokesPerSecond : std::max(rule.strokesPerSecond, 2.0f);
-    if (!terrainTool.terraform && PickOnRock()) rate *= SkillStat("rock_speed") * (HitOre() ? SkillStat("ore_speed") : 1.0f);
-    else if (!terrainTool.terraform && hasHit && !HitRock() && !HitOre()) rate *= SkillStat("soil_speed"); // (#919) Digging
-    return rate;
+    if (terrainTool.terraform) return terrainTool.strokesPerSecond;
+    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate;
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
-    if (PickOnRock()) return r * SkillStat("rock_radius");
-    return !terrainTool.terraform && hasHit && !HitRock() && !HitOre() ? r * SkillStat("soil_radius") : r; // (#919) Digging
+    return r * AimedPerks().radius;
+}
+void TerrainTool_ScaleYield(DigYield& got, float oreMul, float stoneMul) {
+    for (auto& kv : got.items) {
+        bool ore = false;
+        for (int k = 0; k < PlanetField::kOreKindCount && !ore; ++k) if (const char* o = PlanetField::OreKindName(k); o && kv.first == o) ore = true;
+        const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
+        if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
+    }
 }
 
 // Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so
@@ -700,13 +716,7 @@ bool TerrainTool_Stroke(bool dig) {
     const bool rockHit = HitRock() || HitOre(); // (before the edit changes what is there)
     DigYield got = TerrainTool_DigYield(p, centre, r, hit.local, softOnly, terrainTool.gemBoost * SkillStat("gem_chance"));
     // (#883) Mining's perks: more ore, more stone of the rock's own kind
-    const float oreMul = SkillStat("ore_yield"), stoneMul = SkillStat("stone_yield");
-    for (auto& kv : got.items) {
-        bool ore = false;
-        for (int k = 0; k < PlanetField::kOreKindCount && !ore; ++k) if (const char* o = PlanetField::OreKindName(k); o && kv.first == o) ore = true;
-        const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
-        if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
-    }
+    TerrainTool_ScaleYield(got, SkillStat("ore_yield"), SkillStat("stone_yield"));
     for (auto& kv : got.items) inventory.addFractional(kv.first, kv.second);
     if (gSkillEvent) { // (#883) XP: the stroke's kind, and a gem
         gSkillEvent(got.ore ? "ore_stroke" : rockHit && !softOnly ? "rock_stroke" : "soil_stroke", 1.0, hit.local);
@@ -833,6 +843,12 @@ int TerrainTool_HitsToFell(const Plant& p, const ToolSpec& t) {
     return std::max(1, (int)lroundf((4.0f + 9.0f * p.trunkVolume()) * ChopFactor(t))); // the trunk's volume (#274, user 2026-11-15): a giant oak ~190 stone-axe hits (~1 min), a medium tree 10-25, a sapling ~5; better axes proportionally faster
 }
 
+void TerrainTool_ScalePlantDrops(PlantDrops& d, const Plant& p, const std::function<float(const char*)>& stat) {
+    for (auto& [item, n] : d.items) {
+        const char* name = p.tree() ? (item != "rubber" ? "log_yield" : nullptr) : p.stone() ? "stone_find" : item == "fibre" ? "fibre_yield" : nullptr;
+        if (name) n = SkillScaled(n, name, stat);
+    }
+}
 PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
     PlantDrops d;
     auto add = [&](const char* item, int n) { d.items.push_back({ item, n }); };
