@@ -1229,14 +1229,15 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     // the radius wandering in [rmin, 8] m. Main passages branch (25% of their vertices) into shorter, narrower side passages,
     // so the tunnels form networks (#615, #999: spaghetti and noodle caves). Branches at 35% of main vertices.
     auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
-    // (#1058, Plan 10 step 5) A chamber at a deep passage vertex c (depth m under the ground): an ellipsoid flattened
-    // along the local vertical (half-width 15-75 m, mostly the smaller, height x0.3-0.45: wide and low, its roof domed),
+    // (#1058, Plan 10 step 5) A chamber at a deep passage vertex c (depth m under the ground; 2% of deep background vertices,
+    // 10% of karst ones): an ellipsoid flattened
+    // along the local vertical (half-width 15-45 m, mostly the smaller, height x0.3-0.45: wide and low, its roof domed),
     // a level floor 0.4 r below its axis (kind 3), a breakdown floor of 3-8 sunk boulders (solid, r 2-6 m) and 0-2
     // columns floor to roof (solid, r 1.5-4 m). Skipped where its dome would come within 10 m of the surface.
     auto chamber = [&](Vector3 c, Vector3 head, float depth, std::mt19937& g) {
         std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
         const float u0 = Ug(g), u1 = Ug(g), u2 = Ug(g), u3 = Ug(g);
-        const float r = 15.0f + 60.0f * u0 * u0, flat = 0.3f + 0.15f * u1;
+        const float r = 15.0f + 30.0f * u0 * u0, flat = 0.3f + 0.15f * u1;
         if (depth - r * flat * 2.3f < 10.0f) return;
         const Vector3 up = Vector3Normalize(c);
         const Vector3 hd = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
@@ -1285,7 +1286,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             sg.up = Vector3Normalize(Vector3Add(pos, pos2));
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
-            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.08f) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
+            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
                 const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
@@ -1516,7 +1517,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                         push(Vector3Add(pos, Vector3Scale(u1, 1.8f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.8f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
                     }
                     pos = pos2; dir = dir2; r = r2; h = h2; run += L;
-                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.15f) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
+                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.10f) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
                     head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
                     if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
                         const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
@@ -1715,7 +1716,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
-                intrude = (mouth ? 0.65f : 0.55f) * rw * fade * wn;
+                const float ra = hall ? std::min(rw, 8.0f) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
+                intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
             }
         }
         m = std::min(m, std::max(len - rw + intrude, floorCut));
