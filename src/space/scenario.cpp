@@ -237,6 +237,51 @@ int RunMany(const std::vector<ScenarioDef>& defs, const std::string& outDir, con
     return failed ? 1 : 0;
 }
 
+// --scenario-parity NAME [TICKS] (#968): the fluid's CPU and GPU paths, the same scenario run twice in lockstep (GPU, then
+// FLUID_CPU=1), each writing a per-tick hash of every brick's cells (RAYLIBGAME_FLUID_TRACE_FILE) and ending after TICKS
+// traced ticks; PASS when the two traces are identical tick for tick, else the first tick they part. A lockstep scenario only
+// (one whose s.env leaves RAYLIBGAME_FLUID_LOCKSTEP on).
+int RunParity(const ScenarioDef& d, const std::string& outDir, const std::vector<std::string>& pass, long long ticks) {
+    const std::string exe = ScenarioProc_Exe();
+    std::error_code ec;
+    fs::create_directories(outDir, ec);
+    const char* modes[2] = { "gpu", "cpu" };
+    std::vector<std::string> lines[2];
+    for (int m = 0; m < 2; ++m) {
+        const std::string trace = outDir + "/parity-" + modes[m] + ".txt";
+        fs::remove(trace, ec);
+        SetEnv("FLUID_CPU", m ? "1" : "0");
+        SetEnv("RAYLIBGAME_FLUID_TRACE", "1");
+        SetEnv("RAYLIBGAME_FLUID_TRACE_FILE", trace);
+        SetEnv("RAYLIBGAME_FLUID_TRACE_STOP", std::to_string(ticks));
+        std::string cmd = Quote(exe) + " --scenario " + Quote(d.name) + " --scenario-out " + Quote(outDir + "/parity-" + modes[m]) + " --scenario-no-record";
+        for (const std::string& a : pass) cmd += " " + Quote(a);
+        printf("scenario: === parity %s (%s)\n", d.name.c_str(), modes[m]);
+        fflush(stdout);
+        const int rc = ScenarioProc_Run(cmd, d.timeout * 6.0 + 240.0); // lockstep on the CPU path runs well under real time
+        if (FILE* f = fopen(trace.c_str(), "rb")) {
+            char b[256];
+            while (fgets(b, sizeof b, f)) { std::string s = b; while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back(); lines[m].push_back(s); }
+            fclose(f);
+        }
+        printf("scenario: parity %s (%s): %zu ticks traced (exit %d)\n", d.name.c_str(), modes[m], lines[m].size(), rc);
+    }
+    SetEnv("FLUID_CPU", "0"); SetEnv("RAYLIBGAME_FLUID_TRACE", "0"); SetEnv("RAYLIBGAME_FLUID_TRACE_FILE", ""); SetEnv("RAYLIBGAME_FLUID_TRACE_STOP", "0");
+    const size_t n = std::min(lines[0].size(), lines[1].size());
+    size_t diff = n;
+    for (size_t i = 0; i < n; ++i) if (lines[0][i] != lines[1][i]) { diff = i; break; }
+    std::string verdict, reason;
+    if (n == 0) { verdict = "ERROR"; reason = "no ticks traced (is the scenario lockstep, and did both runs reach the fluid?)"; }
+    else if (diff < n) { verdict = "FAIL"; reason = "the CPU and GPU paths part at traced tick " + std::to_string(diff + 1) + " of " + std::to_string(n) + ": gpu '" + lines[0][diff] + "', cpu '" + lines[1][diff] + "'"; }
+    else if (n < (size_t)ticks) { verdict = "FAIL"; reason = "identical for all " + std::to_string(n) + " common ticks, but a run ended early (gpu " + std::to_string(lines[0].size()) + ", cpu " + std::to_string(lines[1].size()) + " of " + std::to_string(ticks) + ")"; }
+    else { verdict = "PASS"; reason = "identical for all " + std::to_string(n) + " traced ticks"; }
+    printf("scenario: parity %s -> %s: %s\n", d.name.c_str(), verdict.c_str(), reason.c_str());
+    const std::string j = "{\n  \"schema\": 1,\n  \"scenario\": \"parity:" + JsonEsc(d.name) + "\",\n  \"verdict\": \"" + verdict + "\",\n  \"reason\": \"" + JsonEsc(reason) +
+                          "\",\n  \"ticks\": " + std::to_string(n) + ",\n  \"first_difference\": " + (diff < n ? std::to_string(diff + 1) : std::string("null")) + "\n}\n";
+    if (FILE* f = fopen((outDir + "/parity-results.json").c_str(), "wb")) { fwrite(j.data(), 1, j.size(), f); fclose(f); }
+    return verdict == "PASS" ? 0 : 1;
+}
+
 } // namespace
 
 ScenarioRegistrar::ScenarioRegistrar(const char* name, const char* file, ScenarioBuild build) {
@@ -250,13 +295,18 @@ bool Scenario_Active() { return R.active; }
 
 void Scenario_PrepareArgs(int& argc, char**& argv) {
     std::string sel, outDir;
-    bool list = false;
+    bool list = false, parity = false;
+    long long parityTicks = 400;
     std::vector<std::string> rest; // everything else, passed on
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--scenario-report") { std::exit(ScenarioReport_Main(argc - i - 1, argv + i + 1)); }
         else if (a == "--scenario-ab") { std::exit(ScenarioAB_Main(argc - i - 1, argv + i + 1)); } // (#871) scenarioab.cpp
         else if (a == "--scenario" && i + 1 < argc) sel = argv[++i];
+        else if (a == "--scenario-parity" && i + 1 < argc) { // (#968) NAME [TICKS]: the fluid's CPU and GPU paths compared
+            parity = true; sel = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') parityTicks = std::max(1ll, atoll(argv[++i]));
+        }
         else if (a == "--scenario-out" && i + 1 < argc) outDir = argv[++i];
         else if (a == "--scenario-list") { list = true; if (i + 1 < argc && argv[i + 1][0] != '-') sel = argv[++i]; }
         else if (a == "--scenario-keep") { R.keep = true; R.keepReason = "--scenario-keep"; rest.push_back(a); }
@@ -284,6 +334,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     setvbuf(stdout, nullptr, _IONBF, 0); // a run ended by a timeout still shows every line
     const std::vector<ScenarioDef> defs = Matching(sel);
     if (defs.empty()) { printf("scenario: no scenario matches '%s' (--scenario-list lists them)\n", sel.c_str()); std::exit(2); }
+    if (parity) std::exit(RunParity(defs[0], outDir, rest, parityTicks)); // (#968) one scenario, its CPU and GPU runs compared
     if (sel.rfind("tag:", 0) == 0 || sel == "all" || defs.size() > 1) std::exit(RunMany(defs, outDir, rest));
 
     // One scenario, in this process.
