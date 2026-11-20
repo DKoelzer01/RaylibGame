@@ -69,7 +69,8 @@ namespace {
 
     // The connection lifecycle (#321). A peer is a connection; a session is a player, kept by name for the server's
     // run, so a reconnect under the same name gets its session (and later its PlayerSession) back.
-    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0, firstHeard = 0.0; NetGuard guard; }; // guard, firstHeard: #349
+    struct Peer { uint32_t session = 0; bool joined = false; double lastHeard = 0.0, firstHeard = 0.0; NetGuard guard; // guard, firstHeard: #349
+                  bool inGame = false; }; // (#1033) its first input came: the client is past its world load
     std::unordered_map<uint32_t, Peer> peers;          // by connection
     struct Session {
         uint32_t id = 0; std::string name; uint32_t conn = 0; bool online = false;
@@ -84,6 +85,10 @@ namespace {
     std::function<void(const char* what, uint32_t session, const std::string& detail)> eventHook;
     uint32_t nextSession = 1;
     constexpr double kTimeoutSeconds = 15.0;           // nothing heard (pings come every second): gone
+    // (#1033) A client that joined but hasn't sent an input yet is loading the world: one long frame there (the spawn load
+    // took ~37 s on the runner) sends no pings. It gets longer before it counts as gone (a closed connection is still
+    // noticed at once by the transport). 120 s: the user's choice (2026-11-20), room for slow machines.
+    constexpr double kLoadingTimeoutSeconds = 120.0;
 
     // Players (#327): the server's own simulation of every session's player, from the inputs its client sends (one a sim
     // step; none waiting: the last keys stay held). Kept across a reconnect: the player is where they left.
@@ -1723,6 +1728,7 @@ namespace {
             it->second.firstHeard = GetTime();
         }
         it->second.lastHeard = GetTime();
+        if (NetPeek(m.data) == NetMsg::Input) it->second.inGame = true; // (#1033)
         { // (#349) size, kind, form and rate first: a bad message is dropped; a client that keeps sending them is kicked
             std::string why;
             const GuardVerdict v = NetGuard_Admit(it->second.guard, NetPeek(m.data), m.data.size(), NetWellFormed(m.data), GetTime(), why);
@@ -2058,7 +2064,7 @@ void Host_Update(Scene& world) {
     std::vector<uint32_t> gone, silent;
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
-        else if (GetTime() - p.lastHeard > kTimeoutSeconds) silent.push_back(conn);
+        else if (GetTime() - p.lastHeard > Host_SilenceLimit(p.joined, p.inGame)) silent.push_back(conn);
         else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
@@ -2192,6 +2198,7 @@ int Host_ItemCount(uint32_t session, const std::string& item) {
 }
 // (#920 tests) XP into a remote player's skill (sent with the next SkillState); their food (so eating is not refused as full);
 // the perk spends the server allowed and refused.
+double Host_SilenceLimit(bool joined, bool inGame) { return joined && !inGame ? kLoadingTimeoutSeconds : kTimeoutSeconds; }
 bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp) {
     auto it = remotes.find(session);
     if (it == remotes.end()) return false;
@@ -2227,3 +2234,12 @@ bool Host_SetCreative(const std::string& name, bool on) {
     }
     return false;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
+    EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
+    EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";
+    EXPECT_DOUBLE_EQ(Host_SilenceLimit(false, false), 15.0) << "not joined yet: the usual limit (Hello has its own)";
+}
+#endif

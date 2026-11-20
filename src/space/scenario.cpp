@@ -424,6 +424,15 @@ bool ScenarioCtx::eq(const std::string& name, double v, double want, double tol)
 }
 bool ScenarioCtx::near(const std::string& name, double v, double want, double tol) { return Record(name, v, "~", Num(want) + " +- " + Num(tol), std::fabs(v - want) <= tol); }
 bool ScenarioCtx::lt(const std::string& name, double v, double bound) { return Record(name, v, "<", Num(bound), v < bound); }
+bool ScenarioCtx::timingLt(const std::string& name, double v, double bound) {
+    // (#1034) Timing is judged on the quiet PC only: where RAYLIBGAME_TIMING_GATES=0 (the shared GPU runner) the value is
+    // reported, with the bound in the note, and never fails the scenario.
+    static const bool gates = !(getenv("RAYLIBGAME_TIMING_GATES") && atoi(getenv("RAYLIBGAME_TIMING_GATES")) == 0);
+    if (gates) return lt(name, v, bound);
+    metric(name, v, "", true);
+    note(name + ": " + Num(v) + " (gate < " + Num(bound) + " not judged here: RAYLIBGAME_TIMING_GATES=0)");
+    return true;
+}
 bool ScenarioCtx::gt(const std::string& name, double v, double bound) { return Record(name, v, ">", Num(bound), v > bound); }
 bool ScenarioCtx::between(const std::string& name, double v, double lo, double hi) { return Record(name, v, "in", "[" + Num(lo) + ", " + Num(hi) + "]", v >= lo && v <= hi); }
 void ScenarioCtx::metric(const std::string& name, double v, const std::string& unit, bool lowerIsBetter) {

@@ -12,7 +12,8 @@
 //   client -> Hello (protocol, build commit, name, password)
 //   host   -> Welcome (session, the world description: seed, bodies, fingerprint; settings; the server tick) + Shower,
 //             or Reject (protocol, build, password, full, name already playing, garbled) and closes
-//   client -> Ping every second; host -> Pong (round trip, the server tick). Nothing heard for 15 s: Bye(timed out).
+//   client -> Ping every second; host -> Pong (round trip, the server tick). Nothing heard for 15 s: Bye(timed out)
+//             (#1033: 120 s while a joined client is still loading, before its first input; Host_SilenceLimit).
 //   either -> Bye (quit; the server closed). A player who comes back under the same name gets the same session.
 // Players (#327): each session has a server-side Player stepped from its client's inputs (one a sim step) and sent to
 // everyone as PlayerState at 30 Hz (unreliable); the owner reconciles its prediction, the others interpolate.
@@ -59,6 +60,7 @@ bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an
 // Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every
 // player as a restart would (only with nobody online; their records stay on disk).
 int Host_ItemCount(uint32_t session, const std::string& item);
+double Host_SilenceLimit(bool joined, bool inGame); // (#1033) seconds of silence before a connection counts as gone
 bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp); // (#920 tests)
 bool Host_TestSetFood(uint32_t session, float food);                          // (#920 tests)
 int Host_SkillSpends();                                                        // (#920 tests) allowed

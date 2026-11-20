@@ -52,6 +52,7 @@ struct ScenarioCtx {
     bool check(const std::string& name, bool ok, const std::string& detail = "");
     bool eq(const std::string& name, double v, double want, double tol = 0.0);
     bool near(const std::string& name, double v, double want, double tol);
+    bool timingLt(const std::string& name, double v, double bound); // a timing gate (#1034): reported only where RAYLIBGAME_TIMING_GATES=0
     bool lt(const std::string& name, double v, double bound);
     bool gt(const std::string& name, double v, double bound);
     bool between(const std::string& name, double v, double lo, double hi);
