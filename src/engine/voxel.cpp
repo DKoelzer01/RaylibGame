@@ -1254,16 +1254,17 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         auto onFloor = [&](float dist, float ang, float h) {
             return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
         };
+        static const bool solidsTest = !(getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS") && getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS")[0] == '0'); // (#1116 isolation)
         const int boulders = 3 + (int)(6.0f * u2);
         for (int i = 0; i < boulders; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 2.0f + 4.0f * Ug(g);
             const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
-            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
+            if (solidsTest) add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
         }
         const int columns = (int)(3.0f * u3);
         for (int i = 0; i < columns; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), cr = 1.5f + 2.5f * Ug(g);
-            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
+            if (solidsTest) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
         }
     };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
@@ -1716,7 +1717,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         // across the wall (jagged faces) but 10x slower outward (solid rock behind them, no shells or floating pieces).
         // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
         float intrude = 0.0f;
-        if (len > 0.5f * rw && len < rw + 40.0f) {
+        static const int wallNoiseTest = getenv("RAYLIBGAME_CAVE_WALLNOISE") ? atoi(getenv("RAYLIBGAME_CAVE_WALLNOISE")) : 1; // (#1116 isolation, CPU only: 0 none, 2 none in chambers)
+        if (len > 0.5f * rw && len < rw + 40.0f && wallNoiseTest != 0 && !(wallNoiseTest == 2 && hall)) {
             const float hl2 = hx * hx + hy * hy + hz * hz;
             const float hl = sqrtf(hl2);
             if (hl > 1e-3f) {
