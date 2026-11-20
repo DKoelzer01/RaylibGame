@@ -103,7 +103,7 @@ SCENARIO("fluid/flow") {
         c.check("water reached the channel's end", S.reachT >= 0.0);
         c.check("water reached the chamber", S.caveT >= 0.0);
         c.check("the water went to sleep", S.sleepT >= 0.0);
-        c.lt("fluid step, worst 1 s rolling mean (ms, #627)", roll, 30.0);
+        c.timingLt("fluid step, worst 1 s rolling mean (ms, #627)", roll, 30.0); // timing: judged on the quiet PC only (#1034)
         return true;
     });
 }
