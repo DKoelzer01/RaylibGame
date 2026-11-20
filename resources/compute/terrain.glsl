@@ -412,32 +412,39 @@ float floatingIsland(vec3 p, float d) {
 float caveGraphDistance(vec3 q, out float solid) {
     solid = -1e9;
     bool any = false;
-    precise float swell = 0.0, bulge = 0.0, bump = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0;
+    precise float swell = 0.0, wallN = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0, big = 0.0;
     precise float m = 1e9;
     for (int i = 0; i < caveSegCount; ++i) {
         vec4 lo = caveSegData(i, 3), hi = caveSegData(i, 4);
         if (q.x < lo.x || q.y < lo.y || q.z < lo.z || q.x > hi.x || q.y > hi.y || q.z > hi.z) continue;
         if (!any) {
             any = true; // every a * b + c handed to fractal() sits in a precise variable (arguments may be fused into FMAs)
-            precise float qx = q.x * 0.09, qy = q.y * 0.09, qz = q.z * 0.09;
+            // Factors = features per metre x (1 / the noise's own base frequency), as CaveGraphDistance (voxel.cpp).
+            precise float qx = q.x * 13.5, qy = q.y * 13.5, qz = q.z * 13.5;
             precise float qx17 = qx + 17.0, qy29 = qy + 29.0, qz41 = qz + 41.0;
             precise float wx, wy, wz;
             wx = q.x + 3.0 * fractal(N_CAVES_A, 1, qx17, qy, qz);
             wy = q.y + 3.0 * fractal(N_CAVES_A, 1, qx, qy29, qz);
             wz = q.z + 3.0 * fractal(N_CAVES_A, 1, qx, qy, qz41);
-            swell = 1.0 + 0.5 * fractal(N_CAVES_B, 1, wx * 0.1, wy * 0.1, wz * 0.1);
-            bulge = 0.9 * fractal(N_DETAIL, 2, wx * 0.28, wy * 0.28, wz * 0.28);
-            precise float bx = wx * 0.9 + 31.0;
-            bump = 0.25 * fractal(N_DETAIL, 1, bx, wy * 0.9, wz * 0.9);
-            lev = 0.45 + 0.25 * fractal(N_CAVERNS, 1, wx * 0.06, wy * 0.06, wz * 0.06);
-            precise float tx = wx * 0.05 + 7.0;
-            tilt = 0.6 * fractal(N_CAVE_MOUTHS, 1, tx, wy * 0.05, wz * 0.05);
-            precise float px = wx * 0.2 + 53.0;
-            pocket = max(0.0, fractal(N_DETAIL, 1, px, wy * 0.2, wz * 0.2));
-            precise float rx = wx * 0.5 + 71.0;
-            rub = fractal(N_DETAIL, 1, rx, wy * 0.5, wz * 0.5);
-            precise float sx = wx * 0.04 + 13.0;
-            shift = 0.4 * fractal(N_CAVES_B, 1, sx, wy * 0.04, wz * 0.04);
+            swell = 1.0 + 0.3 * fractal(N_CAVES_B, 1, wx * 15.0, wy * 15.0, wz * 15.0);
+            precise float w3x = wx * 24.5 + 101.0;
+            precise float r3 = fractal(N_DETAIL, 3, w3x, wy * 24.5, wz * 24.5);
+            precise float w1x = wx * 135.0 + 7.0;
+            precise float r1 = fractal(N_CAVES_B, 2, w1x, wy * 135.0, wz * 135.0);
+            precise float cr = 0.3 - abs(r1);
+            precise float wn0 = 0.35 + 2.6 * r3 + 1.4 * cr;
+            wallN = max(0.0, wn0);
+            lev = 0.45 + 0.25 * fractal(N_CAVERNS, 1, wx * 13.2, wy * 13.2, wz * 13.2);
+            precise float tx = wx * 35.0 + 7.0;
+            tilt = 0.6 * fractal(N_CAVE_MOUTHS, 1, tx, wy * 35.0, wz * 35.0);
+            precise float px = wx * 14.0 + 53.0;
+            pocket = max(0.0, fractal(N_DETAIL, 1, px, wy * 14.0, wz * 14.0));
+            precise float rx = wx * 35.0 + 71.0;
+            rub = fractal(N_DETAIL, 1, rx, wy * 35.0, wz * 35.0);
+            precise float sx = wx * 6.0 + 13.0;
+            shift = 0.4 * fractal(N_CAVES_B, 1, sx, wy * 6.0, wz * 6.0);
+            precise float gx = wx * 22.0 + 91.0;
+            big = fractal(N_CAVERNS, 1, gx, wy * 22.0, wz * 22.0);
         }
         vec4 A = caveSegData(i, 0), Bs = caveSegData(i, 1), U = caveSegData(i, 2), Sd = caveSegData(i, 5);
         precise float abx = Bs.x - A.x, aby = Bs.y - A.y, abz = Bs.z - A.z;
@@ -452,15 +459,15 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float r = A.w + (Bs.w - A.w) * t;
         float kind = lo.w;
         if (kind > 1.5) {
-            precise float va = xdiv(hv, 0.35);
+            precise float va = xdiv(hv, U.w);
             precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             precise float la = xsqrt(la2);
-            precise float rr = r * (1.0 + 0.5 * rub);
+            precise float rr = r * (1.0 + 0.3 * rub);
             solid = max(solid, rr - la);
             continue;
         }
-        precise float mk = kind > 0.5 ? 2.0 : 1.0;
-        precise float rough = 1.0 + mk * bulge + mk * bump;
+        precise float bk = kind > 0.5 ? 0.4 : 0.2;
+        precise float rough = 1.0 + bk * big;
         precise float rs = swell * rough;
         precise float rw = r * max(0.7, rs);
         precise float pk = hv > 0.0 ? pocket : 0.0;
@@ -473,9 +480,20 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float v22 = v2 * v2;
         precise float l2 = max(0.0, lh) + v22;
         precise float len = xsqrt(l2);
-        precise float rubble = kind > 0.5 ? max(0.0, rub) : 0.0;
-        precise float floorCut = (0.0 - hv) - lev * rw * U.w + 0.5 * tilt * hp + rubble;
-        m = min(m, max(len - rw, floorCut));
+        precise float rub6 = 0.35 * max(0.0, rub);
+        precise float rubble = kind > 0.5 ? rub6 : 0.0;
+        precise float levK = kind > 0.5 ? 0.45 : lev;
+        precise float tiltK = kind > 0.5 ? 0.0 : tilt;
+        precise float floorCut = (0.0 - hv) - levK * rw * U.w + 0.5 * tiltK * hp + rubble;
+        precise float fnum = len - 0.5 * rw;
+        precise float fden = 0.4 * rw;
+        precise float fa = xdiv(fnum, fden);
+        precise float fc = clamp(fa, 0.0, 1.0);
+        precise float fade = fc * fc * (3.0 - 2.0 * fc);
+        precise float ak = kind > 0.5 ? 0.65 : 0.55;
+        precise float intrude = ak * rw * fade * wallN;
+        precise float lw = len - rw + intrude;
+        m = min(m, max(lw, floorCut));
     }
     return m;
 }
@@ -488,8 +506,8 @@ float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     if (cavesGraph == 1) { // (#615 step 2) graph tunnels (no mouths yet) and the caverns: as PlanetField::caveDistance
         precise float mg = 1e9;
-        if (caveWeight > 0.0 && depth > -8.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
-            if (depth > -8.0 && caveSegCount > 0) { precise float sol; mg = caveGraphDistance(p, sol) + (1.0 - caveWeight) * 20.0; if (sol > -1e8) { precise float so = sol - (1.0 - caveWeight) * 20.0; solid = so; } }
+        if (caveWeight > 0.0 && depth > -12.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -12.0 && caveSegCount > 0) { precise float sol; mg = caveGraphDistance(p, sol) + (1.0 - caveWeight) * 20.0; if (sol > -1e8) { precise float so = sol - (1.0 - caveWeight) * 20.0; solid = so; } }
             if (depth > 30.0 && d > mantleRadius + 40.0) {
                 precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
                 precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);

@@ -1277,12 +1277,14 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        const float odds = std::min(0.95f, 0.35f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
-        for (int tries = 0; tries < 3 && data->mouths.empty(); ++tries) {
+        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
+        for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
             const float sl = Vector3Length(s);
-            if (sl < 1.0f || coin >= odds) continue;
+            (void)coin;
+            if (sl < 1.0f) continue;
             Vector3 dir = Vector3Scale(s, 1.0f / sl);
             const Vector3 onR = Vector3Scale(dir, R);
             if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
@@ -1296,7 +1298,31 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float slope = sqrtf(g1 * g1 + g2 * g2);
             if (slope < 0.36f || slope > 3.0f) continue;                  // ~20-72 degrees
             Vector3 uphill = Vector3Normalize(Vector3Add(Vector3Scale(t1, g1), Vector3Scale(t2, g2)));
-            const float r = 2.5f + 2.5f * rr, flat = 0.55f + 0.15f * rf, rMouth = 1.6f * r;
+            // A real face, not a dimple in a field: the ground rises 5 m+ within 10 m behind the mouth (2 m+ within 5 m),
+            // and the opening is sized to fit under it (its roof 1.6 x rMouth x flat over the ground at the face, plus a
+            // 1.5 m lip), so the passage enters a hillside and is seen from the front with rock overhead.
+            const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
+            const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
+            const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
+            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            const float flat = 0.55f + 0.15f * rf;
+            const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
+            if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
+            const float rMouth = 1.6f * r;
+            { // (#1022) no tors or boulders (rock over the height map) in or before the opening: they hid it from the front
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(dir, uphill));
+                bool blocked = false;
+                for (int sx = -1; sx <= 1 && !blocked; ++sx)
+                    for (float out = -1.0f; out <= 8.0f && !blocked; out += 3.0f) {
+                        const Vector3 dq = at(dir, Vector3Add(Vector3Scale(side, 0.6f * rMouth * sx), Vector3Scale(uphill, -out)));
+                        const float sq = R + f.elevation(dq);
+                        for (float hq = 0.5f; hq <= 2.5f && !blocked; hq += 1.0f) {
+                            const Vector3 pq = Vector3Scale(dq, sq + hq);
+                            blocked = f.rockFeature(pq, sq + hq, sq, 0.0f) > -0.5f;
+                        }
+                    }
+                if (blocked) continue;
+            }
             const float axisH = e0 + 0.6f * rMouth * flat;                 // the flat floor at the ground at the face
             const float drop = 0.8f + 0.8f * rd;                           // m per 8 m segment
             std::vector<CaveSeg> ent;
@@ -1307,6 +1333,22 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const Vector3 outside = Vector3Scale(at(dir, Vector3Scale(uphill, -rMouth)), R + axisH);
             Vector3 pos = Vector3Scale(dir, R + axisH);
             seg(outside, pos, rMouth, rMouth);
+            CaveSeg lip; // (#1022) the overhanging lip: a thin slab of rock following the hillside down to the top of the
+            {            // opening and 2 m out past the face (its rounded end included), ragged-edged (solid, kind 2): its inner end
+                         // lies 1.2 m under the slope 6 m+ in, its outer end at the roof, so it reads as the hill hanging over
+                         // The hill meets roof height some metres in from the face (the face slopes): the lip hangs 2 m out
+                         // from there, never in the open air in front of the slope.
+                const float roofH = axisH + 0.8f * rMouth * flat;
+                float dRoof = 0.0f;
+                while (dRoof < 15.0f && f.elevation(at(dir, Vector3Scale(uphill, dRoof))) < roofH + 0.5f) dRoof += 0.5f;
+                const float cap = 0.8f * rMouth;
+                const float bOff = dRoof - 2.0f + cap;                       // the outer end, so the cap reaches 2 m out
+                const float aOff = bOff + std::max(2.0f, cap);
+                const Vector3 aDir = at(dir, Vector3Scale(uphill, aOff));
+                lip.a = Vector3Scale(aDir, R + f.elevation(aDir) - 1.2f);
+                lip.b = Vector3Scale(at(dir, Vector3Scale(uphill, bOff)), R + roofH);
+                lip.ra = lip.rb = cap; lip.flat = 0.15f; lip.up = Vector3Normalize(Vector3Add(lip.a, lip.b)); lip.kind = 2;
+            }
             float h = axisH, depth = 0.0f;
             bool ok = true;
             int k = 0;
@@ -1329,14 +1371,15 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             segs->insert(segs->end(), ent.begin(), ent.end());
             { // a rubble apron: a low, lumpy mound of fallen blocks on the slope just outside and below the opening
                 const Vector3 od = Vector3Normalize(ent.front().a);
-                const Vector3 apDir = at(od, Vector3Scale(Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b)), 0.6f * rMouth));
-                const Vector3 c = Vector3Scale(apDir, R + f.elevation(apDir) - 0.3f * rMouth);
+                const Vector3 apDir = at(od, Vector3Scale(Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b)), 0.2f * rMouth)); // (#1022: low talus, walked over)
+                const Vector3 c = Vector3Scale(apDir, R + f.elevation(apDir) - 0.26f * rMouth);
                 const Vector3 across = Vector3Normalize(Vector3CrossProduct(apDir, Vector3Subtract(ent.front().a, ent.front().b))); // along the slope's contour
-                CaveSeg ap; ap.a = Vector3Subtract(c, Vector3Scale(across, 0.6f * rMouth));
-                ap.b = Vector3Add(c, Vector3Scale(across, 0.6f * rMouth));
-                ap.ra = ap.rb = 1.1f * rMouth; ap.flat = 0.35f; ap.up = apDir; ap.kind = 2;
+                CaveSeg ap; ap.a = Vector3Subtract(c, Vector3Scale(across, 0.5f * rMouth));
+                ap.b = Vector3Add(c, Vector3Scale(across, 0.5f * rMouth));
+                ap.ra = ap.rb = 0.65f * rMouth; ap.flat = 0.3f; ap.up = apDir; ap.kind = 2;
                 segs->push_back(ap);
             }
+            segs->push_back(lip);
             data->mouths.push_back({ Vector3Scale(dir, 0.0f), Vector3Negate(uphill) });
             data->mouths.back().at = ent.front().b;                        // the axis point at the slope face
             data->mouths.back().out = Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b));
@@ -1366,9 +1409,9 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
             for (int x = clo[0]; x <= chi[0]; ++x) {
                 const auto cell = CaveCell(f, seed, x, y, z);
                 for (const CaveSeg& s : cell->segs) {
-                    // The box beyond which the shape can't reach: the bore at most x1.35 x 1.63 (swell, mouths' bulges and bumps),
-                    // roof pockets x1.5 upward, the warp 2 m; plus the list's reach.
-                    const float rr = 6.0f * std::max(s.ra, s.rb) + 3.0f + reach;
+                    // The box beyond which the shape can't reach: the skeleton at most 1.3 x 1.4 r (swell, the large-scale term), its
+                    // centre wandering 0.4 of that sideways (2.55 r in all; the warp moves only the noise; solids 1.3 r); plus the reach.
+                    const float rr = 3.0f * std::max(s.ra, s.rb) + 2.0f + reach;
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
                     Vector3 side = Vector3CrossProduct(s.up, Vector3Subtract(s.b, s.a));     // across the passage, level
@@ -1430,35 +1473,41 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 }
 
 // The graph tunnels' distance at q (metres to the nearest wall), and `solid` (metres inside a rubble apron, < 0 outside).
-// Organic shapes (#615 step 3, #999 lessons: spaghetti thickness and roughness noise): the sample point is domain-warped
-// (2 m), then the wall moves at three scales as fractions of the bore (a passage-scale swell +-35%, 3-6 m bulges and
-// alcoves +-30%, metre bumps +-12%: in 3D, so every cross-section is lopsided and changes along the passage), the floor
-// sits 20-70% down and tilts across the passage (sloped floors, ledges), the roof lifts into pockets. Mouths are rougher,
-// taller on one side, with rubble mounds on their floor; aprons are low lumpy mounds of fallen blocks. A segment whose box
-// doesn't hold q is skipped and the noises are looked up only once one does. The same operations in the same order as
-// terrain.glsl's caveGraphDistance (bit-exact).
+// Organic shapes (#615 step 3, #1022; user 2026-11-19: "define the actual path and diameter, then apply heavy 3D noise
+// inwards"): the skeleton is the graph segment's bore (radius x a +-30% swell and a 10 m outline term, a gently flattened
+// ellipse whose centre wanders sideways, a floor 20-70% down that tilts across the passage, roof pockets). On it, heavy
+// domain-warped 3D noise (3 octaves from ~3 m plus sharp 1 m creases) only ever grows rock inward from the wall: none
+// inside half the bore, so a clear core always runs through, and up to ~0.6 of the bore near the wall, so walls, ledges and
+// overhangs come out of the noise. Mouths: a larger outline term, taller on one side, a level floor with low rubble. Solids
+// (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
+// up only once one does. The same operations in the same order as terrain.glsl's caveGraphDistance (bit-exact).
 struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
 static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid) {
     solid = -1e9f;
     bool any = false;
-    float swell = 0.0f, bulge = 0.0f, bump = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f;
+    float swell = 0.0f, wallN = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f, big = 0.0f;
     float m = 1e9f;
     for (int i = 0; i < n; ++i) {
         const float* s = segs + 24 * i;
         if (q.x < s[12] || q.y < s[13] || q.z < s[14] || q.x > s[16] || q.y > s[17] || q.z > s[18]) continue;
         if (!any) {
             any = true;
-            const float wx = q.x + 3.0f * N.a.fractal(1, q.x * 0.09f + 17.0f, q.y * 0.09f, q.z * 0.09f);
-            const float wy = q.y + 3.0f * N.a.fractal(1, q.x * 0.09f, q.y * 0.09f + 29.0f, q.z * 0.09f);
-            const float wz = q.z + 3.0f * N.a.fractal(1, q.x * 0.09f, q.y * 0.09f, q.z * 0.09f + 41.0f);
-            swell = 1.0f + 0.5f * N.b.fractal(1, wx * 0.1f, wy * 0.1f, wz * 0.1f);
-            bulge = 0.9f * N.det.fractal(2, wx * 0.28f, wy * 0.28f, wz * 0.28f);
-            bump = 0.25f * N.det.fractal(1, wx * 0.9f + 31.0f, wy * 0.9f, wz * 0.9f);
-            lev = 0.45f + 0.25f * N.cav.fractal(1, wx * 0.06f, wy * 0.06f, wz * 0.06f);
-            tilt = 0.6f * N.mou.fractal(1, wx * 0.05f + 7.0f, wy * 0.05f, wz * 0.05f);
-            pocket = std::max(0.0f, N.det.fractal(1, wx * 0.2f + 53.0f, wy * 0.2f, wz * 0.2f));
-            rub = N.det.fractal(1, wx * 0.5f + 71.0f, wy * 0.5f, wz * 0.5f);
-            shift = 0.4f * N.b.fractal(1, wx * 0.04f + 13.0f, wy * 0.04f, wz * 0.04f); // the bore wanders to one side
+            // The noises carry their own base frequencies (a, b 1/150 m, det 1/70, cav 1/220, mou 1/700), so each factor
+            // below is (the wanted features per metre) x (1 / that frequency): 0.09/m on a 1/150 noise is 13.5, and so on.
+            // (#1022: before this, every factor was 70-700x too low, and all these terms were constant over a passage.)
+            const float wx = q.x + 3.0f * N.a.fractal(1, q.x * 13.5f + 17.0f, q.y * 13.5f, q.z * 13.5f);   // warp: 3 m at ~11 m
+            const float wy = q.y + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f + 29.0f, q.z * 13.5f);
+            const float wz = q.z + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f, q.z * 13.5f + 41.0f);
+            swell = 1.0f + 0.3f * N.b.fractal(1, wx * 15.0f, wy * 15.0f, wz * 15.0f);                     // the bore, +-30% over ~10 m
+            const float r3 = N.det.fractal(3, wx * 24.5f + 101.0f, wy * 24.5f, wz * 24.5f); // (#1022) wall roughness: 3 octaves
+            const float r1 = N.b.fractal(2, wx * 135.0f + 7.0f, wy * 135.0f, wz * 135.0f);   //   from ~3 m, plus creases (|n|: sharp)
+            wallN = std::max(0.0f, 0.35f + 2.6f * r3 + 1.4f * (0.3f - fabsf(r1)));       //   (>= 0: rock only ever grows inward)
+            lev = 0.45f + 0.25f * N.cav.fractal(1, wx * 13.2f, wy * 13.2f, wz * 13.2f);    // floor level, ~17 m
+            tilt = 0.6f * N.mou.fractal(1, wx * 35.0f + 7.0f, wy * 35.0f, wz * 35.0f);       // floor tilt, ~20 m
+            pocket = std::max(0.0f, N.det.fractal(1, wx * 14.0f + 53.0f, wy * 14.0f, wz * 14.0f)); // roof pockets, ~5 m
+            rub = N.det.fractal(1, wx * 35.0f + 71.0f, wy * 35.0f, wz * 35.0f);             // rubble, ~2 m
+            shift = 0.4f * N.b.fractal(1, wx * 6.0f + 13.0f, wy * 6.0f, wz * 6.0f);         // the bore wanders to one side, ~25 m
+            big = N.cav.fractal(1, wx * 22.0f + 91.0f, wy * 22.0f, wz * 22.0f);             // (#1022) the large-scale outline, ~10 m
         }
         const float abx = s[4] - s[0], aby = s[5] - s[1], abz = s[6] - s[2];
         const float apx = q.x - s[0], apy = q.y - s[1], apz = q.z - s[2];
@@ -1471,16 +1520,18 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float hs = hhx * s[20] + hhy * s[21] + hhz * s[22];
         const float r = s[3] + (s[7] - s[3]) * t;
         const float kind = s[15];
-        if (kind > 1.5f) { // a rubble apron: solid inside
-            const float va = hv / 0.35f;
+        if (kind > 1.5f) { // solid inside: a rubble apron, or the overhanging lip over a mouth
+            const float va = hv / s[11];                                  // squashed: aprons 0.35, the lip over a mouth 0.2
             const float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             const float la = sqrtf(la2);
-            const float rr = r * (1.0f + 0.5f * rub);
+            const float rr = r * (1.0f + 0.3f * rub);
             solid = std::max(solid, rr - la);
             continue;
         }
-        const float mk = kind > 0.5f ? 2.0f : 1.0f;                       // mouths: rougher
-        const float rw = r * std::max(0.7f, swell * (1.0f + mk * bulge + mk * bump)); // pinches stay passable
+        const float bk = kind > 0.5f ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
+        const float rough = 1.0f + bk * big;
+        const float rs = swell * rough;
+        const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
         const float pk = hv > 0.0f ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
@@ -1488,9 +1539,18 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float v2 = hvT / vfac;
         const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;
         const float len = sqrtf(l2);
-        const float rubble = kind > 0.5f ? std::max(0.0f, rub) : 0.0f;   // mouths: rubble mounds on the floor
-        const float floorCut = (0.0f - hv) - lev * rw * s[11] + 0.5f * tilt * hp + rubble;
-        m = std::min(m, std::max(len - rw, floorCut));
+        const float rubble = kind > 0.5f ? 0.35f * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
+        const float levK = kind > 0.5f ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
+        const float tiltK = kind > 0.5f ? 0.0f : tilt;                     //   the opening meets the ground and stays open
+        const float floorCut = (0.0f - hv) - levK * rw * s[11] + 0.5f * tiltK * hp + rubble;
+        // (#1022, user) Heavy 3D noise grows rock inward from the wall: none inside half the bore (a clear core to walk
+        // through, and the floor stays the floor), rising to a large fraction of the bore near the wall.
+        const float fa = (len - 0.5f * rw) / (0.4f * rw);
+        const float fc = std::clamp(fa, 0.0f, 1.0f);
+        const float fade = fc * fc * (3.0f - 2.0f * fc);
+        const float ak = kind > 0.5f ? 0.65f : 0.55f;
+        const float intrude = ak * rw * fade * wallN;
+        m = std::min(m, std::max(len - rw + intrude, floorCut));
     }
     return m;
 }
@@ -1509,8 +1569,8 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
     const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
     if (CavesGraph()) { // (#615 step 2) graph tunnels (never at the surface: no mouths yet) and the caverns
         float m = 1e9f;
-        if (caveWeight > 0.0f && depth > -8.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
-            if (depth > -8.0f) {
+        if (caveWeight > 0.0f && depth > -12.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -12.0f) {
                 const std::vector<float>* segs = tlCaveSegs;
                 if (!segs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves)
                     thread_local std::vector<float> own;

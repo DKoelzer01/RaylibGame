@@ -6076,7 +6076,9 @@ int main(int argc, char** argv)
                                 if (dist < best) { best = dist; at = Vector3Scale(dd, s - 3.0f); }
                             }
                         static bool graphInside = false; static Vector3 graphOut{}; bool graphMouth = false; // (#615 step 3)
-                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && pf->nearestCaveMouth(home, 3000.0f, at, graphOut)) { // the nearest hillside mouth
+                        Vector3 mouthNear = home; float mouthRange = 3000.0f; // RAYLIBGAME_CAVES_MOUTH="x y z" (#1022): the mouth there (the same one at any abundance)
+                        if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
+                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut)) { // the nearest hillside mouth
                             graphMouth = true; best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
                             printf("bench: caves: graph mouth %.0f m from the start (outward %.2f %.2f %.2f)\n", best, graphOut.x, graphOut.y, graphOut.z);
                             { const int nm = pf->caveMouthsNear(home, 3000.0f); printf("bench: caves: %d mouths within 3 km of the start (%.2f per km^2: one per %.0f m on a square grid)\n", nm, nm / 28.27f, nm > 0 ? sqrtf(28.27e6f / nm) : 0.0f); }
@@ -6109,7 +6111,18 @@ int main(int argc, char** argv)
                             }
                             cavesPath.clear();
                             const Vector3 start = graphInside ? at : Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f))); // (graph: already inside)
-                            for (int k = 0; k <= 30; ++k) cavesPath.push_back(Vector3Lerp(start, at, k / 30.0f)); // the approach
+                            static const bool frontView = getenv("RAYLIBGAME_CAVES_VIEW") && strcmp(getenv("RAYLIBGAME_CAVES_VIEW"), "front") == 0;
+                            for (int k = 0; k <= 30; ++k) {         // the approach
+                                Vector3 q = Vector3Lerp(start, at, k / 30.0f);
+                                if (frontView && !graphInside) {    // (#1022) RAYLIBGAME_CAVES_VIEW=front: walk up to the face at eye level
+                                    const Vector3 flat = Vector3Lerp(Vector3Add(at, Vector3Scale(out, 30.0f)), at, k / 30.0f);
+                                    const Vector3 dq = Vector3Normalize(flat);
+                                    q = Vector3Scale(dq, std::max(pf->radius + pf->elevation(dq) + 1.7f, Vector3Length(at) + 0.3f)); // at the mouth's level (a cliff mouth: the camera flies), else 1.7 m over the ground
+                                    for (int s = 0; s < 40 && (pf->baseDensity(q) >= ISO_LEVEL || pf->baseDensity(Vector3Add(q, Vector3Scale(dq, 0.8f))) >= ISO_LEVEL || pf->baseDensity(Vector3Add(q, Vector3Scale(dq, -1.4f))) >= ISO_LEVEL); ++s)
+                                        q = Vector3Add(q, Vector3Scale(dq, 0.25f)); // over crags and tors (rock above the height map)
+                                }
+                                cavesPath.push_back(q);
+                            }
                             Vector3 pos = at, prev = graphInside ? out : Vector3Scale(out, -1.0f); // (graph: on along the most open way)
                             for (int k = 0; k < 60; ++k) {          // on along the passage
                                 Vector3 bestDir = prev; float bestD = 1e30f;
