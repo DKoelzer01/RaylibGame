@@ -8,3 +8,4 @@
 --seed 42 --bench 5 --test-flow-sea | #935
 --seed 42 --bench 3 --test-progression | #372 (flaky)
 --seed 42 --bench 3 --test-animals | #373 (flaky)
+--seed 42 --bench 3 --test-dam | #1041 (a low crest passes too little water: the pool stands ~2.5x the weir head; the old caves' leak hid it, #1039)

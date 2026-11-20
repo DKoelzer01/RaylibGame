@@ -7691,11 +7691,11 @@ int main(int argc, char** argv)
                             // on. The reach below keeps the downstream river's level (its sink holds it: a flat river backs up from
                             // below too), so it is reported, not judged.
                             // How high it holds over the crest is a weir's head (#1039, by physics #690 - the fixed 0.35 m was tuned on
-                            // a site whose old caves drained part of the pool): Q = Cd L sqrt(2g) H^1.5 with the reach's natural inflow Q,
-                            // the crest's width over lower ground L and Cd ~ 0.6 (broad-crested), so H = (Q / (Cd L sqrt(2g)))^(2/3).
+                            // a site whose old caves drained part of the pool): a broad-crested weir passes Q = 1.7 L H^1.5 (SI; Cd sqrt(2g)
+                            // ~ 1.7) with the reach's natural inflow Q and the crest's width over lower ground L, so H = (Q / (1.7 L))^(2/3).
                             // 1.5 H allowed: a margin for 0.25 m cells and the crest's rough top (a guess, not measured).
                             const float weirQ = Fluid::ReleasedNaturalFlow(), weirL = std::max(damSpillL, 1.0f);
-                            const float weirH = weirQ > 0.0f ? powf(weirQ / (0.6f * weirL * sqrtf(2.0f * 9.81f)), 2.0f / 3.0f) : 0.35f;
+                            const float weirH = weirQ > 0.0f ? powf(weirQ / (1.7f * weirL), 2.0f / 3.0f) : 0.35f;
                             printf("bench: dam: weir: inflow Q %.2f m^3/s over a crest %.1f m wide -> head H %.2f m; the pool may hold up to %.2f m (crest + 1.5 H)\n",
                                    weirQ, weirL, weirH, damCrest + 1.5f * weirH);
                             const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 1.5f * weirH;
