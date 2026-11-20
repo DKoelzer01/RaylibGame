@@ -1459,7 +1459,10 @@ namespace {
         if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
         rm.editTokens = std::min(kEditBurst, rm.editTokens + (SimTime() - rm.editTokensAt) * rate);
         rm.editTokensAt = SimTime();
-        if (rm.editTokens < 0.999) { RefuseEdit(conn, q.seq, NetEditRefusal::Rate); return; }
+        if (rm.editTokens < 0.999) { // (#1059) the numbers behind a rate refusal, for the log
+            printf("host: edit %u rate: %.2f tokens at sim %.2f s, wall %.2f s (%.2f strokes/s, tool '%s')\n", q.seq, rm.editTokens, SimTime(), GetTime(), rate, held.c_str());
+            RefuseEdit(conn, q.seq, NetEditRefusal::Rate); return;
+        }
         MsgTerrainEdit out;
         out.body = q.body; out.center = q.center; out.radius = q.radius; out.session = session; out.seq = q.seq;
         TerrainEdit e{};
