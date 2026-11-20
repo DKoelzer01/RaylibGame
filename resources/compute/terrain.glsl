@@ -452,7 +452,8 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float hs = hhx * Sd.x + hhy * Sd.y + hhz * Sd.z;
         precise float r = A.w + (Bs.w - A.w) * t;
         float kind = lo.w;
-        if (kind > 1.5) {
+        bool mouth = kind > 0.5 && kind < 1.5, hall = kind > 2.5;   // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        if (kind > 1.5 && kind < 2.5) {
             precise float va = xdiv(hv, U.w);
             precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             precise float la = xsqrt(la2);
@@ -460,7 +461,7 @@ float caveGraphDistance(vec3 q, out float solid) {
             solid = max(solid, rr - la);
             continue;
         }
-        precise float bk = kind > 0.5 ? 0.4 : 0.2;
+        precise float bk = mouth ? 0.4 : 0.2;
         precise float rough = 1.0 + bk * big;
         precise float rs = swell * rough;
         precise float rw = r * max(0.7, rs);
@@ -468,17 +469,18 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float vfac = U.w * (1.0 + 0.5 * pk);
         precise float hp = hs - shift * rw;
         precise float hvM = hv - 0.5 * hp;
-        precise float hvT = kind > 0.5 ? hvM : hv;
+        precise float hvT = mouth ? hvM : hv;
         precise float v2 = xdiv(hvT, vfac);
         precise float lh = hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp;
         precise float v22 = v2 * v2;
         precise float l2 = max(0.0, lh) + v22;
         precise float len = xsqrt(l2);
         precise float rub6 = 0.35 * max(0.0, rub);
-        precise float rubble = kind > 0.5 ? rub6 : 0.0;
-        precise float levK = kind > 0.5 ? 0.45 : lev;
-        precise float tiltK = kind > 0.5 ? 0.0 : tilt;
-        precise float floorCut = (0.0 - hv) - levK * rw * U.w + 0.5 * tiltK * hp + rubble;
+        precise float rubble = mouth ? rub6 : 0.0;
+        precise float levK = mouth ? 0.45 : lev;
+        precise float tiltK = mouth || hall ? 0.0 : tilt;
+        precise float flo = hall ? 0.4 * r : levK * rw;
+        precise float floorCut = (0.0 - hv) - flo * U.w + 0.5 * tiltK * hp + rubble;
         // (#1022) Noise grows the wall inward, looked up at a point squeezed radially toward the wall (no voids behind it).
         precise float intrude = 0.0;
         precise float core = 0.5 * rw, far_ = rw + 40.0;
@@ -506,8 +508,9 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float fa = xdiv(fnum, fden);
                 precise float fc = clamp(fa, 0.0, 1.0);
                 precise float fade = fc * fc * (3.0 - 2.0 * fc);
-                precise float akk = kind > 0.5 ? 0.65 : 0.55;
-                intrude = akk * rw * fade * wn;
+                precise float akk = mouth ? 0.65 : 0.55;
+                precise float ra = hall ? min(rw, 8.0) : rw;
+                intrude = akk * ra * fade * wn;
             }
         }
         precise float lw = len - rw + intrude;
@@ -526,11 +529,7 @@ float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float
         precise float mg = 1e9;
         if (caveWeight > 0.0 && depth > -12.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
             if (depth > -12.0 && caveSegCount > 0) { precise float sol; mg = caveGraphDistance(p, sol) + (1.0 - caveWeight) * 20.0; if (sol > -1e8) { precise float so = sol - (1.0 - caveWeight) * 20.0; solid = so; } }
-            if (depth > 30.0 && d > mantleRadius + 40.0) {
-                precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
-                precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
-                mg = min(mg, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
-            }
+            // (#1058) no noise caverns with graph caves: chambers in the graph replace them
         }
         return mg;
     }

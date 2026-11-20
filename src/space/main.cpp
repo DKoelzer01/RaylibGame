@@ -659,7 +659,7 @@ int main(int argc, char** argv)
     bool benchWind = false; // --test-wind (#650)
     bool benchCampfire = false; int campfirePhase = 0; double campfireT0 = 0.0; uint32_t campfirePlot = 0; int campfirePart = -1; Vector3 campfireAt{}, campfireOut{}; // --shot-campfire (#552)
     bool benchCaveMouth = false; int mouthPhase = 0; double mouthT0 = 0.0; Vector3 mouthAt{}, mouthOut{}; // --shot-cave-mouth (#549)
-    bool benchTestCaves = false; int cavesPhase = 0; double cavesT0 = 0.0; std::vector<Vector3> cavesPath; int cavesOpen = 0; float cavesInside = 0.0f; // --test-caves (#615)
+    bool benchTestCaves = false; int cavesPhase = 0; double cavesT0 = 0.0; std::vector<Vector3> cavesPath; int cavesOpen = 0; float cavesReach = 0.0f; float cavesInside = 0.0f; // --test-caves (#615)
     bool benchMountain = false; int mountainPhase = 0; double mountainT0 = 0.0; Vector3 mountainAt{}, mountainOut{}; // --shot-mountain (#545)
     bool benchShelter = false; int shelterPhase = 0; double shelterT0 = 0.0; Vector3 shelterEye{}, shelterLook{}; // --shot-shelter (#369)
     bool benchRoom = false; int roomPhase = 0; double roomT0 = 0.0; uint32_t roomPlot = 0; Vector3 roomEye{}, roomLook{}; // --shot-room (#369)
@@ -6112,7 +6112,15 @@ int main(int argc, char** argv)
                             if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
                             else printf("bench: caves: no karst ground within 30 km\n");
                         }
-                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && !getenv("RAYLIBGAME_CAVES_INSIDE") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut, mouthKind)) { // the nearest hillside mouth (or karst sink)
+                        const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
+                        if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
+                            Vector3 co{};
+                            if (PlanetField::CavesGraph() && pf->nearestCaveMouth(home, 3000.0f, at, co, 3)) {
+                                graphInside = true;
+                                best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
+                                printf("bench: caves: chamber %.0f m from the start, %.1f m under the surface\n", best, pf->radius + pf->elevation(Vector3Normalize(at)) - Vector3Length(at));
+                            }
+                        } else if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && !getenv("RAYLIBGAME_CAVES_INSIDE") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut, mouthKind)) { // the nearest hillside mouth (or karst sink)
                             graphMouth = true; best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
                             printf("bench: caves: graph mouth %.0f m from the start (outward %.2f %.2f %.2f)\n", best, graphOut.x, graphOut.y, graphOut.z);
                             { const int nm = pf->caveMouthsNear(home, 3000.0f); printf("bench: caves: %d mouths within 3 km of the start (%.2f per km^2: one per %.0f m on a square grid)\n", nm, nm / 28.27f, nm > 0 ? sqrtf(28.27e6f / nm) : 0.0f); }
@@ -6158,25 +6166,35 @@ int main(int argc, char** argv)
                                 cavesPath.push_back(q);
                             }
                             Vector3 pos = at, prev = graphInside ? out : Vector3Scale(out, -1.0f); // (graph: on along the most open way)
+                            // (#1058) The walker moves only through open space (1 m steps in 26 directions, back and sideways too,
+                            // never into a metre cell it has visited) and stops where it is stuck: a blocked passage or a trap
+                            // ends the path short of the PASS reach below, instead of stepping into rock.
+                            std::set<std::tuple<int, int, int>> seen;
+                            auto cellOf = [](Vector3 v) { return std::make_tuple((int)floorf(v.x), (int)floorf(v.y), (int)floorf(v.z)); };
+                            seen.insert(cellOf(pos));
                             for (int k = 0; k < 60; ++k) {          // on along the passage
                                 Vector3 bestDir = prev; float bestD = 1e30f;
                                 for (int x = -1; x <= 1; ++x) for (int y = -1; y <= 1; ++y) for (int z = -1; z <= 1; ++z) {
                                     if (!x && !y && !z) continue;
                                     const Vector3 dir = Vector3Normalize({ (float)x, (float)y, (float)z });
-                                    if (Vector3DotProduct(dir, prev) < 0.2f) continue;     // never back
-                                    const Vector3 nq = Vector3Add(pos, Vector3Scale(dir, 1.5f));
+                                    const Vector3 nq = Vector3Add(pos, dir);
+                                    if (seen.count(cellOf(nq))) continue;
+                                    const float d0 = pf->baseDensity(nq);
+                                    if (d0 >= ISO_LEVEL) continue;                         // only open space
                                     const float nl = Vector3Length(nq), above = nl - (pf->radius + pf->elevation(Vector3Scale(nq, 1.0f / nl)));
-                                    // prefer down a little; stay under the ground, and (#615 step 3) the first 20 m keep going into the hill, not back out of the mouth
-                                    const float dens = pf->baseDensity(nq) + 0.02f * Vector3DotProduct(dir, up) + (above > -1.0f ? 1.0f : 0.0f)
+                                    // prefer down a little and straight on; stay under the ground, and (#615 step 3) the first 20 m keep going into the hill
+                                    const float dens = d0 + 0.02f * Vector3DotProduct(dir, up) + (above > -1.0f ? 1.0f : 0.0f) + 0.3f * (1.0f - Vector3DotProduct(dir, prev))
                                                      - (k < 20 && !graphInside ? 2.0f * Vector3DotProduct(dir, Vector3Negate(out)) : 0.0f);
                                     if (dens < bestD) { bestD = dens; bestDir = dir; }
                                 }
-                                prev = bestDir; pos = Vector3Add(pos, bestDir); cavesPath.push_back(pos);
+                                if (bestD > 1e29f) break;                                    // stuck: nowhere open to go
+                                prev = bestDir; pos = Vector3Add(pos, bestDir); cavesPath.push_back(pos); seen.insert(cellOf(pos));
                             }
-                            cavesOpen = 0; cavesInside = 0.0f;
+                            cavesOpen = 0; cavesInside = 0.0f; cavesReach = 0.0f;
                             for (size_t k = 31; k < cavesPath.size(); ++k) {
                                 const Vector3 q = cavesPath[k];
                                 cavesOpen += pf->baseDensity(q) < ISO_LEVEL;
+                                cavesReach = std::max(cavesReach, Vector3Distance(q, cavesPath[30])); // (#1058) how far it got from the mouth
                                 const float len = Vector3Length(q);
                                 cavesInside = std::max(cavesInside, pf->radius + pf->elevation(Vector3Scale(q, 1.0f / len)) - len);
                             }
@@ -6194,8 +6212,8 @@ int main(int argc, char** argv)
                         player.position = world.renderOrigin + world.camera.position;
                         if (cavesPhase == 2 && GetTime() - cavesT0 > 12.5) {
                             const int inside = (int)cavesPath.size() - 31;
-                            const bool ok = cavesOpen >= inside * 0.9f && cavesInside >= 10.0f;
-                            printf("bench: caves: %d of %d path points inside are open space; deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesInside, ok ? "PASS" : "FAIL");
+                            const bool ok = inside > 0 && cavesOpen >= inside * 0.9f && cavesInside >= 10.0f && cavesReach >= 30.0f; // (#1058) and 30 m+ from the mouth through open space
+                            printf("bench: caves: %d of %d path points inside are open space; %.1f m from the mouth, deepest %.1f m under the surface -> %s\n", cavesOpen, inside, cavesReach, cavesInside, ok ? "PASS" : "FAIL");
                             benchTestCaves = false;
                         }
                     }
