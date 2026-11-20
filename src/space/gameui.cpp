@@ -196,6 +196,16 @@ static std::string AmountText(const InvSlot& s) {
 // doubled font in a small cell ran out of it). Drawn with the font at that size (crisp: the dynamic atlas).
 // (#889 follow-up) The items grid's cell this frame (DrawItemsPanel): the recipe icons and the You slots are sized from it.
 static float gGridCell = 0.0f;
+// (#1148, the user prefers the Catalog page's cells) The one slot size of the game window's item pages (Inventory, Crafting,
+// Catalog, a container's player grid; the suit, off-hand and module slots), from the screen area under the tabs: 54 px
+// at the interface scale, at most 10 across half its width (the Catalog's column), and the grid, hotbar and bin rows fitting
+// its height.
+static float SlotCellFor(ImVec2 area) {
+    const float gap = 4.0f, line = ImGui::GetTextLineHeightWithSpacing(), sy = ImGui::GetStyle().ItemSpacing.y;
+    const float byWidth = (area.x * 0.5f - 24.0f - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
+    const float byHeight = (area.y - line * 2.0f - sy * 9.0f - 8.0f) / (float)(Inventory::kRows + 2);
+    return std::max(24.0f, std::min({ 54.0f * GameUI_Scale(), byWidth, byHeight }));
+}
 static float CellFontSize(float cellH) { return std::min(ImGui::GetFontSize(), std::max(11.0f, cellH * 0.24f)); }
 static ImVec2 CellTextSize(float fs, const char* t, const char* end = nullptr) { return ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, t, end); }
 static void CellText(ImDrawList* dl, float fs, ImVec2 at, ImU32 col, const char* t, const char* end = nullptr) { dl->AddText(ImGui::GetFont(), fs, at, col, t, end); }
@@ -662,11 +672,14 @@ static void DrawGrid(float cell = 54.0f) {
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    // (#1080: the window can be narrow now) wrapped in the room left beside the buttons, not cut at the panel's edge
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", !cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
-    ImGui::PopStyleColor();
+    // (#1161) Under the buttons, wrapped (beside them it was squeezed to a word a line once the grid took less width); the
+    // stack sizes are the Help tab's, not repeated here.
+    const char* note = !cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "";
+    if (note[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%s", note);
+        ImGui::PopStyleColor();
+    }
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
@@ -1498,14 +1511,11 @@ static void DrawYou() {
     ImGui::Separator();
     const float avW = ImGui::GetContentRegionAvail().x, avH = ImGui::GetContentRegionAvail().y;
     ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.75f); // (the column's labels small: at 150% they left the slots no room)
-    const float line = ImGui::GetTextLineHeightWithSpacing(), sy = ImGui::GetStyle().ItemSpacing.y;
     const int slots = (int)Suit_Modules().size();
-    const int modCols = slots > 1 ? 2 : 1, modRows = (slots + modCols - 1) / std::max(1, modCols);
-    // (#889 follow-up) The slots as large as the items grid's cells where the column's height allows: suit and off hand side
-    // by side, the modules two to a row under them, all one size. Down the column: 2 label rows and the button, the
-    // suit row and the module rows.
-    const float fit = (avH - line * 3.6f - sy * 8.0f) / (1.0f + (float)std::max(1, modRows));
-    const float big = std::max(30.0f, std::min(fit, gGridCell > 0.0f ? gGridCell : 120.0f));
+    const int modCols = slots > 1 ? 2 : 1;
+    // (#1148) The slots exactly the items grid's size (suit and off hand side by side, the modules two to a row under them);
+    // a short panel scrolls rather than shrinking them (a height fit had made them half the grid's).
+    const float big = gGridCell > 0.0f ? gGridCell : 54.0f * GameUI_Scale();
     const float cell = big;
     ImGui::BeginGroup();
     const float x0 = ImGui::GetCursorPosX();
@@ -1564,14 +1574,27 @@ static void DrawStats() {
         { "Hunger", TextFormat("x%.2f", su.food) }, { "Underwater O2", TextFormat("x%.1f", su.underwater) },
         { "Cold felt", TextFormat("%.0f%%", su.cold * 100.0f) }, { "Heat", su.heatProof ? "regulated" : "hurts > 35 C" },
         { "Grip", su.grip ? "on" : "off" }, { "Ore scanner", su.scanner ? "on" : "off" } };
-    if (ImGui::BeginTable("suitstats", 4, ImGuiTableFlags_SizingStretchProp)) {
-        for (int k = 0; k < (int)(sizeof(rows) / sizeof(rows[0])); ++k) {
-            if (k % 2 == 0) ImGui::TableNextRow();
+    // (#887, #1148) Labels in a column as wide as the longest one, never wrapped (stretched columns squeezed them to a letter
+    // a line in a narrow panel); two stats to a row only where both pairs fit, else one.
+    const int nRows = (int)(sizeof(rows) / sizeof(rows[0]));
+    float labelW = 0.0f, valueW = 0.0f;
+    for (const auto& r : rows) { labelW = std::max(labelW, ImGui::CalcTextSize(r.first).x); valueW = std::max(valueW, ImGui::CalcTextSize(r.second.c_str()).x); }
+    const float cellPad = ImGui::GetStyle().CellPadding.x * 2.0f;
+    const int pairs = ImGui::GetContentRegionAvail().x >= 2.0f * (labelW + valueW + 2.0f * cellPad) + 8.0f ? 2 : 1;
+    ImGui::PushTextWrapPos(-1.0f); // (no wrapping inside the table)
+    if (ImGui::BeginTable("suitstats", pairs * 2, ImGuiTableFlags_SizingFixedFit)) {
+        for (int c = 0; c < pairs; ++c) {
+            ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, labelW);
+            ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthFixed, valueW + 8.0f);
+        }
+        for (int k = 0; k < nRows; ++k) {
+            if (k % pairs == 0) ImGui::TableNextRow();
             ImGui::TableNextColumn(); ImGui::TextDisabled("%s", rows[k].first);
             ImGui::TableNextColumn(); ImGui::TextUnformatted(rows[k].second.c_str());
         }
         ImGui::EndTable();
     }
+    ImGui::PopTextWrapPos();
     ImGui::Spacing();
     ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Skills");
     const SkillState& st = LocalSession().skills;
@@ -1598,20 +1621,13 @@ static void DrawStats() {
     ImGui::PopFont();
 }
 
-// The items panel of the Inventory and Crafting screens (#887, #889): the left 72%, the grid and hotbar with cells sized to
-// fill it (10 across; down: 6 rows of cells, the hotbar's label, the bin's row and the gaps).
+// The items panel of the Inventory and Crafting screens (#887, #889): the grid and hotbar at the shared slot size (#1148:
+// SlotCellFor; it was sized to fill 72% of the window, larger than the Catalog page's cells).
 static void DrawItemsPanel() {
-    // The cell that fits: 10 across in 72% of the width; down: "Items", 5 grid rows, the hotbar's label and row, the bin's
-    // row (as tall as a cell at this scale), with the style's spacing between rows (#891: it grew with the scale; a fixed
-    // 4 px left the bin cut off). The panel is then as wide as its grid (#891: the rest of the 72% was dead space), and
-    // the other side gets what is left.
+    // The panel is as wide as its grid (#891); the other side gets what is left.
     const ImVec2 a = ImGui::GetContentRegionAvail();
-    const float gap = 4.0f, line = ImGui::GetTextLineHeightWithSpacing(), sy = ImGui::GetStyle().ItemSpacing.y;
-    const float pad = ImGui::GetStyle().WindowPadding.x * 2.0f;
-    const float cw = (a.x * 0.72f - pad - (Inventory::kCols - 1) * gap) / (float)Inventory::kCols;
-    const float ch = (a.y - line * 2.0f - sy * 9.0f - 8.0f) / (float)(Inventory::kRows + 2);
-    const float cell = std::clamp(std::min(cw, ch), 40.0f, 200.0f);
-    gGridCell = cell;
+    const float gap = 4.0f, pad = ImGui::GetStyle().WindowPadding.x * 2.0f;
+    const float cell = gGridCell; // (#1148) the one slot size of every item page (SlotCellFor, set as the screen opens)
     const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + cell + pad);
     ImGui::BeginChild("invgrid", ImVec2(std::min(panelW, a.x * 0.72f), 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted("Items");
@@ -1711,6 +1727,7 @@ void GameUI_Draw(Scene& world) {
         if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
+        gGridCell = SlotCellFor(ImGui::GetContentRegionAvail()); // (#1148) one slot size for the Inventory, Crafting and Catalog pages
         // Crafting, the Catalog and an open container show your items on the left; the Inventory screen alone lays itself out
         // (#887); the others use the whole width.
         const bool ownLayout = (screen == GameScreen::Inventory && !container.open) || screen == GameScreen::Crafting; // (#887, #889)
@@ -1721,7 +1738,7 @@ void GameUI_Draw(Scene& world) {
             { const float w = ImGui::GetWindowContentRegionMax().x * 0.5f; if (fabsf(colW - w) > 1.0f) { ImGui::SetColumnWidth(0, w); colW = w; } } // (#891: half, at any scale)
             ImGui::TextUnformatted("Items");
             ImGui::Separator();
-            DrawGrid(std::min(54.0f * s, (ImGui::GetColumnWidth() - 24.0f - (Inventory::kCols - 1) * 4.0f) / (float)Inventory::kCols)); // (#891: fitting the column)
+            DrawGrid(gGridCell); // (#1148: the shared slot size: this column was its model)
             ImGui::NextColumn();
         }
         switch (screen) {
