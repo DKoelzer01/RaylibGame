@@ -765,7 +765,7 @@ int main(int argc, char** argv)
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
     uint64_t chopId = 0;
-    bool chopFelled = false, chopSaved = false;
+    bool chopFelled = false, chopSaved = false, chopSwitchOk = true; // (chopSwitchOk: #1094, a tree felled in 3 swings has nothing to check)
     Trunk chopTarget{};
     Vector3 chopAway{};      // (#465) from the trunk to where the player stands to chop it (body-local)
     int treePhase = 0;
@@ -2565,6 +2565,18 @@ int main(int argc, char** argv)
                             if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
                             if (chopSwings == 3) { TakeScreenshot("bench_chop_aim.png"); printf("bench: chop: bench_chop_aim.png (the hover: size and species, #528)\n"); }
+                            if (chopSwings == 4) { // (#1094) another tool mid-chop: the progress stays where it was
+                                const float before = TerrainTool_ChopProgress();
+                                const std::string was = terrainTool.heldTool;
+                                terrainTool.heldTool = was.empty() ? "stone_axe" : "";
+                                TerrainTool_Update(world, PlayerInput::None(), true); // (the new tool's rule, aim only)
+                                const float after = TerrainTool_ChopProgress();
+                                terrainTool.heldTool = was;
+                                TerrainTool_Update(world, PlayerInput::None(), true);
+                                chopSwitchOk = before > 0.0f && std::fabs(after - before) < 1e-5f;
+                                printf("bench: chop (#1094): 3 swings cut %.0f%%; with '%s' in hand instead it reads %.0f%% -> %s\n", 100.0f * before,
+                                       was.empty() ? "stone_axe" : "bare hands", 100.0f * after, chopSwitchOk ? "ok" : "FAIL (it jumped)");
+                            }
                             if (TerrainTool_Chop()) {
                                 const int wood = inventory.count("any_log") - chopWood0;
                                 printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
@@ -2587,7 +2599,7 @@ int main(int argc, char** argv)
                         const bool back = present(chopId);
                         if (back || GetTime() - chopStart >= 20.0) {
                             printf("bench: chop: %.0f min later it has regrown: %s (after %.1f s) -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
-                                   GetTime() - chopStart, chopFelled && chopSaved && back ? "PASS" : "FAIL");
+                                   GetTime() - chopStart, chopFelled && chopSaved && back && chopSwitchOk ? "PASS" : "FAIL");
                             benchChop = false;
                         }
                     }
