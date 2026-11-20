@@ -124,8 +124,12 @@ jobs:
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
         run: |
-          # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
+          # The shader's half rounding (packHalf2x16, the stored face flows) against the CPU kernel's, 1M floats (#968).
           set +e
+          timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
+          grep -E "^bench: half" half.log || true
+          echo "half rounding: $(grep -E '^bench: half: [0-9]+ floats' half.log | sed -E 's/^bench: half: //')" >> "$GITHUB_STEP_SUMMARY"
+          # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
           "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
           set -e

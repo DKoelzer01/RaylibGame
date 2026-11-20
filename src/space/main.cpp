@@ -101,6 +101,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "machineact.h"
 #include "skillplay.h"
 #include "fluid.h"
+#include "fluidkernel.h" // --test-half (#968): FluidKernel::HalfRound
 #include "watersurface.h"
 #include "waterfield.h"
 #include "waterworks.h"
@@ -1355,6 +1356,48 @@ int main(int argc, char** argv)
                 buf.destroy(); prog.unload();
             }
             printf("bench: compute: %s\n", ok ? "PASS" : "FAIL (no compute)");
+        }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-half") {
+            // (#968) The shader's packHalf2x16 rounding against the CPU kernel's (nearest even): 1M floats - the magnitudes a face
+            // flow and its carry take (1e-6 .. 1e3, both signs) plus values exactly halfway between two halves - through both.
+            const unsigned n = 1u << 20;
+            std::vector<unsigned> in(n);
+            uint32_t s = 12345u;
+            auto rnd = [&s] { s = s * 1664525u + 1013904223u; return s; };
+            for (unsigned k = 0; k < n; ++k) {
+                float f;
+                if (k % 4 == 3) { // exactly halfway: a half's mantissa plus half an ulp (the 13 dropped bits 0x1000)
+                    uint32_t x = (rnd() & 0x80000000u) | ((112u + rnd() % 30u) << 23) | ((rnd() & 0x3FFu) << 13) | 0x1000u;
+                    std::memcpy(&f, &x, 4);
+                } else {
+                    const float mag = powf(10.0f, -6.0f + 9.0f * (float)(rnd() & 0xFFFFFF) / 16777216.0f);
+                    f = (rnd() & 1u) ? -mag : mag;
+                }
+                std::memcpy(&in[k], &f, 4);
+            }
+            ComputeProgram prog; ComputeBuffer buf;
+            bool ok = Compute_Available() && prog.load("resources/compute/half_test.comp");
+            int bad = 0, badHalfway = 0;
+            if (ok) {
+                buf.create(n * 4, in.data());
+                prog.use(); prog.setUint("count", n); buf.bind(0);
+                prog.dispatch(n / 64);
+                std::vector<unsigned> r(n);
+                buf.download(r.data(), n * 4);
+                for (unsigned k = 0; k < n; ++k) {
+                    float f; std::memcpy(&f, &in[k], 4);
+                    const float c = FluidKernel::HalfRound(f);
+                    uint32_t cb; std::memcpy(&cb, &c, 4);
+                    if (cb != r[k]) {
+                        float g; std::memcpy(&g, &r[k], 4);
+                        if (bad < 5) printf("bench: half: %.9g -> GPU %.9g, CPU %.9g%s\n", f, g, c, k % 4 == 3 ? " (halfway)" : "");
+                        ++bad; badHalfway += k % 4 == 3;
+                    }
+                }
+                buf.destroy(); prog.unload();
+            }
+            printf("bench: half: %u floats, %d differ (%d of them exactly halfway) -> %s\n", n, bad, badHalfway, ok && bad == 0 ? "PASS" : ok ? "FAIL" : "FAIL (no compute)");
         }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
