@@ -93,6 +93,7 @@ jobs:
           mkdir -p "$root"
           { echo "CI_ROOT=$root"; echo "CCACHE_DIR=$root/ccache"; echo "CCACHE_BASEDIR=$(cygpath -m "$GITHUB_WORKSPACE")"; } >> "$GITHUB_ENV"
           echo "DEPS_KEY=$(bash tools/ci/fetch_deps.sh --key | tr ' @' '-_')" >> "$GITHUB_ENV"
+          echo "TCPATH=$(cygpath -u "$root")/toolchain/w64devkit/bin:$(cygpath -u "$root")/toolchain/ccache" >> "$GITHUB_ENV"
       - name: Cache toolchain (w64devkit, ccache)
         id: toolchain
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -112,12 +113,11 @@ jobs:
           7z x -y -bd -o"$tc" "$dl/ccache.zip" > /dev/null
           mv "$tc/ccache-$CCACHE_WIN_VERSION-windows-x86_64" "$tc/ccache"
           rm -rf "$dl"
-      - name: Toolchain on PATH
-        run: |
-          echo "$CI_ROOT/toolchain/ccache" >> "$GITHUB_PATH"
-          echo "$CI_ROOT/toolchain/w64devkit/bin" >> "$GITHUB_PATH"
+      # The toolchain goes on PATH inside each step, not through GITHUB_PATH: w64devkit's bash.exe (busybox) would then
+      # become the steps' `bash` shell, which has no arrays. "$BASH" (Git's bash) runs our scripts.
       - name: Versions
         run: |
+          export PATH="$TCPATH:$PATH"
           which gcc mingw32-make cmake ccache
           gcc --version | head -1; cmake --version | head -1; ccache --version | head -1
       - name: Cache FetchContent sources (raylib, googletest)
@@ -135,7 +135,9 @@ jobs:
           key: gns-windows-w64devkit-${{ env.W64DEVKIT_VERSION }}-${{ hashFiles('tools/build_gns.sh') }}
       - name: Build GameNetworkingSockets (cache miss only)
         if: steps.gns.outputs.cache-hit != 'true'
-        run: JOBS=4 bash tools/build_gns.sh "$CI_ROOT/gns"
+        run: |
+          export PATH="$TCPATH:$PATH"
+          JOBS=4 "$BASH" tools/build_gns.sh "$CI_ROOT/gns"
       - name: Save GameNetworkingSockets # right away: a later failure must not throw the 10-minute build away
         if: steps.gns.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -153,15 +155,17 @@ jobs:
             ccache-windows-
       - name: Configure
         run: |
+          export PATH="$TCPATH:$PATH"
           args=(-S . -B build/ci -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DGAME_OUTPUT_DIR="$(cygpath -m "$PWD")/build/ci/bin"
                 -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
                 -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
                 -DENABLE_GNS=ON -DGNS_ROOT="$CI_ROOT/gns/install"
-                $(bash tools/ci/fetch_deps.sh --cmake "$CI_ROOT/deps"))
+                $("$BASH" tools/ci/fetch_deps.sh --cmake "$CI_ROOT/deps"))
           # The first MinGW configure can fail reading the compiler probe's a.exe (antivirus): once more before giving up.
           cmake "${args[@]}" || { echo "configure failed, retrying once"; cmake "${args[@]}"; }
       - name: Build game + game_tests
         run: |
+          export PATH="$TCPATH:$PATH"
           ccache -z > /dev/null
           start=$SECONDS
           cmake --build build/ci -j 4 --target game game_tests
