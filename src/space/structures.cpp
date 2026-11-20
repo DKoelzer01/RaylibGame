@@ -216,13 +216,13 @@ Int3 TurnedCell(Int3 c, int quarters) { for (int k = 0; k < (quarters & 3); ++k)
 
 // The biome's stone (#164: biome materials): sandstone in the dry south, granite in the cold, limestone in the wet.
 int BiomeStone(int mat, Biome b) {
-    static const int stone = BuildMaterialForItem("stone");
+    static const int stone = BuildMaterialForItem("stone_brick");
     if (mat != stone) return mat;
     const char* m = nullptr;
     switch (b) {
-        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone"; break;
-        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite"; break;
-        case Biome::Jungle: case Biome::Swamp: m = "limestone"; break;
+        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone_brick"; break;
+        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite_brick"; break;
+        case Biome::Jungle: case Biome::Swamp: m = "limestone_brick"; break;
         default: break;
     }
     const int r = m ? BuildMaterialForItem(m) : -1;
@@ -707,7 +707,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             }
         job.parts.push_back({ p, table });
     }
-    lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone"), biome) };
+    lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone_brick"), biome) };
     uint32_t dh = Hash((uint64_t)site.seed ^ 0xd0d0ull);
     if (S.dungeon > 0.0f && DungeonsOn() && !noDungeons && (forceDungeon || Unit(dh) < S.dungeon)) // a dungeon under it (#719)
         PlanDungeon(job, body, pf, *plot, lastDungeonArgs.floorY, lastDungeonArgs.half, site.seed, lastDungeonArgs.stone);

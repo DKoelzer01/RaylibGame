@@ -4767,13 +4767,13 @@ int main(int argc, char** argv)
                         auto mat = [](const char* item) { return (uint8_t)std::max(0, BuildMaterialForItem(item)); };
                         int placed = 0, tried = 0;
                         auto put = [&](PartType t, Int3 c, int orient, const char* m) { ++tried; placed += hut->place(Part{ t, c, (uint8_t)orient, mat(m) }) >= 0 ? 1 : 0; };
-                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 0, z }, 0, "marble");
+                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 0, z }, 0, "marble_brick");
                         for (int y = 1; y <= 4; ++y) {
                             for (int x = 1; x < 5; ++x) { put(y == 2 || y == 3 ? PartType::Pane : PartType::Panel, { x, y, 0 }, RotateOrientation(0, 1), y == 2 || y == 3 ? "glass" : "oak_planks"); put(PartType::Panel, { x, y, 5 }, RotateOrientation(0, 1), "birch_planks"); }
                             for (int z = 1; z < 5; ++z) { put(PartType::Panel, { 0, y, z }, 0, "pine_planks"); put(PartType::Panel, { 5, y, z }, 0, "oak_planks"); }
-                            put(PartType::Post, { 0, y, 0 }, 0, "granite"); put(PartType::Post, { 5, y, 0 }, 0, "granite"); put(PartType::Post, { 0, y, 5 }, 0, "granite"); put(PartType::Post, { 5, y, 5 }, 0, "granite");
+                            put(PartType::Post, { 0, y, 0 }, 0, "granite_brick"); put(PartType::Post, { 5, y, 0 }, 0, "granite_brick"); put(PartType::Post, { 0, y, 5 }, 0, "granite_brick"); put(PartType::Post, { 5, y, 5 }, 0, "granite_brick");
                         }
-                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 5, z }, 0, (x + z) % 2 ? "brick" : "basalt");
+                        for (int x = 0; x < 6; ++x) for (int z = 0; z < 6; ++z) put(PartType::Slab, { x, 5, z }, 0, (x + z) % 2 ? "brick" : "basalt_brick");
                         check(placed == tried, "the hut's parts placed");
                         bool partial = true;
                         for (const auto& kv : hut->cells) partial = partial && !kv.second.shape.full;
@@ -5032,7 +5032,12 @@ int main(int argc, char** argv)
                         grew = false;
                         for (const Rule& u : rules) {
                             if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
-                            if (u.machine == "#farmland" && !have.count("farmland")) continue;
+                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe or shovel makes it
+                                bool till = false;
+                                for (const char* t : { "stone_hoe", "stone_shovel", "iron_hoe", "iron_shovel" }) till = till || have.count(t) > 0;
+                                if (!till) continue;
+                                have.insert("farmland");
+                            }
                             bool ok = true;
                             for (const std::string& in : u.in) ok = ok && (u.machine == "#tool" ? have.count(in) > 0 : have.count(in) > 0);
                             if (!ok) continue;
@@ -6680,7 +6685,7 @@ int main(int argc, char** argv)
                                 // The dam: 1 m stone blocks, 2 thick (x 0-2 m), from 1 m under the floor to 0.5 m over the ground
                                 // (plot cells are 0.5 m: y -7..-1 up), 1 m into each bank (z -3..3 m). The hole's two blocks (1-2 m over
                                 // the floor, z 0-1 m) come out later.
-                                const uint8_t stone = (uint8_t)std::max(0, BuildMaterialForItem("stone"));
+                                const uint8_t stone = (uint8_t)std::max(0, BuildMaterialForItem("stone_brick"));
                                 int placed = 0;
                                 lkHole.clear();
                                 for (int cx : { 0, 2 })
@@ -7553,7 +7558,7 @@ int main(int argc, char** argv)
                             // The wall: 1 m stone blocks across it at x = 0, from 4 m down to 1 m up, 4 m to either side.
                             for (int y = -8; y <= 2; y += 2)
                                 for (int z = -8; z <= 6; z += 2) {
-                                    const int idx = pwPlot->place({ PartType::Block, { -1, y, z }, 0, (uint8_t)std::max(0, BuildMaterialForItem("stone")) });
+                                    const int idx = pwPlot->place({ PartType::Block, { -1, y, z }, 0, (uint8_t)std::max(0, BuildMaterialForItem("stone_brick")) });
                                     if (idx >= 0) pwParts.push_back(idx);
                                 }
                             for (float x : { -6.5f, -4.5f, -2.5f }) Fluid::Pour(*p, at(x, -1.5f), 6.0f); // into the west half (a pour fills one column, <= 6 m^3)
