@@ -175,6 +175,9 @@ void Weather_Update(Scene& world, float dt, float realDt) {
                 if (ts > 0.14f) e = std::max(e, 0.75f * expf(-(ts - 0.14f) * 9.0f));     // the return stroke
             }
         }
+        // Captures: RAYLIBGAME_LIGHTNING_HOLD=1 holds a flash at full strength (the recorder's frames rarely land on one).
+        static const bool hold = getenv("RAYLIBGAME_LIGHTNING_HOLD") && getenv("RAYLIBGAME_LIGHTNING_HOLD")[0] == '1';
+        if (hold && here.kind == WeatherKind::Storm) e = 1.0f;
         flash = e;
         world.lightning = e;
         if (p && e > 0.0f) {

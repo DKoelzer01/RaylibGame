@@ -163,7 +163,7 @@ void main()
     // limb's, so it shows over the night's stars, brightest toward the strike.
     if (lightning.w > 0.0 && density > 0.01) {
         float lobe = pow(max(dot(v, lightning.xyz), 0.0), 3.0);
-        float la = clamp(lightning.w * density * (0.06 + 0.34 * lobe), 0.0, 1.0);
+        float la = clamp(lightning.w * density * (0.15 + 0.55 * lobe), 0.0, 1.0);
         vec3 glowC = vec3(0.72, 0.76, 0.92);
         float na = alpha + la * (1.0 - alpha);
         sky = (sky * alpha + glowC * la) / max(na, 1e-4); // light added over what was there (blended: col x na = sky x alpha + glow x la)
