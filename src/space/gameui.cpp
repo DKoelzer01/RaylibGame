@@ -2065,6 +2065,46 @@ TEST(GameUiPreview, DraggingAcrossItTurnsThePlayer) {
     ImGui::SetCurrentContext(prev);
 }
 
+// (#1078) A drag in the quest tree pans it; it must not move the Tab window. ImGui moves a movable window from a press on
+// no item, so the tree's canvas is an InvisibleButton (questtree.cpp). Without it (the control) the window moves.
+TEST(GameUiQuestTree, ADragOnTheCanvasDoesNotMoveTheWindow) {
+    auto windowAfterDrag = [](bool canvas) {
+        ImGuiContext* prev = ImGui::GetCurrentContext();
+        ImGuiContext* ctx = ImGui::CreateContext();
+        ImGui::SetCurrentContext(ctx);
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(1280.0f, 720.0f); io.DeltaTime = 1.0f / 60.0f; io.IniFilename = nullptr;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.Fonts->AddFontDefault();
+        ImVec2 pos;
+        auto frame = [&](float mx, float my, bool down) {
+            io.AddMousePosEvent(mx, my); io.AddMouseButtonEvent(0, down);
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(100.0f, 100.0f), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(600.0f, 400.0f), ImGuiCond_FirstUseEver);
+            ImGui::Begin("tab window", nullptr, ImGuiWindowFlags_NoTitleBar); // movable, as the Tab window (#1080)
+            ImGui::BeginChild("questtree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
+            if (canvas) ImGui::InvisibleButton("canvas", ImVec2(1200.0f, 900.0f), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
+            else ImGui::Dummy(ImVec2(1200.0f, 900.0f));
+            ImGui::EndChild();
+            pos = ImGui::GetWindowPos();
+            ImGui::End();
+            ImGui::Render();
+        };
+        frame(300.0f, 300.0f, false);
+        frame(300.0f, 300.0f, true);
+        for (int k = 1; k <= 8; ++k) frame(300.0f + 10.0f * k, 300.0f + 5.0f * k, true);
+        frame(380.0f, 340.0f, false);
+        ImGui::DestroyContext(ctx);
+        ImGui::SetCurrentContext(prev);
+        return pos;
+    };
+    const ImVec2 moved = windowAfterDrag(false), kept = windowAfterDrag(true);
+    EXPECT_GT(moved.x, 150.0f) << "the control: a press on no item drags the window (the playtest bug)";
+    EXPECT_FLOAT_EQ(kept.x, 100.0f) << "a drag starting on the tree's canvas leaves the Tab window where it is";
+    EXPECT_FLOAT_EQ(kept.y, 100.0f);
+}
+
 // ---- Unit tests (#894): the press that picks a stack up is not a click outside the window ----
 #include "unit_helpers.h"
 
