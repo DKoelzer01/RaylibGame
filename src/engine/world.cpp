@@ -2145,7 +2145,7 @@ static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::K
 static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
     out.clear();
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
-    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    thread_local std::vector<int16_t>* denseP = nullptr; if (!denseP) denseP = new std::vector<int16_t>(DeltaChunk::kN); auto& dense = *denseP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
     c.toDense(dense.data());
     const int16_t* d = dense.data();
     int i = 0;
@@ -2162,7 +2162,7 @@ static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
 
 static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
-    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    thread_local std::vector<int16_t>* denseP = nullptr; if (!denseP) denseP = new std::vector<int16_t>(DeltaChunk::kN); auto& dense = *denseP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
     std::fill(dense.begin(), dense.end(), (int16_t)0);
     int i = 0;
     size_t w = 0;
