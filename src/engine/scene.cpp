@@ -451,10 +451,17 @@ void Scene::drawScene(int gamestate) {
             anchor = { std::floor(cw.x / 256.0) * 256.0, std::floor(cw.y / 256.0) * 256.0, std::floor(cw.z / 256.0) * 256.0 };
             cw = cw - anchor;
         }
+        // (#1120) Snapped in absolute body-local coordinates (the anchor's own projection added back in double): about the
+        // anchor alone, the grid moved by a fraction of a texel each time the camera crossed into the next 256 m cell (the
+        // anchor's jump projected onto the light's axes), a pop of every shadow edge every ~3 s when flying at 88 m/s. The
+        // light's direction is held fixed between its 0.12 deg steps, so absolute snapping keeps the texels put on the
+        // ground. RAYLIBGAME_SHADOW_ANCHOR_SNAP=1: as before.
+        static const bool anchorSnap = getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP") && getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP")[0] == '1';
         auto snapAxis = [&](Vector3 worldAxis) {
             const Vector3 a = ground ? ground->dirToLocal(worldAxis) : worldAxis;
+            const double base = anchorSnap ? 0.0 : anchor.x * a.x + anchor.y * a.y + anchor.z * a.z;
             const double d = cw.x * a.x + cw.y * a.y + cw.z * a.z;
-            const double s = std::floor(d / texel + 0.5) * texel;
+            const double s = std::floor((d + base) / texel + 0.5) * texel - base;
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
         const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
