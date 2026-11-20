@@ -32,7 +32,7 @@ echo "test_join: host up after ${SECONDS} s ($tmp)"
 # outran the clients' 600 s on the deweyserver runner (#1028).
 if [ -f "$tmp/host.sav.erosion" ]; then
     mkdir -p saves
-    for n in alice bob; do cp "$tmp/host.sav.erosion" "saves/client_$n.sav.erosion"; done
+    for n in alice bob; do mkdir -p saves/mp_cache; cp "$tmp/host.sav.erosion" "saves/mp_cache/client_$n.sav.erosion"; done
 fi
 cpids=()
 for n in alice bob; do
