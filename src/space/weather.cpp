@@ -6,6 +6,7 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "SimplexNoise.h"
+#include "menus.h"    // settings.reduceFlashing (#1162)
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -31,7 +32,8 @@ namespace {
     WeatherState here;            // smoothed at the player
     int forced = -1;
     double lastFlash = 0.0, nextFlash = 0.0, thunderAt = -1.0;
-    float flash = 0.0f;           // lightning overlay 0..1
+    float flash = 0.0f;           // lightning now 0..1 (#1162: lights the sky, Scene::lightning)
+    float flashAz = 0.0f, flashEl = 0.3f; // the strike: around the player's horizon and how high (radians)
 
     Planetoid* StartBody(Scene& world) { return world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); }
 
@@ -146,17 +148,45 @@ void Weather_Update(Scene& world, float dt, float realDt) {
         const float kSurfaceWind = Wind_Old888() ? 1.0f : 0.45f; // (RAYLIBGAME_WIND_888=0: the old full wind)
         Wind_SetFrame(p, local, Vector3Scale(here.wind, kSurfaceWind), stormEased, daily, realDt >= 0.0f ? realDt : dt);
     } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, realDt >= 0.0f ? realDt : dt);
-    // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
-    if (here.kind == WeatherKind::Storm) {
+    // Lightning in a storm: a flash every 6-20 s, thunder a moment later. (#1162) It lights the sky and the clouds toward the
+    // strike (atmosphere.fs) and lifts the open-sky ambient briefly (scene.cpp; fragSky keeps caves and interiors dark), with
+    // a return stroke's second flicker; it no longer whites out the screen (a 55% overlay, user: "They should light up the
+    // sky, not the whole screen"). Reduce flashing (settings): one soft glow, about a third as bright.
+    if (here.kind == WeatherKind::Storm && p && player.nearest == p) {
         if (GameClock() > nextFlash) {
-            flash = 1.0f;
             lastFlash = GameClock();
             nextFlash = GameClock() + 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0;
             thunderAt = GameClock() + 0.6 + 1.8 * (double)GetRandomValue(0, 1000) / 1000.0;
+            const float az = 6.2831853f * GetRandomValue(0, 1000) / 1000.0f;            // somewhere around the horizon,
+            const float el = 0.17f + 0.45f * GetRandomValue(0, 1000) / 1000.0f;          // 10-36 degrees up
+            flashAz = az; flashEl = el;
         }
     }
     if (thunderAt > 0.0 && GameClock() > thunderAt) { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); thunderAt = -1.0; }
-    flash = std::max(0.0f, flash - dt * 3.0f);
+    {
+        const float ts = (float)(GameClock() - lastFlash);
+        float e = 0.0f;
+        if (lastFlash > 0.0 && ts >= 0.0f && ts < 2.0f) {
+            if (settings.reduceFlashing) e = 0.35f * std::min(1.0f, ts / 0.15f) * expf(-std::max(0.0f, ts - 0.15f) * 2.5f); // eased in and out
+            else {
+                e = expf(-ts * 12.0f);                                                    // the stroke
+                if (ts > 0.14f) e = std::max(e, 0.75f * expf(-(ts - 0.14f) * 9.0f));     // the return stroke
+            }
+        }
+        flash = e;
+        world.lightning = e;
+        if (p && e > 0.0f) {
+            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const float d = Vector3Length(local);
+            if (d > 1.0f) {
+                const Vector3 up = Vector3Scale(local, 1.0f / d);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(up, t1);
+                const Vector3 dl = Vector3Add(Vector3Scale(up, sinf(flashEl)), Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(flashAz)), Vector3Scale(t2, sinf(flashAz))), cosf(flashEl)));
+                world.lightningDir = Vector3Normalize(p->dirToWorld(dl));
+            }
+        }
+    }
 }
 
 void Weather_Draw3D(Scene& world) {
@@ -220,5 +250,5 @@ void Weather_Draw3D(Scene& world) {
 }
 
 void Weather_DrawHUD() {
-    if (flash > 0.0f) DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(WHITE, 0.55f * flash));
+    // (#1162) Nothing: lightning lights the sky and the open ground in the 3D scene instead of a white overlay.
 }

@@ -15,6 +15,7 @@ uniform vec3 toLocalX, toLocalY, toLocalZ; // the planet-local images of the wor
 uniform float cloudShell;      // the cloud layer's radius (m); 0 = no clouds
 uniform vec3 cloudDrift;       // wind drift so far (m, planet-local)
 uniform float cloudCover;      // 0..1 (weather), with a floor applied here
+uniform vec4 lightning;        // (#1162) xyz: toward the strike (world), w: the flash 0..1 - lights the clouds and the sky there
 // #142: the physical sky (on by default; RAYLIBGAME_SKY_PHYS=0: off): the sky-view LUT (skyphys.cpp), pulled toward the palette below by skyPhysTint.
 uniform float skyPhys;         // 1: on (the LUT is bound)
 #include "skyphys.glsl"
@@ -133,6 +134,10 @@ void main()
                 vec3 phys = pow(max(sunlit + skylight, vec3(0.0)), vec3(1.0 / 2.2)) * mix(vec3(1.0), vec3(0.62, 0.64, 0.68), overcast);
                 cloud = mix(phys, cloud, skyPhysTint);
             }
+            if (lightning.w > 0.0) {   // (#1162) lit from within: the denser cores most, strongest toward the strike
+                float lobe = pow(max(dot(v, lightning.xyz), 0.0), 3.0);
+                cloud += vec3(0.82, 0.86, 1.0) * lightning.w * (0.12 + 0.88 * lobe) * lit;
+            }
             cloudA = a;
             sky = mix(sky, cloud, a * 0.92);
             alpha = max(alpha, a * 0.9 * density);                       // they hide the stars at night too
@@ -153,6 +158,16 @@ void main()
                 alpha = na;
             }
         }
+    }
+    // (#1162) Lightning lights the air too (the clear sky between clouds, the whole dome a little): an emissive veil like the
+    // limb's, so it shows over the night's stars, brightest toward the strike.
+    if (lightning.w > 0.0 && density > 0.01) {
+        float lobe = pow(max(dot(v, lightning.xyz), 0.0), 3.0);
+        float la = clamp(lightning.w * density * (0.06 + 0.34 * lobe), 0.0, 1.0);
+        vec3 glowC = vec3(0.72, 0.76, 0.92);
+        float na = alpha + la * (1.0 - alpha);
+        sky = (sky * alpha + glowC * la) / max(na, 1e-4); // light added over what was there (blended: col x na = sky x alpha + glow x la)
+        alpha = na;
     }
     // The sun disc (also in space, where the atmosphere is gone).
     float disc = smoothstep(0.99985, 0.99995, mu) * (1.0 - smoothstep(0.4, 0.8, overcast)) * (1.0 - cloudA);
