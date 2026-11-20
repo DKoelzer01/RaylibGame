@@ -89,6 +89,14 @@ namespace {
     // step; none waiting: the last keys stay held). Kept across a reconnect: the player is where they left.
     struct Remote {
         Player player;
+        // (#844) The player's body-local state after its last step (or its spawn): a player is stepped only by its inputs,
+        // and in a gap (a client loading the world, a stall) its world-frame velocity doesn't turn with the planet, so the
+        // first step after it landed on ground that had moved on (a 36 m/s "fall" at --time-scale 60). Re-applied before a
+        // step after a gap, so the player rides its body through it. restSpawns: a respawn or teleport makes it stale.
+        Player::NetState rest{};
+        bool restValid = false;
+        int restSpawns = 0;
+        long long restTick = 0;
         std::deque<MsgInput> inputs;
         uint32_t lastApplied = 0;   // the client tick of the last input stepped (the owner replays the ones after)
         uint32_t lastQueued = 0;    // the newest input tick received (redundant copies of older ones are skipped)
@@ -150,6 +158,8 @@ namespace {
     // caught up at once, but only as fast as real time allows (a budget earned per server tick, at most kMaxBudget), so
     // a client sending too many inputs can't run faster than anyone else. (Repeating the keys while an input was late,
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
+    constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
+    bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -159,6 +169,11 @@ namespace {
             while (r.inputs.size() > kMaxQueuedInputs) { r.carried |= r.inputs.front().pressed; r.inputs.pop_front(); }
             // (#768) at most kMaxStepsPerFrame inputs a frame per player: after a slow frame the backlog is worked off over the
             // next frames, not all at once (all at once made the next frame slower still: the 31-40 ms catch-up bursts at 32 players).
+            if (!r.survival.dead && (!r.restValid || r.restSpawns != r.player.spawns)) { // (#844) just spawned or moved: its state now
+                RenderOriginScope frame(world, r.player.position);
+                r.restValid = r.player.netState(world, r.rest);
+                r.restSpawns = r.player.spawns; r.restTick = SimTick();
+            }
             int stepsThisFrame = 0;
             while (r.budget >= 1.0 && !r.inputs.empty() && stepsThisFrame++ < kMaxStepsPerFrame) {
                 r.budget -= 1.0;
@@ -172,7 +187,10 @@ namespace {
                 r.forwardLocal = { m.fx, m.fy, m.fz };
                 if (Planetoid* b = r.player.nearest ? r.player.nearest : StartBody(world)) r.player.forward = b->dirToWorld(r.forwardLocal);
                 RenderOriginScope frame(world, r.player.position);
+                if (!r.survival.dead && r.restValid && r.restSpawns == r.player.spawns && SimTick() - r.restTick > kRestGapTicks && !RestGapOff())
+                    r.player.applyNetState(world, r.rest); // (#844) back where its body has carried it, moving with it
                 if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
         }
@@ -302,6 +320,10 @@ namespace {
             online.push_back(name);
             if (r.survival.dead && !r.deathHandled) {
                 r.deathHandled = true;
+                // (#844) what killed them, for the log (a death on a peaceful world had no cause to go on)
+                printf("host: %s died (death %d): %s%s; food %.0f, oxygen %.0f, %s\n", name.c_str(), r.survival.deaths, r.survival.lastHarm[0] ? r.survival.lastHarm : "unknown",
+                       !strcmp(r.survival.lastHarm, "fall") ? TextFormat(" at %.1f m/s", r.survival.lastFallSpeed) : "", r.survival.food, r.survival.oxygen,
+                       r.player.flyMode ? "flying" : r.player.grounded ? "on the ground" : "in the air");
                 const auto before = AllAmounts(r.inventory);
                 if (Combat_OnDeathFor(r.inventory, nullptr, r.player, name, deathDrops, false)) ++gravesMade;
                 SendChangedItems(conn, r.inventory, before);

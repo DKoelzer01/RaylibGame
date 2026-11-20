@@ -91,6 +91,7 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
     }
     sv.health -= amount;
     sv.hitDamageTaken += amount;
+    sv.lastHarm = "hit"; // (#844)
     sv.lastHitAt = SimTime();
     sv.lastHitStrength = std::min(1.0f, amount / 20.0f);
     r.dealt = amount;

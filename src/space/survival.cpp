@@ -108,6 +108,8 @@ void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, floa
     if (local && damage <= kGrace && impactSpeed > 6.0f && SimTime() - lastSoft > 10.0 && gSkillEvent) { lastSoft = SimTime(); gSkillEvent("soft_landing", 1.0, Vector3{}); }
     if (damage <= kGrace || survival.dead) return;
     survival.health -= damage;
+    survival.lastHarm = "fall";
+    survival.lastFallSpeed = impactSpeed;
     survival.fallDamageTaken += damage;
     if (local) Audio_Play(Sfx::Error, 0.6f, 0.6f);
 }
@@ -223,7 +225,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
-        if (survival.inVacuum && !stats.vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); }
+        if (survival.inVacuum && !stats.vacuum) { survival.vacuumTime += dt; if (survival.vacuumTime > 60.0f) { survival.health -= 4.0f * std::min(dt, survival.vacuumTime - 60.0f); survival.lastHarm = "vacuum"; } }
         else survival.vacuumTime = 0.0f;
         if ((local && Rocket_Boarded())) { survival.vacuumTime = 0.0f; survival.inVacuum = false; } // inside a pressurised hull, out of air
         if (survival.breathable) survival.oxygen = std::min(100.0f, survival.oxygen + survival.airRefillPerSec * dt);
@@ -260,7 +262,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             if (local) Audio_Play(Sfx::Build, 0.25f, survival.headlamp ? 1.8f : 1.5f);
         } else if (local) GameUI_Toast(stats.powered ? "No suit power for the headlamp" : "The headlamp needs suit power: fit a battery pack (LV)");
     }
-    if (survival.oxygen <= 0.0f) survival.health -= survival.suffocationDamagePerSec * dt;
+    if (survival.oxygen <= 0.0f) { survival.health -= survival.suffocationDamagePerSec * dt; survival.lastHarm = "suffocation"; }
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
     survival.temperature = AirTemperature(world, player, survival, local);
@@ -278,9 +280,9 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         if (!std::isnan(T) && T < 5.0f) drain *= 1.0f + stats.cold * (sk ? (float)Skills_Stat(*sk, "cold") : 1.0f) * (5.0f - T) / 15.0f; // insulation, the regulator
         if (SimTime() < survival.sickUntil) drain *= 2.0f;
         if (!survival.inLifeSupport) survival.food = std::max(0.0f, survival.food - drain * dt);
-        if (survival.food <= 0.0f) survival.health -= survival.starvationDamagePerSec * dt;
+        if (survival.food <= 0.0f) { survival.health -= survival.starvationDamagePerSec * dt; survival.lastHarm = "starvation"; }
         else if (survival.food > 80.0f && survival.oxygen > 0.0f) survival.health = std::min(100.0f, survival.health + survival.wellFedHealPerSec * dt);
-        if (!std::isnan(T) && T > 35.0f && !stats.heatProof) survival.health -= 0.05f * (T - 35.0f) * dt; // 40 C: 0.25 a second
+        if (!std::isnan(T) && T > 35.0f && !stats.heatProof) { survival.health -= 0.05f * (T - 35.0f) * dt; survival.lastHarm = "heat"; } // 40 C: 0.25 a second
     }
 
     if (in.enabled) {
