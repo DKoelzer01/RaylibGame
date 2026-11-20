@@ -313,6 +313,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         airBody = nullptr;
     }
     lastEndPosition = position;
+    if (Frames_On()) updateFrame(world);
     CacheNetState(world);
     // Render interpolation (#315): the feet after this step and the one before, in the nearest body's frame. A new
     // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
@@ -875,6 +876,17 @@ bool Player::applyNetState(Scene& world, const NetState& s) {
     }
     netCache = s; netCacheSpawns = spawns; netCached = true;
     return true;
+}
+
+// Plan 11 F2a (#667, #1146): the player's state in its frame, from today's state. The world-frame velocity: on the ground
+// the velocity is relative to the surface (add the ground's motion), airborne it is world-frame already. The frame: the
+// smallest SOI holding the feet, Fixed below the body's line (contact forces it), with hysteresis against the last one.
+void Player::updateFrame(Scene& world) {
+    const Vector3 feet = (position - world.renderOrigin).toFloat();
+    const Planetoid* ground = grounded ? ((groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest) : nullptr;
+    const Vector3 vw = ground ? Vector3Add(velocity, ground->surfaceVelocity(feet)) : velocity;
+    const FrameRef to = Frames_Choose(Planetoid::All(), position, frame.frame, grounded);
+    if (to.body != 0) Frames_FromGlobal(position, DVec3(vw.x, vw.y, vw.z), to, frame);
 }
 
 void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {

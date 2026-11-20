@@ -7,6 +7,10 @@
 
 // Plan 11 (#667). See frames.h.
 
+static bool gFramesOn = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }();
+bool Frames_On() { return gFramesOn; }
+void Frames_SetOn(bool on) { gFramesOn = on; }
+
 namespace {
 constexpr double kInf = 1e300;
 DVec3 Cross(const DVec3& a, const DVec3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
