@@ -74,13 +74,15 @@ than on the PC because the runner is slower, and are L until they have sim-time 
 `--test-leak` (the flag-mode fluid job runs at the machine's speed; scenarios use `RAYLIBGAME_FLUID_LOCKSTEP=1`).
 
 - `tools/regression.sh planet --only headless`: the runner's half (the `regression` job of `selfhosted.yml`, after the
-  checks; 71 tests, ~85 min on the PC, ~2.5 h on the runner, which runs at about half the PC's frame rate).
+  checks; 71 tests, ~85 min on the PC, ~2.5 h on the runner, which runs at about half the PC's frame rate). It runs
+  as 4 jobs (`--shard 1/4` .. `4/4`, every 4th test; ~35-40 min each, 90 min timeout), so queued runs get the one GPU
+  runner in between; never on pushes.
 - `tools/regression.sh planet --only local`: the PC's half (30 tests, ~30 min instead of ~2 h).
 - No `--only`: every test, as before the split.
 
 The job runs in the persistent run folder (`RUNDIR`, so the seed-42 erosion bake is cached), writes a table of every test
 (verdict, seconds) to the job summary (`tools/ci/regression_summary.sh`) and uploads `regression.log` as the artifact
-`regression-headless-log`. **Known failures** are listed in `tools/regression_known.txt` (the test's arguments and its
+`regression-headless-log-<shard>`. **Known failures** are listed in `tools/regression_known.txt` (the test's arguments and its
 issue): the summary shows new failures first, then the known ones with their issue, and names a listed test that passed
 (fixed? take its line out). The job fails only on new failures. The PC's half can use the same summary:
 `tools/regression.sh planet --only local | tee r.log; tools/ci/regression_summary.sh r.log tools/regression_known.txt`.

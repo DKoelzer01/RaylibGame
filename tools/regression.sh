@@ -9,6 +9,8 @@
 #   --only headless   only the H tests (the runner's nightly)
 #   --only local      only the L tests (the PC's midnight run)
 #   --list            print the tag and arguments of every test in the set, run nothing
+#   --shard I/N       only every Nth of the selected tests, starting with the Ith (1..N): the runner splits the headless
+#                     half into jobs short enough to let other runs in between (#1028)
 #   (no --only: every test, as before the split)
 # Environment:
 #   EXE=path      the game to run (default build/check/bin/game.exe)
@@ -21,18 +23,21 @@
 # Prints each test's "bench:" lines and ends with a PASS/FAIL count. Exit code: 1 if anything failed.
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
-set_name="all"; only=""; list=""
+set_name="all"; only=""; list=""; shard_i=1; shard_n=1; picked=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --only) only="${2:-}"; shift ;;
         --only=*) only="${1#--only=}" ;;
         --list) list=1 ;;
+        --shard) shard_i="${2%/*}"; shard_n="${2#*/}"; shift ;;
         -*) echo "unknown option $1"; set_name="?" ;;
         *) set_name="$1" ;;
     esac
     shift
 done
 case "$only" in ""|headless|local) ;; *) echo "--only takes headless or local"; exit 2 ;; esac
+case "$shard_i/$shard_n" in *[!0-9/]*|/*|*/) echo "--shard takes I/N"; exit 2 ;; esac
+[ "$shard_n" -ge 1 ] && [ "$shard_i" -ge 1 ] && [ "$shard_i" -le "$shard_n" ] || { echo "--shard takes I/N with 1 <= I <= N"; exit 2; }
 exe="${EXE:-$here/build/check/bin/game.exe}"
 dir="${RUNDIR:-$here}"
 if [ "${SNAPSHOT:-0}" = "1" ] && [ -z "$list" ]; then
@@ -47,13 +52,18 @@ A="--bodies resources/data/bodies_asteroids.txt"
 log="$(mktemp)"
 run() { local t0=$(date +%s); echo "=== $*" | tee -a "$log"; timeout 1200 "$exe" "$@" 2>&1 | grep "^bench" | grep -v "world ready" | tee -a "$log"; echo "--- $(( $(date +%s) - t0 )) s"; }
 # want TAG: does this run include tests tagged TAG? (with --list: print the line instead, the caller skips the test)
+selected() { # TAG: in --only's half and in --shard's share (counts the tests of the half, so shards interleave)
+    [ -z "$only" ] || [ "$only" = "$1" ] || return 1
+    picked=$((picked + 1))
+    [ $(( (picked - 1) % shard_n + 1 )) -eq "$shard_i" ]
+}
 want() {
     if [ -n "$list" ]; then return 1; fi
-    [ -z "$only" ] || [ "$only" = "$1" ]
+    selected "$1"
 }
 listed() { # TAG ARGS...: print one --list line, with the RAYLIBGAME_* variables the test runs under
     local tag="$1"; shift
-    [ -z "$only" ] || [ "$only" = "$tag" ] || return 0
+    selected "$tag" || return 0
     printf '%-9s %s%s\n' "$tag" "$(env | grep -o '^RAYLIBGAME_[A-Z0-9_]*=[^ ]*' | sort | tr '\n' ' ')" "$*"
 }
 H() { if [ -n "$list" ]; then listed headless "$@"; elif want headless; then run "$@"; fi; }
@@ -256,7 +266,8 @@ case "$set_name" in
 esac
 if [ -n "$list" ]; then rm -f "$log"; exit 0; fi
 pass=$(grep -c "PASS" "$log"); fail=$(grep -c "FAIL" "$log")
-echo "=== regression ($set_name${only:+ --only $only}): $pass PASS, $fail FAIL"
+what="$set_name${only:+ --only $only}"; [ "$shard_n" -gt 1 ] && what="$what --shard $shard_i/$shard_n"
+echo "=== regression ($what): $pass PASS, $fail FAIL"
 grep "FAIL" "$log"
 rm -f "$log"
 [ "$fail" -eq 0 ]

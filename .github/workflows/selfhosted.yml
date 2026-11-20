@@ -155,16 +155,23 @@ jobs:
 
   # The headless half of the nightly regression (#1028): tools/regression.sh --only headless on the Linux build. The other
   # half (--only local: rendering, camera feel, perf and timing) stays on the PC. Nightly, or a manual run with
-  # regression = headless. After the checks above (one GPU run at a time), also when one of them failed. The job fails
-  # only on new failures: the ones listed in tools/regression_known.txt (with their issues) are reported apart.
+  # regression = headless; never on pushes. After the checks above, also when one of them failed. Split into 4 shards
+  # (--shard I/4, every 4th test), one job each of ~35-40 min on the runner, so other runs get the one GPU runner in
+  # between. A shard fails only on new failures: the ones in tools/regression_known.txt (with their issues) are reported apart.
   regression:
-    name: Regression (--only headless)
+    name: Regression (--only headless, shard ${{ matrix.shard }}/4)
     needs: [package, linux-gpu]
     if: ${{ !cancelled() && needs.package.result == 'success' && (github.event_name == 'schedule' || inputs.regression == 'headless') }}
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
-    timeout-minutes: 300
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       SETS: ${{ inputs.regression_sets || 'planet' }}
+      SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -173,44 +180,45 @@ jobs:
       - name: Paths and version
         run: bash tools/ci/selfhosted_env.sh
       - name: Build (incremental; another branch's run may have used the build folder in between)
-        timeout-minutes: 60
+        timeout-minutes: 30
         run: |
           bash tools/build_linux.sh --inside --out "$OUT" --jobs "$(nproc)"
       - name: Run folder
         run: |
           ln -sfn "$GITHUB_WORKSPACE/resources" "$RUN/resources"
           ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
-      - name: tools/regression.sh --only headless
-        timeout-minutes: 270
+      - name: tools/regression.sh --only headless --shard
+        timeout-minutes: 80
         run: |
           # The run folder keeps saves/ (the erosion bake of seed 42 is cached there after the first night).
           for s in $SETS; do
             case "$s" in planet|eroded|multiplayer) ;; *) echo "::error::unknown regression set '$s'"; exit 2 ;; esac
           done
+          log="$RUN/regression-$SHARD.log"
           set +e
           start=$SECONDS
           for s in $SETS; do
-            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless
-          done 2>&1 | tee "$RUN/regression.log"
+            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
+          done 2>&1 | tee "$log"
           {
-            echo "## Regression --only headless ($SETS, $RAYLIBGAME_VERSION)"
+            echo "## Regression --only headless, shard $SHARD/4 ($SETS, $RAYLIBGAME_VERSION)"
             echo "$(( (SECONDS - start) / 60 )) min in all"
             echo
-            bash tools/ci/regression_summary.sh "$RUN/regression.log" tools/regression_known.txt
-          } > "$RUN/regression-summary.md"
+            bash tools/ci/regression_summary.sh "$log" tools/regression_known.txt
+          } > "$RUN/regression-summary-$SHARD.md"
           rc=$? # 1 when a failure is not in tools/regression_known.txt
           set -e
-          cat "$RUN/regression-summary.md" >> "$GITHUB_STEP_SUMMARY"
-          if ! grep -q "^=== regression (" "$RUN/regression.log"; then echo "::error::the regression did not finish"; exit 1; fi
+          cat "$RUN/regression-summary-$SHARD.md" >> "$GITHUB_STEP_SUMMARY"
+          if ! grep -q "^=== regression (" "$log"; then echo "::error::the regression did not finish"; exit 1; fi
           if [ "$rc" -ne 0 ]; then echo "::error::new regression failures (not in tools/regression_known.txt): see the job summary"; fi
           exit "$rc"
       - name: Upload the regression log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: regression-headless-log
+          name: regression-headless-log-${{ matrix.shard }}
           path: |
-            ${{ env.RUN }}/regression.log
-            ${{ env.RUN }}/regression-summary.md
+            ${{ env.RUN }}/regression-${{ matrix.shard }}.log
+            ${{ env.RUN }}/regression-summary-${{ matrix.shard }}.md
           retention-days: 14
           if-no-files-found: ignore
