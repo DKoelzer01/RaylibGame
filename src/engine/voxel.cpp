@@ -1583,22 +1583,57 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
         float m = 1e9f;
         if (caveWeight > 0.0f && depth > -12.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
             if (depth > -12.0f) {
-                const std::vector<float>* segs = tlCaveSegs;
-                if (!segs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves)
-                    thread_local std::vector<float> own;
+                const float* segData = tlCaveSegs ? tlCaveSegs->data() : nullptr;
+                int n = tlCaveSegs ? (int)(tlCaveSegs->size() / 24) : 0;
+                if (!tlCaveSegs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves),
+                    // binned (#1037) into 8^3 bins of 32 m, each a contiguous copy of the segments whose box overlaps it, so a
+                    // sample tests only its bin's few instead of the whole cell's. The same result: CaveGraphDistance uses only
+                    // segments whose box holds q, and every one of those overlaps q's bin (min / max don't depend on order).
+                    constexpr int kBins = 8;
+                    constexpr float kBin = kCaveCell / kBins;
+                    thread_local std::vector<float> own, binned;
+                    thread_local std::vector<int> binStart;                     // kBins^3 + 1 offsets (in segments) into binned
                     thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0; thread_local const void* kf = nullptr;
                     const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
+                    const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
                     if (!ok || cx != kx || cy != ky || cz != kz || kseed != fieldSeed || kf != this) {
-                        const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
                         GatherCaveSegs(*this, fieldSeed, lo, Vector3AddValue(lo, kCaveCell), 36.0f, own);
+                        const int ns = (int)(own.size() / 24);
+                        auto binRange = [&](const float* s, int a, int& b0, int& b1) {
+                            const float l = a == 0 ? lo.x : a == 1 ? lo.y : lo.z;
+                            b0 = std::clamp((int)floorf((s[12 + a] - l) / kBin), 0, kBins - 1);
+                            b1 = std::clamp((int)floorf((s[16 + a] - l) / kBin), 0, kBins - 1);
+                        };
+                        std::vector<int> count(kBins * kBins * kBins + 1, 0);
+                        for (int pass = 0; pass < 2; ++pass) {                  // count, then fill
+                            if (pass == 1) {
+                                binStart.assign(kBins * kBins * kBins + 1, 0);
+                                for (int b = 0; b < kBins * kBins * kBins; ++b) binStart[b + 1] = binStart[b] + count[b];
+                                binned.assign((size_t)binStart.back() * 24, 0.0f);
+                                std::fill(count.begin(), count.end(), 0);
+                            }
+                            for (int i = 0; i < ns; ++i) {
+                                const float* s = own.data() + 24 * i;
+                                int x0, x1, y0, y1, z0, z1; binRange(s, 0, x0, x1); binRange(s, 1, y0, y1); binRange(s, 2, z0, z1);
+                                for (int z = z0; z <= z1; ++z) for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; ++x) {
+                                    const int b = (z * kBins + y) * kBins + x;
+                                    if (pass == 1) std::copy(s, s + 24, binned.begin() + (size_t)(binStart[b] + count[b]) * 24);
+                                    ++count[b];
+                                }
+                            }
+                        }
                         ok = 1; kx = cx; ky = cy; kz = cz; kseed = fieldSeed; kf = this;
                     }
-                    segs = &own;
+                    const int bx = std::clamp((int)floorf((p.x - lo.x) / kBin), 0, kBins - 1);
+                    const int by = std::clamp((int)floorf((p.y - lo.y) / kBin), 0, kBins - 1);
+                    const int bz = std::clamp((int)floorf((p.z - lo.z) / kBin), 0, kBins - 1);
+                    const int b = (bz * kBins + by) * kBins + bx;
+                    segData = binned.data() + (size_t)binStart[b] * 24;
+                    n = binStart[b + 1] - binStart[b];
                 }
-                const int n = (int)(segs->size() / 24);
                 if (n > 0) {
                     float sol = -1e9f;
-                    m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segs->data(), n, sol) + (1.0f - caveWeight) * 20.0f;
+                    m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segData, n, sol) + (1.0f - caveWeight) * 20.0f;
                     if (solidOut && sol > -1e8f) *solidOut = sol - (1.0f - caveWeight) * 20.0f;
                     if (hit && m < 1e8f) hit->kind = 1;
                 }
