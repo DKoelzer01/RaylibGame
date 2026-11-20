@@ -425,25 +425,17 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                         }
                         d8[k] = d;
                     }
-                    // (#1091) Along each of the 2 x 2 verticals the interpolated density is linear in height, so the ground's
-                    // share of it is exact from where it crosses the iso level. The 4 heights counted before quantised the share
-                    // to quarter cells (~6 cm): water a few cm deep over a flat dug floor was drawn up to that far under the bed,
-                    // and the bed showed through it as a grid of dark diamonds while a channel filled.
-                    float share = 0.0f;
+                    int n = 0;
                     for (int a = 0; a < 2; ++a)
-                        for (int bb = 0; bb < 2; ++bb) {
-                            const float tx = a ? 0.75f : 0.25f, ty = bb ? 0.75f : 0.25f;
-                            const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
-                            const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
-                            const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty; // the bottom and top of the vertical
-                            const bool sLo = lo >= ISO_LEVEL, sHi = hi >= ISO_LEVEL;
-                            if (sLo && sHi) share += 1.0f;
-                            else if (sLo != sHi) {
-                                const float z = (ISO_LEVEL - lo) / (hi - lo);            // where it crosses, 0..1 up the cell
-                                share += sLo ? z : 1.0f - z;                             // ground under it (or over it: an overhang)
+                        for (int bb = 0; bb < 2; ++bb)
+                            for (int h = 0; h < 4; ++h) {
+                                const float tx = a ? 0.75f : 0.25f, ty = bb ? 0.75f : 0.25f, tz = 0.125f + 0.25f * h;
+                                const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
+                                const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
+                                const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
+                                n += lo + (hi - lo) * tz >= ISO_LEVEL ? 1 : 0;
                             }
-                        }
-                    sh = std::min(kMaxShut, (int)lroundf(share * 255.0f / 4.0f));
+                    sh = std::min(kMaxShut, n * 255 / 16);
                 }
                 b.shut[i] = (uint8_t)sh;
                 // Dug: open only because of an edit. Infinite water feeds only these (the real ground has
