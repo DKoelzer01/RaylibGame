@@ -43,6 +43,7 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Pebbles: return "pebbles";
         case VoxelMaterial::Silt: return "silt";
         case VoxelMaterial::Mud: return "mud";
+        case VoxelMaterial::Farmland: return "farmland";
         default: return "?";
     }
 }
@@ -3209,7 +3210,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
                 // their nearest (clay as dirt).
                 const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
-                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith
+                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland) ? (int)VoxelMaterial::Regolith
                              : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;

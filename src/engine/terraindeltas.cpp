@@ -156,6 +156,17 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 auto bareGrass = [&](float base) {
                     if (!chunk->mat(i) && field.material(p, base) == VoxelMaterial::Grass) chunk->setMat(i, (uint8_t)VoxelMaterial::Regolith + 1);
                 };
+                if (e.till) {
+                    // The surface band of soil: a lattice point at most one step over the ground (the mesh's vertices take
+                    // the nearest point's material) down to half a metre under it. Grass goes: one channel, one state.
+                    if (dist >= e.radius) continue;
+                    const float base = field.baseDensity(p), d = base + v * kDeltaStep;
+                    if (d < ISO_LEVEL - DENSITY_GRADIENT * kVoxelSize || d > ISO_LEVEL + DENSITY_GRADIENT * 0.5f) continue;
+                    const int placed = (int)chunk->mat(i) - 1;
+                    const VoxelMaterial m = placed >= 0 ? (VoxelMaterial)placed : field.material(p, base);
+                    if (IsTillable(m)) chunk->setMat(i, (uint8_t)VoxelMaterial::Farmland + 1);
+                    continue;
+                }
                 if (e.carve) {
                     const float base = field.baseDensity(p);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
@@ -321,6 +332,43 @@ TEST(TerrainDeltas, FillsOnGrassAreBareDirtAndRockDigsStayRock) {
         TerrainDeltasBuilder b(empty);
         TerrainEdit dig{}; dig.carve = true; dig.center = { 0.0f, 0.0f, 0.0f }; dig.radius = 0.7f;
         b.apply(dig, field);
+        const auto d = b.finish();
+        int placed = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) { placed += d->materialAt(p) >= 0; });
+        EXPECT_EQ(placed, 0);
+    }
+}
+
+// #1085: a till paints the surface band of soil Farmland inside its radius, leaves the ground's shape alone, and leaves
+// rock (and anything outside the radius) as it was.
+TEST(TerrainDeltas, TillingPaintsFarmlandWithoutChangingTheGround) {
+    {
+        const TurfField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit till{}; till.till = true; till.center = { 0.05f, 0.0f, 0.1f }; till.radius = 1.0f;
+        b.apply(till, field);
+        const auto d = b.finish();
+        int inside = 0, farmland = 0, outsideFarmland = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) {
+            const float r = Vector3Distance(p, till.center);
+            const VoxelMaterial m = Shown(*d, field, p);
+            if (r < till.radius - kVoxelSize) { ++inside; farmland += m == VoxelMaterial::Farmland; }
+            // materialAt falls back to a cell corner's placed material: the rim reads one lattice step wider (as drawn)
+            else if (r > till.radius + 2.0f * kVoxelSize) outsideFarmland += m == VoxelMaterial::Farmland;
+        });
+        EXPECT_GT(inside, 10);
+        EXPECT_EQ(farmland, inside) << "every surface point in the brush is farmland";
+        EXPECT_EQ(outsideFarmland, 0);
+        for (int z = -8; z <= 8; ++z) for (int y = -8; y <= 8; ++y) for (int x = -8; x <= 8; ++x)
+            ASSERT_EQ(d->at(x, y, z), 0.0f) << "a till changed the ground's density";
+    }
+    { // rock does not till
+        const FlatField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit till{}; till.till = true; till.center = { 0.0f, 0.0f, 0.0f }; till.radius = 0.6f;
+        b.apply(till, field);
         const auto d = b.finish();
         int placed = 0;
         ForSurfacePoints(*d, field, [&](Vector3 p) { placed += d->materialAt(p) >= 0; });

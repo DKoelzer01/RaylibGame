@@ -28,9 +28,14 @@ ToolSpec ToolOf(const std::string& id) {
 bool IsSoft(VoxelMaterial m) {
     switch (m) {
         case VoxelMaterial::Regolith: case VoxelMaterial::Sand: case VoxelMaterial::Gravel:
-        case VoxelMaterial::Grass: case VoxelMaterial::Snow: case VoxelMaterial::Clay: case VoxelMaterial::Pebbles: case VoxelMaterial::Silt: case VoxelMaterial::Mud: return true;
+        case VoxelMaterial::Grass: case VoxelMaterial::Snow: case VoxelMaterial::Clay: case VoxelMaterial::Pebbles: case VoxelMaterial::Silt: case VoxelMaterial::Mud: case VoxelMaterial::Farmland: return true;
         default: return false;
     }
+}
+
+bool IsTillable(VoxelMaterial m) {
+    return m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith || m == VoxelMaterial::Clay || m == VoxelMaterial::Silt ||
+           m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland;
 }
 
 int PickTierFor(VoxelMaterial m, const char* item) {
