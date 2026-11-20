@@ -2,7 +2,7 @@
 #   power: none (runs by itself), fuel (burns fuel while working), eu (draws from cables),
 #          generator (burns fuel into EU at its voltage), storage (chest), battery
 # A machine refuses power from a network above its voltage. Fuel burn times are in fuels.
-campfire        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal peat
+campfire        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat fibre
 kiln            | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
 coke_oven       | 0  | none      | 0  |
 blast_furnace   | 0  | fuel      | 0  | coke
@@ -44,4 +44,5 @@ fuel coal 1600
 fuel coke 3200
 fuel helium3 12000
 fuel peat 1000
+fuel fibre 100
 fuel crude_oil 2400
