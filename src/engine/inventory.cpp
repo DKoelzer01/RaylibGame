@@ -13,6 +13,8 @@
 ItemDB itemDB;
 // (inventory: the local PlayerSession's, src/space/playersession.cpp, #313)
 
+const char* RetiredItem(const std::string& id) { return id == "concrete" ? "stone" : ""; }
+
 static std::string Trim(const std::string& s) {
     const size_t a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return "";
@@ -556,5 +558,13 @@ TEST_F(InventoryTest, SavedCellsMoveUpFromNineWideSaves) {
     EXPECT_EQ(Inventory::SavedCell(3, 9), 3);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, 9), Inventory::kGrid);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, Inventory::kCols), Inventory::kOldGrid);
+}
+
+TEST_F(InventoryTest, LunacreteIsGoneAndOldStacksBecomeStone) {
+    EXPECT_EQ(itemDB.find("concrete"), nullptr) << "#1090: no lunacrete on the planet";
+    EXPECT_STREQ(RetiredItem("concrete"), "stone");
+    EXPECT_STREQ(RetiredItem("stone"), "") << "a current item keeps its id";
+    for (const Recipe& r : itemDB.recipes())
+        for (const auto& in : r.inputs) EXPECT_NE(in.first, "concrete") << r.output;
 }
 #endif

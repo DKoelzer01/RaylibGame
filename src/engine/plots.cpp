@@ -146,7 +146,7 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
-        default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
+        default: { const char* m = PartMachineName(t); return m ? m : "stone_brick"; } // shapes: material 0 (#1090: was concrete)
     }
 }
 
@@ -154,7 +154,7 @@ namespace {
     // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
     // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
-        { "concrete", "Concrete", { 168, 166, 158, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1090: was lunacrete ("concrete", gone from the planet); its parts become stone brick
         { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
@@ -262,7 +262,7 @@ static Color PartColor(PartType t) {
         case PartType::Gate: return { 165, 120, 70, 255 };
         case PartType::Cabin: return { 200, 205, 215, 255 };
         case PartType::StationCore: return { 230, 220, 120, 255 };
-        default: return { 168, 166, 158, 255 };                                                          // concrete
+        default: return { 168, 166, 158, 255 };                                                          // plain grey
     }
 }
 
@@ -1095,19 +1095,20 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
 #include "unit_helpers.h"
 
 TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
-    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "concrete", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
         EXPECT_LT(BuildMaterialForItem(m), 0) << m;
     for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
-                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+                           "oak_planks", "oak_log", "spruce_log" })
         EXPECT_GE(BuildMaterialForItem(m), 0) << m;
 }
 
 TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
-    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    // Saves store the index: concrete was slot 0 (#1090), raw stone 1, dirt 4, clay 40; they now read as stone brick and brick.
+    EXPECT_STREQ(GetBuildMaterial(0).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
-    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 0); // new parts use the first slot
     EXPECT_EQ(BuildMaterialForItem("brick"), 16);
     // Each dressed stone keeps its rock's look.
     auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };
