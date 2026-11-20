@@ -50,6 +50,12 @@ struct PlayerInput {
 // (a frame may run no step, or two: world.h SimClock). PlayerInput_EndStep after each step clears the edges.
 void PlayerInput_BeginFrame();
 void PlayerInput_EndStep();
+// (#1081) While a text field has the keyboard (chat, the command line, a rename or search box, a sign), no keyboard key
+// reaches the game: the frame's and the step's input, the slot keys and PlayerInput_BindingPressed all read keyboard
+// bindings as up (mouse buttons, look and wheel stay live). Set once a frame, before PlayerInput_BeginFrame.
+void PlayerInput_SetTextFocus(bool on);
+bool PlayerInput_TextFocus();
+bool PlayerInput_KeyBlocked(int code); // a keyboard binding code while text focus is on
 const PlayerInput& PlayerInput_Frame();
 inline Vector2 gFakeLook = { 0.0f, 0.0f }; // added to the mouse motion every frame (--play-load turning, #509)
 inline uint64_t gFakeHeld = 0; // actions held as if their keys were down (bit = 1 << Act; --play-load walking, #509)

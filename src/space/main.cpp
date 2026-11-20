@@ -101,6 +101,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "machineact.h"
 #include "skillplay.h"
 #include "fluid.h"
+#include "fluidkernel.h" // --test-half (#968): FluidKernel::HalfRound
 #include "watersurface.h"
 #include "waterfield.h"
 #include "waterworks.h"
@@ -765,7 +766,7 @@ int main(int argc, char** argv)
     int chopPhase = 0, chopSwings = 0, chopMisses = 0, chopWood0 = 0;
     double chopStart = 0.0;
     uint64_t chopId = 0;
-    bool chopFelled = false, chopSaved = false;
+    bool chopFelled = false, chopSaved = false, chopSwitchOk = true; // (chopSwitchOk: #1094, a tree felled in 3 swings has nothing to check)
     Trunk chopTarget{};
     Vector3 chopAway{};      // (#465) from the trunk to where the player stands to chop it (body-local)
     int treePhase = 0;
@@ -1357,6 +1358,48 @@ int main(int argc, char** argv)
             printf("bench: compute: %s\n", ok ? "PASS" : "FAIL (no compute)");
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--test-half") {
+            // (#968) The shader's packHalf2x16 rounding against the CPU kernel's (nearest even): 1M floats - the magnitudes a face
+            // flow and its carry take (1e-6 .. 1e3, both signs) plus values exactly halfway between two halves - through both.
+            const unsigned n = 1u << 20;
+            std::vector<unsigned> in(n);
+            uint32_t s = 12345u;
+            auto rnd = [&s] { s = s * 1664525u + 1013904223u; return s; };
+            for (unsigned k = 0; k < n; ++k) {
+                float f;
+                if (k % 4 == 3) { // exactly halfway: a half's mantissa plus half an ulp (the 13 dropped bits 0x1000)
+                    uint32_t x = (rnd() & 0x80000000u) | ((112u + rnd() % 30u) << 23) | ((rnd() & 0x3FFu) << 13) | 0x1000u;
+                    std::memcpy(&f, &x, 4);
+                } else {
+                    const float mag = powf(10.0f, -6.0f + 9.0f * (float)(rnd() & 0xFFFFFF) / 16777216.0f);
+                    f = (rnd() & 1u) ? -mag : mag;
+                }
+                std::memcpy(&in[k], &f, 4);
+            }
+            ComputeProgram prog; ComputeBuffer buf;
+            bool ok = Compute_Available() && prog.load("resources/compute/half_test.comp");
+            int bad = 0, badHalfway = 0;
+            if (ok) {
+                buf.create(n * 4, in.data());
+                prog.use(); prog.setUint("count", n); buf.bind(0);
+                prog.dispatch(n / 64);
+                std::vector<unsigned> r(n);
+                buf.download(r.data(), n * 4);
+                for (unsigned k = 0; k < n; ++k) {
+                    float f; std::memcpy(&f, &in[k], 4);
+                    const float c = FluidKernel::HalfRound(f);
+                    uint32_t cb; std::memcpy(&cb, &c, 4);
+                    if (cb != r[k]) {
+                        float g; std::memcpy(&g, &r[k], 4);
+                        if (bad < 5) printf("bench: half: %.9g -> GPU %.9g, CPU %.9g%s\n", f, g, c, k % 4 == 3 ? " (halfway)" : "");
+                        ++bad; badHalfway += k % 4 == 3;
+                    }
+                }
+                buf.destroy(); prog.unload();
+            }
+            printf("bench: half: %u floats, %d differ (%d of them exactly halfway) -> %s\n", n, bad, badHalfway, ok && bad == 0 ? "PASS" : ok ? "FAIL" : "FAIL (no compute)");
+        }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--shot-icons") printf("bench: icons: %d items -> bench_icons.png (%s)\n", (int)itemDB.items().size(), ItemIcons_SaveSheet("bench_icons.png") ? "saved" : "FAILED");
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) != "--test-heat") continue;
@@ -1469,7 +1512,7 @@ int main(int argc, char** argv)
     // compared once it has streamed in). The player starts where the server's state says (the main loop, once the first
     // own state arrives); gameplay is the server's: this process predicts its player (NetClient_Step), follows the world
     // clock (#339) and draws the others (gNetClient). It never writes the single-player save: anything saved goes to
-    // saves/client_<name>.sav. Returns "" when joined, else why not (the client is back offline).
+    // saves/mp_cache/client_<name>.sav (#1110). Returns "" when joined, else why not (the client is back offline).
     auto joinServer = [&](const std::string& addr, const std::string& name, const std::string& password, uint32_t suit, double retrySeconds, const std::string& waiting) -> std::string {
         std::string err;
         if (!Net_Init(err)) return "no network transport (" + err + ")";
@@ -1508,7 +1551,10 @@ int main(int argc, char** argv)
             if (ParseBodyDef(line, b, e)) sys.bodies.push_back(b); else printf("join: a body the server sent did not parse (%s): %s\n", e.c_str(), line.c_str());
         }
         if (!sys.bodies.empty()) { worldGen.system = sys; worldGen.systemLoaded = true; }
-        SetWorldSavePath(TextFormat("saves/client_%s.sav", joinName.c_str()));
+        // (#1110) The joined game's cache of the server's world, in its own folder: in saves/ it showed in the world lists like a
+        // real world, and the Host page (newest first) offered it: hosting it again started a fresh world and player.
+        { std::error_code ec; std::filesystem::create_directories("saves/mp_cache", ec); }
+        SetWorldSavePath(TextFormat("saves/mp_cache/client_%s.sav", joinName.c_str()));
         // #757: the server's world-gen settings become this save's sidecar (generateWorld reads it), and its sandbox flag.
         const WorldGenParams joinParams = WorldGenParams_FromText(gJoin.welcome.worldgen);
         WorldGenParams_Save(WorldSavePath(), joinParams);
@@ -2319,6 +2365,9 @@ int main(int argc, char** argv)
     double playLoadStart = -2.0; // --play-load (#509): -2 load not issued yet, -1 loading, else the walk's start
     while (windowKeepAlive && !WindowShouldClose())
     {
+        // (#1081) a text field with the keyboard (chat, the command line, a rename or search box: last frame's ImGui state)
+        // keeps every keyboard key from the game this frame: typing "/gm" opened the map
+        PlayerInput_SetTextFocus(GameUI_TextInputActive() || CommandLine_Open());
         if (Recorder_Finished()) break; // a --record capture is complete
         if (playNewSeconds > 0.0) {
             const double now = GetTime();
@@ -2560,6 +2609,18 @@ int main(int argc, char** argv)
                             if (!chopId) { chopId = id; chopWood0 = inventory.count("any_log"); }
                             ++chopSwings;
                             if (chopSwings == 3) { TakeScreenshot("bench_chop_aim.png"); printf("bench: chop: bench_chop_aim.png (the hover: size and species, #528)\n"); }
+                            if (chopSwings == 4) { // (#1094) another tool mid-chop: the progress stays where it was
+                                const float before = TerrainTool_ChopProgress();
+                                const std::string was = terrainTool.heldTool;
+                                terrainTool.heldTool = was.empty() ? "stone_axe" : "";
+                                TerrainTool_Update(world, PlayerInput::None(), true); // (the new tool's rule, aim only)
+                                const float after = TerrainTool_ChopProgress();
+                                terrainTool.heldTool = was;
+                                TerrainTool_Update(world, PlayerInput::None(), true);
+                                chopSwitchOk = before > 0.0f && std::fabs(after - before) < 1e-5f;
+                                printf("bench: chop (#1094): 3 swings cut %.0f%%; with '%s' in hand instead it reads %.0f%% -> %s\n", 100.0f * before,
+                                       was.empty() ? "stone_axe" : "bare hands", 100.0f * after, chopSwitchOk ? "ok" : "FAIL (it jumped)");
+                            }
                             if (TerrainTool_Chop()) {
                                 const int wood = inventory.count("any_log") - chopWood0;
                                 printf("bench: chop: felled a %.1f m tree in %d swings, +%d logs; gone: %s\n", chopTarget.height, chopSwings, wood, present(chopId) ? "no" : "yes");
@@ -2582,7 +2643,7 @@ int main(int argc, char** argv)
                         const bool back = present(chopId);
                         if (back || GetTime() - chopStart >= 20.0) {
                             printf("bench: chop: %.0f min later it has regrown: %s (after %.1f s) -> %s\n", (kRegrowDelay + kRegrowTime) / 60.0, back ? "yes" : "no",
-                                   GetTime() - chopStart, chopFelled && chopSaved && back ? "PASS" : "FAIL");
+                                   GetTime() - chopStart, chopFelled && chopSaved && back && chopSwitchOk ? "PASS" : "FAIL");
                             benchChop = false;
                         }
                     }
@@ -10396,11 +10457,11 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
-        {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
-            static float burnt = 0.0f;
+        {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
+            // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];
             torch.type = LIGHT_POINT;
-            // (#822) or in the off hand, when the main hand holds none: the light at the left hand, and it burns down the same way
+            // (#822) or in the off hand, when the main hand holds none: the light at the left hand
             const std::string& inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
             const std::string& offId = inventory.offHand().id;
             // (#836) A lantern too: a steady, slightly cooler light that reaches further and never burns out.
@@ -10419,12 +10480,6 @@ int main(int argc, char** argv)
                 torch.target = { fibre ? 7.0f : lantern ? 15.0f : 12.0f, 0.0f, 0.0f };   // range (m)
                 torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : lantern ? Color{ 255, 214, 160, (unsigned char)(160 * flicker) }
                                     : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
-                if (!lantern) burnt += GetFrameTime(); // (a lantern never burns out)
-                if (burnt >= (fibre ? 90.0f : 300.0f)) { // one burns out; the next in the stack is lit
-                    burnt = 0.0f;
-                    inventory.remove(held, 1);
-                    if (inventory.count(held) == 0) GameUI_Toast(fibre ? "Your fibre torch burnt out" : "Your torch burnt out");
-                }
             }
         }
         {
@@ -13447,6 +13502,7 @@ int main(int argc, char** argv)
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
+            Recorder_DrawIndicator(); // (#1119) after the capture: on screen, never in the recording
             Recorder_FrameDone();
         if (gSoakOn) { // (#348) before the frame-rate wait
             const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;

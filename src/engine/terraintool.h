@@ -59,6 +59,7 @@ bool TerrainTool_Bucket(class Scene& world); // the bucket in hand: scoop or pou
 bool TerrainTool_BucketFromOffHand(class Scene& world); // (#836) the off hand's bucket where the player aims (the off-hand key)
 bool TerrainTool_AimingPlant(uint64_t* id = nullptr);
 bool TerrainTool_AimedGround(class Planetoid** body, Vector3* local); // the ground the tool aims at (density-marched: no chunks needed), body-local
+float TerrainTool_ChopProgress(); // (#1094) the share of the aimed plant cut so far (0..1; 0: none being cut)
 bool TerrainTool_LastHit(class Planetoid*& body, Vector3& local, Vector3& normalWorld); // the crosshair's terrain hit (placing torches, #218)
 bool TerrainTool_TestFill(); // --test-fill (#228): an exact sphere of dirt, paid by volume
 bool TerrainTool_TestFillOffHand(); // (#836) a tool in hand: RMB places the off hand's block stack
