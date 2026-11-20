@@ -123,9 +123,9 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 
 // MSAA sample count of the 3D pass (the scene target is made with the window's), read once: a glGet each frame
 // can stall the driver (#204, #267).
-// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). RAYLIBGAME_FAR_FOREST=1; default off.
+// #745: distant forests read better (far trees grow, crowns and the canopy tint deepen). On by default (user, 2026-11-19, stronger); RAYLIBGAME_FAR_FOREST=0: off.
 static float FarForestOn() {
-    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '1' ? 1.0f : 0.0f; }();
+    static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 0.0f : 1.0f; }();
     return on;
 }
 
