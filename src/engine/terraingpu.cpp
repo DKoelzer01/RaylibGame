@@ -151,7 +151,7 @@ namespace {
             b.s[0] = g.su; b.s[1] = g.sv;
             b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
-            b.c[0] = (int)(cav.size() / 24); b.c[1] = (int)(j.caveSegs.size() / 24); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; // (#615 step 2)
+            b.c[0] = (int)(cav.size() / 24); b.c[1] = (int)(j.caveSegs.size() / 24); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; { static const int walls = getenv("RAYLIBGAME_CAVE_WALLS") ? std::clamp(atoi(getenv("RAYLIBGAME_CAVE_WALLS")), 0, 2) : 0; b.c[3] = walls; } // (#1022 A/B) the wall variant // (#615 step 2)
             blocks.push_back(b);
             for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];

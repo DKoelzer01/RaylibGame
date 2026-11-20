@@ -273,6 +273,7 @@ uniform float mantleRadius;
 int islandCount = 0;   // set per block by the includer
 int caveSegCount = 0;  // (#615 step 2) the block's cave segments, set by the includer (caveSegData)
 int cavesGraph = 0;    // 1: graph tunnels instead of the noise tunnels (RAYLIBGAME_CAVES=1)
+int caveWalls = 0;     // (#1022 A/B) RAYLIBGAME_CAVE_WALLS: 1 drops the wall noise's finest octaves, 2 also rounds the creases
 
 float waveSin(float x) {
     precise float u = x * 0.15915494, f = u - floor(u);
@@ -490,10 +491,13 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float sc = 0.1 + sq;
                 precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
                 precise float p3x = px * 24.5 + 101.0;
-                precise float r3 = fractal(N_DETAIL, 3, p3x, py * 24.5, pz * 24.5);
+                int o3 = caveWalls > 0 ? 2 : 3, o1 = caveWalls > 0 ? 1 : 2;
+                precise float r3 = fractal(N_DETAIL, o3, p3x, py * 24.5, pz * 24.5);
                 precise float p1x = px * 135.0 + 7.0;
-                precise float r1 = fractal(N_CAVES_B, 2, p1x, py * 135.0, pz * 135.0);
-                precise float cr = 0.3 - abs(r1);
+                precise float r1 = fractal(N_CAVES_B, o1, p1x, py * 135.0, pz * 135.0);
+                precise float r1s = r1 * r1 + 0.01;
+                precise float ar1 = caveWalls == 2 ? xsqrt(r1s) : abs(r1);
+                precise float cr = 0.3 - ar1;
                 precise float wn0 = 0.35 + 2.6 * r3 + 1.4 * cr;
                 precise float wn = max(0.0, wn0);
                 precise float fnum = len - 0.5 * rw;
