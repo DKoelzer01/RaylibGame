@@ -1580,7 +1580,7 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
 // (#1022, user 2026-11-20: "a bit too jagged in places") RAYLIBGAME_CAVE_WALLS: 0 as v21; 1 without the wall noise's finest
 // octaves; 2 also rounds the creases' edges. The GPU gets it per block (c.w). For the user's A/B pick.
-static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") ? std::clamp(atoi(getenv("RAYLIBGAME_CAVE_WALLS")), 0, 2) : 0;
+static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") ? std::clamp(atoi(getenv("RAYLIBGAME_CAVE_WALLS")), 0, 4) : 0;
 static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid, float shrink = 0.0f) {
     solid = -1e9f;
     bool any = false;
@@ -1652,12 +1652,16 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             if (hl > 1e-3f) {
                 const float sc = 0.1f + 0.9f * rw / hl;
                 const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
-                const int o3 = gCaveWalls > 0 ? 2 : 3, o1 = gCaveWalls > 0 ? 1 : 2;           // (#1022 A/B) walls 1-2: no finest octave
-                const float r3 = N.det.fractal(o3, px * 24.5f + 101.0f, py * 24.5f, pz * 24.5f); // octaves from ~3 m
-                const float r1 = N.b.fractal(o1, px * 135.0f + 7.0f, py * 135.0f, pz * 135.0f);  // ~1 m creases (|n|: sharp)
+                const int o3 = gCaveWalls > 0 ? 2 : 3, o1 = gCaveWalls > 0 ? 1 : 2;           // (#1022 A/B) walls 1+: no finest octave
+                // walls 3-4 (user: larger outcrops, fewer small changes): longer waves (rock forms ~7 / ~12 m, creases ~2.5 / ~4 m),
+                // more weight on the forms and less on the creases.
+                const float f3 = gCaveWalls == 4 ? 5.6f : gCaveWalls == 3 ? 10.5f : 24.5f, f1 = gCaveWalls == 4 ? 37.5f : gCaveWalls == 3 ? 60.0f : 135.0f;
+                const float g3 = gCaveWalls == 4 ? 3.0f : gCaveWalls == 3 ? 2.8f : 2.6f, g1 = gCaveWalls == 4 ? 0.7f : gCaveWalls == 3 ? 0.9f : 1.4f;
+                const float r3 = N.det.fractal(o3, px * f3 + 101.0f, py * f3, pz * f3); // octaves from ~3 m
+                const float r1 = N.b.fractal(o1, px * f1 + 7.0f, py * f1, pz * f1);  // ~1 m creases (|n|: sharp)
                 const float r1s = r1 * r1 + 0.01f;
                 const float ar1 = gCaveWalls == 2 ? sqrtf(r1s) : fabsf(r1);                    // walls 2: rounded crease edges
-                const float wn = std::max(0.0f, 0.35f + 2.6f * r3 + 1.4f * (0.3f - ar1));
+                const float wn = std::max(0.0f, 0.35f + g3 * r3 + g1 * (0.3f - ar1));
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
