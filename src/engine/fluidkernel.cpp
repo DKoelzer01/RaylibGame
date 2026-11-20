@@ -170,7 +170,7 @@ struct Pass {
         const int localDiff = (int)(SH(d) + F(d)) - (int)(SH(r) + F(r));
         float share = 0.0f;
         if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d);
-        else if (localDiff >= p.visc[kd]) share = (float)(localDiff / p.visc[kd]);
+        else if (localDiff >= p.visc[kd]) share = p.shareFloat ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd]); // #1041
         const float depth = colDepth;
         const float dh = (float)std::abs(ha - hb) / p.hu;
         float q = std::max(qp * sgn, 0.0f);
@@ -498,7 +498,9 @@ struct Pass {
             Vec4 Q{}, U{}; // U: the units each pair plans (the move pass scales and moves them)
             bool pb; int fb;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pb, fb);
-            const bool bottom = !(fl & SOLID) && F(c) > 0u && !(fl & SOURCE) && gb >= 0 &&
+            // A source's run plans its pairs too (#982: a column of generated water never gave sideways, so a cave dug out to a
+            // river stayed dry); the pair's source rules keep it to giving into dug cells only, and it holds its level.
+            const bool bottom = !(fl & SOLID) && F(c) > 0u && gb >= 0 &&
                                 ((FL(inC[gb]) & SOLID) || (F(inC[gb]) > 0u && KIND(inC[gb]) != KIND(c)));
             if (bottom) {
                 const Vec4 P = g.faceP[gi];

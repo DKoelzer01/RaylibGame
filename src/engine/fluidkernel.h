@@ -32,6 +32,10 @@ struct Params {
     // A sleeping neighbour brick is woken by a column pair only for a head difference of this many units (1.6 cm, the
     // settle tolerance, #855) or a spill into it: resting water beside it asked every substep, and no pond ever slept.
     int wakeUnits = 4;
+    // The levelling share keeps its fraction (#1041): localDiff / visc in float. Integer division dropped up to 0.8 unit a
+    // substep at every face, with no carry, and a low weir passed too little water (the pool stood ~2.5x the physical head).
+    // RAYLIBGAME_FLUID_SHARE_INT=1: the old integer share, for A/B. The shader gets the same as the uniform shareFloat.
+    bool shareFloat = !EnvFlag("RAYLIBGAME_FLUID_SHARE_INT");
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
     void setCell(float cs, int column) {
