@@ -93,7 +93,7 @@ titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few 
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
-farmland         | Farmland         | block | 86,60,38    | Tilled soil: place it (or till ground with a shovel, RMB), plant seeds (I), harvest ripe crops (O).
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
 grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
 root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
 flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.
@@ -144,11 +144,11 @@ ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: sho
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
 grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
 food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.
-# Hoes (plan 2, milestone 14): till soft ground into farmland (RMB); iron and better till 3x3 m at once.
-stone_hoe          | Stone hoe          |  tool | 150,140,120 | Tills soft ground into farmland (RMB).
-iron_hoe           | Iron hoe           |  tool | 175,165,155 | Tills 3x3 m of farmland at once (RMB).
-steel_hoe          | Steel hoe          |  tool | 125,125,135 | Tills 3x3 m of farmland at once (RMB); lasts longer.
-titanium_hoe       | Titanium hoe       |  tool | 205,180,205 | Tills 3x3 m of farmland at once (RMB); lasts longest.
+# Hoes (plan 2, milestone 14): till soil into farmland (RMB, a brush where you aim; #1085); iron and better till a wide patch at once.
+stone_hoe          | Stone hoe          |  tool | 150,140,120 | Tills soil into farmland where you aim (RMB).
+iron_hoe           | Iron hoe           |  tool | 175,165,155 | Tills a wide patch of farmland at once (RMB).
+steel_hoe          | Steel hoe          |  tool | 125,125,135 | Tills a wide patch of farmland at once (RMB); lasts longer.
+titanium_hoe       | Titanium hoe       |  tool | 205,180,205 | Tills a wide patch of farmland at once (RMB); lasts longest.
 # Rocket repair (plan 3, milestone 18): from the hotbar near a damaged rocket.
 repair_kit         | Repair kit         |   999 | 200,180,90  | Mends the most damaged part of the rocket in reach by half (use from the hotbar).
 cabin              | Cabin              | block | 200,205,215 | Rocket crew cabin: 4 seats and 30 minutes of air for the life support (load oxygen canisters, I).

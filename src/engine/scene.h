@@ -22,6 +22,13 @@
 #include <random>
 #include <array>
 #include <unordered_map>
+
+// (#1089) The terrain tool's dig / fill sphere for this frame: the terrain shader draws where it cuts the ground (a line on
+// the real surface, a faint tint inside). Body-local, so a render-origin shift between the tool's update and the draw is
+// harmless; body = nullptr: none. Set by TerrainTool_Update, read by Scene when it binds the lighting shader.
+class Planetoid;
+struct ToolSphereHint { const Planetoid* body = nullptr; Vector3 local{ 0, 0, 0 }; float radius = 0.0f; Color color{ 0, 0, 0, 0 }; double time = 0.0; }; // time: when set (stale after 0.1 s: modes without the tool)
+inline ToolSphereHint gToolSphere;
 #include <functional>
 
 // A shader loaded from a vs/fs pair that reloads itself when either file changes on disk.

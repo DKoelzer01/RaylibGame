@@ -214,7 +214,7 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   bit-exactly (the grid is 2 vec4 per node; the second is unused since the cliff terraces and lips went, #543);
   `--test-terrain-gpu` checks it. Plan 9 (#586): steep terrain comes from formations in the bake input, not post-bake steps.
 - Sky light: `fragSky` from depth below the surface, times a short-ray openness probe (#369: terrain via chunk
-  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.12 (#897; was 0.25)
+  samples, parts via plot cells); `RAYLIBGAME_SKY_PROBES=0` for A/B. Moonlight scale defaults to 0.09 (#1117; 0.12 before, #897; was 0.25)
   (`RAYLIBGAME_MOONLIGHT`). Night light = that moonlit-sky ambient alone: the fixed 1/255 base ambient fades out under the
   air (#897: it was a ~10/255 floor that hid the moonlight setting; `RAYLIBGAME_AMBIENT_BASE=1` = before). Within 40 m
   under the surface, cave mouths and shafts get at least 0.6 x (1 - depth/40 m) of their open sky (#898; `RAYLIBGAME_CAVE_MOUTH_SKY=0` = off;
@@ -251,7 +251,8 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   (`RAYLIBGAME_CAVE_WALLS=0` = the first merged ~3 m / ~1 m walls). Mouths only in real faces (5 m+ rise within 10 m, no tors in
   front). Karst (#1052): dolines in karst country are sinks (shaft, river passage down the drainage, keyholes, mazes, resurgences);
   `RAYLIBGAME_CAVES_KARST=1 --test-caves` finds one, `RAYLIBGAME_CAVES_INSIDE=1` starts in a passage. Chambers (#1058): at deep passage
-  vertices (segment kind 3: a level floor), with solid boulders and columns; graph mode has no noise caverns. Noise factors include each noise's own base frequency (1/70-1/700: forgetting it makes every term constant). Captures:
+  vertices (segment kind 3: a level floor), with solid boulders and columns; graph mode has no noise caverns. Lava tubes (#1063): on
+  volcano flanks, kind-3 tubes 5-25 m down with ledges, skylights and an exit; `RAYLIBGAME_CAVES_TUBE=1 --test-caves` finds one. Noise factors include each noise's own base frequency (1/70-1/700: forgetting it makes every term constant). Captures:
   `RAYLIBGAME_CAMERA_LIGHT=1` (a light at the eye), `RAYLIBGAME_CAVES_VIEW=front` (eye-level frontal approach), `RAYLIBGAME_CAVES_MOUTH="x y z"`
   (that mouth, at any abundance). In GLSL, store every a*b+c handed to a function (xdiv, xsqrt, fractal) in a `precise` variable first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);

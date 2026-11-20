@@ -451,10 +451,17 @@ void Scene::drawScene(int gamestate) {
             anchor = { std::floor(cw.x / 256.0) * 256.0, std::floor(cw.y / 256.0) * 256.0, std::floor(cw.z / 256.0) * 256.0 };
             cw = cw - anchor;
         }
+        // (#1120) Snapped in absolute body-local coordinates (the anchor's own projection added back in double): about the
+        // anchor alone, the grid moved by a fraction of a texel each time the camera crossed into the next 256 m cell (the
+        // anchor's jump projected onto the light's axes), a pop of every shadow edge every ~3 s when flying at 88 m/s. The
+        // light's direction is held fixed between its 0.12 deg steps, so absolute snapping keeps the texels put on the
+        // ground. RAYLIBGAME_SHADOW_ANCHOR_SNAP=1: as before.
+        static const bool anchorSnap = getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP") && getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP")[0] == '1';
         auto snapAxis = [&](Vector3 worldAxis) {
             const Vector3 a = ground ? ground->dirToLocal(worldAxis) : worldAxis;
+            const double base = anchorSnap ? 0.0 : anchor.x * a.x + anchor.y * a.y + anchor.z * a.z;
             const double d = cw.x * a.x + cw.y * a.y + cw.z * a.z;
-            const double s = std::floor(d / texel + 0.5) * texel;
+            const double s = std::floor((d + base) / texel + 0.5) * texel - base;
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
         const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
@@ -637,7 +644,7 @@ void Scene::drawScene(int gamestate) {
         // come from above; fragSky keeps it out of buried ground). User 2026-11-14: the first strength (1.0) read almost as
         // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
         // scales it (1 = the first strength, 0 = the old nights).
-        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.12f; // (#897: 0.25 read too bright, user 2026-11-18)
+        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.09f; // (#897: 0.25 read too bright, user 2026-11-18; #1117: 0.12 -> 0.09, nights a little darker, user 2026-11-20)
         effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale * (1.0f - 0.5f * moonLight))); // half of it while the moon lights directly (#224)
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
@@ -662,6 +669,16 @@ void Scene::drawScene(int gamestate) {
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
+    { // (#1089) the terrain tool's dig / fill sphere (render space), or none
+        float ts[4] = { 0, 0, 0, 0 }, tc[4] = { 0, 0, 0, 0 };
+        if (gToolSphere.body && GetTime() - gToolSphere.time < 0.1) {
+            const Vector3 c = gToolSphere.body->toWorld(gToolSphere.local);
+            ts[0] = c.x; ts[1] = c.y; ts[2] = c.z; ts[3] = gToolSphere.radius;
+            tc[0] = gToolSphere.color.r / 255.0f; tc[1] = gToolSphere.color.g / 255.0f; tc[2] = gToolSphere.color.b / 255.0f; tc[3] = gToolSphere.color.a / 255.0f;
+        }
+        SetShaderValue(s, GetShaderLocation(s, "toolSphere"), ts, SHADER_UNIFORM_VEC4);
+        SetShaderValue(s, GetShaderLocation(s, "toolSphereColor"), tc, SHADER_UNIFORM_VEC4);
+    }
     { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.

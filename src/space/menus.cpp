@@ -330,6 +330,7 @@ void Settings_Load() {
             if (!strcmp(key, "player_uuid")) { settings.playerUuid = val; continue; } // (#346)
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
+            if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -375,6 +376,7 @@ void Settings_Save() {
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
+    for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
