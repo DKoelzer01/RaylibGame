@@ -27,7 +27,7 @@ Better tools (bronze, iron, steel...) dig harder rock and work faster.
 
 # Building
 G enters build mode. The mouse wheel picks the shape, R and V rotate it, RMB places, holding LMB removes a part.
-Parts are built from the material in your hand (bricks, planks, logs, concrete...): stone buildings need bricks, crafted from 2 of that stone (Tab); machines are placed from the hotbar like blocks.
+Parts are built from the material in your hand (bricks, planks, logs, iron plate, glass...): stone buildings need bricks, crafted from 2 of that stone (Tab); machines are placed from the hotbar like blocks.
 Parts snap to a 0.5 m grid on a build plot, which starts where you place the first part. B saves the plot you look at as a blueprint; N cycles your blueprints.
 
 # Machines and power
