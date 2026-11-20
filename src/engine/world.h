@@ -202,6 +202,9 @@ JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
 // outside a body, linear to zero at its centre inside, surfaceGravity at its radius.
 Vector3 GravityAt(Scene& world, Vector3 renderPoint);
 Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
+// Plan 11 (frames.h, #667): a body's orientation (rows of R: body-local -> world) and angular velocity (world, rad/s), in
+// double from its double spin angle.
+void BodyRotationAndSpin(const Planetoid& body, double r[3][3], DVec3& omega);
 
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".
