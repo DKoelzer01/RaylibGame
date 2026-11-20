@@ -428,6 +428,16 @@ static DVec3 AngularVelocityD(Vector3 rotation, Vector3 spin) {
     return DVec3{ 0.5 * (w[2][1] - w[1][2]), 0.5 * (w[0][2] - w[2][0]), 0.5 * (w[1][0] - w[0][1]) };
 }
 
+// Plan 11 (frames.h, #667): a body's orientation (rows: body-local -> world) and angular velocity (world, rad/s) in double,
+// from the double spin angle while it is current (whatever RAYLIBGAME_FRAMES says: only frame code asks for this).
+void BodyRotationAndSpin(const Planetoid& p, double r[3][3], DVec3& omega) {
+    const bool current = p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z;
+    const double ax = current ? p.spinAngle[0] : p.rotation.x, ay = current ? p.spinAngle[1] : p.rotation.y, az = current ? p.spinAngle[2] : p.rotation.z;
+    BodyRotationDd(ax, ay, az, r);
+    if (p.spin.x == 0.0f && p.spin.y == 0.0f && p.spin.z == 0.0f) { omega = DVec3{ 0, 0, 0 }; return; }
+    omega = AngularVelocityD(p.rotation, p.spin);
+}
+
 Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
     // The body's own motion (orbit) plus its spin: omega x (point - centre), omega taken as a vector (differentiating
     // positions in float lost ~0.4 m/s at 60 km), in double (#872).
