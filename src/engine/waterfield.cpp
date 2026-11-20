@@ -249,6 +249,33 @@ float ChunkSampler::surface(int si, int ci, int cj, int ck, int kind) {
     return r;
 }
 
+// RAYLIBGAME_SHORE_SIM=1: published generated water is drawn by the simulation's rules too (before #1091), for A/B.
+static const bool kShoreSim = [] { const char* e = getenv("RAYLIBGAME_SHORE_SIM"); return e && e[0] == '1'; }();
+
+// #1091: a dig by the sea pulls the shore's bricks into a site; their sea cells (kSource | kStatic, held at the sea's level)
+// were then drawn with the simulation's rules for films and draining sheets - over a beach at sea level, a moving brick's
+// films lifted over the sand and tilted toward dry neighbours (shards), a resting one's 15 cm skin and sheet rule cut the
+// shallow band into jagged pieces, and the drawing switched rules at every brick edge. Water the simulation holds at the
+// generated level is the generated water: the mesher draws it so (the same level, so it meets the simulated water - the
+// flooded hole, dug cells - without a seam). A drained column (no wet cell) stays the simulation's.
+bool ChunkSampler::generatedColumn(int si, int ci, int cj, int ck) const {
+    if (kShoreSim) return false;
+    const int bk = ck >> 4;
+    const int64_t key = ((int64_t)si << 56) | ((int64_t)((ci + 8192) & 0x3FFF) << 28) | ((int64_t)((cj + 8192) & 0x3FFF) << 14) | (int64_t)((bk + 8192) & 0x3FFF);
+    auto it = genMemo.find(key);
+    if (it != genMemo.end()) return it->second;
+    bool wet = false, gen = true;
+    uint8_t fill, flags;
+    for (int k = bk * 16; k < bk * 16 + 16 && gen; ++k) {
+        if (!cellAt(si, ci, cj, k, fill, flags) || (flags & kSolid)) continue;
+        if (flags & kDug) gen = false;                                   // an edit opened it: the simulation's water
+        else if (fill > 0) { if ((flags & kStatic) && CellKind(flags) == 0) wet = true; else gen = false; }
+    }
+    const bool r = gen && wet;
+    genMemo.emplace(key, r);
+    return r;
+}
+
 bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
     for (int si = 0; si < (int)sites.size(); ++si) {
         const Site& s = *sites[si];
@@ -256,6 +283,7 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
         s.frame(p, fx, fy, fz);
         const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
         if (!brickAt(si, ci, cj, ck)) continue;
+        if (kind == 0 && generatedColumn(si, ci, cj, ck)) continue; // drawn as the generated water (#1091)
         // The density of one column's surface at this height (dry: as if the surface were half a cell under the sample).
         const float cs = CellSize();
         auto columnDensity = [&](int i, int j) {
@@ -305,7 +333,9 @@ bool ChunkSampler::covered(Vector3 p) const {
     for (int si = 0; si < (int)sites.size(); ++si) {
         float fx, fy, fz;
         sites[si]->frame(p, fx, fy, fz);
-        if (brickAt(si, (int)floorf(fx), (int)floorf(fy), (int)floorf(fz))) return true; // the dense brick cache (#381)
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        // The dense brick cache (#381); generated water held at its level is the generated water's to draw (#1091).
+        if (brickAt(si, ci, cj, ck) && !generatedColumn(si, ci, cj, ck)) return true;
     }
     return false;
 }
@@ -390,3 +420,42 @@ bool ChunkSampler::simFlow(Vector3 p, Vector3& dir, float& speed) const {
     return false;
 }
 } // namespace WaterField
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+using namespace WaterField;
+
+// #1091: a published brick's column of generated sea (kStatic sources) is left to the generated water; a column holding a
+// dug (kDug) cell, simulated water (no kStatic) or none at all is the simulation's to draw.
+TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
+    auto b = std::make_shared<Brick>();
+    const int sea = 8; // cells 0-7 under the sea's level
+    for (int y = 0; y < kBrick; ++y)
+        for (int x = 0; x < kBrick; ++x)
+            for (int z = 0; z < sea; ++z) {
+                const int i = CellIdx(x, y, z);
+                uint8_t fl = kSource | kStatic;
+                if (x == 5) fl = kDug;   // column 5: dug, flooded from the sea
+                if (x == 9) fl = 0;      // column 9: water the simulation moved (no generated level)
+                if (x == 12) continue;   // column 12: dry
+                b->flags[i] = fl; b->fill[i] = b->drawn[i] = 255;
+            }
+    b->kinds = 1;
+    Snapshot snap;
+    Site s;
+    s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 };
+    const float cs = CellSize(), side = kBrick * cs;
+    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.bricks[BrickKey(0, 0, 0)] = b;
+    snap.sites.push_back(s);
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    auto at = [&](int x) { return Vector3{ (x + 0.5f) * cs, (sea - 0.5f) * cs, 3.5f * cs }; }; // a sample just under the sea's surface
+    float w = 0.0f;
+    EXPECT_FALSE(sampler.density(at(2), 0, w)) << "generated sea: the generated water draws it";
+    EXPECT_FALSE(sampler.covered(at(2)));
+    EXPECT_TRUE(sampler.density(at(5), 0, w)) << "a dug, flooded column";
+    EXPECT_TRUE(sampler.covered(at(5)));
+    EXPECT_TRUE(sampler.density(at(9), 0, w)) << "simulated water";
+    EXPECT_TRUE(sampler.density(at(12), 0, w)) << "a drained column stays drained";
+}
+#endif
