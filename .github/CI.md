@@ -34,6 +34,10 @@ branch's, which the push runs keep warm), the toolchain downloads, the raylib / 
 `tools/build_gns.sh`). A cold run builds GNS (protobuf) once per OS; later runs only compile what changed.
 `concurrency` cancels a PR's older run when it is pushed again.
 
+Timings (PR #1024, 2026-11-20): cold (nothing cached) Windows ~11.5 min (GNS 3.3 min + build 7.4 min), Linux ~5.5 min
+(GNS 1.5 min + build 2.8 min); warm (all cached, nothing to recompile) Windows 35 s, Linux 51 s. A PR touching a few
+files recompiles only those plus the links.
+
 ## Self-hosted (deweyserver)
 
 Off until the repository variable is set: Settings > Secrets and variables > Actions > Variables > New repository
