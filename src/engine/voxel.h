@@ -340,6 +340,7 @@ public:
     // outward (downhill) direction, body-local. Tests and captures.
     bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind = -1) const; // kind: -1 any entrance, 0 hillside, 1 karst sink, 2 resurgence (#1052), 3 a chamber centre (#1058)
     int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
+    void caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const; // #1116: the entries of one kind within range (tests)
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

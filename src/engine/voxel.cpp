@@ -1593,6 +1593,22 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
     return found;
 }
 
+void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
+                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) out.push_back(m.at);
+            }
+}
+
 int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
     if (!CavesGraph() || moon) return 0;
     const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
