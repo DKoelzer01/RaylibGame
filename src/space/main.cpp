@@ -2321,6 +2321,9 @@ int main(int argc, char** argv)
     double playLoadStart = -2.0; // --play-load (#509): -2 load not issued yet, -1 loading, else the walk's start
     while (windowKeepAlive && !WindowShouldClose())
     {
+        // (#1081) a text field with the keyboard (chat, the command line, a rename or search box: last frame's ImGui state)
+        // keeps every keyboard key from the game this frame: typing "/gm" opened the map
+        PlayerInput_SetTextFocus(GameUI_TextInputActive() || CommandLine_Open());
         if (Recorder_Finished()) break; // a --record capture is complete
         if (playNewSeconds > 0.0) {
             const double now = GetTime();
