@@ -11303,7 +11303,10 @@ int main(int argc, char** argv)
                     // A stroke every 0.6 s: five digs (bare hands get ~0.4 dirt a stroke; a place costs a whole one), each into
                     // the hole the last one left; then the place and the refusals.
                     constexpr int kDigs = 5;
-                    if (step <= kDigs + 5 && GetTime() - t0 > 0.6 * step) {
+                    // (#1059) 0.6 s after the previous stroke, not 0.6 x step after the start: after a long frame (a host loading
+                    // returning players) every overdue step fired on the next frames at once, and the server rightly refused
+                    // the burst as too fast.
+                    if (step <= kDigs + 5 && (step == 0 ? GetTime() - t0 > 0.0 : GetTime() - lastStepAt > 0.6)) {
                         if (step < kDigs) {
                             spot();
                             const Vector3 c = Vector3Subtract(hitPt, Vector3Scale(up, 0.5f * digR));
@@ -11329,6 +11332,11 @@ int main(int argc, char** argv)
                         } else if (step == kDigs + 4) { // (#1043) bob gets Wide Scoop 2 (soil strokes 20% wider); (#920) carol joins his team
                             Host_TestPerk(bob.welcome.session, "wide_scoop", 2);
                             Host_TestTeamUp(bob.welcome.session, carol.welcome.session);
+                            // (#1059) beside him: as returning players (a save an earlier test left) they spawn where they were
+                            // saved, which can be beyond the share's range
+                            const double apart = Host_PlayersApart(world, bob.welcome.session, carol.welcome.session);
+                            Host_TestPutPlayerAt(world, carol.welcome.session, bob.welcome.session);
+                            printf("bench: net dig: carol was %.1f m from bob; now beside him\n", apart);
                         } else if (step == kDigs + 5) { // a stroke 20% wider than the bare-hand one: the server must take it
                             spot();
                             const float wide = digR * 1.2f;
