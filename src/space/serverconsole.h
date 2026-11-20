@@ -26,6 +26,8 @@ struct ServerConfig {
     std::string motd;
     unsigned int seed = 0;          // 0: the save's own, or a random one for a new world
     std::string log = "server/server.log";
+    std::string ownerId;            // (#1086) a menu-hosted game: the hosting player's id (UUID), always the owner whatever
+                                    // name anyone uses; empty on a dedicated server (its admin.txt decides)
 };
 
 // Reads `path` (writing the defaults there first when it does not exist). False, with why, on a malformed line.

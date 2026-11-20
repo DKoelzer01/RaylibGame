@@ -283,6 +283,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Trapping_Reset();
         DungeonTraps_Reset();
         Combat_Reset();
+        Blueprint_ResetGhosts(); // (#1018)
         Claims_Reset(); // (#343)
         Events_Reset();
         Particles_Clear();
@@ -875,6 +876,7 @@ int main(int argc, char** argv)
             serverMode = true;
             hostSave = serverCfg.save; hostPort = (uint16_t)serverCfg.port; autosaveMinutes = serverCfg.autosaveMinutes;
             Host_SetPassword(serverCfg.password); Host_SetMaxPlayers(serverCfg.maxPlayers);
+            Admin_SetHostOwner(serverCfg.ownerId); // (#1086) a menu-hosted game: the hosting player owns it ("" on a dedicated server)
             if (serverCfg.seed != 0) { worldGen.seed = serverCfg.seed; seedGiven = true; }
             std::error_code ec; if (std::filesystem::path(hostSave).has_parent_path()) std::filesystem::create_directories(std::filesystem::path(hostSave).parent_path(), ec);
             ServerLog_Start(serverCfg.log);
@@ -1575,12 +1577,10 @@ int main(int argc, char** argv)
         gCraftRequest = [](int index, const std::string& output, int count, bool useChests, bool recursive) { NetClient_Craft(gJoin, index, output, count, useChests, recursive); }; // (#338) and our crafting
         gSkillSpendRequest = [](const std::string& perk) { NetClient_SkillSpend(gJoin, perk); }; // (#920) perk points are the server's
         // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
-        gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
-        gFarmRequest = [](Planetoid& b, const Plot& plot, int part, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, plot.id, part, seed); };
-        gFarmTillRequest = [](Planetoid& b, Vector3 ground) {
-            Plot* plot = nullptr; Part part;
-            if (!Farm_TillPart(b, ground, plot, part)) return false;
-            return NetClient_RequestPart(gJoin, b, plot, ground, part, false, -1) != 0;
+        gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, Vector3{}, ""); };
+        gFarmRequest = [](Planetoid& b, Vector3 ground, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, ground, seed); };
+        gFarmTillRequest = [](Planetoid& b, Vector3 ground, float radius) { // (#1085) a till is a terrain edit the server applies
+            return NetClient_RequestEdit(gJoin, NetEditKind::Till, b, ground, ground, radius, "") != 0;
         };
         // (#332) the server runs the machines: ours show its views, and what we do to them is a request
         Factory::SetRemote(true);
@@ -1630,8 +1630,9 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world); };
-    terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world);
+        if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
+    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
         if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
@@ -2084,8 +2085,9 @@ int main(int argc, char** argv)
                 if (text[0] != '/') { printf("chat: %s: %s\n", name.c_str(), text.c_str()); Host_Say(text, session, 0); return; }
                 const std::string line = text.substr(1);
                 std::string reply;
-                if (Admin_Command(line, name, reply)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
-                else if (Admin_RoleOf(name) == AdminRole::Player) reply = "only ops can use commands";
+                const std::string uuid = Host_SessionUuid(session); // (#1086) a menu host's own player is the owner by id
+                if (Admin_Command(line, name, reply, uuid)) { printf("server: %s (by %s)\n", reply.c_str(), name.c_str()); Server_KickRefused(); }
+                else if (Admin_RoleOf(name, uuid) == AdminRole::Player) reply = "only ops can use commands";
                 else {
                     std::istringstream in(line); std::string cmd, who, rest; in >> cmd >> who; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
                     if (cmd == "kick" && !who.empty()) { reply = Host_Kick(who, rest) ? who + " was kicked" : who + " is not online"; Admin_Audit(name + ": " + line + " -> " + reply); }
@@ -4418,21 +4420,51 @@ int main(int argc, char** argv)
                         check(inventory.count("stone_pickaxe") == 0, "broke at its durability");
                         check(Hotbar_Slot(3).empty(), "the broken tool left the hotbar (#209)");
                         toolsLife = life;
-                        // An iron hoe: look at the ground just ahead and till.
+                        toolsPhase = 3;
+                    } else if (toolsPhase == 3 && ((WorldIdle() && player.grounded) || GetTime() - toolsStart > 20.0)) {
+                        // An iron hoe: look at the ground just ahead and till - once the ground there is built (the spawn's
+                        // loading runs while the wear checks above do: the hoe found no ground then, #1085).
                         inventory.add("iron_hoe", 1);
                         terrainTool.heldTool = "iron_hoe";
                         const Vector3 level = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
                         player.forward = Vector3Normalize(Vector3Subtract(level, Vector3Scale(player.up, 0.8f)));
                         player.applyToCamera(world);
                         TerrainTool_Update(world, PlayerInput::None(), true); // aim only
-                        int before = 0;
-                        if (p->plots) for (auto& pl : p->plots->plots) for (auto& part : pl->parts) before += part.type == PartType::Farmland ? 1 : 0;
+                        // (#1085) tilling needs soil, and seed 42 starts on frozen tundra: as a cold start does, lay a wide flat pad
+                        // of dirt where the hoe aims (a 6 m sphere's cap: ~1.9 m across its rim, 0.3 m high) and till that. The
+                        // tool's own aim (it marches the density: this bench runs before the chunks are built).
+                        Planetoid* aimBody = nullptr; Vector3 aimLocal{};
+                        const bool aimOk = TerrainTool_AimedGround(&aimBody, &aimLocal) && aimBody == p;
+                        if (aimOk && !IsTillable(p->materialAt(aimLocal))) {
+                            TerrainEdit pad{}; pad.fill = true; pad.radius = 6.0f; pad.paint = (int)VoxelMaterial::Regolith;
+                            pad.center = Vector3Subtract(aimLocal, Vector3Scale(Vector3Normalize(aimLocal), 5.7f));
+                            ApplyTerrainEdit(*p, pad);
+                            TerrainTool_Update(world, PlayerInput::None(), true); // aim again, at the pad
+                            TerrainTool_AimedGround(&aimBody, &aimLocal);
+                            printf("bench: tools: frozen ground under the hoe: laid a dirt pad to till\n");
+                        }
+                        // (#1085) farmland is tilled ground: count the 0.25 m grid points of the aimed ground's tangent plane,
+                        // within 2.5 m, that read Farmland after the stroke (an iron hoe's 1.6 m brush: ~128; 1 m: ~50)
+                        auto farmlandPoints = [&] {
+                            if (!aimOk) return 0;
+                            const Vector3 u = Vector3Normalize(aimLocal);
+                            Vector3 ea = Vector3CrossProduct({ 0, 1, 0 }, u);
+                            ea = Vector3Length(ea) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(ea);
+                            const Vector3 na = Vector3CrossProduct(u, ea);
+                            int n = 0;
+                            for (int a = -10; a <= 10; ++a)
+                                for (int b = -10; b <= 10; ++b) {
+                                    if (a * a + b * b > 100) continue;
+                                    const Vector3 q = Vector3Add(aimLocal, Vector3Add(Vector3Scale(ea, a * 0.25f), Vector3Scale(na, b * 0.25f)));
+                                    n += p->materialAt(q) == VoxelMaterial::Farmland ? 1 : 0;
+                                }
+                            return n;
+                        };
+                        const int before = farmlandPoints();
                         const bool stroked = TerrainTool_Stroke(false);
-                        int after = 0;
-                        if (p->plots) for (auto& pl : p->plots->plots) for (auto& part : pl->parts) after += part.type == PartType::Farmland ? 1 : 0;
-                        toolsTilled = after - before;
-                        check(stroked && toolsTilled >= 7, "an iron hoe tills 3x3 m");
-                        printf("bench: tools: wear counted, saved, repaired, a stone pickaxe broke after %d strokes; an iron hoe tilled %d squares in one stroke -> %s\n",
+                        toolsTilled = farmlandPoints() - before;
+                        check(stroked && toolsTilled >= 60, "an iron hoe tills a wide patch");
+                        printf("bench: tools: wear counted, saved, repaired, a stone pickaxe broke after %d strokes; an iron hoe tilled %d points (0.25 m grid) in one stroke -> %s\n",
                                toolsLife, toolsTilled, toolsOk ? "PASS" : "FAIL");
                         terrainTool.heldTool.clear();
                         benchTools = false;
@@ -6158,8 +6190,8 @@ int main(int argc, char** argv)
                         if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
                         // RAYLIBGAME_CAVES_KARST=1 (#1052): the nearest karst sink, near the nearest strong karst ground (its
                         // weight on a 500 m grid out to 30 km: karst regions are ~10 km apart, too far for a cave-cell search).
-                        const int mouthKind = getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1' ? 1 : -1;
-                        if (mouthKind == 1 && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                        const int mouthKind = (getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1') || (getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1') ? 1 : -1; // a shaft entrance (karst sink, tube skylight)
+                        if (mouthKind == 1 && getenv("RAYLIBGAME_CAVES_KARST") && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
                             const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
                             float bestK = 1e30f;
                             for (float a = -30000.0f; a <= 30000.0f; a += 500.0f)
@@ -6172,6 +6204,24 @@ int main(int argc, char** argv)
                             mouthRange = 1500.0f;
                             if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
                             else printf("bench: caves: no karst ground within 30 km\n");
+                        }
+                        // RAYLIBGAME_CAVES_TUBE=1 (#1063): a lava tube's skylight (kind 1) near the nearest volcano flank (its
+                        // weight 0.4-0.8 on a 1 km grid out to 60 km: volcanoes are ~20 km apart and few).
+                        const bool tubeMode = getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1';
+                        if (tubeMode && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                            const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
+                            float bestV = 1e30f;
+                            for (float a = -60000.0f; a <= 60000.0f; a += 1000.0f)
+                                for (float b = -60000.0f; b <= 60000.0f; b += 1000.0f) {
+                                    const float dd = a * a + b * b;
+                                    if (dd >= bestV) continue;
+                                    const Vector3 vd = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(k1, a), Vector3Scale(k2, b))));
+                                    const float w = pf->volcanoWeight(Vector3Scale(vd, pf->radius));
+                                    if (w > 0.4f && w < 0.8f && pf->elevation(vd) > 10.0f) { bestV = dd; mouthNear = vd; }
+                                }
+                            mouthRange = 3000.0f;
+                            if (bestV < 1e29f) printf("bench: caves: volcano flank %.0f m from the start\n", sqrtf(bestV));
+                            else printf("bench: caves: no volcano flank within 60 km\n");
                         }
                         const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
                         if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
@@ -8442,51 +8492,122 @@ int main(int argc, char** argv)
                         bool ok = true;
                         auto check = [&](bool c, const char* what) { if (!c) { printf("bench: farm: FAILED %s\n", what); ok = false; } };
                         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-                        const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
+                        // Soil to till (#1085: tilling needs it; seed 42's start has ice 3 m ahead): the first tillable ground on
+                        // rings 3-12 m around the feet.
+                        const Vector3 fwd0 = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        const Vector3 side0 = Vector3CrossProduct(player.up, fwd0);
                         TerrainHit hit;
-                        const bool found = RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit);
-                        check(found, "ground ahead");
+                        bool found = false;
+                        for (float ring = 3.0f; ring <= 12.0f && !found; ring += 3.0f)
+                            for (int k = 0; k < 12 && !found; ++k) {
+                                const float a = k * (2.0f * PI / 12.0f);
+                                const Vector3 at = Vector3Add(feet, Vector3Add(Vector3Scale(fwd0, ring * cosf(a)), Vector3Scale(side0, ring * sinf(a))));
+                                found = RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) &&
+                                        hit.planetoid == p && IsTillable(p->materialAt(hit.local));
+                            }
+                        // None (seed 42 starts on frozen tundra): a cold start's way - place a patch of dirt 3 m ahead and till that.
+                        bool placedDirt = false;
+                        if (!found) {
+                            const Vector3 at = Vector3Add(feet, Vector3Scale(fwd0, 3.0f));
+                            TerrainHit g0;
+                            if (RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, g0) && g0.planetoid == p) {
+                                TerrainEdit fill{}; fill.fill = true; fill.radius = 1.0f; fill.paint = (int)VoxelMaterial::Regolith;
+                                fill.center = Vector3Add(g0.local, Vector3Scale(Vector3Normalize(g0.local), 0.3f));
+                                ApplyTerrainEdit(*p, fill);
+                                found = RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) && hit.planetoid == p &&
+                                        IsTillable(p->materialAt(hit.local));
+                                placedDirt = found;
+                            }
+                        }
+                        check(found, "soil near the start (or placed dirt)");
+                        if (placedDirt) printf("bench: farm: no soil within 12 m of the start: placed a dirt patch and tilled that\n");
                         const bool tilled = found && Farm_Till(world, *p, hit.local);
                         check(tilled, "tilled");
-                        Plot* plot = nullptr; int part = -1;
-                        if (tilled && p->plots)
-                            for (auto& pl : p->plots->plots)
-                                for (int i = (int)pl->parts.size() - 1; i >= 0 && part < 0; --i)
-                                    if (pl->parts[i].type == PartType::Farmland) { plot = pl.get(); part = i; }
-                        check(part >= 0, "farmland part");
-                        if (plot) {
-                            inventory.add("grain_seeds", 2);
-                            check(Farm_Plant(*p, *plot, part, "grain_seeds"), "planted");
-                            const Vector3 up = p->dirToWorld(plot->up);
+                        // (#1085) farmland is tilled ground: the aimed point reads Farmland, and a crop stands at a point of it
+                        const Vector3 ground = hit.local;
+                        check(p->materialAt(ground) == VoxelMaterial::Farmland, "the ground is farmland");
+                        if (tilled) {
+                            inventory.add("grain_seeds", 3);
+                            check(Farm_Plant(*p, ground, "grain_seeds"), "planted");
+                            // a second seed 0.2 m away: refused (spacing 0.5 m), and the seed kept
+                            const Vector3 ul = Vector3Normalize(ground);
+                            Vector3 el = Vector3CrossProduct({ 0, 1, 0 }, ul);
+                            el = Vector3Length(el) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(el);
+                            const int seedsHeld = inventory.count("grain_seeds");
+                            check(!Farm_Plant(*p, Vector3Add(ground, Vector3Scale(el, 0.2f)), "grain_seeds") && inventory.count("grain_seeds") == seedsHeld && Farm_CropCount() == 1, "too close: refused");
+                            const Vector3 up = p->dirToWorld(ul);
                             std::string crop; float g = 0.0f;
                             world.sunDirection = Vector3Negate(up); // night
                             Farm_Update(world, 2000.0f);
-                            Farm_Crop(*p, *plot, part, crop, g);
+                            Farm_Crop(*p, ground, crop, g);
                             check(crop == "grain" && g == 0.0f, "no growth at night");
                             world.sunDirection = up; // noon
                             Farm_Update(world, 900.0f);
-                            Farm_Crop(*p, *plot, part, crop, g);
+                            Farm_Crop(*p, ground, crop, g);
                             farmQuarter = g;
                             check(g > 0.2f && g < 0.6f, "a quarter (or half, by water) after 900 s of day");
                             Farm_Update(world, 4000.0f);
-                            Farm_Crop(*p, *plot, part, crop, g);
+                            Farm_Crop(*p, ground, crop, g);
                             check(g >= 1.0f, "ripe");
                             const int grain0 = inventory.count("grain"), seeds0 = inventory.count("grain_seeds");
-                            check(Farm_Harvest(*p, *plot, part) > 0 && inventory.count("grain") == grain0 + 3 && inventory.count("grain_seeds") > seeds0, "harvest: grain and seeds");
+                            check(Farm_Harvest(*p, ground) > 0 && inventory.count("grain") == grain0 + 3 && inventory.count("grain_seeds") > seeds0, "harvest: grain and seeds");
                             // Plant again, half grow, save and load.
-                            check(Farm_Plant(*p, *plot, part, "grain_seeds"), "replanted");
+                            check(Farm_Plant(*p, ground, "grain_seeds"), "replanted");
                             Farm_Update(world, 600.0f);
-                            float before = 0.0f; Farm_Crop(*p, *plot, part, crop, before);
+                            float before = 0.0f; Farm_Crop(*p, ground, crop, before);
                             const std::string path = std::string(GetWorkingDirectory()) + "/farm_test.tmp";
                             if (FILE* f = fopen(path.c_str(), "w")) { saveExtrasHook(f); fprintf(f, "end_extras\n"); fclose(f); }
                             Farm_Reset();
                             if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
                             remove(path.c_str());
-                            float after = -1.0f; Farm_Crop(*p, *plot, part, crop, after);
+                            float after = -1.0f; Farm_Crop(*p, ground, crop, after);
                             check(crop == "grain" && fabsf(after - before) < 0.001f, "a growing crop saved");
                             farmGrowth = before;
+                            // Dug up: the ground under it is no longer farmland, and the crop goes (#1085)
+                            TerrainEdit dig{}; dig.carve = true; dig.center = ground; dig.radius = 0.6f;
+                            ApplyTerrainEdit(*p, dig);
+                            Farm_Update(world, 1.0f);
+                            check(Farm_CropCount() == 0, "a dug-up crop is gone");
                         }
-                        printf("bench: farm: tilled, planted; night 0, 900 s of day %.2f, ripe, harvested; replanted at %.2f survived a save -> %s\n", farmQuarter, farmGrowth, ok ? "PASS" : "FAIL");
+                        // An old save (#1085): a farmland part on a plot 4 m to the side, with a crop under the old
+                        // "<body>|<plot>|<part>" key. Loading converts it: tilled ground where it stood, the crop on it, no part.
+                        bool converted = false;
+                        {
+                            // 1.8 m beside the first field (dug out above), on the real ground of that column (the density surface)
+                            struct { Vector3 local; } side{};
+                            bool sideOk = false;
+                            const Vector3 col = Vector3Normalize(Vector3Add(ground, Vector3Scale(p->dirToLocal(side0), 1.8f)));
+                            for (float r = Vector3Length(ground) + 3.0f, r0 = Vector3Length(ground) - 3.0f; r > r0 && !sideOk; r -= 0.05f)
+                                if (p->densityAt(Vector3Scale(col, r)) >= ISO_LEVEL) { side.local = Vector3Scale(col, r); sideOk = IsTillable(p->materialAt(side.local)); }
+                            if (sideOk) {
+                                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                                Plot* plot = p->plots->plotFor(side.local, 0.0f, true); // a new plot anchored there: the part at its origin, as old tills made them
+                                const Part part{ PartType::Farmland, { 0, 0, 0 }, 0, 0 };
+                                if (!BuildTool_ApplyPart(*p, *plot, part)) printf("bench: farm: could not place an old farmland part for the conversion check\n");
+                                else {
+                                    const int idx = plot->partAt(part.origin);
+                                    const std::string path = std::string(GetWorkingDirectory()) + "/farm_old.tmp";
+                                    if (FILE* f = fopen(path.c_str(), "w")) { fprintf(f, "crop %s|%u|%d roots 0.5000\nend_extras\n", p->name.c_str(), plot->id, idx); fclose(f); }
+                                    Farm_Reset();
+                                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                                    remove(path.c_str());
+                                    Farm_LoadDone();
+                                    std::string crop; float g = 0.0f;
+                                    const bool gone = plot->parts[idx].type == PartType::Count;
+                                    // where the part stood: its 2 x 2 cell footprint's centre, on the real ground of that column
+                                    Vector3 stood = plot->toBody({ kCellSize, 0.0f, kCellSize });
+                                    const Vector3 sc = Vector3Normalize(stood);
+                                    for (float r = Vector3Length(stood) + 1.5f, r0 = Vector3Length(stood) - 1.5f; r > r0; r -= 0.05f)
+                                        if (p->densityAt(Vector3Scale(sc, r)) >= ISO_LEVEL) { stood = Vector3Scale(sc, r); break; }
+                                    const bool tilledThere = p->materialAt(stood) == VoxelMaterial::Farmland;
+                                    const bool cropThere = Farm_Crop(*p, stood, crop, g) && crop == "roots" && fabsf(g - 0.5f) < 0.01f;
+                                    converted = gone && tilledThere && cropThere;
+                                    printf("bench: farm: an old farmland part on load: part gone %d, ground farmland %d, its crop kept %d\n", (int)gone, (int)tilledThere, (int)cropThere);
+                                }
+                            } else printf("bench: farm: no ground 4 m to the side for the conversion check\n");
+                        }
+                        check(converted, "an old save's farmland part becomes tilled ground with its crop");
+                        printf("bench: farm: tilled, planted (a seed 0.2 m away refused); night 0, 900 s of day %.2f, ripe, harvested; replanted at %.2f survived a save; dug up, gone; an old part converted -> %s\n", farmQuarter, farmGrowth, ok ? "PASS" : "FAIL");
                         benchFarm = false;
                     }
                 } else if (benchQuests && WorldIdle()) {
@@ -8837,7 +8958,27 @@ int main(int argc, char** argv)
                         const bool saved = Blueprint_SaveFile(*plot, "saves/bench_blueprint.bp", "bench copy");
                         Blueprint back;
                         const bool loaded = Blueprint_LoadFile("saves/bench_blueprint.bp", back);
-                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size();
+                        // (#1018) Ghosts: the same preset 16 m the other way, one landing leg short: the leg stays a ghost; out of
+                        // reach it waits, in reach without the leg it waits, with the leg it builds itself.
+                        const Vector3 d2 = Vector3Normalize(Vector3Subtract(home, Vector3Scale(t1, 16.0f / pf->radius)));
+                        Plot* plot2 = p->plots->plotFor(Vector3Scale(d2, pf->radius + pf->elevation(d2)), 0.0f, true);
+                        inventory.clear();
+                        inventory.add("rocket_engine", 1); inventory.add("landing_leg", 3); inventory.add("fuel_tank", 4);
+                        inventory.add("guidance_computer", 1); inventory.add("cockpit", 1);
+                        Blueprint_ResetGhosts();
+                        std::string missing3;
+                        const int placed3 = Blueprint_Place(*p, *plot2, bp, { 0, 0, 0 }, true, missing3, true);
+                        const int ghosts0 = Blueprint_GhostCount();
+                        const Vector3 near2 = plot2->toBody({ 0, 0, 0 }), far2 = Vector3Scale(near2, 1.01f); // (1 % out: ~600 m away)
+                        const int farBuilt = Blueprint_UpdateGhosts(p, far2, 100.0);
+                        const int noLeg = Blueprint_UpdateGhosts(p, near2, 101.0);
+                        inventory.add("landing_leg", 1);
+                        const int built = Blueprint_UpdateGhosts(p, near2, 102.0);
+                        const bool ghostsOk = placed3 == 10 && ghosts0 == 1 && farBuilt == 0 && noLeg == 0 && built == 1 && Blueprint_GhostCount() == 0 &&
+                                              plot2->partCount() == (int)bp.parts.size() && inventory.count("landing_leg") == 0;
+                        printf("bench: blueprint (#1018): one leg short: placed %d, %d ghost; out of reach built %d, without the leg %d, with it %d; ghosts left %d, parts %d of %zu -> %s\n",
+                               placed3, ghosts0, farBuilt, noLeg, built, Blueprint_GhostCount(), plot2->partCount(), bp.parts.size(), ghostsOk ? "ok" : "FAIL");
+                        const bool ok = first == 10 && missing == "1 landing_leg" && second == 1 && plot->partCount() == (int)bp.parts.size() && saved && loaded && back.parts.size() == bp.parts.size() && ghostsOk;
                         printf("bench: blueprint: %s (%zu parts): placed %d (missing: %s), then %d more; saved and loaded %zu parts -> %s\n",
                                bp.name.c_str(), bp.parts.size(), first, missing.c_str(), second, back.parts.size(), ok ? "PASS" : "FAIL");
                     }
@@ -10080,6 +10221,8 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
+            if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
+                Blueprint_UpdateGhosts(player.nearest, player.nearest->toLocal((player.position - world.renderOrigin).toFloat()), SimTime());
             GpuTimer_CpuMark("step: weather, factory");
             GpuTimer_Mark("w-sim-pre");                          // (benches: the fluid's own share below)
             Fluid::Update(world, simDt);                         // flowing water: commands in, a step job, meshes up
@@ -10151,7 +10294,7 @@ int main(int argc, char** argv)
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") {
                         int n = 0;
-                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name)), p.address.c_str()); }
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, Host_SessionUuid(p.session))), p.address.c_str()); }
                         printf("server: %d player(s) online\n", n);
                     }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
@@ -11740,13 +11883,13 @@ int main(int argc, char** argv)
                     felled = true;
                 } else if (GetTime() - t0 > 15.0) felled = true; // (nothing near: reported)
             }
-            // the farmland ahead (the server's plot edit), and its crop as the server's fields say
-            Plot* farm = nullptr; int farmPart = -1;
-            if (pb && pb->plots)
-                for (auto& pl : pb->plots->plots)
-                    for (int k = 0; k < (int)pl->parts.size() && !farm; ++k) if (pl->parts[k].type == PartType::Farmland) { farm = pl.get(); farmPart = k; }
+            // the farmland ahead (#1085: the server's till edit makes the ground Farmland), and its crop as the server's fields
+            // say (the watcher doesn't know where the feller tilled: any crop on the body)
+            static Vector3 tillGround{};
+            static bool tillKnown = false;
+            const bool farm = pb && tillKnown && pb->materialAt(tillGround) == VoxelMaterial::Farmland;
             std::string crop; float growth = 0.0f;
-            const bool hasCrop = farm && Farm_Crop(*pb, *farm, farmPart, crop, growth);
+            const bool hasCrop = pb && (feller ? tillKnown && Farm_Crop(*pb, tillGround, crop, growth) : Farm_CropCount() > 0);
             cropSeen = cropSeen || hasCrop;
             cropGone = cropGone || (cropSeen && !hasCrop);
             if (feller && felled && !tillSent && pb) {
@@ -11755,14 +11898,16 @@ int main(int argc, char** argv)
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
                     const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
                     TerrainHit hit;
-                    if (RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit)) Farm_Till(world, *pb, hit.local);
+                    if (RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) && Farm_Till(world, *pb, hit.local)) {
+                        tillGround = hit.local; tillKnown = true;
+                    }
                     tillSent = true;
                 }
             }
-            if (feller && farm && !sown) { seeds0 = inventory.count("grain_seeds"); sown = Farm_Plant(*pb, *farm, farmPart, "grain_seeds"); }
+            if (feller && farm && !sown) { seeds0 = inventory.count("grain_seeds"); sown = Farm_Plant(*pb, tillGround, "grain_seeds"); }
             static double ripeAt = -1.0;
             if (feller && hasCrop && growth >= 1.0f && ripeAt < 0.0) ripeAt = GetTime();
-            if (feller && hasCrop && ripeAt >= 0.0 && GetTime() - ripeAt > 3.0 && !harvested) { grain0 = inventory.count("grain"); harvested = Farm_Harvest(*pb, *farm, farmPart) > 0; }
+            if (feller && hasCrop && ripeAt >= 0.0 && GetTime() - ripeAt > 3.0 && !harvested) { grain0 = inventory.count("grain"); harvested = Farm_Harvest(*pb, tillGround) > 0; }
             const double plantsSecs = getenv("RAYLIBGAME_PLANTS_SECONDS") ? atof(getenv("RAYLIBGAME_PLANTS_SECONDS")) : 40.0;
             // (the watcher reports once it has seen it all: its clock started apart from the feller's, which may load slower)
             if (feller ? GetTime() - t0 > plantsSecs : (cropGone && gJoin.plantsRemoved >= 1) || GetTime() - t0 > 1.75 * plantsSecs) {
@@ -11774,7 +11919,7 @@ int main(int argc, char** argv)
                        role ? role : "?", (int)felled, (unsigned long long)plantId, (int)standing, dropItem.empty() ? "-" : dropItem.c_str(), drop0, dropItem.empty() ? -1 : inventory.count(dropItem), dropN,
                        gJoin.plantsRemoved, gJoin.plantLists, ids.c_str());
                 printf("bench: net farm (%s, #335): farmland %d; sown %d: seeds %d -> %d; crop seen %d, gone %d; harvested %d: grain %d -> %d; field lists %d\n",
-                       role ? role : "?", (int)(farm != nullptr || cropGone), (int)sown, seeds0, inventory.count("grain_seeds"), (int)cropSeen, (int)cropGone, (int)harvested, grain0, inventory.count("grain"), gJoin.farmLists);
+                       role ? role : "?", (int)(farm || cropGone), (int)sown, seeds0, inventory.count("grain_seeds"), (int)cropSeen, (int)cropGone, (int)harvested, grain0, inventory.count("grain"), gJoin.farmLists);
                 // (#920) the XP the server counted for it (felling: Woodcutting or Foraging; tilling, sowing, harvesting: Farming)
                 printf("bench: net skills (%s, #920): skill states %d; woodcutting %.1f, foraging %.1f, farming %.1f\n", role ? role : "?", gJoin.skillStates,
                        gJoin.skills.xp["woodcutting"], gJoin.skills.xp["foraging"], gJoin.skills.xp["farming"]);
@@ -13192,6 +13337,7 @@ int main(int argc, char** argv)
                     const std::string save = m.path.empty() ? Menu_NewSavePath() : m.path; // (the saves folder: it lists and loads like any save)
                     ServerConfig cfg;
                     cfg.save = save; cfg.port = m.port; cfg.maxPlayers = m.maxPlayers; cfg.password = m.password; cfg.log = save + ".server.log";
+                    cfg.ownerId = PlayerId_Local(); // (#1086) we host it: our player is its owner (by id: our client's Hello carries it)
                     const std::string cfgPath = save + ".server.cfg";
                     bool wrote = false;
                     if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }

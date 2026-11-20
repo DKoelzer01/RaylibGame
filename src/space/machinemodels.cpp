@@ -344,7 +344,7 @@ namespace {
 
     // A machine's frame from its footprint: the floor centre in plot metres, size and facing.
     bool SpotOf(const Plot& plot, size_t i, MachineSpot& s) {
-        static thread_local std::vector<std::pair<Int3, CellShape>> fp;
+        static thread_local std::vector<std::pair<Int3, CellShape>>* fpP = nullptr; if (!fpP) fpP = new std::vector<std::pair<Int3, CellShape>>(); auto& fp = *fpP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
         const Part& part = plot.parts[i];
         Plot::Footprint(part, fp);
         if (fp.empty()) return false;

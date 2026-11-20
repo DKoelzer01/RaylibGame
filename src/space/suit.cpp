@@ -181,16 +181,20 @@ void Suit_Reset() {
     Recompute();
 }
 
+void Suit_ApplyStatsTo(Player& p, const SuitStats& st, float walkMul) {
+    p.walkSpeed = kWalk * st.walk * walkMul;
+    p.jetpackFuelPerSec = kJetFuel / st.jetFuel;
+    p.canHover = st.hover; // #163
+    p.jetpackAccel = st.jetpack && st.powered ? kJetAccel * st.jetThrust : 0.0f; // #217: no thruster pack (or no power), no jetpack
+    if (!st.jetpack || !st.powered) p.jetpackFuel = 0.0f;
+    p.walkableCos = st.grip ? 0.3f : kWalkableCos; // ~73 deg with grip boots
+}
+
 void Suit_Apply(Scene& world, float dt) {
     (void)dt;
     Load();
     if (S().fitted.empty() && !FindSuit(S().worn)) Suit_Reset();
-    player.walkSpeed = kWalk * S().stats.walk * (float)Skills_Stat(LocalSession().skills, "walk_speed"); // (#919: Athletics stacks with the suit)
-    player.jetpackFuelPerSec = kJetFuel / S().stats.jetFuel;
-    player.canHover = S().stats.hover; // #163
-    player.jetpackAccel = S().stats.jetpack && S().stats.powered ? kJetAccel * S().stats.jetThrust : 0.0f; // #217: no thruster pack (or no power), no jetpack
-    if (!S().stats.jetpack || !S().stats.powered) player.jetpackFuel = 0.0f;
-    player.walkableCos = S().stats.grip ? 0.3f : kWalkableCos; // ~73 deg with grip boots
+    Suit_ApplyStatsTo(player, S().stats, (float)Skills_Stat(LocalSession().skills, "walk_speed")); // (#919: Athletics stacks with the suit)
     if (S().stats.scanner && SimTime() - S().lastScan > 1.0) { S().lastScan = SimTime(); Scan(world); }
     if (!S().stats.scanner) S().scanDist = -1.0f;
 }
@@ -267,3 +271,22 @@ bool Suit_LoadLine(const char* tok, FILE* f) {
     return true;
 }
 SuitStats Suit_StatsOf(const SuitState& st) { return StatsOf(st); } // (#337)
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+TEST(SuitStats, NoThrusterPackMeansNoJetpack) { // (#1087: a server's remote players kept the Player defaults: a full, working jetpack)
+    Player p; // (a fresh player: jetpack thrust and a full tank by default)
+    SuitStats basic; // the starting suit (#217): no thruster pack, no power
+    Suit_ApplyStatsTo(p, basic);
+    EXPECT_FLOAT_EQ(p.jetpackAccel, 0.0f) << "no thrust";
+    EXPECT_FLOAT_EQ(p.jetpackFuel, 0.0f) << "and an empty tank";
+    SuitStats packed; packed.jetpack = true; packed.powered = true; packed.jetThrust = 1.5f;
+    Player q; q.jetpackFuel = 0.4f;
+    Suit_ApplyStatsTo(q, packed);
+    EXPECT_GT(q.jetpackAccel, 0.0f) << "a thruster pack with power flies";
+    EXPECT_FLOAT_EQ(q.jetpackFuel, 0.4f) << "and keeps its fuel";
+    SuitStats unpowered = packed; unpowered.powered = false;
+    Suit_ApplyStatsTo(q, unpowered);
+    EXPECT_FLOAT_EQ(q.jetpackAccel, 0.0f) << "no power, no jetpack";
+}
+#endif
