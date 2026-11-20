@@ -127,15 +127,21 @@ jobs:
           key: fetchcontent-${{ env.DEPS_KEY }}
       - name: Fetch sources
         run: bash tools/ci/fetch_deps.sh "$CI_ROOT/deps"
-      - name: Cache GameNetworkingSockets
+      - name: Restore GameNetworkingSockets
         id: gns
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci/gns/install
           key: gns-windows-w64devkit-${{ env.W64DEVKIT_VERSION }}-${{ hashFiles('tools/build_gns.sh') }}
       - name: Build GameNetworkingSockets (cache miss only)
         if: steps.gns.outputs.cache-hit != 'true'
         run: JOBS=4 bash tools/build_gns.sh "$CI_ROOT/gns"
+      - name: Save GameNetworkingSockets # right away: a later failure must not throw the 10-minute build away
+        if: steps.gns.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/gns/install
+          key: ${{ steps.gns.outputs.cache-primary-key }}
       - name: Restore ccache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -198,15 +204,21 @@ jobs:
           key: fetchcontent-linux-${{ env.DEPS_KEY }}
       - name: Fetch sources
         run: bash tools/ci/fetch_deps.sh "$CI_ROOT/deps"
-      - name: Cache GameNetworkingSockets
+      - name: Restore GameNetworkingSockets
         id: gns
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CI_ROOT }}/gns/install
           key: gns-linux-ubuntu24-${{ hashFiles('tools/build_gns.sh') }}
       - name: Build GameNetworkingSockets (cache miss only)
         if: steps.gns.outputs.cache-hit != 'true'
         run: JOBS=4 bash tools/build_gns.sh "$CI_ROOT/gns"
+      - name: Save GameNetworkingSockets # right away: a later failure must not throw the build away
+        if: steps.gns.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CI_ROOT }}/gns/install
+          key: ${{ steps.gns.outputs.cache-primary-key }}
       - name: Restore ccache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
