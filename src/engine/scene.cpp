@@ -662,6 +662,16 @@ void Scene::drawScene(int gamestate) {
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
+    { // (#1089) the terrain tool's dig / fill sphere (render space), or none
+        float ts[4] = { 0, 0, 0, 0 }, tc[4] = { 0, 0, 0, 0 };
+        if (gToolSphere.body && GetTime() - gToolSphere.time < 0.1) {
+            const Vector3 c = gToolSphere.body->toWorld(gToolSphere.local);
+            ts[0] = c.x; ts[1] = c.y; ts[2] = c.z; ts[3] = gToolSphere.radius;
+            tc[0] = gToolSphere.color.r / 255.0f; tc[1] = gToolSphere.color.g / 255.0f; tc[2] = gToolSphere.color.b / 255.0f; tc[3] = gToolSphere.color.a / 255.0f;
+        }
+        SetShaderValue(s, GetShaderLocation(s, "toolSphere"), ts, SHADER_UNIFORM_VEC4);
+        SetShaderValue(s, GetShaderLocation(s, "toolSphereColor"), tc, SHADER_UNIFORM_VEC4);
+    }
     { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.
