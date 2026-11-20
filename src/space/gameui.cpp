@@ -1482,7 +1482,7 @@ static void PreviewWidget(ImTextureID tex, ImVec2 size, float& turn) {
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##preview", size);
     ImGui::GetWindowDrawList()->AddImage(tex, p, ImVec2(p.x + size.x, p.y + size.y), ImVec2(0, 1), ImVec2(1, 0));
-    if (ImGui::IsItemActive()) turn += ImGui::GetIO().MouseDelta.x * 0.012f;
+    if (ImGui::IsItemActive()) turn -= ImGui::GetIO().MouseDelta.x * 0.012f; // (#1073) the side you drag to is the side it turns to
     if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ImGui::SetTooltip("Drag to turn");
 }
 
@@ -2036,7 +2036,7 @@ TEST(GameUiPreview, DraggingAcrossItTurnsThePlayer) {
     frame(200.0f, 250.0f, true);                          // pressed
     for (int k = 1; k <= 10; ++k) frame(200.0f + 10.0f * k, 250.0f, true); // dragged 100 px right
     frame(300.0f, 250.0f, false);                         // released
-    EXPECT_NEAR(turn, 1.2f, 0.05f) << "100 px at 0.012 rad a pixel";
+    EXPECT_NEAR(turn, -1.2f, 0.05f) << "100 px at 0.012 rad a pixel; dragging right lowers the turn (#1073: it had spun the other way)";
     const float after = turn;
     frame(500.0f, 250.0f, false); frame(600.0f, 250.0f, false); // moving without the button: no turn
     EXPECT_FLOAT_EQ(turn, after);
