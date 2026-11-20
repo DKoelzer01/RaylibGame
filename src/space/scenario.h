@@ -86,6 +86,7 @@ struct ScenarioDef {
     std::vector<std::pair<std::string, std::string>> env; // environment set before the game starts
     std::string legacyFlag;                   // the --test-* flag it replaces (the report pairs their verdicts)
     bool record = true;                       // the temporary recording (perf scenarios: off, it costs frame time)
+    bool needsPlanetField = true;             // body 0 must have a PlanetField (false: any body, e.g. the asteroid system, #667)
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }

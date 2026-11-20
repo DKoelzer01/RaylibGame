@@ -32,6 +32,7 @@ static void Build(ScenarioDef& s) {
     s.args = { "--bodies", "resources/data/bodies_asteroids.txt" };
     s.timeout = 240.0;
     s.record = false;
+    s.needsPlanetField = false; // (the asteroid system's first body)
     s.step("an idle world", 120.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         return c.T > 1.0 && WorldIdle();

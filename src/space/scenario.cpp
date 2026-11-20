@@ -410,7 +410,7 @@ bool Scenario_Frame(Scene& world) {
     c.t = SimTime() - R.stepSim;
     c.frame = R.frames++;
     c.stepIndex = R.step;
-    if (!c.field) { Finish("ERROR", "no planet field (body 0)"); return false; }
+    if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
     if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
         const bool wall = c.T <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
