@@ -273,7 +273,7 @@ uniform float mantleRadius;
 int islandCount = 0;   // set per block by the includer
 int caveSegCount = 0;  // (#615 step 2) the block's cave segments, set by the includer (caveSegData)
 int cavesGraph = 0;    // 1: graph tunnels instead of the noise tunnels (RAYLIBGAME_CAVES=1)
-int caveWalls = 0;     // (#1022 A/B) RAYLIBGAME_CAVE_WALLS: 1 drops the wall noise's finest octaves, 2 also rounds the creases
+int caveWalls = 1;     // (#1022) 1: the larger-outcrop walls (default); 0: the v22 walls (RAYLIBGAME_CAVE_WALLS=0)
 
 float waveSin(float x) {
     precise float u = x * 0.15915494, f = u - floor(u);
@@ -490,16 +490,15 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float sq = xdiv(rw90, hl);
                 precise float sc = 0.1 + sq;
                 precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
-                int o3 = caveWalls > 0 ? 2 : 3, o1 = caveWalls > 0 ? 1 : 2;
-                precise float f3 = caveWalls == 4 ? 5.6 : caveWalls == 3 ? 10.5 : 24.5, f1 = caveWalls == 4 ? 37.5 : caveWalls == 3 ? 60.0 : 135.0;
-                precise float g3 = caveWalls == 4 ? 3.0 : caveWalls == 3 ? 2.8 : 2.6, g1 = caveWalls == 4 ? 0.7 : caveWalls == 3 ? 0.9 : 1.4;
+                bool v22 = caveWalls == 0;                                   // (#1022) 1: ~9 m forms, ~3.2 m creases; 0: v22
+                int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
+                precise float f3 = v22 ? 24.5 : 7.8, f1 = v22 ? 135.0 : 47.0;
+                precise float g3 = v22 ? 2.6 : 2.9, g1 = v22 ? 1.4 : 0.8;
                 precise float p3x = px * f3 + 101.0;
                 precise float r3 = fractal(N_DETAIL, o3, p3x, py * f3, pz * f3);
                 precise float p1x = px * f1 + 7.0;
                 precise float r1 = fractal(N_CAVES_B, o1, p1x, py * f1, pz * f1);
-                precise float r1s = r1 * r1 + 0.01;
-                precise float ar1 = caveWalls == 2 ? xsqrt(r1s) : abs(r1);
-                precise float cr = 0.3 - ar1;
+                precise float cr = 0.3 - abs(r1);
                 precise float wn0 = 0.35 + g3 * r3 + g1 * cr;
                 precise float wn = max(0.0, wn0);
                 precise float fnum = len - 0.5 * rw;

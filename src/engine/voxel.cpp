@@ -1578,9 +1578,9 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 // (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
 // up only once one does. The same operations in the same order as terrain.glsl's caveGraphDistance (bit-exact).
 struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
-// (#1022, user 2026-11-20: "a bit too jagged in places") RAYLIBGAME_CAVE_WALLS: 0 as v21; 1 without the wall noise's finest
-// octaves; 2 also rounds the creases' edges. The GPU gets it per block (c.w). For the user's A/B pick.
-static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") ? std::clamp(atoi(getenv("RAYLIBGAME_CAVE_WALLS")), 0, 4) : 0;
+// RAYLIBGAME_CAVE_WALLS=0 (#1022 A/B): the cave walls as first merged (v22); default 1, the larger outcrops. The GPU gets it
+// per block (c.w).
+static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") && getenv("RAYLIBGAME_CAVE_WALLS")[0] == '0' ? 0 : 1;
 static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid, float shrink = 0.0f) {
     solid = -1e9f;
     bool any = false;
@@ -1652,16 +1652,16 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             if (hl > 1e-3f) {
                 const float sc = 0.1f + 0.9f * rw / hl;
                 const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
-                const int o3 = gCaveWalls > 0 ? 2 : 3, o1 = gCaveWalls > 0 ? 1 : 2;           // (#1022 A/B) walls 1+: no finest octave
-                // walls 3-4 (user: larger outcrops, fewer small changes): longer waves (rock forms ~7 / ~12 m, creases ~2.5 / ~4 m),
-                // more weight on the forms and less on the creases.
-                const float f3 = gCaveWalls == 4 ? 5.6f : gCaveWalls == 3 ? 10.5f : 24.5f, f1 = gCaveWalls == 4 ? 37.5f : gCaveWalls == 3 ? 60.0f : 135.0f;
-                const float g3 = gCaveWalls == 4 ? 3.0f : gCaveWalls == 3 ? 2.8f : 2.6f, g1 = gCaveWalls == 4 ? 0.7f : gCaveWalls == 3 ? 0.9f : 1.4f;
-                const float r3 = N.det.fractal(o3, px * f3 + 101.0f, py * f3, pz * f3); // octaves from ~3 m
-                const float r1 = N.b.fractal(o1, px * f1 + 7.0f, py * f1, pz * f1);  // ~1 m creases (|n|: sharp)
-                const float r1s = r1 * r1 + 0.01f;
-                const float ar1 = gCaveWalls == 2 ? sqrtf(r1s) : fabsf(r1);                    // walls 2: rounded crease edges
-                const float wn = std::max(0.0f, 0.35f + g3 * r3 + g1 * (0.3f - ar1));
+                // (#1022, user 2026-11-20) Large irregular outcrops: rock forms ~9 m (2 octaves) and creases ~3.2 m (|n|: hard
+                // edges), weights 2.9 / 0.8. RAYLIBGAME_CAVE_WALLS=0: the walls as first merged (v22: ~3 m forms in 3 octaves,
+                // ~1 m creases in 2, 2.6 / 1.4).
+                const bool v22 = gCaveWalls == 0;
+                const int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
+                const float f3 = v22 ? 24.5f : 7.8f, f1 = v22 ? 135.0f : 47.0f;
+                const float g3 = v22 ? 2.6f : 2.9f, g1 = v22 ? 1.4f : 0.8f;
+                const float r3 = N.det.fractal(o3, px * f3 + 101.0f, py * f3, pz * f3);
+                const float r1 = N.b.fractal(o1, px * f1 + 7.0f, py * f1, pz * f1);
+                const float wn = std::max(0.0f, 0.35f + g3 * r3 + g1 * (0.3f - fabsf(r1)));
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
