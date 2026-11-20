@@ -167,12 +167,14 @@ void QuestTree_DrawTab() {
     // (#1080: the Tab window can be narrow now) the key on its own line, wrapped, so nothing falls off its right edge
     ImGui::NewLine();
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("green: done   white: open   grey: locked (hover for details)   drag to move, scroll to zoom");
+    ImGui::TextWrapped("green: done   white: open   grey: locked (hover for details)   drag to move, the wheel scrolls, Ctrl + wheel zooms");
     ImGui::PopStyleColor();
-    ImGui::BeginChild("questtree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse); // (#1078: the wheel zooms)
+    ImGui::BeginChild("questtree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar); // (#1078: the wheel scrolls; Ctrl + wheel zooms, below)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 o = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2((maxX + 1.0f) * cw + pad * 2.0f, maxY * ch + pad * 2.0f));
+    // (#1078) The canvas is a button: a press in the tree is the tree's (a pan or a click), so ImGui doesn't start moving the
+    // Tab window from it, as it does from a press on no item. Its hover tests below allow the canvas being the active item.
+    ImGui::InvisibleButton("canvas", ImVec2((maxX + 1.0f) * cw + pad * 2.0f, maxY * ch + pad * 2.0f), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
     auto boxAt = [&](float x, float y) { return ImVec2(o.x + pad + x * cw, o.y + pad + y * ch); };
     const int cur = QuestBook_Tier();
     // Edges first. (#914 review) Routed along the gaps between rows and columns, never across a box: out of the parent into
@@ -235,7 +237,7 @@ void QuestTree_DrawTab() {
     for (int t = 0; t < QuestBook_TierCount(); ++t) {
         const ImVec2 b = boxAt(0.0f, (float)t);
         const ImVec2 e(b.x + bw, b.y + bh);
-        const bool hover = ImGui::IsMouseHoveringRect(b, e) && ImGui::IsWindowHovered();
+        const bool hover = ImGui::IsMouseHoveringRect(b, e) && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         overNode = overNode || hover;
         const ImU32 fill = t < cur ? IM_COL32(40, 90, 40, 255) : t == cur ? IM_COL32(70, 70, 30, 255) : IM_COL32(35, 35, 40, 255);
         dl->AddRectFilled(b, e, hover ? IM_COL32(80, 80, 60, 255) : fill, 6.0f);
@@ -275,17 +277,17 @@ void QuestTree_DrawTab() {
         overNode = overNode || ImGui::IsMouseHoveringRect(b, ImVec2(b.x + bw, b.y + bh));
     }
     { // (#1078) Pan: drag with the left button from an empty part (a press on a box stays a click) or the middle button
-        // anywhere. Zoom: the wheel, around the cursor (the tree point under it stays under it), 0.5x to 2x.
+        // anywhere. Zoom: Ctrl + the wheel, around the cursor (the tree point under it stays under it), 0.5x to 2x.
         static bool panning = false;
         const ImGuiIO& io = ImGui::GetIO();
-        const bool hovered = ImGui::IsWindowHovered();
+        const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         if (hovered && ((ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !overNode) || ImGui::IsMouseClicked(ImGuiMouseButton_Middle))) panning = true;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) panning = false;
         if (panning && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
             ImGui::SetScrollX(ImGui::GetScrollX() - io.MouseDelta.x);
             ImGui::SetScrollY(ImGui::GetScrollY() - io.MouseDelta.y);
         }
-        if (hovered && io.MouseWheel != 0.0f) {
+        if (hovered && io.KeyCtrl && io.MouseWheel != 0.0f) { // (#1078, the user: the plain wheel scrolls)
             const float z1 = std::clamp(zoom * (io.MouseWheel > 0.0f ? 1.15f : 1.0f / 1.15f), 0.5f, 2.0f);
             if (z1 != zoom) {
                 // The content point under the cursor (in unzoomed units) stays there: base = o + scroll is the content's origin
