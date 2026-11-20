@@ -644,32 +644,10 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
-    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsSoft(hit.material) && terrainTool.till) {
-        // A shovel or a hoe tills soft ground into farmland (no soil placed); an iron or better hoe
-        // tills the 3x3 metres around the aimed square at once.
-        bool any = terrainTool.till(p, hit.local);
-        if (tool.type == ToolType::Hoe && tool.tier >= 2) {
-            const Vector3 up = Vector3Normalize(hit.local);
-            Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
-            east = Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(east);
-            const Vector3 north = Vector3CrossProduct(up, east);
-            for (int a = -1; a <= 1; ++a)
-                for (int b = -1; b <= 1; ++b) {
-                    if (a == 0 && b == 0) continue;
-                    const Vector3 d = Vector3Normalize(Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b))));
-                    // The real ground in that column (the density surface, as the aimed square): the height map is off it
-                    // on eroded and 3D terrain, and those squares were missed (#496). Searched 1.5 m either side of the aimed
-                    // square's height, from above; none in reach: no square there.
-                    const float r0 = Vector3Length(hit.local);
-                    Vector3 at{};
-                    bool found = false;
-                    for (float r = r0 + 1.5f; r >= r0 - 1.5f && !found; r -= 0.1f)
-                        if (p.densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { at = Vector3Scale(d, r); found = true; }
-                    if (!found) continue;
-                    any = terrainTool.till(p, at) || any;
-                }
-        }
-        if (any) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
+    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsTillable(hit.material) && terrainTool.till) {
+        // A shovel or a hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
+        // placed). The brush is the tool's (TillRadius: an iron or better hoe tills a wide patch at once).
+        if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228

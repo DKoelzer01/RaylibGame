@@ -1448,12 +1448,14 @@ namespace {
         const auto stat = StatsOf(rm);
         const DigPerkScale perks = TerrainTool_DigPerkScale(tool.type == ToolType::Pickaxe, (int)mat, stat);
         const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) * perks.radius / p->scale;
-        const bool dig = q.kind == NetEditKind::Dig;
+        const bool dig = q.kind == NetEditKind::Dig, till = q.kind == NetEditKind::Till;
         if (dig && !rule.can) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
+        // (#1085) a till: a shovel or hoe in hand, soil under the aim, the tool's brush at most, centred on the aim
+        if (till && (TillRadius(tool) <= 0.0f || !IsTillable(mat))) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
         // The stroke's shape: the tool's sphere (place: 1.3x, the soft blob), its centre where the tool puts it.
-        const float maxRadius = baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
+        const float maxRadius = till ? TillRadius(tool) / p->scale * 1.01f + 1e-4f : baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
         const float offset = Vector3Distance(hit, centre);
-        if (q.radius > maxRadius || offset > q.radius * (dig ? 0.5f : 0.3f) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+        if (q.radius > maxRadius || offset > (till ? 0.0f : q.radius * (dig ? 0.5f : 0.3f)) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
         // Rate: a token per cooldown (the tool's strokes a second, at least 2, with the perks), up to a small burst.
         const double rate = std::max(rule.strokesPerSecond, 2.0f) * perks.rate;
         if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
@@ -1493,6 +1495,9 @@ namespace {
                 TeamXp(session, ev, share);
                 if (got.gem) TeamXp(session, "gem", 1.0);
             }
+        } else if (till) { // (#1085) the soil there becomes farmland: no cost, no yield
+            e.till = true;
+            out.flags = 16;
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }

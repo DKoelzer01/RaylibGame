@@ -38,6 +38,14 @@ bool IsTillable(VoxelMaterial m) {
            m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland;
 }
 
+// A shovel turns a small patch, a hoe a wider one, and an iron or better hoe a patch about as wide as the 3x3 metres it
+// tilled when farmland was 1 m squares.
+float TillRadius(ToolSpec tool) {
+    if (tool.type == ToolType::Shovel) return 0.6f;
+    if (tool.type == ToolType::Hoe) return tool.tier >= 2 ? 1.6f : 0.8f;
+    return 0.0f;
+}
+
 int PickTierFor(VoxelMaterial m, const char* item) {
     if (IsSoft(m)) return 0;
     if (m == VoxelMaterial::Ore && item) {

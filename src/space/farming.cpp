@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "tools.h"
 #include "gamerng.h"
 #include "terraintool.h"
 #include "fluid.h"
@@ -221,27 +222,15 @@ void Farm_DrawAimHUD(const Planetoid& body, const Plot& plot, int part) {
     }
 }
 
-bool Farm_TillPart(Planetoid& body, Vector3 ground, Plot*& plot, Part& part) {
-    part = Part{ PartType::Farmland, { 0, 0, 0 }, 0, 0 };
-    plot = body.plots ? body.plots->plotFor(ground, 6.0f, false) : nullptr;
-    if (plot) {
-        part.origin = plot->cellAt(plot->toPlot(Vector3Add(ground, Vector3Scale(plot->up, 0.1f))));
-        part.origin.x &= ~1; part.origin.z &= ~1; // on a 1 m grid, so tilled squares line up
-        return plot->canPlace(part);
-    }
-    return true; // a new plot there (anchored at the ground), the part at its origin
-}
-bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground) {
+// Farmland is a state of dirt (#1085): a till paints the soil around the aimed ground (a free brush, no grid) Farmland in
+// the terrain's material channel - saved and replicated as any terrain edit, and grass there goes.
+bool Farm_Till(Scene& world, Planetoid& body, Vector3 ground, float radius) {
     (void)world;
-    if (gFarmTillRequest) return gFarmTillRequest(body, ground); // joined (#335): the server places the farmland
-    Plot* plot = nullptr; Part part;
-    if (!Farm_TillPart(body, ground, plot, part)) return false;
-    if (!plot) {
-        if (!body.plots) body.plots = std::make_unique<PlotSet>();
-        plot = body.plots->plotFor(ground, 0.0f, true);
-    }
-    if (!plot->canPlace(part)) return false;
-    if (!BuildTool_Place(body, *plot, part, false)) return false;
+    if (!IsTillable(body.materialAt(ground))) return false; // rock, sand, gravel, snow: nothing to till
+    if (gFarmTillRequest) return gFarmTillRequest(body, ground, radius); // joined (#335): the server tills
+    TerrainEdit e{};
+    e.till = true; e.center = ground; e.radius = radius;
+    ApplyTerrainEdit(body, e);
     QuestBook_Count("till");
     if (gSkillEvent) gSkillEvent("till", 1.0, Vector3{}); // (#919) Farming XP
     return true;

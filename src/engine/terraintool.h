@@ -29,7 +29,7 @@ struct TerrainToolSettings {
     float swingTime = 0.3f;      // how long the current swing takes (its cooldown): the hands animate over it
     int gemBoost = 1;            // tests: multiplies the (rare) odds of a gem or quartz per rock stroke
     // A shovel's RMB on soft ground tills it into farmland (set by the game; returns true if it did).
-    std::function<bool(class Planetoid&, Vector3 localGround)> till;
+    std::function<bool(class Planetoid&, Vector3 localGround, float radius)> till; // (#1085) a free brush: body-local radius
     // The item in hand became another (an empty bucket filled, a full one emptied): the game rebinds
     // the hotbar slot and counts quest events ("scoop", "pour").
     std::function<void(const std::string& from, const std::string& to, const char* event)> swapHeld;

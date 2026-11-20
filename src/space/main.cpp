@@ -1531,10 +1531,8 @@ int main(int argc, char** argv)
         // (#335) plants and farms are the server's: a fell, sowing, harvesting and tilling are requests
         gPlantRequest = [](Planetoid& b, uint64_t id) { NetClient_PlantAction(gJoin, 1, b.netId, id, 0, -1, ""); };
         gFarmRequest = [](Planetoid& b, const Plot& plot, int part, bool harvest, const std::string& seed) { NetClient_PlantAction(gJoin, harvest ? 3 : 2, b.netId, 0, plot.id, part, seed); };
-        gFarmTillRequest = [](Planetoid& b, Vector3 ground) {
-            Plot* plot = nullptr; Part part;
-            if (!Farm_TillPart(b, ground, plot, part)) return false;
-            return NetClient_RequestPart(gJoin, b, plot, ground, part, false, -1) != 0;
+        gFarmTillRequest = [](Planetoid& b, Vector3 ground, float radius) { // (#1085) a till is a terrain edit the server applies
+            return NetClient_RequestEdit(gJoin, NetEditKind::Till, b, ground, ground, radius, "") != 0;
         };
         // (#332) the server runs the machines: ours show its views, and what we do to them is a request
         Factory::SetRemote(true);
@@ -1585,7 +1583,7 @@ int main(int argc, char** argv)
     int loadFrames = 0;
     int seenSpawns = 0;
     world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world); };
-    terrainTool.till = [&world](Planetoid& body, Vector3 ground) { return Farm_Till(world, body, ground); }; // a shovel's RMB
+    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
         if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
