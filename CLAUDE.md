@@ -60,7 +60,9 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   tests; full regressions wait for major milestones. Fluid perf: `--sandbox --test-fluid-load S` (an S x S m basin).
 - Full regression (`tools/regression.sh planet`, `EXE=... SNAPSHOT=1`): ONE run only, after ALL fixes are in and
   the PRs are merge-ready (user, 2026-11-14), never between fix rounds; re-check failures with targeted runs
-  first. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
+  first. It is split (#1028): each test is tagged headless or local (`tools/regression.sh planet --list`);
+  `--only headless` runs on the deweyserver runner (nightly, or `gh workflow run selfhosted.yml -r <branch> -f
+  regression=headless`), `--only local` (rendering, camera feel, perf and ms gates, menus) is what this PC runs. Erosion is the default terrain (#362, user 2026-11-15; `RAYLIBGAME_EROSION=0` = the old noise terrain for A/B): the first bench on a seed bakes ~80 s, cached with its save after that.
   Minor targeted tests are fine any time.
 - Known flaky: `--test-progression` (power chain, #372), `--test-animals` flee distance (#373). Re-run before
   treating a failure as a regression.
