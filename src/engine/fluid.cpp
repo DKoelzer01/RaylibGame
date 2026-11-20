@@ -2716,6 +2716,53 @@ bool Fluid::Asleep() {
     return true;
 }
 
+std::string Fluid::DebugAwake() {
+    // Tests (#935): why Asleep() stays false - pending bricks, and the awake ones by state (the first few in full).
+    std::lock_guard<std::mutex> lock(simMx);
+    int pending = 0, awake = 0, unready = 0, noSlot = 0, settled = 0, steady = 0, upload = 0;
+    std::string first;
+    for (auto& s : sites) {
+        pending += (int)s->pending.size();
+        for (auto& kv : s->bricks) {
+            const Brick& b = *kv.second;
+            if (!b.active) continue;
+            ++awake; unready += !b.ready; noSlot += b.slot < 0; settled += b.settled; steady += b.steady; upload += b.upload;
+            double sx = 0.0, sy = 0.0; int nCol = 0; // its net current (cm/s, the steady rule's measure)
+            for (size_t k = 0; k + 1 < b.colFlow.size(); k += 2) if (b.colFlow[k] || b.colFlow[k + 1]) { sx += b.colFlow[k]; sy += b.colFlow[k + 1]; ++nCol; }
+            if (awake <= 4) first += TextFormat(" [%d %d %d: ready %d slot %d idle %d settled %d steady %d changed %d; net current %+.1f %+.1f cm/s over %d columns, win %d/%d]",
+                                                b.bi, b.bj, b.bk, (int)b.ready, b.slot, b.idle, (int)b.settled, (int)b.steady, (int)b.changed,
+                                                nCol ? sx / nCol : 0.0, nCol ? sy / nCol : 0.0, nCol, b.winFlow, b.winTicks);
+            if (awake <= 4) { // its neighbours: missing (-), or ready/active/settled/slot
+                first += " nbrs";
+                for (int fc = 0; fc < 6; ++fc) {
+                    const Brick* o = b.nbr[fc];
+                    first += o ? TextFormat(" %d:r%da%ds%d@%d", fc, (int)o->ready, (int)o->active, (int)o->settled, o->slot) : TextFormat(" %d:-", fc);
+                }
+            }
+            if (awake <= 2 && !b.colFlow.empty()) { // its strongest columns: where, how much water, and what is beside them
+                std::vector<std::pair<int, int>> cols;
+                for (int c = 0; c < 256; ++c) { const int m = abs(b.colFlow[2 * c]) + abs(b.colFlow[2 * c + 1]); if (m) cols.push_back({ -m, c }); }
+                std::sort(cols.begin(), cols.end());
+                for (size_t q = 0; q < cols.size() && q < 5; ++q) {
+                    const int c = cols[q].second, x = c % B, y = c / B;
+                    std::string zs; // the column's wet cells: z fill flags, and the -y neighbour's flags at the same z
+                    for (int z = 0; z < B; ++z) {
+                        const int i = Idx(x, y, z);
+                        if (!b.fill[i] && !(b.flags[i] & (kSource | kSink))) continue;
+                        const Brick* on = y > 0 ? &b : b.nbr[2]; // across -y: this brick, or the neighbour's y = B-1 row
+                        const int iy = y > 0 ? Idx(x, y - 1, z) : Idx(x, B - 1, z);
+                        const int ny = on ? on->flags[iy] : -1, nf = on ? on->fill[iy] : -1;
+                        zs += TextFormat(" z%d:%d/f%d(-y f%d fill %d)", z, b.fill[i], b.flags[i], ny, nf);
+                    }
+                    first += TextFormat("\n    col %d,%d flow %+d %+d cm/s:%s", x, y, b.colFlow[2 * c], b.colFlow[2 * c + 1], zs.c_str());
+                }
+            }
+        }
+    }
+    return TextFormat("pending %d, awake %d (unready %d, no slot %d, settled %d, steady %d, upload %d)%s", pending, awake, unready,
+                      noSlot, settled, steady, upload, first.c_str());
+}
+
 std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
