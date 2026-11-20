@@ -164,7 +164,11 @@ void QuestTree_DrawTab() {
         ImGui::TextColored(ImVec4(l.color.r / 255.0f, l.color.g / 255.0f, l.color.b / 255.0f, 1.0f), "%s", l.name.c_str());
         ImGui::SameLine();
     }
-    ImGui::TextDisabled("  green: done   white: open   grey: locked (hover for details)   drag to move, scroll to zoom");
+    // (#1080: the Tab window can be narrow now) the key on its own line, wrapped, so nothing falls off its right edge
+    ImGui::NewLine();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextWrapped("green: done   white: open   grey: locked (hover for details)   drag to move, scroll to zoom");
+    ImGui::PopStyleColor();
     ImGui::BeginChild("questtree", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoScrollWithMouse); // (#1078: the wheel zooms)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 o = ImGui::GetCursorScreenPos();
