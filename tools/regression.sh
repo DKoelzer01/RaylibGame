@@ -63,6 +63,8 @@ script() { if [ -n "$list" ]; then listed "$1" "$2"; return 1; fi; want "$1"; }
 
 # Comments after a test: why it is local (the H tests read game state, not pixels, frames or the clock's speed).
 # "wall clock" marks a headless test whose phases or timeouts run on GetTime(): a much slower machine could change it.
+# The flag-mode fluid tests run the fluid job at the machine's speed (only scenarios set RAYLIBGAME_FLUID_LOCKSTEP=1): the
+# headless ones gave the PC's verdicts on the runner (#1028), --test-leak did not and is local until its scenario replaces it.
 planet() {
     L --seed 42 --bench 20 --bench-walk # perf bench
     L --seed 42 --bench 10 # perf bench
@@ -73,7 +75,7 @@ planet() {
     H --seed 42 --bench 5 --test-airjump
     L --seed 42 --bench 5 --test-stand 10 # camera jitter per frame, shadow texels slid per second
     H --seed 42 --bench 5 --test-mine 20
-    H --seed 42 --bench 5 --test-suffocate
+    L --seed 42 --bench 5 --test-suffocate # wall clock: must die within 15 s (failed on the slower runner, #1028)
     H --seed 42 --bench 3 --look-down --test-dig 10 --test-saveload
     L --seed 42 --bench 5 --test-stand 3 --look-down --crack-check # reads the screen for magenta holes
     L --seed 9 --bench 8 --test-stand 6 --telescope 16 # the telescope view, camera jitter
@@ -89,7 +91,7 @@ planet() {
     L --seed 42 --bench 3 --test-torch # ground luminance from screenshots
     L --seed 42 --bench 5 --test-lamps # ground luminance from screenshots
     H --seed 42 --bench 5 --test-fill --day
-    H --seed 9 --bench 20 --test-structures --day
+    L --seed 9 --bench 20 --test-structures --day # a screenshot tour that waits for streaming at each site (no verdict on the runner, #1028)
     H --seed 42 --bench 5 --test-fishing
     H --seed 42 --bench 5 --test-trapping
     H --seed 42 --bench 3 --test-combat
@@ -118,7 +120,7 @@ planet() {
     H --seed 42 --bench 3 --test-interest # tree tiles and animals around a second centre 3 km away (#318)
     L --seed 9 --bench 20 --bench-fly 200 # perf bench
     L --seed 9 --bench 10 --bench-fly 200 --no-foliage # perf bench
-    H --seed 42 --bench 3 --test-smallbody
+    L --seed 42 --bench 3 --test-smallbody # wall clock: landing on the pebble timed in seconds (failed on the runner, #1028)
     H --seed 42 --bench 2 --test-inventory
     H --seed 42 --bench 3 --test-map
     L --seed 42 --bench 3 --test-viewmodel # the hands' bob and screenshots of them
@@ -144,7 +146,7 @@ planet() {
     H --seed 42 --day --bench 3 --test-dam-divert # #656: a dam that holds a river dries it 200 m downstream, a second dam upstream cuts the first reach's inflow, the state survives save/load, dug out the river comes back: flow past 0.5 within 60 s and still rising at 90 s (~3 min; --dam-divert-full waits for the full return); wall clock
     H --seed 42 --bench 3 --test-pond
     H --seed 42 --bench 3 --test-part-wall # #391: a wall of build blocks holds water; taken down, the water runs on
-    H --sandbox --seed 42 --day --bench 3 --test-leak # #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass
+    L --sandbox --seed 42 --day --bench 3 --test-leak # the fluid job runs at the machine's speed: the runner reached 0.55 of the orifice rate, the PC 0.79 (#1028); #680/#691: a 1 m hole in a dug wall drains like an orifice, then a weir; no water on the grass
     H --sandbox --seed 42 --day --bench 3 --test-leak-parts # #692/#694: the same through a dam of placed blocks (at 1 m cells, opt-in, a one-block hole off the fluid grid stays shut)
     H --sandbox --seed 42 --day --bench 3 --test-dam-break # #680: Ritter front, depth and discharge (reported; the pass is the model work on #680)
     H --seed 42 --bench 3 --test-flow-meter # #392: the flow readout reads a 1 m^3/s stream

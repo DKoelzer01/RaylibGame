@@ -68,11 +68,14 @@ movement feel (`--test-stand`, `--test-flyfollow`, `--test-ledge`, `--test-tor`,
 verdicts that gate on milliseconds (`--test-persist`, `--test-factory`, `--test-animals`, `--test-flow` and
 `--test-flow-sea`'s step-time gate, `--test-telescope-close`) and the menus. `tools/regression.sh planet --list` prints
 the table; a comment on each L line says why. Tests still timed on the wall clock (phases and timeouts on `GetTime()`)
-are H with a "wall clock" note: a much slower machine could change them.
+are H with a "wall clock" note: a much slower machine could change them. Four tests gave other verdicts on the runner
+than on the PC because the runner is slower, and are L until they have sim-time versions: `--test-suffocate` and
+`--test-smallbody` (wall-clock deadlines), `--test-structures` (a screenshot tour waiting for streaming) and
+`--test-leak` (the flag-mode fluid job runs at the machine's speed; scenarios use `RAYLIBGAME_FLUID_LOCKSTEP=1`).
 
 - `tools/regression.sh planet --only headless`: the runner's half (the `regression` job of `selfhosted.yml`, after the
-  checks; ~75 tests, ~90 min on the PC).
-- `tools/regression.sh planet --only local`: the PC's half (~26 tests, ~25 min instead of ~2 h).
+  checks; 71 tests, ~85 min on the PC, ~2.5 h on the runner, which runs at about half the PC's frame rate).
+- `tools/regression.sh planet --only local`: the PC's half (30 tests, ~30 min instead of ~2 h).
 - No `--only`: every test, as before the split.
 
 The job runs in the persistent run folder (`RUNDIR`, so the seed-42 erosion bake is cached), writes a table of every test
