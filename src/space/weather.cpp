@@ -152,7 +152,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     // strike (atmosphere.fs) and lifts the open-sky ambient briefly (scene.cpp; fragSky keeps caves and interiors dark), with
     // a return stroke's second flicker; it no longer whites out the screen (a 55% overlay, user: "They should light up the
     // sky, not the whole screen"). Reduce flashing (settings): one soft glow, about a third as bright.
-    if (here.kind == WeatherKind::Storm && p && player.nearest == p) {
+    if (here.kind == WeatherKind::Storm && p) { // (also with no nearest body set: the fly camera)
         if (GameClock() > nextFlash) {
             lastFlash = GameClock();
             static const double fixedPeriod = getenv("RAYLIBGAME_LIGHTNING_PERIOD") ? atof(getenv("RAYLIBGAME_LIGHTNING_PERIOD")) : 0.0; // captures: a flash every N s
@@ -178,7 +178,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
         flash = e;
         world.lightning = e;
         if (p && e > 0.0f) {
-            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 local = p->toLocal(world.camera.position);
             const float d = Vector3Length(local);
             if (d > 1.0f) {
                 const Vector3 up = Vector3Scale(local, 1.0f / d);
