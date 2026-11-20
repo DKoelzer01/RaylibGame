@@ -32,6 +32,10 @@ struct Params {
     // A sleeping neighbour brick is woken by a column pair only for a head difference of this many units (1.6 cm, the
     // settle tolerance, #855) or a spill into it: resting water beside it asked every substep, and no pond ever slept.
     int wakeUnits = 4;
+    // The cell path's sub-unit flow (#1041: a low weir passed too little water), RAYLIBGAME_FLUID_CARRY bits: 1 a face's carried
+    // fraction survives a substep it rests (q 0), 2 it survives a substep the taker's room clips, 4 the levelling share keeps
+    // its fraction (localDiff / visc in float, not integer). The shader gets the same as the uniform carryMode.
+    int carry = [] { const char* e = getenv("RAYLIBGAME_FLUID_CARRY"); return e ? atoi(e) : 0; }();
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
     void setCell(float cs, int column) {

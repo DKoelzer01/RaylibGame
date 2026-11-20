@@ -77,6 +77,7 @@ uniform float cellSize;    // m (Plan 10 W4c #642)
 // Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
 // same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
 uniform float kUnits, kHu;
+uniform int carryMode; // #1041: the cell path's sub-unit flow (FluidKernel::Params::carry bits: 1 resting face, 2 clipped, 4 float share)
 uniform int wakeUnits; // #855: a column pair wakes a sleeping neighbour brick for this head difference (units)
 const float kMatchPlan = 3.0; // #855: column pairs planning fewer units a substep carry only the momentum they moved
 #define UNITS kUnits
@@ -248,7 +249,7 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     int localDiff = int(SH(d) + F(d)) - int(SH(r) + F(r));
     float share = 0.0;
     if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d));            // a film over a drop runs off whole (#454)
-    else if (localDiff >= visc[kd]) share = float(localDiff / visc[kd]);
+    else if (localDiff >= visc[kd]) share = (carryMode & 4) != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd]); // #1041
     // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
     // under water (a leak into an open cell beside it: a pool dug into from the side).
     precise float depth = colDepth;
@@ -627,7 +628,7 @@ void main() {
             if (F(c) == 0u && F(inC[gn]) == 0u) continue; // two dry cells: nothing flows (#669: most cells are air or rock)
             float q, qm;
             faceFlow(g, c, gn, inC[gn], k == 0 ? P.x : P.y, q, qm);
-            if (q == 0.0) continue;
+            if (q == 0.0) { if ((carryMode & 1) != 0) { if (k == 0) N.z = P.z; else N.w = P.w; } continue; } // #1041: a resting face keeps its fraction
             if (k == 0) { N.x = q; N.z = sign(P.z) == sign(q) ? P.z : 0.0; M.x = qm; }
             else { N.y = q; N.w = sign(P.w) == sign(q) ? P.w : 0.0; M.y = qm; }
         }
@@ -699,7 +700,7 @@ void main() {
         float mag = abs(a) * sc;
         int units = int(min(floor(mag), float(share)));
         bool clipped = float(units) < floor(mag);                         // by the taker's room
-        float carry = clipped ? 0.0 : mag - floor(mag);
+        float carry = (clipped && (carryMode & 2) == 0) ? 0.0 : mag - floor(mag); // #1041: 2 keeps it when clipped
         int signedUnits = a > 0.0 ? -units : units;                       // into this cell
         net += signedUnits;
         moving += uint(units);

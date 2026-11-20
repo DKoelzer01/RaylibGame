@@ -158,6 +158,7 @@ struct Brick {
     // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
     bool steady = false;
     int winTicks = 0, winFlow = 0;  // this settle window: ticks published, ticks the GPU changed it
+    std::vector<int32_t> winCol; int winColN = 0; // this settle window: the columns' currents summed (cm/s, per readback) and the readbacks (#1032)
     float checkVol = 0.0f;          // its water (m^3) at the window's start: a slow drain or fill changes it, jitter does not (#680)
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
@@ -1079,7 +1080,7 @@ void RunJob() {
             // wakes it again (Touch); a real flow changes some cell by more than that within the window.
             if (b.active) {
                 ++b.winTicks;
-                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther; }
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.winColN = 0; std::fill(b.winCol.begin(), b.winCol.end(), 0); b.checkVol = b.statVolume + b.statOther; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
                     const int maxd = SettleDrift(b); // a few outlier cells allowed (#855); the volume check below still catches
                                                      // water that is really going somewhere
@@ -1090,7 +1091,16 @@ void RunJob() {
                     // (the mean of its columns' signed flows, #677's colFlow, cm/s) averages jitter out; a real stream moves
                     // its columns the same way. No current published yet: the old rule.
                     bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
-                    if (flowing && kSteadyNet > 0.0f && !b.colFlow.empty()) {
+                    // The current is the window's mean (user, #1032): one readback's last substep caught a trickle that moved a unit
+                    // now and then as a full unit's speed (28-68 cm/s over a shallow column), and a channel still topping up slowly
+                    // stayed "steady" for minutes. RAYLIBGAME_STEADY_SNAPSHOT=1: the last readback alone (the old rule), for A/B.
+                    static const bool snapshot = EnvFlag("RAYLIBGAME_STEADY_SNAPSHOT");
+                    if (flowing && kSteadyNet > 0.0f && !snapshot && b.winColN > 0 && b.winCol.size() == 512) {
+                        double sx = 0.0, sy = 0.0; int nCol = 0;
+                        for (size_t k = 0; k + 1 < b.winCol.size(); k += 2)
+                            if (b.winCol[k] || b.winCol[k + 1]) { sx += b.winCol[k]; sy += b.winCol[k + 1]; ++nCol; }
+                        flowing = nCol > 0 && sqrt(sx * sx + sy * sy) / ((double)nCol * b.winColN) >= kSteadyNet;
+                    } else if (flowing && kSteadyNet > 0.0f && !b.colFlow.empty()) {
                         double sx = 0.0, sy = 0.0; int nCol = 0;
                         for (size_t k = 0; k + 1 < b.colFlow.size(); k += 2)
                             if (b.colFlow[k] || b.colFlow[k + 1]) { sx += b.colFlow[k]; sy += b.colFlow[k + 1]; ++nCol; }
@@ -1110,7 +1120,7 @@ void RunJob() {
                         b.faces.clear(); b.zeroFaces = true; // at rest: no momentum (#855: as a GPU slot given back and taken again)
                     }
                     else b.steady = false;
-                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther;
+                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.winColN = 0; std::fill(b.winCol.begin(), b.winCol.end(), 0); b.checkVol = b.statVolume + b.statOther;
                 }
             } else { b.checkStep = -1; b.steady = false; }
             // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in
@@ -1535,6 +1545,9 @@ void GpuReadback() {
                     if (!br) continue;
                     br->colFlow.resize(512);
                     for (int c = 0; c < 256; ++c) { const uint32_t v = fp[li * 256 + c]; br->colFlow[2 * c] = (int16_t)(v & 0xFFFFu); br->colFlow[2 * c + 1] = (int16_t)(v >> 16); }
+                    if (br->winCol.size() != 512) br->winCol.assign(512, 0); // the settle window's sum (#1032)
+                    for (int k = 0; k < 512; ++k) br->winCol[k] += br->colFlow[k];
+                    ++br->winColN;
                 }
             }
         } else {
@@ -1786,7 +1799,7 @@ void GpuTick(int n) {
     G.step.setInt("kColumnCells", ColumnCells());
     { // fill units per m^3 / per metre, the CPU kernel's own floats (#680: the shader divided them itself, not correctly rounded)
         FluidKernel::Params kp; kp.setCell(cellSize, ColumnCells());
-        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits);
+        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits); G.step.setInt("carryMode", kp.carry); // #1041
     }
     static const bool advectOn = !EnvFlag("FLUID_NOADVECT");
     G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
