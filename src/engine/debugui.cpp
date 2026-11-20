@@ -1,0 +1,181 @@
+#include "debugui.h"
+#include "scene.h"
+#include "world.h"
+#include "profiler.h"
+#include "terraintool.h"
+#include "audio.h"
+
+#include "imgui.h"
+#include "rlImGui.h"
+
+#include <cmath>
+
+namespace {
+    bool open = false;
+    float frameTimes[240] = {};
+    int frameIndex = 0;
+
+    // Sun direction edited as azimuth/elevation (degrees); initialised from the scene on first draw.
+    bool sunInit = false;
+    float sunAzimuth = 0.0f, sunElevation = 0.0f;
+}
+
+void DebugUI_Init() {
+    rlImGuiSetup(true);
+    ImGui::GetIO().IniFilename = "imgui.ini";
+}
+
+void DebugUI_Shutdown() { rlImGuiShutdown(); }
+bool DebugUI_IsOpen() { return open; }
+void DebugUI_Toggle() { open = !open; }
+
+void DebugUI_Draw(Scene& world) {
+    // Always record frame times so the graph has history when the panel opens.
+    frameTimes[frameIndex] = GetFrameTime() * 1000.0f;
+    frameIndex = (frameIndex + 1) % IM_ARRAYSIZE(frameTimes);
+    if (!open) return;
+    PROFILE_FUNCTION();
+
+    if (!sunInit) {
+        const Vector3 d = world.sunDirection;
+        sunAzimuth = atan2f(d.z, d.x) * RAD2DEG;
+        sunElevation = asinf(d.y) * RAD2DEG;
+        sunInit = true;
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Debug (F1)")) {
+        // --- Frame ---
+        float worst = 0.0f, sum = 0.0f;
+        for (float t : frameTimes) { worst = fmaxf(worst, t); sum += t; }
+        ImGui::Text("%d FPS   avg %.2f ms   worst %.2f ms", GetFPS(), sum / IM_ARRAYSIZE(frameTimes), worst);
+        ImGui::PlotLines("##frametimes", frameTimes, IM_ARRAYSIZE(frameTimes), frameIndex, "frame ms", 0.0f, 33.0f, ImVec2(-1, 60));
+        ImGui::Text("Chunks drawn: %d", world.lastDrawCalls);
+
+        // --- Rendering ---
+        if (ImGui::CollapsingHeader("Rendering", ImGuiTreeNodeFlags_DefaultOpen)) {
+            bool sunChanged = ImGui::SliderFloat("Sun azimuth", &sunAzimuth, -180.0f, 180.0f, "%.0f deg");
+            sunChanged |= ImGui::SliderFloat("Sun elevation", &sunElevation, -89.0f, 89.0f, "%.0f deg");
+            if (sunChanged) {
+                const float az = sunAzimuth * DEG2RAD, el = sunElevation * DEG2RAD;
+                world.sunDirection = { cosf(el) * cosf(az), sinf(el), cosf(el) * sinf(az) };
+            }
+            ImGui::SliderFloat("Shadow box half-size", &world.shadowHalfExtent, 25.0f, 500.0f, "%.0f");
+            ImGui::SliderFloat("Texture scale", &world.texScale, 0.005f, 0.5f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            ImGui::ColorEdit3("Ambient", &world.ambientColor.x);
+            ImGui::Checkbox("Debug overlay (F3)", &world.debugDraw);
+            ImGui::SameLine();
+            ImGui::Checkbox("Frustum culling", &frustumCullingEnabled);
+            if (ImGui::Button("Reload shaders")) world.reloadShaders();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(also reload automatically on save)");
+            if (world.shadowMap.depth.id > 0 && ImGui::TreeNode("Shadow map")) {
+                ImGui::TextDisabled("Hardware-compare depth texture: shown by the debug draw overlay instead.");
+                ImGui::TreePop();
+            }
+        }
+
+        // --- Time of day (#275): spins the planet (and moves the orbits), the player rides along ---
+        if (ImGui::CollapsingHeader("Time of day", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const double day = BodyDaySeconds(world), hour = day / 24.0;
+            const float elev = SunElevationAtCamera(world);
+            ImGui::Text("Sun %+.1f deg over the horizon%s", elev, day > 0.0 ? "" : " (this body doesn't spin)");
+            ImGui::SliderFloat("Time scale", &gDebugTimeScale, 1.0f, 600.0f, "x%.0f", ImGuiSliderFlags_Logarithmic);
+            if (day > 0.0) {
+                if (ImGui::Button("+1 h")) gTimeSkipSeconds += hour;
+                ImGui::SameLine();
+                if (ImGui::Button("+6 h")) gTimeSkipSeconds += 6.0 * hour;
+                ImGui::SameLine();
+                // Dawn: the sun 2 degrees under the horizon, rising; dusk: setting at the horizon. Noon: half way between
+                // sunrise and sunset (the next one).
+                if (ImGui::Button("Dawn")) { const double t = SecondsToSunElevationAtCamera(world, -2.0f, true); if (t > 0.0) gTimeSkipSeconds += t; }
+                ImGui::SameLine();
+                if (ImGui::Button("Noon")) {
+                    const double rise = SecondsToSunElevationAtCamera(world, 0.0f, true), set = SecondsToSunElevationAtCamera(world, 0.0f, false);
+                    if (rise > 0.0 && set > 0.0) {
+                        double noon = set > rise ? 0.5 * (rise + set) : 0.5 * (rise - day + set); // sun up now: the noon between the last sunrise and the next sunset
+                        if (noon < 1.0) noon += day;
+                        gTimeSkipSeconds += noon;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Dusk")) { const double t = SecondsToSunElevationAtCamera(world, 0.0f, false); if (t > 0.0) gTimeSkipSeconds += t; }
+                ImGui::TextDisabled("F8: +1 h while this panel is open");
+                if (IsKeyPressed(KEY_F8)) gTimeSkipSeconds += hour;
+            }
+        }
+
+        // --- Camera ---
+        if (ImGui::CollapsingHeader("Audio")) {
+            float vol = Audio_GetMasterVolume();
+            if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 1.0f, "%.2f")) Audio_SetMasterVolume(vol);
+        }
+
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::DragFloat3("Position", &world.camera.position.x, 0.5f);
+            ImGui::SliderFloat("Move speed", &cameraMoveSpeed, 1.0f, 10000.0f, "%.0f u/s", ImGuiSliderFlags_Logarithmic);
+            const DVec3 cw = world.cameraWorld();
+            ImGui::Text("World position: %.1f %.1f %.1f", cw.x, cw.y, cw.z);
+            ImGui::Text("Render origin:  %.1f %.1f %.1f", world.renderOrigin.x, world.renderOrigin.y, world.renderOrigin.z);
+            ImGui::SliderFloat("FOV", &world.camera.fovy, 20.0f, 120.0f, "%.0f deg");
+        }
+
+        // --- Chunk streaming ---
+        if (ImGui::CollapsingHeader("Chunk streaming", ImGuiTreeNodeFlags_DefaultOpen)) {
+            const WorldStats& s = GetWorldStats();
+            ImGui::Text("Meshes drawn: %d   LOD nodes: %d   edits: %d", s.chunks, s.nodes, s.edits);
+            ImGui::SliderFloat("Terrain detail (LOD factor)", &lodSettings.detailFactor, 0.5f, 6.0f, "%.2f"); // #297: the setting; lodFactor follows it (lower while flying)
+            ImGui::Text("LOD factor in effect: %.2f%s", lodSettings.lodFactor, lodSettings.fast ? " (moving fast)" : "");
+            ImGui::Text("Jobs queued: %d   running: %d / %d threads", s.queuedJobs, s.runningJobs, s.workerThreads);
+            ImGui::Text("Uploads: %d pending, %d last frame", s.pendingUploads, s.uploadsLastFrame);
+            ImGui::Text("Avg chunk build: %.2f ms   last world load: %.2f s", s.avgBuildMs, s.lastGenerationSeconds);
+        }
+
+        // --- Terrain tool ---
+        if (ImGui::CollapsingHeader("Terrain tool")) {
+            ImGui::Checkbox("Terraform tool (debug: old brush, any material)", &terrainTool.terraform);
+            ImGui::SliderFloat("Brush radius", &terrainTool.brushRadius, 1.0f, 24.0f, "%.1f");
+            ImGui::SliderFloat("Strength", &terrainTool.digStrength, 0.02f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Strokes / s", &terrainTool.strokesPerSecond, 1.0f, 30.0f, "%.0f");
+            if (ImGui::Button("Save (F5)")) SaveWorld(world);
+            ImGui::SameLine();
+            if (ImGui::Button("Load (F9)")) LoadWorldSave(world);
+        }
+
+        // --- World generation ---
+        if (ImGui::CollapsingHeader("World generation", ImGuiTreeNodeFlags_DefaultOpen)) {
+            int seed = (int)worldGen.seed;
+            if (ImGui::InputInt("Seed (0 = random)", &seed)) worldGen.seed = (unsigned int)std::max(0, seed);
+            ImGui::Text("Last seed used: %u", worldGen.lastSeed);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reuse")) worldGen.seed = worldGen.lastSeed;
+            // The system definition (from bodies.txt or a save); edits apply on Regenerate.
+            ImGui::TextDisabled("Bodies (%s)", worldGen.bodiesPath.c_str());
+            for (size_t i = 0; i < worldGen.system.bodies.size(); ++i) {
+                BodyDef& b = worldGen.system.bodies[i];
+                ImGui::PushID((int)i);
+                if (ImGui::TreeNode("body", "%s %s", BodyKindName(b.kind), b.name.c_str())) {
+                    if (b.kind == BodyKind::Ring) {
+                        ImGui::SliderInt("Count", &b.count, 0, 64);
+                        ImGui::SliderFloat("Base size", &b.radius, 8.0f, 250.0f, "%.0f");
+                        ImGui::SliderFloat("Extent", &b.extent, 100.0f, 50000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+                        ImGui::SliderFloat("Max spin (deg/s)", &b.maxSpinDegPerSec, 0.0f, 20.0f, "%.1f");
+                    } else {
+                        ImGui::SliderFloat("Radius", &b.radius, 8.0f, 100000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+                        if (b.orbitParent.empty()) ImGui::DragFloat3("Position", &b.position.x, 1.0f);
+                        else ImGui::DragFloat("Altitude", &b.orbitAltitude, 10.0f, 0.0f, 1e7f, "%.0f");
+                        if (ImGui::SliderFloat("Spin (deg/s)", &b.spinDegPerSec, -20.0f, 20.0f, "%.2f")) b.spinFromDay = false;
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            ImGui::TextDisabled("Chunks build on worker threads, nearest first.");
+            if (ImGui::Button("Regenerate world")) regenerateWorld(world);
+            ImGui::SameLine();
+            if (ImGui::Button("Reload bodies file")) { ReloadSystemDef(); regenerateWorld(world); }
+        }
+    }
+    ImGui::End();
+}

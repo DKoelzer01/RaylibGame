@@ -1,0 +1,31 @@
+{
+  "version": 5,
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release (MinGW)",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug (MinGW)",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "profile",
+      "displayName": "Release + Tracy",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/profile",
+      "cacheVariables": { "ENABLE_TRACY": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release", "jobs": 8 },
+    { "name": "debug", "configurePreset": "debug", "jobs": 8 },
+    { "name": "profile", "configurePreset": "profile", "jobs": 8 }
+  ]
+}

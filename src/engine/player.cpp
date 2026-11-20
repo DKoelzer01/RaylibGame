@@ -1,0 +1,986 @@
+#include "camera.h" // gFlyGravityUp (#232)
+#include "player.h"
+#include <chrono>
+#include "world.h"
+#include "playerinput.h"
+
+#include <raymath.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+// (player: the local PlayerSession's, src/space/playersession.cpp, #313)
+
+
+static Vector3 RotateAround(Vector3 v, Vector3 axis, float angle) {
+    return Vector3RotateByQuaternion(v, QuaternionFromAxisAngle(axis, angle));
+}
+
+void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
+    ++spawns;
+    const float R = body.radius * body.scale;
+    const Vector3 c = body.position;
+    if (body.flat) dir = { 0, 1, 0 };
+    dir = Vector3Normalize(dir);
+    const float outer = body.field->maxRadius() * body.scale; // above the highest terrain (planets: mountains)
+    const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, outer + 60.0f));
+    TerrainHit hit;
+    Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
+    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    position = world.renderOrigin + feet;
+    up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
+    forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
+    if (Vector3Length(forward) < 0.1f) forward = { 0, 0, 1 };
+    velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
+    grounded = false;
+    groundBody = nullptr;
+    anchorTo(body);
+    flyMode = false;
+}
+
+
+// Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent, so
+// its parent's pull cancels in its frame - subtract the body's own acceleration (the outside
+// gravity at its centre). A small body only counts once its own pull here is felt (0.1 m/s^2):
+// flying past ring rocks the planet stays the reference instead of "up" snapping between rocks.
+static bool FeltIsRelative(Vector3 feet, const Planetoid* nearest) {
+    return nearest && nearest->orbitParent && Vector3Length(BodyGravityAt(*nearest, feet)) >= 0.1f;
+}
+static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
+    const Vector3 g = GravityAt(world, feet);
+    if (!FeltIsRelative(feet, nearest)) return g;
+    return Vector3Subtract(g, GravityAt(world, nearest->position));
+}
+void Player::update(Scene& world, const PlayerInput& in, float dt) {
+    PROFILE_FUNCTION();
+    // #768: the collision cache lives for one update only. Carried across updates it made the physics depend on history:
+    // a client replaying from a corrected state skipped differently from the server, and predictions drifted.
+    for (bool& v : collideCache.valid) v = false;
+    if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
+        flyMode = !flyMode;
+        velocity = { 0, 0, 0 };
+        if (!flyMode) {
+            // Drop in moving with the ground below (a spinning planet's surface is fast).
+            const Vector3 feet = (position - world.renderOrigin).toFloat();
+            if (Planetoid* p = NearestPlanetoid(world, feet)) velocity = p->surfaceVelocity(feet);
+        }
+        groundBody = nullptr;
+    }
+    impactSpeed = landingSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
+    jetpackFiring = false;
+    if (flyMode) {
+        // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
+        bool rotate = false;
+        Planetoid* ref = flyFollow ? flyReference(world, rotate) : nullptr;
+        if (ref && ref->id == flyBodyId && rotate == flyRotate) {
+            if (rotate) {
+                flyCarried = ref->toWorldD(flyLocal);
+                flyCarriedValid = true;
+                world.camera.position = (flyCarried - world.renderOrigin).toFloat();
+                world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
+                world.camera.up = ref->dirToWorld(flyLocalUp);
+            } else {
+                const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
+                world.camera.position = Vector3Add(world.camera.position, move);
+                world.camera.target = Vector3Add(world.camera.target, move);
+            }
+        }
+        // Near a body the fly camera keeps the horizon level (#232): its local up while gravity there is felt (> 0.5 m/s^2),
+        // else the free 6-DOF camera (space, near-zero g).
+        {
+            bool rot2 = false;
+            Planetoid* near = flyReference(world, rot2);
+            gFlyGravityUp = { 0, 0, 0 };
+            if (near) {
+                const DVec3 rel = (world.renderOrigin + world.camera.position) - near->worldPos;
+                const double d = rel.length(), R = (double)near->radius * near->scale;
+                const double g = near->surfaceGravity * (R * R) / std::max(d * d, 1.0);
+                if (g > 0.5 && d > 1.0) gFlyGravityUp = { (float)(rel.x / d), (float)(rel.y / d), (float)(rel.z / d) };
+            }
+        }
+        // The free-fly camera (Scene / customUpdateCamera) drives; keep the body under the eye.
+        position = world.renderOrigin + Vector3Subtract(world.camera.position, Vector3Scale(up, eyeHeight));
+        forward = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        up = Vector3Normalize(world.camera.up); // keep a consistent basis for leaving fly mode
+        return;
+    }
+    dt = std::min(dt, 0.1f); // don't explode after a hitch
+
+    // Drop a ground anchor whose body was destroyed (world regen, a load) whether or not we are
+    // still flagged grounded; everything below may dereference groundBody.
+    if (groundBody && Planetoid::find(groundId) != groundBody) groundBody = nullptr;
+
+    // Ride along with a spinning body we are standing on: position AND orientation turn with it,
+    // so standing still on a spinning asteroid looks still (the view no longer drifts).
+    if (grounded && groundBody) {
+        if ((position - lastEndPosition).length() > 1e-6 || Planetoid::find(groundId) != groundBody) {
+            // Something else moved us since last frame (respawn, leaving the ship, a load), or the
+            // body was destroyed (world regen): the old ground anchor no longer applies.
+            grounded = false;
+            groundBody = nullptr;
+        } else {
+            position = groundBody->toWorldD(groundLocal);
+            // Turn the view by however much the body turned since last frame (a delta, so view
+            // changes made elsewhere between frames are kept).
+            const Quaternion now = groundBody->rotationQuat();
+            const Quaternion delta = QuaternionMultiply(now, QuaternionInvert(groundRotPrev));
+            forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
+            up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
+        }
+    }
+    // Airborne: carry along with the body we were near (its spin and orbit since last frame); the
+    // motion of our own (world-frame) velocity is then integrated relative to its surface below.
+    if (airBody && Planetoid::find(airId) != airBody) airBody = nullptr;
+    if (!grounded && airBody) {
+        if ((position - lastEndPosition).length() > 1e-6) airBody = nullptr; // moved from outside (respawn, load, ship)
+        else position = airBody->toWorldD(airLocal);
+    }
+    Vector3 feet = (position - world.renderOrigin).toFloat();
+    // Eye smoothing (below) compares the feet in the ground's frame before and after this update.
+    Planetoid* const eyeBody = (grounded && groundBody) ? groundBody : (airBody ? airBody : nullptr);
+    const DVec3 eyeFrom = (grounded && groundBody) ? groundLocal : airLocal;
+
+    nearest = NearestPlanetoid(world, feet);
+    // In water when the body's middle is (static or flowing water).
+    inWater = !flyMode && IsUnderwater(world, Vector3Add(feet, Vector3Scale(up, 0.9f)));
+    riverCurrent = inWater ? RiverCurrent(nearest, Vector3Add(feet, Vector3Scale(up, 0.9f))) : Vector3{ 0, 0, 0 }; // a river pushes (#361)
+    // "Up" is against the summed gravity. Where gravity is too weak to define it (deep space, the
+    // balance point between bodies) it is left alone so the view doesn't spin; in the air it turns
+    // at most 2 rad/s. On the ground it follows exactly, so walking around a body stays continuous.
+    {
+        // Felt gravity: near a body on an orbit, it and everything on it fall freely around its parent,
+        // so subtract the body's own acceleration (the outside gravity at its centre). Otherwise the
+        // parent's pull would tilt "up" (~4 deg on the moon) and jumps would go out sideways.
+        const Vector3 g = FeltGravity(world, feet, nearest);
+        const float gl = Vector3Length(g);
+        Vector3 newUp = up;
+        if (nearest && nearest->flat) newUp = { 0, 1, 0 };
+        else if (gl > 0.05f) newUp = Vector3Scale(g, -1.0f / gl);
+        if (Vector3LengthSqr(up) < 0.25f) {
+            // A zero "up" (a save without one) has nothing to carry from: take the new up directly.
+            up = Vector3LengthSqr(newUp) > 0.25f ? newUp : Vector3{ 0, 1, 0 };
+            newUp = up;
+        }
+        if (!grounded) {
+            const float angle = acosf(std::clamp(Vector3DotProduct(up, newUp), -1.0f, 1.0f));
+            const float maxTurn = 2.0f * dt;
+            if (angle > maxTurn)
+                newUp = Vector3Normalize(Vector3RotateByQuaternion(up, QuaternionSlerp(QuaternionIdentity(), QuaternionFromVector3ToVector3(up, newUp), maxTurn / angle)));
+        }
+        // Carry the view along as "up" changes so walking around the body feels continuous.
+        forward = Vector3Normalize(Vector3RotateByQuaternion(forward, QuaternionFromVector3ToVector3(up, newUp)));
+        up = newUp;
+    }
+
+    Vector3 wish = { 0, 0, 0 };
+    bool jump = false, jetUp = false, jetDown = false;
+    if (in.enabled) {
+        // (mouse look: look(), once per frame)
+        const Vector3 flat = Vector3Normalize(Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up))));
+        const Vector3 side = Vector3CrossProduct(flat, up);
+        // On the ground and in the air under gravity WASD is level (walking / air control); in deep
+        // space it fires the suit thrusters along the view.
+        const Vector3 f = (grounded || gravity >= 0.5f) ? flat : forward;
+        if (in.down(Act::Forward)) wish = Vector3Add(wish, f);
+        if (in.down(Act::Back)) wish = Vector3Subtract(wish, f);
+        if (in.down(Act::Right)) wish = Vector3Add(wish, side);
+        if (in.down(Act::Left)) wish = Vector3Subtract(wish, side);
+        if (Vector3Length(wish) > 0.0f) wish = Vector3Normalize(wish);
+        if (in.down(Act::Sprint)) wish = Vector3Scale(wish, runMultiplier);
+        jump = in.hit(Act::Jump);
+        jetUp = in.down(Act::Jump);
+        jetDown = in.down(Act::Down);
+        if (in.hit(Act::Dampeners)) dampeners = !dampeners;
+        if (in.hit(Act::Hover) && canHover) hovering = !hovering; // flight pack (#163)
+        if (in.hit(Act::Prone)) proneWanted = !proneWanted; // Z (#578)
+    }
+    // Posture (#578): prone while wanted, crouched while Ctrl is held on the ground (Ctrl still swims down and descends
+    // in the air), else upright; Space from prone gets up. Lying down or crouching always works; getting taller needs
+    // the room above, else the lower posture stays.
+    {
+        const bool onFoot = grounded || coyote > 0.0f; // (grounded flickers over bumps: the coyote time bridges it)
+        if (inWater || hovering || flyMode) proneWanted = false;
+        if (proneWanted && jump) { proneWanted = false; jump = false; }
+        const bool crouchWanted = in.enabled && in.down(Act::Down) && onFoot && !inWater && !hovering;
+        Posture want = proneWanted ? Posture::Prone : crouchWanted ? Posture::Crouch : Posture::Stand;
+        if (want < posture && !roomAbove(world, postureHeight(want))) { // taller: room?
+            want = want == Posture::Stand && posture == Posture::Prone && roomAbove(world, kCrouchHeight) ? Posture::Crouch : posture;
+            if (posture == Posture::Prone && want != Posture::Prone) proneWanted = false;
+        }
+        posture = want;
+        height = postureHeight(posture);
+        eyeHeight += (postureEye(posture) - eyeHeight) * std::min(1.0f, dt * 12.0f); // eased (~0.1 s)
+        if (posture != Posture::Stand) {
+            if (Vector3LengthSqr(wish) > 0.0f) wish = Vector3Scale(Vector3Normalize(wish), posture == Posture::Prone ? kProneSpeed : kCrouchSpeed); // no sprint
+            if (posture == Posture::Prone) { jump = false; jetUp = false; }
+        }
+    }
+    if (!canHover || !hoverPowered) hovering = false;
+    // Fall safety (#163): a charged flight pack catches a fall faster than 12 m/s against the ground below.
+    if (canHover && hoverPowered && !hovering && !grounded && !inWater && gravity >= 0.5f && nearest) {
+        const Vector3 at = (position - world.renderOrigin).toFloat();
+        const float vUp = Vector3DotProduct(Vector3Subtract(velocity, nearest->surfaceVelocity(at)), up);
+        if (vUp < -12.0f) hovering = true;
+    }
+    // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
+    // flickers off over bumpy ground (see coyote time in stepPhysics).
+    if (jump) jumpBuffer = 0.15f;
+
+    // Fixed substeps keep collision stable at any frame rate, and are shortened further at speed
+    // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
+    const float h = 1.0f / 120.0f;
+    // Speed relative to the ground (airborne velocity is world-frame and carries the spin).
+    const Vector3 relVel = (!grounded && nearest) ? Vector3Subtract(velocity, nearest->surfaceVelocity((position - world.renderOrigin).toFloat())) : velocity;
+    const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(relVel) * dt / 0.2f)), 1, 1024);
+    const float sdt = dt / steps;
+    // Airborne by an orbiting body: move in its free-falling frame - take its change of velocity
+    // since last frame, then fall with the felt gravity. A rail orbit ignores other bodies' pull (a
+    // big rock next to a small one), so world gravity drifted the player off a 5 m rock as fast as
+    // it pulled them in: they hovered a metre up and never landed.
+    airFelt = false;
+    if (!grounded && airBody && airBody == nearest && FeltIsRelative((position - world.renderOrigin).toFloat(), nearest)) {
+        velocity = Vector3Add(velocity, Vector3Subtract(nearest->linearVelocity, airFrameVel));
+        airFelt = true;
+    }
+    // In water Space and Ctrl swim instead of firing the jetpack.
+    swimUp = inWater && jetUp; swimDown = inWater && jetDown;
+    if (inWater) jetUp = jetDown = false;
+    for (int i = 0; i < steps; ++i) { stepPhysics(world, sdt, wish, jetUp, jetDown); }
+
+    feet = (position - world.renderOrigin).toFloat();
+    if (grounded && nearest) {
+        groundBody = nearest;
+        groundId = nearest->id;
+        groundLocal = nearest->toLocalD(position);
+        groundRotPrev = nearest->rotationQuat();
+    } else {
+        groundBody = nullptr;
+    }
+    // Eye smoothing: walking, the collision push-out moves the feet up and down by millimetres to
+    // centimetres from one frame to the next (marching-cubes facets, the contact normal changing),
+    // and the camera showed every step as shake - worst climbing steep slopes. The eye follows a
+    // low-passed vertical *speed* of the feet in the ground's frame, so a steady climb has no lag and
+    // only the frame-to-frame noise is filtered; a slow pull keeps it within 25 cm of the body.
+    {
+        float dz = 0.0f;
+        const float offBefore = eyeOffset;
+        const bool known = eyeBody && nearest == eyeBody && dt > 0.0f;
+        if (known) {
+            const DVec3 d = eyeBody->toLocalD(position) - eyeFrom;
+            const Vector3 u = eyeBody->dirToLocal(up);
+            dz = (float)(d.x * u.x + d.y * u.y + d.z * u.z) * eyeBody->scale;
+        }
+        if (eyeSmoothing && known && grounded && fabsf(dz) < 1.0f) {
+            const float vz = dz / dt;
+            const float sc = std::max(0.1f, eyeSmoothScale); // #168: the setting scales the filter and the leash
+            eyeVz += (vz - eyeVz) * (1.0f - expf(-dt / (0.10f * sc)));
+            eyeOffset += eyeVz * dt - dz;
+            eyeOffset *= expf(-dt * 5.0f / sc);
+            eyeOffset = std::clamp(eyeOffset, -0.25f * sc, 0.25f * sc);
+        } else {
+            // In the air (jumps, falls, a frame of lost contact) the eye follows the body and eases
+            // out what is left; the speed is kept so landing again on a slope doesn't lag.
+            eyeVz = known ? dz / dt : 0.0f;
+            eyeOffset *= expf(-dt * 15.0f);
+        }
+        eyeStep = known ? dz + (eyeOffset - offBefore) : 0.0f; // tests: the eye's height change this update, ground frame
+        eyeStepKnown = known;
+        // Sideways (#255), in the air too (wedged in a crevice the player is often not grounded): the same low-passed
+        // velocity, a short time constant and a 3 cm leash so walking off or stopping never trails visibly.
+        Vector3 dh = { 0, 0, 0 };
+        if (known) {
+            const DVec3 d = eyeBody->toLocalD(position) - eyeFrom;
+            const Vector3 u = eyeBody->dirToLocal(up);
+            dh = Vector3Subtract(Vector3Scale(Vector3{ (float)d.x, (float)d.y, (float)d.z }, eyeBody->scale), Vector3Scale(u, dz));
+        }
+        if (eyeSmoothing && known && eyeOffsetBody == eyeBody->id && Vector3Length(dh) < 0.5f) {
+            eyeVh = Vector3Lerp(eyeVh, Vector3Scale(dh, 1.0f / dt), 1.0f - expf(-dt / 0.05f));
+            eyeOffsetH = Vector3Scale(Vector3Add(eyeOffsetH, Vector3Subtract(Vector3Scale(eyeVh, dt), dh)), expf(-dt * 10.0f));
+            const float len = Vector3Length(eyeOffsetH);
+            if (len > 0.03f) eyeOffsetH = Vector3Scale(eyeOffsetH, 0.03f / len);
+        } else {
+            eyeVh = known ? Vector3Scale(dh, 1.0f / dt) : Vector3{ 0, 0, 0 };
+            eyeOffsetH = { 0, 0, 0 };
+        }
+        eyeOffsetBody = known ? eyeBody->id : 0;
+    }
+    if (!grounded && nearest) {
+        airBody = nearest;
+        airId = nearest->id;
+        airLocal = nearest->toLocalD(position);
+        airFrameVel = nearest->linearVelocity;
+    } else {
+        airBody = nullptr;
+    }
+    lastEndPosition = position;
+    CacheNetState(world);
+    // Render interpolation (#315): the feet after this step and the one before, in the nearest body's frame. A new
+    // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
+    if (nearest) {
+        const DVec3 l = nearest->toLocalD(position);
+        const bool cont = nearest->id == interpBody && interpSpawns == spawns && (l - interpCur).length() * nearest->scale < 5.0;
+        interpPrev = cont ? interpCur : l;
+        interpCur = l;
+        interpBody = nearest->id;
+        interpSpawns = spawns;
+    } else interpBody = 0;
+}
+
+void Player::look(Vector2 m) {
+    forward = RotateAround(forward, up, -m.x * mouseSensitivity * lookScale);
+    const Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, up));
+    const Vector3 pitched = RotateAround(forward, right, -m.y * mouseSensitivity * lookScale);
+    if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
+}
+
+DVec3 Player::renderPosition(float alpha) const {
+    if (flyMode || !interpBody || interpSpawns != spawns) return position;
+    const Planetoid* b = Planetoid::find(interpBody);
+    if (!b) return position;
+    // Only while nothing moved the player since the last step (benches, respawns, the death hold): then the body-local
+    // feet still match `position`.
+    if ((b->toWorldD(interpCur) - position).length() > 1e-3) return position;
+    const double a = std::clamp((double)alpha, 0.0, 1.0);
+    return b->toWorldD(interpPrev + (interpCur - interpPrev) * a);
+}
+
+void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool jetDown) {
+    Vector3 feet = (position - world.renderOrigin).toFloat();
+
+    const bool wasGrounded = grounded;
+
+    // Gravity summed over every body (inverse-square, no cutoff, so orbits work).
+    const Vector3 gvec = GravityAt(world, feet);       // world frame: airborne velocity is world-frame
+    const Vector3 gFelt = FeltGravity(world, feet, nearest); // the ground's frame: grounded velocity is relative to it
+    gravity = Vector3Length(gFelt);
+    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
+
+    const float vUp = Vector3DotProduct(velocity, up);
+    bool resting = false; // grounded with no walking input
+    if (grounded) {
+        // Direct ground control along the contact plane, pressed lightly into it so crests and dips
+        // keep contact. Collision-induced upward speed is discarded (only jumps leave the ground).
+        const Vector3 n = groundNormal;
+        Vector3 along = Vector3Subtract(wish, Vector3Scale(n, Vector3DotProduct(wish, n)));
+        const float wl = Vector3Length(wish), al = Vector3Length(along);
+        if (al > 1e-4f) along = Vector3Scale(along, wl / al);
+        Vector3 walk = Vector3Scale(along, walkSpeed * (inWater ? 0.55f : 1.0f)); // wading is slow
+        walk = Vector3Add(walk, Vector3Scale(Vector3Subtract(riverCurrent, Vector3Scale(n, Vector3DotProduct(riverCurrent, n))), 0.4f)); // wading in a river: pushed downstream (#361)
+        if (smoothMotion) {
+            // Reduce motion: ease into and out of walking (instant starts and stops are hard to watch).
+            const Vector3 cur = Vector3Subtract(velocity, Vector3Scale(n, Vector3DotProduct(velocity, n)));
+            const Vector3 dv = Vector3Subtract(walk, cur);
+            const float dl = Vector3Length(dv), maxDv = 20.0f * dt;
+            walk = dl > maxDv ? Vector3Add(cur, Vector3Scale(dv, maxDv / dl)) : walk;
+        }
+        // At rest, no press into the ground: the push back out is found to a few mm, so pressing in
+        // every substep made a standing camera (and the shadow map with it) vibrate by 5-9 mm a frame.
+        // The ground probe keeps a resting player grounded.
+        resting = Vector3LengthSqr(walk) < 1e-6f;
+        velocity = resting ? Vector3{ 0, 0, 0 } : Vector3Subtract(walk, Vector3Scale(n, 1.5f));
+        (void)vUp;
+        // A jump starts from the walking velocity only: keeping the press into a sloped ground would
+        // push you downhill on takeoff.
+        if (Vector3LengthSqr(pendingPush) > 1e-6f) {
+            // Knocked back (#165): off the ground like a jump, at the push (surface-relative, as grounded velocity is).
+            velocity = pendingPush;
+            grounded = false;
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        } else if (jumpBuffer > 0.0f) {
+            velocity = Vector3Add(Vector3Scale(along, walkSpeed), Vector3Scale(up, jumpSpeed));
+            grounded = false;
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        } else {
+            coyote = 0.12f;
+        }
+        jetpackFuel = std::min(1.0f, jetpackFuel + dt * 0.5f);
+    } else {
+        // Airborne: Newtonian; nothing clamps speed, so you can build up orbital velocity.
+        const bool inGravity = gravity >= 0.5f;
+        velocity = Vector3Add(velocity, pendingPush); // knocked back in the air (#165): the push adds to the flight
+        if (jumpBuffer > 0.0f && coyote > 0.0f) {
+            // Coyote time: just left the ground (or "grounded" flickered off for a frame) - still jump,
+            // setting the upward speed relative to the surface below.
+            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed - Vector3DotProduct(Vector3Subtract(velocity, surface), up)));
+            jumpBuffer = coyote = 0.0f;
+            jumpLock = 0.15f;
+        }
+        Vector3 thrust = { 0, 0, 0 };
+        if (hovering && inGravity && !inWater) {
+            // Hover (#163): the velocity eases fast to the wished one against the ground below (no drift when the keys
+            // are let go); Space/Ctrl climb and descend. Gravity is cancelled below; no jetpack fuel.
+            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            Vector3 target = Vector3Add(surface, Vector3Scale(wish, hoverSpeed));
+            if (jetUp) target = Vector3Add(target, Vector3Scale(up, hoverClimb));
+            if (jetDown) target = Vector3Subtract(target, Vector3Scale(up, hoverClimb));
+            velocity = Vector3Add(target, Vector3Scale(Vector3Subtract(velocity, target), expf(-10.0f * dt)));
+        } else if (inGravity) {
+            // Air control (free, no fuel): steer toward the wished walking velocity relative to the
+            // ground below - enough to reach a ledge mid-jump. With no input, momentum is untouched.
+            if (Vector3Length(wish) > 0.0f) {
+                const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+                const Vector3 rel = Vector3Subtract(velocity, surface);
+                const Vector3 relLevel = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
+                const Vector3 dv = Vector3Subtract(Vector3Scale(wish, walkSpeed), relLevel);
+                const float dvl = Vector3Length(dv), maxDv = airControlAccel * dt;
+                if (dvl > 1e-5f) velocity = Vector3Add(velocity, Vector3Scale(dv, std::min(1.0f, maxDv / dvl)));
+            }
+        } else if (Vector3Length(wish) > 0.0f) {
+            thrust = Vector3Normalize(wish); // deep space: suit thrusters along the view
+        }
+        // Jetpack (Space up / Ctrl down, and WASD in deep space) burns fuel; recharging it on the ground
+        // is what costs suit power (see the survival code).
+        if (jetUp && !hovering) thrust = Vector3Add(thrust, up);
+        if (jetDown && !hovering) thrust = Vector3Subtract(thrust, up);
+        const float tl = Vector3Length(thrust);
+        if (tl > 0.0f && jetpackFuel > 0.0f) {
+            velocity = Vector3Add(velocity, Vector3Scale(thrust, jetpackAccel * dt / std::max(tl, 1.0f)));
+            jetpackFuel = std::max(0.0f, jetpackFuel - dt * jetpackFuelPerSec);
+            jetpackFiring = true;
+        } else if (tl == 0.0f && dampeners && !inGravity) {
+            // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
+            // Relative to the nearest body: damping the world-frame velocity (a ring rock's ~3 km/s
+            // orbit) dragged the player off small rocks at hundreds of m/s^2.
+            const Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), 1.0f - std::min(1.0f, 0.6f * dt)));
+        }
+    }
+    pendingPush = { 0, 0, 0 };
+    // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
+    // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
+    // shoved the player off it.
+    Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
+    if (hovering && !grounded && !inWater && gravity >= 0.5f) gAccel = { 0, 0, 0 }; // the flight pack holds the height (#163)
+    if (inWater && !grounded) {
+        // Swimming: buoyancy all but cancels gravity, the water drags (relative to the ground's frame),
+        // Space swims up and Ctrl down (no jetpack under water).
+        gAccel = Vector3Scale(gAccel, 0.12f);
+        Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        frame = Vector3Add(frame, riverCurrent); // a river carries a swimmer downstream (#361)
+        velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
+        if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
+        if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));
+    }
+    // Static friction: standing on walkable ground, only gravity's push into the ground applies.
+    // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
+    if (grounded) gAccel = resting ? Vector3{ 0, 0, 0 } : Vector3Scale(groundNormal, std::min(0.0f, Vector3DotProduct(gAccel, groundNormal)));
+    velocity = Vector3Add(velocity, gAccel);
+
+    // Airborne, velocity is world-frame but the terrain already stands where it will be at the end of
+    // this frame (and update() carried us with it): move relative to its surface.
+    const Vector3 frameVel = (!wasGrounded && nearest) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+    const Vector3 move = Vector3Scale(Vector3Subtract(velocity, frameVel), dt);
+    const Vector3 feetBefore = feet;
+    feet = Vector3Add(feet, move);
+    collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
+    const Vector3 vPre = velocity; // before the push-out and the ground probe touch it
+    { const auto t0 = std::chrono::steady_clock::now(); grounded = resolveCollisions(world, feet); gPlayerCollideSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); } // (#768)
+    collideTrunks(feet);
+    // Just jumped: the probe below the feet would still find the slope (they have risen only a few cm)
+    // and re-ground the player, cancelling the jump. Collisions still push out; only grounding waits.
+    if (jumpLock > 0.0f) { grounded = false; jumpLock = std::max(0.0f, jumpLock - dt); }
+    // Touchdown (#263): the speed into the floor, from the velocity before collisions, however the landing was
+    // found (a push-out, or the ground probe's skin, which at fall speeds is most landings and recorded nothing).
+    // Only walkable floors land you (groundNormal); walls and ceilings never count as landings (#255).
+    if (!wasGrounded && grounded) landingSpeed = std::max(landingSpeed, -Vector3DotProduct(Vector3Subtract(vPre, collideFrameVel), groundNormal));
+    // Wedged (#255): airborne, meant to fall but held up by steep walls (a V, an overhang corner), the fall speed
+    // must not build up while the walls stop it (it reached lethal speeds in a second or two).
+    if (!grounded) {
+        const float meantDown = -Vector3DotProduct(move, up);
+        const float wentDown = -Vector3DotProduct(Vector3Subtract(feet, feetBefore), up);
+        if (meantDown > 0.005f && wentDown < 0.25f * meantDown) {
+            const float vDown = Vector3DotProduct(Vector3Subtract(velocity, frameVel), up);
+            if (vDown < -1.0f) velocity = Vector3Add(velocity, Vector3Scale(up, -1.0f - vDown));
+        }
+    }
+    // Just landed: on the ground velocity is relative to the surface (as the walking code expects), so
+    // take the ground's own motion out now rather than leave a world-frame velocity for a frame.
+    if (!wasGrounded && grounded) velocity = Vector3Subtract(velocity, collideFrameVel);
+    // Leaving a spinning body: on the ground velocity is relative to the surface, so add the
+    // surface's own motion; you keep the body's momentum, as you would really.
+    // Landed and lifted off within one frame (contact flicker in a tight corner) leaves groundBody
+    // unset (it is recorded at the end of the frame): the landing took out the nearest body's motion,
+    // so give that back. Skipping it lost the planet's spin (~87 m/s) and the walls threw the player.
+    if (wasGrounded && !grounded && nearest) {
+        // Walked off an edge (#240): the walking velocity followed a contact normal tilting out over
+        // the lip and carried the 1.5 m/s press into the ground, so leaving it threw the player down
+        // (more when sprinting). If there is no ground a walkable slope's drop ahead and below, keep
+        // only the level part and let gravity start from rest. Contact flickers on bumpy ground and
+        // walking down a slope (ground still there) keep their velocity.
+        const float vu = Vector3DotProduct(velocity, up);
+        if (vu < 0.0f && jumpLock <= 0.0f) {
+            Planetoid& p = *nearest;
+            const Vector3 level = Vector3Subtract(velocity, Vector3Scale(up, vu));
+            const float ll = Vector3Length(level);
+            const float ahead = std::min(ll * 0.1f, 1.5f); // where the feet will be in 0.1 s
+            const Vector3 probe = ll > 1e-4f ? Vector3Add(feet, Vector3Scale(level, ahead / ll)) : feet;
+            const float depth = 0.4f + 1.6f * ahead; // ~58 degrees: steeper than walkable
+            bool ground = false;
+            for (float k = 0.1f; k <= depth && !ground; k += 0.15f) {
+                const Vector3 at = Vector3Subtract(probe, Vector3Scale(up, k));
+                ground = p.densityAt(p.toLocal(at)) >= ISO_LEVEL;
+                if (!ground && p.plots) // built parts count as ground too (stairs, platform steps)
+                    for (auto& pl : p.plots->plots) {
+                        Vector3 c = p.toLocal(at), nl;
+                        if (pl->collideSphere(c, 0.08f / p.scale, nl)) { ground = true; break; }
+                    }
+            }
+            if (!ground) velocity = level;
+        }
+    }
+    if (wasGrounded && !grounded) {
+        Planetoid* from = (groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest;
+        if (from) velocity = Vector3Add(velocity, from->surfaceVelocity(feet));
+    }
+    position = world.renderOrigin + feet;
+    jumpBuffer = std::max(0.0f, jumpBuffer - dt);
+    if (!grounded) coyote = std::max(0.0f, coyote - dt);
+}
+
+// Room to get taller (#578): the capsule's spheres from its top now up to toHeight, each a little smaller than the
+// capsule's (a shallow touch is fine: the collision pass pushes out of it), clear of solid ground and built parts.
+bool Player::roomAbove(Scene& world, float toHeight) const {
+    if (!nearest || toHeight <= height) return true;
+    const Planetoid& p = *nearest;
+    const Vector3 feet = (position - world.renderOrigin).toFloat();
+    const float r = radius * 0.85f;
+    for (float o = height - radius; ; o = std::min(o + 0.2f, toHeight - radius)) {
+        const Vector3 c = Vector3Add(feet, Vector3Scale(up, o));
+        if (p.densityAt(p.toLocal(Vector3Add(c, Vector3Scale(up, r)))) >= ISO_LEVEL) return false; // the sphere's top
+        if (p.plots)
+            for (auto& pl : p.plots->plots) { Vector3 lc = p.toLocal(c), nl; if (pl->collideSphere(lc, r / p.scale, nl)) return false; }
+        if (o >= toHeight - radius) return true;
+    }
+}
+
+// Push the feet/head spheres out of solid density, then probe just below the feet for ground.
+bool Player::resolveCollisions(Scene&, Vector3& feet) {
+    if (!nearest) return false;
+    Planetoid& p = *nearest;
+    bool onGround = false;
+    // A capsule (#255): sphere centres from `radius` up to `height - radius`, at most 0.23 m apart (no waist: the two
+    // spheres at 0.45 and 1.15 m left a 0.28 m neck that jagged rock poked into). The player is `height` (1.7 m) tall, so
+    // 2 m doorways and tunnels pass (user, 2026-11-14: the first capsule ran up to the eye and made the player 2.05 m;
+    // RAYLIBGAME_PLAYER_HEIGHT=2.05 is that one, for A/B); the eye (1.6 m) sits inside the top sphere, and the eye
+    // keep-out below lowers the camera where a ceiling comes closer. Each pass pushes out of the deepest contact only:
+    // two spheres pushing along different normals on jagged rock fought each other.
+    static const float heightOverride = getenv("RAYLIBGAME_PLAYER_HEIGHT") ? (float)atof(getenv("RAYLIBGAME_PLAYER_HEIGHT")) : 0.0f;
+    if (heightOverride > 2.0f * radius) { standHeight = heightOverride; if (posture == Posture::Stand) height = standHeight; } // (crouching and prone keep theirs, #578)
+    constexpr int kMaxSamples = 8;
+    const int kSamples = std::clamp((int)ceilf((height - 2.0f * radius) / 0.23f - 1e-3f) + 1, 2, kMaxSamples); // 5 at 1.7 m, 6 at 2.05 m
+    float offsets[kMaxSamples];
+    for (int i = 0; i < kSamples; ++i) offsets[i] = radius + (height - 2.0f * radius) * (float)i / (float)(kSamples - 1);
+    // The linear estimate (iso - density) / |gradient| is only a distance where the density behaves
+    // like one; dig and build edits (big density steps) break that, and it reported contacts in open
+    // air that pushed up to 1 m per iteration, sometimes into the ground (the "wall launch"). So each
+    // contact is confirmed by sampling along the normal, the push is the measured penetration, and the
+    // total push in a frame is capped.
+    auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
+    float pushBudget = 0.6f;
+    // #768: skip spheres that were measured clear of the terrain and can't have reached it since (see CollideCache).
+    static const bool useCache = !(getenv("RAYLIBGAME_COLLIDE_CACHE") && atoi(getenv("RAYLIBGAME_COLLIDE_CACHE")) == 0);
+    CollideCache& cc = collideCache;
+    if (cc.body != &p || cc.edits != p.edits.get()) { for (bool& v : cc.valid) v = false; cc.body = &p; cc.edits = p.edits.get(); }
+    constexpr float kClearMargin = 0.05f; // m
+    for (int iter = 0; iter < 6 && pushBudget > 0.0f; ++iter) {
+        bool moved = false;
+        // Contacts deepest first; one push per pass (the next pass re-measures).
+        struct Cand { float d, off; Vector3 n; } cand[kMaxSamples]; int nc = 0;
+        for (int si = 0; si < kSamples; ++si) { const float o2 = offsets[si];
+            const Vector3 c2 = Vector3Add(feet, Vector3Scale(up, o2));
+            const Vector3 l2 = p.toLocal(c2);
+            if (useCache && cc.valid[si] && cc.dist[si] - Vector3Distance(l2, cc.centre[si]) * p.scale > radius + kClearMargin) continue; // clear: can't touch yet
+            float d2; Vector3 n2;
+            const bool ok = TerrainSurfaceDistance(p, c2, d2, n2);
+            cc.valid[si] = ok; cc.dist[si] = d2; cc.centre[si] = l2;
+            if (ok && d2 < radius) cand[nc++] = { d2, o2, n2 };
+        }
+        std::sort(cand, cand + nc, [](const Cand& a, const Cand& b) { return a.d < b.d; });
+        for (int ci = 0; ci < nc && !moved; ++ci) {
+            const float off = cand[ci].off;
+            const float dist = cand[ci].d; const Vector3 n = cand[ci].n; // (measured just above, at this same centre)
+            const Vector3 c = Vector3Add(feet, Vector3Scale(up, off));
+            float push = 0.0f;
+            if (!solid(c)) {
+                // Centre in the open: is there solid ground within the radius along -n, and how far?
+                if (!solid(Vector3Subtract(c, Vector3Scale(n, radius)))) continue; // a false contact
+                float lo = 0.0f, hi = radius;                                       // lo open, hi solid
+                for (int k = 0; k < 10; ++k) { // to ~0.4 mm
+                    const float mid = 0.5f * (lo + hi);
+                    if (solid(Vector3Subtract(c, Vector3Scale(n, mid)))) hi = mid; else lo = mid;
+                }
+                push = radius - hi;
+            } else {
+                // Embedded: step out along the normal to open space.
+                float s = 0.05f;
+                while (s < 1.0f && solid(Vector3Add(c, Vector3Scale(n, s)))) s += 0.05f;
+                push = s + radius;
+            }
+            push = std::min(push, pushBudget);
+            if (push <= 1e-4f) continue;
+            pushBudget -= push;
+            feet = Vector3Add(feet, Vector3Scale(n, push));
+            const float vUpBefore = Vector3DotProduct(velocity, up);
+            // Impact and push-out relative to the (moving) terrain: against the world-frame velocity a
+            // spinning planet's hole walls hit like 86 m/s impacts and stopped you dead while they moved on.
+            const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
+            if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
+            lastContactDot = Vector3DotProduct(n, up);
+            // Steep walls must not convert a push into upward motion (no wall climbing).
+            if (lastContactDot <= 0.55f) {
+                const float vUpAfter = Vector3DotProduct(velocity, up);
+                if (vUpAfter > vUpBefore) velocity = Vector3Subtract(velocity, Vector3Scale(up, vUpAfter - vUpBefore));
+            }
+            if (lastContactDot > walkableCos) { onGround = true; groundNormal = n; } // walkable slope (< ~57 deg)
+            moved = true;
+        }
+        if (!moved) break;
+    }
+    // Build plot parts: the same capsule spheres pushed out of part shapes (exact convex cells). Only the first
+    // kSamples offsets are set (the array is sized for the tallest override).
+    if (p.plots) {
+        for (int iter = 0; iter < 2; ++iter)
+            for (int si = 0; si < kSamples; ++si)
+                for (auto& pl : p.plots->plots) {
+                    const float off = offsets[si];
+                    const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, off)));
+                    Vector3 c = before, nl;
+                    if (!pl->collideSphere(c, radius / p.scale, nl)) continue;
+                    const Vector3 moved = Vector3Subtract(c, before);
+                    const float len = Vector3Length(moved) * p.scale;
+                    if (len > 1e-6f) feet = Vector3Add(feet, Vector3Scale(p.dirToWorld(Vector3Normalize(moved)), len));
+                    const Vector3 n = p.dirToWorld(nl);
+                    const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
+                    if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
+                    if (Vector3DotProduct(n, up) > 0.55f) { onGround = true; groundNormal = n; }
+                }
+        // Standing on a part: a probe just below the feet sphere.
+        if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f)
+            for (auto& pl : p.plots->plots) {
+                Vector3 c = p.toLocal(Vector3Add(feet, Vector3Scale(up, radius - 0.12f))), nl;
+                if (pl->collideSphere(c, radius / p.scale, nl) && Vector3DotProduct(p.dirToWorld(nl), up) > 0.55f) { onGround = true; groundNormal = p.dirToWorld(nl); break; }
+            }
+    }
+    // Ground probe: the push-out is approximate and can leave a small gap; treat anything within a
+    // few centimetres below the feet sphere as standing (unless moving away, e.g. jumping).
+    if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f) {
+        float dist; Vector3 n;
+        const float skin = 0.12f;
+        if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
+            // Settle onto it, past a 2 cm dead band: the distance here is a linear estimate and the
+            // push-out a bisection; settling every frame see-sawed between the two by 5-9 mm.
+            const float gap = dist - radius;
+            if (gap > 0.02f) feet = Vector3Subtract(feet, Vector3Scale(n, gap - 0.01f));
+            onGround = true;
+            groundNormal = n;
+        } else if (solid(Vector3Subtract(feet, Vector3Scale(up, skin)))) {
+            // The estimate overshoots on small, sharply curved bodies: solid right under the feet is
+            // standing too (a resting player no longer presses into the ground to make contact).
+            onGround = true;
+            groundNormal = up;
+        }
+    }
+    return onGround;
+}
+
+void Player::applyToCamera(Scene& world) const {
+    if (flyMode) return;
+    const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
+    Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
+        const float len = Vector3Length(eyeOffsetH);
+        if (len > 1e-6f) eye = Vector3Add(eye, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
+    }
+    lastEyePush = 0.0f;
+    // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
+    // shape: keep it 0.25 m clear of the terrain (the near plane's reach) so it never looks through a ceiling or an
+    // overhang (#255). It was pushed out along the surface normal each frame: against jagged walls and overhangs
+    // that normal and the push size swung between facets frame to frame and the camera shook (and inside rock the
+    // normal could flip: metre jumps). Now the eye only moves down the body's axis toward the head sphere's centre,
+    // which the collision keeps clear: the highest point of that segment with the clearance (a short search). It
+    // drops there at once (never into the rock) and comes back up eased (~0.15 s): one direction, one number.
+    if (nearest) {
+        const float clearance = 0.25f;
+        auto clear = [&](Vector3 q) {
+            float dist; Vector3 n;
+            if (!TerrainSurfaceDistance(*nearest, q, dist, n)) return true;
+            return dist >= clearance && nearest->densityAt(nearest->toLocal(q)) < ISO_LEVEL;
+        };
+        const Vector3 headCentre = Vector3Add(feet, Vector3Scale(up, height - radius)); // the capsule's top sphere
+        const float span = Vector3Distance(headCentre, eye); // ~0.45 m (+ the eye offset)
+        float want = 0.0f;                                   // how far below the nominal eye
+        if (!clear(eye)) {
+            float lo = 0.0f, hi = span;                      // lo: blocked, hi: clear (or the centre)
+            for (int i = 0; i < 7; ++i) {
+                const float mid = 0.5f * (lo + hi);
+                if (clear(Vector3Subtract(eye, Vector3Scale(up, mid)))) hi = mid; else lo = mid;
+            }
+            want = hi;
+        }
+        const float dt = GameFrameTime();
+        if (dt <= 0.0f || dt > 0.25f) eyeDrop = want;
+        else if (want > eyeDrop) {
+            // Down eased too (~40 ms) while the eye where it is now keeps 12 cm; closer than that, at once.
+            float dist; Vector3 n;
+            const Vector3 now = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+            const bool roomy = !TerrainSurfaceDistance(*nearest, now, dist, n) || (dist >= 0.12f && nearest->densityAt(nearest->toLocal(now)) < ISO_LEVEL);
+            eyeDrop = roomy ? eyeDrop + (want - eyeDrop) * (1.0f - expf(-dt / 0.04f)) : want;
+        } else eyeDrop += (want - eyeDrop) * (1.0f - expf(-dt / 0.15f)); // back up eased
+        eye = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+        lastEyePush = eyeDrop;
+    }
+    world.camera.position = eye;
+    world.camera.target = Vector3Add(world.camera.position, forward);
+    // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
+    if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
+    else cameraUp = up;
+    world.camera.up = cameraUp;
+}
+
+// Tree trunks are vertical capsules (bushes are soft): push the body cylinder out sideways and
+// drop the velocity into the trunk, relative to the (moving) ground the tree stands on.
+void Player::collideTrunks(Vector3& feet) {
+    if (!nearest || !nearest->trees) return;
+    static thread_local std::vector<Trunk>* nearP = nullptr; if (!nearP) nearP = new std::vector<Trunk>(); auto& near = *nearP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
+    near.clear();
+    const Vector3 local = nearest->toLocal(feet);
+    nearest->trees->trunksNear(local, radius + 2.0f, near);
+    for (const Trunk& t : near) {
+        const Vector3 d = Vector3Subtract(local, t.base);
+        const float along = Vector3DotProduct(d, t.up);
+        if (along < -eyeHeight || along > t.height) continue;      // below the roots or over the top
+        const Vector3 side = Vector3Subtract(d, Vector3Scale(t.up, along));
+        const float dist = Vector3Length(side);
+        const float minDist = t.radius + radius;
+        if (dist >= minDist || dist < 1e-4f) continue;
+        const Vector3 n = nearest->dirToWorld(Vector3Scale(side, 1.0f / dist));
+        feet = Vector3Add(feet, Vector3Scale(n, minDist - dist));
+        const float vn = Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), n);
+        if (vn < 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(n, vn));
+    }
+}
+
+Planetoid* Player::flyReference(Scene& world, bool& rotate) const {
+    // Sphere of influence: a = orbit radius, r = a (m / M)^0.4 with masses ~ g R^2. Bodies with no
+    // parent reach everywhere. Several hold the camera: the nearest surface wins.
+    const DVec3 cam = world.renderOrigin + world.camera.position;
+    Planetoid* best = nullptr;
+    double bestDist = 1e300;
+    for (auto& obj : world.objects) {
+        Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
+        if (!b || b->flat) continue;
+        const double d = (cam - b->worldPos).length();
+        const double R = (double)b->radius * b->scale;
+        double soi = 1e300;
+        if (b->orbitParent && Planetoid::find(b->orbitParentId) == b->orbitParent) {
+            const Planetoid* m = b->orbitParent;
+            const double Rm = (double)m->radius * m->scale;
+            const double ratio = (b->surfaceGravity * R * R) / std::max(1e-9, (double)m->surfaceGravity * Rm * Rm);
+            soi = std::max(2.0 * R, b->orbitRadius * pow(std::max(ratio, 0.0), 0.4));
+        } else if (b->kind == BodyKind::Asteroid) {
+            soi = 10.0 * R; // loose asteroids (no orbit): their neighbourhood
+        }
+        if (d > soi) continue;
+        if (d - R < bestDist) { bestDist = d - R; best = b; }
+    }
+    if (best) rotate = (cam - best->worldPos).length() < 2.0 * best->radius * best->scale;
+    return best;
+}
+
+void Player::recordFly(Scene& world) {
+    flyBodyId = 0;
+    if (!flyMode || !flyFollow) return;
+    bool rotate = false;
+    Planetoid* ref = flyReference(world, rotate);
+    if (!ref) return;
+    flyBodyId = ref->id;
+    flyRotate = rotate;
+    flyBodyPos = ref->worldPos;
+    // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
+    const DVec3 cam = world.renderOrigin + world.camera.position;
+    flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
+    flyCarriedValid = false;
+    flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
+    flyLocalUp = ref->dirToLocal(world.camera.up);
+}
+
+void Player::anchorTo(Planetoid& body) {
+    airBody = &body;
+    airId = body.id;
+    airLocal = body.toLocalD(position);
+    airFrameVel = body.linearVelocity;
+    lastEndPosition = position;
+}
+
+// The state as the last step left it, taken there (a server that steps a player only by its inputs reads it later, when
+// the body has moved on: the world position and velocity are then stale, the body-local ones are not).
+void Player::CacheNetState(const Scene& world) {
+    netCached = false;
+    Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
+    if (!b) return;
+    const Quaternion toLocal = QuaternionInvert(b->rotationQuat()); // (dirToLocal normalizes: a speed needs the rotation)
+    const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+    netCache.body = b->netId;
+    netCache.local = b->toLocalD(position);
+    netCache.vel = Vector3RotateByQuaternion(rel, toLocal);
+    netCacheSpawns = spawns;
+    netCached = true;
+}
+
+bool Player::netState(const Scene& world, NetState& s) const {
+    if (!netCached || netCacheSpawns != spawns) { // never stepped since a spawn: as it stands now
+        Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
+        if (!b) return false;
+        const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+        s.body = b->netId;
+        // (#856) The anchor's body-local feet, not the world position: a player spawned and not stepped yet (a server's
+        // joiner still loading its world) keeps its spawn-time world position while the planet turns under it (~105 m/s at
+        // the surface), so that position read later lay kilometres off; the client started there and was snapped back.
+        if (grounded && groundBody == b) s.local = groundLocal;
+        else if (!grounded && airBody == b) s.local = airLocal;
+        else s.local = b->toLocalD(position);
+        s.vel = Vector3RotateByQuaternion(rel, QuaternionInvert(b->rotationQuat()));
+    } else {
+        s.body = netCache.body; s.local = netCache.local; s.vel = netCache.vel;
+    }
+    s.grounded = grounded; s.hovering = hovering;
+    s.posture = (uint8_t)posture;
+    s.jumpBuffer = jumpBuffer; s.coyote = coyote; s.jumpLock = jumpLock; s.jetpackFuel = jetpackFuel;
+    return true;
+}
+
+bool Player::applyNetState(Scene& world, const NetState& s) {
+    Planetoid* b = Planetoid::findNet(s.body);
+    if (!b) return false;
+    position = b->toWorldD(s.local);
+    const Vector3 rel = Vector3RotateByQuaternion(s.vel, b->rotationQuat());
+    velocity = s.grounded ? rel : Vector3Add(rel, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
+    grounded = s.grounded; hovering = s.hovering;
+    posture = (Posture)std::min<uint8_t>(s.posture, (uint8_t)Posture::Prone);
+    height = postureHeight(posture);
+    jumpBuffer = s.jumpBuffer; coyote = s.coyote; jumpLock = s.jumpLock; jetpackFuel = s.jetpackFuel;
+    nearest = b;
+    if (grounded) {
+        groundBody = b; groundId = b->id;
+        groundLocal = s.local;
+        groundRotPrev = b->rotationQuat();
+        airBody = nullptr;
+        lastEndPosition = position;
+    } else {
+        groundBody = nullptr;
+        anchorTo(*b); // (sets lastEndPosition)
+    }
+    netCache = s; netCacheSpawns = spawns; netCached = true;
+    return true;
+}
+
+void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
+    ++spawns;
+    position = world.renderOrigin + renderFeet;
+    velocity = body.surfaceVelocity(renderFeet);
+    grounded = false;
+    groundBody = nullptr;
+    flyMode = false;
+    anchorTo(body);
+}
+
+void Player::poisonCollideCache() {
+    // At the player's own feet (body-local), so the "moved since" term is small and every sphere would be skipped.
+    const Vector3 here = nearest ? nearest->toLocalD(position).toFloat() : Vector3{};
+    for (int si = 0; si < 8; ++si) { collideCache.valid[si] = true; collideCache.dist[si] = 1000.0f; collideCache.centre[si] = here; }
+    collideCache.body = nearest; collideCache.edits = nearest ? nearest->edits.get() : nullptr;
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the multiplayer state (netState / applyNetState) in the body's frame ----
+#include "unit_helpers.h"
+
+namespace {
+struct PlayerNetTest : ::testing::Test {
+    Scene& world = UnitTest::FieldOnlyScene(); // reads renderOrigin only (zero)
+    std::unique_ptr<Planetoid> body;
+    void SetUp() override {
+        body = std::make_unique<Planetoid>("unit", DVec3{ 0.0, 0.0, 0.0 }, Vector3{ 0, 40, 0 }, 1.0f, 42u, 60000.0f);
+        body->rotation = { 0, 40, 0 };
+        body->spin = { 0, 0.1f, 0 }; // ~105 m/s at the surface, as terra
+        body->netId = 0x1000000000000001ull;
+    }
+    Player::NetState State(bool grounded) const {
+        Player::NetState s;
+        s.body = body->netId; s.local = { 1200.25, 59950.5, -640.125 }; s.vel = { 1.5f, grounded ? 0.0f : -3.0f, 0.25f };
+        s.grounded = grounded; s.posture = 1; s.jumpBuffer = 0.1f; s.coyote = 0.05f; s.jumpLock = 0.02f; s.jetpackFuel = 0.6f;
+        return s;
+    }
+    static void ExpectSame(const Player::NetState& a, const Player::NetState& b) {
+        EXPECT_EQ(a.body, b.body);
+        EXPECT_LT((a.local - b.local).length(), 1e-6) << "local position";
+        EXPECT_LT(Vector3Distance(a.vel, b.vel), 2e-3f) << "local velocity " << b.vel.x << " " << b.vel.y << " " << b.vel.z;
+        EXPECT_EQ(a.grounded, b.grounded);
+        EXPECT_EQ(a.posture, b.posture);
+        EXPECT_FLOAT_EQ(a.jumpBuffer, b.jumpBuffer); EXPECT_FLOAT_EQ(a.coyote, b.coyote);
+        EXPECT_FLOAT_EQ(a.jumpLock, b.jumpLock); EXPECT_FLOAT_EQ(a.jetpackFuel, b.jetpackFuel);
+    }
+};
+}
+
+TEST_F(PlayerNetTest, AppliedStateReadsBack) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        Player::NetState back;
+        ASSERT_TRUE(p.netState(world, back));
+        ExpectSame(s, back);
+    }
+}
+
+// The same through the frame conversions: a player not stepped since a spawn reports what it stands on now.
+TEST_F(PlayerNetTest, UnsteppedStateGoesThroughTheBodyFrame) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        ++p.spawns; // the cached state is a spawn old: netState converts from the anchors and the world velocity
+        Player::NetState back;
+        ASSERT_TRUE(p.netState(world, back));
+        ExpectSame(s, back);
+    }
+}
+
+// #856: a joiner the server never steps (still loading) keeps its spawn-time world position while the planet turns; its
+// reported state must stay where it was put on the planet, not slide by spin x time (12 km in #856's run).
+TEST_F(PlayerNetTest, UnsteppedPlayerStaysPutOnATurningPlanet) {
+    for (bool grounded : { true, false }) {
+        Player p;
+        const Player::NetState s = State(grounded);
+        ASSERT_TRUE(p.applyNetState(world, s));
+        ++p.spawns;
+        body->rotation.y += 60.0f * body->spin.y; // a minute of spin, the player not stepped
+        Player::NetState later;
+        ASSERT_TRUE(p.netState(world, later));
+        EXPECT_LT((later.local - s.local).length(), 1e-6) << (grounded ? "grounded" : "airborne") << " player slid on the body";
+    }
+}
+
+TEST_F(PlayerNetTest, PlacedPlayerStaysPutOnATurningPlanet) {
+    Player p;
+    const DVec3 local{ -800.0, 59990.0, 300.0 };
+    p.placeAt(world, *body, body->toWorldD(local).toFloat()); // render origin = world origin
+    body->rotation.y += 90.0f * body->spin.y;
+    Player::NetState s;
+    ASSERT_TRUE(p.netState(world, s));
+    EXPECT_LT((s.local - local).length(), 0.02) << "float render feet: within 2 cm at 60 km";
+}
+
+TEST_F(PlayerNetTest, UnknownBodyIsRefused) {
+    Player p;
+    Player::NetState s = State(true);
+    s.body = 0x1000000000000999ull;
+    EXPECT_FALSE(p.applyNetState(world, s));
+    Player::NetState out;
+    EXPECT_FALSE(Player{}.netState(world, out)) << "no body yet";
+}
+#endif

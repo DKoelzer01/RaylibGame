@@ -1,0 +1,40 @@
+# Rocket parts (milestone 7): build parts on a plot; a plot with a cockpit is a rocket.
+# part item         | mass kg | thrust kN | isp s | fuel kg | what it does
+rocket_engine       | 600     | 120       | 300   | 0       | thrust along the plot's up axis
+fuel_tank           | 200     | 0         | 0     | 1500    | holds rocket fuel (I loads it from the inventory)
+cockpit             | 800     | 0         | 0     | 0       | pressurised seat for the pilot (life support)
+guidance_computer   | 100     | 0         | 0     | 0       | attitude control (reaction wheels)
+landing_leg         | 60      | 0         | 0     | 0       | absorbs touchdowns (each lifts the safe landing speed)
+cabin               | 900     | 0         | 0     | 0       | crew room: 4 seats, 30 min of air (the cockpit holds 10)
+station_core        | 700     | 0         | 0     | 1500    | deployed in orbit (K) it founds a station; holds 1500 kg of fuel for docked rockets
+# Structure: kg per 0.5 m cell of each building material.
+material concrete 300
+material stone_brick 330
+material oak_planks 60
+material birch_planks 60
+material maple_planks 60
+material pine_planks 60
+material spruce_planks 60
+material iron_plate 90
+material glass 80
+material heat_shield_tile 150
+# Rocket fuel: kg per item.
+fuel rocket_fuel 100
+# Heat: degrees C a part survives on the leading face (re-entry, fast flight in thick air). Default 900.
+heat rocket_engine 1600
+heat fuel_tank 1100
+heat cockpit 1200
+heat guidance_computer 700
+heat landing_leg 1100
+heat cabin 1200
+heat station_core 1200
+heat heat_shield_tile 3000
+heat concrete 1100
+heat stone_brick 1200
+heat oak_planks 250
+heat birch_planks 250
+heat maple_planks 250
+heat pine_planks 250
+heat spruce_planks 250
+heat iron_plate 1000
+heat glass 900

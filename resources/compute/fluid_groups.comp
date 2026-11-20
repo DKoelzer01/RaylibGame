@@ -1,0 +1,54 @@
+#version 430
+// The dry-cell skip (#675, fluid.cpp GPU mode): before each substep, the 64-cell groups of the processed bricks (16 x 4
+// cells of one layer: group = z * 4 + y / 4, cells group * 64 .. + 63) that held water in either of the last two
+// substeps, or border such a group (inside the brick or across a face to a processed brick), are listed for the
+// substep's indirect dispatches of fluid_step.comp. Water moves at most a cell a pass, so a group nothing wet borders
+// stays dry and is skipped exactly. Listed for one substep after it dried, its pass-0 copy (B) is dry too, so the cells
+// that read it see the truth. Most of a brick is air or rock: a filling quarter-metre basin ran ~10x the cells it held.
+//  mode 0: one workgroup per processed brick, a thread per group: list it (and clear this substep's wet mask, which
+//          fluid_step.comp's pass 2 sets).
+//  mode 1: one thread: the listed count into indirect dispatch args (x <= 32768 groups, y rows) and the counter reset.
+layout(local_size_x = 64) in;
+layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
+layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
+layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
+layout(std430, binding = 10) buffer Mask { uint mask[]; };           // per slot: 3 substeps (rotating) x 2 words of group bits
+layout(std430, binding = 11) buffer Groups { uint groups[]; };       // [0..2] dispatch args, [3] listed, [4] counter, [8..] slot * 64 + group
+uniform uint count; // processed slots
+uniform int mode;
+uniform int cur;    // this substep's mask (0-2): the other two are the last two substeps'
+
+bool wetAt(int s, int grp) {
+    uint w = uint(grp) >> 5u, b = 1u << (uint(grp) & 31u);
+    uint base = uint(s) * 6u;
+    uint p1 = uint((cur + 2) % 3), p2 = uint((cur + 1) % 3);
+    return ((mask[base + p1 * 2u + w] | mask[base + p2 * 2u + w]) & b) != 0u;
+}
+bool wetNb(uint slot, int face, int grp) {
+    int s = nbr[slot * 6u + uint(face)];
+    return s >= 0 && inS[uint(s)] != 0u && wetAt(s, grp);
+}
+
+void main() {
+    if (mode == 1) {
+        if (gl_GlobalInvocationID.x == 0u) {
+            uint n = groups[4];
+            groups[3] = n; groups[4] = 0u;
+            groups[0] = min(n, 32768u); groups[1] = (n + 32767u) / 32768u; groups[2] = 1u;
+        }
+        return;
+    }
+    uint li = gl_WorkGroupID.x;
+    if (li >= count) return;
+    uint slot = list[li];
+    int s = int(slot);
+    int grp = int(gl_LocalInvocationID.x), z = grp >> 2, q = grp & 3;
+    bool on = wetAt(s, grp)
+           || (q > 0 && wetAt(s, grp - 1)) || (q < 3 && wetAt(s, grp + 1))
+           || (z > 0 && wetAt(s, grp - 4)) || (z < 15 && wetAt(s, grp + 4))
+           || wetNb(slot, 0, grp) || wetNb(slot, 1, grp)                  // across x: the same rows of the next brick
+           || (q == 0 && wetNb(slot, 2, z * 4 + 3)) || (q == 3 && wetNb(slot, 3, z * 4))
+           || (z == 0 && wetNb(slot, 4, 60 + q)) || (z == 15 && wetNb(slot, 5, q));
+    if (on) { uint i = atomicAdd(groups[4], 1u); groups[8u + i] = slot * 64u + uint(grp); }
+    if (grp < 2) mask[slot * 6u + uint(cur) * 2u + uint(grp)] = 0u; // pass 2 marks this substep's wet groups
+}

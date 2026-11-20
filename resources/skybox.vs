@@ -17,7 +17,8 @@ void main()
 
     // Remove translation from the view matrix
     mat4 rotView = mat4(mat3(matView));
-    vec4 clipPos = matProjection*rotView*vec4(vertexPosition, 1.0);
+    // Scale the unit cube well past the near plane (0.5); translation is already removed.
+    vec4 clipPos = matProjection*rotView*vec4(vertexPosition*10.0, 1.0);
 
     // Calculate final vertex position
     gl_Position = clipPos;

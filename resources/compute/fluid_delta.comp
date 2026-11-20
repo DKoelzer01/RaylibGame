@@ -1,0 +1,71 @@
+#version 430
+// Changes made on the CPU (buckets, pumps, springs, levelling: fluid.cpp GPU mode) applied to the GPU state.
+// Each entry: global cell, signed fill change, kind (+8: set the kind when the cell was empty).
+//  mode 0 (a thread an entry): apply it; what does not fit in the cell is kept in the entry (pad) for mode 1.
+//  mode 1 (one thread): each entry's excess, in list order (sorted by cell: deterministic), goes up its column into the
+//    open cells of its kind. The CPU places a change on its mirror of the cells, a dispatch older than the GPU's: a pour
+//    the mirror had room for could land on a cell the GPU had filled meanwhile, and clamping it at 255 deleted the excess
+//    (#840: ~1 m^3 of a dam-break's 149 m^3 fill). A pour puts water at or above its point, so up the column is where it
+//    belongs. What still finds no room is dropped (rare).
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer Cells { uint cells[]; };
+struct Delta { uint cell; int delta; uint kind; uint pad; };
+layout(std430, binding = 1) buffer Deltas { Delta deltas[]; };
+layout(std430, binding = 2) buffer Flags { uint flagsOut[]; };
+layout(std430, binding = 3) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
+layout(std430, binding = 10) buffer Mask { uint gmask[]; }; // the dry-cell skip's wet groups (#675): a CPU change wets its group in all three
+uniform uint count;
+uniform int mode;
+uniform int useGroups; // 1: the dry-cell skip is on (binding 10 is its mask)
+
+const uint SOLID = 1u;
+void wet(uint cell) {
+    atomicOr(flagsOut[cell / 4096u], 1u);
+    if (useGroups != 0) { uint slot = cell / 4096u, grp = (cell % 4096u) / 64u; for (uint k = 0u; k < 3u; ++k) atomicOr(gmask[slot * 6u + k * 2u + (grp >> 5u)], 1u << (grp & 31u)); }
+}
+// The cell over one, or 0xFFFFFFFF (its brick missing).
+uint above(uint cell) {
+    uint slot = cell / 4096u, local = cell % 4096u;
+    if (local / 256u < 15u) return cell + 256u;
+    int s = nbr[slot * 6u + 5u];
+    return s < 0 ? 0xFFFFFFFFu : uint(s) * 4096u + (local - 15u * 256u);
+}
+void main() {
+    if (mode == 1) {
+        if (gl_GlobalInvocationID.x != 0u) return;
+        for (uint i = 0u; i < count; ++i) {
+            int e = int(deltas[i].pad);
+            if (e <= 0) continue;
+            uint kind = deltas[i].kind & 7u;
+            uint cell = deltas[i].cell;
+            for (int k = 0; k < 64 && e > 0; ++k) {
+                cell = above(cell);
+                if (cell == 0xFFFFFFFFu) break;
+                uint c = cells[cell];
+                uint fl = (c >> 8) & 255u;
+                int f = int(c & 255u);
+                if ((fl & SOLID) != 0u) break;                              // a ceiling: no further up
+                if (f > 0 && ((fl >> 5) & 7u) != kind) break;               // another fluid
+                int add = min(e, 255 - f);
+                if (add <= 0) continue;
+                if (f == 0) fl = (fl & 31u) | (kind << 5);
+                cells[cell] = uint(f + add) | (fl << 8) | (c & 0xFFFF0000u);
+                e -= add;
+                wet(cell);
+            }
+        }
+        return;
+    }
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= count) return;
+    Delta d = deltas[i];
+    uint c = cells[d.cell];
+    int f = int(c & 255u);
+    int nf = clamp(f + d.delta, 0, 255);
+    deltas[i].pad = uint(max(f + d.delta - 255, 0)); // the excess, for mode 1
+    uint fl = (c >> 8) & 255u;
+    if (f == 0 && nf > 0) fl = (fl & 31u) | ((d.kind & 7u) << 5);
+    cells[d.cell] = uint(nf) | (fl << 8) | (c & 0xFFFF0000u); // the target and the ground share (#454) stay
+    atomicOr(flagsOut[d.cell / 4096u], 1u);
+    if (useGroups != 0 && nf > 0) { uint slot = d.cell / 4096u, grp = (d.cell % 4096u) / 64u; for (uint k = 0u; k < 3u; ++k) atomicOr(gmask[slot * 6u + k * 2u + (grp >> 5u)], 1u << (grp & 31u)); }
+}

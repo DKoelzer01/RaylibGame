@@ -1,0 +1,262 @@
+#include "foliage.h"
+#include "gpumem.h"
+#include "voxel.h"
+#include "plots.h"
+#include <mutex>
+#include <unordered_map>
+
+#include <raymath.h>
+#include <rlgl.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+
+bool foliageEnabled = true;
+
+namespace {
+    // Small, fast integer hash (lowbias32) -> [0, 1).
+    uint32_t Hash(uint32_t x) {
+        x ^= x >> 16; x *= 0x7feb352dU;
+        x ^= x >> 15; x *= 0x846ca68bU;
+        x ^= x >> 16;
+        return x;
+    }
+    float Unit(uint32_t& state) { state = Hash(state + 0x9e3779b9U); return (state >> 8) * (1.0f / 16777216.0f); }
+    // Smooth value noise in [0, 1] over body-local metres (cell size 1/f): where the grass edge wanders (#609).
+    float Lattice(int x, int y, int z) { return (Hash((uint32_t)x * 73856093U ^ (uint32_t)y * 19349663U ^ (uint32_t)z * 83492791U) >> 8) * (1.0f / 16777216.0f); }
+    float ValueNoise3(Vector3 p, float f) {
+        const float x = p.x * f, y = p.y * f, z = p.z * f;
+        const float fx0 = floorf(x), fy0 = floorf(y), fz0 = floorf(z);
+        const int x0 = (int)fx0, y0 = (int)fy0, z0 = (int)fz0;
+        float tx = x - fx0, ty = y - fy0, tz = z - fz0;
+        tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty); tz = tz * tz * (3 - 2 * tz);
+        auto L = [&](int a, int b, int c) { return Lattice(x0 + a, y0 + b, z0 + c); };
+        const float c00 = L(0, 0, 0) + (L(1, 0, 0) - L(0, 0, 0)) * tx, c10 = L(0, 1, 0) + (L(1, 1, 0) - L(0, 1, 0)) * tx;
+        const float c01 = L(0, 0, 1) + (L(1, 0, 1) - L(0, 0, 1)) * tx, c11 = L(0, 1, 1) + (L(1, 1, 1) - L(0, 1, 1)) * tx;
+        const float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+        return c0 + (c1 - c0) * tz;
+    }
+
+    Vector3 Vert(const std::vector<float>& v, int i) { return { v[3 * i], v[3 * i + 1], v[3 * i + 2] }; }
+
+    // The shared tuft meshes, one after another in one buffer: y runs 0..1 from root to tip (the
+    // shader scales it and bends the tips with the wind).
+    //   0: a sparse tuft, five blades fanned around the up axis;
+    //   1: a clump, 14 blades from roots spread over ~12 cm;
+    //   2: a dense clump, 24 blades over ~20 cm, the fullest.
+    unsigned int tuftVbo = 0;
+    int variantFirst[kGrassVariants] = {}, variantCount[kGrassVariants] = {};
+    void AddBlade(std::vector<float>& v, float rx, float rz, float dirA, float lean, float height, float w) {
+        const float c = cosf(dirA), s = sinf(dirA);
+        // Root left, root right (across the lean direction), tip leaning out along it.
+        const float pts[3][3] = { { rx - s * w, 0.0f, rz + c * w }, { rx + s * w, 0.0f, rz - c * w }, { rx + c * lean, height, rz + s * lean } };
+        for (auto& p : pts) v.insert(v.end(), { p[0], p[1], p[2] });
+    }
+    void EnsureTuftMesh() {
+        if (tuftVbo) return;
+        std::vector<float> v;
+        // Variant 0: the original tuft.
+        variantFirst[0] = 0;
+        for (int b = 0; b < 5; ++b) {
+            const float a = b * 2.0f * PI / 5 + 0.4f * b;
+            AddBlade(v, 0.0f, 0.0f, a, 0.18f + 0.07f * (b % 3), 1.0f - 0.1f * (b % 2), 0.035f);
+        }
+        // Clumps: blades from roots scattered in a disc, leaning outward (a little random), the
+        // middle ones tallest. A fixed seed: every clump of a variant is the same mesh, turned and
+        // scaled per instance.
+        uint32_t state = 12345u;
+        const int blades[3] = { 5, 14, 24 };
+        const float spread[3] = { 0.0f, 0.12f, 0.2f };
+        for (int var = 1; var < kGrassVariants; ++var) {
+            variantFirst[var] = (int)(v.size() / 3);
+            for (int b = 0; b < blades[var]; ++b) {
+                const float ra = Unit(state) * 2.0f * PI, rr = spread[var] * sqrtf(Unit(state));
+                const float rx = cosf(ra) * rr, rz = sinf(ra) * rr;
+                const float out = rr / std::max(spread[var], 1e-3f);           // 0 centre .. 1 rim
+                const float dirA = ra + (Unit(state) - 0.5f) * 1.2f;
+                const float lean = 0.08f + 0.25f * out + 0.1f * Unit(state);
+                const float height = (0.65f + 0.35f * Unit(state)) * (1.0f - 0.25f * out);
+                AddBlade(v, rx, rz, dirA, lean, height, 0.028f + 0.012f * Unit(state));
+            }
+        }
+        for (int var = 0; var < kGrassVariants; ++var)
+            variantCount[var] = (var + 1 < kGrassVariants ? variantFirst[var + 1] : (int)(v.size() / 3)) - variantFirst[var];
+        GpuMemTag gm66_("grass"); // VRAM accounting (#302)
+        tuftVbo = rlLoadVertexBuffer(v.data(), (int)(v.size() * sizeof(float)), false);
+    }
+}
+
+// #830: each body's part cells, by its field (the snapshot a build takes is the one current when it starts; a change remeshes).
+static std::mutex gBlockersMutex;
+static std::unordered_map<const DensityField*, std::shared_ptr<const GrassBlockers>> gBlockers;
+void Grass_SetBlockers(const DensityField* field, std::shared_ptr<const GrassBlockers> blockers) {
+    std::lock_guard<std::mutex> lock(gBlockersMutex);
+    if (blockers && !blockers->empty()) gBlockers[field] = std::move(blockers); else gBlockers.erase(field);
+}
+static std::shared_ptr<const GrassBlockers> BlockersOf(const DensityField* field) {
+    std::lock_guard<std::mutex> lock(gBlockersMutex);
+    auto it = gBlockers.find(field);
+    return it == gBlockers.end() ? nullptr : it->second;
+}
+std::shared_ptr<const GrassBlockers> Grass_BlockersOf(const DensityField* field) { return BlockersOf(field); } // (#908)
+
+void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
+    // Nodes at 1 m resolution or finer (the old level 0 and the finer ones around the player).
+    if (out.key.stride() > 1.0f || out.indices.empty() || out.texcoords2.empty() || out.tangents.empty()) return;
+    // (#830) the plots near this chunk: a blade whose root (lifted 15 cm) is in a part's cell isn't placed
+    std::vector<const GrassBlockPlot*> blockers;
+    if (const auto all = BlockersOf(&field)) {
+        const Vector3 c = Vector3AddValue(out.key.origin(), 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size();
+        for (const GrassBlockPlot& b : *all) {
+            const DVec3 d = DVec3{ c.x, c.y, c.z } - b.origin;
+            if (d.length() <= reach + b.radius) blockers.push_back(&b);
+        }
+    }
+    auto blocked = [&](const Vector3& local, const Vector3& up) {
+        for (const GrassBlockPlot* b : blockers) {
+            const DVec3 rel = DVec3{ local.x + up.x * 0.15f, local.y + up.y * 0.15f, local.z + up.z * 0.15f } - b->origin;
+            const Vector3 r = rel.toFloat();
+            const Int3 cell = { (int)floorf(Vector3DotProduct(r, b->east) / kCellSize), (int)floorf(Vector3DotProduct(r, b->up) / kCellSize),
+                                (int)floorf(Vector3DotProduct(r, b->north) / kCellSize) };
+            if (b->cells.count(cell)) return true;
+            // (#908) Under a built roof (a solid cell straight overhead within 6 m): no grass grows in the dark of a shelter
+            // or a floorless house. RAYLIBGAME_ROOF_SKY=0: grass as before.
+            static const bool roofOn = !(getenv("RAYLIBGAME_ROOF_SKY") && getenv("RAYLIBGAME_ROOF_SKY")[0] == '0');
+            if (roofOn && !b->solid.empty())
+                for (int k = 1; k <= 12; ++k) if (b->solid.count(Int3{ cell.x, cell.y + k, cell.z })) return true;
+        }
+        return false;
+    };
+    const float sea = field.seaLevelRadius();
+    if (sea <= 0.0f) return; // no seas, no grass (moons, asteroids)
+    const Vector3 origin = out.key.origin();
+    const float edge = out.key.size(); // keep the overlap cell to the neighbour (it draws its own)
+    // #243: the blades stand on sites that don't depend on the LOD. They were scattered per triangle with the node's own
+    // seed, so a chunk switching level reshuffled every blade (the grass "jumped"). Now: a jittered lattice in the body's
+    // frame, in the plane across the chunk's dominant axis (its up, roughly); each triangle lifts the sites over it onto
+    // its surface, and a site's size, variant and keep chance come from its own hash. A finer or coarser mesh puts the
+    // same blades in the same places, only at slightly different heights.
+    const Vector3 centre = Vector3AddValue(origin, 0.5f * edge);
+    const int ax = fabsf(centre.x) >= fabsf(centre.y) && fabsf(centre.x) >= fabsf(centre.z) ? 0 : fabsf(centre.y) >= fabsf(centre.z) ? 1 : 2;
+    const int au = ax == 0 ? 1 : 0, av = ax == 2 ? 1 : 2;
+    Vector3 axisDir{}; (&axisDir.x)[ax] = 1.0f;
+    // The site density over the projected plane: twice the target, so ground tilted up to 60 degrees from the axis (the
+    // most a planet's up gets from its dominant axis is ~55) can keep the target per square metre of real ground.
+    const float siteDensity = kGrassPerSquareMetre * 2.0f, cell = 1.0f / sqrtf(siteDensity);
+    auto comp = [](const Vector3& q, int i) { return (&q.x)[i]; };
+    const size_t tris = out.indices.size() / 3;
+    std::vector<float> byVariant[kGrassVariants];
+    for (size_t t = 0; t < tris; ++t) {
+        const int i0 = out.indices[3 * t], i1 = out.indices[3 * t + 1], i2 = out.indices[3 * t + 2];
+        // Grass is material 6 (texcoords2.x); sky exposure is tangent.w.
+        const float g0 = out.texcoords2[2 * i0], g1 = out.texcoords2[2 * i1], g2 = out.texcoords2[2 * i2];
+        if (g0 + g1 + g2 < 0.9f) continue; // any grass corner: the edge thins out across its triangles (below)
+        if (out.tangents[4 * i0 + 3] + out.tangents[4 * i1 + 3] + out.tangents[4 * i2 + 3] < 2.9f) continue;
+        const Vector3 a = Vert(out.positions, i0), b = Vert(out.positions, i1), c = Vert(out.positions, i2);
+        const Vector3 cr = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+        const float area = 0.5f * Vector3Length(cr);
+        if (area < 1e-4f) continue;
+        // The triangle across the axis (body-local): its 2D corners, and the lattice cells under its bounding box.
+        const Vector3 A = Vector3Add(origin, a), B = Vector3Add(origin, b), C = Vector3Add(origin, c);
+        const float ax2 = comp(A, au), ay2 = comp(A, av), bx2 = comp(B, au), by2 = comp(B, av), cx2 = comp(C, au), cy2 = comp(C, av);
+        const float det = (bx2 - ax2) * (cy2 - ay2) - (cx2 - ax2) * (by2 - ay2);
+        if (fabsf(det) < 1e-6f) continue; // edge-on to the axis: steep, bare anyway
+        const float faceAxis = fabsf(cr.x * axisDir.x + cr.y * axisDir.y + cr.z * axisDir.z) / (2.0f * area); // |n . axis|
+        const int x0 = (int)floorf(std::min({ ax2, bx2, cx2 }) / cell), x1 = (int)floorf(std::max({ ax2, bx2, cx2 }) / cell);
+        const int y0 = (int)floorf(std::min({ ay2, by2, cy2 }) / cell), y1 = (int)floorf(std::max({ ay2, by2, cy2 }) / cell);
+        for (int gy = y0; gy <= y1; ++gy)
+            for (int gx = x0; gx <= x1; ++gx) {
+            uint32_t state = Hash((uint32_t)gx * 73856093U ^ (uint32_t)gy * 19349663U ^ (uint32_t)ax * 83492791U ^ (centre.x + centre.y + centre.z < 0.0f ? 0x5bd1e995U : 0U));
+            const float sx = (gx + Unit(state)) * cell, sy = (gy + Unit(state)) * cell; // the site
+            // Barycentric weights of the site in the projected triangle (the same weights on the triangle itself).
+            const float u = ((sx - ax2) * (cy2 - ay2) - (cx2 - ax2) * (sy - ay2)) / det;
+            const float v = ((bx2 - ax2) * (sy - ay2) - (sx - ax2) * (by2 - ay2)) / det;
+            const float w = 1.0f - u - v;
+            if (u < 0.0f || v < 0.0f || w < 0.0f) continue;
+            // Keep a share so real ground gets kGrassPerSquareMetre: sites per m^2 of ground = siteDensity * |n . axis|.
+            if (Unit(state) * siteDensity * std::max(faceAxis, 0.05f) >= kGrassPerSquareMetre) continue;
+            const Vector3 p = Vector3Add(Vector3Add(Vector3Scale(a, w), Vector3Scale(b, u)), Vector3Scale(c, v));
+            if (p.x >= edge || p.y >= edge || p.z >= edge) continue;
+            const Vector3 local = Vector3Add(origin, p);
+            // At the edge of the turf the blades thin out over the triangle, along a line that wanders with a ~1.5 m noise:
+            // a hard cut at half weight drew the mesh's stair steps along every bank (#609).
+            const float gw = w * g0 + u * g1 + v * g2;
+            if (gw < 0.999f) {
+                const float edgeN = ValueNoise3(local, 0.7f) - 0.5f;
+                const float keep = std::clamp((gw + 0.6f * edgeN - 0.2f) / 0.6f, 0.0f, 1.0f);
+                if (Unit(state) >= keep) continue;
+            }
+            const float r = Vector3Length(local);
+            if (r < sea + 0.3f) continue;
+            const Vector3 up = Vector3Scale(local, 1.0f / r);
+            const Vector3 n0 = Vert(out.normals, i0), n1 = Vert(out.normals, i1), n2 = Vert(out.normals, i2);
+            const Vector3 nrm = Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(n0, w), Vector3Scale(n1, u)), Vector3Scale(n2, v)));
+            if (Vector3DotProduct(nrm, up) < 0.82f) continue; // steeper than ~35 degrees: bare
+            if (!blockers.empty() && blocked(local, up)) continue; // (#830) under a placed part
+            const float h = Unit(state);
+            // Variant: a quarter sparse tufts, the rest clumps (taller), so open ground is covered.
+            const float pick = Unit(state), su = Unit(state);
+            const int var = pick < 0.25f ? 0 : pick < 0.7f ? 1 : 2;
+            const float scale = var == 0 ? 0.22f + 0.35f * su * su   // mostly short, a few tall
+                              : var == 1 ? 0.35f + 0.3f * su
+                                         : 0.42f + 0.35f * su;
+            // The variant rides in the scale (scale + 10 * variant); grouped by variant for one draw each.
+            // The climate (Plan 5 B) rides in the up vector's length (the shader normalises it): the packed
+            // code the mesher left in the vertex's tangent.y (2 + temperature step + moisture; 1 = none).
+            const float code = std::max(1.0f, out.tangents[4 * i0 + 1]);
+            byVariant[var].insert(byVariant[var].end(), { p.x, p.y, p.z, scale + 10.0f * var, up.x * code, up.y * code, up.z * code, h });
+        }
+    }
+    for (auto& v : byVariant) out.grass.insert(out.grass.end(), v.begin(), v.end());
+}
+
+void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
+    Foliage_Release(g);
+    if (inst.empty()) return;
+    EnsureTuftMesh();
+    // Instances arrive grouped by variant (ScatterGrass); count each group from the scale's tens.
+    const int n = (int)(inst.size() / kGrassFloats);
+    for (int i = 0; i < n; ++i) ++g.count[std::clamp((int)(inst[(size_t)i * kGrassFloats + 3] / 10.0f), 0, kGrassVariants - 1)];
+    GpuMemTag gm133_("grass"); // VRAM accounting (#302)
+    g.vbo = rlLoadVertexBuffer(inst.data(), (int)(inst.size() * sizeof(float)), false);
+    const int stride = kGrassFloats * (int)sizeof(float);
+    int first = 0;
+    for (int v = 0; v < kGrassVariants; ++v) {
+        if (!g.count[v]) continue;
+        // One VAO per variant: the shared mesh, and the instance buffer from this variant's first instance.
+        g.vao[v] = rlLoadVertexArray();
+        rlEnableVertexArray(g.vao[v]);
+        rlEnableVertexBuffer(tuftVbo);
+        rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0);
+        rlEnableVertexAttribute(0);
+        rlEnableVertexBuffer(g.vbo);
+        rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, first * stride);                       // position + scale
+        rlEnableVertexAttribute(10);
+        rlSetVertexAttributeDivisor(10, 1);
+        rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, first * stride + 4 * (int)sizeof(float)); // up + hash
+        rlEnableVertexAttribute(11);
+        rlSetVertexAttributeDivisor(11, 1);
+        rlDisableVertexArray();
+        first += g.count[v];
+    }
+    rlDisableVertexBuffer();
+}
+
+void Foliage_Release(FoliageGpu& g) {
+    for (unsigned int& vao : g.vao) if (vao) rlUnloadVertexArray(vao);
+    if (g.vbo) rlUnloadVertexBuffer(g.vbo);
+    g = FoliageGpu{};
+}
+
+void Foliage_Draw(const FoliageGpu& g, Shader shader, int modelLoc, const Matrix& model) {
+    if (!g.vbo) return;
+    rlSetUniformMatrix(modelLoc, model);
+    (void)shader;
+    for (int v = 0; v < kGrassVariants; ++v) {
+        if (!g.vao[v] || !g.count[v]) continue;
+        rlEnableVertexArray(g.vao[v]);
+        rlDrawVertexArrayInstanced(variantFirst[v], variantCount[v], g.count[v]);
+    }
+    rlDisableVertexArray();
+}

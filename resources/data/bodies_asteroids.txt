@@ -1,0 +1,23 @@
+# Star system: one body (or procedural ring of bodies) per line.   kind name key=value ...
+#
+# kinds   asteroid | planet | moon      a single body
+#         ring                          `count` procedural asteroids around the origin
+# keys    radius=m                      body radius (ring: base size of its members)
+#         position=x,y,z                world position (m), or
+#         orbit=parent,altitude,phase   circular orbit at altitude (m) above a body defined above, starting at
+#                                       phase (degrees) in its equatorial plane; the speed comes from its gravity
+#         spin=deg/s  or  day=seconds   rotation about the body's Y axis (day < 0: retrograde)
+#         gravity=auto or m/s^2         at the mean surface; auto: asteroids 3 + 0.03 R (max 9.81), planets/moons 9.81 R / 100 km
+#                                       (gravity is summed over every body: inverse-square outside, linear inside)
+#         seed=N                        terrain seed (default: drawn from the world seed)
+# ring    count=N  size=lo,hi (radius multipliers)  extent=m  flatten=f (y spread)  maxspin=deg/s
+#
+# Bodies draw from the world seed in file order, so reordering lines changes the world.
+# The old asteroid start system (the default until milestone 1 step 8; the default system is now the
+# home planet in bodies.txt). Run with:  game.exe --bodies resources/data/bodies_asteroids.txt
+
+# The start asteroid: holds still so the first edits are easy to test.
+asteroid planetoid_0 radius=50 position=64,0,0 spin=0
+
+# A loose belt of seven more within 1.5 km.
+ring     planetoid   radius=50 count=7 size=0.5,3 extent=1500 flatten=0.2 maxspin=3

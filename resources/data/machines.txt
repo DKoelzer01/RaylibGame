@@ -1,0 +1,48 @@
+# Machines (build parts, 1 m): part | volts (0: no power) | power | EU per tick produced | fuels | water (litres per tick of burning; boilers)
+#   power: none (runs by itself), fuel (burns fuel while working), eu (draws from cables),
+#          generator (burns fuel into EU at its voltage), storage (chest), battery
+# A machine refuses power from a network above its voltage. Fuel burn times are in fuels.
+campfire        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat fibre
+kiln            | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
+coke_oven       | 0  | none      | 0  |
+blast_furnace   | 0  | fuel      | 0  | coke
+boiler          | 8  | generator | 8  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat | 1
+forge_hammer    | 8  | eu        | 0  |
+alloy_smelter   | 8  | eu        | 0  |
+steam_macerator | 8  | eu        | 0  |
+generator       | 32 | generator | 32 | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
+furnace         | 32 | eu        | 0  |
+macerator       | 32 | eu        | 0  |
+chest           | 0  | storage   | 0  |
+battery         | 32 | battery   | 0  |
+ore_washer      | 32 | eu        | 0  |
+centrifuge      | 32 | eu        | 0  |
+water_pump      | 32 | eu        | 0  |
+mv_generator    | 128 | generator | 128 | coal coke crude_oil
+electrolyzer    | 128 | eu        | 0  |
+chemical_reactor | 128 | eu       | 0  |
+miner           | 128 | eu        | 0  |
+hv_generator    | 512 | generator | 512 | coke
+arc_furnace     | 512 | eu        | 0  |
+refinery        | 512 | eu        | 0  |
+precision_assembler | 512 | eu    | 0  |
+fusion_reactor  | 2048 | generator | 2048 | helium3
+mass_driver     | 2048 | eu       | 0  |
+# fuel | burn ticks (20 a second)
+fuel oak_log 1200
+fuel birch_log 1200
+fuel maple_log 1200
+fuel pine_log 1200
+fuel spruce_log 1200
+fuel oak_planks 300
+fuel birch_planks 300
+fuel maple_planks 300
+fuel pine_planks 300
+fuel spruce_planks 300
+fuel charcoal 1600
+fuel coal 1600
+fuel coke 3200
+fuel helium3 12000
+fuel peat 1000
+fuel fibre 100
+fuel crude_oil 2400

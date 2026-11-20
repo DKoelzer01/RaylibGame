@@ -5,4 +5,21 @@ main
 assets/noise
 assets/models/planetoid
 log.txt
-src/*.o
+*.o
+*.d
+bench.txt
+bench.png
+imgui.ini
+build/
+saves/
+log_*.txt
+CMakeUserPresets.json
+spin_*.png
+bench_*.png
+settings.txt
+
+# Claude Code: per-user settings, worktrees, and capture output (#376, #375)
+.claude/settings.local.json
+.claude/worktrees/
+captures/
+deps/

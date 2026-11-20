@@ -1,0 +1,226 @@
+# id | display name | kind (tool, block, or a number: a resource; placeable parts are blocks) | colour r,g,b | description
+stone           | Stone           | 999 | 130,130,135 | Bulk rock. Hold it and right-click to place ground; craft stone bricks to build with.
+regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Hold it and right-click to place ground.
+dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Hold it and right-click to place ground.
+sand            | Sand            | 999 | 214,190,140 | Fine grains from beaches and shallows. Hold it and right-click to place ground.
+gravel          | Gravel          | 999 | 130,126,120 | Loose stones from scree and the sea floor. Hold it and right-click to place ground.
+ice             | Ice             | 999 | 170,210,240 | Frozen volatiles. Melts into water.
+iron_ore        | Iron ore        | 999 | 190,110, 50 | Metal-bearing rock from ore veins.
+iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
+water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
+oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
+power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
+concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
+glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
+telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
+any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
+any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
+any_stone       | Any stone       | 999 | 130,130,135 | Stone or any rock: granite, basalt, sandstone, limestone or marble.
+fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
+berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
+rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
+clay            | Clay            | 999 | 170,120, 95 | Dug from river and pond beds, swamps and pockets in the dirt. Moulds into crucibles; bricks for kilns and ovens.
+crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
+fired_crucible  | Fired crucible  |  20 | 190, 90, 60 | Holds molten metal. The key to the stone age.
+charcoal        | Charcoal        | 999 |  45, 40, 38 | Wood baked in a campfire. Burns hotter and longer than logs.
+coal            | Coal            | 999 |  30, 30, 32 | From coal deposits underground. Good fuel; bakes into coke.
+coke            | Coke            | 999 |  70, 70, 78 | Baked coal. Burns hot enough to make steel.
+vacuum_tube     | Vacuum tube     | 200 | 210,200,150 | The first circuit element.
+basic_circuit   | Basic circuit   | 200 |  60,140, 70 | Circuit board for LV machines.
+lv_hull         | LV machine hull |  20 | 130,132,140 | Steel casing for LV machines.
+conveyor        | Conveyor        | 999 |  60, 62, 66 | Moves items between machines (build part).
+cable           | Copper cable    | 999 | 184,110, 60 | Carries power between machines (build part).
+pipe            | Water pipe      | 999 |  96,116,140 | Carries water from a water pump to outlets (build part: join them face to face).
+water_outlet    | Water outlet    | 999 |  60,120,190 | Pours out the water a pump sends down its pipes (build part).
+campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: bakes charcoal, fires clay.
+fibre_torch     | Fibre torch     |  20 | 220,170, 90 | Hold it (hotbar or off hand) for a little light.
+torch           | Torch           |  20 | 250,150, 60 | Hold it (hotbar or off hand) for warm light around you, or stand it on the ground (RMB).
+lantern         | Lantern         |  20 | 255,205,130 | Hold it (hotbar or off hand) for a steady light that never burns out.
+kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
+coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
+blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
+boiler          | Steam boiler    |  20 | 160,110, 60 | Burns fuel for steam power (8 V).
+forge_hammer    | Forge hammer    |  20 | 150,120, 70 | Steam: hammers ingots into plates.
+alloy_smelter   | Alloy smelter   |  20 | 170,110, 70 | Steam: alloys copper and tin into bronze.
+steam_macerator | Steam macerator |  20 | 140,120, 90 | Steam: crushes ore into dust and stone into sand.
+chest           | Chest           |  20 | 150,105, 60 | Storage for 50 stacks of anything (build part).
+generator       | LV generator    |  20 | 180, 60, 45 | Burns fuel for LV power (32 V).
+electric_furnace| Electric furnace|  20 |  95, 92, 88 | LV: smelts quickly on power.
+macerator       | Macerator       |  20 |  70,110,150 | LV: crushes ore into twice the dust.
+battery         | LV battery      |  20 | 210,180, 60 | Stores LV power.
+rocket_engine   | Rocket engine   |  10 |  70, 72, 80 | 120 kN of thrust. Place it under the rocket's tanks.
+fuel_tank       | Fuel tank       |  10 | 220,222,226 | Holds 1.5 t of rocket fuel.
+cockpit         | Cockpit         |   4 |  60,120,170 | Pressurised seat; a plot with one is a rocket. E to board.
+guidance_computer | Guidance computer | 4 | 40,140,90 | Steers a rocket (reaction wheels).
+landing_leg     | Landing leg     |  20 | 150,150,150 | Softens touchdowns.
+rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at a rocket and press I to load it.
+# Milestone 8: ore processing, MV, HV
+ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
+centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
+water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
+hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without power: placed over water (a river, a pond, the sea), hold RMB on it to pump 50 L/s into the pipes it touches (boilers, outlets).
+mv_generator    | MV generator    |  20 | 200, 90, 50 | Burns coal or coke for MV power (128 V).
+electrolyzer    | Electrolyzer    |  20 | 180,180, 80 | MV: splits water into hydrogen and oxygen; bauxite dust into aluminium.
+chemical_reactor | Chemical reactor | 20 | 120,160,120 | MV: coal and hydrogen into polyethylene.
+miner           | Miner           |  20 | 110, 90, 70 | MV: mines the ore deposit under it, forever.
+hv_generator    | HV generator    |  20 | 210, 60, 60 | Burns coke for HV power (512 V).
+arc_furnace     | Arc furnace     |  20 |  90, 90,110 | HV: titanium from ilmenite and coke; titanium alloy.
+refinery        | Refinery        |  20 | 140,110,160 | HV: rocket fuel from coal, hydrogen and oxygen.
+precision_assembler | Precision assembler | 20 | 100,140,180 | HV: titanium alloy plates, advanced circuits.
+mv_hull         | MV machine hull |  20 | 150,155,165 | Steel and copper casing for MV machines.
+hv_hull         | HV machine hull |  20 | 175,185,200 | Aluminium and steel casing for HV machines.
+good_circuit    | Good circuit    | 200 |  60,170, 90 | MV circuit: a basic circuit on polyethylene.
+advanced_circuit | Advanced circuit | 200 | 60,200,140 | HV circuit: gold contacts on aluminium.
+hydrogen        | Hydrogen cell   | 200 | 200,220,255 | From electrolysis.
+oxygen          | Oxygen cell     | 200 | 140,200,255 | From electrolysis.
+polyethylene    | Polyethylene    | 200 | 230,230,230 | Plastic sheet.
+heat_shield_tile | Heat shield tile | block | 45, 42, 40 | Ceramic on titanium: build a rocket's leading face from it to survive re-entry.
+# Hand tools (tools.h): pickaxes for stone and ore (bauxite needs iron, ilmenite steel), shovels for
+# soft ground, axes for trees. Higher tiers dig a bigger sphere, faster.
+stone_pickaxe    | Stone pickaxe    | tool | 140,135,130 | Mines stone, ice and the common ores (iron, copper, tin, coal).
+stone_shovel     | Stone shovel     | tool | 150,130,110 | Digs dirt, sand, gravel and snow faster and wider than bare hands.
+stone_axe        | Stone axe        | tool | 150,120,100 | Fells trees in half the swings.
+wooden_shield    | Wooden shield    | tool | 160,115, 70 | Put it in the off-hand cell (inventory) and hold RMB to block: stops three quarters of a hit from the front, for stamina.
+iron_pickaxe     | Iron pickaxe     | tool | 175,170,175 | Mines bauxite too; a bigger bite than stone.
+iron_shovel      | Iron shovel      | tool | 175,165,155 | A wider, faster shovel.
+iron_axe         | Iron axe         | tool | 175,160,150 | Fells trees faster.
+steel_pickaxe    | Steel pickaxe    | tool | 125,128,140 | Mines ilmenite (titanium ore) too.
+steel_shovel     | Steel shovel     | tool | 125,125,135 | A wider, faster shovel.
+steel_axe        | Steel axe        | tool | 125,120,130 | Fells trees quickly.
+titanium_pickaxe | Titanium pickaxe | tool | 205,180,215 | The biggest bite.
+titanium_shovel  | Titanium shovel  | tool | 205,180,205 | The widest shovel.
+titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few swings.
+# Navigation: carrying a Map shows the minimap and opens the full map (M).
+map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
+# Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
+grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
+root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
+flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.
+grain            | Grain            |   999 | 214,190,90  | Grind into flour (Tab).
+flour            | Flour            |   999 | 235,230,215 | Bake into bread in a campfire.
+bread            | Bread            |   999 | 200,150,80  | Food: 25.
+roots            | Roots            |   999 | 160,95,55   | Food: 6 raw, 15 roasted in a campfire.
+roasted_roots    | Roasted roots    |   999 | 140,80,40   | Food: 15.
+# Animals (plan 2, milestone 12): drops, products and the tools to collect them.
+raw_meat         | Raw meat         |   999 | 190,80,80   | Food: 8, may make you sick. Cook it in a campfire.
+cooked_meat      | Cooked meat      |   999 | 150,90,60   | Food: 30.
+egg              | Egg              |   999 | 240,230,200 | Food: 10. Cluckers lay them (O).
+milk             | Milk             |   999 | 245,245,240 | Food: 12. From a hornhide with a bucket (O).
+wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks (O, with shears). Spins into fibre (Tab).
+hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
+feather          | Feather          |   999 | 230,220,210 | From cluckers.
+shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
+bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
+water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).
+fishing_rod      | Fishing rod      |  tool | 150,110, 70 | Hold it (hotbar): RMB on water casts; when a fish bites, RMB again to land it. Sea, rivers and lakes hold different fish.
+snare            | Snare            |  20 | 170,140, 90 | Set it on the ground (hold it, RMB): now and then it catches small game. Walk up to it to collect.
+raw_cod          | Raw cod          |   999 | 190,190,200 | A sea fish. Better cooked (campfire).
+raw_trout        | Raw trout        |   999 | 170,150,140 | A river and lake fish. Better cooked (campfire).
+raw_catfish      | Raw catfish      |   999 | 120,110, 90 | Caught in warm waters. Better cooked (campfire).
+cooked_fish      | Cooked fish      |   999 | 210,160,100 | Fish roasted over a fire. Filling.
+fence            | Fence            | block | 130,95,60   | A 1 m wooden panel. Animals can't cross it: build a pen.
+gate             | Gate             | block | 165,120,70  | A fence panel you can walk through; animals can't.
+bed              | Bed              |    5 | 150,62,52   | Build it (hotbar, then place) and right-click it: you respawn at your bed while it stands.
+claim_banner          | Claim banner          | 5 | 190, 70, 60 | Place it (multiplayer) to claim the land 100 m across for your team: other teams can't build, dig or open anything there. Break it to unclaim.
+bronze_claim_banner   | Bronze claim banner   | 5 | 205,140, 70 | A claim banner for 200 m across (multiplayer).
+steel_claim_banner    | Steel claim banner    | 5 | 150,160,175 | A claim banner for 400 m across (multiplayer).
+titanium_claim_banner | Titanium claim banner | 5 | 205,180,215 | A claim banner for 800 m across (multiplayer).
+# Environmental suit (plan 2, milestone 13): suits and modules, fitted in the inventory's Suit tab.
+cloth              | Cloth              |   999 | 220,215,190 | Woven from fibre or wool. Suits and modules.
+retraining_manual  | Retraining manual  |    20 | 200,175,120 | Spend on the Skills tab: every point of one skill's perk tree comes back to spend again (#883).
+basic_suit         | Basic suit         |  tool | 200,200,190 | 2 module slots. You start in one.
+field_suit         | Field suit         |  tool | 120,150,110 | 4 module slots, +20% oxygen and power.
+explorer_suit      | Explorer suit      |  tool | 220,200,120 | 6 module slots, +50% oxygen and power.
+oxygen_tank_module | Oxygen tank module |  tool | 90,200,255  | Suit module: +50% oxygen.
+battery_pack       | Battery pack       |  tool | 250,210,70  | Suit module: +50% suit power.
+insulation_module  | Insulation         |  tool | 235,235,225 | Suit module: the cold costs much less food.
+rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxygen lasts longer underwater.
+thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
+flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
+lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
+thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
+ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
+servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
+grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
+food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.
+# Hoes (plan 2, milestone 14): till soil into farmland (RMB, a brush where you aim; #1085); iron and better till a wide patch at once.
+stone_hoe          | Stone hoe          |  tool | 150,140,120 | Tills soil into farmland where you aim (RMB).
+iron_hoe           | Iron hoe           |  tool | 175,165,155 | Tills a wide patch of farmland at once (RMB).
+steel_hoe          | Steel hoe          |  tool | 125,125,135 | Tills a wide patch of farmland at once (RMB); lasts longer.
+titanium_hoe       | Titanium hoe       |  tool | 205,180,205 | Tills a wide patch of farmland at once (RMB); lasts longest.
+# Rocket repair (plan 3, milestone 18): from the hotbar near a damaged rocket.
+repair_kit         | Repair kit         |   999 | 200,180,90  | Mends the most damaged part of the rocket in reach by half (use from the hotbar).
+cabin              | Cabin              | block | 200,205,215 | Rocket crew cabin: 4 seats and 30 minutes of air for the life support (load oxygen canisters, I).
+station_core       | Station core       | block | 230,220,120 | Build it onto a rocket; in orbit, K deploys it as a space station (rockets dock to it: K; T moves fuel).
+# Building variety (M21): logs of each tree species (planks to build with), stone kinds from digging rock, bricks.
+oak_log            |  Oak log          |   999 | 120,84,50   | From broadleaf trees. Saw into oak planks (Tab).
+birch_log          |  Birch log        |   999 | 220,214,200 | From the pale broadleaf trees. Saw into birch planks (Tab).
+pine_log           |  Pine log         |   999 | 110,76,46   | From conifers. Saw into pine planks (Tab).
+maple_log          |  Maple log        |   999 | 128,70,52   | From the red-leaved broadleaf trees. Saw into maple planks (Tab).
+spruce_log         |  Spruce log       |   999 | 84,60,44    | From the dark, dense conifers. Saw into spruce planks (Tab).
+oak_planks         | Oak planks        |   999 | 158,112,66  | Warm brown planks: build any shape with them.
+birch_planks       | Birch planks      |   999 | 214,196,152 | Pale planks: build any shape with them.
+pine_planks        | Pine planks       |   999 | 176,132,82  | Light brown planks: build any shape with them.
+maple_planks       | Maple planks      |   999 | 182,104,78  | Reddish planks: build any shape with them.
+spruce_planks      | Spruce planks     |   999 | 112,82,58   | Dark brown planks: build any shape with them.
+granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. Hold it and right-click to place ground; craft granite bricks to build with.
+basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. Hold it and right-click to place ground; craft basalt bricks to build with.
+sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. Hold it and right-click to place ground; craft sandstone bricks to build with.
+limestone          | Limestone         |   999 | 206,202,186 | Pale stone common inland. Hold it and right-click to place ground; craft limestone bricks to build with.
+marble             | Marble            |   999 | 236,234,230 | White stone in rare deep pockets. Hold it and right-click to place ground; craft marble bricks to build with.
+brick              | Brick             |   999 | 158,74,52   | Fired clay (kiln). A building material.
+stone_brick        | Stone brick       |   999 | 122,122,128 | Dressed stone (2 stone). Build any shape with it.
+granite_brick      | Granite brick     |   999 | 168,146,140 | Dressed granite (2 granite). Build any shape with it.
+basalt_brick       | Basalt brick      |   999 | 62,62,68    | Dressed basalt (2 basalt). Build any shape with it.
+sandstone_brick    | Sandstone brick   |   999 | 212,182,132 | Dressed sandstone (2 sandstone). Build any shape with it.
+limestone_brick    | Limestone brick   |   999 | 206,202,186 | Dressed limestone (2 limestone). Build any shape with it.
+marble_brick       | Marble brick      |   999 | 236,234,230 | Dressed marble (2 marble). Build any shape with it.
+# Decoration (plan 3, M22): gems from rock, dyes from plants and minerals, and what they make.
+quartz             | Quartz             |   999 | 240,236,244 | A clear crystal, now and then in any rock. Glass and lamps; polish into quartz blocks.
+amethyst           | Amethyst           |   999 | 150,100,200 | A violet gem in granite. Polish into amethyst blocks; a purple dye.
+ruby               | Ruby               |   999 | 196,40,70   | A red gem in marble. Polish into ruby blocks.
+sapphire           | Sapphire           |   999 | 50,80,196   | A blue gem in basalt. Polish into sapphire blocks.
+emerald            | Emerald            |   999 | 40,176,110  | A green gem in limestone. Polish into emerald blocks.
+white_dye          | White dye          |   999 | 240,240,236 | From limestone. Paints plaster.
+black_dye          | Black dye          |   999 | 34,34,38    | From charcoal. Paints plaster.
+red_dye            | Red dye            |   999 | 190,40,40   | From berries. Paints plaster and glass.
+orange_dye         | Orange dye         |   999 | 230,130,40  | From roots, or red and yellow dye.
+yellow_dye         | Yellow dye         |   999 | 236,206,60  | From grain. Paints plaster and glass.
+green_dye          | Green dye          |   999 | 70,150,60   | From plant fibre. Paints plaster and glass.
+blue_dye           | Blue dye           |   999 | 50,80,190   | From flax seeds (the blue flowers). Paints plaster and glass.
+purple_dye         | Purple dye         |   999 | 130,60,160  | From red and blue dye, or amethyst.
+white_plaster      | White plaster      |   999 | 236,234,226 | Lime plaster: build any shape with it.
+black_plaster      | Black plaster      |   999 | 40,40,44    | Painted plaster: build any shape with it.
+red_plaster        | Red plaster        |   999 | 178,52,46   | Painted plaster: build any shape with it.
+orange_plaster     | Orange plaster     |   999 | 222,128,48  | Painted plaster: build any shape with it.
+yellow_plaster     | Yellow plaster     |   999 | 232,200,70  | Painted plaster: build any shape with it.
+green_plaster      | Green plaster      |   999 | 84,142,66   | Painted plaster: build any shape with it.
+blue_plaster       | Blue plaster       |   999 | 58,92,172   | Painted plaster: build any shape with it.
+purple_plaster     | Purple plaster     |   999 | 124,70,150  | Painted plaster: build any shape with it.
+red_glass          | Red glass          |   999 | 210,110,110 | Stained glass: build panes and windows.
+yellow_glass       | Yellow glass       |   999 | 236,218,120 | Stained glass: build panes and windows.
+green_glass        | Green glass        |   999 | 130,200,130 | Stained glass: build panes and windows.
+blue_glass         | Blue glass         |   999 | 120,150,222 | Stained glass: build panes and windows.
+lamp               | Lamp               |   999 | 255,244,200 | A glowing block (quartz and power-cell light): build any shape with it.
+quartz_block       | Quartz block       |   999 | 240,236,244 | Polished quartz: build any shape with it.
+amethyst_block     | Amethyst block     |   999 | 150,100,200 | Polished amethyst: build any shape with it.
+ruby_block         | Ruby block         |   999 | 196,40,70   | Polished ruby: build any shape with it.
+sapphire_block     | Sapphire block     |   999 | 50,80,196   | Polished sapphire: build any shape with it.
+emerald_block      | Emerald block      |   999 | 40,176,110  | Polished emerald: build any shape with it.
+# Moon and ring (M24, tiers 9-10): materials carried home to build Terra's EV machines.
+anorthite          | Anorthite          |   999 | 222,220,212 | Pale moon rock. The arc furnace smelts it into aluminium.
+helium3            | Helium-3           |   999 | 200,232,255 | Fusion fuel: a trace in moon regolith that the centrifuge separates.
+nickel_iron_ore    | Nickel-iron        |   999 | 150,140,120 | Metal straight from ring rocks: the arc furnace splits it into nickel and iron.
+superconductor     | Superconductor     |   999 | 120,160,230 | Platinum wire cooled by ice: carries current without loss (EV machines).
+ev_hull            | EV machine hull    |    20 | 170,175,190 | Titanium-alloy casing laced with superconductor, for EV (2048 V) machines.
+fusion_reactor     | Fusion reactor     |    20 | 230,120,255 | EV generator (2048 V): burns helium-3.
+mass_driver        | Mass driver        |    20 | 160,170,190 | EV: fires cargo capsules to orbit along a magnetic rail.
+cargo_capsule      | Cargo capsule      |   999 | 200,200,210 | Packed cargo for the mass driver.
+launched_capsule   | Orbital delivery   |   999 | 255,220,120 | A cargo capsule the mass driver put in orbit.
+# Biome resources (Plan 5 B)
+crude_oil        | Crude oil        | 200 | 34, 26, 20  | From oil seeps in warm lands (scoop the black pools with a bucket). A refinery makes rocket fuel of it; a chemical reactor, plastic.
+cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlands scrub. Chewy and watery (edible); splits into fibre.
+rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
+peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
+ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.

@@ -1,0 +1,96 @@
+# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick (eu machines)
+campfire        | charcoal 1       | oak_log 1                 | 200 | 0
+campfire        | charcoal 1       | birch_log 1               | 200 | 0
+campfire        | charcoal 1       | maple_log 1               | 200 | 0
+campfire        | charcoal 1       | pine_log 1                | 200 | 0
+campfire        | charcoal 1       | spruce_log 1              | 200 | 0
+campfire        | fired_crucible 1 | crucible_mold 1           | 400 | 0
+campfire        | roasted_roots 1  | roots 1                   | 200 | 0
+campfire        | bread 1          | flour 2                   | 300 | 0
+campfire        | cooked_meat 1    | raw_meat 1                | 250 | 0
+campfire        | cooked_fish 1    | raw_cod 1                 | 200 | 0
+campfire        | cooked_fish 1    | raw_trout 1               | 200 | 0
+campfire        | cooked_fish 1    | raw_catfish 1             | 200 | 0
+kiln            | copper_ingot 1   | copper_ore 1              | 200 | 0
+kiln            | tin_ingot 1      | tin_ore 1                 | 200 | 0
+kiln            | iron_ingot 1     | iron_ore 1                | 300 | 0
+kiln            | brick 2          | clay 1                    | 160 | 0
+kiln            | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 400 | 0
+kiln            | glass 1          | sand 4                    | 200 | 0
+kiln            | copper_ingot 1   | copper_dust 1             | 100 | 0
+kiln            | tin_ingot 1      | tin_dust 1                | 100 | 0
+kiln            | iron_ingot 1     | iron_dust 1               | 150 | 0
+coke_oven       | coke 1           | coal 2                    | 600 | 0
+blast_furnace   | steel_ingot 1    | iron_ingot 1              | 600 | 0
+forge_hammer    | bronze_plate 1   | bronze_ingot 1            | 100 | 4
+forge_hammer    | iron_plate 1     | iron_ingot 1              | 100 | 4
+forge_hammer    | steel_plate 1    | steel_ingot 1             | 160 | 6
+alloy_smelter   | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 200 | 6
+steam_macerator | copper_dust 1    | copper_ore 1              | 200 | 4
+steam_macerator | tin_dust 1       | tin_ore 1                 | 200 | 4
+steam_macerator | iron_dust 1      | iron_ore 1                | 200 | 4
+steam_macerator | sand 1           | stone 1                   | 100 | 2
+furnace         | iron_ingot 1     | iron_ore 1                | 200 | 8
+furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
+furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
+furnace         | glass 1          | sand 4                    | 160 | 8
+macerator       | sand 2           | stone 1                   | 100 | 4
+macerator       | gravel 2         | concrete 1                | 100 | 4
+# Milestone 8. LV ore processing: ore -> 2 crushed -> purified (water) -> dust + byproduct -> ingot.
+macerator       | iron_crushed 2     | iron_ore 1                | 150 | 8
+macerator       | copper_crushed 2   | copper_ore 1              | 150 | 8
+macerator       | tin_crushed 2      | tin_ore 1                 | 150 | 8
+macerator       | bauxite_crushed 2  | bauxite_ore 1             | 150 | 8
+macerator       | ilmenite_crushed 2 | ilmenite_ore 1            | 150 | 8
+ore_washer      | iron_purified 1    | iron_crushed 1, water 1   | 100 | 8
+ore_washer      | copper_purified 1  | copper_crushed 1, water 1 | 100 | 8
+ore_washer      | tin_purified 1     | tin_crushed 1, water 1    | 100 | 8
+ore_washer      | bauxite_purified 1 | bauxite_crushed 1, water 1 | 100 | 8
+ore_washer      | ilmenite_purified 1 | ilmenite_crushed 1, water 1 | 100 | 8
+centrifuge      | iron_dust 4, nickel_dust 1     | iron_purified 4     | 200 | 10
+centrifuge      | copper_dust 4, gold_dust 1     | copper_purified 4   | 200 | 10
+centrifuge      | tin_dust 4, iron_dust 1        | tin_purified 4      | 200 | 10
+centrifuge      | bauxite_dust 4, iron_dust 1    | bauxite_purified 4  | 200 | 10
+centrifuge      | ilmenite_dust 4, iron_dust 1   | ilmenite_purified 4 | 200 | 10
+water_pump      | water 2            | -                         | 40  | 4
+furnace         | iron_ingot 1       | iron_crushed 1            | 150 | 8
+furnace         | copper_ingot 1     | copper_crushed 1          | 150 | 8
+furnace         | tin_ingot 1        | tin_crushed 1             | 150 | 8
+furnace         | tin_ingot 1        | tin_dust 1                | 100 | 8
+furnace         | nickel_ingot 1     | nickel_dust 1             | 100 | 8
+furnace         | gold_ingot 1       | gold_dust 1               | 100 | 8
+forge_hammer    | aluminium_plate 1  | aluminium_ingot 1         | 120 | 6
+# Plates and dusts that had no recipe (--test-recipes).
+forge_hammer    | copper_plate 1     | copper_ingot 1            | 100 | 4
+forge_hammer    | tin_plate 1        | tin_ingot 1               | 100 | 4
+forge_hammer    | titanium_plate 1   | titanium_ingot 1          | 200 | 8
+macerator       | bronze_dust 1      | bronze_ingot 1            | 100 | 4
+macerator       | aluminium_dust 1   | aluminium_ingot 1         | 100 | 6
+macerator       | titanium_dust 1    | titanium_ingot 1          | 160 | 8
+# MV (128 V).
+electrolyzer    | hydrogen 2, oxygen 1 | water 2                 | 100 | 32
+electrolyzer    | aluminium_ingot 2  | bauxite_dust 4            | 400 | 64
+chemical_reactor | polyethylene 1    | coal 1, hydrogen 2        | 200 | 30
+miner           | iron_ore 1         | -                         | 200 | 32
+miner           | copper_ore 1       | -                         | 200 | 32
+miner           | tin_ore 1          | -                         | 200 | 32
+miner           | coal 1             | -                         | 200 | 32
+miner           | bauxite_ore 1      | -                         | 240 | 32
+miner           | ilmenite_ore 1     | -                         | 300 | 32
+# HV (512 V).
+arc_furnace     | titanium_ingot 1   | ilmenite_dust 2, coke 1   | 600 | 120
+arc_furnace     | titanium_alloy_ingot 4 | titanium_ingot 3, aluminium_ingot 1 | 400 | 120
+refinery        | rocket_fuel 4      | coal 1, hydrogen 4, oxygen 2 | 200 | 64
+precision_assembler | titanium_alloy_plate 1 | titanium_alloy_ingot 1 | 200 | 96
+precision_assembler | advanced_circuit 1 | good_circuit 1, gold_ingot 1, aluminium_plate 1 | 300 | 96
+# Moon and ring tiers (M24).
+centrifuge      | helium3 1          | regolith 32               | 300 | 16
+arc_furnace     | aluminium_ingot 1  | anorthite 4               | 300 | 120
+arc_furnace     | nickel_ingot 1, iron_ingot 1 | nickel_iron_ore 2 | 200 | 120
+arc_furnace     | platinum_ingot 1   | platinum_ore 2            | 300 | 160
+arc_furnace     | iridium_ingot 1    | iridium_ore 2             | 400 | 200
+precision_assembler | superconductor 2 | platinum_ingot 1, copper_wire 4, ice 2 | 300 | 128
+mass_driver     | launched_capsule 1 | cargo_capsule 1           | 200 | 1024
+refinery        | rocket_fuel 6      | crude_oil 2               | 200 | 64
+chemical_reactor | polyethylene 2    | crude_oil 1               | 200 | 30
+chemical_reactor | polyethylene 1    | rubber 2                  | 200 | 30

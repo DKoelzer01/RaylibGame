@@ -1,0 +1,74 @@
+/**
+ * @file    SimplexNoise.h
+ * @brief   A Perlin Simplex Noise C++ Implementation (1D, 2D, 3D).
+ *
+ * Copyright (c) 2014-2018 Sebastien Rombauts (sebastien.rombauts@gmail.com)
+ *
+ * Distributed under the MIT License (MIT) (See accompanying file LICENSE.txt
+ * or copy at http://opensource.org/licenses/MIT)
+ */
+#pragma once
+
+#include <cstddef>  // size_t
+
+/**
+ * @brief A Perlin Simplex Noise C++ Implementation (1D, 2D, 3D, 4D).
+ */
+class SimplexNoise {
+public:
+    // 1D Perlin simplex noise
+    static float noise(float x);
+    // 2D Perlin simplex noise
+    static float noise(float x, float y);
+    // 3D Perlin simplex noise
+    static float noise(float x, float y, float z);
+    static void noise4(const float* x, const float* y, const float* z, float* out); // four 3D samples (SSE2), identical results
+
+    // Fractal/Fractional Brownian Motion (fBm) noise summation
+    float fractal(size_t octaves, float x) const;
+    float fractal(size_t octaves, float x, float y) const;
+    float fractal(size_t octaves, float x, float y, float z) const;
+    // fractal() without the octaves too fine for samples `footprint` apart: an octave fades out as
+    // its wavelength drops from 4 to 2 footprints (so LOD levels differ smoothly, without aliasing
+    // spikes), and the result keeps fractal(octaves)'s normalisation, so detail is dropped, not
+    // rescaled. footprint <= 0: identical to fractal(octaves).
+    float fractalLimited(size_t octaves, float footprint, float x, float y, float z) const;
+    // The parameters a GPU port needs (terrain.glsl): frequency, seed x, y, z. Amplitude 1, lacunarity 2,
+    // persistence 0.5 for every field the terrain uses.
+    void gpuParams(float out[4]) const { out[0] = mFrequency; out[1] = mSeedX; out[2] = mSeedY; out[3] = mSeedZ; }
+
+    /**
+     * Constructor of to initialize a fractal noise summation
+     *
+     * @param[in] frequency    Frequency ("width") of the first octave of noise (default to 1.0)
+     * @param[in] amplitude    Amplitude ("height") of the first octave of noise (default to 1.0)
+     * @param[in] lacunarity   Lacunarity specifies the frequency multiplier between successive octaves (default to 2.0).
+     * @param[in] persistence  Persistence is the loss of amplitude between successive octaves (usually 1/lacunarity)
+     */
+    explicit SimplexNoise(float frequency = 1.0f,
+                          float amplitude = 1.0f,
+                          float lacunarity = 2.0f,
+                          float persistence = 0.5f,
+                          float seedX = 0.0f,
+                          float seedY = 0.0f,
+                          float seedZ = 0.0f)
+        : 
+        mFrequency(frequency),
+        mAmplitude(amplitude),
+        mLacunarity(lacunarity),
+        mPersistence(persistence),
+        mSeedX(seedX),
+        mSeedY(seedY),
+        mSeedZ(seedZ) {
+    }
+
+private:
+    // Parameters of Fractional Brownian Motion (fBm) : sum of N "octaves" of noise
+    float mFrequency;   ///< Frequency ("width") of the first octave of noise (default to 1.0)
+    float mAmplitude;   ///< Amplitude ("height") of the first octave of noise (default to 1.0)
+    float mLacunarity;  ///< Lacunarity specifies the frequency multiplier between successive octaves (default to 2.0).
+    float mPersistence; ///< Persistence is the loss of amplitude between successive octaves (usually 1/lacunarity)
+    float mSeedX;      ///< Seed for X coordinate (default to 0.0)
+    float mSeedY;      ///< Seed for Y coordinate (default to 0.0)
+    float mSeedZ;      ///< Seed for Z coordinate (default to 0.0)
+};
