@@ -1245,6 +1245,35 @@ void RunJob() {
         pubStats = st;
         awakeBricksLast = st.activeBricks; // the levelling interval (LevelEvery)
     }
+    // CPU = GPU parity (#968, tests): RAYLIBGAME_FLUID_TRACE=1 in lockstep prints, after every tick, the total fill and a hash
+    // of every brick's cells (in brick-key order), and the bricks of the first tick a hash differs from the last line's
+    // brick list can be diffed between a FLUID_CPU=1 run and a GPU run.
+    static const bool trace = EnvFlag("RAYLIBGAME_FLUID_TRACE") && EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (trace) {
+        std::vector<std::pair<std::tuple<int, int, int>, const Brick*>> all;
+        for (auto& s : sites) for (auto& kv : s->bricks) all.push_back({ std::make_tuple(kv.second->bi, kv.second->bj, kv.second->bk), kv.second.get() });
+        std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        uint64_t h = 1469598103934665603ull; long long total = 0;
+        std::string per;
+        for (const auto& [key, b] : all) {
+            uint64_t hb = 1469598103934665603ull;
+            for (int i = 0; i < B3; ++i) { hb = (hb ^ b->fill[i]) * 1099511628211ull; total += b->fill[i]; }
+            h = (h ^ hb) * 1099511628211ull;
+            per += TextFormat(" %d,%d,%d:%08x", std::get<0>(key), std::get<1>(key), std::get<2>(key), (unsigned)(hb & 0xFFFFFFFFu));
+        }
+        printf("fluid trace %lld: %zu bricks, %lld units, hash %016llx\n", stepCount, all.size(), total, (unsigned long long)h);
+        static const bool perBrick = EnvFlag("RAYLIBGAME_FLUID_TRACE_BRICKS");
+        if (perBrick) printf("fluid trace bricks %lld:%s\n", stepCount, per.c_str());
+        static int cbi = 0, cbj = 0, cbk = 0;
+        static const bool cells = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_CELLS"); return e && sscanf(e, "%d,%d,%d", &cbi, &cbj, &cbk) == 3; }();
+        if (cells)
+            for (const auto& [key, b] : all) {
+                if (key != std::make_tuple(cbi, cbj, cbk)) continue;
+                std::string cs;
+                for (int i = 0; i < B3; ++i) if (b->fill[i]) cs += TextFormat(" %d:%d/%d", i, b->fill[i], b->flags[i]);
+                printf("fluid trace cells %lld %d,%d,%d:%s\n", stepCount, cbi, cbj, cbk, cs.c_str());
+            }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

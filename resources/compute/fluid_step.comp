@@ -283,7 +283,9 @@ void outward(int g, out float amt[4]) {
 float giveScale(int g, uint c) {
     float a[4]; outward(g, a);
     float total = max(a[0], 0.0) + max(a[1], 0.0) + max(a[2], 0.0) + max(a[3], 0.0);
-    return total > float(F(c)) ? float(F(c)) / total : 1.0;
+    // In double (#968): GLSL's float division may be off by an ulp or two (the CPU kernel's is IEEE), and floor(mag * scale)
+    // turned that into a whole unit - CPU and GPU parted at the first tick. A float quotient through double rounds exactly.
+    return total > float(F(c)) ? float(double(F(c)) / double(total)) : 1.0;
 }
 uint roomShare(int g, uint c) {
     float a[4]; outward(g, a);
