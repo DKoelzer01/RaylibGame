@@ -18,7 +18,7 @@
 #   --force            fetch even when the newest run is the one already in DIR
 #
 # Exit codes: 0 updated or already current, 1 error, 3 no successful run with the artifact (expired after 5 days?).
-# Needs: curl, jq, unzip (or bsdtar), sha256sum.
+# Needs: curl, jq, unzip (or bsdtar, or python3), sha256sum.
 set -euo pipefail
 
 REPO=DKoelzer01/RaylibGame
@@ -82,7 +82,9 @@ fi
 echo "update-server: fetching run $run_id (${sha:0:7}, $when)"
 api -o "$work/artifact.zip" "$art_url"
 mkdir "$work/x"
-if command -v unzip > /dev/null; then unzip -q "$work/artifact.zip" -d "$work/x"; else bsdtar -xf "$work/artifact.zip" -C "$work/x"; fi
+if command -v unzip > /dev/null; then unzip -q "$work/artifact.zip" -d "$work/x"
+elif command -v bsdtar > /dev/null; then bsdtar -xf "$work/artifact.zip" -C "$work/x"
+else python3 -m zipfile -e "$work/artifact.zip" "$work/x"; fi   # deweyserver has python3 but no unzip
 tgz="$work/x/$ARTIFACT.tar.gz"
 [ -f "$tgz" ] || { echo "update-server: the artifact holds no $ARTIFACT.tar.gz" >&2; exit 1; }
 tar -tzf "$tgz" | grep -q '^raylibgame-server/game$' || { echo "update-server: the tarball has no raylibgame-server/game" >&2; exit 1; }
