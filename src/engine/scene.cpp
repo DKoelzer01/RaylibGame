@@ -1042,6 +1042,7 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         KickGpu();
 
+        SceneTarget_OpaqueDone(); // (#910) the Hi-Z pyramid from the opaque depth, before the water writes its own
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).

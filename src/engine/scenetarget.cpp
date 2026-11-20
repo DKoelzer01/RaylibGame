@@ -583,22 +583,10 @@ bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewPro
     return true;
 }
 
-void SceneTarget_End() {
-    if (!S.fbo) return;
-    rlDrawRenderBatchActive();
-    // Resolve (or copy) into the single-sample texture: same RGBA8 format and size, valid everywhere.
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
-    glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
-    const bool hizOn = S.depthFbo && S.hizTex && S.hizPending;
-    const bool ssaoOn = S.depthFbo && S.ssao && S.hdr && S.ssaoStrength > 0.0f; // #933
-    if (contactOn || hizOn || ssaoOn) { // #137 / #134 / #933: the depth too (a multisampled depth resolves to one of its samples)
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
-        glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    if (hizOn) { // #134: the pyramid for next frame's terrain cull, and the view-projection this depth was drawn with
+// #134: the Hi-Z pyramid for next frame's terrain cull from the resolved depth in depthTex, and the view-projection that
+// depth was drawn with.
+static void BuildHiZPyramid() {
+    {
         glUseProgram(S.hizProg);
         const GLint locFrom = glGetUniformLocation(S.hizProg, "fromDepth"), locSrc = glGetUniformLocation(S.hizProg, "srcSize"), locDst = glGetUniformLocation(S.hizProg, "dstSize");
         glActiveTexture(GL_TEXTURE0);
@@ -622,6 +610,43 @@ void SceneTarget_End() {
         S.hizVP = S.hizPendingVP; S.hizFrame = S.frame;
         S.hizValid = true;
     }
+}
+
+// (#910) The pyramid from the OPAQUE depth: called after the opaque passes and before the water. The sea surface writes
+// depth, so a pyramid built at the end of the frame held it, and next frame the seabed nodes lying wholly under the
+// water tested as hidden behind it and were culled (beyond #947's 64 m): through the translucent water their footprints
+// showed the clear colour (the square patches seen at mid distance off the spawn beach). Contact shadows and SSAO still
+// read the final depth (End blits it again for them). RAYLIBGAME_HIZ_OPAQUE=0: the pyramid at the end of the frame.
+static bool sHizBuiltThisFrame = false;
+void SceneTarget_OpaqueDone() {
+    static const bool on = !(getenv("RAYLIBGAME_HIZ_OPAQUE") && getenv("RAYLIBGAME_HIZ_OPAQUE")[0] == '0');
+    if (!on || !S.fbo || !S.depthFbo || !S.hizTex || !S.hizPending) return;
+    rlDrawRenderBatchActive();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
+    glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, S.fbo); // back to drawing into the scene target
+    BuildHiZPyramid();
+    sHizBuiltThisFrame = true;
+}
+
+void SceneTarget_End() {
+    if (!S.fbo) return;
+    rlDrawRenderBatchActive();
+    // Resolve (or copy) into the single-sample texture: same RGBA8 format and size, valid everywhere.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
+    glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
+    const bool hizOn = S.depthFbo && S.hizTex && S.hizPending && !sHizBuiltThisFrame;
+    const bool ssaoOn = S.depthFbo && S.ssao && S.hdr && S.ssaoStrength > 0.0f; // #933
+    if (contactOn || hizOn || ssaoOn) { // #137 / #134 / #933: the depth too (a multisampled depth resolves to one of its samples)
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
+        glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (hizOn) BuildHiZPyramid(); // (#134; #910: normally built already, from the opaque depth)
+    sHizBuiltThisFrame = false;
     S.hizPending = false;
     ++S.frame;
     if (S.hdr) {

@@ -30,6 +30,7 @@ bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewPro
 long long SceneTarget_Frame();    // frames ended so far (the one being drawn has this number)
 long long SceneTarget_HiZFrame(); // the frame the current pyramid was built in (-1: none)
 // Restores the standard depth state and copies the colour to the window.
+void SceneTarget_OpaqueDone(); // (#910) after the opaque passes, before the water: the Hi-Z pyramid from the opaque depth
 void SceneTarget_End();
 void SceneTarget_Unload();
 // #131 the tonemap curve (0 knee - the default, today's look -, 1 ACES, 2 clip): Settings sets it; RAYLIBGAME_TONEMAP wins.
