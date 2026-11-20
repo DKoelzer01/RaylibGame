@@ -155,7 +155,8 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     if (here.kind == WeatherKind::Storm && p && player.nearest == p) {
         if (GameClock() > nextFlash) {
             lastFlash = GameClock();
-            nextFlash = GameClock() + 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0;
+            static const double fixedPeriod = getenv("RAYLIBGAME_LIGHTNING_PERIOD") ? atof(getenv("RAYLIBGAME_LIGHTNING_PERIOD")) : 0.0; // captures: a flash every N s
+            nextFlash = GameClock() + (fixedPeriod > 0.0 ? fixedPeriod : 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0);
             thunderAt = GameClock() + 0.6 + 1.8 * (double)GetRandomValue(0, 1000) / 1000.0;
             const float az = 6.2831853f * GetRandomValue(0, 1000) / 1000.0f;            // somewhere around the horizon,
             const float el = 0.17f + 0.45f * GetRandomValue(0, 1000) / 1000.0f;          // 10-36 degrees up
@@ -167,7 +168,8 @@ void Weather_Update(Scene& world, float dt, float realDt) {
         const float ts = (float)(GameClock() - lastFlash);
         float e = 0.0f;
         if (lastFlash > 0.0 && ts >= 0.0f && ts < 2.0f) {
-            if (settings.reduceFlashing) e = 0.35f * std::min(1.0f, ts / 0.15f) * expf(-std::max(0.0f, ts - 0.15f) * 2.5f); // eased in and out
+            static const bool reduceEnv = getenv("RAYLIBGAME_REDUCE_FLASHING") && getenv("RAYLIBGAME_REDUCE_FLASHING")[0] == '1'; // captures (benches skip settings.txt)
+            if (settings.reduceFlashing || reduceEnv) e = 0.35f * std::min(1.0f, ts / 0.15f) * expf(-std::max(0.0f, ts - 0.15f) * 2.5f); // eased in and out
             else {
                 e = expf(-ts * 12.0f);                                                    // the stroke
                 if (ts > 0.14f) e = std::max(e, 0.75f * expf(-(ts - 0.14f) * 9.0f));     // the return stroke
