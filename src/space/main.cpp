@@ -2379,6 +2379,27 @@ int main(int argc, char** argv)
             preloadT0 = -1.0;
         }
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
+            // RAYLIBGAME_BENCH_AT="lat lon height heading [pitch]" (#910: location repros): every bench frame, the camera at
+            // the HUD's latitude / longitude on the nearest body (body-local: lat = asin(y / r), lon = atan2(z, x)), height m
+            // over the ground there, looking along the compass heading (degrees, 0 north, 90 east) and pitch (degrees, up +).
+            static const char* benchAt = getenv("RAYLIBGAME_BENCH_AT");
+            if (benchAt && player.nearest) {
+                static float at[5] = { 0, 0, 2, 0, 0 };
+                static const int nAt = sscanf(benchAt, "%f %f %f %f %f", &at[0], &at[1], &at[2], &at[3], &at[4]);
+                const auto* bf = dynamic_cast<const PlanetField*>(player.nearest->field.get());
+                if (nAt >= 4 && bf) {
+                    const float la = at[0] * DEG2RAD, lo = at[1] * DEG2RAD, hd = at[3] * DEG2RAD, pt = at[4] * DEG2RAD;
+                    const Vector3 up = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) };
+                    const Vector3 north = { -sinf(la) * cosf(lo), cosf(la), -sinf(la) * sinf(lo) }, east = { -sinf(lo), 0.0f, cosf(lo) };
+                    const Vector3 flat = Vector3Add(Vector3Scale(north, cosf(hd)), Vector3Scale(east, sinf(hd)));
+                    const Vector3 fwd = Vector3Add(Vector3Scale(flat, cosf(pt)), Vector3Scale(up, sinf(pt)));
+                    const Vector3 eye = Vector3Scale(up, bf->radius + std::max(bf->elevation(up), 0.0f) + at[2]);
+                    world.camera.position = player.nearest->toWorld(eye);
+                    world.camera.target = player.nearest->toWorld(Vector3Add(eye, Vector3Scale(fwd, 10.0f)));
+                    world.camera.up = player.nearest->dirToWorld(up);
+                    player.position = world.renderOrigin + world.camera.position;
+                }
+            }
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
             } else if (benchStart < 0.0) {
