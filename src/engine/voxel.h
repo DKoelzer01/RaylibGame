@@ -334,6 +334,10 @@ public:
     // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
     bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
     static bool CavesGraph();
+    // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
+    // outward (downhill) direction, body-local. Tests and captures.
+    bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward) const;
+    int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

@@ -431,8 +431,8 @@ float caveDistance(vec3 p, float d, float depth, float fp, float cwet) {
     precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
     if (cavesGraph == 1) { // (#615 step 2) graph tunnels (no mouths yet) and the caverns: as PlanetField::caveDistance
         precise float mg = 1e9;
-        if (caveWeight > 0.0 && depth > 5.0 && d > mantleRadius + 20.0) {
-            if (depth > 10.0 && caveSegCount > 0) mg = caveGraphDistance(p) + (1.0 - caveWeight) * 20.0;
+        if (caveWeight > 0.0 && depth > -8.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -8.0 && caveSegCount > 0) mg = caveGraphDistance(p) + (1.0 - caveWeight) * 20.0;
             if (depth > 30.0 && d > mantleRadius + 40.0) {
                 precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
                 precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);

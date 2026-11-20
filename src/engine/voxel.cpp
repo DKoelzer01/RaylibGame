@@ -1173,17 +1173,19 @@ int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vecto
 // Passages are capsule chains generated per 256 m cell of the sea-level projection (as floating islands, in 3D cells of
 // the projected point), from the field's seed only: the GPU never repeats the random choices, it gets the segments.
 bool PlanetField::CavesGraph() {
-    static const bool on = getenv("RAYLIBGAME_CAVES") && getenv("RAYLIBGAME_CAVES")[0] == '1';
+    static const bool on = !(getenv("RAYLIBGAME_CAVES") && getenv("RAYLIBGAME_CAVES")[0] == '0'); // on by default since step 3 (#1022)
     return on;
 }
 namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; };
+struct CaveMouth { Vector3 at, out; };   // (#615 step 3) a hillside entrance: its axis point at the slope face, outward (downhill)
+struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
 struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
 struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
 struct CaveCache {
-    struct Shard { std::mutex m; std::unordered_map<CaveCellKey, std::shared_ptr<const std::vector<CaveSeg>>, CaveCellHash> map; };
+    struct Shard { std::mutex m; std::unordered_map<CaveCellKey, std::shared_ptr<const CaveCellData>, CaveCellHash> map; };
     Shard shards[32];
 };
 CaveCache& Caves() { static CaveCache c; return c; }
@@ -1199,14 +1201,15 @@ struct CaveSegScope {
 // One cell's passages: background tunnels (step 2), 0-2 per land cell, each a gently turning random walk of 6-16 segments
 // 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
 // wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
-static std::shared_ptr<const std::vector<CaveSeg>> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
+static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
     const CaveCellKey key{ seed, cx, cy, cz };
     CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
     {
         std::lock_guard<std::mutex> lock(sh.m);
         if (auto it = sh.map.find(key); it != sh.map.end()) return it->second;
     }
-    auto segs = std::make_shared<std::vector<CaveSeg>>();
+    auto data = std::make_shared<CaveCellData>();
+    std::vector<CaveSeg>* segs = &data->segs;
     std::mt19937 rng((unsigned)(CaveCellHash{}(key) ^ 0x9E3779B9u));
     std::uniform_real_distribution<float> U(0.0f, 1.0f);
     const float R = f.radius;
@@ -1266,9 +1269,71 @@ static std::shared_ptr<const std::vector<CaveSeg>> CaveCell(const PlanetField& f
         const float depth = std::max(25.0f + 95.0f * U(rng), minDepth(r));
         walk(Vector3Scale(dir, R + f.elevation(dir) - depth), head, depth, r, 0.5f + 0.4f * U(rng), 6 + (int)(U(rng) * 11.0f), 0);
     }
+    // (#615 step 3) Natural mouths: at most one per cell, on a slope of ~20 degrees or more. The entrance runs level into the
+    // hill from the slope face (its axis set so the flat floor meets the ground there, its opening ~1.6x the passage, wider
+    // than tall), then descends ~1 m every 8 m with the hill above as its roof (3 m+ thick, or there is no mouth here),
+    // and once 25 m+ down it goes on as an ordinary branching passage. Caves reach the surface only here (#999: entrances,
+    // not accidents). Its own random numbers: the same mouths at any abundance, more of them with more caves.
+    {
+        std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
+        std::uniform_real_distribution<float> UM(0.0f, 1.0f);
+        const float odds = std::min(0.95f, 0.35f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        for (int tries = 0; tries < 3 && data->mouths.empty(); ++tries) {
+            const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
+            const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
+            const float sl = Vector3Length(s);
+            if (sl < 1.0f || coin >= odds) continue;
+            Vector3 dir = Vector3Scale(s, 1.0f / sl);
+            const Vector3 onR = Vector3Scale(dir, R);
+            if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+            const float e0 = f.elevation(dir);
+            if (e0 < 2.0f) continue;
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 t2 = Vector3CrossProduct(dir, t1);
+            auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+            const float g1 = (f.elevation(at(dir, Vector3Scale(t1, 4.0f))) - f.elevation(at(dir, Vector3Scale(t1, -4.0f)))) / 8.0f;
+            const float g2 = (f.elevation(at(dir, Vector3Scale(t2, 4.0f))) - f.elevation(at(dir, Vector3Scale(t2, -4.0f)))) / 8.0f;
+            const float slope = sqrtf(g1 * g1 + g2 * g2);
+            if (slope < 0.36f || slope > 3.0f) continue;                  // ~20-72 degrees
+            Vector3 uphill = Vector3Normalize(Vector3Add(Vector3Scale(t1, g1), Vector3Scale(t2, g2)));
+            const float r = 2.5f + 2.5f * rr, flat = 0.55f + 0.15f * rf, rMouth = 1.6f * r;
+            const float axisH = e0 + 0.6f * rMouth * flat;                 // the flat floor at the ground at the face
+            const float drop = 0.8f + 0.8f * rd;                           // m per 8 m segment
+            std::vector<CaveSeg> ent;
+            auto seg = [&](Vector3 a, Vector3 b, float ra, float rb) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); ent.push_back(sg);
+            };
+            const Vector3 outside = Vector3Scale(at(dir, Vector3Scale(uphill, -rMouth)), R + axisH);
+            Vector3 pos = Vector3Scale(dir, R + axisH);
+            seg(outside, pos, rMouth, rMouth);
+            float h = axisH, depth = 0.0f;
+            bool ok = true;
+            int k = 0;
+            for (; k < 14; ++k) {
+                const Vector3 dir2 = at(dir, Vector3Scale(uphill, 8.0f));
+                h -= drop;
+                const float e2 = f.elevation(dir2);
+                depth = e2 - h;
+                const float rb = k == 0 ? r + 0.4f * (rMouth - r) : r;
+                const float roof = depth - rb * flat * 1.45f - 1.2f;       // rock over the passage's highest point
+                if (roof < (k == 0 ? 1.0f : 3.0f)) { ok = false; break; }   // the hill is too thin over it: no mouth here
+                const Vector3 pos2 = Vector3Scale(dir2, R + h);
+                seg(pos, pos2, k == 0 ? rMouth : (k == 1 ? r + 0.4f * (rMouth - r) : r), rb);
+                pos = pos2; dir = dir2;
+                uphill = Vector3Normalize(Vector3Subtract(uphill, Vector3Scale(dir, Vector3DotProduct(uphill, dir))));
+                if (depth >= minDepth(r)) break;
+            }
+            if (!ok || k < 1) continue;
+            segs->insert(segs->end(), ent.begin(), ent.end());
+            data->mouths.push_back({ Vector3Scale(dir, 0.0f), Vector3Negate(uphill) });
+            data->mouths.back().at = ent.front().b;                        // the axis point at the slope face
+            data->mouths.back().out = Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b));
+            if (depth >= minDepth(r)) walk(pos, uphill, depth, r, flat, 4 + (int)(rn * 8.0f), 0); // on into the network
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
-    return sh.map.emplace(key, segs).first->second;
+    return sh.map.emplace(key, data).first->second;
 }
 
 // Segments of the cells within reach of a box (body-local), whose capsule (radius x 1.3 for the wall roughness) comes
@@ -1288,7 +1353,7 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
         for (int y = clo[1]; y <= chi[1]; ++y)
             for (int x = clo[0]; x <= chi[0]; ++x) {
                 const auto cell = CaveCell(f, seed, x, y, z);
-                for (const CaveSeg& s : *cell) {
+                for (const CaveSeg& s : cell->segs) {
                     const float rr = 1.45f * std::max(s.ra, s.rb) / std::min(s.flat, 1.0f) + reach + 1.2f; // (+ the bore swell and the wall lumps)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
@@ -1297,6 +1362,44 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
                     out.insert(out.end(), e, e + 20);
                 }
             }
+}
+
+bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward) const {
+    if (!CavesGraph() || moon) return false;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    float best = range;
+    bool found = false;
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue; // only cells on the surface shell
+                const auto cell = CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z);
+                for (const CaveMouth& m : cell->mouths) {
+                    const float dd = Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s);
+                    if (dd < best) { best = dd; at = m.at; outward = m.out; found = true; }
+                }
+            }
+    return found;
+}
+
+int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
+    if (!CavesGraph() || moon) return 0;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    int n = 0;
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
+                    n += Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range;
+            }
+    return n;
 }
 
 bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::vector<float>& out, int maxSegs) const {
@@ -1353,8 +1456,8 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
     const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
     if (CavesGraph()) { // (#615 step 2) graph tunnels (never at the surface: no mouths yet) and the caverns
         float m = 1e9f;
-        if (caveWeight > 0.0f && depth > 5.0f && d > mantleRadius + 20.0f) {
-            if (depth > 10.0f) {
+        if (caveWeight > 0.0f && depth > -8.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -8.0f) {
                 const std::vector<float>* segs = tlCaveSegs;
                 if (!segs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves)
                     thread_local std::vector<float> own;
