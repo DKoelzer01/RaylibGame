@@ -1073,6 +1073,14 @@ static void DrawContainer() {
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
     }
+    if (v.canLight) { // (#1103) a campfire lights or goes out whether or not it has something to cook
+        const bool burning = v.status == MachineStatus::Working;
+        const bool fuel = v.fuelSlot.second > 0 || v.energy > 0;
+        if (!burning && !fuel) ImGui::BeginDisabled();
+        if (ImGui::Button(burning ? "Put out" : "Light")) MachineAct_SetFire(container.body, container.plot, container.part, !burning);
+        if (!burning && !fuel) { ImGui::EndDisabled(); ImGui::SameLine(); ImGui::TextDisabled("needs fuel"); }
+        else if (!burning && v.fire == kFireOut) { ImGui::SameLine(); ImGui::TextDisabled("put out: lights again with something to cook"); }
+    }
     if (v.waterMax > 0) { // #229: boilers need water and heat up before full steam
         ImGui::ProgressBar((float)v.water / (float)v.waterMax, ImVec2(300.0f, 0.0f), TextFormat("Water %d / %d L", v.water, v.waterMax));
         ImGui::ProgressBar((float)v.heat / (float)std::max(1, v.heatMax), ImVec2(300.0f, 0.0f), TextFormat("Heat %d%%", 100 * v.heat / std::max(1, v.heatMax)));
