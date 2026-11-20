@@ -200,6 +200,9 @@ namespace {
                 RenderOriginScope frame(world, r.player.position);
                 if (!r.survival.dead && r.restValid && r.restSpawns == r.player.spawns && SimTick() - r.restTick > kRestGapTicks && !RestGapOff())
                     r.player.applyNetState(world, r.rest); // (#844) back where its body has carried it, moving with it
+                // (#1087) the player's own suit, as single player applies it every frame: the starting suit has no jetpack
+                // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
+                Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
                 if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
