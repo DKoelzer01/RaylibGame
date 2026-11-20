@@ -6190,8 +6190,8 @@ int main(int argc, char** argv)
                         if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
                         // RAYLIBGAME_CAVES_KARST=1 (#1052): the nearest karst sink, near the nearest strong karst ground (its
                         // weight on a 500 m grid out to 30 km: karst regions are ~10 km apart, too far for a cave-cell search).
-                        const int mouthKind = getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1' ? 1 : -1;
-                        if (mouthKind == 1 && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                        const int mouthKind = (getenv("RAYLIBGAME_CAVES_KARST") && getenv("RAYLIBGAME_CAVES_KARST")[0] == '1') || (getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1') ? 1 : -1; // a shaft entrance (karst sink, tube skylight)
+                        if (mouthKind == 1 && getenv("RAYLIBGAME_CAVES_KARST") && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
                             const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
                             float bestK = 1e30f;
                             for (float a = -30000.0f; a <= 30000.0f; a += 500.0f)
@@ -6204,6 +6204,24 @@ int main(int argc, char** argv)
                             mouthRange = 1500.0f;
                             if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
                             else printf("bench: caves: no karst ground within 30 km\n");
+                        }
+                        // RAYLIBGAME_CAVES_TUBE=1 (#1063): a lava tube's skylight (kind 1) near the nearest volcano flank (its
+                        // weight 0.4-0.8 on a 1 km grid out to 60 km: volcanoes are ~20 km apart and few).
+                        const bool tubeMode = getenv("RAYLIBGAME_CAVES_TUBE") && getenv("RAYLIBGAME_CAVES_TUBE")[0] == '1';
+                        if (tubeMode && !getenv("RAYLIBGAME_CAVES_MOUTH")) {
+                            const Vector3 k1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), k2 = Vector3CrossProduct(home, k1);
+                            float bestV = 1e30f;
+                            for (float a = -60000.0f; a <= 60000.0f; a += 1000.0f)
+                                for (float b = -60000.0f; b <= 60000.0f; b += 1000.0f) {
+                                    const float dd = a * a + b * b;
+                                    if (dd >= bestV) continue;
+                                    const Vector3 vd = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(k1, a), Vector3Scale(k2, b))));
+                                    const float w = pf->volcanoWeight(Vector3Scale(vd, pf->radius));
+                                    if (w > 0.4f && w < 0.8f && pf->elevation(vd) > 10.0f) { bestV = dd; mouthNear = vd; }
+                                }
+                            mouthRange = 3000.0f;
+                            if (bestV < 1e29f) printf("bench: caves: volcano flank %.0f m from the start\n", sqrtf(bestV));
+                            else printf("bench: caves: no volcano flank within 60 km\n");
                         }
                         const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
                         if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
