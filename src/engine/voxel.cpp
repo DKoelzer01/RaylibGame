@@ -1532,6 +1532,84 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             kwalk(bot, up, head0, e0 - sdepth, 2.0f + 3.0f * rnd[7], slope, n, 0, keyLen);
         }
     }
+    // (#1063, Plan 10 step 6) Lava tubes: a cell on a volcano's flank (weight 0.3-0.85: below the crater, above the toe;
+    // New World "Volcanoes") starts one at 1% x abundance (its own numbers): a sinuous tube walking down the 120 m-scale
+    // slope 5-25 m under the ground, radius 2.5-6.5 m and height x0.6-0.8 (5-13 m wide, 3-10 m high), with the level floor
+    // and arched roof of kind 3, thin ledges along one wall (half its segments, solid), skylights (round shafts to the
+    // surface at 12% of its segments under 15 m; entrances of kind 1), and an exit where its roof thins out (kind 2).
+    // At most ~640 m (the cells' reach).
+    if (f.gen.volcanoes) {
+        std::mt19937 rt((unsigned)(CaveCellHash{}(key) ^ 0x1A7A70BEu));
+        std::uniform_real_distribution<float> UT(0.0f, 1.0f);
+        const float tubeOdds = std::min(0.95f, 0.01f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float coin = UT(rt), sx = UT(rt), sy = UT(rt), sz = UT(rt);
+        const Vector3 s = { (cx + sx) * kCaveCell, (cy + sy) * kCaveCell, (cz + sz) * kCaveCell };
+        const float sl = Vector3Length(s);
+        float vw = 0.0f;
+        if (coin < tubeOdds && sl > 1.0f) Strata_Volcano(Vector3Scale(s, R / sl), R, seed, &vw);
+        Vector3 dir = sl > 1.0f ? Vector3Scale(s, 1.0f / sl) : Vector3{ 0, 1, 0 };
+        const Vector3 onR = Vector3Scale(dir, R);
+        const bool inCell = (int)floorf(onR.x / kCaveCell) == cx && (int)floorf(onR.y / kCaveCell) == cy && (int)floorf(onR.z / kCaveCell) == cz;
+        if (coin < tubeOdds && inCell && vw > 0.3f && vw < 0.85f && f.elevation(dir) > 5.0f) {
+            auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+            auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                segs->push_back(sg);
+            };
+            auto downhill = [&](Vector3 d0, Vector3 fallback) {
+                const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 a2 = Vector3CrossProduct(d0, a1);
+                const float g1 = f.elevation(at(d0, Vector3Scale(a1, 60.0f))) - f.elevation(at(d0, Vector3Scale(a1, -60.0f)));
+                const float g2 = f.elevation(at(d0, Vector3Scale(a2, 60.0f))) - f.elevation(at(d0, Vector3Scale(a2, -60.0f)));
+                const Vector3 g = Vector3Add(Vector3Scale(a1, -g1), Vector3Scale(a2, -g2));
+                const float gl = Vector3Length(g);
+                return gl > 1.0f ? Vector3Scale(g, 1.0f / gl) : fallback;
+            };
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const float ang = 2.0f * PI * UT(rt);
+            Vector3 head = downhill(dir, Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang)))));
+            float r = 2.5f + 4.0f * UT(rt), depth = 6.0f + 10.0f * UT(rt);
+            const float flat = 0.6f + 0.2f * UT(rt);
+            const int n = 20 + (int)(12.0f * UT(rt));
+            Vector3 pos = Vector3Scale(dir, R + f.elevation(dir) - depth);
+            for (int k = 0; k < n; ++k) {
+                const float L = 15.0f + 10.0f * UT(rt);
+                const float turn = (UT(rt) - 0.5f) * 0.5f;                     // sinuous
+                head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.6f), Vector3Scale(downhill(dir, head), 0.4f)));
+                const float r2 = std::clamp(r + (UT(rt) - 0.5f) * 1.5f, 2.5f, 6.5f);
+                const float d2 = std::clamp(depth + (UT(rt) - 0.5f) * 3.0f, 5.0f, 25.0f);
+                const Vector3 dir2 = at(dir, Vector3Scale(head, L));
+                const float e2 = f.elevation(dir2);
+                if (e2 < 0.0f) break;
+                const Vector3 pos2 = Vector3Scale(dir2, R + e2 - d2);
+                const float ledgeU = UT(rt), skyU = UT(rt), sideU = UT(rt);
+                // The roof must hold over the arch (pockets x1.5): on the lower flank where it thins out, the tube opens.
+                if (d2 - 1.5f * r2 * flat < 3.0f) {
+                    if (k > 3) {
+                        const Vector3 fwd = Vector3Normalize(Vector3Subtract(pos2, pos));
+                        push(pos, Vector3Add(pos2, Vector3Scale(fwd, 1.6f * r2)), r, 1.6f * r2, 0.8f, 1);
+                        data->mouths.push_back({ pos2, fwd, 2 });
+                    }
+                    break;
+                }
+                push(pos, pos2, r, r2, flat, 3);
+                if (ledgeU < 0.5f) {                                           // a thin shelf along one wall, mid-height
+                    const Vector3 up = Vector3Normalize(Vector3Add(pos, pos2));
+                    Vector3 side = Vector3CrossProduct(up, Vector3Subtract(pos2, pos));
+                    side = Vector3Scale(Vector3Normalize(side), sideU < 0.5f ? -1.0f : 1.0f);
+                    push(Vector3Add(pos, Vector3Scale(side, 0.85f * r)), Vector3Add(pos2, Vector3Scale(side, 0.85f * r2)), 0.22f * r, 0.22f * r2, 0.35f, 2);
+                }
+                if (skyU < 0.12f && d2 < 15.0f && k > 0) {                    // a skylight: a round shaft to the surface
+                    const float sr = std::max(1.5f, 0.35f * r2);
+                    push(Vector3Scale(dir2, R + e2 + 3.0f), pos2, sr, sr, 1.0f, 0);
+                    data->mouths.push_back({ Vector3Scale(dir2, R + e2), dir2, 1 });
+                }
+                pos = pos2; dir = dir2; r = r2; depth = d2;
+                head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
     return sh.map.emplace(key, data).first->second;
