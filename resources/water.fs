@@ -27,6 +27,35 @@ uniform int fluidDebug;         // #695: 1 = water coloured by its speed, stripe
 #include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 
 out vec4 finalColor;
+uniform float rain;            // 0..1 rain falling (weather): rings on the surface (#407)
+
+// (#407) Rain rings as a height (m) on the body-aligned position p (it stays put on the spinning planet; the cells repeat
+// with the 20 m wrap, so chunks meet without a seam): a drop lands in some cells of a 0.5 m grid, its ring spreading to
+// ~0.4 m over 1.5 s (0.7 s in #475's first version: "barely visible because the animation plays too fast") and fading.
+// Laid on the projection plane of the surface's body-aligned normal nb.
+float rainRings(vec3 p, vec3 nb, float rain) {
+    const float cellM = 0.5, period = 1.5, cellsPerWrap = 40.0;
+    vec3 an = abs(nb);
+    int a = an.x > an.y && an.x > an.z ? 0 : (an.y > an.z ? 1 : 2);
+    vec2 uv = (a == 0 ? p.yz : a == 1 ? p.zx : p.xy) / cellM;
+    vec2 cell = floor(uv);
+    float h = 0.0;
+    for (int j = -1; j <= 1; ++j)
+        for (int i = -1; i <= 1; ++i) {
+            vec2 c = cell + vec2(float(i), float(j));
+            vec2 cm = mod(c, cellsPerWrap) + float(a) * 97.0;
+            vec3 hsh = fract(sin(vec3(dot(cm, vec2(127.1, 311.7)), dot(cm, vec2(269.5, 183.3)), dot(cm, vec2(419.2, 371.9)))) * 43758.5453);
+            float t = time / period + hsh.z;
+            float life = fract(t);
+            if (fract(sin(dot(cm + mod(floor(t), 64.0) * 0.37, vec2(12.9898, 78.233))) * 43758.5453) > min(1.0, rain * 0.9)) continue;
+            float r = length(uv - (c + hsh.xy)) * cellM;                          // m from the drop
+            float rad = 0.42 * (1.0 - (1.0 - life) * (1.0 - life));                // fast at first, slowing as it spreads
+            float x = (r - rad) / 0.035;                                           // a band ~3.5 cm wide
+            float fade = (1.0 - life) * (1.0 - life) * smoothstep(0.0, 0.06, life); // in, then dying away
+            h += 0.006 * exp(-x * x) * fade;
+        }
+    return h;
+}
 
 // Value noise on a 0.5 m lattice that repeats every 20 m (40 cells), like the ripples: fragTexPos wraps per chunk.
 float latticeHash(ivec3 c)
@@ -102,6 +131,22 @@ void main()
     }
     bump *= rippleFade;
     n = normalize(n + bump - n * dot(bump, n));
+    // (#407) Rain rings: the height's surface gradient from its screen-space derivatives (no body-to-world matrix needed),
+    // within ~40 m (farther they are finer than a pixel).
+    float ringFade = rain > 0.02 && fragKind == 0 ? 1.0 - smoothstep(25.0, 40.0, dist) : 0.0;
+    vec3 dpx = dFdx(p), dpy = dFdy(p);                                    // (on a 20 m wrap seam these jump: no rings there)
+    if (max(dot(dpx, dpx), dot(dpy, dpy)) > 1.0) ringFade = 0.0;
+    if (ringFade > 0.0) {
+        vec3 nb = normalize(cross(dpx, dpy));                            // the surface's normal in p's (body) frame
+        float h = rainRings(p, nb, rain) * ringFade;
+        vec3 dpdx = dFdx(fragPosition), dpdy = dFdy(fragPosition);
+        vec3 r1 = cross(dpdy, n), r2 = cross(n, dpdx);
+        float det = dot(dpdx, r1);
+        if (abs(det) > 1e-10) {
+            vec3 grad = sign(det) * (dFdx(h) * r1 + dFdy(h) * r2) / abs(det);
+            n = normalize(n - grad);
+        }
+    }
 
     vec3 v = normalize(viewPos - fragPosition);
     float nv = abs(dot(n, v));                                    // also seen from below

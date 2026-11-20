@@ -130,6 +130,18 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     if (cloudOverride >= 0.0f) { here.cloud = cloudOverride; here.precipitation = 0.0f; }
     // Above the air or underground the sky is not overhead.
     world.weatherCloud = here.cloud;
+    // Rain rings on water (#407): rain and storms (snow falls on water without them); none underground (a cave pool shows
+    // no rings while it rains outside), as for the rain streaks (Weather_Draw3D).
+    world.weatherRain = (here.kind == WeatherKind::Rain || here.kind == WeatherKind::Storm) ? here.precipitation : 0.0f;
+    if (world.weatherRain > 0.0f) {
+        const PlanetField* rpf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+        if (!rpf || player.nearest != p) world.weatherRain = 0.0f;
+        else {
+            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const float d = Vector3Length(local);
+            if (d < 1.0f || d < rpf->radius + rpf->elevation(Vector3Scale(local, 1.0f / d)) - 3.0f) world.weatherRain = 0.0f;
+        }
+    }
     world.weatherFog = here.fog;
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // The wind field (#650): this mean wind, storminess (rain a little, storms fully) and the daily cycle at the player.

@@ -896,6 +896,7 @@ void Scene::drawScene(int gamestate) {
             SetShaderValue(ws, GetShaderLocation(ws, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "skyColor"), &skyHorizon, SHADER_UNIFORM_VEC3);
+            SetShaderValue(ws, GetShaderLocation(ws, "rain"), &weatherRain, SHADER_UNIFORM_FLOAT); // (#407) rain rings
             SetShaderValue(ws, GetShaderLocation(ws, "fogColor"), &effFog, SHADER_UNIFORM_VEC3);
             SetShaderValue(ws, GetShaderLocation(ws, "fogDensity"), &effFogDensity, SHADER_UNIFORM_FLOAT);
             SetShaderValue(ws, GetShaderLocation(ws, "time"), &now, SHADER_UNIFORM_FLOAT);
