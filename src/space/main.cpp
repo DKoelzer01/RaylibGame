@@ -13401,6 +13401,7 @@ int main(int argc, char** argv)
             rlDrawRenderBatchActive(); // the batched 2D (HUD text, bars, minimap) flushes here, not inside EndDrawing
             GpuTimer_Mark("2d-flush");
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
+            Recorder_DrawIndicator(); // (#1119) after the capture: on screen, never in the recording
             Recorder_FrameDone();
         if (gSoakOn) { // (#348) before the frame-rate wait
             const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;
