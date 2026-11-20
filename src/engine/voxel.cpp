@@ -1180,7 +1180,7 @@ namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
-struct CaveMouth { Vector3 at, out; int kind = 0; }; // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence
+struct CaveMouth { Vector3 at, out; int kind = 0; }; // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
 struct CaveCellKey { unsigned seed; int x, y, z; bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z; } };
 struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
@@ -1233,6 +1233,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
         };
         add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, 3);
+        data->mouths.push_back({ c, up, 3 });                            // (for tests: --test-caves RAYLIBGAME_CAVES_CHAMBER=1)
         const float floorH = -0.4f * r * flat;
         auto onFloor = [&](float dist, float ang, float h) {
             return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
@@ -1588,7 +1589,7 @@ int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
                 const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
                 if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
                 for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
-                    n += Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range;
+                    n += m.kind < 3 && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range; // entrances only (#1058)
             }
     return n;
 }

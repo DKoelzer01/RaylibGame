@@ -6112,7 +6112,15 @@ int main(int argc, char** argv)
                             if (bestK < 1e29f) printf("bench: caves: karst ground %.0f m from the start\n", sqrtf(bestK));
                             else printf("bench: caves: no karst ground within 30 km\n");
                         }
-                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && !getenv("RAYLIBGAME_CAVES_INSIDE") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut, mouthKind)) { // the nearest hillside mouth (or karst sink)
+                        const bool chamberMode = getenv("RAYLIBGAME_CAVES_CHAMBER") && getenv("RAYLIBGAME_CAVES_CHAMBER")[0] == '1';
+                        if (chamberMode) { // (#1058) RAYLIBGAME_CAVES_CHAMBER=1: start inside the nearest chamber (its centre)
+                            Vector3 co{};
+                            if (PlanetField::CavesGraph() && pf->nearestCaveMouth(home, 3000.0f, at, co, 3)) {
+                                graphInside = true;
+                                best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
+                                printf("bench: caves: chamber %.0f m from the start, %.1f m under the surface\n", best, pf->radius + pf->elevation(Vector3Normalize(at)) - Vector3Length(at));
+                            }
+                        } else if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && !getenv("RAYLIBGAME_CAVES_INSIDE") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut, mouthKind)) { // the nearest hillside mouth (or karst sink)
                             graphMouth = true; best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
                             printf("bench: caves: graph mouth %.0f m from the start (outward %.2f %.2f %.2f)\n", best, graphOut.x, graphOut.y, graphOut.z);
                             { const int nm = pf->caveMouthsNear(home, 3000.0f); printf("bench: caves: %d mouths within 3 km of the start (%.2f per km^2: one per %.0f m on a square grid)\n", nm, nm / 28.27f, nm > 0 ? sqrtf(28.27e6f / nm) : 0.0f); }
