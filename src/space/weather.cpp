@@ -135,9 +135,9 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     world.weatherRain = (here.kind == WeatherKind::Rain || here.kind == WeatherKind::Storm) ? here.precipitation : 0.0f;
     if (world.weatherRain > 0.0f) {
         const PlanetField* rpf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
-        if (!rpf || player.nearest != p) world.weatherRain = 0.0f;
+        if (!rpf || (player.nearest && player.nearest != p)) world.weatherRain = 0.0f; // nearest is unset while flying
         else {
-            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 local = p->toLocal(world.camera.position);
             const float d = Vector3Length(local);
             if (d < 1.0f || d < rpf->radius + rpf->elevation(Vector3Scale(local, 1.0f / d)) - 3.0f) world.weatherRain = 0.0f;
         }
