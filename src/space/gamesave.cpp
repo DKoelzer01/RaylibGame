@@ -1,4 +1,5 @@
 #include "gamesave.h"
+#include "blueprint.h"
 #include "fishing.h"
 #include "structures.h"
 #include "trapping.h"
@@ -331,6 +332,7 @@ void GameSave_Register() {
         Structures_Save(f); // #164
         Trapping_Save(f);   // #176
         Combat_Save(f);     // graves (#165)
+        Blueprint_SaveGhosts(f); // blueprint parts not built yet (#1018)
         Claims_Save(f);     // land claims (#343)
         Events_Save(f);     // #177
         Rocket_Save(f);
@@ -378,6 +380,7 @@ void GameSave_Register() {
         LocalSession().skills = SkillState{}; // (#883)
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
+        Blueprint_ResetGhosts(); // (#1018) and the ghosts
         Claims_Reset();
         Teams_Reset();
         QuestBook_ClearPins(); // (#825) the record's pins come back with it
@@ -404,6 +407,7 @@ void GameSave_Register() {
             if (Structures_LoadLine(tok, f)) continue;
             if (Trapping_LoadLine(tok, f)) continue;
             if (Combat_LoadLine(tok, f)) continue;
+            if (Blueprint_LoadGhostLine(tok, f)) continue; // (#1018)
             if (Claims_LoadLine(tok, f)) continue;
             if (Events_LoadLine(tok, f)) continue;
             if (Rocket_LoadLine(tok, f)) continue;
