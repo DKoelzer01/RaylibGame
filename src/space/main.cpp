@@ -10300,11 +10300,11 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
-        {   // Slot 3: a torch in hand (#218), a flickering point light at the hand; it burns down while held in the game.
-            static float burnt = 0.0f;
+        {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
+            // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];
             torch.type = LIGHT_POINT;
-            // (#822) or in the off hand, when the main hand holds none: the light at the left hand, and it burns down the same way
+            // (#822) or in the off hand, when the main hand holds none: the light at the left hand
             const std::string& inHand = Hotbar_Selected() >= 0 ? Hotbar_Slot(Hotbar_Selected()) : std::string();
             const std::string& offId = inventory.offHand().id;
             // (#836) A lantern too: a steady, slightly cooler light that reaches further and never burns out.
@@ -10323,12 +10323,6 @@ int main(int argc, char** argv)
                 torch.target = { fibre ? 7.0f : lantern ? 15.0f : 12.0f, 0.0f, 0.0f };   // range (m)
                 torch.color = fibre ? Color{ 255, 165, 85, (unsigned char)(110 * flicker) } : lantern ? Color{ 255, 214, 160, (unsigned char)(160 * flicker) }
                                     : Color{ 255, 180, 105, (unsigned char)(150 * flicker) };
-                if (!lantern) burnt += GetFrameTime(); // (a lantern never burns out)
-                if (burnt >= (fibre ? 90.0f : 300.0f)) { // one burns out; the next in the stack is lit
-                    burnt = 0.0f;
-                    inventory.remove(held, 1);
-                    if (inventory.count(held) == 0) GameUI_Toast(fibre ? "Your fibre torch burnt out" : "Your torch burnt out");
-                }
             }
         }
         {
