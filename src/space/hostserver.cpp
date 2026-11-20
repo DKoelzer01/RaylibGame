@@ -87,7 +87,7 @@ namespace {
     constexpr double kTimeoutSeconds = 15.0;           // nothing heard (pings come every second): gone
     // (#1033) A client that joined but hasn't sent an input yet is loading the world: one long frame there (the spawn load
     // took ~37 s on the runner) sends no pings. It gets longer before it counts as gone (a closed connection is still
-    // noticed at once by the transport). 120 s is a guess with room for slow machines.
+    // noticed at once by the transport). 120 s: the user's choice (2026-11-20), room for slow machines.
     constexpr double kLoadingTimeoutSeconds = 120.0;
 
     // Players (#327): the server's own simulation of every session's player, from the inputs its client sends (one a sim
