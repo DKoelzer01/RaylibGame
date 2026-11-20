@@ -362,10 +362,7 @@ namespace {
                 if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
             const Vector3 g = Surface(Offset(-20.0f, 10.0f));
             if (!Farm_Till(*scene, *body, g)) { printf("bench: progression: could not till\n"); failed = 1; return false; }
-            for (auto& pl : body->plots->plots)
-                for (int i = (int)pl->parts.size() - 1; i >= 0; --i)
-                    if (pl->parts[i].type == PartType::Farmland && Farm_Plant(*body, *pl, i, "")) return QuestBook_CountOf("plant") >= 1.0;
-            return false;
+            return Farm_Plant(*body, g, "") && QuestBook_CountOf("plant") >= 1.0; // (#1085) on the tilled ground itself
         });
         add("water the field: a bucket of water poured beside it", [] {
             // The bucket's pour (TerrainTool_Bucket counts "pour" through the game's hook), done directly:

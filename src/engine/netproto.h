@@ -224,9 +224,10 @@ struct MsgTeamState { // #604: at most 16 members
     int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
 };
 // (#335) plants and farming
-struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; uint32_t plot = 0; int32_t part = -1; std::string seed; }; // 1 fell (plant), 2 sow (plot, part, seed), 3 harvest (plot, part)
+// 1 fell (plant), 2 sow (x y z: the body-local ground, seed), 3 harvest (x y z: the crop's ground) (#1085: crops by position)
+struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; float x = 0, y = 0, z = 0; std::string seed; };
 struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
-struct NetFarmField { uint32_t plot = 0; int32_t part = -1; std::string crop; float growth = 0.0f; };
+struct NetFarmField { float x = 0, y = 0, z = 0; std::string crop; float growth = 0.0f; }; // x y z: body-local, the crop's ground (#1085)
 struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
 struct MsgDropItems { std::string item; int64_t centi = 0; };        // #865: hundredths of a unit
 struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" = clear the inventory
