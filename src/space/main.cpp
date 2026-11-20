@@ -680,6 +680,7 @@ int main(int argc, char** argv)
     bool benchPond = false; int pondPhase = 0; double pondT0 = 0.0; Vector3 pondDirB{}, pondOutB{}, pondPit{}, pondMid{}; float pondLevelB = 0.0f, pondRB = 0.0f; // --test-pond
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
+    constexpr float kFlowShaftM = 6.0f, kFlowChamberR = 2.0f, kFlowCaveM = 8.0f; // the flow tests' shaft depth, chamber radius, chamber point under the water (m, #935)
     float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
     bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
@@ -7763,11 +7764,13 @@ int main(int argc, char** argv)
                                 for (float h = flowLevel - 0.3f; h <= flowLevel + 4.0f; h += 1.2f) cut.push_back({ at(q, h), 1.6f, -1.0f, true });
                             }
                             const Vector3 endDir = Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, (shore + 14.0f) / pf->radius)));
-                            for (float h = flowLevel - 1.0f; h >= flowLevel - 12.0f; h -= 0.8f) cut.push_back({ at(endDir, h), 1.3f, -1.0f, true });
-                            cut.push_back({ at(endDir, flowLevel - 13.0f), 3.0f, -1.0f, true });
+                            // A 6 m shaft to a 2 m chamber (#935 / #1032, user 2026-11-19: shrink the scene, keep ~2 min): the water
+                            // had ~200 m^3 of shaft and chamber to fill through the channel and settled only after ~220-230 s.
+                            for (float h = flowLevel - 1.0f; h >= flowLevel - kFlowShaftM; h -= 0.8f) cut.push_back({ at(endDir, h), 1.3f, -1.0f, true });
+                            cut.push_back({ at(endDir, flowLevel - kFlowShaftM - 1.0f), kFlowChamberR, -1.0f, true });
                             ApplyTerrainEdits(*p, cut.data(), cut.size());
                             flowEnd = at(Vector3Normalize(Vector3Add(flowDir, Vector3Scale(flowOut, (shore + 10.0f) / pf->radius))), flowLevel - 0.6f);
-                            flowCave = at(endDir, flowLevel - 14.5f);
+                            flowCave = at(endDir, flowLevel - kFlowCaveM);
                             flowEdit = GetTime();
                             // Camera over the channel's end, looking back at the water.
                             player.flyMode = true; sunOverride = true;
@@ -7793,6 +7796,7 @@ int main(int argc, char** argv)
                             const Fluid::Stats s = Fluid::GetStats();
                             printf("bench: flow t=%3.0f s: %d sites, %d bricks (%d awake), %.0f wet cells, %.1f m^3, step %.2f ms (max %.2f), publish %.2f ms; changes d%lld s%lld r%lld l%lld\n",
                                    t, s.sites, s.bricks, s.activeBricks, s.wetCells, s.volume, s.stepMs, s.maxStepMs, s.meshMs, s.dbg[0], s.dbg[1], s.dbg[2], s.dbg[3]);
+                            if (s.activeBricks > 0 && t > 60.0) printf("bench: flow awake: %s; steady bricks %d, wakes gpu %lld cpu %lld\n", Fluid::DebugAwake().c_str(), s.steadyBricks, s.wakes[0], s.wakes[1]); // #935
                         }
                         if (flowReachT >= 0.0 && flowCaveT >= 0.0 && flowSleepT < 0.0 && Fluid::Asleep()) flowSleepT = t;
                         if (t > 6.0 && t < 7.0) TakeScreenshot("bench_flow.png");
@@ -7831,7 +7835,7 @@ int main(int argc, char** argv)
                             printf("bench: flow: %zu steps (%zu working) until asleep: worst 1 s mean %.2f ms (the gate, < 30 ms); working p50 %.2f, p95 %.2f, p99 %.2f ms, %d over 30 ms, max %.2f ms (#627)\n",
                                    flowSteps.size(), sorted.size(), roll, pct(0.5), pct(0.95), pct(0.99), over30, s.maxStepMs);
                             printf("bench: flow: reached the channel end after %.1f s, the chamber after %.1f s; water stands %.1f m over the chamber floor point (feed level %.1f m above it); asleep after %.1f s; step 1 s mean %.2f ms (max %.2f) -> %s\n",
-                                   flowReachT, flowCaveT, caveTop, 14.5f, flowSleepT, roll, s.maxStepMs, pass ? "PASS" : "FAIL");
+                                   flowReachT, flowCaveT, caveTop, kFlowCaveM, flowSleepT, roll, s.maxStepMs, pass ? "PASS" : "FAIL");
                             printf("bench: flow: bench_flow.png, bench_flow_end.png\n");
                             benchFlow = false;
                         }

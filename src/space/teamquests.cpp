@@ -7,7 +7,12 @@
 
 #include <cstdio>
 #include <cstring>
-#include <process.h>
+#ifdef _WIN32
+#include <process.h> // _getpid
+#else
+#include <unistd.h>
+#define _getpid getpid // (#1025) the Linux server build
+#endif
 #include <string>
 #include <raylib.h>
 #include <raymath.h>

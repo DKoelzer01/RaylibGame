@@ -664,6 +664,7 @@ void main() {
     uint inKind = kind;
     int best = 0;
     int fx = 0, fy = 0; // flow across the faces along +x / +y (#392)
+    int ownX = 0, ownY = 0; // units moved across this cell's own +x / +y faces (the drawn current, #935)
     vec4 applied = vec4(0.0); // the flows and carries this cell owns (+x, +y), as applied
     for (int k = 0; k < 4; ++k) {
         int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0;
@@ -701,8 +702,13 @@ void main() {
         }
         int along = (k == 0 || k == 2) ? signedUnits : -signedUnits;      // + across the face along the axis
         if (k < 2) fx += along; else fy += along;
+        if (k == 1) ownX = along; else if (k == 3) ownY = along;
     }
     storeP(g, applied);
+    // What moved across the faces this cell owns, signed along +x / +y (#935): the drawn current and the steady rule read it.
+    // The planned flow alone counted momentum the taker's room or a sleeping neighbour never let through: a channel against
+    // a settled brick read 3 m/s at rest and stayed awake as steady flow for good (as the columns did, #855).
+    faceN[g].w = (uint(ownX) & 0xFFFFu) | (uint(ownY) << 16);
     int nf = clamp(f + net, 0, 255);
     if (f == 0 && nf > 0) kind = inKind;
     // What a released reach's sink takes in (#656), net (#875: a sink held at the natural level gives into a drained reach and

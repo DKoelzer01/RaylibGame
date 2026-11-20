@@ -138,6 +138,7 @@ namespace Fluid {
     void SetSpeed(int steps);   // tests: steps per tick (1 = 20 Hz real time)
     bool Asleep();              // every brick asleep and nothing queued
     std::string DebugCell(const Planetoid& body, Vector3 local); // tests: "fill N flags SRTD"
+    std::string DebugAwake();   // tests (#935): pending and awake bricks by state
 }
 
 #endif
