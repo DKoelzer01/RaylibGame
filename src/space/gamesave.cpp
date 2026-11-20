@@ -243,11 +243,48 @@ bool ReadRecord(const std::string& path) {
     return true;
 }
 
+// (#1110) The record file this session's player was read from ("" none: a new player, or the world file's own lines).
+std::string recordReadFrom;
+// A record's play time, from its file (-1: no file or no line).
+double RecordPlayTime(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "r");
+    if (!f) return -1.0;
+    double t = -1.0; char tok[64] = {};
+    while (fscanf(f, " %63s", tok) == 1) { if (strcmp(tok, "play_time") == 0) { if (fscanf(f, " %lf", &t) != 1) t = -1.0; break; } char rest[512]; if (!fgets(rest, sizeof rest, f)) break; }
+    fclose(f);
+    return t;
+}
+// (#1110, data loss) Never replace a player's record silently: a session that didn't read that file (a fresh player while a
+// record existed, a legacy save's own lines), or would write less play time than the file holds, first keeps it beside
+// itself as <id>.player.<stamp>.bak. Returns the backup's path ("" none made).
+std::string KeepRecordBeforeWrite(const std::string& path, double sessionPlayTime) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return std::string();
+    const double onDisk = RecordPlayTime(path);
+    const bool ours = recordReadFrom == path;
+    if (ours && onDisk <= sessionPlayTime + 1.0) return std::string(); // (the record this session is continuing)
+    char stamp[32];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
+    const std::string bak = path + "." + stamp + ".bak";
+    fs::copy_file(path, bak, fs::copy_options::overwrite_existing, ec);
+    if (ec) { TraceLog(LOG_WARNING, "save: could not back up the player record %s (%s)", path.c_str(), ec.message().c_str()); return std::string(); }
+    printf("save: kept the earlier player record as %s (%s; its play time %.0f s, this session's %.0f s)\n", bak.c_str(),
+           ours ? "it holds more play time" : "this session didn't load it", onDisk, sessionPlayTime);
+    return bak;
+}
+
 bool WriteRecord(const std::string& uuid) {
     PlayerRecordMeta m;
     m.uuid = uuid; m.name = settings.mpName.empty() ? "player" : settings.mpName;
     m.firstSeen = recordFirstSeen; m.playTime = recordPlayTime;
-    return WriteRecordFrom(PlayerRecord_Path(uuid), LocalTarget(), m, GetTime() - recordLoadedAt);
+    const std::string path = PlayerRecord_Path(uuid);
+    const double session = GetTime() - recordLoadedAt;
+    KeepRecordBeforeWrite(path, recordPlayTime + session);
+    const bool ok = WriteRecordFrom(path, LocalTarget(), m, session);
+    if (ok) { recordReadFrom = path; recordPlayTime += session; recordLoadedAt = GetTime(); } // (this file is ours now; its time counted)
+    return ok;
 }
 } // namespace
 
@@ -351,6 +388,7 @@ void GameSave_Register() {
         playerLoaded = false;
         bodyFramed = false;
         recordFirstSeen = recordPlayTime = 0.0;
+        recordReadFrom.clear(); // (#1110) set below when a record is read
         recordLoadedAt = GetTime();
         const bool local = LocalPlayer();
         const std::string me = local ? PlayerId_Local() : std::string();
@@ -389,7 +427,20 @@ void GameSave_Register() {
             from = PlayerRecord_Path(own);
             Teams_ReplaceMember(own, me);
         }
-        if (!playerLoaded && FileExists(from.c_str())) ReadRecord(from); // (a format 12 save already gave its lines)
+        // (#1110) A format 12 save gave its own player lines, but an id-keyed record exists too (the world was opened by another
+        // game since): the newer one wins. The record, when newer, is read over the old lines; when older, the next save backs
+        // it up before writing (KeepRecordBeforeWrite: this session didn't read it).
+        if (playerLoaded && FileExists(from.c_str())) {
+            namespace fs = std::filesystem;
+            std::error_code e1, e2;
+            const auto recT = fs::last_write_time(from, e1), worldT = fs::last_write_time(WorldSavePath(), e2);
+            if (!e1 && !e2 && recT > worldT) {
+                printf("load: the player record %s is newer than the world file's own player lines: it is used\n", from.c_str());
+                inventory.clear(); // (the record's slots only, none left over from the old lines)
+                if (ReadRecord(from)) recordReadFrom = from;
+            }
+        }
+        if (!playerLoaded && FileExists(from.c_str())) { if (ReadRecord(from)) recordReadFrom = from; } // (a format 12 save already gave its lines)
         if (!playerLoaded && newPlayerHook) newPlayerHook(); // nobody's player here for us: start at the world's start
     };
 }
@@ -502,7 +553,37 @@ bool GameSave_TestSplit(Scene& world) {
     const fs::path saveName = fs::path(save).filename();
     ok7 = ok7 && (int)backups.size() == std::min(5, BackupsKept()) && BackupsKept() == 5 && fs::exists(backups.back() / saveName) &&
           fs::exists(backups.back() / (saveName.string() + ".players") / (me + ".player"));
-    const bool all = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7;
+    // 8 (#1110, data loss): a record exists, but this session's player didn't come from it (here: the record was away when the
+    // world loaded, so a new player started): saving keeps the old record as a .bak before writing; nothing is silently lost.
+    const std::string rec1110 = PlayerRecord_Path(me), aside = rec1110 + ".aside";
+    auto baks = [&]() { int n = 0; for (const auto& e : fs::directory_iterator(PlayerRecord_Dir(), ec)) if (e.path().string().find(".bak") != std::string::npos) ++n; return n; };
+    bool ok8 = SaveWorld(world) && fs::exists(rec1110);
+    const std::string before8 = slurp(rec1110);
+    fs::rename(rec1110, aside, ec);
+    ok8 = ok8 && !ec && LoadWorldSave(world) && !GameSave_PlayerLoaded(); // (a new player: no record seen)
+    fs::rename(aside, rec1110, ec);
+    const int baks0 = baks();
+    ok8 = ok8 && !ec && SaveWorld(world) && baks() == baks0 + 1;
+    for (const auto& e : fs::directory_iterator(PlayerRecord_Dir(), ec))
+        if (e.path().string().find(".bak") != std::string::npos) ok8 = ok8 && slurp(e.path().string()) == before8; // (the old record, whole)
+    // 9 (#1110): the round trip. A record as a server writes it (PlayerRecord_Write: a menu host's player) opens in single
+    // player with its items; single player's save keeps them (no .bak: it continues that record); a server reads them back.
+    for (const auto& e : fs::directory_iterator(PlayerRecord_Dir(), ec)) if (e.path().string().find(".bak") != std::string::npos) fs::remove(e.path(), ec);
+    bool ok9 = false;
+    {
+        Player hostP = player; Inventory hostInv; SurvivalState hostSv = survival; PlayerRecordMeta meta;
+        hostInv.add("copper_ingot", 5); hostInv.add("telescope", 1);
+        meta.uuid = me; meta.name = "host"; meta.playTime = 5000.0;
+        ok9 = PlayerRecord_Write(rec1110, hostP, hostInv, hostSv, meta, 0.0, nullptr);
+        ok9 = ok9 && LoadWorldSave(world) && GameSave_PlayerLoaded() && inventory.count("copper_ingot") == 5; // MP -> SP
+        const int baks9 = baks();
+        ok9 = ok9 && SaveWorld(world) && baks() == baks9;                                                          // SP save: no backup needed
+        Player p2; Inventory inv2; SurvivalState sv2; PlayerRecordMeta m2;
+        ok9 = ok9 && PlayerRecord_Read(rec1110, p2, inv2, sv2, m2, nullptr) && inv2.count("copper_ingot") == 5 && m2.playTime >= 5000.0; // SP -> MP
+    }
+    const bool all = ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9;
+    printf("bench: save split (#1110): a record this session didn't load is kept as a .bak before a save %d; a server's record opens in single player "
+           "and back, play time kept %d\n", ok8, ok9);
     printf("bench: save split (#346): saved as 13 with the record beside it and loaded back %d; a format 12 save loaded and resaved as 13 %d; "
            "another PC's world continued as its owner %d; no record: a new player with the kit, the quests kept %d; "
            "a server's resave of a format 12 save kept its player as the owner %d; a body found by its NetId %d; seven saves left %d backups (5), "
