@@ -681,7 +681,7 @@ int main(int argc, char** argv)
     bool benchFlowSea = false; // --test-flow-sea (#190): the flow test from the sea instead of inland water
     bool benchFlow = false; int flowPhase = 0; double flowStart = 0.0, flowEdit = 0.0, flowReachT = -1.0, flowCaveT = -1.0, flowSleepT = -1.0; Vector3 flowDir{}, flowOut{}, flowEnd{}, flowCave{}; float flowLevel = 0.0f; // --test-flow
     constexpr float kFlowShaftM = 6.0f, kFlowChamberR = 2.0f, kFlowCaveM = 8.0f; // the flow tests' shaft depth, chamber radius, chamber point under the water (m, #935)
-    float damDrift = 0.0f; // --test-dam: the current mid-channel (0: the check failed)
+    float damDrift = 0.0f, damSpillL = 0.0f; // damSpillL: the dam's crest length over ground under the crest (m, #1039: the weir's width); // --test-dam: the current mid-channel (0: the check failed)
     bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
     bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
@@ -1680,7 +1680,7 @@ int main(int argc, char** argv)
             if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
-            long long tunnel = 0, cavern = 0, samples = 0, land = 0, collapsedCols = 0, trenchCols = 0, caveCols = 0;
+            long long tunnel = 0, cavern = 0, samples = 0, land = 0, collapsedCols = 0, trenchCols = 0, caveCols = 0, mouthCols = 0;
             uint64_t hash = 1469598103934665603ull;
             const auto t0 = std::chrono::steady_clock::now();
             for (float a = -R; a <= R; a += 2.0f)
@@ -1705,14 +1705,19 @@ int main(int argc, char** argv)
                         if (h <= 0.0f && !open) rockAbove = true;
                         if (caveOpen && -h < 4.0f && h <= 0.0f && !rockAbove) trench = true;
                     }
-                    caveCols += anyCave; collapsedCols += collapsed; trenchCols += trench;
+                    // (#615 step 3) open to the sky on a slope (15 degrees+) is a mouth; on flat ground, a trench
+                    float slope = 0.0f;
+                    if (trench) { auto el = [&](Vector3 off) { return pf->elevation(Vector3Normalize(Vector3Add(Vector3Scale(dir, pf->radius), off))); };
+                        const float g1 = (el(Vector3Scale(t1, 2.0f)) - el(Vector3Scale(t1, -2.0f))) / 4.0f, g2 = (el(Vector3Scale(t2, 2.0f)) - el(Vector3Scale(t2, -2.0f))) / 4.0f;
+                        slope = sqrtf(g1 * g1 + g2 * g2); }
+                    caveCols += anyCave; collapsedCols += collapsed; trenchCols += trench && slope < 0.27f; mouthCols += trench && slope >= 0.27f;
                 }
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             printf("bench: cave stats: R %.0f m, %lld land columns (2 m), %lld samples (0.5 m, +14..-%.0f m) in %.0f ms\n", R, land, samples, D, ms);
             printf("bench: cave stats: open cave samples: tunnel %lld, cavern %lld (%.2f%% of samples); columns with a cave %lld (%.1f%%)\n",
                    tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
-            printf("bench: cave stats: columns a #549 roof collapse opened %lld; trench columns (open to the sky through a cave, roof < 4 m) %lld = %.0f m^2 (%.2f%% of land)\n",
-                   collapsedCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            printf("bench: cave stats: columns a #549 roof collapse opened %lld; mouth columns (open to the sky through a cave on a 15+ degree slope) %lld; trench columns (the same on flatter ground) %lld = %.0f m^2 (%.2f%% of land)\n",
+                   collapsedCols, mouthCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
             printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
             return 0;
         }
@@ -6071,25 +6076,33 @@ int main(int argc, char** argv)
                                 const float dist = sqrtf(a * a + b * b);
                                 if (dist < best) { best = dist; at = Vector3Scale(dd, s - 3.0f); }
                             }
-                        if (PlanetField::CavesGraph()) { // (#615 step 2) graph tunnels have no mouths yet: start inside the nearest passage
+                        static bool graphInside = false; static Vector3 graphOut{}; bool graphMouth = false; // (#615 step 3)
+                        Vector3 mouthNear = home; float mouthRange = 3000.0f; // RAYLIBGAME_CAVES_MOUTH="x y z" (#1022): the mouth there (the same one at any abundance)
+                        if (const char* mm = getenv("RAYLIBGAME_CAVES_MOUTH")) { Vector3 mp{}; if (sscanf(mm, "%f %f %f", &mp.x, &mp.y, &mp.z) == 3) { mouthNear = Vector3Normalize(mp); mouthRange = 60.0f; } }
+                        if (PlanetField::CavesGraph() && !getenv("RAYLIBGAME_CAVES_START") && pf->nearestCaveMouth(mouthNear, mouthRange, at, graphOut)) { // the nearest hillside mouth
+                            graphMouth = true; best = Vector3Distance(Vector3Scale(Vector3Normalize(at), pf->radius), Vector3Scale(home, pf->radius));
+                            printf("bench: caves: graph mouth %.0f m from the start (outward %.2f %.2f %.2f)\n", best, graphOut.x, graphOut.y, graphOut.z);
+                            { const int nm = pf->caveMouthsNear(home, 3000.0f); printf("bench: caves: %d mouths within 3 km of the start (%.2f per km^2: one per %.0f m on a square grid)\n", nm, nm / 28.27f, nm > 0 ? sqrtf(28.27e6f / nm) : 0.0f); }
+                        } else if (PlanetField::CavesGraph()) { // no mouth near (or a fixed start): start inside the nearest passage
+                            graphInside = true;
                             std::vector<float> segs;
                             const Vector3 c0 = Vector3Scale(home, pf->radius + pf->elevation(home));
                             pf->blockCaveSegs(Vector3AddValue(c0, -400.0f), 800.0f, 2, 1.0f, segs, INT32_MAX);
                             float bd = 1e30f;
-                            if (const char* st = getenv("RAYLIBGAME_CAVES_START")) { Vector3 sp{}; if (sscanf(st, "%f %f %f", &sp.x, &sp.y, &sp.z) == 3) { segs.clear(); segs.insert(segs.end(), { sp.x, sp.y, sp.z, 0, sp.x, sp.y, sp.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }); } } // (captures: a fixed start)
-                            for (size_t s = 0; s + 20 <= segs.size(); s += 20) {
+                            if (const char* st = getenv("RAYLIBGAME_CAVES_START")) { Vector3 sp{}; if (sscanf(st, "%f %f %f", &sp.x, &sp.y, &sp.z) == 3) { segs.clear(); segs.insert(segs.end(), { sp.x, sp.y, sp.z, 0, sp.x, sp.y, sp.z, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }); } } // (captures: a fixed start)
+                            for (size_t s = 0; s + 24 <= segs.size(); s += 24) {
                                 const Vector3 mid = { 0.5f * (segs[s] + segs[s + 4]), 0.5f * (segs[s + 1] + segs[s + 5]), 0.5f * (segs[s + 2] + segs[s + 6]) };
                                 const float dd = Vector3Distance(mid, c0);
                                 if (dd < bd) { bd = dd; at = mid; }
                             }
                             best = bd < 1e29f ? bd : 1e30f;
-                            if (best < 1e29f) printf("bench: caves: graph tunnels (RAYLIBGAME_CAVES=1): %zu segments within 400 m, starting in the nearest at %.2f %.2f %.2f\n", segs.size() / 20, at.x, at.y, at.z);
+                            if (best < 1e29f) printf("bench: caves: graph tunnels (RAYLIBGAME_CAVES=1): %zu segments within 400 m, starting in the nearest at %.2f %.2f %.2f\n", segs.size() / 24, at.x, at.y, at.z);
                         }
                         if (best > 1e29f) { printf("bench: caves: no cave mouth within 3 km -> FAIL\n"); benchTestCaves = false; }
                         else {
                             const Vector3 up = Vector3Normalize(at);
                             const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), e2 = Vector3CrossProduct(up, e1);
-                            Vector3 out = e1; int bestOpen = -1; // the side the mouth opens to: the most open air 3 m down
+                            Vector3 out = e1; int bestOpen = graphMouth ? 1000 : -1; if (graphMouth) out = graphOut; // the side the mouth opens to: the most open air 3 m down
                             for (int k = 0; k < 16; ++k) {
                                 const float ang = 2.0f * PI * k / 16.0f;
                                 const Vector3 h = Vector3Add(Vector3Scale(e1, cosf(ang)), Vector3Scale(e2, sinf(ang)));
@@ -6098,16 +6111,31 @@ int main(int argc, char** argv)
                                 if (open > bestOpen) { bestOpen = open; out = h; }
                             }
                             cavesPath.clear();
-                            const Vector3 start = PlanetField::CavesGraph() ? at : Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f))); // (graph: already inside)
-                            for (int k = 0; k <= 30; ++k) cavesPath.push_back(Vector3Lerp(start, at, k / 30.0f)); // the approach
-                            Vector3 pos = at, prev = PlanetField::CavesGraph() ? out : Vector3Scale(out, -1.0f); // (graph: on along the most open way)
+                            const Vector3 start = graphInside ? at : Vector3Add(at, Vector3Add(Vector3Scale(out, 30.0f), Vector3Scale(up, 8.0f))); // (graph: already inside)
+                            static const bool frontView = getenv("RAYLIBGAME_CAVES_VIEW") && strcmp(getenv("RAYLIBGAME_CAVES_VIEW"), "front") == 0;
+                            for (int k = 0; k <= 30; ++k) {         // the approach
+                                Vector3 q = Vector3Lerp(start, at, k / 30.0f);
+                                if (frontView && !graphInside) {    // (#1022) RAYLIBGAME_CAVES_VIEW=front: walk up to the face at eye level
+                                    const Vector3 flat = Vector3Lerp(Vector3Add(at, Vector3Scale(out, 30.0f)), at, k / 30.0f);
+                                    const Vector3 dq = Vector3Normalize(flat);
+                                    q = Vector3Scale(dq, std::max(pf->radius + pf->elevation(dq) + 1.7f, Vector3Length(at) + 0.3f)); // at the mouth's level (a cliff mouth: the camera flies), else 1.7 m over the ground
+                                    for (int s = 0; s < 40 && (pf->baseDensity(q) >= ISO_LEVEL || pf->baseDensity(Vector3Add(q, Vector3Scale(dq, 0.8f))) >= ISO_LEVEL || pf->baseDensity(Vector3Add(q, Vector3Scale(dq, -1.4f))) >= ISO_LEVEL); ++s)
+                                        q = Vector3Add(q, Vector3Scale(dq, 0.25f)); // over crags and tors (rock above the height map)
+                                }
+                                cavesPath.push_back(q);
+                            }
+                            Vector3 pos = at, prev = graphInside ? out : Vector3Scale(out, -1.0f); // (graph: on along the most open way)
                             for (int k = 0; k < 60; ++k) {          // on along the passage
                                 Vector3 bestDir = prev; float bestD = 1e30f;
                                 for (int x = -1; x <= 1; ++x) for (int y = -1; y <= 1; ++y) for (int z = -1; z <= 1; ++z) {
                                     if (!x && !y && !z) continue;
                                     const Vector3 dir = Vector3Normalize({ (float)x, (float)y, (float)z });
                                     if (Vector3DotProduct(dir, prev) < 0.2f) continue;     // never back
-                                    const float dens = pf->baseDensity(Vector3Add(pos, Vector3Scale(dir, 1.5f))) + 0.02f * Vector3DotProduct(dir, up); // prefer down a little
+                                    const Vector3 nq = Vector3Add(pos, Vector3Scale(dir, 1.5f));
+                                    const float nl = Vector3Length(nq), above = nl - (pf->radius + pf->elevation(Vector3Scale(nq, 1.0f / nl)));
+                                    // prefer down a little; stay under the ground, and (#615 step 3) the first 20 m keep going into the hill, not back out of the mouth
+                                    const float dens = pf->baseDensity(nq) + 0.02f * Vector3DotProduct(dir, up) + (above > -1.0f ? 1.0f : 0.0f)
+                                                     - (k < 20 && !graphInside ? 2.0f * Vector3DotProduct(dir, Vector3Negate(out)) : 0.0f);
                                     if (dens < bestD) { bestD = dens; bestDir = dir; }
                                 }
                                 prev = bestDir; pos = Vector3Add(pos, bestDir); cavesPath.push_back(pos);
@@ -7484,8 +7512,10 @@ int main(int argc, char** argv)
                         {
                             // The dam: a wall across the river and 15 m into each bank, from under the bed up to the crest.
                             std::vector<TerrainEdit> wall;
+                            damSpillL = 0.0f;
                             for (float w = -(damHW + 15.0f); w <= damHW + 15.0f; w += 0.8f) {
                                 const Vector3 dw = off(damDir, damSide, w);
+                                if (pf->elevation(dw) < damCrest) damSpillL += 0.8f; // the weir's width: where the ground is under the crest (#1039)
                                 const float bed = std::min(pf->elevation(dw), damLevel - damDepth);
                                 for (float h = bed - 0.5f; h <= damCrest - 0.6f; h += 0.8f) wall.push_back({ at(dw, h), 1.3f, 5.0f, false });
                             }
@@ -7660,7 +7690,15 @@ int main(int argc, char** argv)
                             // Backs up to the crest; spills: the pool then holds there (water leaves over the crest) instead of rising
                             // on. The reach below keeps the downstream river's level (its sink holds it: a flat river backs up from
                             // below too), so it is reported, not judged.
-                            const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 0.35f;
+                            // How high it holds over the crest is a weir's head (#1039, by physics #690 - the fixed 0.35 m was tuned on
+                            // a site whose old caves drained part of the pool): a broad-crested weir passes Q = 1.7 L H^1.5 (SI; Cd sqrt(2g)
+                            // ~ 1.7) with the reach's natural inflow Q and the crest's width over lower ground L, so H = (Q / (1.7 L))^(2/3).
+                            // 1.5 H allowed: a margin for 0.25 m cells and the crest's rough top (a guess, not measured).
+                            const float weirQ = Fluid::ReleasedNaturalFlow(), weirL = std::max(damSpillL, 1.0f);
+                            const float weirH = weirQ > 0.0f ? powf(weirQ / (1.7f * weirL), 2.0f / 3.0f) : 0.35f;
+                            printf("bench: dam: weir: inflow Q %.2f m^3/s over a crest %.1f m wide -> head H %.2f m; the pool may hold up to %.2f m (crest + 1.5 H)\n",
+                                   weirQ, weirL, weirH, damCrest + 1.5f * weirH);
+                            const bool backs = damMaxU >= damLvU + 0.2f && damMaxU >= damCrest - 0.25f, spills = spillT >= 0.0 && su > -1e8f && su <= damCrest + 1.5f * weirH;
                             const bool around = bypassT >= 0.0; // rose, then held under the crest while fed: it went around (#666)
                             printf("bench: dam: %d reaches released; upstream rose %.2f -> %.2f m (crest %.2f), spilled after %.0f s and holds at %.2f m; %s; downstream %.2f -> lowest %.2f, now %.2f m -> %s\n",
                                    released, damLvU, damMaxU, damCrest, spillT, su, around ? TextFormat("went around the dam (held at %.2f m from %.0f s)", stallLevel, stallT) : "did not go around",
@@ -9438,7 +9476,7 @@ int main(int argc, char** argv)
                         }
                         benchWalkSeconds = 0.0;
                     }
-                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchTestCaves && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat &&  !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
+                } else if ((WorldIdle() && benchReload <= 0 && !benchLoadHold && benchDigStrokes == 0 && !benchPaint && !benchSaveLoad && benchWalkSeconds <= 0.0 && benchMineStrokes == 0 && minePhase != 2 && benchFlySeconds <= 0.0 && !benchSuffocate && benchOrbitSeconds <= 0.0 && !benchRide && !benchPark && !benchGravity && !benchPrecision && !benchMantle && !benchAirJump && !benchMoon && !benchHole && !benchWall && !benchDoorway && !benchLedge && !benchTor && !benchMachines && !benchFall && !benchHover && !benchNetIds && !benchNet && !benchTwoPlayers && !benchFingerprint && !benchInterest && !benchTeleClose && !benchMenus && !benchWater && !benchFlyFollow && !benchHotbar && !benchInventory && !benchMap && !benchViewmodel && !benchQuests && !benchHunger && !benchFarm && !benchAnimals && !benchThreats && !benchAnimalPath && !benchDam && !benchFlowMeter && !benchPartWall && !benchPressure && benchShotTabs == 0 && !benchForest && !benchFlow && !benchPond && !benchBucket && !benchWaterSpeed && benchFluidLoad <= 0.0f && !benchFlowShade && !benchPump && !benchTerrain && !benchWind && !benchCampfire && !benchCaveMouth && !benchTestCaves && !benchMountain && !benchShelter && !benchRoom && !benchFacing && !benchDungeon && !benchDungeonTraps && !benchSaveSplit && !benchPosture && !benchPause && !benchBite && !benchPlacement && !benchShotDig && !benchShadow && !benchParticles && !benchBiomes && !benchOil && !benchSpring && !benchShotAnimals && !benchShotAvatar && !benchShotMachines && benchShotBiomes < 0 && !benchFarForest && !benchRecipes && !benchWeather && !benchDecor && !benchMaterials && !benchDamage && !benchCrafting && !benchSuit && !benchTools && !benchRivers && !benchRing && !benchRocket && !benchStation && !benchBlueprint && !benchSmallBody && !benchTrees && !benchChop && benchPersist == 0 && benchBuild == 0 && benchFactory == 0 && !benchCombat && !benchBed && !benchHost && !benchIdleDrift && !benchTeams && !benchClaimOffline && !benchSkills && !benchInventoryFps && !benchJoinedItems && !benchJoin && !benchTimeFollow && benchPlayerCost == 0 && !benchNetAnimals && !benchNetQuests && !benchNetMachines && !benchNetPlants && !benchNetClaims && !benchNetAbuse && !benchNetMove && !benchNetDig && !benchNetBuild && !benchNetSync && !benchShotMpMenu && !benchMpMenu && benchMpBots == 0 && !benchShower && !benchProgression && (benchUnfocus <= 0.0f || unfocusPhase >= 6)) || GetTime() > 600.0) {
                     benchStart = GetTime();
                     printf("bench: world ready after %.2f s (%d chunks, avg build %.2f ms of which sampling %.2f ms, %d worker threads)\n",
                         GetWorldStats().lastGenerationSeconds, GetWorldStats().chunks, GetWorldStats().avgBuildMs, GetWorldStats().avgSampleMs, GetWorldStats().workerThreads);
@@ -12470,7 +12508,8 @@ int main(int argc, char** argv)
             if (phase == 1 && SimTime() - t0 > 4.5 && !survival.dead) {
                 bedDist = Vector3Distance(feet(), bedFeet); wokeOnBed = bedDist < 1.5f;
                 saved = SaveWorld(world);
-                FILE* f = saved ? fopen(WorldSavePath(), "r") : nullptr;
+                // (#915) the bed is the player's: it's in their record beside the world (#346), never the world file
+                FILE* f = saved ? fopen(PlayerRecord_Path(PlayerId_Local()).c_str(), "r") : nullptr;
                 bool line = false; char buf[512];
                 while (f && fgets(buf, sizeof buf, f)) if (!strncmp(buf, "bed ", 4)) line = true;
                 if (f) fclose(f);

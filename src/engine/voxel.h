@@ -327,13 +327,17 @@ public:
     // reaches). densityNear carves where it is under its meshing reach; terrain.glsl's caveDistance is the same, bit-exact.
     // hit (tools: --cave-stats): what made the distance.
     struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
-    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr) const;
+    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr, float* solid = nullptr) const; // solid (#615 step 3): metres inside rubble aprons (densityNear adds them)
     // (#615 step 2) The cave graph: passages generated per 256 m cell (sea-level projection) from the seed, cached. A block
     // gets the segments whose capsules can reach it, 5 vec4 each: (a, ra), (b, rb), (up, flat), box lo, box hi. False
     // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
     // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
     bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
     static bool CavesGraph();
+    // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
+    // outward (downhill) direction, body-local. Tests and captures.
+    bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward) const;
+    int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

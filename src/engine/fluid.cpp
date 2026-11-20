@@ -2091,6 +2091,13 @@ float Fluid::ReleaseInflowScale() {
     return lo;
 }
 
+float Fluid::ReleasedNaturalFlow() {
+    std::lock_guard<std::mutex> lock(simMx);
+    float q = 0.0f;
+    for (auto& s : sites) for (const Site::Release& r : s->releases) q += r.natQ;
+    return q;
+}
+
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
     const float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
     const float t = std::min(m3, have);
