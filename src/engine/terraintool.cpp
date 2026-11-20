@@ -312,18 +312,42 @@ static int FillerMaterial(const std::string& item) {
     return -1;
 }
 
+// (#1097) What a soft placing blob costs: 2 of the filler a m^3 of ground it adds (the lattice points it raises from air to
+// solid), as a sphere fill pays (FillCost) and as digging gives back. A flat item a stroke made more ground than digging it
+// back cost: a loop that made something from nothing.
+float TerrainTool_PlaceCost(const Planetoid& p, const TerrainEdit& e) {
+    const float r = e.radius;
+    int added = 0;
+    const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize);
+    const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize);
+    const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize);
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const Vector3 q = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+                const float dist = Vector3Distance(q, e.center);
+                if (dist >= r) continue;
+                const float d = p.densityAt(q);
+                if (d >= ISO_LEVEL) continue;
+                const float t = 1.0f - dist / r; // TerrainDeltas::apply's soft brush
+                if (d + e.strength * t * t * (3.0f - 2.0f * t) >= ISO_LEVEL) ++added;
+            }
+    const float s = p.scale;
+    return added * kVoxelSize * kVoxelSize * kVoxelSize * s * s * s * 2.0f;
+}
+
 // Building consumes bulk material: the filler in hand when there is one (it is what gets placed),
-// else the best one carried. `paint` = the material the placed ground is made of.
-static bool PayFiller(int& paint) {
+// else the best one carried. `paint` = the material the placed ground is made of; `cost` = items (#1097: by volume).
+static bool PayFiller(int& paint, float cost) {
     const std::string& held = terrainTool.heldTool;
-    if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.remove(held, 1))) { paint = FillerMaterial(held); return true; }
+    if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.removeAmount(held, cost))) { paint = FillerMaterial(held); return true; }
     // (#836) A block stack in the off hand: RMB places it while the main hand holds a tool.
     const std::string off = inventory.offHand().id;
-    if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.remove(off, 1))) { paint = FillerMaterial(off); return true; }
+    if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.removeAmount(off, cost))) { paint = FillerMaterial(off); return true; }
     if (terrainTool.creative) { paint = -1; return true; }
     static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-    for (const char* f : fillers) if (inventory.remove(f, 1)) { paint = FillerMaterial(f); return true; }
-    Toast("Need stone, dirt, regolith, gravel, sand or concrete to build");
+    for (const char* f : fillers) if (inventory.removeAmount(f, cost)) { paint = FillerMaterial(f); return true; }
+    Toast(TextFormat("Need %.1f stone, dirt, regolith, gravel, sand or concrete for this", cost));
     Audio_Play(Sfx::Error, 0.5f);
     return false;
 }
@@ -429,7 +453,7 @@ static bool BrushStroke(bool digging) {
         ++terrainTool.swings;
     } else {
         int paint = -1;
-        if (!PayFiller(paint)) return false;
+        if (!PayFiller(paint, 1.0f)) return false;
         Audio_Play(Sfx::Build, 0.6f);
     }
     TerrainEdit e;
@@ -483,6 +507,8 @@ void TerrainTool_ScaleYield(DigYield& got, float oreMul, float stoneMul) {
         const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
         if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
     }
+    for (const auto& kv : got.placed) got.items[kv.first] += kv.second; // (#1097) placed ground: what it cost, unscaled
+    got.placed.clear();
 }
 
 // Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so
@@ -523,6 +549,13 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
                 if (d < ISO_LEVEL || !p.field->editable(q)) continue;
                 const VoxelMaterial m = p.materialAt(q, surfN);
                 if (softOnly && !IsSoft(m)) continue;
+                // (#1097) Placed ground gives back at most what it cost (2 of its filler a m^3, as a fill pays) and nothing more:
+                // no stones in placed dirt, no stone kinds, peat, gems or seeds, no perks. Placing and digging it back can't
+                // make anything.
+                if (const int pm = p.edits ? p.edits->placedAt(q) : -1; pm >= 0) {
+                    out.placed[ItemAt(p, q, (VoxelMaterial)pm)] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
+                    continue;
+                }
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
                 if (!stoneKindAt && m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) stoneKindAt = item; // #587: a stratum's rock hosts its gem
@@ -679,19 +712,21 @@ bool TerrainTool_Stroke(bool dig) {
         e.strength = 0.6f;
         const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
+        const float cost = TerrainTool_PlaceCost(p, e); // (#1097) by the ground it adds
+        if (cost < 0.05f) { Toast("Already solid there"); return false; }
         if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler (the one in hand, else the best carried)
             std::string pay = FillerMaterial(terrainTool.heldTool) >= 0 ? terrainTool.heldTool : std::string();
             if (pay.empty() && FillerMaterial(inventory.offHand().id) >= 0) pay = inventory.offHand().id; // (#836) the off hand's stack next
             static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-            for (const char* f : fillers) if (pay.empty() && inventory.count(f) > 0) pay = f;
-            if (pay.empty() || inventory.count(pay) <= 0) { Toast("Need stone, dirt, regolith, gravel, sand or concrete to build"); Audio_Play(Sfx::Error, 0.5f); return false; }
+            for (const char* f : fillers) if (pay.empty() && inventory.amount(f) >= cost) pay = f;
+            if (pay.empty() || inventory.amount(pay) < cost) { Toast(TextFormat("Need %.1f stone, dirt, regolith, gravel, sand or concrete for this", cost)); Audio_Play(Sfx::Error, 0.5f); return false; }
             gTerrainToolNetEdit(p, false, hit.local, e.center, e.radius, pay);
             StrokeParticles(p, hit.local, hit.material, false);
             Audio_Play(Sfx::Build, 0.6f);
             return true;
         }
         int paint = -1;
-        if (!PayFiller(paint)) return false;
+        if (!PayFiller(paint, cost)) return false;
         e.paint = paint;
         StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);

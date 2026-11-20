@@ -55,7 +55,7 @@ int TerrainDeltas::materialAt(Vector3 pos) const {
         const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
         auto it = chunks.find(KeyOf(cx, cy, cz));
         if (it == chunks.end()) return -1;
-        return (int)it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) - 1;
+        return MatOf(it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)));
     };
     const int m = mat((int)lroundf(p.x), (int)lroundf(p.y), (int)lroundf(p.z));
     if (m >= 0) return m;
@@ -65,6 +65,16 @@ int TerrainDeltas::materialAt(Vector3 pos) const {
         if (c >= 0) return c;
     }
     return -1;
+}
+
+int TerrainDeltas::placedAt(Vector3 pos) const {
+    if (chunks.empty()) return -1;
+    const int x = (int)lroundf(pos.x / kVoxelSize), y = (int)lroundf(pos.y / kVoxelSize), z = (int)lroundf(pos.z / kVoxelSize);
+    const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
+    auto it = chunks.find(KeyOf(cx, cy, cz));
+    if (it == chunks.end()) return -1;
+    const uint8_t v = it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk));
+    return MatPlaced(v) ? MatOf(v) : -1;
 }
 
 void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair<Key, const DeltaChunk*>>& out) const {
@@ -153,7 +163,7 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 if (e.carve) {
                     const float base = field.baseDensity(p);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
-                    const int placed = (int)chunk->mat(i) - 1;
+                    const int placed = MatOf(chunk->mat(i));
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
@@ -169,12 +179,16 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     const float base = field.baseDensity(p);
                     const float fillTo = ISO_LEVEL - DENSITY_GRADIENT * sd;
                     if (base + v * kDeltaStep < fillTo) {
+                        // Placed ground is what was air before (#1097: it is what the fill paid for, 2 items a m^3); ground
+                        // that was there already keeps its own material and digs as itself.
+                        const bool wasAir = base + v * kDeltaStep < ISO_LEVEL;
                         chunk->set(i, (int16_t)std::clamp((int)ceilf((fillTo - base) / kDeltaStep), -32767, 32767)); // up: never just under iso inside
-                        if (e.paint >= 0 && sd < kVoxelSize) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too
+                        if (e.paint >= 0 && sd < kVoxelSize && wasAir) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too
                     }
                 } else {
+                    const bool wasAir = field.baseDensity(p) + v * kDeltaStep < ISO_LEVEL; // (#1097, as a fill)
                     chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
-                    if (e.paint >= 0 && t > 0.15f) chunk->setMat(i, (uint8_t)(e.paint + 1));
+                    if (e.paint >= 0 && wasAir && add > 0.0f) chunk->setMat(i, (uint8_t)(e.paint + 1)); // all it raised: no unmarked placed ground at the rim
                 }
             }
 }
