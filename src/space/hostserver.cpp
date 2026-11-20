@@ -622,14 +622,27 @@ namespace {
         const auto before = AllAmounts(rm.inventory);
         if (a.action == 1) { // fell a plant
             Plant pl;
-            if (!b->trees || !b->trees->findPlant(a.plant, pl)) { refuse(nullptr); return; } // gone already (another player's): its removal is on its way
-            if (Vector3Distance(pl.base, me) > kPlantReach * b->scale) { refuse("That's out of reach"); return; }
-            if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuse(why.c_str()); return; } // (#343)
+            // (#1107) every refusal is logged with its reason: plants near a fresh spawn couldn't be felled, silently
+            auto refuseLog = [&](const char* reason, const char* tell) {
+                printf("host: plant %016llx refused for session %u: %s\n", (unsigned long long)a.plant, session, reason);
+                refuse(tell);
+            };
+            if (!b->trees) { refuseLog("the body has no trees here", nullptr); return; }
+            if (!b->trees->findPlant(a.plant, pl)) {
+                if (b->trees->removals().count(a.plant)) { refuseLog("already felled (its removal is on its way)", nullptr); return; } // (another player's)
+                // Not in the server's tile: the tile isn't loaded here, or a clearing (a structure, a spring) took it on the
+                // server only. Tell the client it's gone there, so the two worlds agree instead of the player swinging at nothing.
+                refuseLog("not in the server's tile (not loaded, or cleared on the server only)", "That plant isn't there on the server");
+                SendPlants(conn, b->netId, 0, { { a.plant, WorldTime() } });
+                return;
+            }
+            if (const float d = Vector3Distance(pl.base, me); d > kPlantReach * b->scale) { refuseLog(TextFormat("out of reach (%.1f m)", d), "That's out of reach"); return; }
+            if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuseLog(why.c_str(), why.c_str()); return; } // (#343)
             std::string held;
             for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
             const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
-            if (SimTime() - rm.lastFellAt < minGap) { refuse(nullptr); return; }
+            if (SimTime() - rm.lastFellAt < minGap) { refuseLog(TextFormat("too soon (%.2f s of %.2f s, %d swings with '%s')", SimTime() - rm.lastFellAt, minGap, hits, held.c_str()), nullptr); return; }
             rm.lastFellAt = SimTime();
             PlantDrops drops = TerrainTool_PlantDrops(*b, pl);
             TerrainTool_ScalePlantDrops(drops, pl, StatsOf(rm)); // (#920) the player's Woodcutting and Foraging perks
