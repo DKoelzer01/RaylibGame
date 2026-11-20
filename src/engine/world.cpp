@@ -198,13 +198,37 @@ static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
     r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
 }
 
+static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]);
+
+// Plan 11 F1 (#667): RAYLIBGAME_FRAMES=1 builds a spinning body's rotation from its double spin angle (advanceBodies keeps
+// phase + spin * time in double) instead of the float Euler `rotation` stored from it: float degrees near 360 step by
+// 3.05e-5 deg, up to ~3 cm at Terra's surface, and frames/still saw the standing player jump 13-31 mm in single steps.
+// The double angle is used while it is current - advanceBodies wrote `rotation` from it - and the float angles otherwise
+// (a load, a script or a test set `rotation`).
+static bool kFramesPose = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }(); // (unit tests set it)
+struct BodyAngles { double x, y, z; };
+static BodyAngles AnglesOf(const Planetoid& p) {
+    if (kFramesPose && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
+        return { p.spinAngle[0], p.spinAngle[1], p.spinAngle[2] };
+    return { p.rotation.x, p.rotation.y, p.rotation.z };
+}
+static void BodyRotationOf(const Planetoid& p, double r[3][3]) { const BodyAngles a = AnglesOf(p); BodyRotationDd(a.x, a.y, a.z, r); }
+// A rotation matrix (body-local -> world, rows of R) as raymath's Matrix, times a scale: MatrixRotateXYZ's layout.
+static Matrix RotationMatrix(const double r[3][3], double s = 1.0) {
+    return { (float)(r[0][0] * s), (float)(r[0][1] * s), (float)(r[0][2] * s), 0.0f,
+             (float)(r[1][0] * s), (float)(r[1][1] * s), (float)(r[1][2] * s), 0.0f,
+             (float)(r[2][0] * s), (float)(r[2][1] * s), (float)(r[2][2] * s), 0.0f,
+             0.0f, 0.0f, 0.0f, 1.0f };
+}
+
 // The same rotation, cached per thread for the last body and angles: toLocal / toWorld run in hot loops (collision, tools,
 // chunk jobs), and six double cos/sin a call would add up.
 static const double (*BodyRotationCached(const Planetoid& p))[3] {
     thread_local const Planetoid* body = nullptr;
-    thread_local Vector3 rot{ NAN, NAN, NAN };
+    thread_local BodyAngles rot{ NAN, NAN, NAN };
     thread_local double r[3][3];
-    if (body != &p || rot.x != p.rotation.x || rot.y != p.rotation.y || rot.z != p.rotation.z) { body = &p; rot = p.rotation; BodyRotationD(rot, r); }
+    const BodyAngles a = AnglesOf(p);
+    if (body != &p || rot.x != a.x || rot.y != a.y || rot.z != a.z) { body = &p; rot = a; BodyRotationDd(a.x, a.y, a.z, r); }
     return r;
 }
 
@@ -299,7 +323,7 @@ float SunElevationAtCamera(const Scene& world) {
 
 DVec3 Planetoid::toWorldD(const DVec3& l) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const double s = scale;
     return worldPos + DVec3((r[0][0] * l.x + r[0][1] * l.y + r[0][2] * l.z) * s,
                             (r[1][0] * l.x + r[1][1] * l.y + r[1][2] * l.z) * s,
@@ -308,7 +332,7 @@ DVec3 Planetoid::toWorldD(const DVec3& l) const {
 
 DVec3 Planetoid::toLocalD(const DVec3& w) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const DVec3 d = w - worldPos;
     const double inv = 1.0 / scale;
     return DVec3((r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z) * inv,  // R is orthonormal: R^-1 = R^T
@@ -329,7 +353,8 @@ namespace {
         ChunkPlacer(const Planetoid& p, const DVec3& renderOrigin)
             : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
               offset(p.worldPos - renderOrigin), s(p.scale) {
-            BodyRotationD(p.rotation, r);
+            BodyRotationOf(p, r);
+            if (kFramesPose) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
         }
         Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
         Matrix modelAt(const DVec3& o) const {
@@ -448,7 +473,7 @@ bool SurfaceVelocity_SelfTest() { // (#872) every orientation and spin: omega x 
 // float with the body centre tens of km from the render origin (hundreds of metres on the surface).
 Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const Vector3 d = worldDir;
     return Vector3Normalize({ (float)(r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z),
                               (float)(r[0][1] * d.x + r[1][1] * d.y + r[2][1] * d.z),
@@ -457,7 +482,7 @@ Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
 
 Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const Vector3 d = localDir;
     return Vector3Normalize({ (float)(r[0][0] * d.x + r[0][1] * d.y + r[0][2] * d.z),
                               (float)(r[1][0] * d.x + r[1][1] * d.y + r[1][2] * d.z),
@@ -465,7 +490,10 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
 }
 
 Quaternion Planetoid::rotationQuat() const {
-    return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    if (!kFramesPose) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    double r[3][3];
+    BodyRotationOf(*this, r); // (#667) the double pose: a grounded player's view turns with it step by step, unquantised
+    return QuaternionFromMatrix(RotationMatrix(r));
 }
 
 bool Planetoid::useFarSphere(const RenderContext& ctx) const {
@@ -2884,5 +2912,32 @@ TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
         EXPECT_LT(Dist(b->toLocalD(b->toWorldD(l)), l), 1e-6) << deg << " deg";
     }
     EXPECT_LT(Dist(b->toWorldD(l), w0), 0.1) << "360 deg is a full turn (raylib's float DEG2RAD: within 10 cm at 60 km)";
+}
+
+// Plan 11 F1 (#667): a point on a turning body moves evenly, step by step. Near 360 deg the float Euler angle steps by
+// 3.05e-5 deg, so a surface point 60 km out jumped by up to ~3 cm between steps (frames/still: 13-31 mm). With the double
+// pose (RAYLIBGAME_FRAMES=1) every 1/60 s step moves it the same arc, to well under a millimetre.
+TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
+    auto stepSpread = [](bool doublePose) {
+        kFramesPose = doublePose;
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
+        b->spin = { 0.0f, 0.1f, 0.0f }; // Terra's day: 360 deg an hour
+        const DVec3 l{ 1234.5, 31000.0, 51300.0 }; // a surface point ~60 km out, off the axis
+        double lo = 1e9, hi = 0.0;
+        DVec3 last{};
+        for (int k = 0; k <= 600; ++k) {
+            const double a = 359.0 + 0.1 * k / 60.0; // 10 s of spin up to 360 deg, 1/60 s steps
+            b->spinAngle[1] = a; b->spinAngleSet = true;
+            b->rotation = { 0.0f, (float)a, 0.0f }; // advanceBodies stores the float from the double
+            const DVec3 w = b->toWorldD(l);
+            if (k > 0) { const double d = Dist(w, last); lo = std::min(lo, d); hi = std::max(hi, d); }
+            last = w;
+        }
+        kFramesPose = false;
+        return hi - lo;
+    };
+    const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);
+    EXPECT_GT(floatSpread, 0.005) << "the float angle's steps: uneven by cm (the test still sees the old path)";
+    EXPECT_LT(doubleSpread, 1e-4) << "the double pose: even steps";
 }
 #endif
