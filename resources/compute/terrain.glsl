@@ -485,9 +485,9 @@ float caveGraphDistance(vec3 q, out float solid) {
             precise float hl2 = hx * hx + hy * hy + hz * hz;
             precise float hl = xsqrt(hl2);
             if (hl > 1e-3) {
-                precise float rw75 = 0.75 * rw;
-                precise float sq = xdiv(rw75, hl);
-                precise float sc = 0.25 + sq;
+                precise float rw90 = 0.9 * rw;
+                precise float sq = xdiv(rw90, hl);
+                precise float sc = 0.1 + sq;
                 precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
                 precise float p3x = px * 24.5 + 101.0;
                 precise float r3 = fractal(N_DETAIL, 3, p3x, py * 24.5, pz * 24.5);

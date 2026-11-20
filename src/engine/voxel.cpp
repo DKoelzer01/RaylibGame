@@ -1543,15 +1543,15 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
         // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
         // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
-        // squeezed radially toward the skeleton's wall (radial distance x 0.25 around it), so it changes at full rate
-        // across the wall (jagged faces) but 4x slower outward (solid rock behind them, no shells or floating pieces).
+        // squeezed radially toward the skeleton's wall (radial distance x 0.1 around it), so it changes at full rate
+        // across the wall (jagged faces) but 10x slower outward (solid rock behind them, no shells or floating pieces).
         // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
         float intrude = 0.0f;
         if (len > 0.5f * rw && len < rw + 40.0f) {
             const float hl2 = hx * hx + hy * hy + hz * hz;
             const float hl = sqrtf(hl2);
             if (hl > 1e-3f) {
-                const float sc = 0.25f + 0.75f * rw / hl;
+                const float sc = 0.1f + 0.9f * rw / hl;
                 const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
                 const float r3 = N.det.fractal(3, px * 24.5f + 101.0f, py * 24.5f, pz * 24.5f); // 3 octaves from ~3 m
                 const float r1 = N.b.fractal(2, px * 135.0f + 7.0f, py * 135.0f, pz * 135.0f);   // sharp ~1 m creases (|n|)
