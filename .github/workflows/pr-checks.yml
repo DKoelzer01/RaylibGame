@@ -1,0 +1,259 @@
+# PR checks on GitHub-hosted runners (#1016): every PR (forks included) and every push to the integration branches.
+# Nothing here runs on the self-hosted runner, and nothing needs a secret. See .github/CI.md.
+# The check to make required is "CI ok" (it is always reported, also when the build jobs are skipped for docs-only changes).
+name: PR checks
+
+on:
+  pull_request:
+    branches: [m84-integration, develop, main]
+  push:
+    branches: [m84-integration, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # w64devkit = the shipping Windows toolchain (the user's C:/raylib/w64devkit is 2.0.0, GCC 14.2.0).
+  W64DEVKIT_VERSION: "2.0.0"
+  W64DEVKIT_SHA256: cea23fc56a5e61457492113a8377c8ab0c42ed82303fcc454ccd1963a46f8ce1
+  CCACHE_WIN_VERSION: "4.14.2"
+  CCACHE_WIN_SHA256: 6993ce645e53192cec592ee23186200b574ac4c59097ecde8d9cfd681b47ae84
+  CCACHE_MAXSIZE: 600M
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_COMPRESS: "true"
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # a PR's merge commit and its first parent (the base tip)
+          persist-credentials: false
+      - name: Base commit
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=""
+          if [ "$EVENT" = pull_request ]; then
+            base="$(git rev-parse HEAD^1)"
+          elif [ "$EVENT" = push ] && [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            git fetch -q --no-tags --depth=1 origin "$BEFORE" && base="$BEFORE" || echo "previous tip $BEFORE not fetchable"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "base: ${base:-none}"
+      - name: Changed files (docs-only changes skip the builds)
+        id: changes
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          code=true
+          if [ -n "$BASE" ]; then
+            files="$(git diff --name-only "$BASE" HEAD)"
+            echo "$files" | sed 's/^/  /'
+            # Docs: Markdown anywhere, docs/, root-level images, Claude Code settings.
+            if [ -n "$files" ] && ! echo "$files" | grep -qvE '(\.md$|^docs/|^[^/]+\.(png|jpg|gif)$|^\.claude/|^LICENSE)'; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "build jobs: $code"
+      - name: Static checks (NetMsg ids, kNetProtocol, kErosionBakeVersion, gh project)
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: bash tools/ci/static_checks.sh "$BASE"
+
+  windows:
+    name: Windows build + unit tests (w64devkit)
+    needs: static
+    if: ${{ !cancelled() && needs.static.outputs.code == 'true' }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Paths
+        run: |
+          root="$(cygpath -m "$RUNNER_TEMP")/ci"
+          mkdir -p "$root"
+          { echo "CI_ROOT=$root"; echo "CCACHE_DIR=$root/ccache"; echo "CCACHE_BASEDIR=$(cygpath -m "$GITHUB_WORKSPACE")"; } >> "$GITHUB_ENV"
+          echo "DEPS_KEY=$(bash tools/ci/fetch_deps.sh --key | tr ' @' '-_')" >> "$GITHUB_ENV"
+      - name: Cache toolchain (w64devkit, ccache)
+        id: toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/toolchain
+          key: win-toolchain-w64devkit-${{ env.W64DEVKIT_VERSION }}-ccache-${{ env.CCACHE_WIN_VERSION }}
+      - name: Download toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          tc="$CI_ROOT/toolchain"; dl="$CI_ROOT/dl"
+          mkdir -p "$tc" "$dl"
+          curl -fsSL --retry 3 -o "$dl/w64devkit.exe" "https://github.com/skeeto/w64devkit/releases/download/v$W64DEVKIT_VERSION/w64devkit-x64-$W64DEVKIT_VERSION.exe"
+          echo "$W64DEVKIT_SHA256  $dl/w64devkit.exe" | sha256sum -c -
+          7z x -y -bd -o"$tc" "$dl/w64devkit.exe" > /dev/null
+          curl -fsSL --retry 3 -o "$dl/ccache.zip" "https://github.com/ccache/ccache/releases/download/v$CCACHE_WIN_VERSION/ccache-$CCACHE_WIN_VERSION-windows-x86_64.zip"
+          echo "$CCACHE_WIN_SHA256  $dl/ccache.zip" | sha256sum -c -
+          7z x -y -bd -o"$tc" "$dl/ccache.zip" > /dev/null
+          mv "$tc/ccache-$CCACHE_WIN_VERSION-windows-x86_64" "$tc/ccache"
+          rm -rf "$dl"
+      - name: Toolchain on PATH
+        run: |
+          echo "$CI_ROOT/toolchain/ccache" >> "$GITHUB_PATH"
+          echo "$CI_ROOT/toolchain/w64devkit/bin" >> "$GITHUB_PATH"
+      - name: Versions
+        run: |
+          which gcc mingw32-make cmake ccache
+          gcc --version | head -1; cmake --version | head -1; ccache --version | head -1
+      - name: Cache FetchContent sources (raylib, googletest)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/deps
+          key: fetchcontent-${{ env.DEPS_KEY }}
+      - name: Fetch sources
+        run: bash tools/ci/fetch_deps.sh "$CI_ROOT/deps"
+      - name: Cache GameNetworkingSockets
+        id: gns
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/gns/install
+          key: gns-windows-w64devkit-${{ env.W64DEVKIT_VERSION }}-${{ hashFiles('tools/build_gns.sh') }}
+      - name: Build GameNetworkingSockets (cache miss only)
+        if: steps.gns.outputs.cache-hit != 'true'
+        run: JOBS=4 bash tools/build_gns.sh "$CI_ROOT/gns"
+      - name: Restore ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/ccache
+          key: ccache-windows-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-windows-${{ github.head_ref || github.ref_name }}-
+            ccache-windows-${{ github.base_ref || 'm84-integration' }}-
+            ccache-windows-
+      - name: Configure
+        run: |
+          args=(-S . -B build/ci -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DGAME_OUTPUT_DIR="$(cygpath -m "$PWD")/build/ci/bin"
+                -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+                -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+                -DENABLE_GNS=ON -DGNS_ROOT="$CI_ROOT/gns/install"
+                $(bash tools/ci/fetch_deps.sh --cmake "$CI_ROOT/deps"))
+          # The first MinGW configure can fail reading the compiler probe's a.exe (antivirus): once more before giving up.
+          cmake "${args[@]}" || { echo "configure failed, retrying once"; cmake "${args[@]}"; }
+      - name: Build game + game_tests
+        run: |
+          ccache -z > /dev/null
+          start=$SECONDS
+          cmake --build build/ci -j 4 --target game game_tests
+          echo "build: $((SECONDS - start)) s"
+          ccache -s | tee ccache-stats.txt
+          { echo "### Windows build"; echo "$((SECONDS - start)) s"; echo '```'; cat ccache-stats.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci/ccache
+          key: ccache-windows-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
+      - name: Unit tests (game_tests)
+        run: ./build/ci/bin/game_tests.exe --gtest_brief=1 # from the repo root: some tests read resources/
+
+  linux:
+    name: Linux build + unit tests (headless server, GNS)
+    needs: static
+    if: ${{ !cancelled() && needs.static.outputs.code == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CCACHE_BASEDIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ccache libssl-dev libegl1
+          root="$(cd "$GITHUB_WORKSPACE/.." && pwd)/ci"; mkdir -p "$root"
+          { echo "CI_ROOT=$root"; echo "CCACHE_DIR=$root/ccache"; } >> "$GITHUB_ENV"
+          echo "DEPS_KEY=$(bash tools/ci/fetch_deps.sh --key | tr ' @' '-_')" >> "$GITHUB_ENV"
+          gcc --version | head -1; cmake --version | head -1; ccache --version | head -1
+      - name: Cache FetchContent sources (raylib, googletest)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CI_ROOT }}/deps
+          key: fetchcontent-linux-${{ env.DEPS_KEY }}
+      - name: Fetch sources
+        run: bash tools/ci/fetch_deps.sh "$CI_ROOT/deps"
+      - name: Cache GameNetworkingSockets
+        id: gns
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CI_ROOT }}/gns/install
+          key: gns-linux-ubuntu24-${{ hashFiles('tools/build_gns.sh') }}
+      - name: Build GameNetworkingSockets (cache miss only)
+        if: steps.gns.outputs.cache-hit != 'true'
+        run: JOBS=4 bash tools/build_gns.sh "$CI_ROOT/gns"
+      - name: Restore ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CI_ROOT }}/ccache
+          key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-${{ github.base_ref || 'm84-integration' }}-
+            ccache-linux-
+      - name: Configure
+        run: |
+          cmake -S . -B build/ci -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DGAME_OUTPUT_DIR="$PWD/build/ci/bin" \
+            -DRAYLIBGAME_HEADLESS=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DENABLE_GNS=ON -DGNS_ROOT="$CI_ROOT/gns/install" \
+            $(bash tools/ci/fetch_deps.sh --cmake "$CI_ROOT/deps")
+      - name: Build game + game_tests
+        run: |
+          ccache -z > /dev/null
+          start=$SECONDS
+          cmake --build build/ci -j 4 --target game game_tests
+          echo "build: $((SECONDS - start)) s"
+          ccache -s | tee ccache-stats.txt
+          { echo "### Linux build"; echo "$((SECONDS - start)) s"; echo '```'; cat ccache-stats.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CI_ROOT }}/ccache
+          key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
+      - name: Unit tests (game_tests)
+        run: ./build/ci/bin/game_tests --gtest_brief=1 # from the repo root: some tests read resources/
+      - name: Dedicated server smoke test (null GL, sandbox world)
+        timeout-minutes: 5
+        run: EXE="$PWD/build/ci/bin/game" RAYLIBGAME_NO_GL=1 bash tools/test_server.sh
+
+  ok:
+    name: CI ok
+    needs: [static, windows, linux]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: All checks passed (skipped = docs-only change)
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success|skipped) ;; *) echo "a check did not pass ($r)"; exit 1 ;; esac
+          done
