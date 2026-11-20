@@ -498,7 +498,9 @@ struct Pass {
             Vec4 Q{}, U{}; // U: the units each pair plans (the move pass scales and moves them)
             bool pb; int fb;
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pb, fb);
-            const bool bottom = !(fl & SOLID) && F(c) > 0u && !(fl & SOURCE) && gb >= 0 &&
+            // A source's run plans its pairs too (#982: a column of generated water never gave sideways, so a cave dug out to a
+            // river stayed dry); the pair's source rules keep it to giving into dug cells only, and it holds its level.
+            const bool bottom = !(fl & SOLID) && F(c) > 0u && gb >= 0 &&
                                 ((FL(inC[gb]) & SOLID) || (F(inC[gb]) > 0u && KIND(inC[gb]) != KIND(c)));
             if (bottom) {
                 const Vec4 P = g.faceP[gi];

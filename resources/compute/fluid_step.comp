@@ -542,7 +542,9 @@ void main() {
         uint code[4] = uint[4](0u, 0u, 0u, 0u);
         bool pb; int fb;
         int gb = neighbour(slot, x, y, z, 0, 0, -1, pb, fb);
-        bool bottom = (fl & SOLID) == 0u && F(c) > 0u && (fl & SOURCE) == 0u && gb >= 0 &&
+        // A source's run plans its pairs too (#982: a column of generated water never gave sideways, so a cave dug out to a
+        // river stayed dry); the pair's source rules keep it to giving into dug cells only, and it holds its level.
+        bool bottom = (fl & SOLID) == 0u && F(c) > 0u && gb >= 0 &&
                       ((FL(rc(gb)) & SOLID) != 0u || (F(rc(gb)) > 0u && KIND(rc(gb)) != KIND(c)));
         if (bottom) {
             vec4 P = loadP(g);
