@@ -153,6 +153,13 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
+    // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
+    bool fxActive = false;
+    Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
+    Vector3 airVelDir{};
+    float airVelLen = 0.0f;
+    uint64_t airVelBody = 0;
     // Airborne near an orbiting body we move in its free-falling frame: its velocity at the end of
     // last frame (its change is added to ours), and whether this frame uses felt gravity.
     Vector3 airFrameVel{};

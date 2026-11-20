@@ -141,6 +141,20 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     const DVec3 eyeFrom = (grounded && groundBody) ? groundLocal : airLocal;
 
     nearest = NearestPlanetoid(world, feet);
+    // Plan 11 F2b (#667, #1146), RAYLIBGAME_FRAMES=1: in a Fixed frame the velocity is always the speed against the turning
+    // ground - airborne too, not only on the ground - so nothing converts at landing or lift-off and the move is velocity *
+    // dt. An airborne frame velocity is kept in the body's axes between updates (it turns with the body, as the position
+    // does); entering or leaving the frame path converts once. (Centred frames keep today's path until they are wired.)
+    {
+        const bool fx = Frames_On() && nearest && frame.frame.kind == FrameKind::Fixed && frame.frame.body == nearest->netId;
+        if (fx && !grounded) {
+            if (fxActive && airVelBody == nearest->id) velocity = Vector3Scale(nearest->dirToWorld(airVelDir), airVelLen); // turned with the body
+            else velocity = Vector3Subtract(velocity, nearest->surfaceVelocity(feet));                                      // into the frame, once
+        } else if (!fx && fxActive && !grounded && nearest) {
+            velocity = Vector3Add(velocity, nearest->surfaceVelocity(feet));                                                // back to world-frame
+        }
+        fxActive = fx;
+    }
     // In water when the body's middle is (static or flowing water).
     inWater = !flyMode && IsUnderwater(world, Vector3Add(feet, Vector3Scale(up, 0.9f)));
     riverCurrent = inWater ? RiverCurrent(nearest, Vector3Add(feet, Vector3Scale(up, 0.9f))) : Vector3{ 0, 0, 0 }; // a river pushes (#361)
@@ -219,7 +233,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // Fall safety (#163): a charged flight pack catches a fall faster than 12 m/s against the ground below.
     if (canHover && hoverPowered && !hovering && !grounded && !inWater && gravity >= 0.5f && nearest) {
         const Vector3 at = (position - world.renderOrigin).toFloat();
-        const float vUp = Vector3DotProduct(Vector3Subtract(velocity, nearest->surfaceVelocity(at)), up);
+        const float vUp = Vector3DotProduct((fxActive ? velocity : Vector3Subtract(velocity, nearest->surfaceVelocity(at))), up);
         if (vUp < -12.0f) hovering = true;
     }
     // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
@@ -230,7 +244,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // (<= 0.2 m of travel each, under the body radius) so a fast player can't pass through thin walls.
     const float h = 1.0f / 120.0f;
     // Speed relative to the ground (airborne velocity is world-frame and carries the spin).
-    const Vector3 relVel = (!grounded && nearest) ? Vector3Subtract(velocity, nearest->surfaceVelocity((position - world.renderOrigin).toFloat())) : velocity;
+    const Vector3 relVel = (!grounded && nearest && !fxActive) ? Vector3Subtract(velocity, nearest->surfaceVelocity((position - world.renderOrigin).toFloat())) : velocity;
     const int steps = std::clamp(std::max((int)ceilf(dt / h), (int)ceilf(Vector3Length(relVel) * dt / 0.2f)), 1, 1024);
     const float sdt = dt / steps;
     // Airborne by an orbiting body: move in its free-falling frame - take its change of velocity
@@ -238,7 +252,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // big rock next to a small one), so world gravity drifted the player off a 5 m rock as fast as
     // it pulled them in: they hovered a metre up and never landed.
     airFelt = false;
-    if (!grounded && airBody && airBody == nearest && FeltIsRelative((position - world.renderOrigin).toFloat(), nearest)) {
+    if (!fxActive && !grounded && airBody && airBody == nearest && FeltIsRelative((position - world.renderOrigin).toFloat(), nearest)) {
         velocity = Vector3Add(velocity, Vector3Subtract(nearest->linearVelocity, airFrameVel));
         airFelt = true;
     }
@@ -309,6 +323,11 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         airId = nearest->id;
         airLocal = nearest->toLocalD(position);
         airFrameVel = nearest->linearVelocity;
+        if (fxActive) { // (F2b) the frame velocity in the body's axes, turned back with it next update
+            airVelLen = Vector3Length(velocity);
+            airVelDir = airVelLen > 1e-9f ? nearest->dirToLocal(Vector3Scale(velocity, 1.0f / airVelLen)) : Vector3{ 0, 0, 0 };
+            airVelBody = nearest->id;
+        }
     } else {
         airBody = nullptr;
     }
@@ -404,7 +423,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         if (jumpBuffer > 0.0f && coyote > 0.0f) {
             // Coyote time: just left the ground (or "grounded" flickered off for a frame) - still jump,
             // setting the upward speed relative to the surface below.
-            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 }; // (F2b: the frame velocity is against the ground already)
             velocity = Vector3Add(velocity, Vector3Scale(up, jumpSpeed - Vector3DotProduct(Vector3Subtract(velocity, surface), up)));
             jumpBuffer = coyote = 0.0f;
             jumpLock = 0.15f;
@@ -413,7 +432,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         if (hovering && inGravity && !inWater) {
             // Hover (#163): the velocity eases fast to the wished one against the ground below (no drift when the keys
             // are let go); Space/Ctrl climb and descend. Gravity is cancelled below; no jetpack fuel.
-            const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 }; // (F2b: the frame velocity is against the ground already)
             Vector3 target = Vector3Add(surface, Vector3Scale(wish, hoverSpeed));
             if (jetUp) target = Vector3Add(target, Vector3Scale(up, hoverClimb));
             if (jetDown) target = Vector3Subtract(target, Vector3Scale(up, hoverClimb));
@@ -422,7 +441,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             // Air control (free, no fuel): steer toward the wished walking velocity relative to the
             // ground below - enough to reach a ledge mid-jump. With no input, momentum is untouched.
             if (Vector3Length(wish) > 0.0f) {
-                const Vector3 surface = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+                const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 }; // (F2b: the frame velocity is against the ground already)
                 const Vector3 rel = Vector3Subtract(velocity, surface);
                 const Vector3 relLevel = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
                 const Vector3 dv = Vector3Subtract(Vector3Scale(wish, walkSpeed), relLevel);
@@ -445,7 +464,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             // Inertial dampeners (B toggles) only in deep space, so they never fight a fall or an orbit.
             // Relative to the nearest body: damping the world-frame velocity (a ring rock's ~3 km/s
             // orbit) dragged the player off small rocks at hundreds of m/s^2.
-            const Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+            const Vector3 frame = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
             velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), 1.0f - std::min(1.0f, 0.6f * dt)));
         }
     }
@@ -453,13 +472,13 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.
-    Vector3 gAccel = Vector3Scale(grounded || airFelt ? gFelt : gvec, gravityScale * dt);
+    Vector3 gAccel = Vector3Scale(grounded ? gFelt : fxActive ? frameGravity(world, feet) : airFelt ? gFelt : gvec, gravityScale * dt);
     if (hovering && !grounded && !inWater && gravity >= 0.5f) gAccel = { 0, 0, 0 }; // the flight pack holds the height (#163)
     if (inWater && !grounded) {
         // Swimming: buoyancy all but cancels gravity, the water drags (relative to the ground's frame),
         // Space swims up and Ctrl down (no jetpack under water).
         gAccel = Vector3Scale(gAccel, 0.12f);
-        Vector3 frame = nearest ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        Vector3 frame = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
         frame = Vector3Add(frame, riverCurrent); // a river carries a swimmer downstream (#361)
         velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
         if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
@@ -472,11 +491,11 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
 
     // Airborne, velocity is world-frame but the terrain already stands where it will be at the end of
     // this frame (and update() carried us with it): move relative to its surface.
-    const Vector3 frameVel = (!wasGrounded && nearest) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+    const Vector3 frameVel = (!wasGrounded && nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
     const Vector3 move = Vector3Scale(Vector3Subtract(velocity, frameVel), dt);
     const Vector3 feetBefore = feet;
     feet = Vector3Add(feet, move);
-    collideFrameVel = (wasGrounded || !nearest) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
+    collideFrameVel = (wasGrounded || !nearest || fxActive) ? Vector3{ 0, 0, 0 } : nearest->surfaceVelocity(feet);
     const Vector3 vPre = velocity; // before the push-out and the ground probe touch it
     { const auto t0 = std::chrono::steady_clock::now(); grounded = resolveCollisions(world, feet); gPlayerCollideSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); } // (#768)
     collideTrunks(feet);
@@ -532,7 +551,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
             if (!ground) velocity = level;
         }
     }
-    if (wasGrounded && !grounded) {
+    if (wasGrounded && !grounded && !fxActive) { // (F2b: lifting off keeps the frame velocity as it is)
         Planetoid* from = (groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest;
         if (from) velocity = Vector3Add(velocity, from->surfaceVelocity(feet));
     }
@@ -883,10 +902,26 @@ bool Player::applyNetState(Scene& world, const NetState& s) {
 // smallest SOI holding the feet, Fixed below the body's line (contact forces it), with hysteresis against the last one.
 void Player::updateFrame(Scene& world) {
     const Vector3 feet = (position - world.renderOrigin).toFloat();
-    const Planetoid* ground = grounded ? ((groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest) : nullptr;
+    // The velocity is against the ground: on the ground, and airborne on the frame path (F2b) - add the ground's motion.
+    const Planetoid* ground = grounded ? ((groundBody && Planetoid::find(groundId) == groundBody) ? groundBody : nearest) : fxActive ? nearest : nullptr;
     const Vector3 vw = ground ? Vector3Add(velocity, ground->surfaceVelocity(feet)) : velocity;
     const FrameRef to = Frames_Choose(Planetoid::All(), position, frame.frame, grounded);
     if (to.body != 0) Frames_FromGlobal(position, DVec3(vw.x, vw.y, vw.z), to, frame);
+}
+
+// Plan 11 F2b (#1146): the acceleration an airborne player feels in the nearest body's Fixed frame (felt gravity, Coriolis
+// and centrifugal: Frames_Acceleration), in world axes. The velocity is the frame velocity (against the ground).
+Vector3 Player::frameGravity(Scene& world, Vector3 feet) const {
+    if (!nearest) return { 0, 0, 0 };
+    FramePos fp;
+    fp.frame = FrameRef{ nearest->netId, FrameKind::Fixed };
+    fp.pos = nearest->toLocalD(world.renderOrigin + feet);
+    const float vl = Vector3Length(velocity);
+    if (vl > 1e-9f) { const Vector3 d = Vector3Scale(nearest->dirToLocal(Vector3Scale(velocity, 1.0f / vl)), vl); fp.vel = DVec3(d.x, d.y, d.z); }
+    const DVec3 a = Frames_Acceleration(Planetoid::All(), fp);
+    const double al = a.length();
+    if (al < 1e-12) return { 0, 0, 0 };
+    return Vector3Scale(nearest->dirToWorld(Vector3{ (float)(a.x / al), (float)(a.y / al), (float)(a.z / al) }), (float)al);
 }
 
 void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
