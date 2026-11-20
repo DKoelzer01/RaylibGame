@@ -49,7 +49,7 @@ namespace {
         return max;
     }
     int StoneMaterial() {
-        for (int i = 0; i < BuildMaterialCount(); ++i) if (strcmp(GetBuildMaterial(i).item, "stone") == 0) return i;
+        for (int i = 0; i < BuildMaterialCount(); ++i) if (strcmp(GetBuildMaterial(i).item, "stone_brick") == 0) return i;
         return 0;
     }
     // A plot-space box (centre, size) drawn in render space with the plot's axes.
