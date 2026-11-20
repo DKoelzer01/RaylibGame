@@ -47,13 +47,18 @@ constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE,
 static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");
 
 PlayerInput frameIn, stepIn;
+bool textFocus = false; // (#1081) a text field has the keyboard
 
-bool Down(int b) { return b >= kMouse ? IsMouseButtonDown(b - kMouse) : IsKeyDown(b); }
-bool Pressed(int b) { return b >= kMouse ? IsMouseButtonPressed(b - kMouse) : IsKeyPressed(b); }
+bool Down(int b) { return b >= kMouse ? IsMouseButtonDown(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyDown(b); }
+bool Pressed(int b) { return b >= kMouse ? IsMouseButtonPressed(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyPressed(b); }
 bool Released(int b) { return b >= kMouse ? IsMouseButtonReleased(b - kMouse) : IsKeyReleased(b); }
 }
 
 const PlayerInput& PlayerInput::None() { static const PlayerInput none; return none; }
+
+void PlayerInput_SetTextFocus(bool on) { textFocus = on; }
+bool PlayerInput_TextFocus() { return textFocus; }
+bool PlayerInput_KeyBlocked(int code) { return textFocus && code > 0 && code < kMouse; }
 
 void PlayerInput_BeginFrame() {
     EnsureBindings();
@@ -68,7 +73,7 @@ void PlayerInput_BeginFrame() {
     f.look = GetMouseDelta();
     f.look.x += gFakeLook.x; f.look.y += gFakeLook.y; // --play-load turning (#509)
     f.wheel = GetMouseWheelMove();
-    for (int i = 0; i < 10; ++i) if (IsKeyPressed(kSlotKeys[i])) { f.slot = i; break; }
+    for (int i = 0; i < 10; ++i) if (!PlayerInput_KeyBlocked(kSlotKeys[i]) && IsKeyPressed(kSlotKeys[i])) { f.slot = i; break; }
     frameIn = f;
     // The step's input: held state is current; edges, motion and wheel add up until a step takes them.
     stepIn.enabled = true;
@@ -137,6 +142,15 @@ int PlayerInput_PressedCode() {
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#895): a held button that broke something strikes nothing more until pressed again ----
 #include "unit_helpers.h"
+
+TEST(PlayerInputTextFocus, TypingKeepsKeyboardBindingsFromTheGame) { // (#1081: typing "/gm" in chat opened the map)
+    PlayerInput_SetTextFocus(true);
+    EXPECT_TRUE(PlayerInput_KeyBlocked(PlayerInput_Binding(Act::Map))) << "M while typing is a letter, not the map";
+    EXPECT_TRUE(PlayerInput_KeyBlocked(KEY_ONE)) << "and digits aren't hotbar slots";
+    EXPECT_FALSE(PlayerInput_KeyBlocked(PlayerInput_Binding(Act::Primary))) << "mouse buttons stay live";
+    PlayerInput_SetTextFocus(false);
+    EXPECT_FALSE(PlayerInput_KeyBlocked(PlayerInput_Binding(Act::Map))) << "no text field: the keys are the game's";
+}
 
 TEST(HoldLatch, HeldDiggingIsNeverInterrupted) {
     HoldLatch l;

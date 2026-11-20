@@ -1,5 +1,6 @@
 #include "recorder.h"
 #include "world.h"
+#include "gameui.h" // (#1119) the start and stop toasts
 
 #include <raylib.h>
 #include "external/msf_gif.h" // raylib bundles msf_gif (its own GIF recording) and exports it
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -250,6 +252,11 @@ namespace {
         if (removed > 0) printf("record: removed the %d oldest captures to stay under %.1f GB\n", removed, maxBytes / (1024.0 * 1024.0 * 1024.0));
     }
 
+    // (#1119) a capture folder as the player knows it: "<date>/<HHMMSS>" (the last two parts of the path)
+    std::string FolderName(const std::string& d) {
+        const std::filesystem::path p(d);
+        return (p.parent_path().filename() / p.filename()).generic_string();
+    }
     void Begin(const std::string& d) {
         if (finisher.joinable()) finisher.join(); // the last F10 recording is still being written (shares the writer queue)
         dir = d;
@@ -273,6 +280,7 @@ namespace {
     void End(bool background = false) {
         if (!active) return;
         active = false; // (the writer emits the last GIF frame when it reaches the end job)
+        if (!cli) GameUI_Toast(TextFormat("Recording saved: %s", FolderName(dir).c_str())); // (#1119) F10's, by the key or when full
         if (background) { finisher = std::thread(Finish); return; }
         Finish();
     }
@@ -355,6 +363,20 @@ namespace {
 }
 
 void Recorder_Screenshot() { shotWanted = true; }
+
+// (#1119) While an F10 recording runs: a blinking red dot, REC, the time so far and what is left, top right. Drawn after the
+// frame was captured (main.cpp calls it after Recorder_Capture), so it never shows in the recording itself.
+void Recorder_DrawIndicator() {
+    if (!active || cli) return;
+    const double elapsed = GetTime() - clockStart;
+    const double left = captured > 0 ? elapsed / captured * std::max(0, framesWanted - captured) : framesWanted * every / 60.0;
+    auto mmss = [](double s) { const int t = std::max(0, (int)s); return std::string(TextFormat("%d:%02d", t / 60, t % 60)); };
+    const char* text = TextFormat("REC %s  (%s left)", mmss(elapsed).c_str(), mmss(left).c_str());
+    const int fs = 20, w = MeasureText(text, fs), x = GetScreenWidth() - w - 46, y = 14;
+    DrawRectangle(x - 34, y - 6, w + 46, fs + 12, Fade(BLACK, 0.55f));
+    if (fmod(GetTime(), 1.0) < 0.6) DrawCircle(x - 17, y + fs / 2, 7.0f, RED);
+    DrawText(text, x, y, fs, RAYWHITE);
+}
 void Recorder_Cue() { cued = true; }
 
 void Recorder_Update(bool worldReady) {
@@ -368,6 +390,7 @@ void Recorder_Update(bool worldReady) {
             framesWanted = 600; every = 2; startDelay = 0.0f; hudFrames = true; wantGif = true; wantSheet = true;
             Begin(Resolve(Today("%H%M%S")));
             waiting = false;
+            GameUI_Toast(TextFormat("Recording to %s (F10 stops)", FolderName(dir).c_str())); // (#1119)
         }
     }
     if (active && waiting && GetTime() - waitStart >= startDelay && worldReady && (!onCue || cued)) { waiting = false; gGameClock = 0.0; clockStart = GetTime(); } // animation clocks start with the capture

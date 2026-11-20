@@ -118,6 +118,24 @@ jobs:
           fi
           if [ $rc -ne 0 ] || grep -q "FAIL" terrain-gpu.log; then echo "::error::--test-terrain-gpu failed (exit $rc)"; tail -40 terrain-gpu.log; exit 1; fi
           echo "terrain gpu: PASS" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fluid CPU = GPU parity (informational until #968's residual is fixed)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 30
+        working-directory: ${{ env.RUN }}
+        run: |
+          # The shader's half rounding (packHalf2x16, the stored face flows) against the CPU kernel's, 1M floats (#968).
+          set +e
+          timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
+          grep -E "^bench: half" half.log || true
+          echo "half rounding: $(grep -E '^bench: half: [0-9]+ floats' half.log | sed -E 's/^bench: half: //')" >> "$GITHUB_STEP_SUMMARY"
+          # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
+          "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
+          rc=$?
+          set -e
+          grep -E "^scenario: parity" parity.log || true
+          echo "fluid parity: $(grep -E '^scenario: parity .* -> ' parity.log | tail -1 | sed -E 's/^scenario: parity //')" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
       - name: Headless scenarios (fluid, craft, skills, world)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 45

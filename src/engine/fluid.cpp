@@ -1295,6 +1295,17 @@ void RunJob() {
             per += TextFormat(" %d,%d,%d:%08x", std::get<0>(key), std::get<1>(key), std::get<2>(key), (unsigned)(hb & 0xFFFFFFFFu));
         }
         printf("fluid trace %lld: %zu bricks, %lld units, hash %016llx\n", stepCount, all.size(), total, (unsigned long long)h);
+        // --scenario-parity (#968): the lines to a file the parent compares, and the run ends after so many traced ticks.
+        static FILE* traceFile = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_FILE"); return e && e[0] ? fopen(e, "w") : nullptr; }();
+        static const long long traceStop = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_STOP"); return e ? atoll(e) : 0ll; }();
+        static long long traced = 0;
+        if (traceFile) { fprintf(traceFile, "%lld %zu %lld %016llx\n", stepCount, all.size(), total, (unsigned long long)h); fflush(traceFile); }
+        if (traceStop > 0 && ++traced >= traceStop) {
+            if (traceFile) fclose(traceFile);
+            printf("fluid trace: %lld ticks traced, ending the run (RAYLIBGAME_FLUID_TRACE_STOP)\n", traced);
+            fflush(stdout);
+            std::_Exit(0); // the parent compares the files; nothing else of this run is wanted
+        }
         static const bool perBrick = EnvFlag("RAYLIBGAME_FLUID_TRACE_BRICKS");
         if (perBrick) printf("fluid trace bricks %lld:%s\n", stepCount, per.c_str());
         static int cbi = 0, cbj = 0, cbk = 0;

@@ -17,7 +17,7 @@ name="syncer"
 tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
-rm -rf "saves/client_$name.sav" "saves/client_$name.sav."* # (no cache to begin with)
+rm -rf "saves/mp_cache/client_$name.sav" "saves/mp_cache/client_$name.sav."* # (no cache to begin with)
 RAYLIBGAME_SYNC_FINGERPRINT=1 "$exe" --host "$tmp/host.sav" --seed 42 --host-edits "$edits" --bench 900 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
