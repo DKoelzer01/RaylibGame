@@ -21,7 +21,7 @@
 //   --gif                also <dir>/capture.gif (640 px wide)
 //   --sheet              also <dir>/sheet.png
 //   --fixed-dt <s>       simulate with this frame time whatever the real one (reproducible captures with --seed)
-// Normal play: F10 starts and stops a recording into <root>/<YYYY-MM-DD>/<HHMMSS>/ (every 2nd frame, up to 600, GIF and sheet).
+// Normal play: F10 starts and stops a recording into <root>/<YYYY-MM-DD>/<HHMMSS>/ (every 2nd frame until F10 again, at most 30 min; the GIF is its first 30 s; the sheet spans it all).
 // When a recording ends it prints "record: <dir> frames=N gif=<path|-> sheet=<path|-> hash=<first>..<last>".
 
 #include <string>
