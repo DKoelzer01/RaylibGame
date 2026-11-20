@@ -8058,6 +8058,26 @@ int main(int argc, char** argv)
                         check(survival.health >= 100.0f && (threatFire > 12.0f || threatFire >= fireStart - 0.5f), "a campfire keeps it off");
                         if (firePart >= 0) fp->remove(firePart);
                         Animals_RefreshNow();
+                        // (#560) Any light keeps it off, not only a campfire: a placed torch; then, with no light, it bites again
+                        // (it was there to bite); then a lantern carried in the off hand.
+                        const int torchPart = fp->place(Part{ PartType::Torch, fp->cellAt(fp->toPlot(Vector3Add(fireAt, Vector3Scale(fireDir, 0.1f)))), 0, 0 });
+                        Animals_RefreshNow();
+                        step(10.0f);
+                        const bool torchOk = torchPart >= 0 && survival.health >= 100.0f;
+                        if (torchPart >= 0) fp->remove(torchPart);
+                        Animals_RefreshNow();
+                        float bitAgain = 0.0f;
+                        for (int k = 0; k < 15 && bitAgain <= 0.0f; ++k) { step(1.0f); bitAgain = 100.0f - survival.health; }
+                        survival.health = 100.0f;
+                        const InvSlot offBefore = inventory.offHand();
+                        inventory.grid()[Inventory::kOffHand] = InvSlot{ "lantern", 100 };
+                        step(10.0f);
+                        const bool lanternOk = survival.health >= 100.0f;
+                        inventory.grid()[Inventory::kOffHand] = offBefore;
+                        printf("bench: threats (#560): a placed torch kept it off %d; no light: it bit again for %.0f; a lantern in the off hand kept it off %d\n",
+                               (int)torchOk, bitAgain, (int)lanternOk);
+                        check(torchOk && bitAgain > 0.0f && lanternOk, "any light keeps it off: a placed torch, a carried lantern (#560)");
+                        survival.health = 100.0f;
                         // Daylight: it runs off and is gone.
                         world.sunDirection = p->dirToWorld(up);
                         step(45.0f);
