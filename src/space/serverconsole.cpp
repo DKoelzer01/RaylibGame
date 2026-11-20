@@ -68,6 +68,7 @@ std::string ServerConfig_Text(const ServerConfig& c) {
       << "motd = " << c.motd << "\n"
       << "seed = " << c.seed << "\n"
       << "log = " << c.log << "\n";
+    if (!c.ownerId.empty()) s << "owner_id = " << c.ownerId << "\n"; // (#1086) menu hosting only
     return s.str();
 }
 
@@ -98,6 +99,7 @@ bool ServerConfig_Load(const std::string& path, ServerConfig& out, std::string& 
         else if (key == "password") c.password = val;
         else if (key == "motd") c.motd = val;
         else if (key == "log") c.log = val;
+        else if (key == "owner_id") c.ownerId = val; // (#1086)
         else if (key == "port" && num(v) && v >= 1 && v <= 65535) c.port = (int)v;
         else if (key == "max_players" && num(v) && v >= 1 && v <= 64) c.maxPlayers = (int)v;
         else if (key == "autosave_minutes" && num(v) && v >= 0) c.autosaveMinutes = v;
