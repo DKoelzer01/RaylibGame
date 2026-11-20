@@ -32,6 +32,10 @@ void Net_Poll();                                       // run callbacks: accepts
 bool Net_IsConnected(uint32_t conn);
 int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
+// Bytes not yet delivered on a connection: queued, sent but not acknowledged, and held by the simulated conditions. A
+// sender that streams (the join sync, #776) holds back while this is high instead of overflowing the send buffer.
+uint32_t Net_PendingBytes(uint32_t conn);
+int Net_ReliableSendFailures();                        // reliable sends the transport refused (should stay 0)
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
 void Net_Close(uint32_t conn);
 std::string Net_RemoteAddress(uint32_t conn);           // "ip:port" of the other end ("" unknown; #345 IP bans)

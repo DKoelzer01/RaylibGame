@@ -16,7 +16,9 @@
 
 namespace {
 
-constexpr int kIcon = 64;     // pixels per icon
+constexpr int kIcon = 64;     // an icon's design space (the painters' coordinates)
+constexpr int kRes = 2;       // (#891) pixels per design unit: icons are painted at 128 px for the doubled interface
+constexpr int kPx = kIcon * kRes; // pixels per icon in the atlas
 constexpr int kCols = 16;     // icons per atlas row
 
 struct C3 { float r, g, b; };
@@ -96,18 +98,19 @@ Shade Speckle(Shade s, float amt, int seed, int cell = 2) {
 }
 
 struct Canvas {
-    std::vector<float> px = std::vector<float>(kIcon * kIcon * 4, 0.0f); // premultiplied RGBA
+    std::vector<float> px = std::vector<float>(kPx * kPx * 4, 0.0f); // premultiplied RGBA
     int seed = 1;
     // Fill a shape: anti-aliased edge, shaded body, an outline of the shade at 35% brightness.
     void paint(const Sdf& sdf, const Shade& shade, float outline = 1.4f, float alpha = 1.0f) {
-        for (int y = 0; y < kIcon; ++y)
-            for (int x = 0; x < kIcon; ++x) {
-                const float fx = x + 0.5f, fy = y + 0.5f, d = sdf(fx, fy);
-                if (d >= 0.5f) continue;
-                const float a = Clamp01(0.5f - d) * alpha;
+        for (int y = 0; y < kPx; ++y)
+            for (int x = 0; x < kPx; ++x) {
+                // (#891) the pixel's centre in design units; distances back in pixels for a one-pixel antialiased edge
+                const float fx = (x + 0.5f) / kRes, fy = (y + 0.5f) / kRes, d = sdf(fx, fy), dp = d * kRes;
+                if (dp >= 0.5f) continue;
+                const float a = Clamp01(0.5f - dp) * alpha;
                 C3 c = shade(fx, fy);
-                if (outline > 0) c = Mix(c, c * 0.32f, Clamp01(d + outline + 0.5f) * 0.9f);
-                float* p = &px[(y * kIcon + x) * 4];
+                if (outline > 0) c = Mix(c, c * 0.32f, Clamp01(d + outline + 0.5f / kRes) * 0.9f); // (the outline: in design units)
+                float* p = &px[(y * kPx + x) * 4];
                 const float ia = 1.0f - a;
                 p[0] = Clamp01(c.r) * a + p[0] * ia; p[1] = Clamp01(c.g) * a + p[1] * ia; p[2] = Clamp01(c.b) * a + p[2] * ia;
                 p[3] = a + p[3] * ia;
@@ -582,7 +585,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (ends("_seeds")) { Seeds(cv, c); return; }
     if (is({ "quartz", "amethyst", "ruby", "sapphire", "emerald" })) { Gem(cv, c); return; }
     if (is({ "granite", "basalt", "sandstone", "limestone", "marble" })) { Cube(cv, c, Pat::Stone); return; }
-    if (id == "brick") { Cube(cv, c, Pat::Brick); return; }
+    if (id == "brick" || ends("_brick")) { Cube(cv, c, Pat::Brick); return; } // fired and dressed stone (#1098)
     if (is({ "concrete" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "heat_shield_tile") { Cube(cv, c, Pat::Tiles); return; }
     if (id == "farmland") { Cube(cv, { 0.4f, 0.27f, 0.16f }, Pat::Soil); return; }
@@ -632,7 +635,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (id == "repair_kit") { Repair(cv); return; }
     if (id == "crucible_mold" || id == "fired_crucible") { Crucible(cv, c); return; }
     if (id == "fence" || id == "gate") { Fence(cv, c, id == "gate"); return; }
-    if (id == "lamp" || id == "lamp_upgrade") { Lantern(cv, c); return; }
+    if (id == "lamp" || id == "lamp_upgrade" || id == "lantern") { Lantern(cv, c); return; } // (#836: the lantern too)
     if (id == "any_planks") { Planks(cv, c); return; }
     if (id == "insulation_module") { Module(cv, c, Sym::Plus); return; }
     if (id == "rebreather") { Module(cv, c, Sym::Drop); return; }
@@ -659,7 +662,7 @@ void ItemIcons_Init() {
     const int n = (int)items.size();
     if (n == 0) return;
     const int rows = (n + kCols - 1) / kCols;
-    atlasImage = GenImageColor(kCols * kIcon, rows * kIcon, BLANK);
+    atlasImage = GenImageColor(kCols * kPx, rows * kPx, BLANK);
     Color* out = (Color*)atlasImage.data;
     // Paint in parallel: each icon writes only its own cell.
     const int threads = std::max(1, std::min(8, (int)std::thread::hardware_concurrency()));
@@ -670,10 +673,10 @@ void ItemIcons_Init() {
                 Canvas cv;
                 cv.seed = (int)std::hash<std::string>{}(items[i].id) & 0x7FFF;
                 PaintItem(cv, items[i]);
-                const int ox = (i % kCols) * kIcon, oy = (i / kCols) * kIcon;
-                for (int y = 0; y < kIcon; ++y)
-                    for (int x = 0; x < kIcon; ++x) {
-                        const float* p = &cv.px[(y * kIcon + x) * 4];
+                const int ox = (i % kCols) * kPx, oy = (i / kCols) * kPx;
+                for (int y = 0; y < kPx; ++y)
+                    for (int x = 0; x < kPx; ++x) {
+                        const float* p = &cv.px[(y * kPx + x) * 4];
                         const float a = p[3], ia = a > 1e-4f ? 1.0f / a : 0.0f;
                         out[(oy + y) * atlasImage.width + ox + x] = { (unsigned char)(Clamp01(p[0] * ia) * 255.0f + 0.5f), (unsigned char)(Clamp01(p[1] * ia) * 255.0f + 0.5f),
                                                                       (unsigned char)(Clamp01(p[2] * ia) * 255.0f + 0.5f), (unsigned char)(Clamp01(a) * 255.0f + 0.5f) };
@@ -701,7 +704,7 @@ Texture2D ItemIcons_Texture() { return atlas; }
 Rectangle ItemIcons_Source(const std::string& id) {
     auto it = cellOf.find(id);
     if (it == cellOf.end()) return { 0, 0, 0, 0 };
-    return { (float)((it->second % kCols) * kIcon), (float)((it->second / kCols) * kIcon), (float)kIcon, (float)kIcon };
+    return { (float)((it->second % kCols) * kPx), (float)((it->second / kCols) * kPx), (float)kPx, (float)kPx };
 }
 
 void ItemIcons_Draw(const std::string& id, Rectangle dst, Color tint) {

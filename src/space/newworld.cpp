@@ -30,6 +30,7 @@ namespace {
     bool seedFocus = false;
     WorldGenParams params;
     int difficulty = 1;           // #526: set at creation, kept by the world
+    int xpRate = 1;               // (#883) 0.5x, 1x, 2x, 5x: an index into kXpRates
     double changedAt = 0.0;       // the last input change (the preview rebuilds 0.35 s after it)
     bool dirty = true;
     float spin = 0.0f;
@@ -256,6 +257,7 @@ void NewWorld_Open() {
     InitGpu();
     params = WorldGenParams{};
     difficulty = std::clamp(settings.difficulty, 0, 2);
+    xpRate = 1; for (int k = 0; k < 4; ++k) if (fabsf(settings.xpRate - kXpRates[k]) < 0.01f) xpRate = k;
     seedFocus = false;
     haveMap = false;
     RollSeed();
@@ -278,7 +280,8 @@ NewWorldChoice NewWorld_Draw() {
     // The panel: seed, parameters, buttons.
     const float px = W * 0.06f, pw = std::min(W * 0.42f, 720.0f * s), rowH = 46.0f * s, gap = 12.0f * s;
     float y = H * 0.18f;
-    DrawRectangleRounded({ px - 20 * s, y - 20 * s, pw + 40 * s, H * 0.74f }, 0.04f, 6, kPanel);
+    constexpr float kPanelH = 0.78f; // of the screen height: 11 rows of settings, Difficulty and the buttons (#637, #526)
+    DrawRectangleRounded({ px - 20 * s, y - 20 * s, pw + 40 * s, H * kPanelH }, 0.04f, 6, kPanel);
     {   // Seed: digits, editable; Random rolls a new one.
         const int fs = (int)(rowH * 0.5f);
         DrawText("Seed", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
@@ -308,6 +311,7 @@ NewWorldChoice NewWorld_Draw() {
     if (Slider(next(), "Roughness", params.roughness, 0.3f, 2.0f, "%.2fx")) Changed();
     if (Slider(next(), "Biome size", params.biomeSize, 0.5f, 2.0f, "%.2fx")) Changed();
     if (Slider(next(), "Resources", params.resources, 0.5f, 2.0f, "%.2fx")) Changed();
+    if (Slider(next(), "Water cycle", params.waterCycle, 0.5f, 2.0f, "%.2fx")) Changed(); // #637: river size, streams, wetter climates
     {   // Erosion on/off and its strength (not in the preview: the bake runs when the world is made).
         const Rectangle r = next();
         const int fs = (int)(rowH * 0.5f);
@@ -330,21 +334,28 @@ NewWorldChoice NewWorld_Draw() {
     const int noteFs = (int)(17 * s);
     DrawText("The preview shows the base terrain; erosion shapes it when the world is created (about a minute).", (int)px, (int)y, noteFs, Fade(kText, 0.6f));
     y += noteFs + gap * 2;
-    if (Button({ px, y, pw * 0.3f, rowH }, "Defaults")) { params = WorldGenParams{}; Changed(); }
-    {   // Difficulty (#526): chosen here once; the world keeps it (no setting changes it later).
+    {   // Difficulty (#526): chosen here once; the world keeps it (no setting changes it later). Its label in the row: above
+        // it, it ran into the note.
         static const char* names[] = { "Peaceful", "Normal", "Hard" };
-        const int fs = (int)(rowH * 0.42f);
-        const float bx = px + pw * 0.34f, bw = pw * 0.2f;
-        DrawText("Difficulty", (int)bx, (int)(y - fs - 4 * s), fs, Fade(kText, 0.8f));
+        const int fs = (int)(rowH * 0.5f);
+        const float bx = px + pw * 0.34f, bw = pw * 0.155f;
+        DrawText("Difficulty", (int)px, (int)(y + (rowH - fs) * 0.5f), fs, kText);
         for (int k = 0; k < 3; ++k) {
             const Rectangle b = { bx + k * (bw + gap * 0.5f), y, bw, rowH };
             if (Button(b, names[k])) difficulty = k;
             if (k == difficulty) DrawRectangleLinesEx(b, 2.0f, SKYBLUE);
         }
+        // Skill XP rate (#883, the user on #167): how fast skills level in this world, kept by it; one button in the same row
+        // (a row of its own ran into the bottom buttons) that steps through 0.5x, 1x, 2x, 5x.
+        static const char* rates[] = { "XP 0.5x", "XP 1x", "XP 2x", "XP 5x" };
+        const float xx = bx + 3 * (bw + gap * 0.5f) + gap * 0.5f;
+        if (Button({ xx, y, px + pw - xx, rowH }, rates[xpRate])) xpRate = (xpRate + 1) % 4;
     }
-    const float by = H * 0.18f + H * 0.74f - rowH - 40 * s;
-    if (Button({ px, by, pw * 0.46f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; r.difficulty = difficulty; }
-    if (Button({ px + pw * 0.54f, by, pw * 0.46f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
+    // The bottom row: Create World, Cancel, Defaults (#637: a Defaults row under the sliders ran into it once they were 11).
+    const float by = H * 0.18f + kPanelH * H - rowH - 40 * s;
+    if (Button({ px, by, pw * 0.4f, rowH * 1.15f }, "Create World")) { r.kind = NewWorldChoice::Create; r.seed = seed; r.params = params; r.difficulty = difficulty; r.xpRate = kXpRates[xpRate]; }
+    if (Button({ px + pw * 0.43f, by, pw * 0.3f, rowH * 1.15f }, "Cancel") || (IsKeyPressed(KEY_ESCAPE) && !seedFocus)) r.kind = NewWorldChoice::Cancel;
+    if (Button({ px + pw * 0.76f, by, pw * 0.24f, rowH * 1.15f }, "Defaults")) { params = WorldGenParams{}; Changed(); }
 
     // The preview, rebuilt 0.35 s after the last change.
     if (dirty && !building.load() && GetTime() - changedAt > 0.35) StartBuild();

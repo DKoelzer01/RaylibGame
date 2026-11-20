@@ -15,6 +15,7 @@
 #include "scenetarget.h"
 #include "waterfield.h"
 #include <chrono>
+#include <filesystem>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -40,6 +41,9 @@ const int CHUNK_SIZE = 32;
 WorldGenSettings worldGen;
 std::function<void(FILE*)> saveExtrasHook;
 std::function<void(FILE*)> loadExtrasHook;
+std::function<void()> loadDoneHook;
+static std::vector<std::function<void()>>& UnloadHooks() { static std::vector<std::function<void()>> h; return h; }
+void World_AddUnloadHook(std::function<void()> hook) { UnloadHooks().push_back(std::move(hook)); }
 LodSettings lodSettings;
 std::unordered_set<const Chunk*> gOcclusionSkip; // #134 experiment (main.cpp RAYLIBGAME_OCC_SKIP)
 std::unordered_set<uint32_t> gOcclusionSkipPlots; // #134 experiment: plot ids left out (parts and machines)
@@ -178,8 +182,11 @@ Planetoid* Planetoid::findNet(uint64_t netId) {
     return nullptr;
 }
 
-Vector3 Planetoid::toLocal(Vector3 world) const { return Vector3Transform(world, MatrixInvert(localTransform())); }
-Vector3 Planetoid::toWorld(Vector3 local) const { return Vector3Transform(local, localTransform()); }
+std::vector<Planetoid*> Planetoid::All() {
+    std::vector<Planetoid*> out;
+    for (const auto& kv : planetoidRegistry) out.push_back(kv.second);
+    return out;
+}
 
 // The rotation of localTransform() (raymath's MatrixRotateXYZ) in double: world = R * (scale * local).
 static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
@@ -189,6 +196,59 @@ static void BodyRotationD(const Vector3& rotationDeg, double r[3][3]) {
     r[0][0] = cz * cy;                 r[0][1] = sz * cy;                 r[0][2] = -sy;
     r[1][0] = cz * sy * sx - sz * cx;  r[1][1] = sz * sy * sx + cz * cx;  r[1][2] = cy * sx;
     r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
+}
+
+static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]);
+
+// Plan 11 F1 (#667): RAYLIBGAME_FRAMES=1 builds a spinning body's rotation from its double spin angle (advanceBodies keeps
+// phase + spin * time in double) instead of the float Euler `rotation` stored from it: float degrees near 360 step by
+// 3.05e-5 deg, up to ~3 cm at Terra's surface, and frames/still saw the standing player jump 13-31 mm in single steps.
+// The double angle is used while it is current - advanceBodies wrote `rotation` from it - and the float angles otherwise
+// (a load, a script or a test set `rotation`).
+static bool kFramesPose = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }(); // (unit tests set it)
+struct BodyAngles { double x, y, z; };
+static BodyAngles AnglesOf(const Planetoid& p) {
+    if (kFramesPose && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
+        return { p.spinAngle[0], p.spinAngle[1], p.spinAngle[2] };
+    return { p.rotation.x, p.rotation.y, p.rotation.z };
+}
+static void BodyRotationOf(const Planetoid& p, double r[3][3]) { const BodyAngles a = AnglesOf(p); BodyRotationDd(a.x, a.y, a.z, r); }
+// A rotation matrix (body-local -> world, rows of R) as raymath's Matrix, times a scale: MatrixRotateXYZ's layout.
+static Matrix RotationMatrix(const double r[3][3], double s = 1.0) {
+    return { (float)(r[0][0] * s), (float)(r[0][1] * s), (float)(r[0][2] * s), 0.0f,
+             (float)(r[1][0] * s), (float)(r[1][1] * s), (float)(r[1][2] * s), 0.0f,
+             (float)(r[2][0] * s), (float)(r[2][1] * s), (float)(r[2][2] * s), 0.0f,
+             0.0f, 0.0f, 0.0f, 1.0f };
+}
+
+// The same rotation, cached per thread for the last body and angles: toLocal / toWorld run in hot loops (collision, tools,
+// chunk jobs), and six double cos/sin a call would add up.
+static const double (*BodyRotationCached(const Planetoid& p))[3] {
+    thread_local const Planetoid* body = nullptr;
+    thread_local BodyAngles rot{ NAN, NAN, NAN };
+    thread_local double r[3][3];
+    const BodyAngles a = AnglesOf(p);
+    if (body != &p || rot.x != a.x || rot.y != a.y || rot.z != a.z) { body = &p; rot = a; BodyRotationDd(a.x, a.y, a.z, r); }
+    return r;
+}
+
+// Render space <-> body-local in double (#1072): the float path (MatrixInvert(localTransform()), a float rotation applied to
+// a translation ~60 km from the render origin) was off by mm to ~2 cm, and differently every step as the planet turned, so
+// the player's collision - its solid test, push-out and ground probe, all sampling the density through toLocal - see-sawed
+// while standing still and the camera bobbed. Now R^T (c - position) / scale with the rotation in double: the body's render
+// position (a float) only changes its rounding when the render origin re-centres, so the samples hold still with the ground.
+Vector3 Planetoid::toLocal(Vector3 world) const {
+    const double (*r)[3] = BodyRotationCached(*this);
+    const double dx = (double)world.x - position.x, dy = (double)world.y - position.y, dz = (double)world.z - position.z;
+    const double inv = 1.0 / scale;
+    return { (float)((r[0][0] * dx + r[1][0] * dy + r[2][0] * dz) * inv), (float)((r[0][1] * dx + r[1][1] * dy + r[2][1] * dz) * inv),
+             (float)((r[0][2] * dx + r[1][2] * dy + r[2][2] * dz) * inv) };
+}
+Vector3 Planetoid::toWorld(Vector3 local) const {
+    const double (*r)[3] = BodyRotationCached(*this);
+    const double s = scale, lx = local.x, ly = local.y, lz = local.z;
+    return { (float)(position.x + (r[0][0] * lx + r[0][1] * ly + r[0][2] * lz) * s), (float)(position.y + (r[1][0] * lx + r[1][1] * ly + r[1][2] * lz) * s),
+             (float)(position.z + (r[2][0] * lx + r[2][1] * ly + r[2][2] * lz) * s) };
 }
 
 double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising) {
@@ -263,7 +323,7 @@ float SunElevationAtCamera(const Scene& world) {
 
 DVec3 Planetoid::toWorldD(const DVec3& l) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const double s = scale;
     return worldPos + DVec3((r[0][0] * l.x + r[0][1] * l.y + r[0][2] * l.z) * s,
                             (r[1][0] * l.x + r[1][1] * l.y + r[1][2] * l.z) * s,
@@ -272,7 +332,7 @@ DVec3 Planetoid::toWorldD(const DVec3& l) const {
 
 DVec3 Planetoid::toLocalD(const DVec3& w) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const DVec3 d = w - worldPos;
     const double inv = 1.0 / scale;
     return DVec3((r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z) * inv,  // R is orthonormal: R^-1 = R^T
@@ -293,7 +353,8 @@ namespace {
         ChunkPlacer(const Planetoid& p, const DVec3& renderOrigin)
             : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
               offset(p.worldPos - renderOrigin), s(p.scale) {
-            BodyRotationD(p.rotation, r);
+            BodyRotationOf(p, r);
+            if (kFramesPose) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
         }
         Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
         Matrix modelAt(const DVec3& o) const {
@@ -342,27 +403,87 @@ float Planetoid::densityAt(Vector3 local) const {
     return field->density(local, edits.get());
 }
 
+// BodyRotationD with double angles (deg): r maps body-local into world (dirToWorld's matrix). (#872)
+static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]) {
+    const double ax = -rx * DEG2RAD, ay = -ry * DEG2RAD, az = -rz * DEG2RAD;
+    const double cx = cos(ax), sx = sin(ax), cy = cos(ay), sy = sin(ay), cz = cos(az), sz = sin(az);
+    r[0][0] = cz * cy;                 r[0][1] = sz * cy;                 r[0][2] = -sy;
+    r[1][0] = cz * sy * sx - sz * cx;  r[1][1] = sz * sy * sx + cz * cx;  r[1][2] = cy * sx;
+    r[2][0] = cz * sy * cx + sz * sx;  r[2][1] = sz * sy * cx - cz * sx;  r[2][2] = cy * cx;
+}
+
+// Omega (rad/s, world) of a body with these Euler angles turning at `spin` deg/s: the skew part of dR/dt * R^T, dR/dt
+// by a central difference over +-1 ms of the angles, all in double (#872: the float quaternion route, 2 acos(w) with w
+// within 4e-7 of 1, lost up to 1.5% for bodies spinning about several axes).
+static DVec3 AngularVelocityD(Vector3 rotation, Vector3 spin) {
+    constexpr double h = 1e-3;
+    double r0[3][3], rp[3][3], rm[3][3];
+    BodyRotationDd(rotation.x, rotation.y, rotation.z, r0);
+    BodyRotationDd(rotation.x + (double)spin.x * h, rotation.y + (double)spin.y * h, rotation.z + (double)spin.z * h, rp);
+    BodyRotationDd(rotation.x - (double)spin.x * h, rotation.y - (double)spin.y * h, rotation.z - (double)spin.z * h, rm);
+    double w[3][3] = {};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            for (int k = 0; k < 3; ++k) w[i][j] += (rp[i][k] - rm[i][k]) / (2.0 * h) * r0[j][k];
+    return DVec3{ 0.5 * (w[2][1] - w[1][2]), 0.5 * (w[0][2] - w[2][0]), 0.5 * (w[1][0] - w[0][1]) };
+}
+
+// Plan 11 (frames.h, #667): a body's orientation (rows: body-local -> world) and angular velocity (world, rad/s) in double,
+// from the double spin angle while it is current (whatever RAYLIBGAME_FRAMES says: only frame code asks for this).
+void BodyRotationAndSpin(const Planetoid& p, double r[3][3], DVec3& omega) {
+    const bool current = p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z;
+    const double ax = current ? p.spinAngle[0] : p.rotation.x, ay = current ? p.spinAngle[1] : p.rotation.y, az = current ? p.spinAngle[2] : p.rotation.z;
+    BodyRotationDd(ax, ay, az, r);
+    if (p.spin.x == 0.0f && p.spin.y == 0.0f && p.spin.z == 0.0f) { omega = DVec3{ 0, 0, 0 }; return; }
+    omega = AngularVelocityD(p.rotation, p.spin);
+}
+
 Vector3 Planetoid::surfaceVelocity(Vector3 renderPoint) const {
-    // The body's own motion (orbit) plus its spin: omega x (point - centre). Omega comes from the
-    // rotation change over one second (rotation is Euler angles, so any spin axis works); taking it
-    // as a vector keeps this exact far from the centre (differentiating positions in float lost
-    // ~0.4 m/s at 60 km).
+    // The body's own motion (orbit) plus its spin: omega x (point - centre), omega taken as a vector (differentiating
+    // positions in float lost ~0.4 m/s at 60 km), in double (#872).
     if (spin.x == 0.0f && spin.y == 0.0f && spin.z == 0.0f) return linearVelocity;
-    const Vector3 r1 = Vector3Add(rotation, spin);
-    const Quaternion q0 = rotationQuat();
-    const Quaternion q1 = QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * r1.x, DEG2RAD * r1.y, DEG2RAD * r1.z }));
-    Vector3 axis; float angle;
-    QuaternionToAxisAngle(QuaternionNormalize(QuaternionMultiply(q1, QuaternionInvert(q0))), &axis, &angle);
-    if (angle > PI) angle -= 2.0f * PI;
-    const Vector3 omega = Vector3Scale(axis, angle); // rad/s
-    return Vector3Add(linearVelocity, Vector3CrossProduct(omega, Vector3Subtract(renderPoint, position)));
+    const DVec3 w = AngularVelocityD(rotation, spin);
+    const double dx = (double)renderPoint.x - position.x, dy = (double)renderPoint.y - position.y, dz = (double)renderPoint.z - position.z;
+    return Vector3Add(linearVelocity, Vector3{ (float)(w.y * dz - w.z * dy), (float)(w.z * dx - w.x * dz), (float)(w.x * dy - w.y * dx) });
+}
+
+bool SurfaceVelocity_SelfTest() { // (#872) every orientation and spin: omega x r against the motion of a surface point
+    uint32_t rng = 777; auto rnd = [&rng] { rng = rng * 1664525u + 1013904223u; return (rng >> 8) / 16777216.0f; };
+    double worst = 0.0, worstY = 0.0, worstFrame = 0.0;
+    for (int i = 0; i < 1000; ++i) {
+        const Vector3 rot = { rnd() * 360.0f, rnd() * 360.0f, rnd() * 360.0f };
+        const bool yOnly = i < 500;
+        const Vector3 spin = yOnly ? Vector3{ 0, 0.004f + 0.02f * rnd(), 0 } : Vector3{ (rnd() - 0.5f) * 2.0f, (rnd() - 0.5f) * 2.0f, (rnd() - 0.5f) * 2.0f };
+        const double L[3] = { (rnd() - 0.5) * 2.0, (rnd() - 0.5) * 2.0, (rnd() - 0.5) * 2.0 };
+        const double len = sqrt(L[0] * L[0] + L[1] * L[1] + L[2] * L[2]);
+        auto worldAt = [&](double t, double out[3]) { // the surface point (59 km out) at time t, the angles advanced by spin * t
+            double m[3][3];
+            BodyRotationDd(rot.x + spin.x * t, rot.y + spin.y * t, rot.z + spin.z * t, m);
+            for (int a = 0; a < 3; ++a) out[a] = (m[a][0] * L[0] + m[a][1] * L[1] + m[a][2] * L[2]) / len * 59000.0;
+        };
+        double a[3], b[3], c[3];
+        worldAt(-0.01, a); worldAt(0.01, b); worldAt(0.0, c);
+        const DVec3 w = AngularVelocityD(rot, spin);
+        const double v[3] = { w.y * c[2] - w.z * c[1], w.z * c[0] - w.x * c[2], w.x * c[1] - w.y * c[0] };
+        const double ref[3] = { (b[0] - a[0]) / 0.02, (b[1] - a[1]) / 0.02, (b[2] - a[2]) / 0.02 };
+        const double rl = sqrt(ref[0] * ref[0] + ref[1] * ref[1] + ref[2] * ref[2]);
+        const double err = sqrt((v[0] - ref[0]) * (v[0] - ref[0]) + (v[1] - ref[1]) * (v[1] - ref[1]) + (v[2] - ref[2]) * (v[2] - ref[2])) / std::max(rl, 1e-9);
+        if (yOnly) worstY = std::max(worstY, err); else worst = std::max(worst, err);
+        // the frame: BodyRotationDd is dirToWorld's matrix (the body's real local -> world)
+        double r[3][3]; BodyRotationD(rot, r); double m[3][3]; BodyRotationDd(rot.x, rot.y, rot.z, m);
+        for (int x = 0; x < 3; ++x) for (int y = 0; y < 3; ++y) worstFrame = std::max(worstFrame, fabs(r[x][y] - m[x][y]));
+    }
+    const bool ok = worst < 1e-3 && worstY < 1e-3 && worstFrame < 1e-9;
+    printf("bench: surface velocity: worst error %.5f%% (spin about Y), %.5f%% (about all three axes) over 500 orientations each; frame %.1e: %s\n",
+           worstY * 100.0, worst * 100.0, worstFrame, ok ? "PASS" : "FAIL");
+    return ok;
 }
 
 // Directions only rotate (no translation): transforming two points and subtracting lost ~0.2 deg in
 // float with the body centre tens of km from the render origin (hundreds of metres on the surface).
 Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const Vector3 d = worldDir;
     return Vector3Normalize({ (float)(r[0][0] * d.x + r[1][0] * d.y + r[2][0] * d.z),
                               (float)(r[0][1] * d.x + r[1][1] * d.y + r[2][1] * d.z),
@@ -371,7 +492,7 @@ Vector3 Planetoid::dirToLocal(Vector3 worldDir) const {
 
 Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
     double r[3][3];
-    BodyRotationD(rotation, r);
+    BodyRotationOf(*this, r);
     const Vector3 d = localDir;
     return Vector3Normalize({ (float)(r[0][0] * d.x + r[0][1] * d.y + r[0][2] * d.z),
                               (float)(r[1][0] * d.x + r[1][1] * d.y + r[1][2] * d.z),
@@ -379,7 +500,10 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
 }
 
 Quaternion Planetoid::rotationQuat() const {
-    return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    if (!kFramesPose) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    double r[3][3];
+    BodyRotationOf(*this, r); // (#667) the double pose: a grounded player's view turns with it step by step, unquantised
+    return QuaternionFromMatrix(RotationMatrix(r));
 }
 
 bool Planetoid::useFarSphere(const RenderContext& ctx) const {
@@ -387,8 +511,41 @@ bool Planetoid::useFarSphere(const RenderContext& ctx) const {
     return Vector3Distance(position, ctx.cameraPos) / std::max(1.0f, lodSettings.zoom) > kFarSphereRadii * radius * scale;
 }
 
+// #830: when parts were placed or removed, the grass scatter gets the body's new part cells and the chunks under the
+// changes are rebuilt (their grass redone). One remesh per changed plot, over the changed cells' extent.
+static void SyncGrassBlockers(Planetoid& p) {
+    bool changed = false;
+    for (const auto& pl : p.plots->plots) changed = changed || !pl->changedCells.empty();
+    if (!changed) return;
+    auto snap = std::make_shared<GrassBlockers>();
+    for (const auto& pl : p.plots->plots) {
+        if (pl->cells.empty()) continue;
+        GrassBlockPlot g;
+        g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
+        for (const auto& kv : pl->cells) {
+            g.cells.insert(kv.first);
+            if (PartBlocksSky(pl->parts[kv.second.part])) g.solid.insert(kv.first); // (#908) roofs shade the ground
+            const Int3 c = kv.first;
+            g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
+        }
+        snap->push_back(std::move(g));
+    }
+    Grass_SetBlockers(static_cast<const DensityField*>(p.field.get()), snap);
+    for (const auto& pl : p.plots->plots) {
+        if (pl->changedCells.empty()) continue;
+        Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+        for (const Int3& c : pl->changedCells) {
+            const Vector3 at = pl->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+            lo = Vector3Min(lo, at); hi = Vector3Max(hi, at);
+        }
+        pl->changedCells.clear();
+        RequestRemesh(p, Vector3Scale(Vector3Add(lo, hi), 0.5f), 0.5f * Vector3Distance(lo, hi) + kCellSize + 8.0f, 1.0f); // (#908) +8 m: the ground under a roof (its sky)
+    }
+}
+
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
+    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -447,6 +604,10 @@ void Planetoid::draw(const RenderContext& ctx) {
         const long long pyramidFrame = SceneTarget_HiZFrame();
         if (pyramidFrame >= 0 && hizBodyFrame == pyramidFrame && SceneTarget_HiZ(tex, w, h, levels, vp)) {
             cull.hizTex = tex; cull.hizW = w; cull.hizH = h; cull.hizLevels = levels; cull.hizViewProj = vp; cull.hizBody = hizBody;
+            // (#910) Not the nodes near the camera: walking moves the eye between frames, and ground hidden from last frame's eye
+            // was culled for a frame while visible from this one (grass over nothing). RAYLIBGAME_HIZ_NEAR (m, default 64).
+            static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f;
+            cull.hizCam = toLocal(ctx.cameraPos); cull.hizNear = hizNear;
         }
     }
     const int n = TerrainArena_Flush(ctx.terrainMaterial->shader.id, false, bodyNow, cull);
@@ -560,8 +721,15 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
             const auto t0 = std::chrono::steady_clock::now();
             GpuBlockJob job;
             job.block = ChunkBlockOf(key);
-            if (pf->prepareBlock(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.grid) &&
-                pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64)) {
+            // (#1058) Counted for cost checks: blocks on the GPU, and those the cave-segment limit (32) sends to the CPU path.
+            static std::atomic<int> gCaveGpuBlocks{ 0 }, gCaveCpuBlocks{ 0 };
+            static const bool caveCountReport = (atexit([] { printf("bench: cave blocks: %d on the GPU, %d over the 32-segment limit (CPU path)\n", gCaveGpuBlocks.load(), gCaveCpuBlocks.load()); }), true);
+            (void)caveCountReport;
+            const bool prepOk = pf->prepareBlock(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.grid) &&
+                                pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64);
+            const bool caveOk = prepOk && pf->blockCaveSegs(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.caveSegs, 32);
+            if (caveOk) ++gCaveGpuBlocks; else if (prepOk) ++gCaveCpuBlocks;
+            if (caveOk) { // (#615) else the CPU path
                 const float prepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 job.keep = field;
                 job.field = pf;
@@ -1955,6 +2123,7 @@ void World_ClearStreamingQueues() {
 }
 
 void unloadWorld(Scene& world) {
+    for (auto& h : UnloadHooks()) h(); // (#902) pointers into the old world dropped before it goes
     Jobs().clearQueued();  // in-flight jobs finish; their results are dropped (planetoid ids are gone)
     World_ClearStreamingQueues(); // #387 (first: nothing queued to wait for; again below for what lands meanwhile)
     // The builds already running on the workers (CPU only: a GPU density block is a callback on the main thread, never a
@@ -2014,7 +2183,7 @@ static std::string RegionFile(const std::string& dir, int body, TerrainDeltas::K
 static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
     out.clear();
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
-    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    thread_local std::vector<int16_t>* denseP = nullptr; if (!denseP) denseP = new std::vector<int16_t>(DeltaChunk::kN); auto& dense = *denseP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
     c.toDense(dense.data());
     const int16_t* d = dense.data();
     int i = 0;
@@ -2031,7 +2200,7 @@ static void EncodeChunk(const DeltaChunk& c, std::vector<uint16_t>& out) {
 
 static bool DecodeChunk(const uint16_t* in, size_t words, DeltaChunk& c) {
     const int n = kDeltaChunk * kDeltaChunk * kDeltaChunk;
-    thread_local std::vector<int16_t> dense(DeltaChunk::kN);
+    thread_local std::vector<int16_t>* denseP = nullptr; if (!denseP) denseP = new std::vector<int16_t>(DeltaChunk::kN); auto& dense = *denseP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
     std::fill(dense.begin(), dense.end(), (int16_t)0);
     int i = 0;
     size_t w = 0;
@@ -2072,7 +2241,7 @@ static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
         const int zeros = in[w++], count = in[w++];
         if (i + zeros + count > n || w + count > words) return false;
         i += zeros;
-        for (int k = 0; k < count; ++k) c.setMat(i++, (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count));
+        for (int k = 0; k < count; ++k, ++w) c.setMat(i++, (uint8_t)(std::min<int>(in[w] & 0x7F, (int)VoxelMaterial::Count) | (in[w] & kMatState))); // (#1097) bit 7 kept
     }
     return true;
 }
@@ -2189,15 +2358,99 @@ std::shared_ptr<const TerrainDeltas> LoadRegionsFor(int body, const std::string&
     return b.finish();
 }
 
+// ---- Late-join sync (#776): regions in memory, as the save writes them ----
+
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& d) {
+    std::unordered_set<TerrainDeltas::Key> set;
+    for (const auto& kv : d.chunks) set.insert(TerrainDeltas::RegionOf(kv.first));
+    std::vector<TerrainDeltas::Key> out(set.begin(), set.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// RGN5 bytes of one region's chunks (the save's layout), chunks in key order: the same content always encodes the same,
+// so its hash compares across machines.
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& d, TerrainDeltas::Key region) {
+    std::vector<std::pair<TerrainDeltas::Key, const DeltaChunk*>> chunks;
+    for (const auto& kv : d.chunks) if (TerrainDeltas::RegionOf(kv.first) == region) chunks.push_back({ kv.first, kv.second.get() });
+    std::sort(chunks.begin(), chunks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<uint8_t> out;
+    auto put = [&](const void* p, size_t n) { const uint8_t* b = (const uint8_t*)p; out.insert(out.end(), b, b + n); };
+    put("RGN5", 4);
+    const int32_t n = (int32_t)chunks.size();
+    put(&n, 4);
+    std::vector<uint16_t> enc, encM;
+    for (const auto& c : chunks) {
+        int cx, cy, cz;
+        TerrainDeltas::Unpack(c.first, cx, cy, cz);
+        EncodeChunk(*c.second, enc);
+        EncodeMaterials(*c.second, encM);
+        const int32_t hdr[5] = { cx, cy, cz, (int32_t)(enc.size() * 2), (int32_t)(encM.size() * 2) };
+        put(hdr, sizeof hdr);
+        put(enc.data(), enc.size() * 2);
+        put(encM.data(), encM.size() * 2);
+    }
+    return out;
+}
+
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes) {
+    uint64_t h = 14695981039346656037ull;
+    for (uint8_t b : bytes) { h ^= b; h *= 1099511628211ull; }
+    return h;
+}
+
+// Replace one region's chunks on a body with these RGN5 bytes (empty: clear it) and rebuild what shows it.
+bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data, size_t size) {
+    std::vector<std::pair<TerrainDeltas::Key, std::shared_ptr<DeltaChunk>>> got;
+    if (size > 0) {
+        size_t at = 0;
+        auto take = [&](void* dst, size_t n) { if (at + n > size) return false; memcpy(dst, data + at, n); at += n; return true; };
+        char magic[4]; int32_t n = 0;
+        if (!take(magic, 4) || memcmp(magic, "RGN5", 4) != 0 || !take(&n, 4) || n < 0 || n > kRegionChunks * kRegionChunks * kRegionChunks) return false;
+        for (int32_t i = 0; i < n; ++i) {
+            int32_t hdr[5];
+            if (!take(hdr, sizeof hdr) || hdr[3] <= 0 || hdr[4] < 0 || at + (size_t)hdr[3] + (size_t)hdr[4] > size || (hdr[3] & 1) || (hdr[4] & 1)) return false;
+            auto chunk = std::make_shared<DeltaChunk>();
+            std::vector<uint16_t> words((size_t)hdr[3] / 2), mats((size_t)hdr[4] / 2);
+            take(words.data(), (size_t)hdr[3]);
+            take(mats.data(), (size_t)hdr[4]);
+            if (!DecodeChunk(words.data(), words.size(), *chunk)) return false;
+            if (!mats.empty() && !DecodeMaterials(mats.data(), mats.size(), *chunk)) return false;
+            const TerrainDeltas::Key k = TerrainDeltas::KeyOf(hdr[0], hdr[1], hdr[2]);
+            if (TerrainDeltas::RegionOf(k) != region) return false; // (a chunk outside the region it claims)
+            got.push_back({ k, chunk });
+        }
+        if (at != size) return false;
+    }
+    TerrainDeltasBuilder b(*p.edits);
+    for (auto it = b.state().chunks.begin(); it != b.state().chunks.end();)
+        it = TerrainDeltas::RegionOf(it->first) == region ? b.state().chunks.erase(it) : std::next(it);
+    for (auto& [k, c] : got) b.setChunk(k, c);
+    p.edits = b.finish();
+    p.dirtyRegions.insert(region);
+    p.lodDirty = true;
+    // Rebuild the region's nodes (and its trees' cover) with the new deltas.
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(region, rx, ry, rz);
+    const float side = kRegionChunks * kDeltaChunk * kVoxelSize; // metres
+    const Vector3 centre{ (rx + 0.5f) * side, (ry + 0.5f) * side, (rz + 0.5f) * side };
+    const float reach = side * 0.8661f + 2.0f;
+    RequestRemesh(p, centre, reach);
+    if (p.trees) p.trees->onEdit(centre, reach, p.edits);
+    return true;
+}
+
 bool SaveWorld(Scene& world) {
     if (!DirectoryExists("saves")) MakeDirectory("saves");
-    FILE* f = fopen(SAVE_PATH, "w");
+    // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
+    const std::string tmpPath = SAVE_PATH_STR + ".tmp";
+    FILE* f = fopen(tmpPath.c_str(), "w");
     if (!f) return false;
     const DVec3 camWorld = world.renderOrigin + world.camera.position;
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 12\n"); // 12 (#360): ponds' water bricks saved even drained; no claimed ponds
+    fprintf(f, "RAYLIBGAME_SAVE 13\n"); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -2216,7 +2469,8 @@ bool SaveWorld(Scene& world) {
         Planetoid* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || p->ringRock >= 0 || p->vehicle) continue; // promoted ring rocks: saved with their ring (below); rockets: by the game
         const int bodyIndex = index++;
-        fprintf(f, "planetoid %d rot %f %f %f strokes %zu\n", bodyIndex, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
+        // (#346) the body's NetId too: a load finds the body by it, not by its place in the list
+        fprintf(f, "planetoid %d netid %llu rot %f %f %f strokes %zu\n", bodyIndex, (unsigned long long)p->netId, p->rotation.x, p->rotation.y, p->rotation.z, p->edits->strokes);
         totalStrokes += p->edits->strokes;
         // v6: chopped / harvested plants (id, world time removed); they regrow from that time.
         const PlantRemovals none;
@@ -2231,16 +2485,60 @@ bool SaveWorld(Scene& world) {
     }
     // v10: ring rocks a visit changed (edits, plots), whether they are voxel bodies now or not.
     for (auto& ring : gRings) ring->save(f, dir);
-    fclose(f);
+    const bool written = fflush(f) == 0 && !ferror(f);
+    if (fclose(f) != 0 || !written) { std::error_code ec; std::filesystem::remove(tmpPath, ec); LOG_ERROR("World", "%s: could not write the save\n", SAVE_PATH); return false; }
+    std::error_code ec;
+    std::filesystem::rename(tmpPath, SAVE_PATH_STR, ec); // replaces the old save in one step
+    if (ec) { LOG_ERROR("World", "%s: could not replace the save: %s\n", SAVE_PATH, ec.message().c_str()); return false; }
     LOG_INFO("World", "saved %zu strokes to %s (%d region files written)\n", totalStrokes, SAVE_PATH, regionsWritten);
+    BackupSave();
     return true;
 }
+
+// Backups (#346, user: the newest 5): after each save, the world file and the player records (<save>.players/) are copied
+// into <save>.backups/<date-time>/, and only the newest kBackups are kept. The regions are not copied (large, and written
+// in place chunk by chunk). RAYLIBGAME_BACKUPS=N keeps N (0: none).
+int BackupsKept() { static const int n = getenv("RAYLIBGAME_BACKUPS") ? std::max(0, atoi(getenv("RAYLIBGAME_BACKUPS"))) : 5; return n; }
+std::string BackupDir() { return SAVE_PATH_STR + ".backups"; }
+void BackupSave() {
+    namespace fs = std::filesystem;
+    const int keep = BackupsKept();
+    if (keep <= 0) return;
+    std::error_code ec;
+    const fs::path root = BackupDir();
+    // The name sorts by time: date, time, milliseconds (two saves in one second still get their own).
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t t = std::chrono::system_clock::to_time_t(now);
+    const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char stamp[40];
+    snprintf(stamp, sizeof(stamp), "%04d%02d%02d-%02d%02d%02d-%03d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+    const fs::path to = root / stamp;
+    fs::create_directories(to, ec);
+    const fs::path save = SAVE_PATH_STR;
+    fs::copy_file(save, to / save.filename(), fs::copy_options::overwrite_existing, ec);
+    if (ec) { LOG_WARN("World", "backup of %s: %s\n", SAVE_PATH, ec.message().c_str()); return; }
+    const fs::path players = SAVE_PATH_STR + ".players";
+    if (fs::exists(players, ec)) fs::copy(players, to / players.filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    std::vector<fs::path> all;
+    for (const auto& e : fs::directory_iterator(root, ec)) if (e.is_directory()) all.push_back(e.path());
+    std::sort(all.begin(), all.end());
+    for (size_t i = 0; i + keep < all.size(); ++i) fs::remove_all(all[i], ec); // the oldest beyond the newest `keep`
+}
+
+static LoadPhases gLastLoad;
+const LoadPhases& LastLoadPhases() { return gLastLoad; }
 
 bool LoadWorldSave(Scene& world) {
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 12) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 13) {
         fclose(f);
         LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
         return false;
@@ -2313,8 +2611,14 @@ bool LoadWorldSave(Scene& world) {
     Vector3 rot{};
     char kind[16] = {};
     const std::string dir = RegionDir();
-    while (fscanf(f, " planetoid %d rot %f %f %f %15s %zu", &index, &rot.x, &rot.y, &rot.z, kind, &editCount) == 6) {
-        Planetoid* body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
+    while (fscanf(f, " planetoid %d", &index) == 1) {
+        // (#346) "netid <id>" since format 13's step 3: the body is found by it; older saves by their place in the list
+        unsigned long long netid = 0;
+        const long at = ftell(f);
+        if (fscanf(f, " netid %llu", &netid) != 1) { fseek(f, at, SEEK_SET); netid = 0; }
+        if (fscanf(f, " rot %f %f %f %15s %zu", &rot.x, &rot.y, &rot.z, kind, &editCount) != 5) break;
+        Planetoid* body = netid ? Planetoid::findNet((NetId)netid) : nullptr;
+        if (!body) body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
         std::shared_ptr<const TerrainDeltas> deltas;
         if (std::string(kind) == "strokes") {
             // v7: the deltas are in the region files.
@@ -2368,8 +2672,12 @@ bool LoadWorldSave(Scene& world) {
         else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
     fclose(f);
+    gLastLoad = { regenMs, regionsMs, plotsMs, fluidMs };
     if (loadProfile) printf("load: %.0f ms: regenerate the world %.0f, region deltas %.0f, plots + machines %.0f, fluid %.0f, rest %.0f\n",
                             lms(lt0), regenMs, regionsMs, plotsMs, fluidMs, lms(lt0) - regenMs - regionsMs - plotsMs - fluidMs);
+    // Every body is in its saved state now (rotation above): positions kept in a body's frame go back to world space here
+    // (#901: the player's record was read in the extras, before the rotation came back, and stood on the wrong ground).
+    if (loadDoneHook) loadDoneHook();
     LOG_INFO("World", "loaded %s (seed %u)\n", SAVE_PATH, seed);
     return true;
 }
@@ -2493,3 +2801,153 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     if (d >= surface) return false;
     return d > pf->radius + pf->elevation(dir); // above the bed
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): body-local <-> world frames under spin ----
+#include "unit_helpers.h"
+#include <random>
+
+namespace {
+// A body at `pos` (no GL: chunks are never built), turned by `rot` degrees about X, Y, Z.
+std::unique_ptr<Planetoid> MakeBody(DVec3 pos, Vector3 rot, float radius = 60000.0f) {
+    auto b = std::make_unique<Planetoid>("unit", pos, rot, 1.0f, 42u, radius);
+    b->rotation = rot;
+    return b;
+}
+double Dist(const DVec3& a, const DVec3& b) { return (a - b).length(); }
+}
+
+// local -> world -> local is exact to micrometres 60 km from the centre, the body 100 km from the origin, at any angle.
+TEST(Frames, LocalWorldRoundTripAt60km) {
+    std::mt19937 rng(1);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f);
+    std::uniform_real_distribution<double> dir(-1.0, 1.0);
+    for (int i = 0; i < 500; ++i) {
+        auto b = MakeBody({ 100000.0, -20000.0, 5000.0 }, { ang(rng), ang(rng), ang(rng) });
+        DVec3 l{ dir(rng), dir(rng), dir(rng) };
+        l = l * (60000.0 / std::max(1e-9, l.length()));
+        const DVec3 w = b->toWorldD(l);
+        EXPECT_NEAR(Dist(w, b->worldPos), 60000.0, 1e-6) << "a rotation keeps distances";
+        EXPECT_LT(Dist(b->toLocalD(w), l), 1e-6);
+    }
+}
+
+// The double transform is the float model matrix's (raymath MatrixRotateXYZ), so chunks and physics agree.
+TEST(Frames, DoubleTransformMatchesTheModelMatrix) {
+    std::mt19937 rng(2);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f), c(-200.0f, 200.0f);
+    for (int i = 0; i < 200; ++i) {
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, { ang(rng), ang(rng), ang(rng) }, 500.0f);
+        const Vector3 l = { c(rng), c(rng), c(rng) };
+        const Vector3 wf = b->toWorld(l);
+        const DVec3 wd = b->toWorldD(DVec3(l));
+        EXPECT_LT(Dist(DVec3(wf), wd), 2e-4) << "rotation " << b->rotation.x << " " << b->rotation.y << " " << b->rotation.z;
+        const Vector3 dw = b->dirToWorld(Vector3Normalize(l));
+        const Vector3 dq = Vector3RotateByQuaternion(Vector3Normalize(l), b->rotationQuat());
+        EXPECT_LT(Vector3Distance(dw, dq), 1e-5f);
+        EXPECT_LT(Vector3Distance(b->dirToLocal(dw), Vector3Normalize(l)), 1e-5f);
+    }
+}
+
+// The float toLocal (render space -> body-local) is what collision samples the density through (#1072). A point near the
+// render origin, 60 km out from a turning body's centre, maps to body-local within a body-local float's rounding of the
+// double path, at every angle - the old float matrix inverse was off by mm to ~2 cm and differently from angle to angle.
+TEST(Frames, FloatToLocalMatchesTheDoublePathAt60km) {
+    auto b = MakeBody(DVec3(0.0, -60010.0, 0.0), { 0.0f, 0.0f, 0.0f });
+    b->position = { 0.0f, -60010.0f, 0.0f }; // render origin at the world origin: the body's centre 60 km below it
+    double worst = 0.0;
+    for (int k = 0; k < 400; ++k) {
+        b->rotation = { 0.0f, 200.0f + 0.003f * (float)k, 0.0f }; // a turning planet, ~1 m of surface travel a step
+        const Vector3 c = { 0.37f, 1.20f, -0.81f };              // a capsule sphere near the player (render space)
+        const DVec3 ref = b->toLocalD(DVec3(c.x, c.y, c.z));   // render origin = world origin here
+        const Vector3 l = b->toLocal(c);
+        worst = std::max(worst, (DVec3(l.x, l.y, l.z) - ref).length());
+        EXPECT_LT(Vector3Distance(b->toWorld(l), c), 0.01f);   // and back
+    }
+    EXPECT_LT(worst, 0.004); // body-local float rounding at 60 km: 0.8 mm measured (the old float matrix: 8.6 mm)
+}
+
+// A body-fixed point's velocity from the spin (surfaceVelocity) is the rate its world position changes: the player rides
+// on it, and a wrong one slides everything standing on a turning planet (#749, #856).
+namespace {
+// The reference: the body-fixed point's world velocity by a central difference of the rotation in double (BodyRotationD's
+// formula with double angles: the stored float angles step 1.5e-5 deg at 200 deg, too coarse to difference).
+DVec3 SpinVelocityD(Vector3 rotDeg, Vector3 spinDeg, const DVec3& l) {
+    auto world = [&](double t) {
+        const double ax = -((double)rotDeg.x + spinDeg.x * t) * (PI / 180.0), ay = -((double)rotDeg.y + spinDeg.y * t) * (PI / 180.0),
+                     az = -((double)rotDeg.z + spinDeg.z * t) * (PI / 180.0);
+        const double cx = cos(ax), sx = sin(ax), cy = cos(ay), sy = sin(ay), cz = cos(az), sz = sin(az);
+        const double r[3][3] = { { cz * cy, sz * cy, -sy }, { cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx }, { cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx } };
+        return DVec3(r[0][0] * l.x + r[0][1] * l.y + r[0][2] * l.z, r[1][0] * l.x + r[1][1] * l.y + r[1][2] * l.z, r[2][0] * l.x + r[2][1] * l.y + r[2][2] * l.z);
+    };
+    const double h = 1e-3;
+    return (world(h) - world(-h)) * (1.0 / (2.0 * h));
+}
+// Worst |surfaceVelocity - reference| / speed over `n` random orientations (0: the identity only).
+double WorstSurfaceVelocityError(int n, Vector3 spin) {
+    std::mt19937 rng(749);
+    std::uniform_real_distribution<float> ang(0.0f, 360.0f);
+    double worst = 0.0;
+    for (int i = 0; i <= n; ++i) {
+        const Vector3 rot = i == 0 ? Vector3{ 0, 0, 0 } : Vector3{ ang(rng), ang(rng), ang(rng) };
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, rot);
+        b->spin = spin;
+        const DVec3 l{ 31000.0, 42000.0, -28000.0 }; // ~59 km out
+        const DVec3 ref = SpinVelocityD(rot, spin, l);
+        const Vector3 v = b->surfaceVelocity(b->toWorldD(l).toFloat()); // render origin = the world origin; the body sits there
+        worst = std::max(worst, Dist(DVec3(v), ref) / std::max(1e-9, ref.length()));
+    }
+    return worst;
+}
+}
+
+// A planet's spin (about its Y axis, as bodies.txt gives it) at any orientation.
+TEST(Frames, SurfaceVelocityIsTheSpinOfABodyFixedPoint) {
+    EXPECT_LT(WorstSurfaceVelocityError(500, { 0, 0.1f, 0 }), 0.002) << "worst relative error over 500 orientations";
+}
+
+// Disabled until #872: a spin about several Euler axes at once (ring rocks, asteroids) is off by up to 1.5%: the angular
+// velocity comes from a float quaternion's acosf(w) near w = 1. Run with --gtest_also_run_disabled_tests.
+TEST(Frames, DISABLED_SurfaceVelocityOfAMultiAxisSpin) {
+    EXPECT_LT(WorstSurfaceVelocityError(500, { 0.02f, -0.1f, 0.05f }), 0.002) << "worst relative error over 500 orientations";
+}
+
+// A whole day of turning: the same local point comes back to the same place, and its local coordinates never drift.
+TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
+    auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
+    const DVec3 l{ 1234.5, 59900.25, -321.125 };
+    const DVec3 w0 = b->toWorldD(l);
+    for (int deg = 0; deg <= 360; deg += 15) {
+        b->rotation.y = (float)deg;
+        EXPECT_LT(Dist(b->toLocalD(b->toWorldD(l)), l), 1e-6) << deg << " deg";
+    }
+    EXPECT_LT(Dist(b->toWorldD(l), w0), 0.1) << "360 deg is a full turn (raylib's float DEG2RAD: within 10 cm at 60 km)";
+}
+
+// Plan 11 F1 (#667): a point on a turning body moves evenly, step by step. Near 360 deg the float Euler angle steps by
+// 3.05e-5 deg, so a surface point 60 km out jumped by up to ~3 cm between steps (frames/still: 13-31 mm). With the double
+// pose (RAYLIBGAME_FRAMES=1) every 1/60 s step moves it the same arc, to well under a millimetre.
+TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
+    auto stepSpread = [](bool doublePose) {
+        kFramesPose = doublePose;
+        auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
+        b->spin = { 0.0f, 0.1f, 0.0f }; // Terra's day: 360 deg an hour
+        const DVec3 l{ 1234.5, 31000.0, 51300.0 }; // a surface point ~60 km out, off the axis
+        double lo = 1e9, hi = 0.0;
+        DVec3 last{};
+        for (int k = 0; k <= 600; ++k) {
+            const double a = 359.0 + 0.1 * k / 60.0; // 10 s of spin up to 360 deg, 1/60 s steps
+            b->spinAngle[1] = a; b->spinAngleSet = true;
+            b->rotation = { 0.0f, (float)a, 0.0f }; // advanceBodies stores the float from the double
+            const DVec3 w = b->toWorldD(l);
+            if (k > 0) { const double d = Dist(w, last); lo = std::min(lo, d); hi = std::max(hi, d); }
+            last = w;
+        }
+        kFramesPose = false;
+        return hi - lo;
+    };
+    const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);
+    EXPECT_GT(floatSpread, 0.005) << "the float angle's steps: uneven by cm (the test still sees the old path)";
+    EXPECT_LT(doubleSpread, 1e-4) << "the double pose: even steps";
+}
+#endif

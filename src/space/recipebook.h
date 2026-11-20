@@ -6,6 +6,7 @@
 // and so on. resources/data/recipe_unlocks.txt can add a further condition per output (a task in
 // the quest book's terms: "explorer_suit | do stalker 1"). Creative mode knows everything.
 
+#include <functional>
 #include <set>
 #include <string>
 
@@ -19,6 +20,14 @@ struct RecipeBookState {
 };
 
 bool RecipeBook_Known(const Recipe& r);
+bool RecipeBook_Unlocked(const Recipe& r);  // (#338) its recipe_unlocks condition alone, on the selected quest book (a server: the team's)
+// (#338) Craft recipe `index` (into itemDB.recipes()) `count` times: in single player here, from the inventory; in a joined game a request
+// to the server (gCraftRequest; the result comes back as inventory deltas). The one entry point for the crafting screens.
+bool Crafting_Request(int index, int count = 1);
+// (#946) Joined: craft it with its missing intermediates first, the server planning them (#928); false when not joined (the caller
+// queues the plan's steps here).
+bool Crafting_RequestRecursive(int index, int count);
+inline std::function<void(int index, const std::string& output, int count, bool useChests, bool recursive)> gCraftRequest; // useChests (#854): what the inventory lacks, from the chests near the player
 bool RecipeBook_Discovered(const std::string& item);
 // Search: a recipe matches when its output's name or id, or any ingredient's, contains the words.
 bool RecipeBook_Matches(const Recipe& r, const std::string& lowerQuery);

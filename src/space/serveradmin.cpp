@@ -58,7 +58,10 @@ void Admin_Load(const std::string& d) {
     fclose(f);
 }
 
-AdminRole Admin_RoleOf(const std::string& name) {
+static std::string hostOwnerId; // (#1086)
+void Admin_SetHostOwner(const std::string& uuid) { hostOwnerId = uuid; }
+AdminRole Admin_RoleOf(const std::string& name, const std::string& uuid) {
+    if (!uuid.empty() && uuid == hostOwnerId) return AdminRole::Owner; // the player hosting this game from their menu
     const std::string n = Lower(name);
     return owners.count(n) ? AdminRole::Owner : ops.count(n) ? AdminRole::Op : AdminRole::Player;
 }
@@ -84,13 +87,13 @@ void Admin_Audit(const std::string& text) {
     fclose(f);
 }
 
-bool Admin_Command(const std::string& line, const std::string& by, std::string& reply) {
+bool Admin_Command(const std::string& line, const std::string& by, std::string& reply, const std::string& byUuid) {
     std::istringstream in(line);
     std::string cmd, arg, rest;
     in >> cmd >> arg; std::getline(in, rest); rest.erase(0, rest.find_first_not_of(" \t"));
     const std::string a = Lower(arg);
     const bool console = by == "console";
-    const AdminRole byRole = console ? AdminRole::Owner : Admin_RoleOf(by);
+    const AdminRole byRole = console ? AdminRole::Owner : Admin_RoleOf(by, byUuid);
     auto done = [&](const std::string& what) { reply = what; Admin_Audit(by + ": " + line + " -> " + what); Save(); return true; };
     auto need = [&](const char* usage) { reply = std::string("usage: ") + usage; return true; };
     if (cmd == "ops") {
@@ -157,6 +160,15 @@ bool Admin_Test() {
     check(Admin_Command("banip 10.0.0.9", "console", r) && !Admin_CheckJoin("eve", "10.0.0.9:51234", why) && Admin_CheckJoin("eve", "10.0.0.8:51234", why), "IP ban (port ignored)");
     check(Admin_Command("whitelist on", "console", r) && !Admin_CheckJoin("carol", "", why) && why == "not on this server's whitelist", "whitelist refuses others");
     check(Admin_CheckJoin("alice", "", why) && Admin_CheckJoin("dee", "", why), "ops and owners pass the whitelist");
+    // (#1086) a menu-hosted game: its hosting player is the owner by their id, whatever the name; a joiner using the
+    // host's name (or an owner's) without the id gets nothing from the name it borrowed beyond what admin.txt says
+    Admin_SetHostOwner("0b1e2c3d-host");
+    check(Admin_RoleOf("Host Player", "0b1e2c3d-host") == AdminRole::Owner, "the host by id is the owner (a name not in admin.txt)");
+    check(Admin_RoleOf("Host Player", "9f9f9f9f-other") == AdminRole::Player && Admin_RoleOf("Host Player") == AdminRole::Player, "the host's name with another id is a player");
+    check(Admin_Command("op mallory", "Host Player", r, "0b1e2c3d-host") && Admin_RoleOf("mallory") == AdminRole::Op, "the host by id may op");
+    check(Admin_Command("deop mallory", "Host Player", r, "9f9f9f9f-other") && r == "only ops can do that" && Admin_RoleOf("mallory") == AdminRole::Op, "a spoof of the host's name may not");
+    Admin_SetHostOwner("");
+    check(Admin_RoleOf("Host Player", "0b1e2c3d-host") == AdminRole::Player, "a dedicated server (no host id): admin.txt alone");
     check(Admin_Command("whitelist add Carol", "alice", r) && Admin_CheckJoin("carol", "", why), "whitelist add");
     check(!Admin_Command("say hi", "console", r), "not an admin command");
     // A restart: everything comes back from admin.txt.

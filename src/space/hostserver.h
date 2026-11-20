@@ -12,7 +12,8 @@
 //   client -> Hello (protocol, build commit, name, password)
 //   host   -> Welcome (session, the world description: seed, bodies, fingerprint; settings; the server tick) + Shower,
 //             or Reject (protocol, build, password, full, name already playing, garbled) and closes
-//   client -> Ping every second; host -> Pong (round trip, the server tick). Nothing heard for 15 s: Bye(timed out).
+//   client -> Ping every second; host -> Pong (round trip, the server tick). Nothing heard for 15 s: Bye(timed out)
+//             (#1033: 120 s while a joined client is still loading, before its first input; Host_SilenceLimit).
 //   either -> Bye (quit; the server closed). A player who comes back under the same name gets the same session.
 // Players (#327): each session has a server-side Player stepped from its client's inputs (one a sim step) and sent to
 // everyone as PlayerState at 30 Hz (unreliable); the owner reconciles its prediction, the others interpolate.
@@ -33,6 +34,12 @@ bool Host_Start(uint16_t port, std::string& status); // gNetRole = Host; false (
 void Host_SetAutosaveMinutes(double minutes);         // 0 = off
 void Host_SetPassword(const std::string& password);   // "" none (--host-password)
 void Host_SetMaxPlayers(int n);                       // default 8 (--max-players)
+enum class DeathDrops : uint8_t;
+void Host_SetDeathDrops(DeathDrops d);                // (#804) --death-drops difficulty|keep|grave (default difficulty)
+int Host_GravesMade();
+int Host_DropsMade();                                 // (#865) drops made for joined players
+int Host_CreativeGives();                             // (#866) creative gives done for joined players
+int Host_CreativeRefused();                           // (#866) refused: not creative
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed
@@ -49,6 +56,26 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 bool Host_Give(uint32_t session, const std::string& item, int count);
+bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an online player's game mode (false: not online)
+// Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every
+// player as a restart would (only with nobody online; their records stay on disk).
+int Host_ItemCount(uint32_t session, const std::string& item);
+std::string Host_SessionUuid(uint32_t session); // (#1086) the player's id (from their Hello), for roles by identity; "" unknown
+double Host_SilenceLimit(bool joined, bool inGame); // (#1033) seconds of silence before a connection counts as gone
+bool Host_TestSkillXp(uint32_t session, const std::string& skill, double xp); // (#920 tests)
+bool Host_TestSetFood(uint32_t session, float food);                          // (#920 tests)
+bool Host_TestPerk(uint32_t session, const std::string& perk, int rank);       // (#1043 tests) a perk at a rank, sent at once
+bool Host_TestTeamUp(uint32_t a, uint32_t b);                                  // (#920 tests) b joins a's team
+int Host_TeamXpGiven();                                                        // (#920 tests) team XP shares handed out
+int Host_SkillSpends();                                                        // (#920 tests) allowed
+int Host_SkillSpendsRefused();                                                 // (#920 tests) refused
+bool Host_TestGive(uint32_t session, const std::string& item, int count); // (tests) into a remote player's inventory; count < 0 takes
+double Host_PlayersApart(class Scene& world, uint32_t a, uint32_t b);          // (#865 tests) metres between two remote players
+bool Host_TestPutPlayerAt(class Scene& world, uint32_t who, uint32_t at); // (#865 tests) one remote player onto another's spot
+bool Host_ForgetPlayers();
+// Join sync (#776, tests): syncs finished so far; bytes sent by them.
+int Host_SyncsDone();
+uint64_t Host_SyncBytesSent();
 // The dedicated server's console and admin (#326, #345): who is (or was) here; kick by name (Bye kicked, with the reason as a chat
 // line first); a chat line from the server (fromSession 0) or a player, to everyone (toSession 0) or one session; the message of
 // the day (in the Welcome); a join check (bans, whitelist: false refuses with NetReject::Banned and why); a handler for

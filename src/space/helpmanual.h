@@ -11,6 +11,7 @@
 void HelpManual_DrawTab();               // inside the inventory's ImGui tab bar
 int HelpManual_TopicCount();             // tests: guides loaded, plus the item database
 void HelpManual_OpenItem(const std::string& id); // opens an item's page (the next time the tab draws)
+const std::string& HelpManual_PageItem(); // the item page shown ("" a guide) (tests)
 void HelpManual_Save(FILE* f);           // "Discovered only", with the world
 bool HelpManual_LoadLine(const char* tok, FILE* f);
 

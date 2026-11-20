@@ -1,10 +1,13 @@
 #include "recipebook.h"
+#include "playerinput.h"
 #include "playersession.h"
 #include "simclock.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "survival.h"
 #include "terraintool.h"
+#include "audio.h"
+#include <algorithm>
 
 #include <raylib.h>
 #include <cctype>
@@ -75,8 +78,32 @@ void RecipeBook_Update() {
                 if (fresh < 3) { const ItemDef* d = itemDB.find(o); list += (list.empty() ? "" : ", ") + (d ? d->name : o); }
                 ++fresh;
             }
-        if (fresh > 0) GameUI_Toast(TextFormat("New recipe%s: %s%s (Tab)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : ""));
+        if (fresh > 0) { const std::string key = PlayerInput_KeyName(PlayerInput_Binding(Act::Crafting)); GameUI_Toast(TextFormat("New recipe%s: %s%s (%s: crafting)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : "", key.c_str())); } // (#827: the key as bound)
     }
     R().known.swap(now);
     R().primed = true;
+}
+
+bool RecipeBook_Unlocked(const Recipe& r) {
+    Load();
+    auto it = unlocks.find(r.output);
+    return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+}
+
+bool Crafting_Request(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    const Recipe& r = recipes[index];
+    if (gCraftRequest) { gCraftRequest(index, r.output, std::min(count, 64), true, false); return true; } // (#854: from nearby chests too, as the screen counts them) // the server crafts and says so
+    int made = 0;
+    while (made < count && inventory.canCraft(r) && inventory.craft(r)) ++made;
+    if (made > 0) Audio_Play(Sfx::Craft);
+    return made > 0;
+}
+
+bool Crafting_RequestRecursive(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (!gCraftRequest || index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    gCraftRequest(index, recipes[index].output, std::min(count, 64), false, true); // (#946) one request: the server plans it whole
+    return true;
 }

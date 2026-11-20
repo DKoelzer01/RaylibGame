@@ -17,7 +17,16 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::Loadout: return { 10, 20 };
         case NetMsg::EditRequest: return { 30, 60 };  // (#329 has its own stroke budget behind this)
         case NetMsg::PartRequest: return { 30, 60 };  // (#330 likewise)
+        case NetMsg::SyncWant: return { 0.2, 3 };     // (#776) once a join (its bitmask: 4096 bytes is 32k entries)
         case NetMsg::AnimalHit: return { 10, 20 };    // (#334; a swing cooldown is checked behind this)
+        case NetMsg::UseItem: return { 4, 8 };        // (#337: eating, a canister, a cell)
+        case NetMsg::BedUse: return { 2, 4 };         // (#800: a right-click on a bed)
+        case NetMsg::CraftRequest: return { 4, 10 };  // (#338: a click, or a few)
+        case NetMsg::MachineAction: return { 8, 20 };  // (#332: clicks in a machine screen, I / O, watch on open and close)
+        case NetMsg::PlantAction: return { 10, 20 };   // (#335: a fell (bushes and stones fall in one swing), I / O on farmland; the fell rate is checked behind this)
+        case NetMsg::DropItems: return { 6, 12 };     // (#865: Q drops one per press, a click outside the window a stack)
+        case NetMsg::CreativeGive: return { 8, 20 };  // (#866: Catalog clicks and middle-clicks, a drag across the Catalog)
+        case NetMsg::SkillSpend: return { 2, 6 };    // (#920: Learn clicks on the Skills tab)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }

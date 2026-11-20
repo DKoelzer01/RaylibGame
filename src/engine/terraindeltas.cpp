@@ -55,7 +55,7 @@ int TerrainDeltas::materialAt(Vector3 pos) const {
         const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
         auto it = chunks.find(KeyOf(cx, cy, cz));
         if (it == chunks.end()) return -1;
-        return (int)it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)) - 1;
+        return MatOf(it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk)));
     };
     const int m = mat((int)lroundf(p.x), (int)lroundf(p.y), (int)lroundf(p.z));
     if (m >= 0) return m;
@@ -65,6 +65,16 @@ int TerrainDeltas::materialAt(Vector3 pos) const {
         if (c >= 0) return c;
     }
     return -1;
+}
+
+int TerrainDeltas::placedAt(Vector3 pos) const {
+    if (chunks.empty()) return -1;
+    const int x = (int)lroundf(pos.x / kVoxelSize), y = (int)lroundf(pos.y / kVoxelSize), z = (int)lroundf(pos.z / kVoxelSize);
+    const int cx = FloorDiv(x, kDeltaChunk), cy = FloorDiv(y, kDeltaChunk), cz = FloorDiv(z, kDeltaChunk);
+    auto it = chunks.find(KeyOf(cx, cy, cz));
+    if (it == chunks.end()) return -1;
+    const uint8_t v = it->second->mat(Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk));
+    return MatPlaced(v) ? MatOf(v) : -1;
 }
 
 void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair<Key, const DeltaChunk*>>& out) const {
@@ -150,10 +160,31 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 }
                 const int i = Idx(x - cx * kDeltaChunk, y - cy * kDeltaChunk, z - cz * kDeltaChunk);
                 const int16_t v = chunk->get(i);
+                // Grass is a state of the generated surface, not a layer (#1085): ground an edit exposes or makes is bare dirt.
+                // The generator calls everything in the ~1 m band of its surface grass, so a point the edit leaves on the new
+                // surface takes Regolith in the material channel where the field would say Grass. Placed ground keeps its own.
+                auto bareGrass = [&](float base) {
+                    // (#1097) natural ground in another state (kMatState): it digs as natural ground, extras and perks included
+                    if (!chunk->mat(i) && field.material(p, base) == VoxelMaterial::Grass) chunk->setMat(i, (uint8_t)(((uint8_t)VoxelMaterial::Regolith + 1) | kMatState));
+                };
+                if (e.till) {
+                    // The surface band of soil: a lattice point at most one step over the ground (the mesh's vertices take
+                    // the nearest point's material) down to half a metre under it. Grass goes: one channel, one state.
+                    if (dist >= e.radius) continue;
+                    const float base = field.baseDensity(p), d = base + v * kDeltaStep;
+                    if (d < ISO_LEVEL - DENSITY_GRADIENT * kVoxelSize || d > ISO_LEVEL + DENSITY_GRADIENT * 0.5f) continue;
+                    const uint8_t cur = chunk->mat(i);
+                    const int placed = MatOf(cur); // (#1097: the material without its state bit)
+                    const VoxelMaterial m = placed >= 0 ? (VoxelMaterial)placed : field.material(p, base);
+                    // (#1097) tilled natural ground is a state of it (kMatState); tilled placed dirt stays placed (it digs back at
+                    // most what it cost: tilling can't turn placed ground into natural)
+                    if (IsTillable(m)) chunk->setMat(i, (uint8_t)(((uint8_t)VoxelMaterial::Farmland + 1) | (MatPlaced(cur) ? 0 : kMatState)));
+                    continue;
+                }
                 if (e.carve) {
                     const float base = field.baseDensity(p);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
-                    const int placed = (int)chunk->mat(i) - 1;
+                    const int placed = MatOf(chunk->mat(i));
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
                     if (e.softOnly && (base + v * kDeltaStep) >= ISO_LEVEL && !IsSoft(was)) continue;
                     if (base + v * kDeltaStep > carveTo) {
@@ -165,16 +196,258 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                         chunk->set(i, (int16_t)std::clamp(q, -32767, 32767));
                         if (sd < 0.0f) chunk->setMat(i, 0); // dug out: what is exposed below shows its own material
                     }
+                    if (fabsf(sd) < kVoxelSize) bareGrass(base); // the points either side of the cut's face: bare dirt, not turf
                 } else if (e.fill) {
                     const float base = field.baseDensity(p);
                     const float fillTo = ISO_LEVEL - DENSITY_GRADIENT * sd;
                     if (base + v * kDeltaStep < fillTo) {
+                        // Placed ground is what was air before (#1097: it is what the fill paid for, 2 items a m^3); ground
+                        // that was there already keeps its own material and digs as itself.
+                        const bool wasAir = base + v * kDeltaStep < ISO_LEVEL;
                         chunk->set(i, (int16_t)std::clamp((int)ceilf((fillTo - base) / kDeltaStep), -32767, 32767)); // up: never just under iso inside
-                        if (e.paint >= 0 && sd < kVoxelSize) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too
+                        if (e.paint >= 0 && sd < kVoxelSize && wasAir) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too (placed: #1097)
+                        else if (sd < kVoxelSize) bareGrass(base); // (#1085) grass under it: bare dirt, natural (#1097)
                     }
                 } else {
+                    const bool wasAir = field.baseDensity(p) + v * kDeltaStep < ISO_LEVEL; // (#1097, as a fill)
                     chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
-                    if (e.paint >= 0 && t > 0.15f) chunk->setMat(i, (uint8_t)(e.paint + 1));
+                    if (e.paint >= 0 && wasAir && add > 0.0f) chunk->setMat(i, (uint8_t)(e.paint + 1)); // all it raised: no unmarked placed ground at the rim (#1097)
+                    else if (t > 0.15f) bareGrass(field.baseDensity(p)); // (#1085) grass under the blob: bare dirt, natural (#1097)
                 }
             }
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): carve and fill rounding (#693), keys, the sparse chunk store ----
+#include "unit_helpers.h"
+#include <random>
+
+namespace {
+// Flat ground: solid below y = 0, the lattice row at y = 0 exactly at iso (the worst case for #693's rounding).
+class FlatField : public DensityField {
+public:
+    float baseDensity(Vector3 p) const override { return ISO_LEVEL - DENSITY_GRADIENT * p.y; }
+    VoxelMaterial material(Vector3, float) const override { return VoxelMaterial::Rock; }
+    Vector3 fallbackUp(Vector3) const override { return { 0, 1, 0 }; }
+    float maxRadius() const override { return 1e6f; }
+};
+float LatticeDensity(const TerrainDeltas& d, const DensityField& f, int x, int y, int z) {
+    return f.baseDensity({ x * kVoxelSize, y * kVoxelSize, z * kVoxelSize }) + d.at(x, y, z);
+}
+}
+
+// #693: a box carved flush with the ground leaves no lattice point inside it (or on its faces) solid: no specks.
+TEST(TerrainDeltas, FlushBoxCarveLeavesNoSolidPointInside) {
+    const FlatField field;
+    const float offsets[] = { 0.0f, 0.001f, -0.001f, 0.0625f, 0.124f }; // the box top at, just over and just under the ground
+    for (float off : offsets) {
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit e{};
+        e.carve = true; e.box = true;
+        e.half = { 1.0f, 0.5f, 1.0f };
+        e.center = { 0.1f, -0.5f + off, -0.2f };
+        e.radius = Vector3Length(e.half);
+        b.apply(e, field);
+        const auto d = b.finish();
+        int solidInside = 0, inside = 0;
+        for (int z = -8; z <= 8; ++z) for (int y = -8; y <= 4; ++y) for (int x = -8; x <= 8; ++x) {
+            const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+            const bool in = fabsf(p.x - e.center.x) <= e.half.x && fabsf(p.y - e.center.y) <= e.half.y && fabsf(p.z - e.center.z) <= e.half.z;
+            if (!in) continue;
+            ++inside;
+            if (LatticeDensity(*d, field, x, y, z) >= ISO_LEVEL) ++solidInside;
+        }
+        EXPECT_GT(inside, 100);
+        EXPECT_EQ(solidInside, 0) << "box top " << off << " m over the ground";
+    }
+}
+
+TEST(TerrainDeltas, SphereCarveAndFillAreExact) {
+    const FlatField field;
+    std::mt19937 rng(693);
+    std::uniform_real_distribution<float> c(-0.3f, 0.3f), r(0.4f, 1.6f);
+    for (int k = 0; k < 40; ++k) {
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit carve{}; carve.carve = true; carve.center = { c(rng), c(rng), c(rng) }; carve.radius = r(rng);
+        b.apply(carve, field);
+        TerrainEdit fill{}; fill.fill = true; fill.center = { carve.center.x + 4.0f, 1.0f + c(rng), carve.center.z }; fill.radius = r(rng); fill.paint = (int)VoxelMaterial::Gravel;
+        b.apply(fill, field);
+        const auto d = b.finish();
+        EXPECT_EQ(d->strokes, 2u);
+        for (int z = -10; z <= 10; ++z) for (int y = -10; y <= 12; ++y) for (int x = -10; x <= 26; ++x) {
+            const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+            const float dens = LatticeDensity(*d, field, x, y, z);
+            if (Vector3Distance(p, carve.center) < carve.radius) ASSERT_LT(dens, ISO_LEVEL) << "carved point solid at " << x << " " << y << " " << z;
+            if (Vector3Distance(p, fill.center) < fill.radius) ASSERT_GE(dens, ISO_LEVEL) << "filled point empty at " << x << " " << y << " " << z;
+        }
+        EXPECT_EQ(d->materialAt(fill.center), (int)VoxelMaterial::Gravel) << "filled ground keeps its material";
+    }
+}
+
+// #1085: grass is a state of the generated surface. A field that, like the generator, calls the ~1 m band under its surface
+// grass: a dig there, or a fill without a material, leaves bare dirt on every face point it makes; rock stays rock.
+namespace {
+struct TurfField : FlatField {
+    VoxelMaterial material(Vector3, float base) const override {
+        return base < ISO_LEVEL + DENSITY_GRADIENT * 1.0f ? VoxelMaterial::Grass : VoxelMaterial::Rock;
+    }
+};
+// The material a lattice point shows: the placed one, else the field's.
+VoxelMaterial Shown(const TerrainDeltas& d, const DensityField& f, Vector3 p) {
+    const int m = d.materialAt(p);
+    return m >= 0 ? (VoxelMaterial)m : f.material(p, f.baseDensity(p));
+}
+// Solid lattice points with an empty neighbour: the points the surface's vertices take their material from.
+template <class Fn> void ForSurfacePoints(const TerrainDeltas& d, const DensityField& f, Fn fn) {
+    for (int z = -12; z <= 12; ++z) for (int y = -12; y <= 12; ++y) for (int x = -12; x <= 12; ++x) {
+        if (LatticeDensity(d, f, x, y, z) < ISO_LEVEL) continue;
+        bool face = false;
+        const int n[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+        for (auto& o : n) face |= LatticeDensity(d, f, x + o[0], y + o[1], z + o[2]) < ISO_LEVEL;
+        if (face) fn(Vector3{ x * kVoxelSize, y * kVoxelSize, z * kVoxelSize });
+    }
+}
+}
+
+TEST(TerrainDeltas, DiggingGrassLeavesBareDirt) {
+    const TurfField field;
+    TerrainDeltas empty;
+    TerrainDeltasBuilder b(empty);
+    TerrainEdit dig{}; dig.carve = true; dig.center = { 0.1f, 0.0f, -0.1f }; dig.radius = 0.7f; // the hole's floor 0.7 m down: still in the turf band
+    b.apply(dig, field);
+    const auto d = b.finish();
+    int cut = 0, grassInCut = 0, untouchedGrass = 0;
+    ForSurfacePoints(*d, field, [&](Vector3 p) {
+        const float r = Vector3Distance(p, dig.center);
+        if (r < dig.radius + kVoxelSize) { ++cut; if (Shown(*d, field, p) == VoxelMaterial::Grass) ++grassInCut; }
+        else if (r > dig.radius + 1.5f && Shown(*d, field, p) == VoxelMaterial::Grass) ++untouchedGrass;
+    });
+    EXPECT_GT(cut, 30);
+    EXPECT_EQ(grassInCut, 0) << "the hole's faces show turf";
+    EXPECT_GT(untouchedGrass, 100) << "the untouched surface keeps its grass";
+}
+
+TEST(TerrainDeltas, FillsOnGrassAreBareDirtAndRockDigsStayRock) {
+    { // a fill without a material (no filler in hand): bare dirt, not turf
+        const TurfField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit fill{}; fill.fill = true; fill.center = { 0.0f, 0.5f, 0.0f }; fill.radius = 0.6f;
+        b.apply(fill, field);
+        const auto d = b.finish();
+        int mound = 0, grass = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) {
+            if (p.y > 0.2f && Vector3Distance(p, fill.center) < fill.radius + kVoxelSize) { ++mound; if (Shown(*d, field, p) == VoxelMaterial::Grass) ++grass; }
+        });
+        EXPECT_GT(mound, 20);
+        EXPECT_EQ(grass, 0);
+    }
+    { // a dig in rock writes no material: the rock shows its own
+        const FlatField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit dig{}; dig.carve = true; dig.center = { 0.0f, 0.0f, 0.0f }; dig.radius = 0.7f;
+        b.apply(dig, field);
+        const auto d = b.finish();
+        int placed = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) { placed += d->materialAt(p) >= 0; });
+        EXPECT_EQ(placed, 0);
+    }
+}
+
+// #1085: a till paints the surface band of soil Farmland inside its radius, leaves the ground's shape alone, and leaves
+// rock (and anything outside the radius) as it was.
+TEST(TerrainDeltas, TillingPaintsFarmlandWithoutChangingTheGround) {
+    {
+        const TurfField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit till{}; till.till = true; till.center = { 0.05f, 0.0f, 0.1f }; till.radius = 1.0f;
+        b.apply(till, field);
+        const auto d = b.finish();
+        int inside = 0, farmland = 0, outsideFarmland = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) {
+            const float r = Vector3Distance(p, till.center);
+            const VoxelMaterial m = Shown(*d, field, p);
+            if (r < till.radius - kVoxelSize) { ++inside; farmland += m == VoxelMaterial::Farmland; }
+            // materialAt falls back to a cell corner's placed material: the rim reads one lattice step wider (as drawn)
+            else if (r > till.radius + 2.0f * kVoxelSize) outsideFarmland += m == VoxelMaterial::Farmland;
+        });
+        EXPECT_GT(inside, 10);
+        EXPECT_EQ(farmland, inside) << "every surface point in the brush is farmland";
+        EXPECT_EQ(outsideFarmland, 0);
+        for (int z = -8; z <= 8; ++z) for (int y = -8; y <= 8; ++y) for (int x = -8; x <= 8; ++x)
+            ASSERT_EQ(d->at(x, y, z), 0.0f) << "a till changed the ground's density";
+    }
+    { // rock does not till
+        const FlatField field;
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit till{}; till.till = true; till.center = { 0.0f, 0.0f, 0.0f }; till.radius = 0.6f;
+        b.apply(till, field);
+        const auto d = b.finish();
+        int placed = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) { placed += d->materialAt(p) >= 0; });
+        EXPECT_EQ(placed, 0);
+    }
+}
+
+TEST(TerrainDeltas, EditsMakeNewSnapshotsAndShareUntouchedChunks) {
+    const FlatField field;
+    TerrainDeltas empty;
+    TerrainDeltasBuilder b1(empty);
+    TerrainEdit a{}; a.carve = true; a.center = { 0, 0, 0 }; a.radius = 1.0f;
+    TerrainEdit far{}; far.carve = true; far.center = { 100, 0, 0 }; far.radius = 1.0f;
+    b1.apply(a, field); b1.apply(far, field);
+    const auto s1 = b1.finish();
+    TerrainDeltasBuilder b2(*s1);
+    std::unordered_set<TerrainDeltas::Key> touched;
+    TerrainEdit again = a; again.center = { 0.5f, 0, 0 };
+    b2.apply(again, field, &touched);
+    const auto s2 = b2.finish();
+    EXPECT_FALSE(touched.empty());
+    int shared = 0, copied = 0;
+    for (const auto& kv : s2->chunks) {
+        auto it = s1->chunks.find(kv.first);
+        if (it == s1->chunks.end()) continue;
+        (it->second == kv.second ? shared : copied)++;
+        if (it->second != kv.second) EXPECT_TRUE(touched.count(kv.first)) << "a changed chunk is reported";
+    }
+    EXPECT_GT(shared, 0) << "the far stroke's chunks are shared, not copied";
+    EXPECT_GT(copied, 0);
+    EXPECT_LT(LatticeDensity(*s1, field, 0, 0, 0), ISO_LEVEL);
+}
+
+TEST(TerrainDeltas, KeysPackAndRegionsFloor) {
+    std::mt19937 rng(5);
+    std::uniform_int_distribution<int> d(-1000000, 1000000);
+    for (int i = 0; i < 10000; ++i) {
+        const int x = d(rng), y = d(rng), z = d(rng);
+        int a, b, c;
+        TerrainDeltas::Unpack(TerrainDeltas::KeyOf(x, y, z), a, b, c);
+        ASSERT_EQ(a, x); ASSERT_EQ(b, y); ASSERT_EQ(c, z);
+    }
+    int rx, ry, rz;
+    TerrainDeltas::Unpack(TerrainDeltas::RegionOf(TerrainDeltas::KeyOf(-1, 0, 15)), rx, ry, rz);
+    EXPECT_EQ(rx, -1); EXPECT_EQ(ry, 0); EXPECT_EQ(rz, 0);
+    TerrainDeltas::Unpack(TerrainDeltas::RegionOf(TerrainDeltas::KeyOf(-16, -17, 16)), rx, ry, rz);
+    EXPECT_EQ(rx, -1); EXPECT_EQ(ry, -2); EXPECT_EQ(rz, 1);
+}
+
+TEST(TerrainDeltas, SparseChunkDenseRoundTrip) {
+    std::mt19937 rng(11);
+    std::vector<int16_t> dense(DeltaChunk::kN, 0);
+    for (int k = 0; k < 3000; ++k) dense[rng() % DeltaChunk::kN] = (int16_t)((int)(rng() % 2001) - 1000);
+    DeltaChunk c;
+    c.fromDense(dense.data());
+    for (int i = 0; i < DeltaChunk::kN; ++i) ASSERT_EQ(c.get(i), dense[i]) << i;
+    std::vector<int16_t> out(DeltaChunk::kN, 7);
+    c.toDense(out.data());
+    EXPECT_EQ(out, dense);
+    DeltaChunk e;
+    for (int i = 0; i < DeltaChunk::kN; i += 97) e.set(i, 0);
+    EXPECT_TRUE(e.empty()) << "zeros allocate no brick";
+}
+#endif

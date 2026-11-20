@@ -49,8 +49,14 @@ enum class PartType : uint8_t {
     Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
     Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
     Meteorite,                                                       // a fallen meteorite (#177): 1 m of space rock; broken, it gives nickel-iron and rare ores
+    PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
+    Bed,                                                             // a bed (#800): right-click it to respawn there while it stands
+    ClaimBanner, ClaimBanner2, ClaimBanner3, ClaimBanner4,            // (#343) claim banners: placed in multiplayer, they claim 100 / 200 / 400 / 800 m across for the team
     Count
 };
+// (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
+inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
+constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
 inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
@@ -80,6 +86,7 @@ struct Part {
     uint8_t orient;     // 0..23
     uint8_t material = 0; // shapes: BuildMaterial index
 };
+bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
@@ -108,6 +115,8 @@ public:
     float air = 0.0f;                   // rocket life support: minutes of breathable air loaded (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
+    std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
+    uint32_t refundTo = 0;              // (#854) a server: the player whose removal is next to reach the factory (its machines' contents go to them)
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;

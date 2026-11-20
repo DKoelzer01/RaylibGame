@@ -30,8 +30,10 @@ extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
 void BuildTool_Draw3D(Scene& world);
+void BuildTool_ForgetWorld(); // drop the aim's pointers into a world being unloaded (#902)
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
+float BuildTool_BreakHold();       // (#919) seconds LMB must be held to take a part down (Building's perks shorten it)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
 int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
 // The aimed placement for tests (#550/#551): the plot it goes into (null: a new plot at newOrigin, body-local) and its
@@ -40,6 +42,7 @@ const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin);
 // Place a part on a plot (charging its cost unless creative or charge is false) and lay its
 // foundation against the ground. Used by the tool and by scripted tests.
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge);
+void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part); // (#919) Building XP once the part has stood 5 min
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,

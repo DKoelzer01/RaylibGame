@@ -1,3 +1,4 @@
+#include <functional>
 #include <unordered_map>
 #include <filesystem>
 #include <cstring>
@@ -42,6 +43,7 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Pebbles: return "pebbles";
         case VoxelMaterial::Silt: return "silt";
         case VoxelMaterial::Mud: return "mud";
+        case VoxelMaterial::Farmland: return "farmland";
         default: return "?";
     }
 }
@@ -137,6 +139,9 @@ static float SeedSpan(float frequency) {
 
 float NoiseSeedSpanUnits() { SeedSpan(1.0f); return gSeedSpanUnits; }
 
+// #1055: a process-wide counter for PlanetField::caveEpoch (never 0, so a default key never matches a field's).
+static uint32_t NextCaveEpoch() { static std::atomic<uint32_t> n{ 0 }; return ++n; }
+
 static SimplexNoise SeededNoise(std::mt19937& rng, float frequency) {
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     const float span = SeedSpan(frequency);
@@ -227,6 +232,7 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     gridCache = std::make_shared<GridNodeCache>();
     erosionState = std::make_shared<ErosionState>();
     fieldSeed = seed;
+    caveEpoch = NextCaveEpoch();      // #1055
     std::mt19937 rng(seed);
     // Large features scale with the body (a moon gets proportionally sized basins and ridges);
     // hills, detail, caves and veins are absolute sizes, so they feel the same everywhere.
@@ -259,6 +265,7 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
 }
 
 void PlanetField::setGenParams(const WorldGenParams& p) {
+    caveEpoch = NextCaveEpoch();      // #1055: the land changes: cave cells built before must not be reused
     gen = p;
     if (moon) return;
     // land(): 200 m of gentle land + the ranges (1400 m x mountains) + hills (85 m x roughness) + detail; the default
@@ -268,6 +275,7 @@ void PlanetField::setGenParams(const WorldGenParams& p) {
 }
 
 void PlanetField::setSandbox() {
+    caveEpoch = NextCaveEpoch();      // #1055
     if (moon) return;
     sandbox = true;
     gen.erosion = false;               // no bake
@@ -290,6 +298,7 @@ struct PlanetField::ErosionState {
     CanyonGrade grade; bool gradeOn = false; // #544: the canyons' graded floors, while the bake reads its input (set before its threads start)
 };
 
+bool PlanetField::caveBaked() const { return erosion() != nullptr; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -869,7 +878,12 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
+            rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
+            // #903: the biomes' regional reshaping (swamps pulled ~24 m down) moves the water with the ground; at a coarse
+            // footprint only the regional part counts (dunes are bumps the channel cuts through). A/B: =1 the old levels.
+            if (!EnvFlag("RAYLIBGAME_RIVER_SHIFT_OLD")) rp.regionalShift = [this](Vector3 d, float h) { return biomeShape(d, h, 512.0f); };
             riverState->net = std::make_unique<RiverNetwork>(*ero, radius, rp);
         } else
         // With the bake, the network sees the baked surface itself: land() adds the gullies (+-75 m at this footprint),
@@ -1024,6 +1038,25 @@ PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) cons
     return c;
 }
 
+// (#971, user 2026-11-19) Wet lowlands keep their cave roofs: in swamps (the climate's swamp rule, smoothed: moist > ~0.74
+// under ~90 m) and on rivers' floodplains (within ~120 m of a real river's edge, under ~8 m over its level) a tunnel just
+// under the ground stays closed instead of collapsing into a trench (#549). RAYLIBGAME_WET_CAVE_ROOF=0: off.
+float PlanetField::caveWetColumn(Vector3 dir, float elev) const {
+    static const bool on = !(getenv("RAYLIBGAME_WET_CAVE_ROOF") && getenv("RAYLIBGAME_WET_CAVE_ROOF")[0] == '0');
+    if (!on || moon || elev <= 0.0f) return 0.0f;
+    const Climate cl = climateAt(dir, elev);
+    const float swamp = Smoothstep(0.70f, 0.78f, cl.moist) * (1.0f - Smoothstep(75.0f, 95.0f, elev));
+    float flood = 0.0f;
+    if (const RiverNetwork* net = rivers()) {
+        const RiverNetwork::Hit rh = net->nearest(dir, 160.0f);
+        if (rh.found) {
+            const float edge = std::max(0.0f, rh.dist - rh.halfWidth), over = elev - rh.level;
+            flood = (1.0f - Smoothstep(60.0f, 120.0f, edge)) * (1.0f - Smoothstep(4.0f, 8.0f, over));
+        }
+    }
+    return std::max(swamp, flood);
+}
+
 float PlanetField::terrain3D(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     if (moon || d < 1e-3f) return 0.0f;
     const float h = d - surface;
@@ -1144,6 +1177,795 @@ int PlanetField::floatingIslandsNear(Vector3 dir, float range, std::vector<Vecto
     return (int)out.size();
 }
 
+// ---- (#615 step 2) The cave graph ----
+// Passages are capsule chains generated per 256 m cell of the sea-level projection (as floating islands, in 3D cells of
+// the projected point), from the field's seed only: the GPU never repeats the random choices, it gets the segments.
+bool PlanetField::CavesGraph() {
+    static const bool on = !(getenv("RAYLIBGAME_CAVES") && getenv("RAYLIBGAME_CAVES")[0] == '0'); // on by default since step 3 (#1022)
+    return on;
+}
+namespace {
+constexpr float kCaveCell = 256.0f;
+constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
+struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
+struct CaveMouth { Vector3 at, out; int kind = 0; float radius = 0.0f, depth = 0.0f; }; // radius, depth: shafts (kind 1, #1067) // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
+struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
+// (#1055) A cell depends on more than (seed, cell): on the field's land (its gen params: caveEpoch, renewed by setGenParams /
+// setSandbox and unique per field) and on whether the erosion bake was visible when it was built. Both are in the key
+// (equality only: the hash and so the cell's random numbers stay (seed, cell)), so a read before the bake is attached, or
+// an earlier world with the same seed in this process, can no longer leave cells that later reads reuse.
+struct CaveCellKey { unsigned seed; int x, y, z; uint32_t epoch = 0; bool baked = false;
+    bool operator==(const CaveCellKey& o) const { return seed == o.seed && x == o.x && y == o.y && z == o.z && epoch == o.epoch && baked == o.baked; } };
+struct CaveCellHash { size_t operator()(const CaveCellKey& k) const { return ((size_t)k.seed * 2654435761u) ^ ((size_t)k.x * 73856093u) ^ ((size_t)k.y * 19349663u) ^ ((size_t)k.z * 83492791u); } };
+struct CaveCache {
+    struct Shard { std::mutex m; std::unordered_map<CaveCellKey, std::shared_ptr<const CaveCellData>, CaveCellHash> map; };
+    Shard shards[32];
+};
+CaveCache& Caves() { static CaveCache c; return c; }
+// The cave field's own per-point list (single samples: collision, tests); blocks set theirs (sampleBlock).
+thread_local const std::vector<float>* tlCaveSegs = nullptr;
+struct CaveSegScope {
+    const std::vector<float>* prev;
+    explicit CaveSegScope(const std::vector<float>* s) : prev(tlCaveSegs) { tlCaveSegs = s; }
+    ~CaveSegScope() { tlCaveSegs = prev; }
+};
+} // namespace
+
+// One cell's passages: background tunnels (step 2), 0-2 per land cell, each a gently turning random walk of 6-16 segments
+// 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
+// wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
+// (#1058) RAYLIBGAME_CAVE_CHAMBERS=0: no chambers (cost A/B; a skipped chamber draws no numbers, so the passages walked after
+// it in that cell come out differently: compare volumes and costs, not hashes).
+static bool CaveChambersOn() { static const bool on = !(getenv("RAYLIBGAME_CAVE_CHAMBERS") && getenv("RAYLIBGAME_CAVE_CHAMBERS")[0] == '0'); return on; }
+static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
+    const CaveCellKey key{ seed, cx, cy, cz, f.caveEpoch, f.caveBaked() };
+    CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
+    {
+        std::lock_guard<std::mutex> lock(sh.m);
+        if (auto it = sh.map.find(key); it != sh.map.end()) return it->second;
+    }
+    auto data = std::make_shared<CaveCellData>();
+    std::vector<CaveSeg>* segs = &data->segs;
+    std::mt19937 rng((unsigned)(CaveCellHash{}(key) ^ 0x9E3779B9u));
+    std::uniform_real_distribution<float> U(0.0f, 1.0f);
+    const float R = f.radius;
+    // A passage: a gently turning random walk of segments 15-30 m long, kept 25 m + its radius deep (never at the surface),
+    // the radius wandering in [rmin, 8] m. Main passages branch (25% of their vertices) into shorter, narrower side passages,
+    // so the tunnels form networks (#615, #999: spaghetti and noodle caves). Branches at 35% of main vertices.
+    auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
+    // (#1058, Plan 10 step 5) A chamber at a deep passage vertex c (depth m under the ground; 2% of deep background vertices,
+    // 10% of karst ones): an ellipsoid flattened
+    // along the local vertical (half-width 15-45 m, mostly the smaller, height x0.3-0.45: wide and low, its roof domed),
+    // a level floor 0.4 r below its axis (kind 3), a breakdown floor of 3-8 sunk boulders (solid, r 2-6 m) and 0-2
+    // columns floor to roof (solid, r 1.5-4 m). Skipped where its dome would come within 10 m of the surface.
+    auto chamber = [&](Vector3 c, Vector3 head, float depth, std::mt19937& g) {
+        std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
+        const float u0 = Ug(g), u1 = Ug(g), u2 = Ug(g), u3 = Ug(g);
+        const float r = 15.0f + 30.0f * u0 * u0, flat = 0.3f + 0.15f * u1;
+        if (depth - r * flat * 2.3f < 10.0f) return;
+        const Vector3 up = Vector3Normalize(c);
+        const Vector3 hd = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
+        const Vector3 sd = Vector3CrossProduct(up, hd);
+        auto add = [&](Vector3 a, Vector3 b, float ra, float rb, float fl, int kind) {
+            CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
+        };
+        add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, 3);
+        data->mouths.push_back({ c, up, 3 });                            // (for tests: --test-caves RAYLIBGAME_CAVES_CHAMBER=1)
+        const float floorH = -0.4f * r * flat;
+        auto onFloor = [&](float dist, float ang, float h) {
+            return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
+        };
+        const int boulders = 3 + (int)(6.0f * u2);
+        for (int i = 0; i < boulders; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 2.0f + 4.0f * Ug(g);
+            const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
+            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
+        }
+        const int columns = (int)(3.0f * u3);
+        for (int i = 0; i < columns; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), cr = 1.5f + 2.5f * Ug(g);
+            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
+        }
+    };
+    std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
+        Vector3 dir = Vector3Normalize(pos);
+        const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
+        for (int k = 0; k < n; ++k) {
+            const float L = 15.0f + 15.0f * U(rng);
+            const float turn = (U(rng) - 0.5f) * 1.2f;                      // up to ~35 degrees a segment
+            const Vector3 side = Vector3CrossProduct(dir, head);
+            head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(side, sinf(turn))));
+            const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, rmin, rmax);
+            const float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
+            const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
+            const float e2 = f.elevation(dir2);
+            if (e2 < 0.0f) break;                                          // not under the sea
+            const Vector3 pos2 = Vector3Scale(dir2, R + e2 - depth2);
+            // The middle must stay deep too (the ground between may dip): else the passage ends here.
+            const Vector3 mid = Vector3Scale(Vector3Add(pos, pos2), 0.5f);
+            const float ml = Vector3Length(mid);
+            if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml < minDepth(std::max(r, r2))) break;
+            CaveSeg sg;
+            sg.a = pos; sg.b = pos2; sg.ra = r; sg.rb = r2; sg.flat = flat;
+            sg.up = Vector3Normalize(Vector3Add(pos, pos2));
+            segs->push_back(sg);
+            pos = pos2; dir = dir2; r = r2; depth = depth2;
+            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
+            head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
+            if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
+                const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
+                const Vector3 s2 = Vector3CrossProduct(dir, head);
+                const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(s2, sinf(bt))));
+                walk(pos, bh, depth, std::min(r, 1.5f + 2.5f * U(rng)), std::clamp(flat + (U(rng) - 0.5f) * 0.2f, 0.45f, 0.95f), 3 + (int)(U(rng) * 5.0f), 1);
+            }
+        }
+    };
+    // (#615) Abundance (the New World "Caves" slider, step 11; RAYLIBGAME_CAVE_ABUNDANCE for now): 0 none, 1 as tuned, 2 ~3x.
+    // The first starts draw the same numbers at any abundance, so more caves add passages and keep the others.
+    static const float abundance = getenv("RAYLIBGAME_CAVE_ABUNDANCE") ? std::clamp((float)atof(getenv("RAYLIBGAME_CAVE_ABUNDANCE")), 0.0f, 2.0f) : 1.0f;
+    const int starts = (int)lroundf(4.0f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+    for (int tries = 0; tries < starts; ++tries) {
+        const Vector3 s = { (cx + U(rng)) * kCaveCell, (cy + U(rng)) * kCaveCell, (cz + U(rng)) * kCaveCell };
+        const float sl = Vector3Length(s);
+        if (sl < 1.0f) continue;
+        const Vector3 dir = Vector3Scale(s, 1.0f / sl);
+        const Vector3 onR = Vector3Scale(dir, R); // the start must project into this cell
+        if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+        if (f.elevation(dir) < 5.0f) continue;     // land only
+        if (U(rng) < 0.1f) continue;               // not every start
+        const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+        const float ang = U(rng) * 2.0f * PI;
+        const Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
+        const float r = 2.0f + 6.0f * U(rng);
+        const float depth = std::max(25.0f + 95.0f * U(rng), minDepth(r));
+        walk(Vector3Scale(dir, R + f.elevation(dir) - depth), head, depth, r, 0.5f + 0.4f * U(rng), 6 + (int)(U(rng) * 11.0f), 0);
+    }
+    // (#615 step 3) Natural mouths: at most one per cell, on a slope of ~20 degrees or more. The entrance runs level into the
+    // hill from the slope face (its axis set so the flat floor meets the ground there, its opening ~1.6x the passage, wider
+    // than tall), then descends ~1 m every 8 m with the hill above as its roof (3 m+ thick, or there is no mouth here),
+    // and once 25 m+ down it goes on as an ordinary branching passage. Caves reach the surface only here (#999: entrances,
+    // not accidents). Its own random numbers: the same mouths at any abundance, more of them with more caves.
+    {
+        std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
+        std::uniform_real_distribution<float> UM(0.0f, 1.0f);
+        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
+        for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
+            const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
+            const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
+            const float sl = Vector3Length(s);
+            (void)coin;
+            if (sl < 1.0f) continue;
+            Vector3 dir = Vector3Scale(s, 1.0f / sl);
+            const Vector3 onR = Vector3Scale(dir, R);
+            if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+            const float e0 = f.elevation(dir);
+            if (e0 < 2.0f) continue;
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 t2 = Vector3CrossProduct(dir, t1);
+            auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+            const float g1 = (f.elevation(at(dir, Vector3Scale(t1, 4.0f))) - f.elevation(at(dir, Vector3Scale(t1, -4.0f)))) / 8.0f;
+            const float g2 = (f.elevation(at(dir, Vector3Scale(t2, 4.0f))) - f.elevation(at(dir, Vector3Scale(t2, -4.0f)))) / 8.0f;
+            const float slope = sqrtf(g1 * g1 + g2 * g2);
+            if (slope < 0.36f || slope > 3.0f) continue;                  // ~20-72 degrees
+            Vector3 uphill = Vector3Normalize(Vector3Add(Vector3Scale(t1, g1), Vector3Scale(t2, g2)));
+            // A real face, not a dimple in a field: the ground rises 5 m+ within 10 m behind the mouth (2 m+ within 5 m),
+            // and the opening is sized to fit under it (its roof 1.6 x rMouth x flat over the ground at the face, plus a
+            // 1.5 m lip), so the passage enters a hillside and is seen from the front with rock overhead.
+            const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
+            const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
+            const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
+            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            const float flat = 0.55f + 0.15f * rf;
+            const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
+            if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
+            const float rMouth = 1.6f * r;
+            { // (#1022) no tors or boulders (rock over the height map) in or before the opening: they hid it from the front
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(dir, uphill));
+                bool blocked = false;
+                for (int sx = -1; sx <= 1 && !blocked; ++sx)
+                    for (float out = -1.0f; out <= 8.0f && !blocked; out += 3.0f) {
+                        const Vector3 dq = at(dir, Vector3Add(Vector3Scale(side, 0.6f * rMouth * sx), Vector3Scale(uphill, -out)));
+                        const float sq = R + f.elevation(dq);
+                        for (float hq = 0.5f; hq <= 2.5f && !blocked; hq += 1.0f) {
+                            const Vector3 pq = Vector3Scale(dq, sq + hq);
+                            blocked = f.rockFeature(pq, sq + hq, sq, 0.0f) > -0.5f;
+                        }
+                    }
+                if (blocked) continue;
+            }
+            const float axisH = e0 + 0.6f * rMouth * flat;                 // the flat floor at the ground at the face
+            const float drop = 0.8f + 0.8f * rd;                           // m per 8 m segment
+            std::vector<CaveSeg> ent;
+            int kindNext = 1;                                              // the mouth's first two segments are rougher, with a rubble floor
+            auto seg = [&](Vector3 a, Vector3 b, float ra, float rb) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kindNext; ent.push_back(sg);
+            };
+            const Vector3 outside = Vector3Scale(at(dir, Vector3Scale(uphill, -rMouth)), R + axisH);
+            Vector3 pos = Vector3Scale(dir, R + axisH);
+            seg(outside, pos, rMouth, rMouth);
+            CaveSeg lip; // (#1022) the overhanging lip: a thin slab of rock following the hillside down to the top of the
+            {            // opening and 2 m out past the face (its rounded end included), ragged-edged (solid, kind 2): its inner end
+                         // lies 1.2 m under the slope 6 m+ in, its outer end at the roof, so it reads as the hill hanging over
+                         // The hill meets roof height some metres in from the face (the face slopes): the lip hangs 2 m out
+                         // from there, never in the open air in front of the slope.
+                const float roofH = axisH + 0.8f * rMouth * flat;
+                float dRoof = 0.0f;
+                while (dRoof < 15.0f && f.elevation(at(dir, Vector3Scale(uphill, dRoof))) < roofH + 0.5f) dRoof += 0.5f;
+                const float cap = 0.8f * rMouth;
+                const float bOff = dRoof - 2.0f + cap;                       // the outer end, so the cap reaches 2 m out
+                const float aOff = bOff + std::max(2.0f, cap);
+                const Vector3 aDir = at(dir, Vector3Scale(uphill, aOff));
+                lip.a = Vector3Scale(aDir, R + f.elevation(aDir) - 1.2f);
+                lip.b = Vector3Scale(at(dir, Vector3Scale(uphill, bOff)), R + roofH);
+                lip.ra = lip.rb = cap; lip.flat = 0.15f; lip.up = Vector3Normalize(Vector3Add(lip.a, lip.b)); lip.kind = 2;
+            }
+            float h = axisH, depth = 0.0f;
+            bool ok = true;
+            int k = 0;
+            for (; k < 14; ++k) {
+                const Vector3 dir2 = at(dir, Vector3Scale(uphill, 8.0f));
+                h -= drop;
+                const float e2 = f.elevation(dir2);
+                depth = e2 - h;
+                const float rb = k == 0 ? r + 0.4f * (rMouth - r) : r;
+                const float roof = depth - rb * flat * 2.3f;                // rock over the passage's highest point (swell, bulges, roof pockets)
+                if (roof < (k == 0 ? 1.0f : 3.0f)) { ok = false; break; }   // the hill is too thin over it: no mouth here
+                const Vector3 pos2 = Vector3Scale(dir2, R + h);
+                kindNext = k == 0 ? 1 : 0;
+                seg(pos, pos2, k == 0 ? rMouth : (k == 1 ? r + 0.4f * (rMouth - r) : r), rb);
+                pos = pos2; dir = dir2;
+                uphill = Vector3Normalize(Vector3Subtract(uphill, Vector3Scale(dir, Vector3DotProduct(uphill, dir))));
+                if (depth >= minDepth(r)) break;
+            }
+            if (!ok || k < 1) continue;
+            segs->insert(segs->end(), ent.begin(), ent.end());
+            { // a rubble apron: a low, lumpy mound of fallen blocks on the slope just outside and below the opening
+                const Vector3 od = Vector3Normalize(ent.front().a);
+                const Vector3 apDir = at(od, Vector3Scale(Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b)), 0.2f * rMouth)); // (#1022: low talus, walked over)
+                const Vector3 c = Vector3Scale(apDir, R + f.elevation(apDir) - 0.26f * rMouth);
+                const Vector3 across = Vector3Normalize(Vector3CrossProduct(apDir, Vector3Subtract(ent.front().a, ent.front().b))); // along the slope's contour
+                CaveSeg ap; ap.a = Vector3Subtract(c, Vector3Scale(across, 0.5f * rMouth));
+                ap.b = Vector3Add(c, Vector3Scale(across, 0.5f * rMouth));
+                ap.ra = ap.rb = 0.65f * rMouth; ap.flat = 0.3f; ap.up = apDir; ap.kind = 2;
+                segs->push_back(ap);
+            }
+            segs->push_back(lip);
+            data->mouths.push_back({ Vector3Scale(dir, 0.0f), Vector3Negate(uphill) });
+            data->mouths.back().at = ent.front().b;                        // the axis point at the slope face
+            data->mouths.back().out = Vector3Normalize(Vector3Subtract(ent.front().a, ent.front().b));
+            if (depth >= minDepth(r)) walk(pos, uphill, depth, r, flat, 4 + (int)(rn * 8.0f), 0); // on into the network
+        }
+    }
+    // (#1052, Plan 10 step 4) Karst river caves: in karst country (#592, New World "Karst"; weight > 0.3) a doline whose
+    // centre falls in this cell may be a sink: a round shaft from its floor down 10-30 m with a rubble cone at its foot, and
+    // from there a river passage following the drainage (the 240 m-scale downhill, not the bowl's own), its axis falling
+    // 1-5% of the way: keyhole sections first (a tube with a narrow slot above it, made of two stacked round tubes), then
+    // round tubes; level side passages at 40% of its vertices make mazes. Where the roof thins out after 100 m+ it has met
+    // a valley side: it opens there (a resurgence). At most ~640 m, inside the cells' reach (kCaveCellReach). Each doline
+    // draws its own numbers (seeded by its id): the same sinks at any abundance, more of them with more.
+    {
+        const Vector3 clo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
+        std::vector<KarstDoline> dolines;
+        Strata_KarstDolines(clo, Vector3AddValue(clo, kCaveCell), R, seed, dolines);
+        const float sinkOdds = std::min(0.95f, 0.6f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+        auto frame = [](Vector3 d0, Vector3& a1, Vector3& a2) {
+            a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            a2 = Vector3CrossProduct(d0, a1);
+        };
+        auto downhill = [&](Vector3 d0, Vector3 fallback) {               // the drainage direction at the 240 m scale
+            Vector3 a1, a2; frame(d0, a1, a2);
+            const float g1 = f.elevation(at(d0, Vector3Scale(a1, 120.0f))) - f.elevation(at(d0, Vector3Scale(a1, -120.0f)));
+            const float g2 = f.elevation(at(d0, Vector3Scale(a2, 120.0f))) - f.elevation(at(d0, Vector3Scale(a2, -120.0f)));
+            const Vector3 g = Vector3Add(Vector3Scale(a1, -g1), Vector3Scale(a2, -g2));
+            const float gl = Vector3Length(g);
+            return gl > 1.0f ? Vector3Scale(g, 1.0f / gl) : fallback;
+        };
+        auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+            CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+            segs->push_back(sg);
+        };
+        for (const KarstDoline& dl : dolines) {
+            if (f.karstWeight(Vector3Scale(dl.dir, R)) < 0.3f) continue;
+            const float e0 = f.elevation(dl.dir);
+            if (e0 < 3.0f) continue;                                         // a flooded hollow
+            std::mt19937 rk(dl.id ^ 0x6B4A57u);
+            std::uniform_real_distribution<float> UK(0.0f, 1.0f);
+            float rnd[8];
+            for (float& v : rnd) v = UK(rk);
+            if (rnd[0] >= sinkOdds) continue;
+            const Vector3 up = dl.dir;
+            Vector3 a1, a2; frame(up, a1, a2);
+            // The shaft: round, its walls vertical, from 3 m over the bowl's floor down to the passage; the cone on its floor.
+            const float sr = 3.0f + 3.0f * rnd[1], sdepth = 10.0f + 20.0f * rnd[2];
+            const Vector3 bot = Vector3Scale(up, R + e0 - sdepth);
+            push(Vector3Scale(up, R + e0 + 3.0f), bot, sr, 0.85f * sr, 1.0f, 0);
+            const Vector3 coneC = Vector3Scale(up, R + e0 - sdepth - 0.45f * sr);
+            push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.7f * sr, 0.7f * sr, 0.35f, 2);
+            data->mouths.push_back({ Vector3Scale(up, R + e0), up, 1, sr, sdepth });
+            // The river passage.
+            const float slope = 0.01f + 0.04f * rnd[3];
+            const int n = 20 + (int)(12.0f * rnd[4]);
+            const float keyLen = (0.25f + 0.35f * rnd[5]) * n * 20.0f;
+            const float ang = rnd[6] * 2.0f * PI;
+            const Vector3 head0 = downhill(up, Vector3Add(Vector3Scale(a1, cosf(ang)), Vector3Scale(a2, sinf(ang))));
+            std::function<void(Vector3, Vector3, Vector3, float, float, float, int, int, float)> kwalk =
+                [&](Vector3 pos, Vector3 dir, Vector3 head, float h, float r, float fall, int steps, int level, float keyRun) {
+                float run = 0.0f;
+                for (int k = 0; k < steps; ++k) {
+                    const float L = 15.0f + 10.0f * UK(rk);
+                    const float turn = (UK(rk) - 0.5f) * 0.7f;
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                    if (level == 0) head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.7f), Vector3Scale(downhill(dir, head), 0.3f)));
+                    const float r2 = std::clamp(r + (UK(rk) - 0.5f) * 1.5f, level ? 1.2f : 2.0f, level ? 3.0f : 5.0f);
+                    const float h2 = h - fall * L;
+                    const Vector3 dir2 = at(dir, Vector3Scale(head, L));
+                    const float e2 = f.elevation(dir2);
+                    if (e2 < 0.0f) break;                                    // not under the sea
+                    const bool key = run < keyRun;
+                    const float topR = key ? 2.25f * r2 : 0.95f * r2;        // the section's top over the axis
+                    const Vector3 pos2 = Vector3Scale(dir2, R + h2);
+                    if (e2 - h2 - 1.5f * topR < 3.0f) {                      // the roof is thinning out (pockets x1.5)
+                        if (level == 0 && run > 100.0f) {                    // a valley side: a resurgence
+                            const Vector3 fwd = Vector3Normalize(Vector3Subtract(pos2, pos));
+                            push(pos, Vector3Add(pos2, Vector3Scale(fwd, 1.6f * r2)), r, 1.6f * r2, 0.8f, 1);
+                            data->mouths.push_back({ pos2, fwd, 2 });
+                        }
+                        break;
+                    }
+                    push(pos, pos2, r, r2, key ? 0.95f : 0.9f, 0);
+                    if (key) {                                               // the keyhole's slot: two stacked round tubes
+                        const Vector3 u1 = Vector3Normalize(pos), u2 = Vector3Normalize(pos2);
+                        push(Vector3Add(pos, Vector3Scale(u1, 1.0f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.0f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
+                        push(Vector3Add(pos, Vector3Scale(u1, 1.8f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.8f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
+                    }
+                    pos = pos2; dir = dir2; r = r2; h = h2; run += L;
+                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.10f && CaveChambersOn()) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
+                    head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
+                    if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
+                        const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
+                        const Vector3 bh = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(bt)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(bt))));
+                        kwalk(pos, dir, bh, h, std::min(r, 1.5f + 1.5f * UK(rk)), 0.0f, 3 + (int)(4.0f * UK(rk)), 1, 0.0f);
+                    }
+                }
+            };
+            kwalk(bot, up, head0, e0 - sdepth, 2.0f + 3.0f * rnd[7], slope, n, 0, keyLen);
+        }
+    }
+    // (#1063, Plan 10 step 6) Lava tubes: a cell on a volcano's flank (weight 0.3-0.85: below the crater, above the toe;
+    // New World "Volcanoes") starts one at 1% x abundance (its own numbers): a sinuous tube walking down the 120 m-scale
+    // slope 5-25 m under the ground, radius 2.5-6.5 m and height x0.6-0.8 (5-13 m wide, 3-10 m high), with the level floor
+    // and arched roof of kind 3, thin ledges along one wall (half its segments, solid), skylights (round shafts to the
+    // surface at 12% of its segments under 15 m; entrances of kind 1), and an exit where its roof thins out (kind 2).
+    // At most ~640 m (the cells' reach).
+    if (f.gen.volcanoes) {
+        std::mt19937 rt((unsigned)(CaveCellHash{}(key) ^ 0x1A7A70BEu));
+        std::uniform_real_distribution<float> UT(0.0f, 1.0f);
+        const float tubeOdds = std::min(0.95f, 0.01f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float coin = UT(rt), sx = UT(rt), sy = UT(rt), sz = UT(rt);
+        const Vector3 s = { (cx + sx) * kCaveCell, (cy + sy) * kCaveCell, (cz + sz) * kCaveCell };
+        const float sl = Vector3Length(s);
+        float vw = 0.0f;
+        if (coin < tubeOdds && sl > 1.0f) Strata_Volcano(Vector3Scale(s, R / sl), R, seed, &vw);
+        Vector3 dir = sl > 1.0f ? Vector3Scale(s, 1.0f / sl) : Vector3{ 0, 1, 0 };
+        const Vector3 onR = Vector3Scale(dir, R);
+        const bool inCell = (int)floorf(onR.x / kCaveCell) == cx && (int)floorf(onR.y / kCaveCell) == cy && (int)floorf(onR.z / kCaveCell) == cz;
+        if (coin < tubeOdds && inCell && vw > 0.3f && vw < 0.85f && f.elevation(dir) > 5.0f) {
+            auto at = [&](Vector3 d0, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(d0, R), off)); };
+            auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                segs->push_back(sg);
+            };
+            auto downhill = [&](Vector3 d0, Vector3 fallback) {
+                const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 a2 = Vector3CrossProduct(d0, a1);
+                const float g1 = f.elevation(at(d0, Vector3Scale(a1, 60.0f))) - f.elevation(at(d0, Vector3Scale(a1, -60.0f)));
+                const float g2 = f.elevation(at(d0, Vector3Scale(a2, 60.0f))) - f.elevation(at(d0, Vector3Scale(a2, -60.0f)));
+                const Vector3 g = Vector3Add(Vector3Scale(a1, -g1), Vector3Scale(a2, -g2));
+                const float gl = Vector3Length(g);
+                return gl > 1.0f ? Vector3Scale(g, 1.0f / gl) : fallback;
+            };
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const float ang = 2.0f * PI * UT(rt);
+            Vector3 head = downhill(dir, Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang)))));
+            float r = 2.5f + 4.0f * UT(rt), depth = 6.0f + 10.0f * UT(rt);
+            const float flat = 0.6f + 0.2f * UT(rt);
+            const int n = 20 + (int)(12.0f * UT(rt));
+            Vector3 pos = Vector3Scale(dir, R + f.elevation(dir) - depth);
+            for (int k = 0; k < n; ++k) {
+                const float L = 15.0f + 10.0f * UT(rt);
+                const float turn = (UT(rt) - 0.5f) * 0.5f;                     // sinuous
+                head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(dir, head), sinf(turn))));
+                head = Vector3Normalize(Vector3Add(Vector3Scale(head, 0.6f), Vector3Scale(downhill(dir, head), 0.4f)));
+                const float r2 = std::clamp(r + (UT(rt) - 0.5f) * 1.5f, 2.5f, 6.5f);
+                const float d2 = std::clamp(depth + (UT(rt) - 0.5f) * 3.0f, 5.0f, 25.0f);
+                const Vector3 dir2 = at(dir, Vector3Scale(head, L));
+                const float e2 = f.elevation(dir2);
+                if (e2 < 0.0f) break;
+                const Vector3 pos2 = Vector3Scale(dir2, R + e2 - d2);
+                const float ledgeU = UT(rt), skyU = UT(rt), sideU = UT(rt);
+                // The roof must hold over the arch (pockets x1.5): on the lower flank where it thins out, the tube opens.
+                if (d2 - 1.5f * r2 * flat < 3.0f) {
+                    if (k > 3) {
+                        const Vector3 fwd = Vector3Normalize(Vector3Subtract(pos2, pos));
+                        push(pos, Vector3Add(pos2, Vector3Scale(fwd, 1.6f * r2)), r, 1.6f * r2, 0.8f, 1);
+                        data->mouths.push_back({ pos2, fwd, 2 });
+                    }
+                    break;
+                }
+                push(pos, pos2, r, r2, flat, 3);
+                if (ledgeU < 0.5f) {                                           // a thin shelf along one wall, mid-height
+                    const Vector3 up = Vector3Normalize(Vector3Add(pos, pos2));
+                    Vector3 side = Vector3CrossProduct(up, Vector3Subtract(pos2, pos));
+                    side = Vector3Scale(Vector3Normalize(side), sideU < 0.5f ? -1.0f : 1.0f);
+                    push(Vector3Add(pos, Vector3Scale(side, 0.85f * r)), Vector3Add(pos2, Vector3Scale(side, 0.85f * r2)), 0.22f * r, 0.22f * r2, 0.35f, 2);
+                }
+                if (skyU < 0.12f && d2 < 15.0f && k > 0) {                    // a skylight: a round shaft to the surface
+                    const float sr = std::max(1.5f, 0.35f * r2);
+                    push(Vector3Scale(dir2, R + e2 + 3.0f), pos2, sr, sr, 1.0f, 0);
+                    data->mouths.push_back({ Vector3Scale(dir2, R + e2), dir2, 1, sr, d2 });
+                }
+                pos = pos2; dir = dir2; r = r2; depth = d2;
+                head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lock(sh.m);
+    if (sh.map.size() > 4096) sh.map.clear();
+    return sh.map.emplace(key, data).first->second;
+}
+
+// Segments of the cells within reach of a box (body-local), whose capsule (radius x 1.3 for the wall roughness) comes
+// within `reach` of it. (seed: fieldSeed; the cells by the box corners' sea-level projections, +-kCaveCellReach.)
+static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vector3 hi, float reach, std::vector<float>& out) {
+    out.clear();
+    int clo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, chi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) return;
+        const Vector3 s = Vector3Scale(q, f.radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - kCaveCellReach); chi[a] = std::max(chi[a], c[a] + kCaveCellReach); }
+    }
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x) {
+                const auto cell = CaveCell(f, seed, x, y, z);
+                for (const CaveSeg& s : cell->segs) {
+                    // The box beyond which the shape can't reach: the skeleton at most 1.3 x 1.4 r (swell, the large-scale term), its
+                    // centre wandering 0.4 of that sideways (2.55 r in all; the warp moves only the noise; solids 1.3 r); plus the reach.
+                    const float rmax = std::max(s.ra, s.rb);
+                    const float rr = 3.0f * rmax + 2.0f + reach + std::max(0.0f, 0.8f * rmax - 6.4f); // (#1058: big chambers keep the single-sample bound)
+                    const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
+                    if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
+                    Vector3 side = Vector3CrossProduct(s.up, Vector3Subtract(s.b, s.a));     // across the passage, level
+                    const float sl = Vector3Length(side);
+                    side = sl > 1e-4f ? Vector3Scale(side, 1.0f / sl) : Vector3{ 0, 0, 0 };
+                    const float e[24] = { s.a.x, s.a.y, s.a.z, s.ra, s.b.x, s.b.y, s.b.z, s.rb, s.up.x, s.up.y, s.up.z, s.flat,
+                                          slo.x, slo.y, slo.z, (float)s.kind, shi.x, shi.y, shi.z, 0.0f, side.x, side.y, side.z, 0.0f };
+                    out.insert(out.end(), e, e + 24);
+                }
+            }
+}
+
+bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind) const {
+    if (!CavesGraph() || moon) return false;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    float best = range;
+    bool found = false;
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue; // only cells on the surface shell
+                const auto cell = CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z);
+                for (const CaveMouth& m : cell->mouths) {
+                    if (kind >= 0 ? m.kind != kind : m.kind >= 3) continue; // "any" = entrances (not chamber centres, #1058)
+                    const float dd = Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s);
+                    if (dd < best) { best = dd; at = m.at; outward = m.out; found = true; }
+                }
+            }
+    return found;
+}
+
+void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const {
+    // (#1067) The shaft entrances (kind 1) whose shaft (top to its depth, plus the light pool under its foot) can reach
+    // the box: from the cells around the box's corners projected onto the sea-level sphere.
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, chi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) return;
+        const Vector3 s = Vector3Scale(q, radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - 1); chi[a] = std::max(chi[a], c[a] + 1); }
+    }
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.kind != 1 || m.radius <= 0.0f) continue;
+                    const float reach = 3.0f * m.radius + 12.0f;               // the pool's reach around the shaft
+                    const Vector3 foot = Vector3Subtract(m.at, Vector3Scale(m.out, m.depth + 12.0f));
+                    const Vector3 blo = Vector3SubtractValue(Vector3Min(m.at, foot), reach), bhi = Vector3AddValue(Vector3Max(m.at, foot), reach);
+                    if (bhi.x < lo.x || blo.x > hi.x || bhi.y < lo.y || blo.y > hi.y || bhi.z < lo.z || blo.z > hi.z) continue;
+                    out.push_back({ m.at, m.out, m.radius, m.depth });
+                }
+}
+
+int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
+    if (!CavesGraph() || moon) return 0;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    int n = 0;
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
+                    n += m.kind < 3 && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range; // entrances only (#1058)
+            }
+    return n;
+}
+
+bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::vector<float>& out, int maxSegs) const {
+    out.clear();
+    if (!CavesGraph() || moon) return true;
+    if (2.0f - fp / 8.0f <= 0.0f) return true;            // caveWeight 0 at this footprint: no caves to carve
+    const float ext = stride * (float)(S - 1);
+    const float reach = 2.0f * std::max(fp, 1.0f) + 2.0f; // densityNear's meshing reach
+    GatherCaveSegs(*this, fieldSeed, o, Vector3AddValue(o, ext), reach, out);
+    return (int)(out.size() / 24) <= maxSegs;
+}
+
+// The graph tunnels' distance at q (metres to the nearest wall), and `solid` (metres inside a rubble apron, < 0 outside).
+// Organic shapes (#615 step 3, #1022; user 2026-11-19: "define the actual path and diameter, then apply heavy 3D noise
+// inwards"): the skeleton is the graph segment's bore (radius x a +-30% swell and a 10 m outline term, a gently flattened
+// ellipse whose centre wanders sideways, a floor 20-70% down that tilts across the passage, roof pockets). On it, heavy
+// domain-warped 3D noise (2 octaves from ~4 m plus a gentle ~2 m one) only ever grows rock inward from the wall: none
+// inside half the bore, so a clear core always runs through, and up to ~0.6 of the bore near the wall, so walls, ledges and
+// overhangs come out of the noise. Mouths: a larger outline term, taller on one side, a level floor with low rubble. Solids
+// (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
+// up only once one does. The same operations in the same order as terrain.glsl's caveGraphDistance (bit-exact).
+struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
+// RAYLIBGAME_CAVE_WALLS=0 (#1022 A/B): the cave walls as first merged (v22); default 1, the larger outcrops. The GPU gets it
+// per block (c.w).
+static const int gCaveWalls = getenv("RAYLIBGAME_CAVE_WALLS") && getenv("RAYLIBGAME_CAVE_WALLS")[0] == '0' ? 0 : 1;
+static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid, float shrink = 0.0f) {
+    solid = -1e9f;
+    bool any = false;
+    float swell = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f, big = 0.0f;
+    float m = 1e9f;
+    for (int i = 0; i < n; ++i) {
+        const float* s = segs + 24 * i;
+        if (q.x < s[12] + shrink || q.y < s[13] + shrink || q.z < s[14] + shrink || q.x > s[16] - shrink || q.y > s[17] - shrink || q.z > s[18] - shrink) continue;
+        if (!any) {
+            any = true;
+            // The noises carry their own base frequencies (a, b 1/150 m, det 1/70, cav 1/220, mou 1/700), so each factor
+            // below is (the wanted features per metre) x (1 / that frequency): 0.09/m on a 1/150 noise is 13.5, and so on.
+            // (#1022: before this, every factor was 70-700x too low, and all these terms were constant over a passage.)
+            const float wx = q.x + 3.0f * N.a.fractal(1, q.x * 13.5f + 17.0f, q.y * 13.5f, q.z * 13.5f);   // warp: 3 m at ~11 m
+            const float wy = q.y + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f + 29.0f, q.z * 13.5f);
+            const float wz = q.z + 3.0f * N.a.fractal(1, q.x * 13.5f, q.y * 13.5f, q.z * 13.5f + 41.0f);
+            swell = 1.0f + 0.3f * N.b.fractal(1, wx * 15.0f, wy * 15.0f, wz * 15.0f);                     // the bore, +-30% over ~10 m
+            lev = 0.45f + 0.25f * N.cav.fractal(1, wx * 13.2f, wy * 13.2f, wz * 13.2f);    // floor level, ~17 m
+            tilt = 0.6f * N.mou.fractal(1, wx * 35.0f + 7.0f, wy * 35.0f, wz * 35.0f);       // floor tilt, ~20 m
+            pocket = std::max(0.0f, N.det.fractal(1, wx * 14.0f + 53.0f, wy * 14.0f, wz * 14.0f)); // roof pockets, ~5 m
+            rub = N.det.fractal(1, wx * 35.0f + 71.0f, wy * 35.0f, wz * 35.0f);             // rubble, ~2 m
+            shift = 0.4f * N.b.fractal(1, wx * 6.0f + 13.0f, wy * 6.0f, wz * 6.0f);         // the bore wanders to one side, ~25 m
+            big = N.cav.fractal(1, wx * 22.0f + 91.0f, wy * 22.0f, wz * 22.0f);             // (#1022) the large-scale outline, ~10 m
+        }
+        const float abx = s[4] - s[0], aby = s[5] - s[1], abz = s[6] - s[2];
+        const float apx = q.x - s[0], apy = q.y - s[1], apz = q.z - s[2];
+        const float num = apx * abx + apy * aby + apz * abz;
+        const float den = abx * abx + aby * aby + abz * abz;
+        const float t = std::clamp(num / den, 0.0f, 1.0f);
+        const float hx = apx - abx * t, hy = apy - aby * t, hz = apz - abz * t;
+        const float hv = hx * s[8] + hy * s[9] + hz * s[10];
+        const float hhx = hx - s[8] * hv, hhy = hy - s[9] * hv, hhz = hz - s[10] * hv;
+        const float hs = hhx * s[20] + hhy * s[21] + hhz * s[22];
+        const float r = s[3] + (s[7] - s[3]) * t;
+        const float kind = s[15];
+        const bool mouth = kind > 0.5f && kind < 1.5f, hall = kind > 2.5f; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        if (kind > 1.5f && kind < 2.5f) { // solid inside: a rubble apron, the lip over a mouth, a chamber's boulder or column
+            const float va = hv / s[11];                                  // squashed: aprons 0.35, the lip over a mouth 0.2
+            const float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
+            const float la = sqrtf(la2);
+            const float rr = r * (1.0f + 0.3f * rub);
+            solid = std::max(solid, rr - la);
+            continue;
+        }
+        const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
+        const float rough = 1.0f + bk * big;
+        const float rs = swell * rough;
+        const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
+        const float pk = hv > 0.0f ? pocket : 0.0f;
+        const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
+        const float hp = hs - shift * rw;
+        const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
+        const float v2 = hvT / vfac;
+        const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;
+        const float len = sqrtf(l2);
+        const float rubble = mouth ? 0.35f * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
+        const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
+        const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
+        const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
+        const float floorCut = (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
+        // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
+        // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
+        // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
+        // squeezed radially toward the skeleton's wall (radial distance x 0.1 around it), so it changes at full rate
+        // across the wall (jagged faces) but 10x slower outward (solid rock behind them, no shells or floating pieces).
+        // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
+        float intrude = 0.0f;
+        if (len > 0.5f * rw && len < rw + 40.0f) {
+            const float hl2 = hx * hx + hy * hy + hz * hz;
+            const float hl = sqrtf(hl2);
+            if (hl > 1e-3f) {
+                const float sc = 0.1f + 0.9f * rw / hl;
+                const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
+                // (#1022, user 2026-11-20) Large irregular outcrops: rock forms ~9 m (2 octaves) and creases ~3.2 m (|n|: hard
+                // edges), weights 2.9 / 0.8. RAYLIBGAME_CAVE_WALLS=0: the walls as first merged (v22: ~3 m forms in 3 octaves,
+                // ~1 m creases in 2, 2.6 / 1.4).
+                const bool v22 = gCaveWalls == 0;
+                const int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
+                const float f3 = v22 ? 24.5f : 7.8f, f1 = v22 ? 135.0f : 47.0f;
+                const float g3 = v22 ? 2.6f : 2.9f, g1 = v22 ? 1.4f : 0.8f;
+                const float r3 = N.det.fractal(o3, px * f3 + 101.0f, py * f3, pz * f3);
+                const float r1 = N.b.fractal(o1, px * f1 + 7.0f, py * f1, pz * f1);
+                const float wn = std::max(0.0f, 0.35f + g3 * r3 + g1 * (0.3f - fabsf(r1)));
+                const float fa = (len - 0.5f * rw) / (0.4f * rw);
+                const float fc = std::clamp(fa, 0.0f, 1.0f);
+                const float fade = fc * fc * (3.0f - 2.0f * fc);
+                const float ra = hall ? std::min(rw, 8.0f) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
+                intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
+            }
+        }
+        m = std::min(m, std::max(len - rw + intrude, floorCut));
+    }
+    return m;
+}
+
+// (#615 step 1) The caves: worm tunnels (with #549's mouth regions and their collapsing thin roofs, kept closed in wet
+// lowlands by #971) and caverns. The same operations in the same order as terrain.glsl's caveDistance (bit-exact).
+float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit, float* solidOut) const {
+    if (solidOut) *solidOut = -1e9f;
+    // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
+    // its own distance field in metres, combined with min(): rock density grows with depth, so
+    // subtracting a fixed amount would only carve shallow caves.
+    // - Worm tunnels (~14 m radius) where both cave fields cross zero: at 1/150 m the fields change
+    //   ~0.01 per metre, so (t - kTunnelLevel) * 100 ~ metres from the tunnel wall.
+    // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
+    // Coarse LOD samples can't resolve them, so both fade out there.
+    const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
+    if (CavesGraph()) { // (#615 step 2) graph tunnels (never at the surface: no mouths yet) and the caverns
+        float m = 1e9f;
+        if (caveWeight > 0.0f && depth > -12.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -12.0f) {
+                const float* segData = tlCaveSegs ? tlCaveSegs->data() : nullptr;
+                int n = tlCaveSegs ? (int)(tlCaveSegs->size() / 24) : 0;
+                if (!tlCaveSegs) { // a single sample: this 256 m cell's list, kept per thread (reach 36 m: any footprint that carves),
+                    // binned (#1037) into 8^3 bins of 32 m, each a contiguous copy of the segments whose box overlaps it, so a
+                    // sample tests only its bin's few instead of the whole cell's. The same result: CaveGraphDistance uses only
+                    // segments whose box holds q, and every one of those overlaps q's bin (min / max don't depend on order).
+                    constexpr int kBins = 8;
+                    constexpr float kBin = kCaveCell / kBins;
+                    struct CaveBins { std::vector<float> own, binned; std::vector<int> binStart; }; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
+                    thread_local CaveBins* bins = nullptr; if (!bins) bins = new CaveBins(); auto& own = bins->own; auto& binned = bins->binned; auto& binStart = bins->binStart; // binStart: kBins^3 + 1 offsets (in segments) into binned
+                    thread_local int ok = 0, kx = 0, ky = 0, kz = 0; thread_local unsigned kseed = 0, kepoch = 0; thread_local bool kbaked = false; thread_local const void* kf = nullptr;
+                    const int cx = (int)floorf(p.x / kCaveCell), cy = (int)floorf(p.y / kCaveCell), cz = (int)floorf(p.z / kCaveCell);
+                    const Vector3 lo = { cx * kCaveCell, cy * kCaveCell, cz * kCaveCell };
+                    if (!ok || cx != kx || cy != ky || cz != kz || kseed != fieldSeed || kf != this || kepoch != caveEpoch || kbaked != (erosion() != nullptr)) { // (#1055: + epoch, bake)
+                        GatherCaveSegs(*this, fieldSeed, lo, Vector3AddValue(lo, kCaveCell), 36.0f, own);
+                        const int ns = (int)(own.size() / 24);
+                        auto binRange = [&](const float* s, int a, int& b0, int& b1) {
+                            const float l = a == 0 ? lo.x : a == 1 ? lo.y : lo.z;
+                            b0 = std::clamp((int)floorf((s[12 + a] - l) / kBin), 0, kBins - 1);
+                            b1 = std::clamp((int)floorf((s[16 + a] - l) / kBin), 0, kBins - 1);
+                        };
+                        std::vector<int> count(kBins * kBins * kBins + 1, 0);
+                        for (int pass = 0; pass < 2; ++pass) {                  // count, then fill
+                            if (pass == 1) {
+                                binStart.assign(kBins * kBins * kBins + 1, 0);
+                                for (int b = 0; b < kBins * kBins * kBins; ++b) binStart[b + 1] = binStart[b] + count[b];
+                                binned.assign((size_t)binStart.back() * 24, 0.0f);
+                                std::fill(count.begin(), count.end(), 0);
+                            }
+                            for (int i = 0; i < ns; ++i) {
+                                const float* s = own.data() + 24 * i;
+                                int x0, x1, y0, y1, z0, z1; binRange(s, 0, x0, x1); binRange(s, 1, y0, y1); binRange(s, 2, z0, z1);
+                                for (int z = z0; z <= z1; ++z) for (int y = y0; y <= y1; ++y) for (int x = x0; x <= x1; ++x) {
+                                    const int b = (z * kBins + y) * kBins + x;
+                                    if (pass == 1) std::copy(s, s + 24, binned.begin() + (size_t)(binStart[b] + count[b]) * 24);
+                                    ++count[b];
+                                }
+                            }
+                        }
+                        ok = 1; kx = cx; ky = cy; kz = cz; kseed = fieldSeed; kf = this; kepoch = caveEpoch; kbaked = erosion() != nullptr;
+                    }
+                    const int bx = std::clamp((int)floorf((p.x - lo.x) / kBin), 0, kBins - 1);
+                    const int by = std::clamp((int)floorf((p.y - lo.y) / kBin), 0, kBins - 1);
+                    const int bz = std::clamp((int)floorf((p.z - lo.z) / kBin), 0, kBins - 1);
+                    const int b = (bz * kBins + by) * kBins + bx;
+                    segData = binned.data() + (size_t)binStart[b] * 24;
+                    n = binStart[b + 1] - binStart[b];
+                }
+                if (n > 0) {
+                    float sol = -1e9f;
+                    // (#1037) A single sample's list holds boxes grown by 36 m (any footprint that carves); a segment matters to
+                    // this sample's density only within the meshing reach (2 x fp + 2, at least 4 m: the solids' -4 cut). Out of a
+                    // segment's shape box by d, its distance is >= 0.59 d - 2.57 and its solid < -4 (bores flat <= 1, so at most
+                    // x1.5 tall with roof pockets; radius <= 8 m; mouths' lopsided height x0.89; #1052 corrected the #1037 bound,
+                    // which assumed x1.05), so testing the box shrunk to 1.7 x that reach + 4.5 m changes no density but skips
+                    // most noise lookups in rock near caves. Blocks: 0.
+                    const float keep = std::max(2.0f * std::max(fp, 1.0f) + 2.0f, 4.0f) * 1.7f + 4.5f;
+                    const float shrink = tlCaveSegs ? 0.0f : std::max(0.0f, 36.0f - keep);
+                    m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segData, n, sol, shrink) + (1.0f - caveWeight) * 20.0f;
+                    if (solidOut && sol > -1e8f) *solidOut = sol - (1.0f - caveWeight) * 20.0f;
+                    if (hit && m < 1e8f) hit->kind = 1;
+                }
+            }
+            // (#1058) No noise caverns with graph caves: chambers in the graph replace them (RAYLIBGAME_CAVES=0 keeps them).
+        }
+        return m;
+    }
+    // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
+    // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
+    float caveTop = 5.0f;
+    float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
+    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) {
+        mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z));
+        // (#971) wet lowlands keep their roofs: no mouth there (the GPU reads the same interpolated column, terrain.glsl)
+        if (mouth > 0.0f) mouth = mouth * (1.0f - (col ? col->wet : caveWetColumn(Vector3Scale(p, 1.0f / d), surface - radius)));
+        caveTop = 5.0f - 7.5f * mouth;
+    }
+    if (hit) hit->mouth = mouth;
+    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
+    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
+    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
+    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
+    // tops of tors (14 m) so slabs over a collapsed roof go too.
+    constexpr float kRoof = 4.0f;
+    const float gate = mouth > 0.0f ? -14.0f : caveTop;
+    float m = 1e9f;                                            // metres to the nearest cave wall (< 0 inside)
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
+        const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
+        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
+        // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
+        const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
+        if ((a - kTunnelLevel) * 100.0f <= reach) {
+            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
+            top = top + (1.0f - top) * mouth;
+            const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
+            m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
+            if (hit) hit->kind = 1;
+            if (mouth > 0.0f && m > 0.0f) {
+                const float roof = depth + m;
+                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
+                m = m + (-2.0f - m) * c;
+                if (hit && c > 0.0f) hit->collapsed = true;
+            }
+        }
+        if (depth > 30.0f && d > mantleRadius + 40.0f) {
+            const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
+            const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z); // a little flattened: wider than tall
+            const float mc = (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f;
+            if (hit && mc < m) hit->kind = 2;
+            m = std::min(m, mc);
+        }
+    }
+    return m;
+}
+
 // Everything after the height map, shared by single samples and blocks so both agree exactly.
 float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, const Column3D* col) const {
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
@@ -1154,50 +1976,13 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
         const float m = rockFeature(p, d, surface, fp);
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
-    // Caves, from a few metres down to 20 m above the mantle (which stays intact). Each cave shape is
-    // its own distance field in metres, combined with min(): rock density grows with depth, so
-    // subtracting a fixed amount would only carve shallow caves.
-    // - Worm tunnels (~14 m radius) where both cave fields cross zero: at 1/150 m the fields change
-    //   ~0.01 per metre, so (t - kTunnelLevel) * 100 ~ metres from the tunnel wall.
-    // - Caverns: rare chambers tens of metres across where a low-frequency field peaks, 30 m+ down.
-    // Coarse LOD samples can't resolve them, so both fade out there.
-    const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
-    // Cave mouths (Plan 5 C): in some regions (~15%) tunnels may reach up through the surface, so caves are found
-    // by walking; elsewhere they stay 5 m+ down. Only looked up for shallow samples.
-    float caveTop = 5.0f;
-    float mouth = 0.0f; // #549: in mouth regions tunnels open at full width where they meet the surface (no grille)
-    if (depth < 14.0f && depth > -14.0f && caveWeight > 0.0f && !moon) { mouth = Smoothstep(0.3f, 0.45f, caveMouths.fractal(1, p.x, p.y, p.z)); caveTop = 5.0f - 7.5f * mouth; }
-    // #549 (playtest 8): a tunnel running just under the ground left a roof thin enough for the surface noise to punch
-    // rows of small holes through it (the grille), and tor slabs bridged the mouth. In mouth regions a roof thinner than
-    // kRoof collapses: every sample over the tunnel whose roof (its depth + its distance to the tunnel) is that thin is
-    // carved. The roof depth is about the same all down a column, so whole columns open, with clean edges; up to the
-    // tops of tors (14 m) so slabs over a collapsed roof go too.
-    constexpr float kRoof = 4.0f;
-    const float gate = mouth > 0.0f ? -14.0f : caveTop;
-    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
+    // Caves (#615 step 1: one shared caveDistance, bit-exact with terrain.glsl's): carved where under the meshing reach.
+    {
+        float solid = -1e9f;
+        const float m = caveDistance(p, d, depth, surface, fp, col, nullptr, &solid);
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
-        const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
-        float m = 1e9f;                                        // metres to the nearest cave wall (< 0 inside)
-        // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
-        const float a = fabsf(cavesA.fractal(2, p.x, p.y, p.z));
-        if ((a - kTunnelLevel) * 100.0f <= reach) {
-            float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
-            top = top + (1.0f - top) * mouth;
-            const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
-            const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
-            m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
-            if (mouth > 0.0f && m > 0.0f) {
-                const float roof = depth + m;
-                const float c = mouth * std::clamp((kRoof + 1.0f - roof) * 0.5f, 0.0f, 1.0f);
-                m = m + (-2.0f - m) * c;
-            }
-        }
-        if (depth > 30.0f && d > mantleRadius + 40.0f) {
-            const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
-            const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z); // a little flattened: wider than tall
-            m = std::min(m, (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f);
-        }
         if (m < near) v = std::min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+        if (solid > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * solid); // (#615 step 3) rubble aprons, after the carve
     }
     // Floating islands (Plan 5 C, rare): only for samples well above the ground.
     if (depth < -15.0f && !moon) { const float m = floatingIsland(p, d); if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m); }
@@ -1294,6 +2079,7 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const Vector3 gdir = Vector3Normalize(Vector3Add(n, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
             const float e = elevation(gdir, fp);
             Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
+            col.wet = caveWetColumn(gdir, e); // (#971)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -1321,11 +2107,15 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c0 = &g.cols[(size_t)iv * g.nu + iu];
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+    col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
     return true;
 }
 
 void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const BlockGrid& g, float* out) const {
+    std::vector<float> caveSegs; // (#615 step 2) the block's cave segments: the same list the GPU gets (blockCaveSegs)
+    if (CavesGraph()) blockCaveSegs(o, stride, S, fp, caveSegs, INT32_MAX);
+    CaveSegScope caveScope(CavesGraph() ? &caveSegs : nullptr);
     const float outer = radius + maxElevation, inner = radius + minElevation;
     const Vector3 n = g.n, t1 = g.t1, t2 = g.t2;
     const float umin = g.umin, vmin = g.vmin, su = g.su, sv = g.sv;
@@ -1353,6 +2143,7 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c0 = &cols[(size_t)iv * nu + iu];
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+                    col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
                 }
                 out[idx] = densityNear(p, d, surface, fp, &col);
@@ -1378,6 +2169,7 @@ PlanetField::Climate PlanetField::climateAt(Vector3 dir, float elev) const {
     c.temp = 30.0f - 44.0f * (lat * sqrtf(lat)) - 6.5f * std::max(elev, 0.0f) / 1000.0f + 7.0f * tempNoise.fractal(2, x, y, z);
     // Moisture: regional wet and dry patches, wetter in the lowlands near the sea.
     c.moist = 0.5f + 0.85f * moistNoise.fractal(3, x, y, z) + 0.08f * (1.0f - Smoothstep(10.0f, 150.0f, elev)); // noise sits mostly in +-0.4
+    c.moist += 0.15f * (gen.waterCycle - 1.0f); // #637: a busier water cycle, wetter climates (biomes follow)
     c.moist = std::clamp(c.moist, 0.0f, 1.0f);
     return c;
 }
@@ -1572,7 +2364,10 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         // stones in fast reaches, sand with gravel bars at a moderate pace, silt and sand in slow ones, clay under the skin
         // (#206: digging a river bed finds clay); lakes and ponds keep clay with gravel bars in the deeper middle.
         constexpr float kWetReach = 60.0f; // m: floodplains and wet shores at most this far out
-        if (e > 0.0f && inlandWaterNear(up, kWetReach)) {
+        // Under sea level only a bed with inland water over it (#940: a river reaching the coast through a swamp, its bed
+        // a metre under the sea's level, read as beach sand - no clay to dig); the sea floor by a river mouth stays the sea's.
+        auto inlandBedBelowSea = [&] { if (e <= -12.0f || !inlandWaterNear(up, 0.0f)) return false; const float w0 = waterElevation(up, fp); return w0 != kNoWater && w0 > 0.0f && e < w0; };
+        if ((e > 0.0f || inlandBedBelowSea()) && inlandWaterNear(up, kWetReach)) {
             const RiverNetwork::NaturalScope natural; // a river dried by a dam keeps its bed and banks (#656)
             const RiverNetwork* net = rivers();
             const RiverNetwork::Hit rh = net && fp < 128.0f ? net->nearest(up, kWetReach + 50.0f) : RiverNetwork::Hit{};
@@ -1672,8 +2467,11 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f + 0.2f * rocks.fractal(2, p.x * 14.0f + 97.0f, p.y * 14.0f, p.z * 14.0f)) return VoxelMaterial::Clay; // ragged edges (#609)
             if (!skin) return VoxelMaterial::Clay;
         }
-        // Grassland. Undug ground facing up is turf all the way down to the soil layer (the mesh strays
-        // from the height map, which used to bare patches of dirt); dug ground is dirt.
+        // Grassland. Grass is a state of the generated surface (#1085): the band within ~1 m of the density surface, and the
+        // height map's 0.6 m skin, read as turf (the mesh strays from the height map, which used to bare patches of dirt); an
+        // edit that exposes or makes ground writes bare dirt over it in the material channel (TerrainDeltas::apply), so a dig
+        // never shows turf. (The skin stays: the spawn search, trees and other height-map samplers read it - without it seed
+        // 42's start moved to frozen tundra.)
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
         if (skin) return VoxelMaterial::Grass;
@@ -1736,7 +2534,7 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
 // up to the stride where the probe stops (a ring).
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
-                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev) {
+                              Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev, bool verifyOutside = false) {
     const float d = Vector3Length(p);
     if (d < 1e-3f) return 1.0f;
     const Vector3 up = Vector3Scale(p, 1.0f / d);
@@ -1773,7 +2571,7 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
             if (blockSolid(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), inside)) blocked = true;
             if (!inside) break;
         }
-        if (!blocked && !inside && r == 0 && mayRoof) { // the up ray beyond the block: the rest from the field
+        if (!blocked && !inside && r == 0 && (mayRoof || verifyOutside)) { // the up ray beyond the block: the rest from the field (#898: also for a buried vertex)
             // Straight up stays in this vertex's column, so with the column known (the block's grid) the surface is too:
             // densityNear skips the height map, which made full density() calls here the bulk of a build in the 3D band
             // (no erosion: "Preparing spawn" 8 s -> 40 s, #387).
@@ -1786,9 +2584,17 @@ static float OverheadOpenness(const DensityField& field, const TerrainDeltas& de
                 blocked = v >= ISO_LEVEL;
             }
         }
-        if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+        if (!blocked && !inside && verifyOutside && r != 0) {
+            // (#898) a buried vertex: a ray that left the block is open only if the ground beyond really is (else cave walls
+            // at a block's edge would read as lit), from the field itself.
+            const float fp = std::max(stride, 1.0f);
+            for (; k < 8 && !blocked; k += 2) blocked = field.density(Vector3Add(p, Vector3Scale(dirs[r], kDist[k])), &deltas, fp) >= ISO_LEVEL; // (every other: the cost)
+        }
+        if (!blocked) open += r == 0 ? 3.0f : 1.0f; // (#899) the sky overhead weighs most
     }
-    return std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f);
+    // (#899) Open ground and ground by one wall stay 1; under an overhang (only the up ray blocked) 0.71, in an alcove 0.54. With
+    // the old weights (up 2, x1.5) an overhang open at the sides read as full sky.
+    return std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2158,7 +2964,13 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
                     // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
                     Vector3 flow = simFlow; float speed = simSpeed;
-                    if (kind == 0 && gen.inland && rivers && !(simKind && sim.covered(bp))) {
+                    // (#1121, playtest: settled rivers lost their moving-water look) Simulated water whose solver current has
+                    // died down (its bricks settled or asleep: < 5 cm/s) is still a river where a river runs: it takes the river's
+                    // current as the generated water does. Ponds and lakes have no river there and stay still.
+                    // RAYLIBGAME_SETTLED_RIVER_FLOW=0: as before.
+                    static const bool settledRiver = !(getenv("RAYLIBGAME_SETTLED_RIVER_FLOW") && getenv("RAYLIBGAME_SETTLED_RIVER_FLOW")[0] == '0');
+                    const bool simHere = simKind && sim.covered(bp);
+                    if (kind == 0 && gen.inland && rivers && (!simHere || (settledRiver && simSpeed < 0.05f))) {
                         const RiverNetwork::Hit hr = rivers->nearest(radial, 60.0f);
                         if (hr.found && hr.dist < hr.halfWidth + 3.0f) {
                             flow = Vector3Subtract(hr.down, Vector3Scale(radial, Vector3DotProduct(hr.down, radial))); // along the surface
@@ -2290,6 +3102,23 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
     const int E = S + 2;
     const Vector3 eo = Vector3AddValue(origin, -stride);
     std::vector<float> ext(base, base + (size_t)E * E * E);
+    // (#908) The plots near this chunk with building blocks in them: the sky probe below lets their roofs shade the ground.
+    std::shared_ptr<const GrassBlockers> roofSnap;
+    std::vector<const GrassBlockPlot*> roofPlots;
+    static const bool roofSkyOn = !(getenv("RAYLIBGAME_ROOF_SKY") && getenv("RAYLIBGAME_ROOF_SKY")[0] == '0');
+    if (roofSkyOn && stride <= 2.0f && (roofSnap = Grass_BlockersOf(&field))) {
+        const Vector3 cc = Vector3AddValue(origin, 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size() + 12.0f;
+        for (const GrassBlockPlot& b : *roofSnap) {
+            if (b.solid.empty()) continue;
+            if ((DVec3{ cc.x, cc.y, cc.z } - b.origin).length() <= reach + b.radius) roofPlots.push_back(&b);
+        }
+    }
+    // (#1067) The cave shafts open to the sky that reach this chunk (karst sinks, tube skylights): their light pool below.
+    static const bool shaftSkyOn = !(getenv("RAYLIBGAME_SHAFT_SKY") && getenv("RAYLIBGAME_SHAFT_SKY")[0] == '0');
+    std::vector<PlanetField::CaveShaft> shafts;
+    if (shaftSkyOn && stride <= 1.0f)
+        if (const auto* pfs = dynamic_cast<const PlanetField*>(&field)) pfs->shaftsNear(origin, Vector3AddValue(origin, out.key.size()), shafts);
     // Player edits: the delta lattice at the samples (lattice points at every stride); coarse nodes filter it along
     // their columns (AddDeltasColumnFiltered, #679), so big excavations show from afar with flat floors. Cost depends
     // on the edited chunks here, never on how many strokes the world has had.
@@ -2402,7 +3231,69 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 const float matFp = dugHere ? std::min(stride, 1.0f) : stride;
                 VoxelMaterial m = hinted ? gridField->materialSkyHinted(p, b, matFp, n, sky, &gElev, &gCol) : field.materialSky(p, b, matFp, n, sky);
                 if (!near.empty()) { const int placed = deltas.materialAt(p); if (placed >= 0) m = (VoxelMaterial)placed; } // placed ground keeps its material
-                if (gSkyProbes && sky > 0.02f && stride <= 2.0f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, hinted ? &gCol : nullptr, hinted ? &gElev : nullptr);
+                float roofOpen = 1.0f; // (#908) the built roofs' share of the sky here (ambient only: folded into the occlusion below)
+                if (gSkyProbes && stride <= 2.0f) {
+                    const PlanetField::Column3D* pc = hinted ? &gCol : nullptr; const float* pe = hinted ? &gElev : nullptr;
+                    // (#898) Under the surface (the depth term < 1) and less than 40 m down: light comes in where the sky can be
+                    // seen (a cave mouth, a shaft, a pit): at least 0.6 x (1 - depth / 40 m) of the open share (0.42 at 12 m: walls stay
+                    // under the open ground and fall off deeper in), the rays checked past the block. The
+                    // depth term alone cut to black ~10 m down, under an opening or not; a closed tunnel stays black.
+                    const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p) : 1e9f;
+                    static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
+                    if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
+                    else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
+                    // (#1067, user on Plan 10: "a vertical pit or shaft open to the sky must be lit properly from outside all the way
+                    // down") The probes above see only 12 m and a shaft's walls block their tilted rays, so a shaft read as buried.
+                    // 1. A vertex (not a roof facing down) whose column is open all the way to the surface sees the sky straight up:
+                    //    at least 0.85, at any depth (the column walked in 2 m steps; a closed cave stops at its first roof sample).
+                    // 2. Under a shaft's foot (karst sink, tube skylight): a pool of up to 0.5, fading from the shaft's radius to 2.5
+                    //    radii around its axis and from 4 to 12 m below its foot. RAYLIBGAME_SHAFT_SKY=0: off.
+                    if (shaftSkyOn && stride <= 1.0f && hinted && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
+                        const Vector3 upv = Vector3Normalize(p);
+                        if (Vector3DotProduct(n, upv) > -0.3f) {
+                            const Vector3 p0 = Vector3Add(p, Vector3Scale(n, 0.5f * stride));
+                            const float fpc = std::max(stride, 1.0f);
+                            bool open = true;
+                            for (float t = 1.0f; t < depthHere + 3.0f && open; t += 2.0f)
+                                open = field.density(Vector3Add(p0, Vector3Scale(upv, t)), &deltas, fpc) < ISO_LEVEL;
+                            if (open) sky = std::max(sky, 0.85f);
+                        }
+                        for (const PlanetField::CaveShaft& s : shafts) {
+                            const Vector3 v = Vector3Subtract(p, s.top);
+                            const float along = -Vector3DotProduct(v, s.up);      // metres below the shaft's top
+                            if (along < 0.5f * s.depth || along > s.depth + 12.0f) continue;
+                            const float horiz = Vector3Length(Vector3Add(v, Vector3Scale(s.up, along)));
+                            const float a = std::clamp((horiz - s.radius) / (1.5f * s.radius), 0.0f, 1.0f);
+                            const float b = std::clamp((along - s.depth - 4.0f) / 8.0f, 0.0f, 1.0f);
+                            sky = std::max(sky, 0.5f * (1.0f - a * a * (3.0f - 2.0f * a)) * (1.0f - b * b * (3.0f - 2.0f * b)));
+                        }
+                    }
+                    // (#908) Built roofs: the same rays (up, and four at 45 degrees; the up one weighs 3) through the solid cells of the
+                    // plots near this chunk (the #830 snapshot): the ground under a shelter, a covered yard or a house without a floor
+                    // no longer takes the full sky. RAYLIBGAME_ROOF_SKY=0: off.
+                    if (sky > 0.02f && !roofPlots.empty()) {
+                        constexpr float kCellSize = 0.5f; // plots.h (not included here)
+                        float partsOpen = 1.0f;
+                        for (const GrassBlockPlot* b : roofPlots) {
+                            const DVec3 d = DVec3{ p.x, p.y, p.z } - b->origin;
+                            const Vector3 l = { (float)d.x, (float)d.y, (float)d.z };
+                            const Vector3 c = { Vector3DotProduct(l, b->east) / kCellSize, Vector3DotProduct(l, b->up) / kCellSize, Vector3DotProduct(l, b->north) / kCellSize };
+                            if (Vector3Length(c) * kCellSize > b->radius + 12.0f) continue;
+                            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
+                            float open = 0.0f;
+                            for (int r = 0; r < 5; ++r) {
+                                bool blocked = false;
+                                for (float s = 0.6f; s <= 24.0f && !blocked; s += 0.5f) { // cells: 12 m
+                                    const Vector3 q = Vector3Add(c, Vector3Scale(dirs[r], s));
+                                    blocked = b->solid.count(Int3{ (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) }) > 0;
+                                }
+                                if (!blocked) open += r == 0 ? 3.0f : 1.0f;
+                            }
+                            partsOpen = std::min(partsOpen, std::clamp(open / 7.0f * 1.25f, 0.0f, 1.0f));
+                        }
+                        roofOpen = partsOpen; // not the sky term: that scales the sun too, and a roof's shadow comes from the shadow maps (parts cast)
+                    }
+                }
                 out.tangents[v * 4 + 3] = sky;
                 // Ambient occlusion (#132): how much of the hemisphere over the vertex is solid within ~1.5 m, from the
                 // block's own samples (edits included): 5 directions (the normal, and four 45 degrees off it) at 0.6 and
@@ -2429,6 +3320,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                             if (solidAt(Vector3Add(e0, Vector3Scale(dirs[r], m / stride)))) occ += (r == 0 ? 1.5f : 1.0f) * (m < 1.0f ? 1.3f : 0.7f);
                     out.occlusion[v] = std::clamp(occ / 7.0f, 0.0f, 1.0f);
                 }
+                if (roofOpen < 1.0f) out.occlusion[v] = std::max(out.occlusion[v], 1.0f - roofOpen); // (#908) also with RAYLIBGAME_AO=0
                 if (m == VoxelMaterial::Ore) {
                     // Which ore (the shader colours each kind): 1 + kind, over 8.
                     if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {
@@ -2461,7 +3353,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 // The legacy one-hot weight (per-chunk draws, grass scattering): materials past the 8 channels show as
                 // their nearest (clay as dirt).
                 const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
-                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud) ? (int)VoxelMaterial::Regolith
+                             : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland) ? (int)VoxelMaterial::Regolith
                              : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;

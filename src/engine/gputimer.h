@@ -7,6 +7,7 @@
 // stall the pipeline. Off (no GL calls) until GpuTimer_Enable(true).
 
 void GpuTimer_Enable(bool on);
+void GpuTimer_KeepOn(bool on);         // (#871) on whatever GpuTimer_Enable is told (a profiled scenario: its passes as zones)
 void GpuTimer_BeginFrame();            // before the first draw of a frame
 void GpuTimer_Mark(const char* name);  // a string literal: the pass that just finished
 void GpuTimer_Print();                 // "bench: gpu ..." averages per pass, then the total

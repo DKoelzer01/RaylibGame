@@ -1,5 +1,22 @@
 #include "netclient.h"
+#include "playerrecord.h"
+#include "commandline.h"
+#include "terraintool.h"
 #include "animals.h"
+#include "combat.h"
+#include "teamquests.h"
+#include "factory.h"
+#include "farming.h"
+#include "claims.h"
+#include "trees.h"
+#ifdef _WIN32
+#include <process.h> // _getpid
+#else
+#include <unistd.h>
+#define _getpid getpid // (#1025) the Linux server build
+#endif
+#include "survival.h"
+#include "playersession.h"
 #include "hostserver.h"
 #include "net.h"
 #include "world.h"
@@ -19,6 +36,7 @@
 #include <raylib.h>
 #include <cstdio>
 #include <vector>
+#include <set>
 
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
 
@@ -46,12 +64,15 @@ namespace {
     }
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
+        const NetMsg kind = NetPeek(m.data);
+        if (c.syncHold && (kind == NetMsg::SyncIndex || kind == NetMsg::SyncData || kind == NetMsg::SyncDone || kind == NetMsg::Plants || kind == NetMsg::FarmFields || kind == NetMsg::Claims)) { c.syncHeld.push_back(m); return; } // (#776; #335: plants and fields need the bodies too)
         NetReader r(m.data.data() + (m.data.empty() ? 0 : 1), m.data.empty() ? 0 : m.data.size() - 1);
-        switch (NetPeek(m.data)) {
+        switch (kind) {
             case NetMsg::Welcome: {
                 MsgWelcome w;
                 if (c.state != NetClient::State::AwaitingWelcome || !NetRead(r, w)) return;
                 c.welcome = w; c.serverTick = w.serverTick; c.state = NetClient::State::Joined;
+                c.syncing = true; c.syncStartedAt = GetTime(); c.syncDoneAt = -1.0; // (#776) the world's edits come next
                 if (gNetRole == NetRole::Client) SetWorldTime(w.worldTime); // #339: the server's clock (spin, orbits, sun, weather derive from it)
                 return;
             }
@@ -99,6 +120,7 @@ namespace {
             case NetMsg::TerrainEdit: { // (#329) in the server's order; a host in this process already changed the world
                 MsgTerrainEdit t;
                 if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                if (c.syncing) { c.syncQueue.push_back(m); ++c.syncQueued; return; } // (#776) after the join snapshot
                 ++c.editsSeen;
                 c.editOrder = c.editOrder * 1099511628211ull ^ (((uint64_t)t.session << 32) | t.seq); // the order, to compare clients
                 if (t.session == c.welcome.session) ++c.editsOwn;
@@ -108,7 +130,7 @@ namespace {
                 if (!p) return;
                 TerrainEdit e{};
                 e.center = t.center.toFloat(); e.radius = t.radius; e.strength = t.strength; e.paint = t.paint;
-                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0;
+                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0; e.till = (t.flags & 16) != 0;
                 if (e.box) {
                     e.half = { t.hx, t.hy, t.hz };
                     e.ax = { t.ax[0], t.ax[1], t.ax[2] }; e.ay = { t.ay[0], t.ay[1], t.ay[2] };
@@ -128,11 +150,13 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, d)) return;
                 ++c.inventoryDeltas;
                 if (c.inventory) { if (d.amount > 0.0) c.inventory->addAmount(d.item, d.amount); else c.inventory->removeAmount(d.item, -d.amount); }
+                else c.pendingInventory.push_back({ d.item, d.amount }); // (#803) before the game attached its inventory: kept for then
                 return;
             }
             case NetMsg::PlotEdit: { // (#330) in the server's order; a host in this process already changed the world
                 MsgPlotEdit e;
                 if (c.state != NetClient::State::Joined || !NetRead(r, e)) return;
+                if (c.syncing) { c.syncQueue.push_back(m); ++c.syncQueued; return; } // (#776) after the join snapshot
                 ++c.plotEdits;
                 c.plotOrder = c.plotOrder * 1099511628211ull ^ (((uint64_t)e.session << 40) ^ ((uint64_t)e.seq << 8) ^ (uint64_t)e.op);
                 if (e.session == c.welcome.session) { ++c.plotEditsOwn; if (e.op == NetPartOp::NewPlot) c.lastNewPlot = e.plot; }
@@ -151,6 +175,74 @@ namespace {
                     Part part{}; part.type = (PartType)e.part.type; part.origin = { e.part.x, e.part.y, e.part.z }; part.orient = e.part.orient; part.material = e.part.material;
                     BuildTool_ApplyPart(*p, *plot, part);
                 } else plot->remove((int)e.partIndex);
+                return;
+            }
+            case NetMsg::SyncIndex: { // (#776) a page of the join snapshot's entries; all in: say which we need
+                MsgSyncIndex x;
+                if (c.state != NetClient::State::Joined || !NetRead(r, x) || !c.syncing) return;
+                if (x.snapshot != c.syncSnapshot || c.syncPages == 0) { c.syncSnapshot = x.snapshot; c.syncPages = x.pages; c.syncPagesGot = 0; c.syncIndex.assign(x.total, NetSyncEntry{}); }
+                const size_t base = (size_t)x.page * kSyncIndexPage;
+                for (size_t i = 0; i < x.entries.size() && base + i < c.syncIndex.size(); ++i) c.syncIndex[base + i] = x.entries[i];
+                if (++c.syncPagesGot < c.syncPages) return;
+                // Which do we lack? An entry we already hold with the same hash is skipped (a cached client save).
+                const bool install = !Host_Listening(); // (a host in this process: same world; fetched to check, not installed)
+                MsgSyncWant want; want.snapshot = c.syncSnapshot; want.total = (uint32_t)c.syncIndex.size();
+                want.bits.assign((c.syncIndex.size() + 7) / 8, 0);
+                c.syncWanted.assign(c.syncIndex.size(), 0);
+                std::map<uint64_t, std::set<uint64_t>> listed; // regions in the snapshot, by body
+                for (size_t i = 0; i < c.syncIndex.size(); ++i) {
+                    const NetSyncEntry& e = c.syncIndex[i];
+                    Planetoid* p = Planetoid::findNet(e.body);
+                    uint64_t mine = 0;
+                    if (e.kind == NetSyncKind::Region) {
+                        listed[e.body].insert(e.key);
+                        if (p && p->edits && !c.syncAssumeEmpty) { const std::vector<uint8_t> b = Region_Encode(*p->edits, e.key); if (b.size() > 8) mine = Region_Hash(b); }
+                    } else if (p && p->plots && !c.syncAssumeEmpty) mine = Region_Hash(Plots_Blob(*p->plots));
+                    if (mine == e.hash) continue;
+                    want.bits[i / 8] |= (uint8_t)(1u << (i % 8));
+                    c.syncWanted[i] = 1; ++c.syncEntriesWanted; c.syncBytesWanted += e.size;
+                }
+                // Regions we hold that the server has no edits in: back to the generated ground.
+                if (install && !c.syncAssumeEmpty)
+                    for (Planetoid* p : Planetoid::All()) {
+                        if (!p->edits || !p->netId) continue;
+                        for (TerrainDeltas::Key k : Regions_List(*p->edits))
+                            if (!listed[p->netId].count(k) && Region_Install(*p, k, nullptr, 0)) ++c.syncCleared;
+                    }
+                SendMsg(c, want);
+                return;
+            }
+            case NetMsg::SyncData: {
+                MsgSyncData d;
+                if (c.state != NetClient::State::Joined || !NetRead(r, d) || d.snapshot != c.syncSnapshot || d.entry >= c.syncIndex.size() || !c.syncWanted[d.entry]) return;
+                const NetSyncEntry& e = c.syncIndex[d.entry]; // (e.size: as stored; d.size: as sent, compressed)
+                std::vector<uint8_t>& buf = c.syncBuf[d.entry];
+                if (c.syncGot[d.entry] == 0 && buf.empty()) buf.assign(d.size, 0);
+                if (buf.size() != d.size) return; // (pieces of one entry all carry its sent size)
+                std::copy(d.bytes.begin(), d.bytes.end(), buf.begin() + d.offset);
+                c.syncBytes += d.bytes.size();
+                if ((c.syncGot[d.entry] += (uint32_t)d.bytes.size()) < d.size) return;
+                // Complete: check it, install it.
+                c.syncWanted[d.entry] = 0; ++c.syncEntriesDone;
+                std::vector<uint8_t> plain; // (sent DEFLATE-compressed; hashed as stored)
+                if (!buf.empty()) { int n = 0; unsigned char* u = DecompressData(buf.data(), (int)buf.size(), &n); if (u) { plain.assign(u, u + n); MemFree(u); } }
+                if (Region_Hash(plain) != e.hash) ++c.syncHashBad;
+                else if (!Host_Listening()) {
+                    if (Planetoid* p = Planetoid::findNet(e.body)) {
+                        const bool ok = e.kind == NetSyncKind::Region ? Region_Install(*p, e.key, plain.data(), plain.size()) : Plots_Install(*p, plain);
+                        if (ok) ++c.syncInstalled; else ++c.syncHashBad;
+                    }
+                }
+                c.syncBuf.erase(d.entry); c.syncGot.erase(d.entry);
+                return;
+            }
+            case NetMsg::SyncDone: { // everything asked for is here: the live edits held since the snapshot apply now, in order
+                MsgSyncDone d;
+                if (c.state != NetClient::State::Joined || !NetRead(r, d) || d.snapshot != c.syncSnapshot) return;
+                c.syncing = false; c.syncDoneAt = GetTime();
+                std::vector<NetMessage> held;
+                held.swap(c.syncQueue);
+                for (const NetMessage& q : held) OnMessage(c, q);
                 return;
             }
             case NetMsg::PartRefused: {
@@ -173,6 +265,121 @@ namespace {
                 static std::vector<AnimalNet> in; in.clear();
                 for (const MsgAnimals::Entry& e : am.entries) in.push_back({ e.netId, e.species, e.body, e.pos.toFloat(), e.heading, e.state, e.health, e.age, e.flags });
                 Animals_ApplyNet(in, am.removed);
+                return;
+            }
+            case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
+                MsgDamage dm;
+                if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
+                ++c.damageTaken;
+                c.lastDamage = dm.amount;
+                if (gNetRole != NetRole::Client) return; // (a host's in-process test client: the host's own player isn't the one hit)
+                // (#337) the server's copy took the damage (its health arrives in Vitals) and the shove: here only the hit's feel
+                // (the camera shake and the hit-stop read these).
+                SurvivalState& sv = LocalSession().survival;
+                sv.lastHitAt = SimTime(); sv.lastHitStrength = std::min(1.0f, dm.amount / 20.0f);
+                return;
+            }
+            case NetMsg::MachineView: { // (#332) the machine we watch, as the server simulates it (its screen, the look-at panel)
+                MsgMachineView v;
+                if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
+                ++c.machineViews;
+                if (Planetoid* b = Planetoid::findNet(v.body)) Factory::SetRemoteView({ b->id, v.plot, v.part }, v.view);
+                return;
+            }
+            case NetMsg::MachineStates: { // (#332) which machines of a plot work now (models, smoke)
+                MsgMachineStates s;
+                if (c.state != NetClient::State::Joined || !NetRead(r, s)) return;
+                ++c.machineStates;
+                if (Planetoid* b = Planetoid::findNet(s.body)) Factory::SetRemoteWorking(b->id, s.plot, std::vector<int>(s.working.begin(), s.working.end()));
+                return;
+            }
+            case NetMsg::Plants: { // (#335) plants the server removed (felled, picked up): gone here too, regrowing on the shared clock
+                MsgPlants p;
+                if (c.state != NetClient::State::Joined || !NetRead(r, p)) return;
+                ++c.plantLists; c.plantsRemoved += (int)p.removed.size();
+                if (gNetRole != NetRole::Client) return; // (a host in this process has them already)
+                Planetoid* b = Planetoid::findNet(p.body);
+                if (!b || !b->trees) return;
+                const bool mine = p.session != 0 && p.session == c.welcome.session;
+                if (p.removed.size() == 1) TerrainTool_PlantRemoved(*b, p.removed[0].first, p.removed[0].second, mine);
+                else b->trees->mergeRemovals(p.removed);
+                return;
+            }
+            case NetMsg::SkillState: { // (#920) our skills as the server counts them: the whole state, replacing ours
+                MsgSkillState k;
+                if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;
+                SkillState s;
+                size_t a = 0;
+                while (a < k.text.size()) {
+                    size_t b = k.text.find('\n', a);
+                    if (b == std::string::npos) b = k.text.size();
+                    Skills_LoadLine(s, k.text.substr(a, b - a).c_str());
+                    a = b + 1;
+                }
+                c.skills = s;
+                ++c.skillStates;
+                return;
+            }
+            case NetMsg::Claims: { // (#343) the land claims: the map's circles and the border near another team's
+                MsgClaims k;
+                if (c.state != NetClient::State::Joined || !NetRead(r, k)) return;
+                ++c.claimLists;
+                std::vector<ClaimView> list;
+                for (const NetClaim& n : k.claims) {
+                    Planetoid* b = Planetoid::findNet(n.body);
+                    if (!b) continue;
+                    ClaimView v; v.id = n.id; v.team = n.team; v.teamName = n.teamName; v.colour = n.colour; v.body = b->name;
+                    v.centre = { n.centre[0], n.centre[1], n.centre[2] }; v.radius = n.radius; v.ours = n.flags & 1; v.allowed = n.flags & 2;
+                    list.push_back(std::move(v));
+                }
+                Claims_SetMirror(list);
+                return;
+            }
+            case NetMsg::FarmFields: { // (#335) the crops near us as the server grows them
+                MsgFarmFields f;
+                if (c.state != NetClient::State::Joined || !NetRead(r, f)) return;
+                ++c.farmLists;
+                if (gNetRole != NetRole::Client) return;
+                if (Planetoid* b = Planetoid::findNet(f.body)) Farm_SetRemoteFields(*b, f.fields);
+                return;
+            }
+            case NetMsg::QuestBook: { // (#338) our team's quest book as the server keeps it: the Quests tab and HUD show it
+                MsgQuestBook q;
+                if (c.state != NetClient::State::Joined || !NetRead(r, q)) return;
+                ++c.questBooks; c.questTeam = (int)q.team;
+                if (gNetRole == NetRole::Client) TeamQuests_ApplyText(q.text); // (a host in this process keeps the real ones)
+                return;
+            }
+            case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
+                MsgGraves g;
+                if (c.state != NetClient::State::Joined || !NetRead(r, g)) return;
+                ++c.gravesMsgs;
+                std::vector<GraveInfo> list;
+                for (const auto& e : g.graves) { GraveInfo gi{ e.id, e.body, e.local, e.owner, e.name, e.style, e.diedAt }; gi.dropped = e.dropped; gi.items = e.items; list.push_back(std::move(gi)); }
+                c.lastGraves = (int)list.size();
+                if (gNetRole == NetRole::Client) Combat_SetGraveMirror(list, c.name); // (a host in this process has the real list)
+                return;
+            }
+            case NetMsg::TeamState: { // (#604) our team: the Team screen and the HUD's teammates show it
+                MsgTeamState t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                if (!t.invite.empty() && t.invite != c.team.invite) c.chat.push_back(MsgChat{ 0, "You're invited to join " + t.invite + ": /team accept (or the Team screen)" });
+                c.team = t; ++c.teamMsgs;
+                return;
+            }
+            case NetMsg::Vitals: { // (#337) our player's survival as the server simulates it: the bars follow it
+                MsgVitals v;
+                if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
+                c.vitals = v; ++c.vitalsMsgs;
+                if (gNetRole != NetRole::Client) return; // (a host's in-process test client: not the host's own player)
+                SurvivalState& sv = LocalSession().survival;
+                sv.health = v.health; sv.food = v.food; sv.oxygen = v.oxygen; sv.power = v.power; sv.temperature = v.temperature;
+                sv.breathable = v.flags & 2; sv.inVacuum = v.flags & 4; sv.underwater = v.flags & 8; sv.inLifeSupport = v.flags & 16;
+                const bool dead = v.flags & 1;
+                if (dead && !sv.dead) { sv.dead = true; sv.deathTime = SimTime(); }
+                else if (!dead && sv.dead) sv.dead = false; // (respawned: the server put the player at the start; its state carries it)
+                sv.deaths = v.deaths;
+                if (((v.flags & 128) != 0) != terrainTool.creative) GameMode_SetCreative((v.flags & 128) != 0); // (#823) the server's /gamemode for us
                 return;
             }
             case NetMsg::PlayerSnapshot: { // (#769) the states of one snapshot, each against one we acknowledged (or full)
@@ -227,6 +434,15 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 
 void NetClient_Update(NetClient& c) {
     if (c.state == NetClient::State::Idle || c.state == NetClient::State::Rejected || c.state == NetClient::State::Closed) return;
+    if (c.inventory && !c.pendingInventory.empty()) { // (#803) deltas that arrived before the inventory was attached
+        for (const auto& [item, amount] : c.pendingInventory) { if (amount > 0.0) c.inventory->addAmount(item, amount); else c.inventory->removeAmount(item, -amount); }
+        c.pendingInventory.clear();
+    }
+    if (!c.syncHold && !c.syncHeld.empty()) { // (#776) the world is ready now: the sync's messages held so far, in order
+        std::vector<NetMessage> held;
+        held.swap(c.syncHeld);
+        for (const NetMessage& m : held) OnMessage(c, m);
+    }
     // Each other player's playback clock, in that player's own steps (ackInput: the server steps a player only by its
     // inputs, so by the server's tick it moves in bursts as they arrive; by its own steps evenly, at 60 a second). It runs
     // at real time and eases toward kInterpDelay behind the newest state heard (a 1 s time constant, per second: per
@@ -257,7 +473,7 @@ void NetClient_Update(NetClient& c) {
     const double now = GetTime();
     if (c.state == NetClient::State::Connecting) {
         if (Net_IsConnected(c.conn)) {
-            SendMsg(c, MsgHello{ c.protocol, c.build.empty() ? Commit() : c.build, c.name, c.password });
+            SendMsg(c, MsgHello{ c.protocol, c.build.empty() ? Commit() : c.build, c.name, c.password, c.uuid.empty() ? PlayerId_FromName(c.name) : c.uuid });
             c.state = NetClient::State::AwaitingWelcome;
             c.lastHeard = now;
         } else if (now - c.started > kClientConnectTimeout) { c.bye = NetBye::TimedOut; End(c, NetClient::State::Closed); }
@@ -410,7 +626,11 @@ void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarS
         a.jetpack = (s.flags & 128) != 0;
         a.posture = (Player::Posture)std::min((s.flags >> 5) & 3, (int)Player::Posture::Prone);
         a.action = s.action; a.actionPhase = s.actionPhase;
-        if (auto l = c.loadouts.find(session); l != c.loadouts.end()) { a.held = l->second.held; a.headlamp = l->second.headlamp; a.suitTier = l->second.suitTier; }
+        if (auto l = c.loadouts.find(session); l != c.loadouts.end()) {
+            a.held = l->second.held; a.headlamp = l->second.headlamp; a.suitTier = l->second.suitTier;
+            const uint32_t sc = l->second.suitColor;
+            if (sc) a.suitColor = Color{ (unsigned char)(sc >> 16), (unsigned char)(sc >> 8), (unsigned char)sc, 255 };
+        }
         out.push_back(a);
     }
 }
@@ -418,7 +638,8 @@ void NetClient_FillAvatars(const NetClient& c, Scene& world, std::vector<AvatarS
 void NetClient_SetLoadout(NetClient& c, const std::string& held, bool headlamp, int suitTier) {
     if (c.state != NetClient::State::Joined) return;
     MsgLoadout l; l.held = held; l.headlamp = headlamp; l.suitTier = (uint8_t)std::clamp(suitTier, 0, 255);
-    if (c.loadoutSent && l.held == c.loadout.held && l.headlamp == c.loadout.headlamp && l.suitTier == c.loadout.suitTier) return;
+    l.suitColor = c.suitColor & 0xFFFFFFu;
+    if (c.loadoutSent && l.held == c.loadout.held && l.headlamp == c.loadout.headlamp && l.suitTier == c.loadout.suitTier && l.suitColor == c.loadout.suitColor) return;
     c.loadout = l; c.loadoutSent = true;
     SendMsg(c, l);
 }
@@ -452,7 +673,165 @@ void NetClient_SendChat(NetClient& c, const std::string& text) {
     SendMsg(c, MsgChat{ 0, text.substr(0, 256) });
 }
 
+// ---- Join sync (#776) helpers ----
+
+// A body's plots as the save writes them (text; the same file mode both ways, so equal plots give equal bytes).
+std::vector<uint8_t> Plots_Blob(const PlotSet& plots) {
+    static const std::string kTempS = "saves/.netsync_plots." + std::to_string(_getpid()) + ".tmp"; // (#837) per process: a host and clients share the folder
+    const char* kTemp = kTempS.c_str();
+    if (!DirectoryExists("saves")) MakeDirectory("saves");
+    std::vector<uint8_t> out;
+    FILE* f = fopen(kTemp, "w");
+    if (!f) return out;
+    plots.save(f);
+    fclose(f);
+    if ((f = fopen(kTemp, "rb"))) {
+        uint8_t buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) out.insert(out.end(), buf, buf + n);
+        fclose(f);
+    }
+    std::remove(kTemp);
+    return out;
+}
+
+bool Plots_Install(Planetoid& body, const std::vector<uint8_t>& blob) {
+    static const std::string kTempS = "saves/.netsync_plots_in." + std::to_string(_getpid()) + ".tmp"; // (#837) per process
+    const char* kTemp = kTempS.c_str();
+    if (!DirectoryExists("saves")) MakeDirectory("saves");
+    FILE* f = fopen(kTemp, "wb");
+    if (!f) return false;
+    fwrite(blob.data(), 1, blob.size(), f);
+    fclose(f);
+    auto set = std::make_unique<PlotSet>();
+    bool ok = false;
+    if ((f = fopen(kTemp, "r"))) { ok = set->load(f); fclose(f); }
+    std::remove(kTemp);
+    if (ok) body.plots = std::move(set);
+    return ok;
+}
+
+uint64_t NetSync_TerrainFingerprint(Scene& world) {
+    uint64_t h = 14695981039346656037ull;
+    for (auto& o : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(o.get());
+        if (!p || !p->edits) continue;
+        for (TerrainDeltas::Key k : Regions_List(*p->edits)) {
+            h = (h ^ p->netId) * 1099511628211ull;
+            h = (h ^ k) * 1099511628211ull;
+            h = (h ^ Region_Hash(Region_Encode(*p->edits, k))) * 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+// The client's cache (#776): its copy of the server's terrain edits, kept beside its client save (the regions as the
+// save writes them), so a rejoin fetches only what changed. Keyed by the server's world (seed and bodies fingerprint):
+// another world's cache is ignored. Bodies are numbered as the save numbers them.
+static bool CachedBody(const Planetoid* p) { return p && p->ringRock < 0 && !p->vehicle; }
+int NetClient_LoadCache(Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint) {
+    FILE* f = fopen((save + ".synced").c_str(), "r");
+    if (!f) return 0;
+    unsigned s = 0; unsigned long long fp = 0;
+    const bool same = fscanf(f, "%u %llu", &s, &fp) == 2 && s == seed && fp == (unsigned long long)fingerprint;
+    fclose(f);
+    if (!same) return 0;
+    const std::string dir = save + ".regions";
+    int index = 0, regions = 0;
+    for (auto& o : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(o.get());
+        if (!CachedBody(p)) continue;
+        std::shared_ptr<const TerrainDeltas> d = LoadRegionsFor(index++, dir, 0);
+        if (!d || d->empty()) continue;
+        regions += (int)Regions_List(*d).size();
+        p->edits = d;
+        p->regionsSavedTo = dir; p->allRegionsDirty = false; p->dirtyRegions.clear();
+        p->lodDirty = true;
+    }
+    return regions;
+}
+int NetClient_SaveCache(Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint) {
+    if (!DirectoryExists("saves")) MakeDirectory("saves");
+    const std::string dir = save + ".regions";
+    if (!DirectoryExists(dir.c_str())) MakeDirectory(dir.c_str());
+    int index = 0, written = 0;
+    for (auto& o : world.objects) {
+        Planetoid* p = dynamic_cast<Planetoid*>(o.get());
+        if (!CachedBody(p) || !p->edits) { if (CachedBody(p)) ++index; continue; }
+        written += SaveRegionsFor(*p->edits, p->dirtyRegions, p->allRegionsDirty, p->regionsSavedTo, index++, dir);
+    }
+    if (FILE* f = fopen((save + ".synced").c_str(), "w")) { fprintf(f, "%u %llu\n", seed, (unsigned long long)fingerprint); fclose(f); }
+    return written;
+}
+
+int NetSync_ScatterStrokes(Scene& world, int strokes, uint32_t seed) {
+    Planetoid* p = nullptr;
+    for (auto& o : world.objects) if ((p = dynamic_cast<Planetoid*>(o.get()))) break;
+    const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+    if (!pf || strokes <= 0) return 0;
+    const Vector3 home = pf->findSpawnDir(p->seed);
+    Vector3 e1 = Vector3CrossProduct({ 0, 1, 0 }, home);
+    e1 = Vector3Normalize(Vector3Length(e1) < 1e-3f ? Vector3{ 1, 0, 0 } : e1);
+    const Vector3 e2 = Vector3CrossProduct(home, e1);
+    std::vector<TerrainEdit> edits;
+    uint32_t s = seed * 2654435761u + 1u;
+    auto next = [&]() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }; // xorshift: the same strokes everywhere
+    for (int i = 0; i < strokes; ++i) {
+        const float a = (float)(next() % 60001) / 100.0f - 300.0f, b = (float)(next() % 60001) / 100.0f - 300.0f;
+        const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(e1, a / pf->radius), Vector3Scale(e2, b / pf->radius))));
+        TerrainEdit e{}; e.center = Vector3Scale(d, pf->radius + pf->elevation(d)); e.radius = 1.5f + (float)(next() % 100) / 100.0f; e.carve = true;
+        edits.push_back(e);
+    }
+    ApplyTerrainEdits(*p, edits.data(), edits.size());
+    return (int)edits.size();
+}
+
 void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
     if (c.state != NetClient::State::Joined || !netId) return;
     SendMsg(c, MsgAnimalHit{ netId });
+}
+void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action) {
+    if (c.state != NetClient::State::Joined || !netId || action < 1 || action > 2) return;
+    SendMsg(c, MsgAnimalHit{ netId, (uint8_t)action });
+}
+void NetClient_UseItem(NetClient& c, const std::string& item) {
+    if (c.state != NetClient::State::Joined || item.empty()) return;
+    SendMsg(c, MsgUseItem{ item });
+}
+void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]) { // (#800)
+    if (c.state != NetClient::State::Joined || body.empty()) return;
+    MsgBedUse b; b.body = body; b.plot = plot;
+    for (int i = 0; i < 3; ++i) b.cell[i] = cell[i];
+    SendMsg(c, b);
+}
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests, bool recursive) { // (#338)
+    if (c.state != NetClient::State::Joined || index < 0 || output.empty()) return;
+    MsgCraftRequest q; q.recipe = (uint32_t)index; q.output = output; q.count = (uint8_t)std::clamp(count, 1, 64); q.useChests = useChests; q.recursive = recursive;
+    SendMsg(c, q);
+}
+void NetClient_SkillSpend(NetClient& c, const std::string& perk) { // (#920)
+    if (c.state != NetClient::State::Joined || perk.empty()) return;
+    MsgSkillSpend q; q.perk = perk;
+    SendMsg(c, q);
+}
+void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi) { // (#865)
+    if (c.state != NetClient::State::Joined || item.empty() || centi <= 0) return;
+    MsgDropItems q; q.item = item; q.centi = centi;
+    SendMsg(c, q);
+}
+void NetClient_CreativeGive(NetClient& c, const std::string& item, int count) { // (#866)
+    if (c.state != NetClient::State::Joined) return;
+    MsgCreativeGive q; q.item = item; q.count = (uint32_t)std::max(0, count);
+    SendMsg(c, q);
+}
+void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) { // (#332)
+    if (c.state != NetClient::State::Joined || part < 0) return;
+    MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item;
+    a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
+    SendMsg(c, a);
+}
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed) { // (#335; #1085: the ground)
+    if (c.state != NetClient::State::Joined) return;
+    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.x = ground.x; a.y = ground.y; a.z = ground.z; a.seed = seed;
+    SendMsg(c, a);
 }

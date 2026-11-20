@@ -18,6 +18,11 @@ enum class Act : int {
     Dock, Transfer, Undock, RollLeft, RollRight,     // K, T, U, Z, C
     FreeLook, Save, Load,                            // Alt (rocket camera), F5, F9
     Prone,                                           // Z on foot: lie down / get up (#578; Z rolls the ship too)
+    Inventory, Crafting, Skills,                      // Tab, C, K: the game window and its tabs (#821; C and K fly the rocket too)
+    Telescope, PlayerList, Deposit, BlueprintCycle, BlueprintSave, ZoomOut, ZoomIn, // T, J, Q, N, B, -, = (#821: rebindable too)
+    OffHandUse,                                       // Q: use the off hand's food or oxygen canister (#822)
+    Chat,                                             // Enter: the command line (and chat when joined) (#823)
+    DropItem, SwapOffHand,                            // Q, F in the game window: drop from the slot under the mouse (Ctrl: the stack), swap it with the off hand (#862)
     Count
 };
 
@@ -45,11 +50,41 @@ struct PlayerInput {
 // (a frame may run no step, or two: world.h SimClock). PlayerInput_EndStep after each step clears the edges.
 void PlayerInput_BeginFrame();
 void PlayerInput_EndStep();
+// (#1081) While a text field has the keyboard (chat, the command line, a rename or search box, a sign), no keyboard key
+// reaches the game: the frame's and the step's input, the slot keys and PlayerInput_BindingPressed all read keyboard
+// bindings as up (mouse buttons, look and wheel stay live). Set once a frame, before PlayerInput_BeginFrame.
+void PlayerInput_SetTextFocus(bool on);
+bool PlayerInput_TextFocus();
+bool PlayerInput_KeyBlocked(int code); // a keyboard binding code while text focus is on
 const PlayerInput& PlayerInput_Frame();
 inline Vector2 gFakeLook = { 0.0f, 0.0f }; // added to the mouse motion every frame (--play-load turning, #509)
 inline uint64_t gFakeHeld = 0; // actions held as if their keys were down (bit = 1 << Act; --play-load walking, #509)
 const PlayerInput& PlayerInput_Step();
 // `in` when enabled, else PlayerInput::None() (the old inputEnabled flags).
 inline const PlayerInput& PlayerInput_If(bool enabled, const PlayerInput& in) { return enabled ? in : PlayerInput::None(); }
+
+// Key bindings (#821): every action's key or mouse button (kMouseBinding + button), changed in Settings and kept in settings.txt
+// ("bind <action> <code>"). The default is each action's key above.
+constexpr int kMouseBinding = 1000;
+int PlayerInput_Binding(Act a);
+void PlayerInput_SetBinding(Act a, int code);
+void PlayerInput_ResetBindings();
+int PlayerInput_DefaultBinding(Act a);
+const char* PlayerInput_ActId(Act a);     // the settings file's word ("forward", "inventory", ...)
+const char* PlayerInput_ActLabel(Act a);  // what Settings shows ("Move forward", "Open the inventory", ...)
+bool PlayerInput_ActFromId(const char* id, Act& out);
+const char* PlayerInput_KeyName(int code); // "W", "Left Shift", "Mouse 1", ...
+int PlayerInput_PressedCode();            // a key or mouse button pressed this frame (rebinding), -1 none
+bool PlayerInput_BindingPressed(Act a);   // its key went down this frame, whatever the gameplay input (menus, the game window)
+
+// (#895) A held button that just broke something (a part, a plant felled, a loose stone picked up) is used up: nothing else
+// is struck until it is released and pressed again, so holding LMB through a broken block doesn't mine what was behind it.
+// Ordinary held digging never uses it up.
+struct HoldLatch {
+    bool latched = false;
+    void consume() { latched = true; }
+    bool allows(bool held) { if (!held) latched = false; return held && !latched; } // what the button counts as now
+};
+inline HoldLatch gPrimaryLatch; // the local player's primary (LMB)
 
 #endif

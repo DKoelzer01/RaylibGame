@@ -104,13 +104,14 @@ bool Weather_RainingAt(Scene& world, Vector3 dir) {
     return w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm;
 }
 
-void Weather_Update(Scene& world, float dt) {
+void Weather_Update(Scene& world, float dt, float realDt) {
     Planetoid* p = StartBody(world);
     WeatherState target;
     if (p && player.nearest == p) {
         const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
         if (Vector3Length(local) > 1.0f) target = Weather_At(world, Vector3Normalize(local), WorldTime());
     }
+    { static const int envForce = getenv("RAYLIBGAME_WEATHER_FORCE") ? atoi(getenv("RAYLIBGAME_WEATHER_FORCE")) : -1; if (envForce >= 0) forced = envForce; } // (#1083 captures) 0 clear .. 3 storm (WeatherKind)
     if (forced >= 0) {
         target.kind = (WeatherKind)forced;
         target.cloud = forced == 0 ? 0.1f : forced == 1 ? 0.55f : forced == 5 ? 0.4f : forced == 3 ? 0.95f : 0.75f;
@@ -125,6 +126,8 @@ void Weather_Update(Scene& world, float dt) {
     here.wind = Vector3Lerp(here.wind, target.wind, k);
     here.kind = target.kind;
     if (forced >= 0) { here.cloud = target.cloud; here.precipitation = target.precipitation; here.fog = target.fog; }
+    static const float cloudOverride = getenv("RAYLIBGAME_WEATHER_CLOUD") ? (float)atof(getenv("RAYLIBGAME_WEATHER_CLOUD")) : -1.0f; // (#933 captures) cloud cover, no rain
+    if (cloudOverride >= 0.0f) { here.cloud = cloudOverride; here.precipitation = 0.0f; }
     // Above the air or underground the sky is not overhead.
     world.weatherCloud = here.cloud;
     world.weatherFog = here.fog;
@@ -138,8 +141,11 @@ void Weather_Update(Scene& world, float dt) {
         stormEased += (stormTarget - stormEased) * k;
         if (forced >= 0) stormEased = stormTarget;
         const float daily = len > 1.0f ? Wind_DailyFactor(Vector3Scale(local, 1.0f / len), Vector3Normalize(p->dirToLocal(world.sunDirection)), { 0, 1, 0 }) : 1.0f;
-        Wind_SetFrame(p, local, here.wind, stormEased, daily, dt);
-    } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, dt);
+        // (#888) at the ground the wind is a fraction of the weather's (that moves the clouds and fronts): 8-12 m/s made every
+        // day a fresh breeze with gale bursts, the grass pumping; the surface sees ~2-5 m/s, storms still blow hard (wind.cpp).
+        const float kSurfaceWind = Wind_Old888() ? 1.0f : 0.45f; // (RAYLIBGAME_WIND_888=0: the old full wind)
+        Wind_SetFrame(p, local, Vector3Scale(here.wind, kSurfaceWind), stormEased, daily, realDt >= 0.0f ? realDt : dt);
+    } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, realDt >= 0.0f ? realDt : dt);
     // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
     if (here.kind == WeatherKind::Storm) {
         if (GameClock() > nextFlash) {

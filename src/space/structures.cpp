@@ -216,13 +216,13 @@ Int3 TurnedCell(Int3 c, int quarters) { for (int k = 0; k < (quarters & 3); ++k)
 
 // The biome's stone (#164: biome materials): sandstone in the dry south, granite in the cold, limestone in the wet.
 int BiomeStone(int mat, Biome b) {
-    static const int stone = BuildMaterialForItem("stone");
+    static const int stone = BuildMaterialForItem("stone_brick");
     if (mat != stone) return mat;
     const char* m = nullptr;
     switch (b) {
-        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone"; break;
-        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite"; break;
-        case Biome::Jungle: case Biome::Swamp: m = "limestone"; break;
+        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone_brick"; break;
+        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite_brick"; break;
+        case Biome::Jungle: case Biome::Swamp: m = "limestone_brick"; break;
         default: break;
     }
     const int r = m ? BuildMaterialForItem(m) : -1;
@@ -396,24 +396,41 @@ void PlaceJobs() {
     }
 }
 
-// Dungeons (#719, per the #164 design): under some ruins, a ramp beside the ruin goes down 8 m to 3-6 rooms carved from
-// templates, joined in a tree by corridors, all on one floor. Each room has a torch; the deepest (the last) a chest of
-// rare loot, the others now and then a common one. Everything is terrain carves and plot parts on the site's plot (saved
-// as edits and parts, nothing new). RAYLIBGAME_DUNGEONS=0 turns them off.
+// Dungeons (#719, per the #164 design): under some ruins, a ramp beside the ruin goes down 8 m to the first of 2-3 floors
+// 10 m apart (the deepest ~29 m down), joined by stairs. Each floor is 2-4 rooms joined in a tree by corridors that leave
+// the rooms square through doorways with a door (two stacked gates). Rooms come in four shapes: plain, a pillared hall, a
+// vaulted room (a high middle) and a crypt (alcoves in the walls). Each room has a torch; the last room of a floor a chest
+// (the deepest a dungeon_rare one, with the dungeon-only relic now and then), the others now and then a common chest. Traps
+// (slice 2): pressure plates in some corridors (a falling block or darts) and gas vents in some rooms (dungeontraps.cpp).
+// Everything is terrain carves and plot parts on the site's plot (saved as edits and parts, nothing new).
+// RAYLIBGAME_DUNGEONS=0 turns them off.
 bool DungeonsOn() { static const bool on = !(getenv("RAYLIBGAME_DUNGEONS") && atoi(getenv("RAYLIBGAME_DUNGEONS")) == 0); return on; }
-struct DungeonPlan { int rooms = 0; Vector3 entrance{}; std::vector<Vector3> roomCentres; std::vector<std::pair<int, int>> links; float floorY = 0.0f; };
+struct DungeonPlan {
+    int rooms = 0, floors = 0, doors = 0, plates = 0, darts = 0, vents = 0, shapes = 0; // shapes: a bit per room shape used
+    Vector3 entrance{}; float floorY = 0.0f, deepest = 0.0f;
+    std::vector<Vector3> roomCentres;               // 1 m over each room's floor
+    std::vector<std::pair<int, int>> links;
+    std::vector<Vector3> corridorMids, stairPoints, rampPoints; // 1 m over the floor: must be open
+};
 DungeonPlan lastDungeon; // tests: the last dungeon planned (plot metres)
 bool forceDungeon = false; // tests: every ruin with a dungeon chance gets one
 bool noDungeons = false;   // tests: none (--test-structures checks the surface sets and their chests)
-void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Plot& plot, float floorY, float ruinHalfX, uint32_t seed) {
+struct DungeonArgs { float floorY = 0.0f, half = 0.0f; int stone = 0; };
+DungeonArgs lastDungeonArgs; // tests: what the last site would plan its dungeon with (built with noDungeons, then planned by hand)
+void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Plot& plot, float floorY, float ruinHalfX, uint32_t seed, int stoneMat) {
     // Rock over every room and corridor (at least kCover): where the ground falls away from the ruin a room came up
-    // under a thin crust and trees showed through its ceiling. The plan is dropped when fewer than 3 rooms fit.
-    constexpr float kCover = 3.0f;
+    // under a thin crust and trees showed through its ceiling. A floor that fits fewer than 2 rooms ends the dungeon there,
+    // and a dungeon whose first floor fits none is dropped.
+    constexpr float kCover = 3.0f, kDepth = 8.0f, kFloorGap = 10.0f, kRoomH = 3.0f, kCorrHalfW = 0.75f, kCorrH = 2.4f;
+    constexpr float kStepDown = 0.35f, kStepRun = 0.5f, kStub = 1.2f; // stairs at 35 deg; a doorway's passage out of the wall
     auto cover = [&](Vector3 plotTop) { const Vector3 t = plot.toBody(plotTop); return pf.radius + pf.elevation(Vector3Normalize(t)) - Vector3Length(t); };
+    auto snap = [](float y) { return floorf(y / kCellSize) * kCellSize; };
+    auto cellOf = [](float x, float y, float z) { return Int3{ (int)floorf(x / kCellSize), (int)floorf(y / kCellSize), (int)floorf(z / kCellSize) }; };
     std::vector<TerrainEdit> cuts;
-    constexpr float kDepth = 8.0f, kRoomH = 3.0f, kCorrHalfW = 0.75f, kCorrH = 2.4f;
-    struct Room { Vector3 c; float hx, hz; };
-    static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f } }; // half sizes (m)
+    std::vector<std::pair<Part, std::string>> parts;
+    struct Room { Vector3 c; float hx, hz; int shape; int floor; uint8_t walls = 0; }; // walls: a bit per wall with a door or stairs (+x, -x, +z, -z)
+    static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f }, { 2.5f, 4.5f }, { 4.5f, 3.5f } }; // half sizes (m)
+    constexpr int kTemplateCount = 6;
     uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
     auto box = [&](Vector3 c, Vector3 half) {
         TerrainEdit e{};
@@ -423,60 +440,186 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         e.radius = Vector3Length(half);
         cuts.push_back(e);
     };
-    // The ramp: from just outside the ruin (+x), 0.5 m forward and 0.35 m down a step (35 deg), 2.4 m of headroom.
-    const float x0 = ruinHalfX + 2.0f;
-    const int steps = (int)ceilf(kDepth / 0.35f);
-    for (int i = 0; i <= steps; ++i) {
-        const float y = floorY - 0.35f * i;
-        box({ x0 + 0.5f * i, y + 1.2f, 0.0f }, { 0.4f, 1.2f, kCorrHalfW });
-    }
-    const float roomFloor = floorY - 0.35f * steps;
-    const float xEnd = x0 + 0.5f * steps;
-    // Rooms: the first at the ramp's foot, each next one off a room already there (a tree), never overlapping.
-    std::vector<Room> rooms;
-    std::vector<std::pair<int, int>> links; // corridors: room indices
-    const int n = 3 + (int)(Unit(h) * 4.0f) % 4;
-    auto covered = [&](const Room& r) { // the ceiling's middle and corners under kCover of rock
-        const float top = roomFloor + kRoomH;
+    auto covered = [&](const Room& r, float flr) { // the ceiling's middle and corners under kCover of rock
+        const float top = flr + kRoomH + 1.5f;     // (a vaulted room's middle is higher)
         for (int k = 0; k < 5; ++k) {
             const float u = k == 0 ? 0.0f : (k & 1 ? 1.0f : -1.0f), v = k == 0 ? 0.0f : (k & 2 ? 1.0f : -1.0f);
-            if (cover({ r.c.x + u * r.hx, top, r.c.z + v * r.hz }) < kCover) return false;
+            if (cover({ r.c.x + u * (r.hx + 1.0f), top, r.c.z + v * (r.hz + 1.0f) }) < kCover) return false; // +1 m: alcoves
         }
         return true;
     };
-    { const Vector2 t = kTemplates[(int)(Unit(h) * 4.0f) & 3]; rooms.push_back({ { xEnd + t.x, roomFloor, 0.0f }, t.x, t.y }); }
-    if (!covered(rooms[0])) return; // the ground falls away right past the ruin: no dungeon here
-    for (int tries = 0; (int)rooms.size() < n && tries < 60; ++tries) {
-        const size_t fi = (size_t)(Unit(h) * rooms.size()) % rooms.size();
-        const Room& from = rooms[fi];
-        const Vector2 t = kTemplates[(int)(Unit(h) * 4.0f) & 3];
-        const float ang = Unit(h) * 2.0f * PI, d = std::max(from.hx, from.hz) + std::max(t.x, t.y) + 3.0f + Unit(h) * 4.0f;
-        const Room r{ { from.c.x + cosf(ang) * d, roomFloor, from.c.z + sinf(ang) * d }, t.x, t.y };
-        bool clear = fabsf(r.c.x) > ruinHalfX + 4.0f + r.hx || fabsf(r.c.z) > ruinHalfX + 4.0f + r.hz; // not under the ruin (or its ramp's top)
-        for (const Room& o : rooms) clear = clear && (fabsf(o.c.x - r.c.x) > o.hx + r.hx + 2.0f || fabsf(o.c.z - r.c.z) > o.hz + r.hz + 2.0f);
-        if (!clear || !covered(r) || cover({ 0.5f * (from.c.x + r.c.x), roomFloor + kCorrH, 0.5f * (from.c.z + r.c.z) }) < kCover) continue;
-        // The corridor from `from` to it, boxes every 0.6 m along the floor.
-        const Vector3 a = from.c, b = r.c;
-        const float len = Vector2Length({ b.x - a.x, b.z - a.z });
-        for (float s = 0.0f; s <= len; s += 0.6f) { const float k = s / len; box({ a.x + (b.x - a.x) * k, roomFloor + kCorrH * 0.5f, a.z + (b.z - a.z) * k }, { kCorrHalfW, kCorrH * 0.5f, kCorrHalfW }); }
-        links.push_back({ (int)fi, (int)rooms.size() });
-        rooms.push_back(r);
+    // A part whose footprint's lowest cell lands on `lo` (gates turn about their origin cell, so place by the footprint).
+    auto placeAt = [&](PartType t, uint8_t orient, Int3 lo, uint8_t material, const std::string& table) {
+        Part p{ t, { 0, 0, 0 }, orient, material };
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(p, fp);
+        Int3 mn = fp.empty() ? Int3{ 0, 0, 0 } : fp[0].first;
+        for (const auto& [c, s] : fp) { mn.x = std::min(mn.x, c.x); mn.y = std::min(mn.y, c.y); mn.z = std::min(mn.z, c.z); }
+        p.origin = { lo.x - mn.x, lo.y - mn.y, lo.z - mn.z };
+        parts.push_back({ p, table });
+    };
+    // A doorway in room r's wall `wall` (0 +x, 1 -x, 2 +z, 3 -z) at lateral `at`: a 1 x 2 m passage kStub out of the wall,
+    // a door in it. Returns the point kStub out, where the corridor starts.
+    auto doorway = [&](Room& r, int wall, float at, float flr) {
+        r.walls |= (uint8_t)(1 << wall);
+        const bool xWall = wall < 2;
+        const float sign = (wall & 1) ? -1.0f : 1.0f;
+        const float wallPos = xWall ? r.c.x + sign * r.hx : r.c.z + sign * r.hz;
+        const float lim = (xWall ? r.hz : r.hx) - 0.8f;
+        const float lat0 = floorf((std::clamp(at, (xWall ? r.c.z : r.c.x) - lim, (xWall ? r.c.z : r.c.x) + lim) - 0.5f) / kCellSize + 0.5f) * kCellSize; // the door's low edge, on a cell
+        const float mid = wallPos + sign * (kStub - 0.3f) * 0.5f, depth = (kStub + 0.3f) * 0.5f;
+        if (xWall) box({ mid, flr + 1.0f, lat0 + 0.5f }, { depth, 1.0f, 0.5f });
+        else box({ lat0 + 0.5f, flr + 1.0f, mid }, { 0.5f, 1.0f, depth });
+        // The door: two gates, one over the other, in the wall's plane.
+        const uint8_t orient = xWall ? 0 : (uint8_t)RotateOrientation(0, 1);
+        const Int3 lo = xWall ? cellOf(wallPos, flr + 0.1f, lat0 + 0.01f) : cellOf(lat0 + 0.01f, flr + 0.1f, wallPos);
+        for (int k = 0; k < 2; ++k) placeAt(PartType::Gate, orient, { lo.x, lo.y + 2 * k, lo.z }, 0, "");
+        ++lastDungeon.doors;
+        const float out = wallPos + sign * kStub;
+        return xWall ? Vector3{ out, flr, lat0 + 0.5f } : Vector3{ lat0 + 0.5f, flr, out };
+    };
+    // The ramp: from just outside the ruin (+x), 0.5 m forward and 0.35 m down a step (35 deg), 2.4 m of headroom.
+    lastDungeon = DungeonPlan{};
+    const float x0 = ruinHalfX + 2.0f;
+    const int steps = (int)ceilf(kDepth / kStepDown);
+    for (int i = 0; i <= steps; ++i) {
+        const float y = floorY - kStepDown * i;
+        box({ x0 + kStepRun * i, y + 1.2f, 0.0f }, { 0.4f, 1.2f, kCorrHalfW });
+        if (i > 1 && i < steps - 1 && i % 4 == 0) lastDungeon.rampPoints.push_back({ x0 + kStepRun * i, y + 1.0f, 0.0f });
     }
-    if (rooms.size() < 3) return; // too little room under good cover: no dungeon
-    lastDungeon = DungeonPlan{ (int)rooms.size(), { x0, floorY, 0.0f }, {}, links, roomFloor };
+    float flr = snap(floorY - kStepDown * steps);
+    Vector3 foot = { x0 + kStepRun * steps, flr, 0.0f }; // where this floor's first room starts
+    Vector3 footDir = { 1, 0, 0 };
+    std::vector<Room> rooms;
+    std::vector<std::pair<int, int>> links;
+    const int floors = 2 + (Unit(h) < 0.4f ? 1 : 0);
+    int floorsBuilt = 0;
+    for (int fl = 0; fl < floors; ++fl) {
+        const size_t first = rooms.size();
+        // The first room at the foot of the ramp or stairs, along their direction.
+        {
+            const int ti = (int)(Unit(h) * kTemplateCount) % kTemplateCount;
+            const Vector2 t = kTemplates[ti];
+            const float reach = fabsf(footDir.x) > 0.5f ? t.x : t.y;
+            Room r{ Vector3Add(foot, Vector3Scale(footDir, reach)), t.x, t.y, (int)(Unit(h) * 4.0f) & 3, fl };
+            r.c.y = flr;
+            if (!covered(r, flr)) break; // the ground falls away here: no (deeper) floor
+            rooms.push_back(r);
+        }
+        const int n = 2 + (int)(Unit(h) * 3.0f) % 3;
+        for (int tries = 0; (int)(rooms.size() - first) < n && tries < 60; ++tries) {
+            const size_t fi = first + (size_t)(Unit(h) * (rooms.size() - first)) % (rooms.size() - first);
+            const Vector2 t = kTemplates[(int)(Unit(h) * kTemplateCount) % kTemplateCount];
+            const int wall = (int)(Unit(h) * 4.0f) & 3;
+            if (rooms[fi].walls & (1 << wall)) continue;
+            const Room& from = rooms[fi];
+            // Off one of its walls: square out, shifted sideways a little (the corridor turns once).
+            const float gap = 4.0f + Unit(h) * 5.0f, side = (Unit(h) - 0.5f) * 6.0f, sign = (wall & 1) ? -1.0f : 1.0f;
+            Vector3 c = from.c;
+            if (wall < 2) { c.x += sign * (from.hx + gap + t.x); c.z += side; } else { c.z += sign * (from.hz + gap + t.y); c.x += side; }
+            Room r{ c, t.x, t.y, (int)(Unit(h) * 4.0f) & 3, fl };
+            bool clear = fl > 0 || fabsf(r.c.x) > ruinHalfX + 4.0f + r.hx || fabsf(r.c.z) > ruinHalfX + 4.0f + r.hz; // not under the ruin (or its ramp's top)
+            for (size_t k = first; k < rooms.size(); ++k) { const Room& o = rooms[k]; clear = clear && (fabsf(o.c.x - r.c.x) > o.hx + r.hx + 3.0f || fabsf(o.c.z - r.c.z) > o.hz + r.hz + 3.0f); }
+            if (fl == 0) clear = clear && (fabsf(r.c.z) > r.hz + 2.0f || r.c.x - r.hx > foot.x + 1.0f || r.c.x + r.hx < x0 - 1.0f); // off the ramp
+            if (!clear || !covered(r, flr) || cover({ 0.5f * (from.c.x + r.c.x), flr + kCorrH, 0.5f * (from.c.z + r.c.z) }) < kCover) continue;
+            // The corridor: out of a doorway in `from`, into one in `r` (the wall facing back), boxes every 0.6 m between.
+            const int back = wall ^ 1;
+            const size_t ri = rooms.size();
+            rooms.push_back(r);
+            const Vector3 a = doorway(rooms[fi], wall, wall < 2 ? r.c.z : r.c.x, flr);
+            const Vector3 b = doorway(rooms[ri], back, wall < 2 ? rooms[fi].c.z : rooms[fi].c.x, flr);
+            const float len = Vector2Length({ b.x - a.x, b.z - a.z });
+            for (float s = 0.0f; s <= len + 0.01f; s += 0.6f) { const float k = len > 0.0f ? s / len : 0.0f; box({ a.x + (b.x - a.x) * k, flr + kCorrH * 0.5f, a.z + (b.z - a.z) * k }, { kCorrHalfW, kCorrH * 0.5f, kCorrHalfW }); }
+            const Vector3 m = { 0.5f * (a.x + b.x), flr + 1.0f, 0.5f * (a.z + b.z) };
+            lastDungeon.corridorMids.push_back(m);
+            links.push_back({ (int)fi, (int)ri });
+            // A pressure plate in the middle of some corridors: a falling block or darts.
+            if (len > 2.5f && Unit(h) < 0.45f) {
+                const uint8_t kind = Unit(h) < 0.55f ? 0 : 1;
+                placeAt(PartType::PressurePlate, 0, cellOf(m.x, flr + 0.1f, m.z), kind, "");
+                ++lastDungeon.plates; lastDungeon.darts += kind;
+            }
+        }
+        if (rooms.size() - first < 2 && fl == 0) { lastDungeon = DungeonPlan{}; return; } // too little room under good cover
+        ++floorsBuilt;
+        lastDungeon.deepest = flr;
+        if (fl + 1 == floors || rooms.size() - first < 2) break; // (a lone room deeper down: the stairs end in it)
+        // Stairs down from a wall of this floor's last room without a door, 10 m to the next floor.
+        bool stairs = false;
+        for (int k = 0; k < 4 && !stairs; ++k) {
+            Room& r = rooms.back();
+            if (r.walls & (1 << k)) continue;
+            const float sign = (k & 1) ? -1.0f : 1.0f;
+            const Vector3 dir = k < 2 ? Vector3{ sign, 0, 0 } : Vector3{ 0, 0, sign };
+            const Vector3 start = { r.c.x + dir.x * r.hx, flr, r.c.z + dir.z * r.hz };
+            const int n2 = (int)ceilf(kFloorGap / kStepDown);
+            // The stairwell's first 4 m (above the room floors under it) must miss this floor's rooms.
+            bool clear = true;
+            for (size_t q = first; q + 1 < rooms.size(); ++q) {
+                const Room& o = rooms[q];
+                const Vector3 e = Vector3Add(start, Vector3Scale(dir, 4.0f));
+                const float lox = std::min(start.x, e.x) - kCorrHalfW, hix = std::max(start.x, e.x) + kCorrHalfW, loz = std::min(start.z, e.z) - kCorrHalfW, hiz = std::max(start.z, e.z) + kCorrHalfW;
+                clear = clear && (hix < o.c.x - o.hx - 1.0f || lox > o.c.x + o.hx + 1.0f || hiz < o.c.z - o.hz - 1.0f || loz > o.c.z + o.hz + 1.0f);
+            }
+            const Vector3 end = Vector3Add(start, Vector3Scale(dir, kStepRun * n2));
+            if (!clear || cover({ end.x, flr - kFloorGap + kCorrH, end.z }) < kCover) continue;
+            r.walls |= (uint8_t)(1 << k);
+            for (int i = 0; i <= n2; ++i) {
+                const Vector3 p = Vector3Add(start, Vector3Scale(dir, kStepRun * i + 0.25f));
+                const float y = flr - kStepDown * i;
+                box({ p.x, y + 1.2f, p.z }, k < 2 ? Vector3{ 0.4f, 1.2f, kCorrHalfW } : Vector3{ kCorrHalfW, 1.2f, 0.4f });
+                if (i > 1 && i < n2 - 1 && i % 5 == 0) lastDungeon.stairPoints.push_back({ p.x, y + 1.0f, p.z });
+            }
+            { // a torch on the 10th step (3.5 m down: a whole number of cells), at the stairwell's side
+                const Vector3 p = Vector3Add(start, Vector3Scale(dir, kStepRun * 10 + 0.25f));
+                parts.push_back({ Part{ PartType::Torch, cellOf(p.x - dir.z * 0.5f, flr - 10 * kStepDown + 0.1f, p.z + dir.x * 0.5f), 0, 0 }, "" });
+            }
+            foot = end; footDir = dir;
+            flr = snap(flr - kStepDown * n2);
+            stairs = true;
+        }
+        if (!stairs) break;
+    }
+    if (floorsBuilt == 0) { lastDungeon = DungeonPlan{}; return; }
+    lastDungeon.rooms = (int)rooms.size(); lastDungeon.floors = floorsBuilt;
+    lastDungeon.entrance = { x0, floorY, 0.0f }; lastDungeon.floorY = rooms[0].c.y; lastDungeon.links = links;
+    // The rooms: carved by shape, a torch each, chests and gas.
     for (size_t i = 0; i < rooms.size(); ++i) {
         const Room& r = rooms[i];
-        box({ r.c.x, roomFloor + kRoomH * 0.5f, r.c.z }, { r.hx, kRoomH * 0.5f, r.hz });
-        lastDungeon.roomCentres.push_back({ r.c.x, roomFloor + 1.0f, r.c.z });
-        if (body.trees) body.trees->addClearing(plot.toBody({ r.c.x, roomFloor + kRoomH, r.c.z }), std::max(r.hx, r.hz) + 2.0f); // (roots)
-        auto cell = [&](float x, float y, float z) { return Int3{ (int)floorf(x / kCellSize), (int)floorf(y / kCellSize), (int)floorf(z / kCellSize) }; };
-        // A torch in a corner (light: rooms 8 m down are black), and a chest against the far wall now and then.
-        job.parts.push_back({ Part{ PartType::Torch, cell(r.c.x + r.hx - 0.4f, roomFloor + 0.1f, r.c.z + r.hz - 0.4f), 0, 0 }, "" });
-        const bool last = i + 1 == rooms.size();
-        if (last || Unit(h) < 0.4f)
-            job.parts.push_back({ Part{ PartType::Chest, cell(r.c.x - r.hx + 0.6f, roomFloor + 0.1f, r.c.z - 0.5f), 0, 0 }, last ? "ruin_rare" : "ruin_common" });
+        const float rf = r.c.y;
+        box({ r.c.x, rf + kRoomH * 0.5f, r.c.z }, { r.hx, kRoomH * 0.5f, r.hz });
+        lastDungeon.shapes |= 1 << r.shape;
+        if (r.shape == 1 && r.hx >= 2.5f && r.hz >= 2.5f) { // a pillared hall: four stone pillars, floor to ceiling
+            for (int k = 0; k < 4; ++k) {
+                const float px = r.c.x + (k & 1 ? 0.5f : -0.5f) * r.hx, pz = r.c.z + (k & 2 ? 0.5f : -0.5f) * r.hz;
+                const Int3 c = cellOf(px, rf + 0.1f, pz);
+                for (int y = 0; y < (int)(kRoomH / kCellSize); ++y) parts.push_back({ Part{ PartType::Cube, { c.x, c.y + y, c.z }, 0, (uint8_t)stoneMat }, "" });
+            }
+        } else if (r.shape == 2) { // vaulted: the middle 1.5 m higher
+            box({ r.c.x, rf + kRoomH + 0.75f, r.c.z }, { r.hx * 0.6f, 0.75f, r.hz * 0.6f });
+        } else if (r.shape == 3) { // a crypt: an alcove 1 m deep in each wall, off its middle (doors take the middle)
+            for (int k = 0; k < 4; ++k) {
+                const float s = (k & 1) ? -1.0f : 1.0f;
+                if (k < 2) box({ r.c.x + s * (r.hx + 0.5f), rf + 1.0f, r.c.z - 0.5f * r.hz }, { 0.5f, 1.0f, 0.6f });
+                else box({ r.c.x + 0.5f * r.hx, rf + 1.0f, r.c.z + s * (r.hz + 0.5f) }, { 0.6f, 1.0f, 0.5f });
+            }
+        }
+        lastDungeon.roomCentres.push_back({ r.c.x, rf + 1.0f, r.c.z });
+        if (body.trees) body.trees->addClearing(plot.toBody({ r.c.x, rf + kRoomH, r.c.z }), std::max(r.hx, r.hz) + 2.0f); // (roots)
+        // A torch in a corner (light: rooms 8 m down are black), and a chest against the far wall now and then: always in
+        // a floor's last room, of rare loot in the deepest.
+        parts.push_back({ Part{ PartType::Torch, cellOf(r.c.x + r.hx - 0.4f, rf + 0.1f, r.c.z + r.hz - 0.4f), 0, 0 }, "" });
+        const bool deepest = i + 1 == rooms.size(), lastOfFloor = deepest || rooms[i + 1].floor != r.floor;
+        if (lastOfFloor || Unit(h) < 0.4f)
+            parts.push_back({ Part{ PartType::Chest, cellOf(r.c.x - r.hx + 0.6f, rf + 0.1f, r.c.z - 0.5f), 0, 0 }, deepest ? "dungeon_rare" : lastOfFloor ? "ruin_rare" : "ruin_common" });
+        // Gas in some rooms past the first (more of them deeper); never the deepest, its chest is reward enough.
+        if (i > 0 && !deepest && Unit(h) < (r.floor == 0 ? 0.2f : 0.35f)) {
+            parts.push_back({ Part{ PartType::GasVent, cellOf(r.c.x + 0.25f, rf + 0.1f, r.c.z + 0.25f), 0, 0 }, "" });
+            ++lastDungeon.vents;
+        }
     }
     job.edits.insert(job.edits.end(), cuts.begin(), cuts.end());
+    job.parts.insert(job.parts.end(), parts.begin(), parts.end());
 }
 
 // Build one site (its tile id for the discovery record; world for its guards, null: none): -1 if the spot doesn't
@@ -564,9 +707,10 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             }
         job.parts.push_back({ p, table });
     }
+    lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone_brick"), biome) };
     uint32_t dh = Hash((uint64_t)site.seed ^ 0xd0d0ull);
     if (S.dungeon > 0.0f && DungeonsOn() && !noDungeons && (forceDungeon || Unit(dh) < S.dungeon)) // a dungeon under it (#719)
-        PlanDungeon(job, body, pf, *plot, (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, site.seed);
+        PlanDungeon(job, body, pf, *plot, lastDungeonArgs.floorY, lastDungeonArgs.half, site.seed, lastDungeonArgs.stone);
     const int planned = (int)job.parts.size();
     jobs.push_back(std::move(job));
     if (force) { RunJob(body, jobs.back(), 1e9); jobs.pop_back(); } // tests (forced sites): all at once
@@ -869,9 +1013,10 @@ std::string Structures_PlacesText(bool discoveredOnly) {
 const char* Structures_LastSkip() { return lastSkip; }
 
 bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target) {
-    // A ruined watchtower with its dungeon forced, 40 m from the player (#719), built at once. Checks: 3-6 rooms; the air
-    // (density under ISO) at every room's middle, along the ramp and at every corridor's middle; a chest of rare loot
-    // waiting in the last room. eye/target (body-local): a view across the first room toward its torch.
+    // A ruined watchtower with its dungeon forced, 40 m from the player (#719), built at once. Checks: 2-3 floors down to
+    // ~30 m, 4-12 rooms; the air (density under ISO) at every room's middle, every corridor's middle, along the ramp and the
+    // stairs; a door (two gates) in every doorway, all placed; the traps planned all placed; one dungeon_rare chest waiting.
+    // Tries a few seeds for one with both kinds of trap. eye/target (body-local): a view across the first room by its torch.
     Ensure();
     if (!DungeonsOn()) { printf("bench: dungeon: RAYLIBGAME_DUNGEONS=0: off -> SKIP\n"); return true; }
     const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
@@ -880,34 +1025,50 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     if (!pf || set < 0) { printf("bench: dungeon: no watchtower set -> FAIL\n"); return false; }
     const Vector3 up = Vector3Normalize(nearLocal);
     Vector3 t1, t2; TangentAxes(up, t1, t2);
-    Site s; s.any = true; s.set = set; s.quarters = 0; s.seed = 4242u;
+    Site s; s.any = true; s.set = set; s.quarters = 0;
     s.dir = Vector3Normalize(Vector3Add(up, Vector3Scale(t1, 40.0f / pf->radius)));
-    forceDungeon = true;
-    lastDungeon = DungeonPlan{};
+    // The ruin first (no dungeon), then the first dungeon seed (of a few, planned dry: cheap) with a falling block, darts
+    // and gas, built under it.
+    s.seed = 4242u;
+    noDungeons = true;
     const size_t pending0 = pending.size();
     const int placed = BuildSite(&world, body, *pf, kRingTile + 200, s, true);
-    forceDungeon = false;
-    const Plot* plot = body.plots ? body.plots->plotFor(Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir)), 15.0f, false) : nullptr;
-    if (placed < 0 || !plot || lastDungeon.rooms == 0) { printf("bench: dungeon: not built (%s) -> FAIL\n", lastSkip); return false; }
+    noDungeons = false;
+    Plot* plot = body.plots ? body.plots->plotFor(Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir)), 15.0f, false) : nullptr;
+    if (placed < 0 || !plot) { printf("bench: dungeon: the ruin not built (%s) -> FAIL\n", lastSkip); return false; }
+    const DungeonArgs A = lastDungeonArgs;
+    uint32_t pick = 4242u;
+    for (uint32_t k = 0; k < 40; ++k) {
+        const uint32_t sd = 4242u + 7919u * k;
+        BuildJob dry;
+        PlanDungeon(dry, body, *pf, *plot, A.floorY, A.half, sd, A.stone);
+        if (lastDungeon.rooms > 0 && lastDungeon.vents > 0 && lastDungeon.darts > 0 && lastDungeon.darts < lastDungeon.plates) { pick = sd; break; }
+    }
+    BuildJob job;
+    job.body = body.id; job.plot = plot->id; job.seed = pick;
+    PlanDungeon(job, body, *pf, *plot, A.floorY, A.half, pick, A.stone);
+    if (lastDungeon.rooms == 0) { printf("bench: dungeon: none fits under the ruin -> FAIL\n"); return false; }
+    RunJob(body, job, 1e9);
     auto air = [&](Vector3 plotPos) { return body.densityAt(plot->toBody(plotPos)) < ISO_LEVEL; };
-    int roomsOpen = 0, links = 0, linksOpen = 0, ramp = 0, rampOpen = 0;
-    for (const Vector3& c : lastDungeon.roomCentres) roomsOpen += air(c);
-    for (const auto& [a, b] : lastDungeon.links) {
-        ++links;
-        const Vector3 m = Vector3Scale(Vector3Add(lastDungeon.roomCentres[a], lastDungeon.roomCentres[b]), 0.5f);
-        linksOpen += air(m);
-    }
-    for (float k = 0.1f; k < 0.95f; k += 0.1f) { // along the ramp, 1 m over its floor
-        const Vector3 e = lastDungeon.entrance;
-        const Vector3 p = { e.x + (lastDungeon.roomCentres[0].x - e.x) * k * 0.6f, e.y + (lastDungeon.floorY - e.y) * k * 0.6f + 1.0f, 0.0f };
-        ++ramp; rampOpen += air(p);
-    }
+    const DungeonPlan& D = lastDungeon;
+    int roomsOpen = 0, linksOpen = 0, rampOpen = 0, stairsOpen = 0;
+    for (const Vector3& c : D.roomCentres) roomsOpen += air(c);
+    for (const Vector3& m : D.corridorMids) linksOpen += air(m);
+    for (const Vector3& p : D.rampPoints) rampOpen += air(p);
+    for (const Vector3& p : D.stairPoints) stairsOpen += air(p);
+    int gates = 0, plates = 0, vents = 0;
+    for (const Part& p : plot->parts) { gates += p.type == PartType::Gate; plates += p.type == PartType::PressurePlate; vents += p.type == PartType::GasVent; }
     int rare = 0;
-    for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "ruin_rare";
-    const bool ok = lastDungeon.rooms >= 3 && lastDungeon.rooms <= 6 && roomsOpen == lastDungeon.rooms && linksOpen == links && rampOpen == ramp && rare == 1;
-    printf("bench: dungeon: %d rooms %.1f m down (%d open), %d corridors (%d open at the middle), the ramp open at %d of %d points, %d rare chest waiting -> %s\n",
-           lastDungeon.rooms, lastDungeon.entrance.y - lastDungeon.floorY, roomsOpen, links, linksOpen, rampOpen, ramp, rare, ok ? "PASS" : "FAIL");
-    const Vector3 c0 = lastDungeon.roomCentres[0];
+    for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "dungeon_rare";
+    const float depth = D.entrance.y - D.deepest;
+    const bool ok = D.floors >= 2 && D.floors <= 3 && depth > 18.0f && depth < 31.0f && D.rooms >= 4 && D.rooms <= 12 && roomsOpen == D.rooms &&
+                    linksOpen == (int)D.corridorMids.size() && rampOpen == (int)D.rampPoints.size() && !D.stairPoints.empty() && stairsOpen == (int)D.stairPoints.size() &&
+                    D.doors == 2 * (int)D.links.size() && gates == 2 * D.doors && plates == D.plates && vents == D.vents && rare == 1;
+    printf("bench: dungeon: seed %u: %d floors, %.1f m down at the deepest; %d rooms (%d open, shapes 0x%x), %d corridors (%d open at the middle), ramp open %d/%d, stairs open %d/%d; "
+           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest -> %s\n",
+           pick, D.floors, depth, D.rooms, roomsOpen, D.shapes, (int)D.corridorMids.size(), linksOpen, rampOpen, (int)D.rampPoints.size(), stairsOpen, (int)D.stairPoints.size(),
+           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, ok ? "PASS" : "FAIL");
+    const Vector3 c0 = D.roomCentres[0];
     eye = plot->toBody({ c0.x - 1.5f, c0.y + 0.6f, c0.z - 1.5f });
     target = plot->toBody({ c0.x + 3.0f, c0.y - 0.6f, c0.z + 3.0f });
     return ok;

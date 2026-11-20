@@ -3,6 +3,8 @@
 
 #include <raylib.h>
 #include <rlgl.h>
+#include <cstdlib>
+#include <ctime>
 
 extern "C" {
     typedef void (*PfnMemoryBarrier)(unsigned int);
@@ -12,8 +14,16 @@ extern "C" {
     typedef void (*PfnDispatchComputeIndirect)(long long);
     extern PfnDispatchComputeIndirect glad_glDispatchComputeIndirect;
 }
+#if RAYLIBGAME_HEADLESS_PLATFORM
+extern "C" int RaylibHeadless_GLMode(void); // src/platform/rcore_headless.c: 2 = the null GL (no GPU)
+#endif
 
 bool Compute_Available() {
+#if RAYLIBGAME_HEADLESS_PLATFORM
+    // A Linux server without a GPU (#792) runs on stub GL functions: every GPU path (fluid, terrain density, arena,
+    // tree culling) takes its CPU fallback.
+    if (RaylibHeadless_GLMode() == 2) return false;
+#endif
     return rlGetVersion() == RL_OPENGL_43 && glad_glMemoryBarrier != nullptr;
 }
 
@@ -51,12 +61,20 @@ std::string LoadShaderSource(const std::string& path, std::vector<std::string>& 
 bool ComputeProgram::load(const std::string& p) {
     if (!Compute_Available()) return false;
     std::vector<std::string> inc;
-    const std::string src = LoadShaderSource(p, inc);
+    std::string src = LoadShaderSource(p, inc);
     if (src.empty()) { LOG_ERROR("Compute", "compute shader %s: not found\n", p.c_str()); return false; }
+    // (#1047) RAYLIBGAME_COLD_SHADERS=1: a comment unique to this run first, so the driver's shader cache misses, as on a fresh
+    // machine or CI runner (comments may come before #version)
+    static const bool cold = getenv("RAYLIBGAME_COLD_SHADERS") && getenv("RAYLIBGAME_COLD_SHADERS")[0] == '1';
+    static int coldN = 0;
+    if (cold) src = std::string(TextFormat("// cold %lld %d\n", (long long)time(nullptr), ++coldN)) + src;
+    const double t0 = GetTime();
     const unsigned int sh = rlCompileShader(src.c_str(), RL_COMPUTE_SHADER);
     if (sh == 0) { LOG_ERROR("Compute", "compute shader %s failed to compile\n", p.c_str()); TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }
     const unsigned int prog = rlLoadComputeShaderProgram(sh);
     if (prog == 0) { LOG_ERROR("Compute", "compute shader %s failed to link\n", p.c_str()); return false; }
+    // (#1047) a slow compile stalls its frame: a driver with a cold shader cache took seconds a shader
+    if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Compute shader %s: compiled and linked in %.0f ms", p.c_str(), ms);
     unload();
     id = prog;
     path = p;

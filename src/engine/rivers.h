@@ -32,6 +32,10 @@ public:
         std::function<float(Vector3)> bankHeight; // optional (bake-native, #640): the ground beside a river (m), levels are held under it
         float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
         float lakeDepth = 6.0f;         // m: a filled depression deeper than this holds water (a lake, or with the bake a pond)
+        std::function<float(Vector3)> runoff; // optional (#637): water per km^2 drained at a place, x the default (moisture x the water cycle)
+        // optional (bake-native, #903): how far the runtime moves the bake's ground at a place of bake height h (m: biomes'
+        // regional reshaping after the bake, e.g. swamps pulled down to a floor 2-5 m over the sea). Levels move with it.
+        std::function<float(Vector3 dir, float h)> regionalShift;
     };
     // height(dir): smooth land height (m above sea level) for a unit direction.
     RiverNetwork(float radius, unsigned int seed, const std::function<float(Vector3)>& height, const Params& params);

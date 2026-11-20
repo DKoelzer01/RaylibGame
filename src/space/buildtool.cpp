@@ -1,4 +1,5 @@
 #include "machinemodels.h"
+#include "machineact.h"
 #include "buildtool.h"
 #include "playerinput.h"
 #include "waterworks.h"
@@ -13,8 +14,14 @@
 #include "terraintool.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "simclock.h"
 #include "factory.h"
 #include "blueprint.h"
+#include "claims.h"
+#include "playerrecord.h"
+#include "menus.h"
+#include "net.h"
+#include <ctime>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -95,32 +102,78 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
     return true;
 }
 
+// (#900) Claims in a game this player runs (single player, or a host's own player): the player's team (a solo player is a
+// team of one: made the first time it is needed), and the map's mirror of the claims, which a joined client gets from its
+// server (MsgClaims) and a game run here builds from its own list when that changes.
+static int LocalTeam() {
+    int team = Teams_Of(PlayerId_Local());
+    if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
+    return team;
+}
+static void RefreshLocalClaims() {
+    if (gNetRole == NetRole::Client) return;
+    static uint32_t seen = 0xFFFFFFFFu;
+    if (Claims_Version() == seen) return;
+    seen = Claims_Version();
+    const int me = Teams_Of(PlayerId_Local());
+    std::vector<ClaimView> list;
+    for (const Claim& c : Claims_All()) {
+        const TeamRecord* t = Teams_Find(c.team);
+        ClaimView v;
+        v.id = c.id; v.team = c.team; v.teamName = t && !t->name.empty() ? t->name : TextFormat("team %d", c.team);
+        v.colour = Claims_TeamColour(c.team, t ? t->colour : 0);
+        v.body = c.body; v.centre = c.centre; v.radius = c.radius;
+        v.ours = me != 0 && c.team == me; v.allowed = me != 0 && Claims_Allows(c.team, me);
+        list.push_back(std::move(v));
+    }
+    Claims_SetMirror(list);
+}
+
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
+    if (part.type == PartType::Farmland) { GameUI_Toast("Farmland is tilled ground now: till soil with a shovel or hoe (RMB)"); return false; } // (#1085)
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
     const char* item = PartItem(part);
+    // (#900) A claim banner claims its ground for the placer's team here too, as a server does for a joined player (or it
+    // is refused, nothing spent: over the budget, or over another team's claim).
+    uint32_t claim = 0;
+    if (const int tier = ClaimBannerTier(t); tier >= 0 && gNetRole != NetRole::Client) {
+        const int team = LocalTeam();
+        const Vector3 cellCentre{ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize };
+        const int reached = std::max(1, (int)QuestBook_LocalState().visitedBodies.size()); // (the bodies stood on: the budget grows with them)
+        std::string why;
+        claim = Claims_Make(team, Claims_Budget(reached), body.name, plot.toBody(cellCentre), kClaimBannerAcross[tier] * 0.5f, (int64_t)time(nullptr), why);
+        if (!claim) { GameUI_Toast(why.c_str()); Audio_Play(Sfx::Error, 0.5f); return false; }
+    }
     if (charge && !terrainTool.creative && !inventory.remove(item, PartCostCount(t))) {
         GameUI_Toast(TextFormat("Need %d %s for a %s", PartCostCount(t), item, PartName(t)));
         Audio_Play(Sfx::Error, 0.5f);
+        if (claim) Claims_Remove(claim);
         return false;
     }
     BuildTool_ApplyPart(body, plot, part);
+    if (claim) {
+        Claims_SetBanner(claim, plot.id, plot.partAt(part.origin));
+        GameUI_Toast(TextFormat("Claimed the land %.0f m across around the banner (the map shows it)", kClaimBannerAcross[ClaimBannerTier(t)]));
+    }
     if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
     return true;
 }
 
-// Breaking built parts: LMB held on a part for kBreakHold seconds (in build mode or out of it; a
+// Breaking built parts: LMB held on a part for BreakHold() seconds (in build mode or out of it; a
 // part in front of the ground takes the click from the terrain tool). A short hold, so a stray click
 // never deletes a wall.
 namespace {
-    constexpr float kBreakHold = 0.45f;
+    constexpr float kBreakHold0 = 0.45f;
+    float BreakHold() { return kBreakHold0 / std::max(0.2f, SkillStat("break_speed")); } // (#919) Building's perks: a shorter hold
     const Plot* breakPlot = nullptr;
     int breakPart = -1;
     float breakHeld = 0.0f;
     bool breakAiming = false;
 }
 
-float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / kBreakHold) : 0.0f; }
+float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / BreakHold()) : 0.0f; }
+float BuildTool_BreakHold() { return BreakHold(); }
 bool BuildTool_AimingPart() { return breakAiming; }
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
@@ -144,19 +197,22 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     const int part = hitPlot->partAt(hitCell);
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
-    if (!in.down(Act::Primary)) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; }
+    if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
-    if (breakHeld < kBreakHold) return;
+    if (breakHeld < BreakHold()) return;
     const Part removed = hitPlot->parts[part];
     if (gBuildToolNetEdit) { // joined (#330): the server removes it, refunds, and tells everyone
         gBuildToolNetEdit(*body, hitPlot, Vector3{}, removed, true, part);
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
         breakPart = -1;
         breakHeld = -0.15f;
+        gPrimaryLatch.consume(); // (#895) the held button is used up
         return;
     }
+    const uint32_t bannerClaim = ClaimBannerTier(removed.type) >= 0 && gNetRole != NetRole::Client ? Claims_OfBanner(body->name, hitPlot->id, part) : 0; // (#900)
     if (hitPlot->remove(part)) {
+        if (bannerClaim) { Claims_Remove(bannerClaim); GameUI_Toast("The banner is down: the land is no longer claimed"); }
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
             const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
             inventory.add("nickel_iron_ore", n);
@@ -167,11 +223,37 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
     }
     breakPart = -1;
-    breakHeld = -0.15f; // a breath before the next part (holding on clears a wall part by part)
+    breakHeld = -0.15f;
+    gPrimaryLatch.consume(); // (#895, the user: holding on mined what was behind) the next part needs a new press
+}
+
+// (#919) Building XP: a part the player placed pays once it has stood 5 minutes (placing and breaking again pays nothing).
+namespace {
+    struct Placed { uint64_t body; uint32_t plot; Int3 origin; PartType type; double at; }; // (the body's id: never a pointer kept)
+    std::vector<Placed> placedByPlayer;
+    constexpr double kPartKept = 300.0; // s
+    void TickPlacedParts(Scene& world) {
+        if (placedByPlayer.empty() || SimTime() - placedByPlayer.front().at < kPartKept) return;
+        const Placed p = placedByPlayer.front();
+        placedByPlayer.erase(placedByPlayer.begin());
+        for (auto& o : world.objects) {
+            auto* b = dynamic_cast<Planetoid*>(o.get());
+            if (!b || b->id != p.body || !b->plots) continue;
+            const Plot* plot = b->plots->byId(p.plot);
+            const int idx = plot ? plot->partAt(p.origin) : -1;
+            if (idx >= 0 && plot->parts[idx].type == p.type && plot->parts[idx].origin == p.origin && gSkillEvent) gSkillEvent("part_kept", 1.0, Vector3{});
+            break;
+        }
+    }
+}
+void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part) {
+    if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, part.origin, part.type, SimTime() });
 }
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
+    TickPlacedParts(world);
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
+    RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
     if (in.hit(Act::BuildMode)) {
         buildTool.active = !buildTool.active;
@@ -351,8 +433,17 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
         std::string missing;
-        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing);
-        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str()) : TextFormat("Placed %d parts; still need %s", n, missing.c_str()));
+        // (#1018) What can't be paid for stays as ghosts, built from the inventory when you come by; placing the same
+        // blueprint on its own ghosts again (nothing new to build) cancels them.
+        const int ghostsBefore = Blueprint_GhostsOn(*target, *bp, aim.part.origin);
+        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing, true);
+        if (n == 0 && ghostsBefore > 0) {
+            const int gone = Blueprint_RemoveGhosts(*target, *bp, aim.part.origin);
+            GameUI_Toast(TextFormat("Cancelled %d ghost part%s of %s", gone, gone == 1 ? "" : "s", bp->name.c_str()));
+            return;
+        }
+        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str())
+                                     : TextFormat("Placed %d parts; the rest are ghosts, built when you come by with %s (place again to cancel)", n, missing.c_str()));
         if (n > 0) Audio_Play(Sfx::Build, 0.5f, 1.0f);
         return;
     }
@@ -362,7 +453,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             if (!body->plots) body->plots = std::make_unique<PlotSet>();
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
-        if (BuildTool_Place(*body, *target, aim.part, true)) Audio_Play(Sfx::Build, 0.5f, 1.2f);
+        if (BuildTool_Place(*body, *target, aim.part, true)) { Audio_Play(Sfx::Build, 0.5f, 1.2f); BuildTool_NotePlacedByPlayer(*body, *target, aim.part); }
     } // LMB on a part: UpdateBreak (a short hold)
 }
 
@@ -466,23 +557,25 @@ void BuildTool_DrawHUD() {
 
 namespace {
     struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; Int3 cell{ 0, 0, 0 }; } machineAim;
+    struct FarmAim { uint64_t body = 0; Vector3 local{}; bool on = false; } farmAim; // (#1085) farmland ground or a crop, aimed
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
+    farmAim = FarmAim{};
     Planetoid* body = player.nearest;
-    if (!body || !body->plots || player.flyMode) return;
+    if (!body || player.flyMode) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
     float best = 6.0f;
-    for (auto& pl : body->plots->plots) {
+    if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable)) { // cables: their network (#570)
+            if (part >= 0 && (IsMachine(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -495,6 +588,17 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
             best = dd;
             machineAim = { body->id, pl->id, dp, pl->parts[dp].type };
         }
+    }
+    // Farmland (#1085): tilled ground, or a crop on it, nearer than any machine. I plants seeds you carry there, O harvests
+    // the crop there.
+    TerrainHit th;
+    if (RaycastTerrain(world, Ray{ world.camera.position, dir }, best * body->scale, th) && th.planetoid == body && Farm_Aims(*body, th.local)) {
+        machineAim = MachineAim{};
+        farmAim = { body->id, th.local, true };
+        if (!in.enabled) return;
+        if (in.hit(Act::Insert)) Farm_Plant(*body, th.local);
+        if (in.hit(Act::Extract)) Farm_Harvest(*body, th.local);
+        return;
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
@@ -509,12 +613,16 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         }
         return;
     }
-    if (machineAim.type == PartType::Farmland) {
-        // Farmland: I plants seeds you carry, O harvests a ripe crop.
-        Planetoid* fb = Planetoid::find(machineAim.body);
-        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
-        if (fb && fp && in.hit(Act::Insert)) Farm_Plant(*fb, *fp, machineAim.part);
-        if (fb && fp && in.hit(Act::Extract)) Farm_Harvest(*fb, *fp, machineAim.part);
+    if (machineAim.type == PartType::Bed) {
+        // A bed (#800): RMB (outside build mode) makes it your spawn; in a joined game the server sets it.
+        if (!buildTool.active && in.hit(Act::Secondary)) {
+            Planetoid* bb = Planetoid::find(machineAim.body);
+            Plot* bp = bb && bb->plots ? bb->plots->byId(machineAim.plot) : nullptr;
+            if (bb && bp) {
+                if (gBedUseRequest) gBedUseRequest(*bb, *bp, machineAim.part);
+                else Survival_SetBedFor(survival, *bb, *bp, machineAim.part, true);
+            }
+        }
         return;
     }
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
@@ -528,7 +636,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).
         // A chest takes everything (#568) but tools and what is on the hotbar, as the chest screen's "Put in all".
-        const auto all = inventory.all(); // copy: we remove while walking it
+        if (MachineAct_Remote()) gMachineRequest(machineAim.body, machineAim.plot, machineAim.part, 2, std::string(), 0, 0, 0); // (#332) the server puts in all it takes
+        const auto all = MachineAct_Remote() ? decltype(inventory.all()){} : inventory.all(); // copy: we remove while walking it
         for (const auto& kv : all) {
             if (kv.second <= 0 || !Factory::Accepts(machineAim.type, kv.first)) continue;
             if (machineAim.type == PartType::Chest) {
@@ -536,11 +645,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
                 for (int s = 0; s < Inventory::kHotbar; ++s) bound = bound || Hotbar_Slot(s) == kv.first;
                 if (bound || KindOf(kv.first) == ItemKind::Tool) continue;
             }
-            if (inventory.remove(kv.first, kv.second)) Factory::Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
+            if (inventory.remove(kv.first, kv.second)) MachineAct_Insert(machineAim.body, machineAim.plot, machineAim.part, kv.first, kv.second);
         }
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
     }
-    if (in.hit(Act::Extract)) { Factory::Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
+    if (in.hit(Act::Extract)) { MachineAct_Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
 }
 
 // A ", "-separated item list as lines at most maxW px wide (font size `size`), the first starting with `prefix`; past
@@ -576,13 +685,12 @@ std::vector<std::string> WrapItemList(const char* prefix, const std::string& lis
 }
 
 void Machine_DrawHUD() {
-    if (machineAim.part < 0 || GameUI_ContainerOpen()) return; // the open screen watches its own machine
-    if (machineAim.type == PartType::Farmland) {
-        Planetoid* fb = Planetoid::find(machineAim.body);
-        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
-        if (fb && fp) Farm_DrawAimHUD(*fb, *fp, machineAim.part);
+    if (GameUI_ContainerOpen()) return; // the open screen watches its own machine
+    if (farmAim.on) { // (#1085) farmland ground or a crop
+        if (Planetoid* fb = Planetoid::find(farmAim.body)) Farm_DrawAimHUD(*fb, farmAim.local);
         return;
     }
+    if (machineAim.part < 0) return;
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)
@@ -632,3 +740,6 @@ void Machine_DrawHUD() {
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
+
+// The world is going (#902): the aim points into its bodies and plots.
+void BuildTool_ForgetWorld() { aim = {}; }

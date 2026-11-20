@@ -41,6 +41,7 @@ struct SuitState {
 };
 
 const SuitStats& Suit_Stats();
+SuitStats Suit_StatsOf(const SuitState& suit); // (#337) any player's (a server's remote players)
 const std::string& Suit_Worn();                       // the worn suit's item id
 const std::vector<std::string>& Suit_Modules();       // one per slot, "" empty
 bool Suit_IsSuit(const std::string& id);
@@ -52,8 +53,14 @@ bool Suit_Fit(const std::string& moduleId);           // into the first free slo
 bool Suit_Unfit(int slot);                            // back to the inventory
 
 void Suit_Apply(Scene& world, float dt);              // stats into player/survival; the ore scanner
+// (#1087) A suit's stats into any player's movement: walk speed (x walkMul: Athletics), the jetpack (none without a
+// thruster pack and power, #217: no thrust, an empty tank), hover, grip. Suit_Apply for the local player; a server for
+// each remote player before its step (it had left them the Player defaults: a full, working jetpack).
+struct Player;
+void Suit_ApplyStatsTo(Player& p, const SuitStats& st, float walkMul = 1.0f);
 void Suit_DrawHUD();                                  // the scanner's ping
-void Suit_DrawTab();                                  // the inventory's Suit tab (ImGui)
+bool Suit_FitInto(int slot, const std::string& moduleId); // (#822) into that slot (a fitted one comes out first)
+void Suit_DrawCarried();                              // (#822) carried suits and modules, Wear / Fit (ImGui)
 void Suit_Reset();                                    // a new game: the basic suit, empty slots
 void Suit_Save(FILE* f);
 bool Suit_LoadLine(const char* tok, FILE* f);

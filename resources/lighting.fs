@@ -44,6 +44,9 @@ struct Light {
 
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
+uniform int debugSky;        // RAYLIBGAME_SHOW_SKY=1: draw fragSky as grey (red = the #898 cave-mouth floor range, 0.55-0.65)
+uniform vec4 toolSphere;     // (#1089) the dig / fill sphere: render-space centre, radius (w = 0: none)
+uniform vec4 toolSphereColor;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
 uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
@@ -51,6 +54,8 @@ uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
+uniform float forestFloorAo;   // (#933 layer 2) strength: the forest floor under the real trees takes less sky light (0: off; RAYLIBGAME_FOLIAGE_AO=0, _STRENGTH)
+uniform float farForest;        // #745: 1 = deeper canopy tint, starting earlier and denser (RAYLIBGAME_FAR_FOREST)
 
 out vec4 finalColor;
 
@@ -123,6 +128,7 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 // Sun shadows: two cascades, hardware PCF (shadow.glsl). The far map is MATERIAL_MAP_BRDF, the near one
 // MATERIAL_MAP_HEIGHT.
 #include "shadow.glsl"
+#include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
 // #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
 // mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
@@ -277,14 +283,15 @@ void main()
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
         // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206),
-        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595)
-        const int kMaterials = 17;
-        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
-        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45);
+        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595), then
+        // farmland (#1085: tilled dirt, the dirt layer with furrows below)
+        const int kMaterials = 18;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 0.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45, 0.95);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4); // detail normal strength
-        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4, 0.5); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45, 0.0); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
@@ -355,6 +362,16 @@ void main()
                 c = mix(c * 0.6, mineral, 0.2 + 0.35 * fleck + 0.45 * vein);
                 c += mineral * glint * 0.6;
             }
+            if (i == 17) {
+                // Farmland (#1085): darker turned soil in furrows every 25 cm (the old farmland part's pattern, parts.fs).
+                // Tilling is a free brush, so the furrows follow a body axis across the ground: the coordinate of the
+                // triplanar projection's widest-facing plane that is not the up-most axis (fragTexPos repeats in whole
+                // texture periods, a multiple of 25 cm, so the stripes have no chunk seams).
+                vec3 an = abs(localNormal);
+                float along = an.y >= an.x && an.y >= an.z ? fragTexPos.x : an.x >= an.z ? fragTexPos.z : fragTexPos.x;
+                float f = abs(fract(along / 0.25) - 0.5) * 2.0;
+                c *= vec3(0.78, 0.72, 0.68) * (0.65 + 0.45 * f);
+            }
             a += c * wi;
             vec2 ra = vec2(roughOf[i], 1.0);
             if (near > 0.01) ra = mix(ra, sampleDetail(tp, layerOf[i], wi * bumpOf[i] * near, dX, dY, dZ), near);
@@ -365,10 +382,31 @@ void main()
         // Slow brightness and warmth changes over ~70-250 m break up what tiling is left.
         float macro = fragMacro; // per vertex (70-250 m features; #183)
         albedo *= mix(vec3(0.84, 0.86, 0.9), vec3(1.14, 1.1, 1.02), macro);
+        // (#1022) Strata in buried rock: layers by height along the planet's up (distance from its centre, the fog shell's),
+        // so cave walls show beds cutting across a passage instead of the texture reading as rings around the bore. Uneven
+        // bed thickness and tone, thin dark bedding seams, fine laminations; the boundaries wander a little.
+        if (fogShell.w > 0.0 && fragSky < 0.95) {
+            float rockW = 0.0;
+            for (int i = 0; i < n; ++i) { int m = aid[i]; if (m == 0 || m == 3 || (m >= 9 && m <= 13)) rockW += aw[i]; }
+            rockW = clamp(rockW / max(total, 1e-4), 0.0, 1.0) * (1.0 - smoothstep(0.55, 0.95, fragSky));
+            if (rockW > 0.01) {
+                float h = length(fragPosition - fogShell.xyz) + 0.7 * (periodicNoise(fragTexPos, 0.12) - 0.5) + 0.25 * (periodicNoise(fragTexPos, 0.5) - 0.5);
+                float s = h / 1.9, bed = floor(s), f = fract(s);
+                float t1 = hash3(vec3(bed, 7.0, 3.0)), t2 = hash3(vec3(bed, 1.0, 11.0));
+                vec3 tone = mix(vec3(0.6, 0.59, 0.58), vec3(1.22, 1.17, 1.08), t1);
+                tone *= mix(vec3(1.0), vec3(1.12, 0.96, 0.82), step(0.68, t2));          // some beds warmer (iron-stained)
+                float seam = 1.0 - 0.45 * smoothstep(0.07, 0.0, min(f, 1.0 - f) * (0.7 + 0.6 * t2));
+                float lam = 0.94 + 0.12 * hash3(vec3(floor(h / 0.35), 5.0, 9.0));
+                albedo *= mix(vec3(1.0), tone * seam * lam, rockW);
+            }
+        }
         if (fragCanopy.x > 0.01) {
             // Distant forests: where the real trees (drawn to treeDistance) fade out, the ground takes the
             // colour of their crowns, by latitude as the trees do, broken up a little by the texture.
-            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition));
+            float cdist = length(viewPos - fragPosition);
+            float c = fragCanopy.x * smoothstep(0.65 * treeDistance, 0.95 * treeDistance, cdist);
+            // #745: thin cover still reads as forest (cover^0.6), the tint starts earlier and its shade is deeper.
+            if (farForest > 0.5) c = pow(fragCanopy.x, 0.5) * smoothstep(0.35 * treeDistance, 0.75 * treeDistance, cdist);
             float ct, cm;
             bool cl = decodeClimate(ct, cm);
             vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
@@ -377,7 +415,7 @@ void main()
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
-            albedo = mix(albedo, crowns * 0.5, c); // crowns in their own shade read darker than open grass
+            albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.32 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);
         }
         rough = r;
@@ -446,7 +484,11 @@ void main()
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
     float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);
-    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky * occlusionAO + direct + emissive;
+    // (#933 layer 2) Under the real trees (to where the painted canopy takes over), the forest floor's sky is mostly crowns:
+    // its ambient drops with the canopy cover (direct sun there comes from the shadow maps already).
+    float floorAo = 1.0;
+    if (forestFloorAo > 0.0 && fragCanopy.x > 0.01) floorAo = 1.0 - min(0.45 * forestFloorAo, 0.9) * fragCanopy.x * (1.0 - smoothstep(0.65 * treeDistance, 0.95 * treeDistance, length(viewPos - fragPosition)));
+    vec3 color = hemiAmbient(ambient.rgb, normal) * albedo * ao * fragSky * occlusionAO * floorAo + direct + emissive;
     // Fog over the part of the view ray inside the air (fogShell: render-space centre + outer radius;
     // w = 0: the whole distance), so a moon or ring far beyond the atmosphere stays visible.
     float fogDist = length(viewPos - fragPosition);
@@ -458,6 +500,16 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
-    color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
+    color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
+    // (#1089) The dig / fill preview: where the sphere cuts the terrain, a line on the real surface (over bumps, ledges and
+    // cave walls, depth-tested by the terrain itself) and a faint tint inside. Only the planet terrain draws it.
+    if (toolSphere.w > 0.0 && palette == 2) {
+        float sd = length(fragPosition - toolSphere.xyz) - toolSphere.w;
+        float fw = max(fwidth(sd), 1e-4);
+        float line = 1.0 - smoothstep(0.75 * fw, 2.0 * fw, abs(sd));
+        float inside = sd < 0.0 ? 0.18 : 0.0;
+        finalColor.rgb = mix(finalColor.rgb, toolSphereColor.rgb, max(line * toolSphereColor.a, inside * toolSphereColor.a));
+    }
+    if (debugSky == 1) finalColor = vec4(fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, 1.0);
 }

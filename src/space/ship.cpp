@@ -163,7 +163,7 @@ void Ship::update(Scene& world, const PlayerInput& in, float dt) {
         }
         // Tree trunks: vertical capsules; the hull is ~1.6 m wide around them.
         if (body->trees) {
-            static thread_local std::vector<Trunk> near;
+            static thread_local std::vector<Trunk>* nearP = nullptr; if (!nearP) nearP = new std::vector<Trunk>(); auto& near = *nearP; // (#1133, #485: MinGW frees thread_local storage before running its destructor at thread exit: never destroyed)
             near.clear();
             const Vector3 lp = body->toLocal(p);
             body->trees->trunksNear(lp, 6.0f, near);

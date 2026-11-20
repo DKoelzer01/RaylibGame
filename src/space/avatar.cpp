@@ -31,6 +31,18 @@ namespace {
             default: return { 210, 90, 60, 255 };   // the starting suit's orange stripes
         }
     }
+    // The suit colour a player picked when joining (#341): the suit takes most of it (a little of the default grey keeps it lit
+    // like the rest of the scene); trims are a darker shade of it. Alpha 0: the default suit.
+    Color SuitOf(const AvatarState& a) {
+        if (a.suitColor.a == 0) return kSuit;
+        auto mix = [](unsigned char d, unsigned char c) { return (unsigned char)std::clamp((int)lroundf(d * 0.25f + c * 0.75f), 0, 255); };
+        return { mix(kSuit.r, a.suitColor.r), mix(kSuit.g, a.suitColor.g), mix(kSuit.b, a.suitColor.b), 255 };
+    }
+    Color SuitDarkOf(const AvatarState& a) {
+        if (a.suitColor.a == 0) return kSuitDark;
+        const Color s = SuitOf(a);
+        return { (unsigned char)(s.r * 0.62f), (unsigned char)(s.g * 0.62f), (unsigned char)(s.b * 0.62f), 255 };
+    }
     Color ToolTier(int tier) {
         switch (tier) { case 1: return { 135, 128, 120, 255 }; case 2: return { 180, 180, 186, 255 }; case 3: return { 120, 126, 140, 255 }; case 4: return { 205, 180, 215, 255 }; default: return GRAY; }
     }
@@ -70,6 +82,7 @@ namespace {
 
     // The humanoid in its own frame (x right, y up, z forward; feet at the origin). gait: radians; stride 0..1.
     void DrawBody(const AvatarState& a, float gait, float stride, bool lowDetail) {
+        const Color kSuit = SuitOf(a), kSuitDark = SuitDarkOf(a); // (#341) the picked colour, else the defaults
         const Color accent = TierAccent(a.suitTier);
         const bool crouch = a.posture == Player::Posture::Crouch, prone = a.posture == Player::Posture::Prone || a.swimming;
         const bool airborne = !a.grounded && !a.flying && !a.swimming && !prone;
@@ -241,5 +254,34 @@ void Avatar_DrawNameplates(Scene& world, const std::vector<AvatarState>& avatars
         const int fs = 20, w = MeasureText(a.name.c_str(), fs);
         DrawRectangle((int)sp.x - w / 2 - 6, (int)sp.y - fs / 2 - 3, w + 12, fs + 6, Fade(BLACK, 0.45f * fade));
         DrawText(a.name.c_str(), (int)sp.x - w / 2, (int)sp.y - fs / 2, fs, Fade(RAYWHITE, fade));
+        if (a.suitColor.a > 0) // (#341) a thin bar of the player's colour under the name
+            DrawRectangle((int)sp.x - w / 2 - 6, (int)sp.y + fs / 2 + 3, w + 12, 3, Fade(Color{ a.suitColor.r, a.suitColor.g, a.suitColor.b, 255 }, fade));
     }
+}
+
+// (#822) The inventory screen's player preview: one avatar alone in `target`, lit like the world where it stands (sun,
+// shadows, ambient), seen from `eye` towards `at` (render space). Call outside the world's 3D pass and outside ImGui.
+void Avatar_DrawPreview(Scene& world, const AvatarState& a, RenderTexture2D& target, Vector3 eye, Vector3 at, Vector3 up) {
+    BeginTextureMode(target);
+    ClearBackground(Color{ 18, 25, 36, 255 });
+    Camera3D cam{};
+    cam.position = eye; cam.target = at; cam.up = up; cam.fovy = 32.0f; cam.projection = CAMERA_PERSPECTIVE;
+    const Camera3D saved = world.camera;
+    world.camera = cam; // (the batch lights from the camera's place: the preview's)
+    // (#913 review) A studio light, not the world's: at night the world-lit figure was near-black on the dark panel. A key
+    // light from the camera's side and above, bright ambient, no fog; the world's lighting comes back after.
+    const Vector3 sun0 = world.frameSun, amb0 = world.frameAmbient, ambUp0 = world.frameAmbientUp, fade0 = world.sunFade, light0 = world.lightDirection;
+    const float fog0 = world.frameFogDensity, moon0 = world.moonLight;
+    const Vector3 key = Vector3Normalize(Vector3Add(Vector3Normalize(Vector3Subtract(eye, at)), Vector3Scale(up, 0.8f)));
+    world.frameSun = key; world.lightDirection = key; world.sunFade = { 0, 0, 0 }; world.moonLight = 0.0f;
+    world.frameAmbient = { 0.32f, 0.33f, 0.36f }; world.frameAmbientUp = { 0.40f, 0.42f, 0.46f }; world.frameFogDensity = 0.0f;
+    BeginMode3D(cam);
+    const std::vector<AvatarState> one{ a };
+    Avatar_Draw3D(world, one);
+    InstanceBatch_Flush(world);
+    EndMode3D();
+    world.frameSun = sun0; world.frameAmbient = amb0; world.frameAmbientUp = ambUp0; world.sunFade = fade0; world.lightDirection = light0;
+    world.frameFogDensity = fog0; world.moonLight = moon0;
+    world.camera = saved;
+    EndTextureMode();
 }

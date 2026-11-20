@@ -10,6 +10,7 @@
 // (the bake rescales its result by PlanetErosion::heightScale: divide a final height by it first).
 #include <raylib.h>
 #include <cstdint>
+#include <vector>
 
 enum class RockType : uint8_t { Soft = 0, Granite, Basalt, Sandstone, Limestone, Marble, Count };
 
@@ -36,6 +37,10 @@ float Strata_OutcropBump(const StrataColumn& c, float h, unsigned int seed);
 // Karst (#592): 0..1 weight of the karst regions (~10 km), and the towers (+) and dolines (-) there, in metres.
 float Strata_KarstWeight(Vector3 s, unsigned int seed);
 float Strata_KarstRelief(Vector3 s, unsigned int seed);
+// #1052: the dolines whose surface centre (on the sphere of radius R) lies in the box [lo, hi): centre direction, bowl
+// radius and depth there (before the karst weight), and a stable id.
+struct KarstDoline { Vector3 dir; float radius, depth; uint32_t id; };
+void Strata_KarstDolines(Vector3 lo, Vector3 hi, float R, unsigned int seed, std::vector<KarstDoline>& out);
 // Volcanoes (#593): metres a volcano adds at surface point s (cones 1-3 km, craters/calderas), 0 off them; weight =
 // 0..1 proximity to the vent (the cone's basalt-and-ash province).
 float Strata_Volcano(Vector3 s, float planetRadius, unsigned int seed, float* weight = nullptr);

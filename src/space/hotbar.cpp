@@ -34,6 +34,7 @@ namespace {
         if (!held || food.empty() || !Survival_IsFood(food)) { H().eatProgress = 0.0f; H().eatBlocked = false; return; }
         if (H().eatBlocked) return;
         if (H().eatProgress == 0.0f && survival.food >= 98.0f) { GameUI_Toast("You are full"); H().eatBlocked = true; return; }
+        gPrimaryLatch.consume(); // (#896) eating: LMB strikes nothing, and one held now waits for a release afterwards
         H().eatProgress += dt / kEatSeconds;
         if (H().eatProgress >= 1.0f) {
             if (Survival_UseItem(food)) ++H().eatenCount;
@@ -112,7 +113,7 @@ namespace {
             terrainTool.heldTool = id;
             return;
         }
-        if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // loose ground (gravel, sand): in hand, RMB places it
+        if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // ground (loose fillers and raw stone, #1098): in hand, RMB places it
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
@@ -134,8 +135,13 @@ namespace {
             buildTool.part = (int)t;
             return;
         }
-        GameUI_Toast(TextFormat("%s can't be used from the hotbar", ShortName(id)));
-        Audio_Play(Sfx::Error, 0.3f);
+        // (#534, the user) Anything else is just held: LMB punches (bare hands), RMB does nothing unless it has a use (the
+        // telescope's RMB raises it: Telescope_Update).
+        if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+        take();
+        buildTool.active = false;
+        terrainTool.heldTool.clear();
+        terrainTool.holdingItem = true;
     }
 }
 
@@ -186,7 +192,12 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     static std::string lastId;
     if (buildTool.active && cur.empty() && lastSlot == H().selected && !lastId.empty()) buildTool.active = false;
     lastSlot = H().selected; lastId = cur;
-    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur);
+    // (#534) An item with no use from the hand (not a tool, filler, block or part) stays in hand too: just held.
+    auto plainHeldId = [](const std::string& id) {
+        return !id.empty() && ToolOf(id).type == ToolType::Hands && !TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0 && PartForItem(id) == PartType::Count &&
+               id != "bucket" && id != "water_bucket" && id != "fishing_rod" && !Survival_IsUsable(id);
+    };
+    const bool inHand = cur.empty() || cur == terrainTool.heldTool || Survival_IsFood(cur) || Animals_IsFeed(cur) || Hotbar_IsLight(cur) || Hotbar_IsPlaceable(cur) || plainHeldId(cur);
     if (!buildTool.active && !inHand) {
         for (int i = 0; i < kHotbarSlots; ++i) if (CellId(i).empty()) { H().selected = i; break; }
         terrainTool.heldTool.clear();
@@ -206,7 +217,11 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     // Food or feed really in hand (not just selected: the last one eaten or fed leaves bare hands): RMB
     // never places terrain with it (#201). Derived each frame so it cannot go stale.
     const bool torchHeld = !buildTool.active && (Hotbar_IsLight(CellId(H().selected)) || Hotbar_IsPlaceable(CellId(H().selected))) && inventory.count(CellId(H().selected)) > 0;
-    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
+    // (#534, the user) Any other item in hand that is not a tool, a filler or a bucket is just held: RMB does nothing with it
+    // (unless it has a use: the telescope's RMB, Telescope_Update), LMB punches (bare hands).
+    const std::string& selId = CellId(H().selected);
+    const bool plainItem = !buildTool.active && inventory.count(selId) > 0 && plainHeldId(selId);
+    terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || plainItem || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
     if (torchHeld && !piloting && in.hit(Act::Secondary)) Hotbar_PlaceTorch();
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
     UpdateEating(GameFrameTime(), !piloting && in.down(Act::Secondary));
@@ -219,10 +234,29 @@ bool Hotbar_TestEatHold(float seconds) { // tests: hold right-click this long (i
     return H().eatenCount > before;
 }
 
+// (#827) The off hand on the HUD: its item (a torch lights, a shield blocks, food and oxygen are used with its key), left of the
+// hotbar, with that key in the corner.
+static void DrawOffHand(int x, int y, int size, float sc) {
+    const InvSlot& s = inventory.offHand();
+    DrawRectangle(x, y, size, size, Fade(BLACK, 0.45f));
+    DrawRectangleLines(x, y, size, size, Fade(Color{ 224, 169, 64, 255 }, 0.6f));
+    DrawText(PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)), x + (int)(4 * sc), y + (int)(3 * sc), (int)(12 * sc), Fade(Color{ 224, 169, 64, 255 }, 0.85f));
+    if (s.empty()) { const char* t = "off hand"; const int fs = (int)(11 * sc); DrawText(t, x + (size - MeasureText(t, fs)) / 2, y + size - fs - (int)(6 * sc), fs, Fade(RAYWHITE, 0.45f)); return; }
+    const float is = (float)size - 28.0f * sc;
+    if (ItemIcons_Has(s.id)) ItemIcons_Draw(s.id, { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
+    if (KindOf(s.id) != ItemKind::Tool) { const char* n = TextFormat("%d", (int)s.amount()); DrawText(n, x + size - (int)(4 * sc) - MeasureText(n, (int)(14 * sc)), y + (int)(3 * sc), (int)(14 * sc), RAYWHITE); }
+    std::string name = ShortName(s.id);
+    int fs = (int)(12 * sc);
+    while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back();
+    DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y + size - fs - (int)(6 * sc), fs, RAYWHITE);
+}
+
 void Hotbar_DrawHUD(bool piloting) {
-    const int n = kHotbarSlots, size = 64, gap = 6;
+    const float sc = GameUI_HudScale(); // (#827, #925) the HUD's size
+    const int n = kHotbarSlots, size = (int)(64 * sc), gap = (int)(6 * sc);
     const int w = n * size + (n - 1) * gap;
-    const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - 44;
+    const int x0 = (GetScreenWidth() - w) / 2, y0 = GetScreenHeight() - size - (int)(44 * sc);
+    DrawOffHand(x0 - size - (int)(18 * sc), y0, size, sc); // (#827) the off hand, left of the hotbar
     for (int i = 0; i < n; ++i) {
         const int x = x0 + i * (size + gap);
         const std::string& id = CellId(i);
@@ -230,7 +264,7 @@ void Hotbar_DrawHUD(bool piloting) {
         const bool sel = !piloting && i == H().selected;
         DrawRectangle(x, y0, size, size, Fade(BLACK, sel ? 0.65f : 0.45f));
         DrawRectangleLines(x, y0, size, size, sel ? SKYBLUE : Fade(RAYWHITE, 0.35f));
-        DrawText(TextFormat("%d", (i + 1) % 10), x + 4, y0 + 3, 14, Fade(RAYWHITE, 0.7f));
+        DrawText(TextFormat("%d", (i + 1) % 10), x + (int)(4 * sc), y0 + (int)(3 * sc), (int)(14 * sc), Fade(RAYWHITE, 0.7f));
         if (id.empty()) continue;
         {
             // A hot or radiant item glows (#580): the slot washed in its colour with a bright rim, as in the inventory.
@@ -240,10 +274,10 @@ void Hotbar_DrawHUD(bool piloting) {
                 DrawRectangleLinesEx({ (float)x, (float)y0, (float)size, (float)size }, 2.0f, Fade(g.color, 0.92f * g.strength));
             }
             const ItemDef* d = itemDB.find(id);
-            const float is = (float)size - 28.0f; // the painted icon (itemicons.h), between the slot number and the name
-            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f, is, is });
+            const float is = (float)size - 28.0f * sc; // the painted icon (itemicons.h), between the slot number and the name
+            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
-            if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), 14), y0 + 3, 14, RAYWHITE);
+            if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), (int)(14 * sc)), y0 + (int)(3 * sc), (int)(14 * sc), RAYWHITE);
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
@@ -251,10 +285,25 @@ void Hotbar_DrawHUD(bool piloting) {
             }
         }
         std::string name = ShortName(id);
-        int fs = 12;
-        while (fs > 9 && MeasureText(name.c_str(), fs) > size - 4) --fs;
-        while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back(); // still too long: cut (#219: names ran into the next slot)
-        DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+        // (#925 follow-up) As the inventory's names: never cut mid-word. One line, shrunk to 70% at most; else two lines split at
+        // the space nearest the middle; a single long word shrinks to fit (raylib's font has a 10 px floor).
+        const int fs0 = (int)(12 * sc), room = size - 4;
+        int fs = fs0;
+        while (fs > (int)(fs0 * 0.7f) && MeasureText(name.c_str(), fs) > room) --fs;
+        size_t split = std::string::npos;
+        if (MeasureText(name.c_str(), fs) > room)
+            for (size_t i = 0; i < name.size(); ++i)
+                if (name[i] == ' ' && (split == std::string::npos || std::abs((int)i - (int)name.size() / 2) < std::abs((int)split - (int)name.size() / 2))) split = i;
+        if (split == std::string::npos) {
+            while (fs > 10 && MeasureText(name.c_str(), fs) > room) --fs;
+            DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y0 + size - fs - 6, fs, RAYWHITE);
+        } else {
+            const std::string a = name.substr(0, split), b = name.substr(split + 1);
+            fs = fs0;
+            while (fs > 10 && std::max(MeasureText(a.c_str(), fs), MeasureText(b.c_str(), fs)) > room) --fs;
+            DrawText(a.c_str(), x + (size - MeasureText(a.c_str(), fs)) / 2, y0 + size - 2 * fs - 7, fs, RAYWHITE);
+            DrawText(b.c_str(), x + (size - MeasureText(b.c_str(), fs)) / 2, y0 + size - fs - 5, fs, RAYWHITE);
+        }
     }
     // Eating (#202): its bar under the crosshair, where the swing bar sits.
     if (H().eatProgress > 0.0f) {
@@ -286,10 +335,10 @@ void Hotbar_Unbind(const std::string&) {
 }
 
 bool Hotbar_PlaceTorch() {
-    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (a placed torch never burns out; fibre
-    // torches burn too fast to set down). It goes into the cell just off the surface, on the nearest plot.
+    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (torches never burn out, #1093; fibre
+    // torches are too flimsy to stand). It goes into the cell just off the surface, on the nearest plot.
     const std::string id = CellId(H().selected);
-    if (id == "fibre_torch") { GameUI_Toast("Fibre torches burn too fast to set down: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    if (id == "fibre_torch") { GameUI_Toast("A fibre torch is too flimsy to stand: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
     if ((id != "torch" && id != "snare") || inventory.count(id) <= 0) return false;
     Planetoid* body = nullptr; Vector3 local{}, n{};
     if (!TerrainTool_LastHit(body, local, n) || !body) return false;
@@ -301,6 +350,7 @@ bool Hotbar_PlaceTorch() {
     const Part part{ id == "snare" ? PartType::Snare : PartType::Torch, pl->cellAt(pl->toPlot(Vector3Add(local, Vector3Scale(nl, 0.15f)))), 0, 0 };
     if (!pl->canPlace(part)) { GameUI_Toast(TextFormat("No room for a %s there", id.c_str())); Audio_Play(Sfx::Error, 0.3f); return false; }
     if (!BuildTool_Place(*body, *pl, part, true)) return false;
+    BuildTool_NotePlacedByPlayer(*body, *pl, part); // (#919) Building XP once it has stood
     Audio_Play(Sfx::Build, 0.5f, 1.3f);
     return true;
 }

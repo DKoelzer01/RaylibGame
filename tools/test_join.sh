@@ -27,6 +27,13 @@ if ! grep -q "listening on port" "$tmp/host.log"; then
 fi
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
 echo "test_join: host up after ${SECONDS} s ($tmp)"
+# The clients regenerate the same world: hand them the host's erosion bake (the cache is keyed on the bake's parameters,
+# so a mismatch just bakes again), as scenarios do with saves/bench.sav.erosion. Without it two cold bakes side by side
+# outran the clients' 600 s on the deweyserver runner (#1028).
+if [ -f "$tmp/host.sav.erosion" ]; then
+    mkdir -p saves
+    for n in alice bob; do mkdir -p saves/mp_cache; cp "$tmp/host.sav.erosion" "saves/mp_cache/client_$n.sav.erosion"; done
+fi
 cpids=()
 for n in alice bob; do
     shot=""; [ "$n" = bob ] && shot="bench_join_bob.png" # bob turns to alice and takes a picture (in the working directory)

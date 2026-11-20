@@ -16,10 +16,15 @@
 #include <raylib.h>
 #include <cstdio>
 #include <string>
+#include <cstdint>
+#include <unordered_set>
 
 class Scene;
 
 void Nav_Update(Scene& world, bool inputEnabled, bool gameInput); // once a frame: exploration, the map's input (inputEnabled), images; gameInput: the minimap zoom keys (#278)
+// (#338) the map tiles a player at body-local `up` (unit) reveals on a body of radius R, added to `set` (the same tiles and radius
+// the local map uses); how many were new. A server counts its players' exploring for their teams with it.
+int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set);
 void Nav_DrawHUD(Scene& world);                   // compass (always), minimap (with a Map)
 void Nav_DrawMap(Scene& world);                   // the full-screen map, when open (draw last)
 bool Nav_MapOpen();
@@ -38,6 +43,7 @@ void Nav_AddWaypoint(const std::string& body, Vector3 localDir, const std::strin
 void Nav_RemoveWaypoint(const std::string& body, const std::string& name);
 int Nav_WaypointCount();
 bool Nav_MinimapReady();
+bool Nav_MinimapShown(); // (#932) the minimap is on screen (it drew within the last 0.25 s)
 bool Nav_MapImageReady();
 
 #endif

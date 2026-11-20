@@ -1,6 +1,9 @@
 #include "foliage.h"
 #include "gpumem.h"
 #include "voxel.h"
+#include "plots.h"
+#include <mutex>
+#include <unordered_map>
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -83,9 +86,48 @@ namespace {
     }
 }
 
+// #830: each body's part cells, by its field (the snapshot a build takes is the one current when it starts; a change remeshes).
+static std::mutex gBlockersMutex;
+static std::unordered_map<const DensityField*, std::shared_ptr<const GrassBlockers>> gBlockers;
+void Grass_SetBlockers(const DensityField* field, std::shared_ptr<const GrassBlockers> blockers) {
+    std::lock_guard<std::mutex> lock(gBlockersMutex);
+    if (blockers && !blockers->empty()) gBlockers[field] = std::move(blockers); else gBlockers.erase(field);
+}
+static std::shared_ptr<const GrassBlockers> BlockersOf(const DensityField* field) {
+    std::lock_guard<std::mutex> lock(gBlockersMutex);
+    auto it = gBlockers.find(field);
+    return it == gBlockers.end() ? nullptr : it->second;
+}
+std::shared_ptr<const GrassBlockers> Grass_BlockersOf(const DensityField* field) { return BlockersOf(field); } // (#908)
+
 void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
     // Nodes at 1 m resolution or finer (the old level 0 and the finer ones around the player).
     if (out.key.stride() > 1.0f || out.indices.empty() || out.texcoords2.empty() || out.tangents.empty()) return;
+    // (#830) the plots near this chunk: a blade whose root (lifted 15 cm) is in a part's cell isn't placed
+    std::vector<const GrassBlockPlot*> blockers;
+    if (const auto all = BlockersOf(&field)) {
+        const Vector3 c = Vector3AddValue(out.key.origin(), 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size();
+        for (const GrassBlockPlot& b : *all) {
+            const DVec3 d = DVec3{ c.x, c.y, c.z } - b.origin;
+            if (d.length() <= reach + b.radius) blockers.push_back(&b);
+        }
+    }
+    auto blocked = [&](const Vector3& local, const Vector3& up) {
+        for (const GrassBlockPlot* b : blockers) {
+            const DVec3 rel = DVec3{ local.x + up.x * 0.15f, local.y + up.y * 0.15f, local.z + up.z * 0.15f } - b->origin;
+            const Vector3 r = rel.toFloat();
+            const Int3 cell = { (int)floorf(Vector3DotProduct(r, b->east) / kCellSize), (int)floorf(Vector3DotProduct(r, b->up) / kCellSize),
+                                (int)floorf(Vector3DotProduct(r, b->north) / kCellSize) };
+            if (b->cells.count(cell)) return true;
+            // (#908) Under a built roof (a solid cell straight overhead within 6 m): no grass grows in the dark of a shelter
+            // or a floorless house. RAYLIBGAME_ROOF_SKY=0: grass as before.
+            static const bool roofOn = !(getenv("RAYLIBGAME_ROOF_SKY") && getenv("RAYLIBGAME_ROOF_SKY")[0] == '0');
+            if (roofOn && !b->solid.empty())
+                for (int k = 1; k <= 12; ++k) if (b->solid.count(Int3{ cell.x, cell.y + k, cell.z })) return true;
+        }
+        return false;
+    };
     const float sea = field.seaLevelRadius();
     if (sea <= 0.0f) return; // no seas, no grass (moons, asteroids)
     const Vector3 origin = out.key.origin();
@@ -151,6 +193,7 @@ void ScatterGrass(const DensityField& field, ChunkMeshData& out) {
             const Vector3 n0 = Vert(out.normals, i0), n1 = Vert(out.normals, i1), n2 = Vert(out.normals, i2);
             const Vector3 nrm = Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(n0, w), Vector3Scale(n1, u)), Vector3Scale(n2, v)));
             if (Vector3DotProduct(nrm, up) < 0.82f) continue; // steeper than ~35 degrees: bare
+            if (!blockers.empty() && blocked(local, up)) continue; // (#830) under a placed part
             const float h = Unit(state);
             // Variant: a quarter sparse tufts, the rest clumps (taller), so open ground is covered.
             const float pick = Unit(state), su = Unit(state);

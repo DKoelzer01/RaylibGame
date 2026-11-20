@@ -11,12 +11,13 @@
 // kNetProtocol changes whenever any message's layout does; the handshake (Hello) refuses a mismatch with a clear reason.
 
 #include "dvec3.h"
+#include "factory.h" // MachineView (#332)
 #include <cstdint>
 #include <string>
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 13; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334)
+constexpr uint32_t kNetProtocol = 34; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -38,10 +39,33 @@ enum class NetMsg : uint8_t {
     PartRequest,   // client -> server: place a part (into a plot, or a new one) or break one (#330)
     PartRefused,   // server -> client: that request was refused (why)
     PlotEdit,      // server -> client: a plot made, a part placed or removed, in the server's order (#330)
+    SyncIndex,     // server -> client: the join snapshot's entries (regions, plots) with hashes, in pages (#776)
+    SyncWant,      // client -> server: which of them it needs
+    SyncData,      // server -> client: a piece of an entry
+    SyncDone,      // server -> client: all wanted entries sent; queued live edits apply now
     PlayerSnapshot = 24, // server -> client (#769): the player states of one snapshot in one message, each delta-coded against one
                    // the client acknowledged (20-23 are #776's)
     Animals = 25,  // server -> client (#334): the animals near the client (state, health), and the ones gone from its view
-    AnimalHit = 26, // client -> server (#334): a swing at an animal (the server checks reach and cooldown, and works out the damage)
+    AnimalHit = 26, // client -> server (#334): a swing at an animal, or feed / take its product (the server checks reach and cooldown)
+    Damage = 27,   // server -> client (#334): a hit on the client's player (an animal's bite): the hit's effect (the health is in Vitals)
+    Vitals = 28,   // server -> client (#337): its player's survival numbers (health, food, oxygen, power, temperature, dead), 5 a second
+    UseItem = 29,  // client -> server (#337): eat or use an item (oxygen canister, power cell) from its inventory as the server keeps it
+    BedUse = 30,   // client -> server (#800): make the bed at (body, plot, cell) this player's spawn
+    Graves = 31,   // server -> client (#804): the world's graves (who, where, which stone), resent when they change
+    QuestBook = 32, // server -> client (#338): the player's team's quest book (its save lines), when it changes and on join
+    CraftRequest = 33, // client -> server (#338): craft a recipe (count times) from its inventory as the server keeps it
+    MachineAction = 34, // client -> server (#332): insert, extract, take a slot, fuel; watch / unwatch a machine's screen
+    MachineView = 35,   // server -> client (#332): the full view of a machine it watches, a few times a second
+    MachineStates = 36, // server -> client (#332): which machines of a plot work now (animations, smoke), when it changes
+    TeamState = 37,     // server -> client (#604): the player's team (name, members online with their health) and an invite waiting
+    PlantAction = 38,   // client -> server (#335): fell a plant (tree, bush, loose stone), plant or harvest a farmland part
+    Plants = 39,        // server -> client (#335): plants removed (id, world time: regrowth runs on the shared clock), at the join and as they go
+    FarmFields = 40,    // server -> client (#335): the crops on farmland near the client (crop, growth), when they change
+    Claims = 41,        // server -> client (#343): the land claims (team, colour, where, how far; ours / allowed), when they change
+    DropItems = 42,     // client -> server (#865): drop some of an item at the feet (the server makes the pile; 41 is #343's Claims)
+    CreativeGive = 43,  // client -> server (#866): creative items into the inventory the server keeps ("" clears it)
+    SkillState = 44,    // server -> client (#920): the player's skills (XP and perks) as the save's lines, when they change
+    SkillSpend = 45,    // client -> server (#920): spend a point on a perk (the server checks it and answers with SkillState)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -59,6 +83,7 @@ public:
     void f64(double v);
     void str(const std::string& s) { varu(s.size()); bytes.insert(bytes.end(), s.begin(), s.end()); }
     void boolean(bool b) { u8(b ? 1 : 0); }
+    void blob(const uint8_t* data, size_t n) { varu(n); bytes.insert(bytes.end(), data, data + n); } // length, then the bytes
     void pos(const DVec3& p);           // body-local, metres, quantised to 1 mm (varint per axis)
     void unit(float x, float y, float z); // a unit vector, 3 x int16
     void angle(float radians);          // uint16 over a full turn
@@ -81,6 +106,12 @@ public:
     double f64();
     std::string str(size_t maxLen = 4096);
     bool boolean() { const uint8_t b = u8(); if (b > 1) ok = false; return b == 1; }
+    std::vector<uint8_t> blob(size_t maxLen) { // length, then the bytes (longer than maxLen: malformed)
+        const uint64_t n = varu();
+        if (n > maxLen || !need((size_t)n)) { ok = false; return {}; }
+        std::vector<uint8_t> out(p, p + n); p += n;
+        return out;
+    }
     DVec3 pos();
     void unit(float& x, float& y, float& z);
     float angle();
@@ -98,6 +129,7 @@ struct MsgHello {
     std::string build;    // the client's build (kGameVersion's commit): a different build may simulate differently
     std::string name;     // the player's name (IP joins); a reconnect under the same name gets its session back
     std::string password; // "" none
+    std::string uuid;     // (#346) the player's id (a UUID): their record on this server; the name is only what others see
 };
 struct NetServerSettings { uint8_t difficulty = 1; bool pvp = false, claims = false; uint8_t maxPlayers = 8; };
 struct MsgWelcome {
@@ -176,16 +208,51 @@ struct MsgAnimals {
     std::vector<Entry> entries;
     std::vector<uint64_t> removed;
 };
-struct MsgAnimalHit { uint64_t netId = 0; };
+struct MsgAnimalHit { uint64_t netId = 0; uint8_t action = 0; }; // 0 hit, 1 feed, 2 take its product
+struct MsgVitals { float health = 100.0f, food = 100.0f, oxygen = 100.0f, power = 100.0f, temperature = 20.0f; uint8_t flags = 0; uint16_t deaths = 0; }; // flags: 1 dead, 2 breathable, 4 vacuum, 8 underwater, 16 life support, 32 sick, 64 headlamp
+struct MsgUseItem { std::string item; };
+struct MsgBedUse { std::string body; uint32_t plot = 0; int32_t cell[3] = { 0, 0, 0 }; }; // #800: the bed's origin cell
+struct MsgQuestBook { uint32_t team = 0; std::string text; }; // #338 (at most 64 KB)
+struct MsgCraftRequest { uint32_t recipe = 0; std::string output; uint8_t count = 1; bool useChests = false; bool recursive = false; }; // recursive (#946): the server plans and crafts the missing intermediates first (#928) // useChests (#854): what the inventory lacks, from the chests near the player // #338 (output: a check that both sides mean the same recipe)
+// #332. action: 1 insert item (count), 2 insert all it takes, 3 insert fuel (item, count), 4 extract the outputs,
+// 5 take one slot (slot, which: 0 inputs, 1 outputs, 2 fuel), 6 watch (its screen opened), 7 unwatch.
+struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; uint8_t action = 0; std::string item; uint16_t count = 0; uint8_t slot = 0, which = 0; };
+struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
+struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
+struct MsgTeamState { // #604: at most 16 members
+    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f; };
+    int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
+};
+// (#335) plants and farming
+// 1 fell (plant), 2 sow (x y z: the body-local ground, seed), 3 harvest (x y z: the crop's ground) (#1085: crops by position)
+struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; float x = 0, y = 0, z = 0; std::string seed; };
+struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
+struct NetFarmField { float x = 0, y = 0, z = 0; std::string crop; float growth = 0.0f; }; // x y z: body-local, the crop's ground (#1085)
+struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
+struct MsgDropItems { std::string item; int64_t centi = 0; };        // #865: hundredths of a unit
+struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" = clear the inventory
+struct NetClaim { uint32_t id = 0; int32_t team = 0; std::string teamName; uint32_t colour = 0; uint64_t body = 0; float centre[3] = {}; float radius = 0.0f; uint8_t flags = 0; }; // flags: 1 ours, 2 we may build there (ours or an ally's)
+struct MsgClaims { std::vector<NetClaim> claims; }; // (#343) every claim (the full list: replaces)
+struct MsgSkillState { std::string text; }; // (#920) Skills_SaveText of the player's skills (the whole state: replaces the client's)
+struct MsgSkillSpend { std::string perk; }; // (#920) a perk id (skills.txt)
+struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with more has bigger problems)
+    struct Entry { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
+                    bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile: what it holds, up to 3 ids (its bundle's colours)
+    std::vector<Entry> graves;
+};
+struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
-struct MsgLoadout { uint32_t session = 0; std::string held; bool headlamp = false; uint8_t suitTier = 0; }; // session: 0 from a client
+struct MsgLoadout { // session: 0 from a client
+    uint32_t session = 0; std::string held; bool headlamp = false; uint8_t suitTier = 0;
+    uint32_t suitColor = 0;          // 0xRRGGBB, picked when joining (#341); 0: the default suit
+};
 struct MsgTerrainEdit {
     uint64_t body = 0;               // NetId
     DVec3 center{};                  // body-local
     float radius = 0.0f;
-    uint8_t flags = 0;               // bit 0 carve, 1 fill, 2 box, 3 soft only
+    uint8_t flags = 0;               // bit 0 carve, 1 fill, 2 box, 3 soft only, 4 till (#1085)
     float hx = 0, hy = 0, hz = 0;    // box half extents (box only), along the body axes of ax/ay/az
     float ax[3] = { 1, 0, 0 }, ay[3] = { 0, 1, 0 };
     int8_t paint = -1;
@@ -196,7 +263,7 @@ struct MsgTerrainEdit {
 // player's loadout and its dig rule, the stroke rate, the cost) and applies it in its order, credits or charges that
 // player's inventory (InventoryDelta to them), and sends the TerrainEdit to everyone (the asker too: it applies there,
 // so every client gets the same edits in the same order). Refused: EditRefused to the asker, nothing changes.
-enum class NetEditKind : uint8_t { Dig = 0, Place = 1, Count };
+enum class NetEditKind : uint8_t { Dig = 0, Place = 1, Till = 2, Count }; // Till (#1085): paint soil farmland (a shovel or hoe)
 struct MsgEditRequest {
     uint32_t seq = 0;                // the client's request number (echoed in the TerrainEdit or the refusal)
     NetEditKind kind = NetEditKind::Dig;
@@ -206,7 +273,7 @@ struct MsgEditRequest {
     float radius = 0.0f;
     std::string item;                // place: the filler that pays (dig: unused; the tool comes from the loadout)
 };
-enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Shape, Count };
+enum class NetEditRefusal : uint8_t { Reach, Rate, Tool, Cost, Body, Mantle, Shape, Claim, Count }; // Claim: inside another team's claim (#343)
 const char* NetEditRefusalText(NetEditRefusal r);
 struct MsgEditRefused { uint32_t seq = 0; NetEditRefusal why = NetEditRefusal::Reach; };
 struct MsgInventoryDelta { std::string item; double amount = 0.0; }; // > 0 added, < 0 taken (fractional, as the inventory)
@@ -225,7 +292,7 @@ struct MsgPartRequest {
     NetPart part;                     // Place
     uint32_t partIndex = 0;           // Remove
 };
-enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Count };
+enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Claim, Count }; // Claim (#343)
 const char* NetPartRefusalText(NetPartRefusal r);
 struct MsgPartRefused { uint32_t seq = 0; NetPartRefusal why = NetPartRefusal::Reach; };
 struct MsgPlotEdit {
@@ -238,6 +305,19 @@ struct MsgPlotEdit {
     uint32_t partIndex = 0;           // Remove
 };
 struct MsgChat { uint32_t from = 0; std::string text; }; // #326: from = the sender's session (0 the server; a client's own is ignored)
+// Join-in-progress sync (#776): at a join the server takes a snapshot of the world's edits (terrain regions, plots) and
+// sends its index in pages; the client answers with the entries it lacks (it compares each region's hash with its own:
+// a rejoin with a cached client save fetches only what changed); the server streams those, nearest first, in pieces
+// within a byte budget, then SyncDone. Live edits after the snapshot follow as usual (the client applies them after).
+enum class NetSyncKind : uint8_t { Region = 0, Plots = 1, Count };
+struct NetSyncEntry { NetSyncKind kind = NetSyncKind::Region; uint64_t body = 0, key = 0, hash = 0; uint32_t size = 0; }; // key: the region (Plots: 0)
+constexpr size_t kSyncIndexPage = 256;      // entries a page
+constexpr size_t kSyncPiece = 16 * 1024;    // bytes a data message
+constexpr uint32_t kSyncMaxEntries = 1u << 20;
+struct MsgSyncIndex { uint32_t snapshot = 0; uint16_t page = 0, pages = 1; uint32_t total = 0; std::vector<NetSyncEntry> entries; };
+struct MsgSyncWant { uint32_t snapshot = 0; uint32_t total = 0; std::vector<uint8_t> bits; }; // bit i: entry i is wanted
+struct MsgSyncData { uint32_t snapshot = 0, entry = 0, offset = 0, size = 0; std::vector<uint8_t> bytes; };
+struct MsgSyncDone { uint32_t snapshot = 0, entries = 0; uint64_t bytes = 0; };
 
 void NetWrite(NetWriter& w, const MsgHello& m);
 void NetWrite(NetWriter& w, const MsgWelcome& m);
@@ -258,6 +338,10 @@ void NetWrite(NetWriter& w, const MsgPartRequest& m);
 void NetWrite(NetWriter& w, const MsgPartRefused& m);
 void NetWrite(NetWriter& w, const MsgPlotEdit& m);
 void NetWrite(NetWriter& w, const MsgChat& m);
+void NetWrite(NetWriter& w, const MsgSyncIndex& m);
+void NetWrite(NetWriter& w, const MsgSyncWant& m);
+void NetWrite(NetWriter& w, const MsgSyncData& m);
+void NetWrite(NetWriter& w, const MsgSyncDone& m);
 bool NetRead(NetReader& r, MsgHello& m);
 bool NetRead(NetReader& r, MsgWelcome& m);
 bool NetRead(NetReader& r, MsgReject& m);
@@ -277,10 +361,52 @@ bool NetRead(NetReader& r, MsgPartRequest& m);
 bool NetRead(NetReader& r, MsgPartRefused& m);
 bool NetRead(NetReader& r, MsgPlotEdit& m);
 bool NetRead(NetReader& r, MsgChat& m);
+bool NetRead(NetReader& r, MsgSyncIndex& m);
+bool NetRead(NetReader& r, MsgSyncWant& m);
+bool NetRead(NetReader& r, MsgSyncData& m);
+bool NetRead(NetReader& r, MsgSyncDone& m);
 void NetWrite(NetWriter& w, const MsgAnimals& m);
 bool NetRead(NetReader& r, MsgAnimals& m);
 void NetWrite(NetWriter& w, const MsgAnimalHit& m);
 bool NetRead(NetReader& r, MsgAnimalHit& m);
+void NetWrite(NetWriter& w, const MsgDamage& m);
+bool NetRead(NetReader& r, MsgDamage& m);
+void NetWrite(NetWriter& w, const MsgVitals& m);
+bool NetRead(NetReader& r, MsgVitals& m);
+void NetWrite(NetWriter& w, const MsgUseItem& m);
+bool NetRead(NetReader& r, MsgUseItem& m);
+void NetWrite(NetWriter& w, const MsgBedUse& m);
+bool NetRead(NetReader& r, MsgBedUse& m);
+void NetWrite(NetWriter& w, const MsgGraves& m);
+void NetWrite(NetWriter& w, const MsgQuestBook& m);
+bool NetRead(NetReader& r, MsgQuestBook& m);
+void NetWrite(NetWriter& w, const MsgCraftRequest& m);
+bool NetRead(NetReader& r, MsgCraftRequest& m);
+void NetWrite(NetWriter& w, const MsgMachineAction& m);
+bool NetRead(NetReader& r, MsgMachineAction& m);
+void NetWrite(NetWriter& w, const MsgMachineView& m);
+bool NetRead(NetReader& r, MsgMachineView& m);
+void NetWrite(NetWriter& w, const MsgMachineStates& m);
+bool NetRead(NetReader& r, MsgMachineStates& m);
+void NetWrite(NetWriter& w, const MsgTeamState& m);
+bool NetRead(NetReader& r, MsgTeamState& m);
+void NetWrite(NetWriter& w, const MsgPlantAction& m);
+bool NetRead(NetReader& r, MsgPlantAction& m);
+void NetWrite(NetWriter& w, const MsgPlants& m);
+bool NetRead(NetReader& r, MsgPlants& m);
+void NetWrite(NetWriter& w, const MsgFarmFields& m);
+bool NetRead(NetReader& r, MsgFarmFields& m);
+void NetWrite(NetWriter& w, const MsgDropItems& m);
+bool NetRead(NetReader& r, MsgDropItems& m);
+void NetWrite(NetWriter& w, const MsgCreativeGive& m);
+bool NetRead(NetReader& r, MsgCreativeGive& m);
+void NetWrite(NetWriter& w, const MsgClaims& m);
+bool NetRead(NetReader& r, MsgClaims& m);
+void NetWrite(NetWriter& w, const MsgSkillState& m);
+bool NetRead(NetReader& r, MsgSkillState& m);
+void NetWrite(NetWriter& w, const MsgSkillSpend& m);
+bool NetRead(NetReader& r, MsgSkillSpend& m);
+bool NetRead(NetReader& r, MsgGraves& m);
 void NetWrite(NetWriter& w, const MsgPlayerSnapshot& m);
 // lookup(session, baseSeq, out): the state of that player received in snapshot baseSeq (false: unknown - the entry can't be
 // decoded and the read fails). Without one (validation), deltas decode against zeros.

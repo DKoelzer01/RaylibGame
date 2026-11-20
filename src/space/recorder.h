@@ -16,10 +16,12 @@
 //   --record-start S     wait S seconds of play (and for the world to be built) before the first frame (default 0)
 //   --record-hud 0|1     include the HUD and UI (default 1; 0 grabs the frame before them)
 //   --record-continue    keep running after the last frame (default: exit when done)
+//   --record-on-cue      hold the first frame until the scenario calls Recorder_Cue() (a test's event after a long setup,
+//                        e.g. --test-dam-break cues it as the wall goes)
 //   --gif                also <dir>/capture.gif (640 px wide)
 //   --sheet              also <dir>/sheet.png
 //   --fixed-dt <s>       simulate with this frame time whatever the real one (reproducible captures with --seed)
-// Normal play: F10 starts and stops a recording into <root>/<YYYY-MM-DD>/<HHMMSS>/ (every 2nd frame, up to 600, GIF and sheet).
+// Normal play: F10 starts and stops a recording into <root>/<YYYY-MM-DD>/<HHMMSS>/ (every 2nd frame until F10 again, at most 30 min; the GIF is its first 30 s; the sheet spans it all).
 // When a recording ends it prints "record: <dir> frames=N gif=<path|-> sheet=<path|-> hash=<first>..<last>".
 
 #include <string>
@@ -32,8 +34,10 @@ void Recorder_Capture();                  // grab the back buffer now (call wher
 bool Recorder_Finished();                 // a command-line recording is done and the game should exit
 void Recorder_Shutdown();                 // finish writing (frames still queued, GIF, sheet)
 bool Recorder_Active();
+void Recorder_Cue();                      // --record-on-cue: start capturing now
 void Recorder_Screenshot();             // F2 (#579): the next finished frame (HUD included) to <root>/<date>/shot-<HHMMSS>/screenshot.png
 std::string Recorder_LastDir();           // the last finished recording's folder ("" if none): bug reports attach it (#169)
 void Recorder_FrameDone();               // end of every frame: counts rendered frames for --record-every
+void Recorder_DrawIndicator();          // (#1119) F10: REC, a red dot and the time, after the capture (never in the recording)
 
 #endif

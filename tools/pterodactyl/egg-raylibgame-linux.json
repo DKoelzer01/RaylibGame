@@ -1,0 +1,37 @@
+{
+    "_comment": "RaylibGame native Linux dedicated server (#792, #326). NOT deployed: importing it on deweyserver's panel needs the user's OK. GPU: the container sees the NVIDIA GPU only when Docker runs it with the nvidia runtime (see tools/pterodactyl/README.md); without one the server runs on its null GL and CPU paths.",
+    "meta": { "version": "PTDL_v2", "update_url": null },
+    "exported_at": "2026-11-18T00:00:00+00:00",
+    "name": "RaylibGame (Linux)",
+    "author": "noreply@anthropic.com",
+    "description": "RaylibGame dedicated server, native Linux build: ./game --server server.cfg (port, max players, password, MOTD, autosave, seed). No display server needed: OpenGL 4.3 from the NVIDIA GPU through EGL when the container has it, else CPU only. Console: help, status, list, save, say, kick, op, ban, stop.",
+    "features": null,
+    "docker_images": { "Debian 12 (yolks)": "ghcr.io/parkervcp/yolks:debian" },
+    "file_denylist": [],
+    "startup": "./game --server server.cfg",
+    "config": {
+        "files": "{\"server.cfg\": {\"parser\": \"file\", \"find\": {\"port\": \"port = {{server.build.default.port}}\", \"max_players\": \"max_players = {{server.build.env.MAX_PLAYERS}}\", \"password\": \"password = {{server.build.env.SERVER_PASSWORD}}\", \"motd\": \"motd = {{server.build.env.MOTD}}\", \"autosave_minutes\": \"autosave_minutes = {{server.build.env.AUTOSAVE_MINUTES}}\", \"seed\": \"seed = {{server.build.env.WORLD_SEED}}\"}}}",
+        "startup": "{\"done\": \"server: ready\"}",
+        "logs": "{}",
+        "stop": "stop"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# RaylibGame Linux server install (#792). Either fetches a prebuilt runtime (DOWNLOAD_URL: the .tar.gz that\n# tools/build_linux.sh makes) or builds it here from GIT_REPO at GIT_REF (about 10 minutes: GameNetworkingSockets\n# and the game). Then writes server.cfg with the panel's values (kept on reinstall: the panel rewrites its lines at\n# every start anyway). The save (server/) is never touched.\nset -euo pipefail\ncd /mnt/server\nexport DEBIAN_FRONTEND=noninteractive\napt-get update -qq\nif [ -n \"${DOWNLOAD_URL:-}\" ]; then\n  apt-get install -y -qq --no-install-recommends curl ca-certificates tar gzip > /dev/null\n  echo \"install: downloading ${DOWNLOAD_URL}\"\n  curl -fsSL \"${DOWNLOAD_URL}\" -o /tmp/server.tar.gz\n  rm -rf /tmp/unpack && mkdir -p /tmp/unpack && tar -xzf /tmp/server.tar.gz -C /tmp/unpack\n  SRC_DIR=/tmp/unpack/raylibgame-server\nelse\n  apt-get install -y -qq --no-install-recommends build-essential cmake git curl ca-certificates pkg-config libssl-dev libegl1 binutils > /dev/null\n  echo \"install: building ${GIT_REPO} at ${GIT_REF} (about 10 minutes)\"\n  rm -rf /tmp/src && git clone -q --depth 1 --branch \"${GIT_REF}\" \"${GIT_REPO}\" /tmp/src\n  RAYLIBGAME_VERSION=\"${GIT_REF} $(git -C /tmp/src rev-parse --short HEAD)\" bash /tmp/src/tools/build_linux.sh --inside --out /tmp/linux --jobs \"$(nproc)\"\n  SRC_DIR=/tmp/linux/stage/raylibgame-server\nfi\n[ -x \"${SRC_DIR}/game\" ] || { echo \"install: no game binary in the build\"; exit 1; }\nrm -rf resources assets lib\ncp -a \"${SRC_DIR}/.\" /mnt/server/\nchmod +x game\nmkdir -p server\nif [ ! -f server.cfg ]; then\ncat > server.cfg <<EOF\n# RaylibGame dedicated server (#326). key = value; '#' starts a comment. Restart the server to apply changes.\nsave = server/world.sav\nport = ${SERVER_PORT}\nmax_players = ${MAX_PLAYERS}\npassword = ${SERVER_PASSWORD}\nautosave_minutes = ${AUTOSAVE_MINUTES}\nmotd = ${MOTD}\nseed = ${WORLD_SEED}\nlog = server/server.log\nEOF\nfi\necho \"install: done ($(cat VERSION 2>/dev/null || echo unknown version))\"\n",
+            "container": "debian:bookworm",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        { "name": "Max players", "description": "Players allowed at once (1-64).", "env_variable": "MAX_PLAYERS", "default_value": "8", "user_viewable": true, "user_editable": true, "rules": "required|integer|between:1,64", "field_type": "text" },
+        { "name": "Server password", "description": "Empty: anyone can join.", "env_variable": "SERVER_PASSWORD", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|string|max:64", "field_type": "text" },
+        { "name": "Message of the day", "description": "Shown to players when they join.", "env_variable": "MOTD", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|string|max:200", "field_type": "text" },
+        { "name": "Autosave minutes", "description": "Minutes between autosaves (0 = only on stop).", "env_variable": "AUTOSAVE_MINUTES", "default_value": "30", "user_viewable": true, "user_editable": true, "rules": "required|numeric|min:0", "field_type": "text" },
+        { "name": "World seed", "description": "Seed for a new world (0 = random). An existing save keeps its own.", "env_variable": "WORLD_SEED", "default_value": "0", "user_viewable": true, "user_editable": true, "rules": "required|integer|min:0", "field_type": "text" },
+        { "name": "Download URL", "description": "Optional: a prebuilt raylibgame-server-linux-x86_64.tar.gz (tools/build_linux.sh). Empty: build from the Git repository below at install.", "env_variable": "DOWNLOAD_URL", "default_value": "", "user_viewable": true, "user_editable": true, "rules": "nullable|url", "field_type": "text" },
+        { "name": "Git repository", "description": "Built at install when no Download URL is set.", "env_variable": "GIT_REPO", "default_value": "https://github.com/DKoelzer01/RaylibGame.git", "user_viewable": true, "user_editable": false, "rules": "required|string|max:200", "field_type": "text" },
+        { "name": "Git branch or tag", "description": "What to build at install (reinstall the server to update).", "env_variable": "GIT_REF", "default_value": "m84-integration", "user_viewable": true, "user_editable": true, "rules": "required|string|max:100", "field_type": "text" },
+        { "name": "NVIDIA GPUs", "description": "GPUs the NVIDIA container runtime gives the server ('all', a GPU index, or 'void' for none). Only works when Docker runs the container with the nvidia runtime.", "env_variable": "NVIDIA_VISIBLE_DEVICES", "default_value": "all", "user_viewable": true, "user_editable": false, "rules": "required|string|max:40", "field_type": "text" },
+        { "name": "NVIDIA driver capabilities", "description": "graphics = the EGL/OpenGL libraries; compute, utility for nvidia-smi.", "env_variable": "NVIDIA_DRIVER_CAPABILITIES", "default_value": "graphics,compute,utility", "user_viewable": false, "user_editable": false, "rules": "required|string|max:80", "field_type": "text" }
+    ]
+}

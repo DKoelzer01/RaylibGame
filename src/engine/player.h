@@ -41,6 +41,7 @@ struct Player {
     bool dampeners = true;            // B: inertial dampeners (deep space only)
     bool autoJump = false;            // tests: jump once on the next update (a Space press in PlayerInput)
     bool autoCrouch = false;          // tests: Ctrl held (crouch, #578)
+    bool autoSprint = false;          // tests: Shift held with autoWalk (#338: the explore test walks 600 m)
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)

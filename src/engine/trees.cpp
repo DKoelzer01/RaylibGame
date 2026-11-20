@@ -79,6 +79,58 @@ void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist
     Quad(m, A[0], A[1], A[2], A[3], centre, leaf, shade); // bottom
 }
 
+// (#933 layer 2) Ambient occlusion baked into the vertex colour's alpha (255 = open; trees.fs scales the ambient term
+// only). Leaves darken toward the crown's middle (the inner canopy sees little sky) and on their undersides; bark toward
+// its foot (the ground's contact) and where it stands under the crown; loose stones at the ground. Analytic, from the
+// variant's own geometry: no rays. RAYLIBGAME_FOLIAGE_AO=0: off (all 255).
+void BakeFoliageAo(VariantMesh& m, bool stone) {
+    static const bool on = !(getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0');
+    const size_t nv = m.pos.size() / 3;
+    if (!on || nv == 0) return;
+    // The crown: the leaf vertices' middle and their reach from it (horizontal and vertical apart: crowns are wide).
+    Vector3 c{}; int nl = 0; float top = 0.0f;
+    for (size_t i = 0; i < nv; ++i) {
+        top = std::max(top, m.pos[3 * i + 1]);
+        if (m.col[4 * i] > 127) { c = Vector3Add(c, { m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2] }); ++nl; }
+    }
+    float rh = 0.0f, rv = 0.0f, lowLeaf = 1e9f;
+    if (nl > 0) {
+        c = Vector3Scale(c, 1.0f / nl);
+        for (size_t i = 0; i < nv; ++i) if (m.col[4 * i] > 127) {
+            const float dx = m.pos[3 * i] - c.x, dz = m.pos[3 * i + 2] - c.z;
+            rh = std::max(rh, sqrtf(dx * dx + dz * dz)); rv = std::max(rv, fabsf(m.pos[3 * i + 1] - c.y));
+            lowLeaf = std::min(lowLeaf, m.pos[3 * i + 1]);
+        }
+    }
+    auto ss = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    for (size_t i = 0; i < nv; ++i) {
+        const Vector3 p = { m.pos[3 * i], m.pos[3 * i + 1], m.pos[3 * i + 2] };
+        const float ny = m.nrm[3 * i + 1];
+        float ao = 1.0f;
+        if (stone) {
+            ao = 0.6f + 0.4f * ss(0.0f, 0.25f, p.y);                                   // the stone's foot against the ground
+        } else if (m.col[4 * i] > 127 && nl > 0) {
+            const float dx = (p.x - c.x) / std::max(rh, 0.1f), dz = (p.z - c.z) / std::max(rh, 0.1f), dy = (p.y - c.y) / std::max(rv, 0.1f);
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz);                          // 0 in the crown's middle, ~1 at its edge
+            ao = 0.5f + 0.5f * ss(0.15f, 0.95f, d);
+            // A crown's lower half sees less sky than its top (the canopy above it): blocky crowns show only their outer
+            // faces (all near the edge, d ~ 1), so this is the part of the AO that reads.
+            const float h = std::clamp((p.y - (c.y - rv)) / std::max(2.0f * rv, 0.1f), 0.0f, 1.0f); // 0 bottom .. 1 top
+            ao = std::min(ao, 0.6f + 0.4f * ss(0.05f, 0.85f, h));
+            if (ny < -0.5f) ao *= 0.78f;                                                 // leaf undersides face the dark ground
+        } else {
+            ao = 0.55f + 0.45f * ss(-0.2f, 0.9f, p.y);                                   // the trunk's foot
+            if (nl > 0 && p.y > lowLeaf - 0.5f) {                                        // bark up in the crown
+                const float dx = p.x - c.x, dz = p.z - c.z;
+                if (dx * dx + dz * dz < rh * rh) ao *= 0.72f;
+            }
+        }
+        static const float strength = getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f; // (#933) 2 = the default (user, 2026-11-19); 1 = the first tuning
+        ao = std::clamp(1.0f - strength * (1.0f - ao), 0.0f, 1.0f);
+        m.col[4 * i + 3] = (unsigned char)std::clamp((int)lroundf(ao * 255.0f), 0, 255);
+    }
+}
+
 float U(std::mt19937& r) { return std::uniform_real_distribution<float>(0.0f, 1.0f)(r); }
 unsigned char Shade(std::mt19937& r) { return (unsigned char)(90 + (int)(U(r) * 140.0f)); }
 
@@ -235,6 +287,8 @@ void BuildVariants() {
         if (v == kStoneVariant) gVariants[1][v] = m; // already a few prisms (and no crown for FarFrom to fit)
         else FarFrom(m, v, gVariants[1][v]);
         gVariants[1][v].vertexCount = (int)(gVariants[1][v].pos.size() / 3);
+        BakeFoliageAo(gVariants[0][v], v == kStoneVariant);
+        BakeFoliageAo(gVariants[1][v], v == kStoneVariant);
     }
 }
 const VariantMesh& Variant(int v, int lod = 0) { std::call_once(gVariantsOnce, BuildVariants); return gVariants[lod][v]; }
@@ -319,13 +373,13 @@ float Smooth(float a, float b, float x) { const float t = std::clamp((x - a) / (
 struct BiomeFlora { float trees, bushes, stones; bool cold; float size; float cover = 0.0f; }; // cover: least tree odds anywhere in it (closed canopy)
 static BiomeFlora FloraOf(Biome b) {
     switch (b) {
-        case Biome::Jungle:   return { 1.5f, 1.4f, 0.5f, false, 1.35f, 0.34f };
+        case Biome::Jungle:   return { 1.5f, 1.4f, 0.8f, false, 1.35f, 0.34f }; // (#893: stones 0.5 -> 0.8)
         case Biome::Savanna:  return { 0.08f, 0.45f, 1.0f, false, 1.15f };
         case Biome::Desert:   return { 0.0f, 0.06f, 2.0f, false, 1.0f };
         case Biome::Badlands: return { 0.02f, 0.12f, 2.5f, false, 0.8f };
         case Biome::Forest:   return { 1.0f, 1.0f, 1.0f, false, 1.0f };
         case Biome::Meadow:   return { 0.07f, 1.3f, 0.8f, false, 1.1f };
-        case Biome::Swamp:    return { 0.45f, 1.5f, 0.3f, false, 0.9f };
+        case Biome::Swamp:    return { 0.45f, 1.5f, 0.8f, false, 0.9f };          // (#893: stones 0.3 -> 0.8)
         case Biome::Taiga:    return { 1.35f, 0.6f, 1.0f, true, 1.05f, 0.26f };
         case Biome::Tundra:   return { 0.04f, 0.35f, 1.6f, true, 0.6f };
         case Biome::Alpine:   return { 0.25f, 0.5f, 1.5f, true, 0.8f };
@@ -423,7 +477,9 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
             }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
-            if (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith && !(stone && m == VoxelMaterial::Gravel)) continue;
+            // Trees and bushes root in turf or soil; loose stones lie on any natural ground but snow and ice (#893: the swamp's clay
+            // and mud and the desert's sand had none, though their biomes call for them; the mountaintops stay bare by height).
+            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith)) continue;
             // Solid ground underfoot and open air above (caves, ravines, edits).
             if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
             if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
@@ -768,7 +824,9 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, culledVbo[slot]);
             glUniform1ui(gTcN, (GLuint)count[0][slot]);
             glUniform1ui(gTcCmd, (GLuint)slot);
-            glUniform1f(gTcRadius, Variant(v, lod).boundRadius);
+            // #745: the far-forest boost grows far trees up to 1.7x in trees.vs; pad the bound to match (RAYLIBGAME_FAR_FOREST=0: off).
+            static const float farPad = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 1.0f : 1.7f; }(); // on by default (user, 2026-11-19); up to 1.7x
+            glUniform1f(gTcRadius, Variant(v, lod).boundRadius * farPad);
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
@@ -819,6 +877,27 @@ static void TilesAround(Vector3 dir, float radius, TreeTileKey out[9], int& n) {
         }
 }
 
+// (#893 tests) The scatter around `dir` as generated (no edits, removals or clearings), counted within `range` m of the
+// ground point there: trees, bushes and loose stones. Builds the tiles itself (the tree system need not have them).
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones) {
+    trees = bushes = stones = 0;
+    const Vector3 d = Vector3Normalize(dir);
+    const Vector3 at = Vector3Scale(d, f.radius + f.elevation(d));
+    TreeTileKey keys[9]; int n = 0;
+    TilesAround(d, f.radius, keys, n);
+    const TerrainDeltas none;
+    const PlantRemovals noRemovals;
+    const std::vector<Vector4> noClearings;
+    for (int k = 0; k < n; ++k) {
+        TreeTile t;
+        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t);
+        for (const Plant& p : t.plants) {
+            if (Vector3Distance(p.base, at) > range) continue;
+            if (p.stone()) ++stones; else if (p.tree()) ++trees; else ++bushes;
+        }
+    }
+}
+
 void TreeSystem::trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const {
     const float r = Vector3Length(local);
     if (r < 1.0f) return;
@@ -847,9 +926,16 @@ void TreeSystem::plantsNear(Vector3 local, float range, std::vector<Plant>& out)
     }
 }
 
-void TreeSystem::remove(uint64_t id) {
+bool TreeSystem::findPlant(uint64_t id, Plant& out) const {
+    auto it = tiles.find(TileOfPlant(id));
+    if (it == tiles.end() || !it->second.ready) return false;
+    for (const Plant& p : it->second.plants) if (p.id == id) { out = p; return true; }
+    return false;
+}
+
+void TreeSystem::remove(uint64_t id, double when) {
     auto next = std::make_shared<PlantRemovals>(*removed);
-    (*next)[id] = WorldTime();
+    (*next)[id] = when >= 0.0 ? when : WorldTime();
     removed = next;
     // Gone at once from the loaded tile (the next rebuild agrees), and its tile starts watching
     // for regrowth.
@@ -871,6 +957,13 @@ void TreeSystem::remove(uint64_t id) {
     // A rebuild already queued was built with the old removals: it would bring the plant back (and,
     // not regrowing, keep it). Re-request so that result is dropped (stale version) for a fresh one.
     if (t.pending) request(it->first, t, 0.0f);
+}
+
+void TreeSystem::mergeRemovals(const std::vector<std::pair<uint64_t, double>>& list) {
+    if (list.size() <= 8) { for (const auto& [id, t] : list) remove(id, t); return; }
+    PlantRemovals next(*removed);
+    for (const auto& [id, t] : list) next[id] = t;
+    setRemovals(next);
 }
 
 void TreeSystem::setRemovals(const PlantRemovals& r) {

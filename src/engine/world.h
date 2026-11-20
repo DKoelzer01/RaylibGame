@@ -117,6 +117,7 @@ inline double gTimeSkipSeconds = 0.0;
 // World seconds until the sun (scene.sunDirection) stands at elevDeg over a body-local point's horizon, rising (true) or
 // setting, from the body's spin alone (within one rotation; -1 when the body doesn't spin or the sun never gets there).
 // The sign of the spin and BodyRotationD's conventions are handled numerically: sampled over a day, then bisected.
+bool SurfaceVelocity_SelfTest(); // (#872) omega x r against a surface point's motion, any orientation and spin: --test-surface-velocity
 double SecondsToSunElevation(const Planetoid& body, Vector3 localPoint, Vector3 sunDir, float elevDeg, bool rising);
 // The same for the camera's spot on the body it is nearest (debug UI: dawn / noon / dusk); -1 when there is none.
 double SecondsToSunElevationAtCamera(const Scene& world, float elevDeg, bool rising);
@@ -171,6 +172,13 @@ void ApplyTerrainEdits(Planetoid& planetoid, const TerrainEdit* edits, size_t co
 // Rebuild the chunks (every level) around a body-local point: water claimed by the simulation (fluid.h).
 // strideReach: extra reach in strides of each level's nodes (their own features reach that far, e.g. static water: #251).
 void RequestRemesh(Planetoid& planetoid, Vector3 localCentre, float radius, float strideReach = 1.0f);
+// Late-join sync (#776): a body's edited regions (128 m cubes of delta chunks, sorted), one region as the save's RGN5 bytes
+// (chunks in key order: equal content, equal bytes), their hash, and installing such bytes on a body (empty: clear the
+// region), rebuilding what shows it. False: the bytes are malformed (nothing changed).
+std::vector<TerrainDeltas::Key> Regions_List(const TerrainDeltas& deltas);
+std::vector<uint8_t> Region_Encode(const TerrainDeltas& deltas, TerrainDeltas::Key region);
+uint64_t Region_Hash(const std::vector<uint8_t>& bytes);
+bool Region_Install(Planetoid& planetoid, TerrainDeltas::Key region, const uint8_t* data, size_t size);
 
 // Physics helpers (render-space points). Distance is approximate: (ISO - density) / |gradient|.
 bool TerrainSurfaceDistance(Planetoid& p, Vector3 renderPoint, float& dist, Vector3& outwardNormal);
@@ -182,6 +190,11 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint);
 Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
+// (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest
+// BackupsKept() stay (RAYLIBGAME_BACKUPS=N, default 5, 0 none).
+void BackupSave();
+int BackupsKept();
+std::string BackupDir();
 extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)
 class JobSystem;
 JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
@@ -189,11 +202,21 @@ JobSystem& WorldJobs(); // the shared worker pool (chunk builds, foliage tiles)
 // outside a body, linear to zero at its centre inside, surfaceGravity at its radius.
 Vector3 GravityAt(Scene& world, Vector3 renderPoint);
 Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
+// Plan 11 (frames.h, #667): a body's orientation (rows of R: body-local -> world) and angular velocity (world, rad/s), in
+// double from its double spin angle.
+void BodyRotationAndSpin(const Planetoid& body, double r[3][3], DVec3& omega);
 
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".
 extern std::function<void(FILE*)> saveExtrasHook;
 extern std::function<void(FILE*)> loadExtrasHook;
+extern std::function<void()> loadDoneHook; // the end of a load, every body back in its saved state (#901: player records go to world space then)
+// Run by unloadWorld before the old world's bodies are freed (#902): modules that keep a body, plot or hit pointer between
+// frames drop it there - drawing goes on while the next world loads, and a pointer into the freed world crashed a reload.
+void World_AddUnloadHook(std::function<void()> hook);
 bool LoadWorldSave(Scene& world);
+// (#943) The last LoadWorldSave's phases (ms): the world regenerated from the seed, and the saved edits (region deltas).
+struct LoadPhases { double regenMs = 0.0, regionsMs = 0.0, plotsMs = 0.0, fluidMs = 0.0; };
+const LoadPhases& LastLoadPhases();
 
 #endif

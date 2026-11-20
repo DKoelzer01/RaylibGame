@@ -76,7 +76,7 @@ namespace std {
 // Ids 0-7 are the legacy weights (per-chunk draws); later ones ride the arena's per-chunk palette (#480: up to 256).
 enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, Sand = 4, Gravel = 5, Grass = 6, Snow = 7, Clay = 8,
                                     Granite = 9, Basalt = 10, Sandstone = 11, Limestone = 12, Marble = 13,
-                                    Pebbles = 14, Silt = 15, Mud = 16, Count }; // 9-13: rock strata (#587); 14-16: river beds, floodplains, wet shores (#595)
+                                    Pebbles = 14, Silt = 15, Mud = 16, Farmland = 17, Count }; // 9-13: rock strata (#587); 14-16: river beds, floodplains, wet shores (#595); 17: tilled dirt (#1085)
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
@@ -108,6 +108,9 @@ struct TerrainEdit {
     // radius); `paint` colours what it adds. Strength unused.
     bool fill = false;
     int paint = -1;        // adding: the VoxelMaterial the added ground is made of (-1: the field's own)
+    // Till (#1085): no change to the ground's shape; soil (grass, dirt, clay, silt, mud) within `radius` of the centre and
+    // within half a metre under the surface (and the lattice points just over it) becomes Farmland. A free brush.
+    bool till = false;
     // Carve an oriented box instead of the sphere (#210: a part's cells, exactly): half extents along the unit axes
     // ax/ay/az (body-local), centred on `center`. Set `radius` to its bounding reach (the half extents' length): the
     // dirty-chunk, tree and fluid bounds use it.
@@ -194,6 +197,8 @@ public:
     bool moon;
     float minElevation, maxElevation; // the surface stays inside [radius + min, radius + max]
     WorldGenParams gen;           // the world's generation parameters (#504): defaults = the terrain as before
+    uint32_t caveEpoch = 0;       // #1055: unique per field and land (renewed by setGenParams / setSandbox): part of the cave cells' key
+    bool caveBaked() const;       // #1055: whether the erosion bake is visible here (part of the cave cells' key)
     // Before any sampling or the erosion bake: the parameters, and the elevation bounds they need (taller ranges).
     void setGenParams(const WorldGenParams& p);
     bool foliage = false;         // grows trees (planets with life); the terrain paints distant canopy
@@ -263,6 +268,7 @@ public:
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres
     float karstWeight(Vector3 s) const { return gen.karst ? Strata_KarstWeight(s, fieldSeed) : 0.0f; } // #592: 0..1
+    float volcanoWeight(Vector3 s) const { float w = 0.0f; if (gen.volcanoes) Strata_Volcano(s, radius, fieldSeed, &w); return w; } // #1063: 0..1 toward a vent (0 off volcanoes)
     // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
     float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
     // On a river or pond bed (or its wet shore): digging there also turns up clay.
@@ -315,11 +321,31 @@ public:
     // Rock outcrops and boulders near the surface: metres inside the nearest one (< 0 outside).
     float rockFeature(Vector3 p, float d, float surface, float footprint) const;
     // 3D terrain: metres the surface is raised (+) or carved (-) here by the 3D noise band (0 outside it).
-    struct Column3D { float mask = 0.0f, f = 0.0f; }; // the 3D band's per-column strength (Plan 5 C). (The cliff lip over a column went with the terraces, #543.)
+    struct Column3D { float mask = 0.0f, f = 0.0f, wet = 0.0f; }; // the 3D band's per-column strength (Plan 5 C). (The cliff lip over a column went with the terraces, #543.) // wet (#971): caveWetColumn, the cave roofs' keeper
     // With the height-map elevation and 3D-band column at p already known (gridSurface, from the chunk's block grid):
     // chunk meshing (#148) skips re-evaluating the height map at every vertex (~80% of the per-vertex cost).
     VoxelMaterial materialSkyHinted(Vector3 p, float base, float footprint, Vector3 normal, float& sky, const float* elevHint, const Column3D* colHint) const;
     Column3D terrain3DColumn(Vector3 dir, float elev) const;
+    // (#971) 0..1: a wet lowland (swamp, or a river's floodplain), where cave roofs never collapse into trenches (#549's mouths
+    // stay closed). Once per height-map grid node (cached with the column) and for single samples in a mouth region only.
+    float caveWetColumn(Vector3 dir, float elev) const;
+    // (#615 step 1) All the caves in one place: metres from p to the nearest cave wall (< 0 inside a cave; 1e9 where no cave
+    // reaches). densityNear carves where it is under its meshing reach; terrain.glsl's caveDistance is the same, bit-exact.
+    // hit (tools: --cave-stats): what made the distance.
+    struct CaveHit { int kind = 0; float mouth = 0.0f; bool collapsed = false; }; // kind: 0 none, 1 tunnel, 2 cavern
+    float caveDistance(Vector3 p, float d, float depth, float surface, float fp, const Column3D* col, CaveHit* hit = nullptr, float* solid = nullptr) const; // solid (#615 step 3): metres inside rubble aprons (densityNear adds them)
+    // (#615 step 2) The cave graph: passages generated per 256 m cell (sea-level projection) from the seed, cached. A block
+    // gets the segments whose capsules can reach it, 5 vec4 each: (a, ra), (b, rb), (up, flat), box lo, box hi. False
+    // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
+    // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
+    bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
+    static bool CavesGraph();
+    // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
+    // outward (downhill) direction, body-local. Tests and captures.
+    bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind = -1) const; // kind: -1 any entrance, 0 hillside, 1 karst sink, 2 resurgence (#1052), 3 a chamber centre (#1058)
+    struct CaveShaft { Vector3 top, up; float radius, depth; };          // #1067: a shaft open to the sky (karst sink, tube skylight)
+    void shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const; // those whose shaft can reach the box [lo, hi]
+    int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

@@ -1,4 +1,5 @@
 #include "blueprint.h"
+#include "playerinput.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -104,15 +105,44 @@ void Blueprint_Cycle() {
     GameUI_Toast(active >= 0 ? TextFormat("Blueprint: %s (RMB places what you can afford; N next)", list[active].name.c_str()) : "Blueprint off");
 }
 
-int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bool charge, std::string& missing) {
+// ---- Ghosts (#1018) ----
+namespace {
+struct Ghost { std::string body; uint32_t plot = 0; Part part{}; };
+std::vector<Ghost> ghosts;
+double nextGhostBuild = 0.0;
+constexpr double kGhostEvery = 0.25; // s between two ghosts built (4 a second)
+bool SamePart(const Part& a, const Part& b) { return a.type == b.type && a.origin.x == b.origin.x && a.origin.y == b.origin.y && a.origin.z == b.origin.z && a.orient == b.orient && a.material == b.material; }
+Part At(const Part& p, Int3 o) { Part q = p; q.origin = { o.x + p.origin.x, o.y + p.origin.y, o.z + p.origin.z }; return q; }
+void AddGhost(const Planetoid& body, const Plot& plot, const Part& q) {
+    for (const Ghost& g : ghosts) if (g.plot == plot.id && g.body == body.name && SamePart(g.part, q)) return;
+    ghosts.push_back({ body.name, plot.id, q });
+}
+// The 12 edges of each cell of a part's footprint, in the plot's cell space (under its model matrix).
+void DrawCellEdges(const Part& q, Color col) {
+    static std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(q, fp);
+    for (const auto& c : fp) {
+        Vector3 v[8];
+        for (int i = 0; i < 8; ++i)
+            v[i] = { (c.first.x + (i & 1)) * kCellSize, (c.first.y + ((i >> 1) & 1)) * kCellSize, (c.first.z + ((i >> 2) & 1)) * kCellSize };
+        const int e[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 }, { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+        for (auto& ed : e) DrawLine3D(v[ed[0]], v[ed[1]], col);
+    }
+}
+}
+
+int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bool charge, std::string& missing, bool leaveGhosts) {
     int placed = 0;
     std::map<std::string, int> short_;
     for (const Part& p : bp.parts) {
-        Part q = p;
-        q.origin = { o.x + p.origin.x, o.y + p.origin.y, o.z + p.origin.z };
+        const Part q = At(p, o);
         if (!plot.canPlace(q)) continue; // already there (filling in) or blocked
         const char* item = PartItem(q);
-        if (charge && !terrainTool.creative && inventory.count(item) < PartCostCount(q.type)) { short_[item] += PartCostCount(q.type); continue; }
+        if (charge && !terrainTool.creative && inventory.count(item) < PartCostCount(q.type)) {
+            short_[item] += PartCostCount(q.type);
+            if (leaveGhosts) AddGhost(body, plot, q); // (#1018) built later, from the inventory, when you come by
+            continue;
+        }
         if (BuildTool_Place(body, plot, q, charge)) ++placed;
     }
     missing.clear();
@@ -120,10 +150,78 @@ int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bo
     return placed;
 }
 
+int Blueprint_GhostCount() { return (int)ghosts.size(); }
+int Blueprint_GhostsOn(const Plot& plot, const Blueprint& bp, Int3 o) {
+    int n = 0;
+    for (const Part& p : bp.parts) { const Part q = At(p, o); for (const Ghost& g : ghosts) if (g.plot == plot.id && SamePart(g.part, q)) { ++n; break; } }
+    return n;
+}
+int Blueprint_RemoveGhosts(const Plot& plot, const Blueprint& bp, Int3 o) {
+    const size_t before = ghosts.size();
+    for (const Part& p : bp.parts) {
+        const Part q = At(p, o);
+        ghosts.erase(std::remove_if(ghosts.begin(), ghosts.end(), [&](const Ghost& g) { return g.plot == plot.id && SamePart(g.part, q); }), ghosts.end());
+    }
+    return (int)(before - ghosts.size());
+}
+
+int Blueprint_UpdateGhosts(Planetoid* body, Vector3 feetLocal, double now) {
+    if (!body || !body->plots || ghosts.empty() || now < nextGhostBuild) return 0;
+    for (size_t i = 0; i < ghosts.size(); ++i) {
+        const Ghost& g = ghosts[i];
+        if (g.body != body->name) continue;
+        Plot* plot = body->plots->byId(g.plot);
+        if (!plot) { ghosts.erase(ghosts.begin() + (long)i); return 0; } // its plot is gone (it emptied)
+        if (!plot->canPlace(g.part)) { ghosts.erase(ghosts.begin() + (long)i); return 0; } // built, or the cell is taken: dropped
+        const Vector3 at = plot->toBody({ (g.part.origin.x + 0.5f) * kCellSize, (g.part.origin.y + 0.5f) * kCellSize, (g.part.origin.z + 0.5f) * kCellSize });
+        if (Vector3Distance(at, feetLocal) > kGhostReach * body->scale) continue;
+        if (!terrainTool.creative && inventory.count(PartItem(g.part)) < PartCostCount(g.part.type)) continue; // not yet
+        const Part part = g.part;
+        if (!BuildTool_Place(*body, *plot, part, true)) continue;
+        ghosts.erase(ghosts.begin() + (long)i);
+        nextGhostBuild = now + kGhostEvery;
+        Audio_Play(Sfx::Build, 0.3f, 1.3f);
+        return 1;
+    }
+    return 0;
+}
+
+void Blueprint_DrawGhosts(Planetoid& body, const DVec3& renderOrigin, Vector3 cameraLocal) {
+    if (ghosts.empty() || !body.plots) return;
+    const Color col = Fade(SKYBLUE, 0.45f);
+    for (auto& plot : body.plots->plots) {
+        bool any = false;
+        for (const Ghost& g : ghosts) any = any || (g.plot == plot->id && g.body == body.name);
+        if (!any || Vector3Distance(plot->toBody({ 0, 0, 0 }), cameraLocal) > 120.0f) continue;
+        rlDrawRenderBatchActive();
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(plot->cellModel(body, renderOrigin))); // (#271: under the plot's double-precision model)
+        for (const Ghost& g : ghosts) if (g.plot == plot->id && g.body == body.name) DrawCellEdges(g.part, col);
+        rlDrawRenderBatchActive();
+        rlPopMatrix();
+    }
+}
+
+void Blueprint_ResetGhosts() { ghosts.clear(); nextGhostBuild = 0.0; }
+void Blueprint_SaveGhosts(FILE* f) {
+    for (const Ghost& g : ghosts)
+        fprintf(f, "ghost %s %u %d %d %d %d %d %d\n", g.body.c_str(), g.plot, (int)g.part.type, g.part.origin.x, g.part.origin.y, g.part.origin.z, (int)g.part.orient, (int)g.part.material);
+}
+bool Blueprint_LoadGhostLine(const char* tok, FILE* f) {
+    if (strcmp(tok, "ghost") != 0) return false;
+    char body[64] = {}; unsigned plot = 0; int type = 0, x = 0, y = 0, z = 0, orient = 0, mat = 0;
+    if (fscanf(f, " %63s %u %d %d %d %d %d %d", body, &plot, &type, &x, &y, &z, &orient, &mat) == 8 && type >= 0 && type < (int)PartType::Count) {
+        Ghost g; g.body = body; g.plot = plot;
+        g.part.type = (PartType)type; g.part.origin = { x, y, z }; g.part.orient = (uint8_t)orient; g.part.material = (uint8_t)mat;
+        ghosts.push_back(g);
+    }
+    return true;
+}
+
 bool Blueprint_Keys(Planetoid* body, Plot* lookingAt) {
     (void)body;
-    if (IsKeyPressed(KEY_N)) { Blueprint_Cycle(); return true; }
-    if (IsKeyPressed(KEY_B) && lookingAt) {
+    if (PlayerInput_BindingPressed(Act::BlueprintCycle)) { Blueprint_Cycle(); return true; }
+    if (PlayerInput_BindingPressed(Act::BlueprintSave) && lookingAt) {
         const std::time_t now = std::time(nullptr);
         char stamp[32];
         std::strftime(stamp, sizeof stamp, "%Y%m%d_%H%M%S", std::localtime(&now));

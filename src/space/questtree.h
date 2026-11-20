@@ -12,6 +12,8 @@
 
 void QuestTree_Update();                 // after the main line (QuestBook_Update calls it)
 void QuestTree_DrawTab();                // ImGui: the tree
+void QuestTree_TestOpenTier(int tier);   // (#890 shots) open that tier's pop-out (-1 closes it)
+bool QuestTree_ClosePopout();            // (#921) closes the tier pop-out; false: none was open
 void QuestTree_Reset();
 void QuestTree_Save(FILE* f);
 bool QuestTree_LoadLine(const char* tok, FILE* f);

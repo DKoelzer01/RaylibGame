@@ -14,7 +14,7 @@
 extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
-    typedef void (__stdcall* PfnClipControl)(GLenum origin, GLenum depth);
+    typedef void (GLAD_API_PTR* PfnClipControl)(GLenum origin, GLenum depth);
     constexpr GLenum kLowerLeft = 0x8CA1, kNegOneToOne = 0x935E, kZeroToOne = 0x935F;
 
     struct State {
@@ -28,6 +28,8 @@ namespace {
         float proj[3] = { 1.0f, 1.0f, 0.1f };     // the projection's m0, m5 and near plane (SceneTarget_ApplyProjection)
         float sunView[3] = { 0.0f, 1.0f, 0.0f };  // toward the sun, view space
         float contactStrength = 0.0f;             // 0: none this frame (night, overcast, no shadows)
+        bool ssao = true;                         // #933 layer 3: RAYLIBGAME_SSAO=0 off
+        float ssaoStrength = 1.0f, ssaoRadius = 1.0f; // RAYLIBGAME_SSAO_STRENGTH, RAYLIBGAME_SSAO_RADIUS (m)
         // Hi-Z (#134): a min-depth pyramid (reverse-Z: min = farthest) of the resolved depth, built at the end of each frame
         // for the next frame's terrain occlusion cull, with the view-projection that depth was drawn with.
         bool hiz = true;                          // RAYLIBGAME_HIZ=0: off
@@ -142,11 +144,58 @@ float contactShadow() {
     occ *= 1.0 - smoothstep(20.0, 30.0, dist);
     return 1.0 - occ * contactStrength * smoothstep(0.03, 0.25, facing);
 }
+// Screen-space AO (#933 layer 3), near pass only: a horizon search through the resolved depth (4 directions x 3 steps over
+// ssaoRadius metres, turned per pixel by interleaved gradient noise) for the contact detail the baked AO can't know
+// (animals, items, players, digs, parts on terrain). Within 25 m, faded out by 35 m. The forward renderer keeps no
+// separate ambient buffer, so sun-facing pixels take it at 40% (mostly the ambient share shows it).
+uniform float ssaoStrength; // 0: off (RAYLIBGAME_SSAO=0)
+uniform float ssaoRadius;   // m (RAYLIBGAME_SSAO_RADIUS)
+uniform int ssaoDebug;      // RAYLIBGAME_SSAO_DEBUG=1: the AO term alone, grey
+float ssao() {
+    vec2 size = vec2(textureSize(depthTex, 0));
+    vec2 uv = gl_FragCoord.xy / size;
+    float d0 = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
+    vec3 p = viewAt(uv, max(d0, 1e-6));
+    vec3 dn = cross(dFdx(p), dFdy(p));                          // before any branch: derivatives need uniform flow
+    if (d0 <= 0.0) return 1.0;                                  // sky
+    float dist = -p.z;
+    if (dist > 35.0 || dot(dn, dn) < 1e-20) return 1.0;
+    vec3 n = normalize(dn);
+    if (dot(n, -p) < 0.0) n = -n;
+    float rPx = ssaoRadius * projP.x / dist * 0.5 * size.x;     // the radius on screen (pixels)
+    if (rPx < 3.0) return 1.0;
+    rPx = min(rPx, 80.0);
+    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    float occ = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        float a = (float(k) + jitter) * 1.5707963;
+        vec2 dir = vec2(cos(a), sin(a));
+        float horizon = 0.0;                                    // per direction: the highest occluder (HBAO), not a sum
+        for (int i = 1; i <= 3; ++i) {
+            vec2 s = (gl_FragCoord.xy + dir * rPx * (float(i) - 0.5 * jitter) / 3.0) / size;
+            if (any(lessThan(s, vec2(0.0))) || any(greaterThan(s, vec2(1.0)))) break;
+            float ds = texture(depthTex, s).r;
+            if (ds <= 0.0) continue;
+            vec3 v = viewAt(s, ds) - p;
+            float l = length(v);
+            if (l < 1e-4) continue;
+            float fall = 1.0 - clamp(l / ssaoRadius, 0.0, 1.0);   // nothing beyond the radius (no halos behind objects)
+            horizon = max(horizon, max(dot(n, v / l) - 0.1, 0.0) * fall);
+        }
+        occ += horizon;
+    }
+    occ = clamp(occ / 4.0 * 1.6, 0.0, 1.0);
+    occ *= 1.0 - smoothstep(25.0, 35.0, dist);
+    float sunFacing = smoothstep(0.05, 0.3, dot(n, sunView)) * (contactStrength > 0.0 ? 1.0 : 0.0);
+    return 1.0 - occ * ssaoStrength * mix(1.0, 0.4, sunFacing);
+}
 void main() {
     vec3 c = texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb;
     if (any(isnan(c)) || any(isinf(c))) { if (nanDebug == 1) { color = vec4(1.0, 0.0, 1.0, 1.0); return; } c = vec3(0.0); } // ~0.1% of pixels are NaN / Inf (#402); RGBA8 stored them as 0
     vec3 lin = pow(max(c, vec3(0.0)), vec3(2.2));
     if (contactStrength > 0.0) lin *= contactShadow();
+    if (ssaoDebug == 1) { color = vec4(vec3(ssaoStrength > 0.0 ? ssao() : 1.0), 1.0); return; }
+    if (ssaoStrength > 0.0) lin *= ssao(); // #933
     if (bloomStrength > 0.0) lin = mix(lin, texture(bloomTex, gl_FragCoord.xy / vec2(textureSize(scene, 0))).rgb / bloomLevels, bloomStrength); // #140
     lin = lin * (exposure > 0.0 ? exposure : 1.0);
     vec3 t = tonemap == 1 ? aces(lin) : tonemap == 2 ? min(lin, vec3(1.0)) : kneeCurve(lin);
@@ -353,7 +402,7 @@ void main() {
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, S.resolveTex, 0);
         if (status == GL_FRAMEBUFFER_COMPLETE) status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        if ((S.hdr && S.contact || S.hiz) && status == GL_FRAMEBUFFER_COMPLETE) { // (#134: Hi-Z reads it too) // #137: the resolved depth (same format: a valid blit)
+        if ((S.hdr && (S.contact || S.ssao) || S.hiz) && status == GL_FRAMEBUFFER_COMPLETE) { // (#134: Hi-Z reads it too) // #137: the resolved depth (same format: a valid blit)
             glGenTextures(1, &S.depthTex);
             glBindTexture(GL_TEXTURE_2D, S.depthTex);
             GpuMemTag gmDepth_("scene target"); // VRAM accounting (#302)
@@ -419,6 +468,8 @@ void main() {
         if (const char* h = getenv("RAYLIBGAME_HDR"); h && h[0] == '0') S.hdr = false;
         if (const char* z = getenv("RAYLIBGAME_HIZ"); z && z[0] == '0') S.hiz = false; // #134
         if (const char* c = getenv("RAYLIBGAME_CONTACT_SHADOWS"); c && c[0] == '0') S.contact = false; // #137
+        if (const char* c = getenv("RAYLIBGAME_SSAO"); c && c[0] == '0') S.ssao = false; // #933
+        S.ssaoStrength = envF("RAYLIBGAME_SSAO_STRENGTH", S.ssaoStrength); S.ssaoRadius = envF("RAYLIBGAME_SSAO_RADIUS", S.ssaoRadius);
         if (const char* t = getenv("RAYLIBGAME_TONEMAP")) S.tonemap = !strcmp(t, "aces") ? 1 : !strcmp(t, "clip") ? 2 : 0;
         if (const char* a = getenv("RAYLIBGAME_AUTO_EXPOSURE"); a && a[0] == '0') S.autoExposure = false;
         S.key = envF("RAYLIBGAME_EXPOSURE_KEY", S.key);
@@ -541,7 +592,8 @@ void SceneTarget_End() {
     glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
     const bool hizOn = S.depthFbo && S.hizTex && S.hizPending;
-    if (contactOn || hizOn) { // #137 / #134: the depth too (a multisampled depth resolves to one of its samples)
+    const bool ssaoOn = S.depthFbo && S.ssao && S.hdr && S.ssaoStrength > 0.0f; // #933
+    if (contactOn || hizOn || ssaoOn) { // #137 / #134 / #933: the depth too (a multisampled depth resolves to one of its samples)
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
         glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
     }
@@ -627,12 +679,16 @@ void SceneTarget_End() {
         glUniform1f(glGetUniformLocation(S.prog, "bloomLevels"), (float)State::kBloomLevels);
         // Contact shadows (#137).
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, contactOn ? S.depthTex : 0);
+        glBindTexture(GL_TEXTURE_2D, contactOn || ssaoOn ? S.depthTex : 0);
         glActiveTexture(GL_TEXTURE0);
         glUniform1i(glGetUniformLocation(S.prog, "depthTex"), 2);
         glUniform1f(glGetUniformLocation(S.prog, "contactStrength"), contactOn ? S.contactStrength : 0.0f);
         glUniform3fv(glGetUniformLocation(S.prog, "sunView"), 1, S.sunView);
         glUniform3fv(glGetUniformLocation(S.prog, "projP"), 1, S.proj);
+        glUniform1f(glGetUniformLocation(S.prog, "ssaoStrength"), ssaoOn ? S.ssaoStrength : 0.0f); // #933
+        glUniform1f(glGetUniformLocation(S.prog, "ssaoRadius"), S.ssaoRadius);
+        static const int ssaoDbg = getenv("RAYLIBGAME_SSAO_DEBUG") ? atoi(getenv("RAYLIBGAME_SSAO_DEBUG")) : 0;
+        glUniform1i(glGetUniformLocation(S.prog, "ssaoDebug"), ssaoDbg);
     }
     glBindVertexArray(S.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -655,3 +711,11 @@ void SceneTarget_Unload() {
     if (S.vao) glDeleteVertexArrays(1, &S.vao);
     S = State{};
 }
+
+// #131: the tonemap chosen in Settings (0 knee, 1 ACES, 2 clip: the shader's numbering). RAYLIBGAME_TONEMAP, when set,
+// wins (benches and A/B runs stay as they were); otherwise the choice applies at once.
+void SceneTarget_SetTonemap(int curve) {
+    if (getenv("RAYLIBGAME_TONEMAP")) return;
+    S.tonemap = std::clamp(curve, 0, 2);
+}
+int SceneTarget_Tonemap() { return S.tonemap; }

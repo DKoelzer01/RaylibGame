@@ -15,6 +15,7 @@ struct WorldGenParams {
     float resources = 1.0f;       // 0.5..2: ore pockets and deposits
     bool erosion = true;          // the erosion bake (Plan 7; off: the noise terrain)
     float erosionStrength = 1.0f; // 0.5..2: how hard rivers cut (the bake's stream power)
+    float waterCycle = 1.0f;      // 0.5..2: how active the water cycle is (#637; the sea level is the reserve, this the turnover): bigger rivers, a few more streams, wetter climates
     float cliffs = 1.0f;          // 0..2: cliffs and canyons (#589): the share of resistant rock layers (0: none; Plan 9)
     bool karst = true;            // karst regions: limestone towers and dolines (#592)
     bool volcanoes = true;        // volcanoes: cones, calderas, lava caps (#593)

@@ -5,6 +5,8 @@
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
+#include <array>
+#include <map>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -64,7 +66,12 @@ const char* PartName(PartType t) {
         case PartType::HandPump: return "hand pump";
         case PartType::Torch: return "torch";
         case PartType::Snare: return "snare";
+        case PartType::Bed: return "bed";
+        case PartType::ClaimBanner: return "claim banner"; case PartType::ClaimBanner2: return "bronze claim banner";
+        case PartType::ClaimBanner3: return "steel claim banner"; case PartType::ClaimBanner4: return "titanium claim banner";
         case PartType::Meteorite: return "meteorite";
+        case PartType::PressurePlate: return "pressure plate";
+        case PartType::GasVent: return "gas vent";
         case PartType::Farmland: return "farmland";
         case PartType::Fence: return "fence";
         case PartType::Gate: return "gate";
@@ -134,18 +141,24 @@ const char* PartCostItem(PartType t) {
         case PartType::HandPump: return "hand_pump"; // not a machine: no factory entry (#280)
         case PartType::Torch: return "torch"; // placed from the hand (#218)
         case PartType::Snare: return "snare"; // placed from the hand (#176)
+        case PartType::Bed: return "bed"; // (#800)
+        case PartType::ClaimBanner: return "claim_banner"; case PartType::ClaimBanner2: return "bronze_claim_banner"; // (#343)
+        case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
+        case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
 
 namespace {
+    // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
+    // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
         { "concrete", "Concrete", { 168, 166, 158, 255 } },
-        { "stone", "Stone", { 122, 122, 128, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
-        { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was "dirt" (loose ground is terrain only); old parts become stone brick
         { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
         // Building variety (M21): planks from each tree species, stone kinds from the ground, kiln bricks.
         { "oak_planks", "Oak", { 158, 112, 66, 255 } },
@@ -153,11 +166,11 @@ namespace {
         { "pine_planks", "Pine", { 176, 132, 82, 255 } },
         { "maple_planks", "Maple", { 182, 104, 78, 255 } },
         { "spruce_planks", "Spruce", { 112, 82, 58, 255 } },
-        { "granite", "Granite", { 168, 146, 140, 255 } },
-        { "basalt", "Basalt", { 62, 62, 68, 255 } },
-        { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
-        { "limestone", "Limestone", { 206, 202, 186, 255 } },
-        { "marble", "Marble", { 236, 234, 230, 255 } },
+        { "granite_brick", "Granite brick", { 168, 146, 140, 255 } },
+        { "basalt_brick", "Basalt brick", { 62, 62, 68, 255 } },
+        { "sandstone_brick", "Sandstone brick", { 212, 182, 132, 255 } },
+        { "limestone_brick", "Limestone brick", { 206, 202, 186, 255 } },
+        { "marble_brick", "Marble brick", { 236, 234, 230, 255 } },
         { "brick", "Brick", { 158, 74, 52, 255 } },
         // Decoration (M22): plaster in eight dye colours, stained glass, lamps, polished gems.
         { "white_plaster", "White plaster", { 236, 234, 226, 255 } },
@@ -184,7 +197,7 @@ namespace {
         { "maple_log", "Maple log", { 110, 64, 50, 255 } },
         { "pine_log", "Pine log", { 104, 74, 50, 255 } },
         { "spruce_log", "Spruce log", { 70, 52, 40, 255 } },
-        { "clay", "Clay", { 170, 120, 95, 255 } },
+        { "brick", "Brick", { 158, 74, 52, 255 } }, // #1098: was "clay" (terrain only); old parts become fired brick
         { "ice", "Ice", { 176, 214, 240, 255 } },
         { "coal", "Coal", { 36, 36, 40, 255 } },
     };
@@ -238,7 +251,12 @@ static Color PartColor(PartType t) {
         case PartType::HandPump: return { 120, 90, 60, 255 };
         case PartType::Torch: return { 120, 85, 55, 255 };
         case PartType::Snare: return { 150, 120, 80, 255 };
+        case PartType::Bed: return { 150, 62, 52, 255 }; // a red blanket (#800)
+        case PartType::ClaimBanner: return { 190, 70, 60, 255 }; case PartType::ClaimBanner2: return { 205, 140, 70, 255 }; // (#343) by tier
+        case PartType::ClaimBanner3: return { 150, 160, 175, 255 }; case PartType::ClaimBanner4: return { 205, 180, 215, 255 };
         case PartType::Meteorite: return { 70, 62, 58, 255 };
+        case PartType::PressurePlate: return { 122, 116, 106, 255 }; // a shade off the floor's stone: a careful eye sees it
+        case PartType::GasVent: return { 96, 110, 70, 255 };         // a mossy grate
         case PartType::Farmland: return { 86, 60, 38, 255 };
         case PartType::Fence: return { 130, 95, 60, 255 };
         case PartType::Gate: return { 165, 120, 70, 255 };
@@ -263,14 +281,13 @@ static unsigned char PartPatternOf(const Part& p) {
         if (ends("_plaster")) return PatPlaster;
         if (ends("_glass") || item == "glass") return PatGlass;
         if (ends("_block")) return PatGem;
-        if (item == "stone") return PatStone;
+        if (item == "stone_brick") return PatStone;
         if (item == "iron_plate") return PatMetal;
-        if (item == "dirt") return PatDirt;
         if (item == "heat_shield_tile") return PatTiles;
         if (item == "brick") return PatBrick;
-        if (item == "marble" || item == "limestone") return PatMarble;
-        if (item == "granite" || item == "basalt" || item == "sandstone") return PatPolished;
-        if (item == "clay") return PatClay;
+        // #1098: dressed stone keeps each rock's old look (dirt and clay parts became stone brick and brick)
+        if (item == "marble_brick" || item == "limestone_brick") return PatMarble;
+        if (item == "granite_brick" || item == "basalt_brick" || item == "sandstone_brick") return PatPolished;
         if (item == "ice") return PatIce;
         if (item == "coal") return PatCoal;
         if (item == "lamp") return PatLamp;
@@ -286,10 +303,15 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
+        case PartType::Bed: return PatPlanks; // a wooden frame (#800)
+        case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
+        case PartType::PressurePlate: return PatStone;
+        case PartType::GasVent: return PatMetal;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
+bool PartBlocksSky(const Part& p) { return IsShape(p.type) && PartPatternOf(p) != PatGlass; } // (#908)
 
 // Cells of a part in part space, each with its shape.
 static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) {
@@ -320,6 +342,14 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) out.push_back({ { 0, y, z }, s });
             break;
         }
+        case PartType::PressurePlate: case PartType::GasVent: { // (#719) 5 cm on the floor: walked over, not stepped up onto
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.1f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Bed: // #800: 1 m wide, 2 m long, half a metre high (2 x 1 x 4 cells)
+            for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
+            break;
         case PartType::Snare: // a low trap frame: the Slab shape (#176)
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
@@ -334,6 +364,14 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Pane: {  // a thin board through the middle (glass panes, screens)
             CellShape s; s.full = false; s.planes = 2; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.56f; s.n[1] = { -1, 0, 0 }; s.d[1] = -0.44f;
             out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::ClaimBanner: case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: { // (#343) a 2 m pole, a flag off its top half
+            CellShape pole; pole.full = false; pole.planes = 2; pole.n[0] = { -1, 0, 0 }; pole.d[0] = -0.75f; pole.n[1] = { 0, 0, 1 }; pole.d[1] = 0.25f; // against the flag's cell
+            for (int y = 0; y < 4; ++y) out.push_back({ { 0, y, 0 }, pole });
+            CellShape flag; flag.full = false; flag.planes = 2; flag.n[0] = { 0, 0, 1 }; flag.d[0] = 0.15f; flag.n[1] = { 0, -1, 0 }; flag.d[1] = -0.1f;
+            CellShape flagTop = flag; flagTop.planes = 1; // (no gap between its two cells)
+            out.push_back({ { 1, 2, 0 }, flag }); out.push_back({ { 1, 3, 0 }, flagTop }); // 0.5 m wide, 0.95 m high
             break;
         }
         case PartType::Torch: { // a thin stick up one edge (#218; #558: 0.1 m, it was a quarter-cell post like Post)
@@ -463,7 +501,7 @@ int Plot::place(const Part& p) {
     Footprint(p, fp);
     const int idx = (int)parts.size();
     parts.push_back(p);
-    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); }
+    for (const auto& c : fp) { cells[c.first] = { idx, c.second }; markDirty(c.first); changedCells.push_back(c.first); }
     ++livePartCount;
     ++version;
     return idx;
@@ -473,7 +511,7 @@ bool Plot::remove(int idx) {
     if (idx < 0 || idx >= (int)parts.size() || parts[idx].type == PartType::Count) return false;
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(parts[idx], fp);
-    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); }
+    for (const auto& c : fp) { cells.erase(c.first); markDirty(c.first); changedCells.push_back(c.first); }
     parts[idx].type = PartType::Count;
     damage.erase(idx);
     --livePartCount;
@@ -596,6 +634,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
     if (s.mesh.vaoId) UnloadMesh(s.mesh);
     s.mesh = Mesh{};
     s.dirty = false;
+    std::map<std::array<int, 6>, float> vertexSky; // (#922) probed corners
     std::vector<float> pos, nrm, sky; // per vertex u = how buried (1 - sky exposure; parts.vs / parts.fs, #216)
     std::vector<unsigned char> col;
     const Int3 lo = { key.x * kSectionCells, key.y * kSectionCells, key.z * kSectionCells };
@@ -611,28 +650,106 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         // Under a roof (#369): five rays from each face through the plot's own cells (up, and four tilted 45 degrees,
         // 0.5-12 m); building blocks stop them, glass and small parts let light by. The open share (the up ray counts
         // double) dims a room's walls and floor, black a few metres from a window or a door.
+        // (#922) The face's view of the sky over its hemisphere: straight up, rings of 12 at 50 and 20 degrees up, and a ring at
+        // 20 degrees down (light off the ground outside), each ray weighted by the cosine to the face and the ring's brightness.
+        // The roof stops the upward rays; rays out through a doorway or window give the inside a little light that falls off
+        // with distance and angle (the share of the hemisphere the opening covers), the ceiling a little ground bounce. Open
+        // faces stay at 1. A roof open at the sides still reads dim (#899: the overhead rays carry most of the weight).
+        struct SkyRay { Vector3 d; float w; };
+        static const std::vector<SkyRay> kSkyRays = [] {
+            std::vector<SkyRay> r{ { { 0, 1, 0 }, 1.0f } };
+            const float elev[3] = { 50.0f, 20.0f, -20.0f }, bright[3] = { 1.0f, 0.8f, 0.35f };
+            for (int e = 0; e < 3; ++e)
+                for (int a = 0; a < 12; ++a) {
+                    const float el = elev[e] * DEG2RAD, az = (a + 0.5f * e) * (2.0f * PI / 12.0f);
+                    r.push_back({ { cosf(el) * cosf(az), sinf(el), cosf(el) * sinf(az) }, bright[e] });
+                }
+            return r;
+        }();
         auto faceSky = [&](Vector3 centre, Vector3 n) {
             if (!gSkyProbes) return cellSky;
-            static const Vector3 dirs[5] = { { 0, 1, 0 }, { 0.7071f, 0.7071f, 0 }, { -0.7071f, 0.7071f, 0 }, { 0, 0.7071f, 0.7071f }, { 0, 0.7071f, -0.7071f } };
-            static const float dist[8] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 10.0f, 16.0f }; // cells (0.5 m)
+            static const float dist[10] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 5.0f, 6.5f, 8.0f, 11.0f, 16.0f }; // cells (0.5 m)
             const Vector3 o = Vector3Add(centre, Vector3Scale(n, 0.6f));
-            float open = 0.0f;
-            for (int r = 0; r < 5; ++r) {
+            float open = 0.0f, total = 0.0f;
+            for (const SkyRay& ray : kSkyRays) {
+                const float w = Vector3DotProduct(ray.d, n) * ray.w;
+                if (w <= 0.02f) continue;
+                total += w;
                 bool blocked = false;
                 for (float s : dist) {
-                    const Vector3 q = Vector3Add(o, Vector3Scale(dirs[r], s));
+                    const Vector3 q = Vector3Add(o, Vector3Scale(ray.d, s));
                     const Int3 qc = { (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) };
                     auto it = cells.find(qc);
                     if (it == cells.end()) continue;
                     const Part& bp = parts[it->second.part];
                     if (IsShape(bp.type) && PartPatternOf(bp) != PatGlass) { blocked = true; break; }
                 }
-                if (!blocked) open += r == 0 ? 2.0f : 1.0f;
+                if (!blocked) open += w;
             }
-            return std::min(cellSky, std::clamp(open / 6.0f * 1.5f, 0.0f, 1.0f));
+            return std::min(cellSky, total > 0.0f ? open / total : 1.0f);
         };
         size_t emitted = pos.size() / 3;
-        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(0.0f); } emitted = pos.size() / 3; };
+        auto pushSky = [&](float fs) { for (size_t v = emitted; v < pos.size() / 3; ++v) { sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky); } emitted = pos.size() / 3; };
+        // (#922) Per vertex (a little in from the corner, toward the face's middle), so the light grades smoothly across the
+        // 0.5 m faces instead of stepping; corners shared by faces with the same normal are probed once.
+        // (#926) A corner's value = the mean of the probes from the middles of the (up to 4) cell faces in its plane around
+        // it, skipping middles whose ray origin sits in a solid cell. Probing at the corner itself let one corner of a quad
+        // read much darker than the others (its rays start against the neighbouring part), and the two triangles of the quad
+        // interpolated that differently: dark wedges and streaks on walls. Shared middles are probed once.
+        auto probeAt = [&](Vector3 p, Vector3 n) {
+            const std::array<int, 6> key = { (int)lroundf(p.x * 8.0f), (int)lroundf(p.y * 8.0f), (int)lroundf(p.z * 8.0f),
+                                             (int)lroundf(n.x * 64.0f), (int)lroundf(n.y * 64.0f), (int)lroundf(n.z * 64.0f) };
+            auto it = vertexSky.find(key);
+            return it != vertexSky.end() ? it->second : (vertexSky[key] = faceSky(p, n));
+        };
+        auto solidCell = [&](Vector3 q) {
+            auto it = cells.find(Int3{ (int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z) });
+            if (it == cells.end()) return false;
+            const Part& bp = parts[it->second.part];
+            return IsShape(bp.type) && PartPatternOf(bp) != PatGlass;
+        };
+        // (#933 layer 1) Corner ambient occlusion: a face corner looks at the 3 cells around it in the layer in front of the
+        // face (the two sides and the diagonal; both sides solid = the darkest), as voxel games do. Room corners, wall/floor
+        // joints and the underside of shelves darken; the sun is untouched (ambient only, via the sky share).
+        // RAYLIBGAME_PART_AO=0: off.
+        static const bool partAo = !(getenv("RAYLIBGAME_PART_AO") && getenv("RAYLIBGAME_PART_AO")[0] == '0');
+        auto cornerAo = [&](Vector3 vp, Vector3 faceMid, Vector3 n) {
+            if (!partAo || fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) > 1e-3f) return 1.0f;
+            const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
+            const Vector3 t2 = Vector3CrossProduct(n, t1);
+            const Vector3 dv = Vector3Subtract(vp, faceMid);
+            const float s1 = Vector3DotProduct(dv, t1) >= 0.0f ? 1.0f : -1.0f, s2 = Vector3DotProduct(dv, t2) >= 0.0f ? 1.0f : -1.0f;
+            const Vector3 front = Vector3Add(faceMid, Vector3Scale(n, 0.5f)); // the middle of the cell in front of the face
+            const bool a = solidCell(Vector3Add(front, Vector3Scale(t1, s1))), b = solidCell(Vector3Add(front, Vector3Scale(t2, s2)));
+            const bool c = solidCell(Vector3Add(front, Vector3Add(Vector3Scale(t1, s1), Vector3Scale(t2, s2))));
+            static const float kLevel[4] = { 0.45f, 0.62f, 0.8f, 1.0f };
+            static const float strength = getenv("RAYLIBGAME_PART_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_PART_AO_STRENGTH")) : 2.0f; // (#933) 2 = the default (user, 2026-11-19); 1 = the first tuning
+            return std::clamp(1.0f - strength * (1.0f - kLevel[a && b ? 0 : 3 - (int)a - (int)b - (int)c]), 0.0f, 1.0f);
+        };
+        auto pushSkyVerts = [&](Vector3 faceMid, Vector3 n) {
+            const bool axis = fabsf(fabsf(n.x) + fabsf(n.y) + fabsf(n.z) - 1.0f) < 1e-3f; // an axis-aligned face
+            const Vector3 t1 = fabsf(n.x) > 0.5f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
+            const Vector3 t2 = Vector3CrossProduct(n, t1);
+            for (size_t v = emitted; v < pos.size() / 3; ++v) {
+                const Vector3 vp = { lo.x + pos[3 * v] / kCellSize, lo.y + pos[3 * v + 1] / kCellSize, lo.z + pos[3 * v + 2] / kCellSize }; // (pos is in metres; the probes work in cells)
+                float fs = 0.0f;
+                int k = 0;
+                if (axis) {
+                    // The vertex snapped to the cell corners, then the middles of the 4 cell faces around it in its plane.
+                    const Vector3 g = { roundf(vp.x), roundf(vp.y), roundf(vp.z) }; // (plot coordinates are cells)
+                    for (int a = -1; a <= 1; a += 2)
+                        for (int b = -1; b <= 1; b += 2) {
+                            const Vector3 m = Vector3Add(g, Vector3Add(Vector3Scale(t1, 0.5f * a), Vector3Scale(t2, 0.5f * b)));
+                            if (solidCell(Vector3Add(m, Vector3Scale(n, 0.5f)))) continue; // that middle is behind another part
+                            fs += probeAt(m, n); ++k;
+                        }
+                }
+                fs = k > 0 ? fs / k : probeAt(faceMid, n);
+                fs *= cornerAo(vp, faceMid, n); // (#933)
+                sky.push_back(1.0f - fs); sky.push_back(1.0f - cellSky);
+            }
+            emitted = pos.size() / 3;
+        };
         auto polyCentre = [](const std::vector<Vector3>& poly) { Vector3 m{}; for (const Vector3& v : poly) m = Vector3Add(m, v); return Vector3Scale(m, 1.0f / (float)poly.size()); };
         const Vector3 cellLo = { (float)c.x, (float)c.y, (float)c.z };
         const size_t firstVertex = pos.size() / 3;
@@ -655,8 +772,16 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             const float shade = f == 3 ? 1.0f : f == 2 ? 0.7f : 0.85f + 0.05f * (f & 1);
             Color fc = { (unsigned char)(color.r * shade), (unsigned char)(color.g * shade), (unsigned char)(color.b * shade), color.a };
+            const Vector3 faceMid = Vector3Add(cellLo, polyCentre(poly));
+            if (partAo && poly.size() == 4) {
+                // (#933) A quad's fan runs along the 0-2 diagonal; when the other pair of corners is the less occluded one,
+                // start the fan one corner on so the diagonal joins those (else the AO spreads into a wedge over the quad).
+                float ao[4];
+                for (int k = 0; k < 4; ++k) ao[k] = cornerAo(Vector3Add(cellLo, poly[k]), faceMid, kFaceN[f]);
+                if (ao[1] + ao[3] > ao[0] + ao[2]) std::rotate(poly.begin(), poly.begin() + 1, poly.end());
+            }
             EmitPoly(poly, kFaceN[f], base, fc, pos, nrm, col);
-            pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), kFaceN[f]));
+            pushSkyVerts(faceMid, kFaceN[f]);
         }
         // Caps on the cutting planes.
         for (int i = 0; i < shape.planes; ++i) {
@@ -673,7 +798,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             }
             for (int j = 0; j < shape.planes; ++j) if (j != i) Clip(poly, shape.n[j], shape.d[j]);
             EmitPoly(poly, n, base, color, pos, nrm, col);
-            if (!poly.empty()) pushSky(faceSky(Vector3Add(cellLo, polyCentre(poly)), n)); else pushSky(cellSky);
+            if (!poly.empty()) pushSkyVerts(Vector3Add(cellLo, polyCentre(poly)), n); else pushSky(cellSky);
         }
         pushSky(cellSky); // anything emitted without a face of its own; "buried" = 1 - sky (meshes without it read 0 = open)
         (void)firstVertex;
@@ -964,3 +1089,31 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
         if (it->get() == plot) { std::unique_ptr<Plot> p = std::move(*it); plots.erase(it); return p; }
     return nullptr;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1098): stone buildings need bricks; loose ground and raw stone are terrain only ----
+#include "unit_helpers.h"
+
+TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+        EXPECT_LT(BuildMaterialForItem(m), 0) << m;
+    for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
+                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+        EXPECT_GE(BuildMaterialForItem(m), 0) << m;
+}
+
+TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
+    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("brick"), 16);
+    // Each dressed stone keeps its rock's look.
+    auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };
+    EXPECT_EQ(pat("stone_brick"), PatStone);
+    EXPECT_EQ(pat("marble_brick"), PatMarble);
+    EXPECT_EQ(pat("granite_brick"), PatPolished);
+    EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
+}
+#endif

@@ -10,7 +10,9 @@
 // client's to it (Host_TakeLocalClientMessages); otherwise the client polls the transport itself.
 
 #include "netproto.h"
+#include "net.h"
 #include "playerinput.h"
+#include "skills.h"
 #include <cstdint>
 #include <deque>
 #include <unordered_map>
@@ -36,6 +38,7 @@ struct NetClient {
     State state = State::Idle;
     uint32_t conn = 0;
     std::string name, password, build;   // build: "" = the game's own (kGameVersion's commit)
+    std::string uuid;                    // (#346) the player's id ("" a test client: one made from the name, the same every run)
     uint32_t protocol = kNetProtocol;    // tests: a different one to be refused
     MsgWelcome welcome;                  // when Joined
     MsgShower shower;                    // the latest from the server
@@ -60,6 +63,16 @@ struct NetClient {
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
+    int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
+    MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
+    MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
+    int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
+    int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
+    int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
+    int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
+    int claimLists = 0;                          // (#343) claims lists heard
+    SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
+    int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
@@ -68,9 +81,11 @@ struct NetClient {
     std::map<uint32_t, MsgLoadout> loadouts;     // the others' held item, headlamp, suit tier
     int rosters = 0;                             // rosters received
     MsgLoadout loadout; bool loadoutSent = false; // ours, as last sent (NetClient_SetLoadout sends a change)
+    uint32_t suitColor = 0;                      // 0xRRGGBB picked when joining (#341; 0: the default suit), sent with the loadout
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
     // Terrain edits (#329)
     class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one
+    std::vector<std::pair<std::string, double>> pendingInventory; // (#803) deltas heard before `inventory` was attached, applied then
     uint32_t editSeq = 0;                        // our requests so far
     int editsSeen = 0, editsOwn = 0, editsRefused = 0, inventoryDeltas = 0;
     int placesSeen = 0;                          // edits that placed ground (the soft brush)
@@ -84,6 +99,24 @@ struct NetClient {
     uint32_t lastNewPlot = 0;                    // the id of the last plot the server made for us
     bool keepPlotLog = false; std::vector<MsgPlotEdit> plotLog; // tests: every plot edit received, to replay elsewhere
     uint64_t plotOrder = 14695981039346656037ull; // a hash of every plot edit in the order applied
+    // Join sync (#776): from the Welcome until SyncDone the world's edits stream in; live edits wait (applied after, in
+    // order). Entries whose hash matches what we hold (a cached client save) are not fetched.
+    bool syncing = false;
+    bool syncAssumeEmpty = false;                // tests: ask for everything, as a client with nothing cached
+    // A joining game holds the sync's messages until its world is generated (they arrive with the Welcome, before the
+    // bodies exist: installing then found no body); clear it when ready and they are handled, in order.
+    bool syncHold = false;
+    std::vector<NetMessage> syncHeld;
+    uint32_t syncSnapshot = 0;
+    int syncPages = 0, syncPagesGot = 0;
+    std::vector<NetSyncEntry> syncIndex;
+    std::vector<uint8_t> syncWanted;             // per entry: 1 asked for and not complete yet
+    std::map<uint32_t, std::vector<uint8_t>> syncBuf;
+    std::map<uint32_t, uint32_t> syncGot;        // bytes received per entry
+    std::vector<NetMessage> syncQueue;           // live edits held during the sync
+    int syncEntriesWanted = 0, syncEntriesDone = 0, syncHashBad = 0, syncInstalled = 0, syncCleared = 0, syncQueued = 0;
+    uint64_t syncBytes = 0, syncBytesWanted = 0;
+    double syncStartedAt = 0.0, syncDoneAt = -1.0;
 };
 
 // One sim step of the joined client's own player: send the input, predict with it (in its own frame), and reconcile
@@ -104,6 +137,19 @@ uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const class Plane
 // anchored at `anchor`, body-local), or to break `plot`'s part partIndex. Returns its seq (0: not sent). The change comes
 // back as PlotEdits with it, or a PartRefused.
 uint32_t NetClient_RequestPart(NetClient& c, const class Planetoid& body, const class Plot* plot, Vector3 anchor, const struct Part& part, bool remove, int partIndex);
+// Join sync (#776): a body's plots as bytes (the save's text), and back onto a body (replacing its plots); the server
+// sends the first, a client installs with the second.
+std::vector<uint8_t> Plots_Blob(const class PlotSet& plots);
+bool Plots_Install(class Planetoid& body, const std::vector<uint8_t>& blob);
+// The terrain's fingerprint (every body's region hashes, combined): equal on a server and a synced client.
+uint64_t NetSync_TerrainFingerprint(class Scene& world);
+// The client's cache of the server's terrain edits, beside its client save (`save`: its path): loaded at a join when it
+// is of the same world (seed, bodies fingerprint), saved when a sync is done. Return the regions loaded / written.
+int NetClient_LoadCache(class Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint);
+int NetClient_SaveCache(class Scene& world, const std::string& save, uint32_t seed, uint64_t fingerprint);
+// Tests (#776): scatter `strokes` dig strokes (1.5-2.5 m) over 600 m around a planet's start, seeded: a world with many
+// edits to sync. Returns the strokes applied (0: no planet).
+int NetSync_ScatterStrokes(class Scene& world, int strokes, uint32_t seed);
 // The game's client (null: not connected to a server). main.cpp draws its other players.
 extern NetClient* gNetClient;
 // A player's state on the wire and back (#327; server and client use the same).
@@ -117,6 +163,15 @@ void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here 
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
 void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
+void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
+void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
+void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
+void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false, bool recursive = false); // (#338) craft on the server
+void NetClient_SkillSpend(NetClient& c, const std::string& perk);                   // (#920) a perk point, as the server checks it
+void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
+void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
+void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest (#1085: at the body-local ground)
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

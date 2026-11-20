@@ -54,6 +54,8 @@ struct ArenaCull {
     int hizW = 0, hizH = 0, hizLevels = 0;
     Matrix hizViewProj{};
     ArenaBody hizBody{};
+    Vector3 hizCam{};         // (#910) body-local camera: nodes within hizNear of it are never Hi-Z culled
+    float hizNear = 0.0f;
 };
 
 bool TerrainArena_Available();

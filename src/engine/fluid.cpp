@@ -12,6 +12,7 @@
 #include "waterfield.h"
 #include "watersurface.h"
 #include "fluidkernel.h"
+#include "simclock.h"
 #include "glcaps.h"
 #include "gputimer.h"
 #include "external/glad.h"
@@ -64,7 +65,16 @@ constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: w
 constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
 // Smaller cells take shorter substeps (W4c #642): a cell gives at most what it holds a substep, so a quarter-metre surface
 // cell capped a deep channel at ~4 m/s with 120 a second. 1 at 1 m, 4 at 0.25 m.
-inline int SubstepScale() { return std::max(1, (int)lroundf(1.0f / WaterField::CellSize())); }
+inline int SubstepScale() {
+    // The column model (#680) moves a run's top two cells a pair a substep, at any speed the limiter allows: it needs no
+    // extra substeps at small cells (the gravity-wave limit, cs / sqrt(g h), is ~56 ms for 2 m of water at 0.25 m). At
+    // 0.25 m one scale ran a quarter of the work and a dam break's front came closer to Ritter: 0.86x to 10 m (4x the
+    // substeps: 1.50x), conservation exact (#747). RAYLIBGAME_FLUID_SUBSTEP_SCALE=N forces N (A/B).
+    static const int forced = getenv("RAYLIBGAME_FLUID_SUBSTEP_SCALE") ? atoi(getenv("RAYLIBGAME_FLUID_SUBSTEP_SCALE")) : 0;
+    static const bool columns = EnvFlag("FLUID_COLUMNS");
+    if (forced > 0) return forced;
+    return columns ? 1 : std::max(1, (int)lroundf(1.0f / WaterField::CellSize()));
+}
 // How far down a surface cell's column depth looks (the momentum flow's wetted height): ~8 m, at most 32 cells (W4c #642).
 inline int ColumnCells() { return std::clamp((int)lroundf(8.0f / WaterField::CellSize()), 1, 32); }
 // Face-flow friction per kind (#642), from its viscosity (water 5): linear (1/s: a pool's last ripples die out) and
@@ -78,6 +88,7 @@ constexpr int kSleepSteps = 120;       // 2 s without change: a brick sleeps
 constexpr int kSettleSteps = 180;      // 3 s window: a brick whose cells all moved less than kSettleDiff in it sleeps (#366)
 // Fill units for 1.6 cm (4 at 1 m, 16 at 0.25 m: in units a quarter-metre cell's resting water never settled, W4c #674).
 const int kSettleDiff = std::max(4, (int)lroundf(0.016f * 255.0f / WaterField::CellSize()));
+constexpr int kSettleOutliers = 16; // cells of a brick (of 4096) that may swing more and still let it sleep (#855)
 // A brick with its levels held is steady flow (kept running) only with a net current of at least this (cm/s, #680); below it,
 // at rest. RAYLIBGAME_STEADY_NET=0: any GPU change counts as flow (the old rule), for A/B.
 const float kSteadyNet = [] { const char* e = getenv("RAYLIBGAME_STEADY_NET"); return e ? (float)atof(e) : 5.0f; }();
@@ -116,6 +127,10 @@ struct Brick {
     bool changed = true;            // since the last publish
     std::array<uint8_t, B3> check{}; long long checkStep = -1; // the cells a settle window ago (#366: resting water sleeps)
     bool settled = false;           // put to sleep resting (#366): small changes (the GPU step at its edge) do not wake it
+    // CPU mode's dry-cell skip (#747): the wet groups of its last two substeps, kept across ticks (the kernel's masks belong
+    // to slots, handed out afresh each tick). Without them a group that dried in a tick's last substep was skipped from the
+    // next tick on and kept a stale momentum in its face records.
+    uint32_t cpuMask[4] = { ~0u, ~0u, ~0u, ~0u }; // last substep (2 words), the one before; all set until first run
     std::array<uint8_t, B3> drawn{}, drawnFlags{}; // the cells as the chunks last redrew them (visible changes only)
     bool drawnSet = false;
     bool drawnMoving = false;       // published as moving (#649: its thin films are drawn while it is awake)
@@ -137,15 +152,32 @@ struct Brick {
     int blockRelease = -1, blocked = 0; // cells of ground added into that released reach's river (the dam: #656 follow-up)
     long long slotNeeded = 0;       // GPU mode: the last tick it was awake or near awake water (#675: else its slot is given back)
     bool hadSlot = false;           // GPU mode: it held a slot before (back from release: uploaded without waking)
+    bool zeroFaces = false;         // GPU mode: its slot's momentum is cleared before the next step (an inactive brick holds none, #855)
     // Steady flow (#674): levels stable over a settle window while water keeps moving through (the GPU reported changes in at
     // least half its ticks). It keeps running - the water still reaches what is downstream - but is read back and published
     // once a second, not every tick, and never falls asleep (a steady stream's bricks slept and woke every second, #660).
     bool steady = false;
     int winTicks = 0, winFlow = 0;  // this settle window: ticks published, ticks the GPU changed it
+    std::vector<int32_t> winCol; int winColN = 0; // this settle window: the columns' currents summed (cm/s, per readback) and the readbacks (#1032)
     float checkVol = 0.0f;          // its water (m^3) at the window's start: a slow drain or fill changes it, jitter does not (#680)
 };
 inline int Cap(const Brick* b, int i) { return 255 - b->shut[i]; }          // what the cell holds (#454)
 inline int Height(const Brick* b, int i) { return b->shut[i] + b->fill[i]; } // where its water stands, in 255ths of the cell
+// How far a brick's cells moved from its check copy, for settling (#366): the largest change, except that a few cells
+// (kSettleOutliers, by at most 4 x kSettleDiff) may swing more and count as kSettleDiff (#855: where the lattice rounds a
+// basin's floor and walls into partly solid cells, single cells trade a few cm with their neighbours for good, and one such
+// cell kept its brick - and through the wake rules a ring of bricks around it - awake). Used by the settle window and by the
+// checks that keep a settled brick asleep, so a brick that slept with its outliers is not woken by them.
+int SettleDrift(const Brick& b) {
+    int maxd = 0, over = 0;
+    for (int i = 0; i < B3; ++i) {
+        const int d = abs((int)b.fill[i] - (int)b.check[i]);
+        maxd = std::max(maxd, d);
+        over += d > kSettleDiff ? 1 : 0;
+    }
+    return maxd > kSettleDiff && over <= kSettleOutliers && maxd <= 4 * kSettleDiff ? kSettleDiff : maxd;
+}
+
 
 struct Site {
     uint64_t body = 0;
@@ -250,6 +282,23 @@ struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0;
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
 std::vector<std::unique_ptr<Site>> sites;
+// Bricks asked for by a tick's face requests, made in one fixed order (#982 / #968): the CPU path met the requests brick by
+// brick in site order and the GPU path slot by slot, so the same brick was made by a different request, the pending queue
+// took a different order, and with kInitPerStep bricks classified a step, different bricks were ready - CPU and GPU parted.
+// Now both queue them here and make them by site, then brick coordinates.
+struct EnsureReq { Site* s; int bi, bj, bk; };
+std::vector<EnsureReq> ensureQueue;
+void FlushEnsures() {
+    if (ensureQueue.empty()) return;
+    for (const auto& sp : sites) {
+        std::vector<std::tuple<int, int, int>> keys;
+        for (const EnsureReq& r : ensureQueue) if (r.s == sp.get()) keys.push_back({ r.bi, r.bj, r.bk });
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        for (const auto& [bi, bj, bk] : keys) sp->ensure(bi, bj, bk);
+    }
+    ensureQueue.clear();
+}
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
 long long stepCount = 0;
 Fluid::Stats stats;
@@ -461,6 +510,12 @@ inline bool RunsBeside(const Brick& o, int fc) { return !(o.statSet && (o.statSo
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
 bool gpuMode = false;
+// Tests (#968/#982, RAYLIBGAME_FLUID_TRACE): a face request after a tick - the brick that asked, the face, and whether the
+// neighbour exists (woken) or is made (new) - to diff the CPU and GPU paths.
+inline void TraceRequest(const Brick* br, int face, bool exists) {
+    static const bool t = EnvFlag("RAYLIBGAME_FLUID_TRACE");
+    if (t) printf("fluid trace request %lld: %d,%d,%d face %d %s\n", stepCount, br->bi, br->bj, br->bk, face, exists ? "wake" : "new");
+}
 struct GpuDeltaRec { Brick* b; int i; int d; uint8_t kind; };
 std::vector<GpuDeltaRec> gpuDeltas;
 inline void GpuDelta(Brick* b, int i, int d) {
@@ -916,11 +971,18 @@ void ApplyCommand(const Command& c) {
             }
 }
 
+// The commands a tick's job applies, taken on the main thread as it launches the job (#814): the job took them itself
+// when a worker started it, so a pour issued the same frame landed in this tick or the next by thread timing, and two
+// identical runs drifted apart.
+std::vector<Command> jobCommands;
+bool gInlineGpu = false;   // GPU lockstep: RunJob runs on the main thread and calls GpuTick itself (#680)
+void GpuTick(int n);       // GPU mode's step (below)
+
 void RunJob() {
     const auto t0 = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(simMx);
     std::vector<Command> cmds;
-    { std::lock_guard<std::mutex> c(cmdMx); cmds.swap(commands); }
+    cmds.swap(jobCommands);
     for (const Command& c : cmds) ApplyCommand(c);
     // Classify queued bricks, in parallel on the worker pool (each costs ~4k density samples, a few ms):
     // this job waits for them, so nothing else touches the site meanwhile.
@@ -966,6 +1028,10 @@ void RunJob() {
     }
     // CPU mode: the GPU's step on the CPU (#654), at its substep count (120 a second).
     if (!gpuMode) CpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load()));
+    // GPU lockstep (tests, #680): the job runs on the main thread and steps the GPU here, where the CPU steps - after this
+    // tick's commands, classification and levelling, before the publish and the settle checks - so both modes keep one
+    // order (the dispatch used to come before the job: the sleep checks saw the state a tick early).
+    else if (gInlineGpu) GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load()));
     const auto t1 = std::chrono::steady_clock::now();
     // Publish: a new snapshot of the water field (waterfield.h) sharing every unchanged brick; the changed bricks'
     // bounds go out with it, so the chunks there redraw their water (the chunk mesher draws all fluid, #360).
@@ -1014,10 +1080,10 @@ void RunJob() {
             // wakes it again (Touch); a real flow changes some cell by more than that within the window.
             if (b.active) {
                 ++b.winTicks;
-                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther; }
+                if (b.checkStep < 0) { b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.winColN = 0; std::fill(b.winCol.begin(), b.winCol.end(), 0); b.checkVol = b.statVolume + b.statOther; }
                 else if (stepCount - b.checkStep >= kSettleSteps) {
-                    int maxd = 0;
-                    for (int i = 0; i < B3 && maxd <= 2 * kSettleDiff; ++i) maxd = std::max(maxd, abs((int)b.fill[i] - (int)b.check[i]));
+                    const int maxd = SettleDrift(b); // a few outlier cells allowed (#855); the volume check below still catches
+                                                     // water that is really going somewhere
                     // Levels held: at rest it sleeps; with water still passing through (the GPU changed it in half its ticks
                     // or more) it is steady (#674: keeps running, read back once a second). Levels moved: neither.
                     // Passing through means a net current too (#680): at 0.25 m cells resting water jitters a fill unit nearly
@@ -1025,7 +1091,16 @@ void RunJob() {
                     // (the mean of its columns' signed flows, #677's colFlow, cm/s) averages jitter out; a real stream moves
                     // its columns the same way. No current published yet: the old rule.
                     bool flowing = b.winTicks > 0 && b.winFlow * 2 >= b.winTicks;
-                    if (flowing && kSteadyNet > 0.0f && !b.colFlow.empty()) {
+                    // The current is the window's mean (user, #1032): one readback's last substep caught a trickle that moved a unit
+                    // now and then as a full unit's speed (28-68 cm/s over a shallow column), and a channel still topping up slowly
+                    // stayed "steady" for minutes. RAYLIBGAME_STEADY_SNAPSHOT=1: the last readback alone (the old rule), for A/B.
+                    static const bool snapshot = EnvFlag("RAYLIBGAME_STEADY_SNAPSHOT");
+                    if (flowing && kSteadyNet > 0.0f && !snapshot && b.winColN > 0 && b.winCol.size() == 512) {
+                        double sx = 0.0, sy = 0.0; int nCol = 0;
+                        for (size_t k = 0; k + 1 < b.winCol.size(); k += 2)
+                            if (b.winCol[k] || b.winCol[k + 1]) { sx += b.winCol[k]; sy += b.winCol[k + 1]; ++nCol; }
+                        flowing = nCol > 0 && sqrt(sx * sx + sy * sy) / ((double)nCol * b.winColN) >= kSteadyNet;
+                    } else if (flowing && kSteadyNet > 0.0f && !b.colFlow.empty()) {
                         double sx = 0.0, sy = 0.0; int nCol = 0;
                         for (size_t k = 0; k + 1 < b.colFlow.size(); k += 2)
                             if (b.colFlow[k] || b.colFlow[k + 1]) { sx += b.colFlow[k]; sy += b.colFlow[k + 1]; ++nCol; }
@@ -1036,10 +1111,16 @@ void RunJob() {
                     // At most 2 mm over the brick's area.
                     const float side = (float)B * WaterField::CellSize();
                     const bool volumeHeld = fabsf(b.statVolume + b.statOther - b.checkVol) <= 0.002f * side * side;
-                    if (maxd <= 2 * kSettleDiff && flowing && volumeHeld && gpuMode) b.steady = true; // a moving surface wobbles more than a still one
-                    else if (maxd <= kSettleDiff && volumeHeld) { b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true; }
+                    // (Not in lockstep: a steady brick is read back one tick in several, so the mirror the next commands meet
+                    // would lag the GPU, and CPU and GPU runs drifted apart at the first steady brick, #680.)
+                    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+                    if (maxd <= 2 * kSettleDiff && flowing && volumeHeld && gpuMode && !lockstep) b.steady = true; // a moving surface wobbles more than a still one
+                    else if (maxd <= kSettleDiff && volumeHeld) {
+                        b.active = false; b.idle = kSleepSteps + 1; b.settled = true; b.steady = false; out.settledNow = true;
+                        b.faces.clear(); b.zeroFaces = true; // at rest: no momentum (#855: as a GPU slot given back and taken again)
+                    }
                     else b.steady = false;
-                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.checkVol = b.statVolume + b.statOther;
+                    b.check = b.fill; b.checkStep = stepCount; b.winTicks = b.winFlow = 0; b.winColN = 0; std::fill(b.winCol.begin(), b.winCol.end(), 0); b.checkVol = b.statVolume + b.statOther;
                 }
             } else { b.checkStep = -1; b.steady = false; }
             // The drawn water eases toward the simulated: 40% of the way a tick (25 ms), so a cell the water reaches fills in
@@ -1197,6 +1278,46 @@ void RunJob() {
         pubStats = st;
         awakeBricksLast = st.activeBricks; // the levelling interval (LevelEvery)
     }
+    // CPU = GPU parity (#968, tests): RAYLIBGAME_FLUID_TRACE=1 in lockstep prints, after every tick, the total fill and a hash
+    // of every brick's cells (in brick-key order), and the bricks of the first tick a hash differs from the last line's
+    // brick list can be diffed between a FLUID_CPU=1 run and a GPU run.
+    static const bool trace = EnvFlag("RAYLIBGAME_FLUID_TRACE") && EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (trace) {
+        std::vector<std::pair<std::tuple<int, int, int>, const Brick*>> all;
+        for (auto& s : sites) for (auto& kv : s->bricks) all.push_back({ std::make_tuple(kv.second->bi, kv.second->bj, kv.second->bk), kv.second.get() });
+        std::sort(all.begin(), all.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        uint64_t h = 1469598103934665603ull; long long total = 0;
+        std::string per;
+        for (const auto& [key, b] : all) {
+            uint64_t hb = 1469598103934665603ull;
+            for (int i = 0; i < B3; ++i) { hb = (hb ^ b->fill[i]) * 1099511628211ull; total += b->fill[i]; }
+            h = (h ^ hb) * 1099511628211ull;
+            per += TextFormat(" %d,%d,%d:%08x", std::get<0>(key), std::get<1>(key), std::get<2>(key), (unsigned)(hb & 0xFFFFFFFFu));
+        }
+        printf("fluid trace %lld: %zu bricks, %lld units, hash %016llx\n", stepCount, all.size(), total, (unsigned long long)h);
+        // --scenario-parity (#968): the lines to a file the parent compares, and the run ends after so many traced ticks.
+        static FILE* traceFile = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_FILE"); return e && e[0] ? fopen(e, "w") : nullptr; }();
+        static const long long traceStop = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_STOP"); return e ? atoll(e) : 0ll; }();
+        static long long traced = 0;
+        if (traceFile) { fprintf(traceFile, "%lld %zu %lld %016llx\n", stepCount, all.size(), total, (unsigned long long)h); fflush(traceFile); }
+        if (traceStop > 0 && ++traced >= traceStop) {
+            if (traceFile) fclose(traceFile);
+            printf("fluid trace: %lld ticks traced, ending the run (RAYLIBGAME_FLUID_TRACE_STOP)\n", traced);
+            fflush(stdout);
+            std::_Exit(0); // the parent compares the files; nothing else of this run is wanted
+        }
+        static const bool perBrick = EnvFlag("RAYLIBGAME_FLUID_TRACE_BRICKS");
+        if (perBrick) printf("fluid trace bricks %lld:%s\n", stepCount, per.c_str());
+        static int cbi = 0, cbj = 0, cbk = 0;
+        static const bool cells = [] { const char* e = getenv("RAYLIBGAME_FLUID_TRACE_CELLS"); return e && sscanf(e, "%d,%d,%d", &cbi, &cbj, &cbk) == 3; }();
+        if (cells)
+            for (const auto& [key, b] : all) {
+                if (key != std::make_tuple(cbi, cbj, cbk)) continue;
+                std::string cs;
+                for (int i = 0; i < B3; ++i) if (b->fill[i]) cs += TextFormat(" %d:%d/%d", i, b->fill[i], b->flags[i]);
+                printf("fluid trace cells %lld %d,%d,%d:%s\n", stepCount, cbi, cbj, cbk, cs.c_str());
+            }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1223,6 +1344,10 @@ struct GpuState {
     ComputeProgram groups;
     ComputeBuffer mask, glist;
     ComputeBuffer sinkOut; // per slot: fill units its sinks took in (river flow, #656; binding 12)
+    // The column-pair flow's scratch (#680, FLUID_COLUMNS; binding 13): a cell's delta, demand, capacity and its pairs'
+    // codes, 20 bytes (only allocated with the column model on).
+    ComputeBuffer col;
+    bool colOn = false;
     bool groupsOn = false;
     int maskCur = 0;
     int capacity = 0;                      // bricks
@@ -1248,6 +1373,7 @@ std::mutex flowMx;
 
 constexpr unsigned kCellsPerBrick = (unsigned)B3;
 constexpr unsigned kFacePBytes = 8, kFaceNBytes = 16; // half-precision face flows a cell (#675; were 16 and 32)
+constexpr unsigned kColBytes = 20;                    // the column flow's scratch a cell (#680: delta, demand, capacity, codes)
 
 bool GpuInit() {
     if (G.init) return G.ok;
@@ -1263,8 +1389,11 @@ bool GpuInit() {
         const std::vector<unsigned> zeros(64, 0u);
         G.flags.upload(zeros.data(), 64 * 4);
         G.sinkOut.create(64 * 4, zeros.data());
+        G.colOn = EnvFlag("FLUID_COLUMNS");
+        if (G.colOn) { const std::vector<unsigned> zc((size_t)64 * kCellsPerBrick * kColBytes / 4, 0u); G.col.create(64 * kCellsPerBrick * kColBytes, zc.data()); }
         // Async readback (#669): buffer storage for the persistent mapping, the pack pass; else the old downloads.
-        G.asyncRb = !EnvFlag("RAYLIBGAME_FLUID_SYNC_READBACK") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
+        // Lockstep (tests) reads each dispatch back as it ends (GpuTick, #680): synchronously.
+        G.asyncRb = !EnvFlag("RAYLIBGAME_FLUID_SYNC_READBACK") && !EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP") && GL_Caps().bufferStorage && glad_glFenceSync && G.pack.load("resources/compute/fluid_pack.comp");
         if (G.asyncRb) G.packed.create(64 * kCellsPerBrick * 2);
         G.realFlow = G.asyncRb && !(getenv("RAYLIBGAME_FLUID_REALFLOW") && atoi(getenv("RAYLIBGAME_FLUID_REALFLOW")) == 0) && G.flowPack.load("resources/compute/fluid_flowpack.comp");
         if (G.realFlow) G.flowPacked.create(64 * 256 * 4);
@@ -1293,6 +1422,7 @@ void GpuGrow(int need) {
     grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
     grow(G.flags, G.capacity * 4, cap * 4);
     grow(G.sinkOut, G.capacity * 4, cap * 4);
+    if (G.colOn) grow(G.col, G.capacity * kCellsPerBrick * kColBytes, cap * kCellsPerBrick * kColBytes);
     if (G.groupsOn) {
         grow(G.mask, G.capacity * 6 * 4, cap * 6 * 4);
         const std::vector<unsigned> zero((size_t)(8 + cap * 64), 0u);
@@ -1390,27 +1520,20 @@ void GpuFlowResolve() {
     G.watchCells = std::move(cells);
 }
 
-void GpuTick(int n) {
-    // 0. Released reaches' outflow (#656): what their sinks took in, credited to each sink brick's release. It rides the
-    // async readback (copied with the flags each dispatch, read a tick later); without it, a stalling download once a
-    // second (with 1800 bricks at 0.25 m cells that stall was a 35 ms frame every second).
-    auto creditSinks = [](const unsigned* units, int slots) {
-        for (int slot = 0; slot < slots && slot < (int)G.owner.size(); ++slot) {
-            const Brick* br = G.owner[slot];
-            Site* st = G.ownerSite[slot];
-            if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += units[slot];
-        }
-    };
-    G.sinkOn = false;
-    for (auto& s : sites) for (const Site::Release& r : s->releases) G.sinkOn = G.sinkOn || r.piece >= 0;
-    static int sinkTick = 0;
-    if (!G.asyncRb && G.sinkOn && ++sinkTick % 20 == 0 && G.capacity > 0) {
-        static std::vector<unsigned> units, zeros;
-        units.resize(G.capacity); zeros.assign(G.capacity, 0u);
-        G.sinkOut.download(units.data(), G.capacity * 4);
-        G.sinkOut.upload(zeros.data(), G.capacity * 4);
-        creditSinks(units.data(), G.capacity);
+// Released reaches' outflow (#656): what their sinks took in, credited to each sink brick's release. It rides the async
+// readback (copied with the flags each dispatch, read a tick later); without it, a stalling download once a second (with
+// 1800 bricks at 0.25 m cells that stall was a 35 ms frame every second).
+void creditSinks(const unsigned* units, int slots) {
+    for (int slot = 0; slot < slots && slot < (int)G.owner.size(); ++slot) {
+        const Brick* br = G.owner[slot];
+        Site* st = G.ownerSite[slot];
+        if (units[slot] && br && st && br->sinkRelease >= 0 && br->sinkRelease < (int)st->releases.size()) st->releases[br->sinkRelease].sinkUnits += (double)(int32_t)units[slot]; // net, signed (#875)
     }
+}
+
+// 1. of GpuTick: the results of the last dispatch - which bricks changed (and want neighbours), then their cells. Also right
+// after the dispatch in lockstep (#680: a tick's commands then meet the state the GPU is about to step, as on the CPU).
+void GpuReadback() {
     // 1. Results of the last dispatch: which bricks changed (and want neighbours), then their cells.
     if (!G.lastList.empty()) {
         // The flags and packed cells: from the mapped buffer the last dispatch copied into (#669: no stall; the copy was
@@ -1433,6 +1556,9 @@ void GpuTick(int n) {
                     if (!br) continue;
                     br->colFlow.resize(512);
                     for (int c = 0; c < 256; ++c) { const uint32_t v = fp[li * 256 + c]; br->colFlow[2 * c] = (int16_t)(v & 0xFFFFu); br->colFlow[2 * c + 1] = (int16_t)(v >> 16); }
+                    if (br->winCol.size() != 512) br->winCol.assign(512, 0); // the settle window's sum (#1032)
+                    for (int k = 0; k < 512; ++k) br->winCol[k] += br->colFlow[k];
+                    ++br->winColN;
                 }
             }
         } else {
@@ -1465,14 +1591,12 @@ void GpuTick(int n) {
                     if (!takes((size_t)li)) continue;
                     Brick* br = G.owner[G.lastList[li]];
                     const uint32_t* pc = packed + (size_t)li * (kCellsPerBrick / 2);
-                    int dr = 0;
                     for (int i = 0; i < B3; ++i) {
                         const uint32_t v = (pc[i >> 1] >> ((i & 1) * 16)) & 0xFFFFu; // fill | kind << 8 (fluid_pack.comp)
                         br->fill[i] = (uint8_t)(v & 255u);
                         br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((v >> 8) & 7u) << kKindShift));
-                        if (br->settled) dr = std::max(dr, abs((int)br->fill[i] - (int)br->check[i]));
                     }
-                    drift[li] = dr;
+                    drift[li] = br->settled ? SettleDrift(*br) : 0;
                 }
             };
             std::atomic<int> left{ parts - 1 };
@@ -1500,24 +1624,52 @@ void GpuTick(int n) {
                     for (int i = 0; i < B3; ++i) {
                         br->fill[i] = (uint8_t)(cells[i] & 255u);
                         br->flags[i] = (uint8_t)((br->flags[i] & ~kKindMask) | (((cells[i] >> 8) & 255u) & kKindMask));
-                        if (br->settled) drift[li] = std::max(drift[li], abs((int)br->fill[i] - (int)br->check[i]));
                     }
+                    if (br->settled) drift[li] = SettleDrift(*br);
                 }
-                if (br->settled && drift[li] <= kSettleDiff) { br->changed = true; continue; } // a resting brick at the edge of a dispatch: stays asleep (#366)
-                if (br->settled) { ++wakeGpu; br->settled = false; }
-                Touch(br);
-                for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
+                if (br->settled && drift[li] <= kSettleDiff) br->changed = true; // a resting brick at the edge of a dispatch: stays asleep (#366)
+                else {
+                    if (br->settled) { ++wakeGpu; br->settled = false; }
+                    Touch(br);
+                    for (int fc = 0; fc < 6; ++fc) if (Brick* o = br->nbr[fc]; o && RunsBeside(*o, fc)) { o->active = true; o->idle = 0; }
+                }
             } else if (br->active && (br->idle += G.lastN) > kSleepSteps) {
                 br->active = false;
             }
+            // A face request: the neighbour brick is made if missing, woken if asleep - as the CPU tick does (#855: here it was
+            // only made, so the column pairs' requests never woke a sleeping brick on the GPU, and CPU and GPU parted once
+            // bricks slept; nor did a resting brick at a dispatch's edge pass its requests on).
             for (int face = 0; face < 6; ++face)
-                if (fl & (2u << face)) site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+                if (fl & (2u << face)) {
+                    TraceRequest(br, face, br->nbr[face] != nullptr);
+                    if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
+                    else ensureQueue.push_back({ site, br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2] });
+                }
         }
+        FlushEnsures(); // the missing bricks asked for, in one fixed order (#982)
+        // An inactive brick holds no momentum (#855): a slot given back and taken again starts at rest (GpuUploadBrick), so a
+        // brick that ran asleep (at a dispatch's edge) drops what it carried, here and in the CPU tick alike.
+        for (size_t li = 0; li < G.lastList.size(); ++li)
+            if (Brick* br = G.owner[G.lastList[li]]; br && !br->active) br->zeroFaces = true;
         static std::vector<unsigned> zeros;
         zeros.assign(G.capacity, 0u);
         G.flags.upload(zeros.data(), G.capacity * 4);
         G.lastList.clear();
     }
+}
+
+void GpuTick(int n) {
+    G.sinkOn = false;
+    for (auto& s : sites) for (const Site::Release& r : s->releases) G.sinkOn = G.sinkOn || r.piece >= 0;
+    static int sinkTick = 0;
+    if (!G.asyncRb && G.sinkOn && ++sinkTick % 20 == 0 && G.capacity > 0) {
+        static std::vector<unsigned> units, zeros;
+        units.resize(G.capacity); zeros.assign(G.capacity, 0u);
+        G.sinkOut.download(units.data(), G.capacity * 4);
+        G.sinkOut.upload(zeros.data(), G.capacity * 4);
+        creditSinks(units.data(), G.capacity);
+    }
+    GpuReadback();
     GpuTimer_Mark("fluid-read"); // benches: the readback above (#669)
     GpuFlowRead(); // 1b. the watched cells' flux since the last read (#392)
     // 2. Slots for classified bricks; whole bricks up.
@@ -1599,10 +1751,25 @@ void GpuTick(int n) {
             G.delta.use();
             G.delta.setUint("count", (unsigned)list.size());
             G.delta.setInt("useGroups", G.groupsOn ? 1 : 0);
-            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.a.bind(0); G.deltas.bind(1); G.flags.bind(2); G.nbrs.bind(3); if (G.groupsOn) G.mask.bind(10); // a change wets its group (#675)
+            G.delta.setInt("mode", 0);
             G.delta.dispatch(((unsigned)list.size() + 63) / 64);
+            // What did not fit (the CPU placed it on a mirror a dispatch old) goes up its column, in list order (#840).
+            G.delta.setInt("mode", 1);
+            G.delta.dispatch(1);
             for (const D& dd : list) if (Brick* br = G.owner[dd.cell / kCellsPerBrick]) { if (!br->settled) { br->active = true; br->idle = 0; } } // a settled brick took a CPU nudge (levelling) asleep
         }
+    }
+    // 3b. Bricks that went to sleep hold no momentum (#855; the CPU tick clears its copies): their slots' face records cleared.
+    {
+        static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f);
+        for (auto& s : sites)
+            for (auto& kv : s->bricks) {
+                Brick& br = *kv.second;
+                if (!br.zeroFaces) continue;
+                br.zeroFaces = false;
+                if (br.slot >= 0) G.faceP.upload(noFlow.data(), kCellsPerBrick * kFacePBytes, br.slot * kCellsPerBrick * kFacePBytes);
+            }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
     std::vector<unsigned> inS(G.capacity, 0u);
@@ -1641,6 +1808,14 @@ void GpuTick(int n) {
     const float cellSize = WaterField::CellSize();
     rlSetUniform(G.step.uniform("cellSize"), &cellSize, RL_SHADER_UNIFORM_FLOAT, 1);
     G.step.setInt("kColumnCells", ColumnCells());
+    { // fill units per m^3 / per metre, the CPU kernel's own floats (#680: the shader divided them itself, not correctly rounded)
+        FluidKernel::Params kp; kp.setCell(cellSize, ColumnCells());
+        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits); G.step.setInt("shareFloat", kp.shareFloat ? 1 : 0); // #1041
+    }
+    static const bool advectOn = !EnvFlag("FLUID_NOADVECT");
+    G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
+    G.step.setInt("advect", advectOn ? 1 : 0);
+    if (G.colOn) G.col.bind(13);
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // tests: specks kept (water accounting, #454)
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
@@ -1670,6 +1845,7 @@ void GpuTick(int n) {
         }
         G.a.bind(0); G.b.bind(1); pass(0);
         G.b.bind(0); G.a.bind(1); pass(1);
+        if (G.colOn) pass(3); // the column pairs' scaled move (#680)
         // Specks soak away on one substep in kEvapEvery: one must rest across it. Every substep, a spreading film lost the
         // edge it had just laid down, again and again (#454: 7-12% of a draining pond).
         G.step.setInt("evaporate", !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0 ? 1 : 0);
@@ -1694,6 +1870,8 @@ void GpuTick(int n) {
             G.flowPack.setUint("count", (unsigned)list.size());
             const float cs = WaterField::CellSize();
             rlSetUniform(G.flowPack.uniform("cellSize"), &cs, RL_SHADER_UNIFORM_FLOAT, 1);
+            G.flowPack.setInt("columns", G.colOn ? 1 : 0); // #855: column records sit at run bottoms, with the units moved
+            { FluidKernel::Params kp; kp.setCell(cs, ColumnCells()); G.flowPack.setFloat("unitFlow", 1.0f / ((kGpuSubstepSeconds / SubstepScale()) * kp.units)); }
             G.a.bind(0); G.list.bind(3); G.faceN.bind(9); G.flowPacked.bind(13);
             G.flowPack.dispatch(1, bricks);
         }
@@ -1735,12 +1913,31 @@ void GpuTick(int n) {
         G.rbFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         glFlush();
     }
+    // Lockstep (tests, #680): read this dispatch back now (synchronously), so the job that follows places its commands on
+    // the state the GPU just reached - the CPU's order (commands, then the substeps) - instead of a dispatch behind.
+    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep) GpuReadback();
 }
 
 // CPU mode (#654: no compute shaders - a headless server, FLUID_CPU=1): the same step as the GPU's (fluidkernel.h) on a grid
 // packed each tick from the awake bricks, their neighbours (processed too, as on the GPU) and the ring past them (read only,
 // for the columns and the cells beside), then unpacked with the GPU readback's rules for waking and sleeping.
 FluidKernel::Grid cpuGrid;
+// Runs fn(i) for i in [0, count) across the job system's workers, this thread taking a share (#747: CPU mode packed and
+// unpacked its slots on one thread, ~9 ms a tick on a 500-brick basin). fn must touch only slot i's data.
+template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
+    if (count <= 0) return;
+    const int parts = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
+    auto run = [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); };
+    std::atomic<int> left{ parts - 1 };
+    for (int part = 1; part < parts; ++part) {
+        JobSystem::tagNext(JobTag::Fluid);
+        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
+    }
+    run(0);
+    while (left.load() > 0) std::this_thread::yield();
+}
+
 void CpuTick(int n) {
     std::vector<Brick*> slots;
     std::vector<Site*> slotSite;
@@ -1755,7 +1952,9 @@ void CpuTick(int n) {
             Brick* b = kv.second.get();
             if (!b->ready || !b->active) continue;
             add(b, s.get());
-            for (Brick* o : b->nbr) add(o, s.get());
+            // Its neighbours run too, as on the GPU (GpuTick 4.): not a brick of solid rock or a dry one above (#669) - those
+            // are read-only ring here as there (#855: once bricks slept, running them here and not there parted CPU and GPU).
+            for (int fc = 0; fc < 6; ++fc) if (Brick* o = b->nbr[fc]; o && (o->active || RunsBeside(*o, fc))) add(o, s.get());
         }
     const int processedCount = (int)slots.size();
     for (int i = 0; i < processedCount; ++i) list.push_back(i);
@@ -1766,7 +1965,7 @@ void CpuTick(int n) {
     if ((int)g.processed.size() < S) g.resize(std::max(S, (int)g.processed.size() * 2));
     std::fill(g.flags.begin(), g.flags.begin() + S, 0u);
     std::fill(g.sinkOut.begin(), g.sinkOut.begin() + S, 0u);
-    for (int i = 0; i < S; ++i) {
+    ParallelSlots(S, [&](int i) { // the slots' cells, faces, neighbours and skip history (each slot its own: in parallel, #747)
         Brick* b = slots[i];
         uint32_t* c = &g.a[(size_t)i * B3];
         for (int k = 0; k < B3; ++k) c[k] = b->fill[k] | ((uint32_t)b->flags[k] << 8) | ((uint32_t)b->target[k] << 16) | ((uint32_t)b->shut[k] << 24);
@@ -1775,7 +1974,11 @@ void CpuTick(int n) {
         else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
-    }
+        // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
+        // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
+        uint32_t* m = &g.gmask[(size_t)i * 6];
+        m[0] = b->cpuMask[0]; m[1] = b->cpuMask[1]; m[2] = 0u; m[3] = 0u; m[4] = b->cpuMask[2]; m[5] = b->cpuMask[3];
+    });
     FluidKernel::Params p;
     for (int k = 0; k < 8; ++k) { p.minSpread[k] = kindMinSpread[k]; p.visc[k] = kindVisc[k]; KindFriction(k, p.frictionLin[k], p.frictionQuad[k]); }
     n *= SubstepScale();
@@ -1783,25 +1986,46 @@ void CpuTick(int n) {
     p.setCell(WaterField::CellSize(), ColumnCells());
     static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
     static unsigned evapTick = 0;
+    // The dry-cell skip (#747): slots are new this tick. FLUID_CPU_FULLFIRST=1: its first substep runs every cell (the old
+    // way, A/B); else the kernel clears the slots' scratch and seeds the wet groups from the cells, and every substep skips.
+    static const bool fullFirst = EnvFlag("FLUID_CPU_FULLFIRST");
+    if (fullFirst) g.groupsFull = true;
+    else FluidKernel::BeginTick(g, list, S);
     for (int k = 0; k < n; ++k) {
         p.evaporate = !noEvap && ++evapTick % (kEvapEvery * (unsigned)SubstepScale()) == 0;
         FluidKernel::Substep(g, p, list);
     }
     // Unpack, as the GPU readback (GpuTick 1.).
     static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
-    for (int i = 0; i < processedCount; ++i) {
+    // Each slot's own brick back (cells, faces, the skip's history) and how far a settled one drifted, in parallel (#747);
+    // then, in slot order as before, what that wakes or puts to sleep (it reaches other bricks).
+    static std::vector<int> slotDrift;
+    if ((int)slotDrift.size() < processedCount) slotDrift.resize(processedCount);
+    ParallelSlots(processedCount, [&](int i) {
         Brick* br = slots[i];
-        const uint32_t fl = g.flags[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
-        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += g.sinkOut[i]; // #656
-        if (fl & 1u) {
+        { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
+            const uint32_t* m = &g.gmask[(size_t)i * 6];
+            const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;
+            br->cpuMask[0] = m[c0 * 2]; br->cpuMask[1] = m[c0 * 2 + 1]; br->cpuMask[2] = m[c1 * 2]; br->cpuMask[3] = m[c1 * 2 + 1];
+        }
+        int drift = 0;
+        if (g.flags[i] & 1u) {
             const uint32_t* c = &g.a[(size_t)i * B3];
-            int drift = 0;
             for (int k = 0; k < B3; ++k) {
                 br->fill[k] = (uint8_t)(c[k] & 255u);
                 br->flags[k] = (uint8_t)((br->flags[k] & ~kKindMask) | (((c[k] >> 8) & 255u) & kKindMask));
-                if (br->settled) drift = std::max(drift, abs((int)br->fill[k] - (int)br->check[k]));
             }
+            if (br->settled) drift = SettleDrift(*br);
+        }
+        slotDrift[i] = drift;
+    });
+    for (int i = 0; i < processedCount; ++i) {
+        Brick* br = slots[i];
+        const uint32_t fl = g.flags[i];
+        if (g.sinkOut[i] && br->sinkRelease >= 0 && br->sinkRelease < (int)slotSite[i]->releases.size()) slotSite[i]->releases[br->sinkRelease].sinkUnits += (double)(int32_t)g.sinkOut[i]; // net, signed (#875) // #656
+        if (fl & 1u) {
+            const int drift = slotDrift[i];
             if (br->settled && drift <= kSettleDiff) br->changed = true; // a resting brick at the edge: stays asleep (#366)
             else {
                 if (br->settled) { ++wakeGpu; br->settled = false; }
@@ -1811,9 +2035,16 @@ void CpuTick(int n) {
         } else if (br->active && (br->idle += n) > kSleepSteps) {
             br->active = false;
         }
+        // A face request: the neighbour brick is made if missing, woken if asleep (#680: the column pairs ask for sleeping ones).
         for (int face = 0; face < 6; ++face)
-            if (fl & (2u << face)) slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+            if (fl & (2u << face)) {
+                TraceRequest(br, face, br->nbr[face] != nullptr);
+                if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
+                else ensureQueue.push_back({ slotSite[i], br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2] });
+            }
     }
+    FlushEnsures(); // the missing bricks asked for, in one fixed order (#982)
+    for (int i = 0; i < processedCount; ++i) if (!slots[i]->active) slots[i]->faces.clear(); // asleep: no momentum (#855, GpuTick)
     for (Brick* b : slots) b->cpuSlot = -1;
 }
 
@@ -1882,6 +2113,13 @@ float Fluid::ReleaseInflowScale() {
         for (const Site::Spring& sp : s->springs)
             if (sp.rel >= 0) lo = lo < 0.0f ? sp.scale : std::min(lo, sp.scale);
     return lo;
+}
+
+float Fluid::ReleasedNaturalFlow() {
+    std::lock_guard<std::mutex> lock(simMx);
+    float q = 0.0f;
+    for (auto& s : sites) for (const Site::Release& r : s->releases) q += r.natQ;
+    return q;
 }
 
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
@@ -2129,6 +2367,15 @@ void Fluid::Update(Scene& world, float dt) {
     // RAYLIBGAME_FLUID_LOCKSTEP=1 (tests): wait for a running step instead of skipping the tick, so the water keeps the game's
     // clock however slow the step is (#747: the CPU kernel at 0.25 m ran at ~25% of real time and fronts looked stalled).
     static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep) {
+        // Ticks on the simulation's clock (#814): accumulating frame times put them at a phase the frames before play (the
+        // loading screen) decided, so two identical runs poured into different ticks.
+        static long long lastTick = -1;
+        const long long tick = (long long)std::floor(SimTime() / kTickSeconds + 1e-9);
+        if (tick == lastTick) return;
+        lastTick = tick;
+        accum = kTickSeconds;
+    }
     if (accum < kTickSeconds) return;
     if (running.load()) {
         if (!lockstep) return;
@@ -2169,10 +2416,22 @@ void Fluid::Update(Scene& world, float dt) {
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
     // CPU's in-place sweep carried it several cells along the sweep.
+    // GPU lockstep (#680): the job runs here, on the main thread, and steps the GPU where the CPU would step (RunJob).
+    if (gpuMode && lockstep) {
+        { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); }
+        running = true; gInlineGpu = true;
+        RunJob();
+        gInlineGpu = false; running = false;
+        return;
+    }
     if (gpuMode) { std::lock_guard<std::mutex> lock(simMx); GpuTick((int)lround(2 * kSubsteps * (kTickSeconds / 0.05)) * std::max(1, speed.load())); } // 120 a second, as before
     (void)world;
+    { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
     JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
+    // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
+    if (lockstep) WaitIdle();
 }
 
 void Fluid::BindKindUniforms(const Shader& shader) {
@@ -2530,6 +2789,10 @@ void Fluid::WaitIdle() {
 void Fluid::SetSpeed(int steps) { speed = std::max(1, steps); }
 
 bool Fluid::Asleep() {
+    // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
+    // went at tick 4038 in one run and 4040 in an identical one), so wait for it, as Update does each tick.
+    static const bool lockstep = EnvFlag("RAYLIBGAME_FLUID_LOCKSTEP");
+    if (lockstep && running.load()) WaitIdle();
     if (running.load()) return false;
     { std::lock_guard<std::mutex> c(cmdMx); if (!commands.empty()) return false; }
     std::lock_guard<std::mutex> lock(simMx);
@@ -2538,6 +2801,53 @@ bool Fluid::Asleep() {
         for (auto& kv : s->bricks) if (kv.second->active) return false;
     }
     return true;
+}
+
+std::string Fluid::DebugAwake() {
+    // Tests (#935): why Asleep() stays false - pending bricks, and the awake ones by state (the first few in full).
+    std::lock_guard<std::mutex> lock(simMx);
+    int pending = 0, awake = 0, unready = 0, noSlot = 0, settled = 0, steady = 0, upload = 0;
+    std::string first;
+    for (auto& s : sites) {
+        pending += (int)s->pending.size();
+        for (auto& kv : s->bricks) {
+            const Brick& b = *kv.second;
+            if (!b.active) continue;
+            ++awake; unready += !b.ready; noSlot += b.slot < 0; settled += b.settled; steady += b.steady; upload += b.upload;
+            double sx = 0.0, sy = 0.0; int nCol = 0; // its net current (cm/s, the steady rule's measure)
+            for (size_t k = 0; k + 1 < b.colFlow.size(); k += 2) if (b.colFlow[k] || b.colFlow[k + 1]) { sx += b.colFlow[k]; sy += b.colFlow[k + 1]; ++nCol; }
+            if (awake <= 4) first += TextFormat(" [%d %d %d: ready %d slot %d idle %d settled %d steady %d changed %d; net current %+.1f %+.1f cm/s over %d columns, win %d/%d]",
+                                                b.bi, b.bj, b.bk, (int)b.ready, b.slot, b.idle, (int)b.settled, (int)b.steady, (int)b.changed,
+                                                nCol ? sx / nCol : 0.0, nCol ? sy / nCol : 0.0, nCol, b.winFlow, b.winTicks);
+            if (awake <= 4) { // its neighbours: missing (-), or ready/active/settled/slot
+                first += " nbrs";
+                for (int fc = 0; fc < 6; ++fc) {
+                    const Brick* o = b.nbr[fc];
+                    first += o ? TextFormat(" %d:r%da%ds%d@%d", fc, (int)o->ready, (int)o->active, (int)o->settled, o->slot) : TextFormat(" %d:-", fc);
+                }
+            }
+            if (awake <= 2 && !b.colFlow.empty()) { // its strongest columns: where, how much water, and what is beside them
+                std::vector<std::pair<int, int>> cols;
+                for (int c = 0; c < 256; ++c) { const int m = abs(b.colFlow[2 * c]) + abs(b.colFlow[2 * c + 1]); if (m) cols.push_back({ -m, c }); }
+                std::sort(cols.begin(), cols.end());
+                for (size_t q = 0; q < cols.size() && q < 5; ++q) {
+                    const int c = cols[q].second, x = c % B, y = c / B;
+                    std::string zs; // the column's wet cells: z fill flags, and the -y neighbour's flags at the same z
+                    for (int z = 0; z < B; ++z) {
+                        const int i = Idx(x, y, z);
+                        if (!b.fill[i] && !(b.flags[i] & (kSource | kSink))) continue;
+                        const Brick* on = y > 0 ? &b : b.nbr[2]; // across -y: this brick, or the neighbour's y = B-1 row
+                        const int iy = y > 0 ? Idx(x, y - 1, z) : Idx(x, B - 1, z);
+                        const int ny = on ? on->flags[iy] : -1, nf = on ? on->fill[iy] : -1;
+                        zs += TextFormat(" z%d:%d/f%d(-y f%d fill %d)", z, b.fill[i], b.flags[i], ny, nf);
+                    }
+                    first += TextFormat("\n    col %d,%d flow %+d %+d cm/s:%s", x, y, b.colFlow[2 * c], b.colFlow[2 * c + 1], zs.c_str());
+                }
+            }
+        }
+    }
+    return TextFormat("pending %d, awake %d (unready %d, no slot %d, settled %d, steady %d, upload %d)%s", pending, awake, unready,
+                      noSlot, settled, steady, upload, first.c_str());
 }
 
 std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
