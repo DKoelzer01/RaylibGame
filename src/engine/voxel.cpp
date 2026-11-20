@@ -297,6 +297,7 @@ struct PlanetField::ErosionState {
     CanyonGrade grade; bool gradeOn = false; // #544: the canyons' graded floors, while the bake reads its input (set before its threads start)
 };
 
+bool PlanetField::caveBaked() const { return erosion() != nullptr; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -1213,7 +1214,7 @@ struct CaveSegScope {
 // 15-30 m long, 30-150 m deep and never shallower than 25 m + its radius (so they never reach the surface), the radius
 // wandering between 2 and 8 m, flattened along the local vertical (height = flat x width).
 static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsigned seed, int cx, int cy, int cz) {
-    const CaveCellKey key{ seed, cx, cy, cz, f.caveEpoch, f.erosion() != nullptr };
+    const CaveCellKey key{ seed, cx, cy, cz, f.caveEpoch, f.caveBaked() };
     CaveCache::Shard& sh = Caves().shards[CaveCellHash{}(key) % 32];
     {
         std::lock_guard<std::mutex> lock(sh.m);
