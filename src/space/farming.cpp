@@ -150,15 +150,15 @@ bool Farm_Plant(Planetoid& body, Plot& plot, int part, const std::string& seed) 
     Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
     return true;
 }
-int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why, bool local) {
+int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why, const std::function<float(const char*)>& stat) {
     auto it = fields.find(Key(body, plot, part));
     if (it == fields.end()) return 0;
     const CropDef* c = Crop(it->second.crop);
     if (!c) { fields.erase(it); return 0; }
     if (it->second.growth < 1.0f) { if (why) *why = TextFormat("The %s is not ripe yet (%.0f%%)", c->id.c_str(), it->second.growth * 100.0f); return 0; }
-    // (#919) Farming's perks: more crop and seed (the local player's; a server's remote players: #920)
-    const int seeds = local ? SkillScaled(1 + GameRng_Int(0, 1), "seed_yield") : 1 + GameRng_Int(0, 1);
-    const int crops = local ? SkillScaled(c->yieldCount, "crop_yield") : c->yieldCount;
+    // (#919) Farming's perks: more crop and seed (the harvester's: the local player, or #920 a server's remote player)
+    const int seeds = stat ? SkillScaled(1 + GameRng_Int(0, 1), "seed_yield", stat) : 1 + GameRng_Int(0, 1);
+    const int crops = stat ? SkillScaled(c->yieldCount, "crop_yield", stat) : c->yieldCount;
     inv.add(c->yield, crops);
     inv.add(c->seed, seeds);
     fields.erase(it);
@@ -174,7 +174,7 @@ int Farm_Harvest(Planetoid& body, Plot& plot, int part) {
         return 1;
     }
     std::string why;
-    const int got = Farm_HarvestFor(inventory, body, plot, part, &why, true);
+    const int got = Farm_HarvestFor(inventory, body, plot, part, &why, SkillStat);
     if (!why.empty()) GameUI_Toast(why.c_str());
     if (got <= 0) return 0;
     QuestBook_Count("harvest");

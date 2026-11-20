@@ -45,7 +45,8 @@ inline std::function<float(const char* stat)> gSkillStat;
 inline float SkillStat(const char* stat) { return gSkillStat ? gSkillStat(stat) : 1.0f; }
 // (#919) n items times a yield stat: the whole part, and the fraction left by chance (the gameplay RNG): x1.1 on 3 logs
 // gives 3 most times and 4 one time in three.
-int SkillScaled(int n, const char* stat);
+// by: whose stats (#920: a server's remote player); empty = the local player's (SkillStat).
+int SkillScaled(int n, const char* stat, const std::function<float(const char*)>& by = nullptr);
 
 struct PlayerInput;
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled = true); // once per frame before drawing (input: #312); editEnabled=false keeps save/load (F5/F9) only
@@ -79,6 +80,12 @@ struct DigYield {
     bool ore = false;            // some ore came out (a vein may be nearly done)
 };
 DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost); // gemBoost: x the gem odds (tests, perks)
+// (#883, #1043) The perks on a stroke, from one player's stats (`stat`: a multiplier by name, 1 = none). The local stroke and
+// the server's check of a joined player's stroke both use these, so a perked stroke is never refused and both credit alike.
+// material: the VoxelMaterial hit; pickaxe: the tool in hand is a pick.
+struct DigPerkScale { float radius = 1.0f, rate = 1.0f; };
+DigPerkScale TerrainTool_DigPerkScale(bool pickaxe, int material, const std::function<float(const char*)>& stat);
+void TerrainTool_ScaleYield(DigYield& got, float oreMul, float stoneMul); // Mining's ore_yield and stone_yield on a stroke's items
 int TerrainTool_FillerMaterial(const std::string& item); // the VoxelMaterial a filler places (-1: not a filler)
 const char* TerrainTool_ItemAt(Planetoid& p, Vector3 local, int material); // the item a material there digs out (ore: its kind)
 // Set while joined to a server (#329): a dig or place stroke is sent as a request instead of applied and paid here;
@@ -98,6 +105,9 @@ struct PlantDrops {
     int sound = 0;      // 0 pickup, 1 a tree's (build) thud, 2 a stone
 };
 PlantDrops TerrainTool_PlantDrops(const Planetoid& p, const Plant& plant);
+// (#919, #920) Woodcutting's and Foraging's perks on a felled plant's drops (log_yield, fibre_yield, stone_find), from
+// `stat` (one player's stats; empty = the local player's).
+void TerrainTool_ScalePlantDrops(PlantDrops& d, const Plant& plant, const std::function<float(const char*)>& stat = nullptr);
 int TerrainTool_HitsToFell(const Plant& plant, const ToolSpec& tool);
 // Set while joined (#335): a plant that comes down is a request (body, plant id); the server removes it for everyone and
 // credits the drops (deltas), and its removal comes back (TerrainTool_PlantRemoved).

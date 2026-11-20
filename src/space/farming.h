@@ -38,7 +38,8 @@ struct NetFarmField;
 inline std::function<void(Planetoid& body, const Plot& plot, int part, bool harvest, const std::string& seed)> gFarmRequest;
 inline std::function<bool(Planetoid& body, Vector3 localGround)> gFarmTillRequest; // a till: a farmland part placed by the server
 bool Farm_SowFor(Inventory& inv, Planetoid& body, Plot& plot, int part, const std::string& seed, std::string* why = nullptr);
-int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why = nullptr, bool local = false); // local: the player's skill perks apply (#919)
+// stat: the harvester's stats for Farming's perks (#919; #920: a server's remote player); empty = no perks.
+int Farm_HarvestFor(Inventory& inv, Planetoid& body, Plot& plot, int part, std::string* why = nullptr, const std::function<float(const char*)>& stat = nullptr);
 void Farm_FieldsNear(const Planetoid& body, Vector3 local, float range, std::vector<NetFarmField>& out);
 void Farm_SetRemoteFields(const Planetoid& body, const std::vector<NetFarmField>& fields); // replaces that body's fields
 // The farmland part a till at localGround makes (a new plot: plot = nullptr, the part at the origin; anchor = localGround).
