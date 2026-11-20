@@ -1187,7 +1187,7 @@ namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
-struct CaveMouth { Vector3 at, out; int kind = 0; }; // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
+struct CaveMouth { Vector3 at, out; int kind = 0; float radius = 0.0f, depth = 0.0f; }; // radius, depth: shafts (kind 1, #1067) // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
 // (#1055) A cell depends on more than (seed, cell): on the field's land (its gen params: caveEpoch, renewed by setGenParams /
 // setSandbox and unique per field) and on whether the erosion bake was visible when it was built. Both are in the key
@@ -1482,7 +1482,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             push(Vector3Scale(up, R + e0 + 3.0f), bot, sr, 0.85f * sr, 1.0f, 0);
             const Vector3 coneC = Vector3Scale(up, R + e0 - sdepth - 0.45f * sr);
             push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.7f * sr, 0.7f * sr, 0.35f, 2);
-            data->mouths.push_back({ Vector3Scale(up, R + e0), up, 1 });
+            data->mouths.push_back({ Vector3Scale(up, R + e0), up, 1, sr, sdepth });
             // The river passage.
             const float slope = 0.01f + 0.04f * rnd[3];
             const int n = 20 + (int)(12.0f * rnd[4]);
@@ -1603,7 +1603,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                 if (skyU < 0.12f && d2 < 15.0f && k > 0) {                    // a skylight: a round shaft to the surface
                     const float sr = std::max(1.5f, 0.35f * r2);
                     push(Vector3Scale(dir2, R + e2 + 3.0f), pos2, sr, sr, 1.0f, 0);
-                    data->mouths.push_back({ Vector3Scale(dir2, R + e2), dir2, 1 });
+                    data->mouths.push_back({ Vector3Scale(dir2, R + e2), dir2, 1, sr, d2 });
                 }
                 pos = pos2; dir = dir2; r = r2; depth = d2;
                 head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
@@ -1669,6 +1669,33 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
                 }
             }
     return found;
+}
+
+void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const {
+    // (#1067) The shaft entrances (kind 1) whose shaft (top to its depth, plus the light pool under its foot) can reach
+    // the box: from the cells around the box's corners projected onto the sea-level sphere.
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3] = { INT32_MAX, INT32_MAX, INT32_MAX }, chi[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) return;
+        const Vector3 s = Vector3Scale(q, radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - 1); chi[a] = std::max(chi[a], c[a] + 1); }
+    }
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.kind != 1 || m.radius <= 0.0f) continue;
+                    const float reach = 3.0f * m.radius + 12.0f;               // the pool's reach around the shaft
+                    const Vector3 foot = Vector3Subtract(m.at, Vector3Scale(m.out, m.depth + 12.0f));
+                    const Vector3 blo = Vector3SubtractValue(Vector3Min(m.at, foot), reach), bhi = Vector3AddValue(Vector3Max(m.at, foot), reach);
+                    if (bhi.x < lo.x || blo.x > hi.x || bhi.y < lo.y || blo.y > hi.y || bhi.z < lo.z || blo.z > hi.z) continue;
+                    out.push_back({ m.at, m.out, m.radius, m.depth });
+                }
 }
 
 int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
@@ -3077,6 +3104,11 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             if ((DVec3{ cc.x, cc.y, cc.z } - b.origin).length() <= reach + b.radius) roofPlots.push_back(&b);
         }
     }
+    // (#1067) The cave shafts open to the sky that reach this chunk (karst sinks, tube skylights): their light pool below.
+    static const bool shaftSkyOn = !(getenv("RAYLIBGAME_SHAFT_SKY") && getenv("RAYLIBGAME_SHAFT_SKY")[0] == '0');
+    std::vector<PlanetField::CaveShaft> shafts;
+    if (shaftSkyOn && stride <= 1.0f)
+        if (const auto* pfs = dynamic_cast<const PlanetField*>(&field)) pfs->shaftsNear(origin, Vector3AddValue(origin, out.key.size()), shafts);
     // Player edits: the delta lattice at the samples (lattice points at every stride); coarse nodes filter it along
     // their columns (AddDeltasColumnFiltered, #679), so big excavations show from afar with flat floors. Cost depends
     // on the edited chunks here, never on how many strokes the world has had.
@@ -3200,6 +3232,32 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
                     if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
+                    // (#1067, user on Plan 10: "a vertical pit or shaft open to the sky must be lit properly from outside all the way
+                    // down") The probes above see only 12 m and a shaft's walls block their tilted rays, so a shaft read as buried.
+                    // 1. A vertex (not a roof facing down) whose column is open all the way to the surface sees the sky straight up:
+                    //    at least 0.85, at any depth (the column walked in 2 m steps; a closed cave stops at its first roof sample).
+                    // 2. Under a shaft's foot (karst sink, tube skylight): a pool of up to 0.5, fading from the shaft's radius to 2.5
+                    //    radii around its axis and from 4 to 12 m below its foot. RAYLIBGAME_SHAFT_SKY=0: off.
+                    if (shaftSkyOn && stride <= 1.0f && hinted && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
+                        const Vector3 upv = Vector3Normalize(p);
+                        if (Vector3DotProduct(n, upv) > -0.3f) {
+                            const Vector3 p0 = Vector3Add(p, Vector3Scale(n, 0.5f * stride));
+                            const float fpc = std::max(stride, 1.0f);
+                            bool open = true;
+                            for (float t = 1.0f; t < depthHere + 3.0f && open; t += 2.0f)
+                                open = field.density(Vector3Add(p0, Vector3Scale(upv, t)), &deltas, fpc) < ISO_LEVEL;
+                            if (open) sky = std::max(sky, 0.85f);
+                        }
+                        for (const PlanetField::CaveShaft& s : shafts) {
+                            const Vector3 v = Vector3Subtract(p, s.top);
+                            const float along = -Vector3DotProduct(v, s.up);      // metres below the shaft's top
+                            if (along < 0.5f * s.depth || along > s.depth + 12.0f) continue;
+                            const float horiz = Vector3Length(Vector3Add(v, Vector3Scale(s.up, along)));
+                            const float a = std::clamp((horiz - s.radius) / (1.5f * s.radius), 0.0f, 1.0f);
+                            const float b = std::clamp((along - s.depth - 4.0f) / 8.0f, 0.0f, 1.0f);
+                            sky = std::max(sky, 0.5f * (1.0f - a * a * (3.0f - 2.0f * a)) * (1.0f - b * b * (3.0f - 2.0f * b)));
+                        }
+                    }
                     // (#908) Built roofs: the same rays (up, and four at 45 degrees; the up one weighs 3) through the solid cells of the
                     // plots near this chunk (the #830 snapshot): the ground under a shelter, a covered yard or a house without a floor
                     // no longer takes the full sky. RAYLIBGAME_ROOF_SKY=0: off.
