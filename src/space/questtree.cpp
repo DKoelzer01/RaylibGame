@@ -4,6 +4,7 @@
 #include "inventory.h"
 #include "survival.h"
 #include "imgui.h"
+#include "imgui_internal.h" // (#1077) BringWindowToDisplayFront
 
 #include <raylib.h>
 #include <algorithm>
@@ -145,6 +146,7 @@ bool QuestTree_LoadLine(const char* tok, FILE* f) {
 }
 
 static int openTier = -1; // (#890) the tier whose objectives are open in the pop-out (-1: none)
+static int focusedTier = -1; // (#1077) the tier the pop-out was last focused for (-1 after a close: a reopen focuses it again)
 void QuestTree_TestOpenTier(int tier) { openTier = tier; } // (shots and tests)
 bool QuestTree_ClosePopout() { if (openTier < 0) return false; openTier = -1; return true; }
 
@@ -269,10 +271,14 @@ void QuestTree_DrawTab() {
     if (openTier >= 0 && openTier < QuestBook_TierCount()) {
         { const ImVec2 b = boxAt(0.0f, (float)openTier); ImGui::SetNextWindowPos(ImVec2(b.x + bw + 8.0f, b.y), ImGuiCond_Always); } // (beside its box, wherever the tree is scrolled)
         ImGui::SetNextWindowBgAlpha(0.93f); // (semi-transparent, but the tree behind must not show through the text)
+        if (focusedTier != openTier) { focusedTier = openTier; ImGui::SetNextWindowFocus(); } // (#1077) focus it when a tier opens (it opened behind the Tab window)
         bool keep = true;
         const ImGuiWindowFlags f = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize |
-                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+                                   ImGuiWindowFlags_NoSavedSettings;
         if (ImGui::Begin("##tierobjectives", nullptr, f)) {
+            // (#1077) and keep it in front of the tree it belongs to: a click on the tree (or anywhere in the Tab window) would
+            // otherwise bring that window over it again
+            ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
             const int t = openTier;
             ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.55f, 1.0f), "Tier %d: %s", t, QuestBook_TierName(t));
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
@@ -303,5 +309,5 @@ void QuestTree_DrawTab() {
         }
         ImGui::End();
         if (!keep) openTier = -1;
-    }
+    } else focusedTier = -1;
 }
