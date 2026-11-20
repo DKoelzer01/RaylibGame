@@ -3361,6 +3361,8 @@ int main(int argc, char** argv)
                         const int fire = plot->place({ PartType::Campfire, { 0, 0, 0 }, 0 });
                         const int kiln = plot->place({ PartType::Kiln, { 4, 0, 0 }, 0 });
                         const int boiler = plot->place({ PartType::Boiler, { 8, 0, 0 }, 0 });
+                        const int coalFire = plot->place({ PartType::Campfire, { 0, 0, 4 }, 0 });  // (#553) any burnable fuel
+                        const int fibreFire = plot->place({ PartType::Campfire, { 4, 0, 4 }, 0 });
                         Factory::Sync(world);
                         Factory::WaitTicks(3);
                         Factory::SetSpeed(20);
@@ -3374,6 +3376,13 @@ int main(int argc, char** argv)
                         Factory::Seed(p->id, plot->id, fire, "oak_log", 3);
                         v = view(fire);
                         check(inputCount(v, "oak_log") > 0 || outputCount(v, "charcoal") > 0, "more logs go to the inputs (to char), not the fuel");
+                        // #553: a campfire takes any burnable fuel: coal (and coke), fibre
+                        Factory::Seed(p->id, plot->id, coalFire, "coal", 2);
+                        v = view(coalFire);
+                        check(v.hasFuelSlot && v.fuelSlot.first == "coal" && v.fuelSlot.second >= 1, "coal lights a campfire");
+                        Factory::Seed(p->id, plot->id, fibreFire, "fibre", 3);
+                        v = view(fibreFire);
+                        check(v.hasFuelSlot && v.fuelSlot.first == "fibre" && v.fuelSlot.second >= 1, "fibre lights a campfire");
                         // #193: kiln, ore in, coal as fuel; mid-craft the ore is still in the input slot; taking it cancels the craft.
                         Factory::Seed(p->id, plot->id, kiln, "coal", 4);
                         Factory::Seed(p->id, plot->id, kiln, "iron_ore", 1);
