@@ -170,7 +170,7 @@ struct Pass {
         const int localDiff = (int)(SH(d) + F(d)) - (int)(SH(r) + F(r));
         float share = 0.0f;
         if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d);
-        else if (localDiff >= p.visc[kd]) share = (p.carry & 4) ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd]); // #1041
+        else if (localDiff >= p.visc[kd]) share = p.shareFloat ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd]); // #1041
         const float depth = colDepth;
         const float dh = (float)std::abs(ha - hb) / p.hu;
         float q = std::max(qp * sgn, 0.0f);
@@ -556,7 +556,7 @@ struct Pass {
                 if (F(c) == 0u && F(inC[gn]) == 0u) continue; // two dry cells: nothing flows (#669)
                 float q, qm;
                 faceFlow(gi, c, gn, inC[gn], k == 0 ? P.x : P.y, q, qm);
-                if (q == 0.0f) { if (p.carry & 1) { if (k == 0) N.z = P.z; else N.w = P.w; } continue; } // #1041: a resting face keeps its fraction
+                if (q == 0.0f) continue;
                 if (k == 0) { N.x = q; N.z = Sign(P.z) == Sign(q) ? P.z : 0.0f; M.x = qm; }
                 else { N.y = q; N.w = Sign(P.w) == Sign(q) ? P.w : 0.0f; M.y = qm; }
             }
@@ -625,7 +625,7 @@ struct Pass {
             const float mag = std::fabs(a) * sc;
             const int units = (int)std::min(std::floor(mag), (float)share);
             const bool clipped = (float)units < std::floor(mag);
-            const float carry = (clipped && !(p.carry & 2)) ? 0.0f : mag - std::floor(mag); // #1041: 2 keeps it when clipped
+            const float carry = clipped ? 0.0f : mag - std::floor(mag);
             const int signedUnits = a > 0.0f ? -units : units;
             net += signedUnits;
             moving += (uint32_t)units;

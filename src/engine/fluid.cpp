@@ -1799,7 +1799,7 @@ void GpuTick(int n) {
     G.step.setInt("kColumnCells", ColumnCells());
     { // fill units per m^3 / per metre, the CPU kernel's own floats (#680: the shader divided them itself, not correctly rounded)
         FluidKernel::Params kp; kp.setCell(cellSize, ColumnCells());
-        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits); G.step.setInt("carryMode", kp.carry); // #1041
+        G.step.setFloat("kUnits", kp.units); G.step.setFloat("kHu", kp.hu); G.step.setInt("wakeUnits", kp.wakeUnits); G.step.setInt("shareFloat", kp.shareFloat ? 1 : 0); // #1041
     }
     static const bool advectOn = !EnvFlag("FLUID_NOADVECT");
     G.step.setInt("columns", G.colOn ? 1 : 0); // the column-pair flow (#680): its passes in fluid_step.comp
