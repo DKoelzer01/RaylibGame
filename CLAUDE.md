@@ -250,7 +250,8 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   bore), looked up squeezed radially (x0.1) so there are no voids behind the faces; ~9 m rock forms with ~3.2 m hard-edged creases
   (`RAYLIBGAME_CAVE_WALLS=0` = the first merged ~3 m / ~1 m walls). Mouths only in real faces (5 m+ rise within 10 m, no tors in
   front). Karst (#1052): dolines in karst country are sinks (shaft, river passage down the drainage, keyholes, mazes, resurgences);
-  `RAYLIBGAME_CAVES_KARST=1 --test-caves` finds one, `RAYLIBGAME_CAVES_INSIDE=1` starts in a passage. Noise factors include each noise's own base frequency (1/70-1/700: forgetting it makes every term constant). Captures:
+  `RAYLIBGAME_CAVES_KARST=1 --test-caves` finds one, `RAYLIBGAME_CAVES_INSIDE=1` starts in a passage. Chambers (#1058): at deep passage
+  vertices (segment kind 3: a level floor), with solid boulders and columns; graph mode has no noise caverns. Noise factors include each noise's own base frequency (1/70-1/700: forgetting it makes every term constant). Captures:
   `RAYLIBGAME_CAMERA_LIGHT=1` (a light at the eye), `RAYLIBGAME_CAVES_VIEW=front` (eye-level frontal approach), `RAYLIBGAME_CAVES_MOUTH="x y z"`
   (that mouth, at any abundance). In GLSL, store every a*b+c handed to a function (xdiv, xsqrt, fractal) in a `precise` variable first.
 - Terrain internals still worth knowing: `PlanetField::rockFeature` (tors, boulders) and `terrain3D` (the 3D band);

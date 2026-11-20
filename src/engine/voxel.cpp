@@ -1217,6 +1217,38 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     // the radius wandering in [rmin, 8] m. Main passages branch (25% of their vertices) into shorter, narrower side passages,
     // so the tunnels form networks (#615, #999: spaghetti and noodle caves). Branches at 35% of main vertices.
     auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
+    // (#1058, Plan 10 step 5) A chamber at a deep passage vertex c (depth m under the ground): an ellipsoid flattened
+    // along the local vertical (half-width 15-75 m, mostly the smaller, height x0.3-0.45: wide and low, its roof domed),
+    // a level floor 0.4 r below its axis (kind 3), a breakdown floor of 3-8 sunk boulders (solid, r 2-6 m) and 0-2
+    // columns floor to roof (solid, r 1.5-4 m). Skipped where its dome would come within 10 m of the surface.
+    auto chamber = [&](Vector3 c, Vector3 head, float depth, std::mt19937& g) {
+        std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
+        const float u0 = Ug(g), u1 = Ug(g), u2 = Ug(g), u3 = Ug(g);
+        const float r = 15.0f + 60.0f * u0 * u0, flat = 0.3f + 0.15f * u1;
+        if (depth - r * flat * 2.3f < 10.0f) return;
+        const Vector3 up = Vector3Normalize(c);
+        const Vector3 hd = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
+        const Vector3 sd = Vector3CrossProduct(up, hd);
+        auto add = [&](Vector3 a, Vector3 b, float ra, float rb, float fl, int kind) {
+            CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
+        };
+        add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, 3);
+        const float floorH = -0.4f * r * flat;
+        auto onFloor = [&](float dist, float ang, float h) {
+            return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
+        };
+        const int boulders = 3 + (int)(6.0f * u2);
+        for (int i = 0; i < boulders; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 2.0f + 4.0f * Ug(g);
+            const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
+            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
+        }
+        const int columns = (int)(3.0f * u3);
+        for (int i = 0; i < columns; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), cr = 1.5f + 2.5f * Ug(g);
+            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
+        }
+    };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
         Vector3 dir = Vector3Normalize(pos);
         const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
@@ -1240,6 +1272,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             sg.up = Vector3Normalize(Vector3Add(pos, pos2));
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
+            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.08f) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
                 const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
@@ -1470,6 +1503,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                         push(Vector3Add(pos, Vector3Scale(u1, 1.8f * r)), Vector3Add(pos2, Vector3Scale(u2, 1.8f * r2)), 0.45f * r, 0.45f * r2, 1.0f, 0);
                     }
                     pos = pos2; dir = dir2; r = r2; h = h2; run += L;
+                    if (level == 0 && e2 - h2 >= 40.0f && UK(rk) < 0.15f) chamber(pos2, head, e2 - h2, rk); // (#1058) karst: more chambers
                     head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir))));
                     if (level == 0 && k + 1 < steps && UK(rk) < 0.4f) {     // a maze branch, level and narrower
                         const float bt = (UK(rk) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.6f * UK(rk));
@@ -1506,7 +1540,8 @@ static void GatherCaveSegs(const PlanetField& f, unsigned seed, Vector3 lo, Vect
                 for (const CaveSeg& s : cell->segs) {
                     // The box beyond which the shape can't reach: the skeleton at most 1.3 x 1.4 r (swell, the large-scale term), its
                     // centre wandering 0.4 of that sideways (2.55 r in all; the warp moves only the noise; solids 1.3 r); plus the reach.
-                    const float rr = 3.0f * std::max(s.ra, s.rb) + 2.0f + reach;
+                    const float rmax = std::max(s.ra, s.rb);
+                    const float rr = 3.0f * rmax + 2.0f + reach + std::max(0.0f, 0.8f * rmax - 6.4f); // (#1058: big chambers keep the single-sample bound)
                     const Vector3 slo = Vector3SubtractValue(Vector3Min(s.a, s.b), rr), shi = Vector3AddValue(Vector3Max(s.a, s.b), rr);
                     if (shi.x < lo.x || slo.x > hi.x || shi.y < lo.y || slo.y > hi.y || shi.z < lo.z || slo.z > hi.z) continue;
                     Vector3 side = Vector3CrossProduct(s.up, Vector3Subtract(s.b, s.a));     // across the passage, level
@@ -1616,7 +1651,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float hs = hhx * s[20] + hhy * s[21] + hhz * s[22];
         const float r = s[3] + (s[7] - s[3]) * t;
         const float kind = s[15];
-        if (kind > 1.5f) { // solid inside: a rubble apron, or the overhanging lip over a mouth
+        const bool mouth = kind > 0.5f && kind < 1.5f, hall = kind > 2.5f; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        if (kind > 1.5f && kind < 2.5f) { // solid inside: a rubble apron, the lip over a mouth, a chamber's boulder or column
             const float va = hv / s[11];                                  // squashed: aprons 0.35, the lip over a mouth 0.2
             const float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             const float la = sqrtf(la2);
@@ -1624,21 +1660,22 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             solid = std::max(solid, rr - la);
             continue;
         }
-        const float bk = kind > 0.5f ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
+        const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
         const float rough = 1.0f + bk * big;
         const float rs = swell * rough;
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
         const float pk = hv > 0.0f ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
-        const float hvT = kind > 0.5f ? hv - 0.5f * hp : hv;              // mouths: taller on one side
+        const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
         const float v2 = hvT / vfac;
         const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;
         const float len = sqrtf(l2);
-        const float rubble = kind > 0.5f ? 0.35f * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
-        const float levK = kind > 0.5f ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
-        const float tiltK = kind > 0.5f ? 0.0f : tilt;                     //   the opening meets the ground and stays open
-        const float floorCut = (0.0f - hv) - levK * rw * s[11] + 0.5f * tiltK * hp + rubble;
+        const float rubble = mouth ? 0.35f * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
+        const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
+        const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
+        const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
+        const float floorCut = (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
         // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
         // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
@@ -1665,7 +1702,7 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
-                intrude = (kind > 0.5f ? 0.65f : 0.55f) * rw * fade * wn;
+                intrude = (mouth ? 0.65f : 0.55f) * rw * fade * wn;
             }
         }
         m = std::min(m, std::max(len - rw + intrude, floorCut));
@@ -1752,13 +1789,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                     if (hit && m < 1e8f) hit->kind = 1;
                 }
             }
-            if (depth > 30.0f && d > mantleRadius + 40.0f) {
-                const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
-                const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z);
-                const float mc = (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f;
-                if (hit && mc < m) hit->kind = 2;
-                m = std::min(m, mc);
-            }
+            // (#1058) No noise caverns with graph caves: chambers in the graph replace them (RAYLIBGAME_CAVES=0 keeps them).
         }
         return m;
     }
