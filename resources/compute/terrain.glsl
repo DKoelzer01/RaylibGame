@@ -488,11 +488,9 @@ float caveGraphDistance(vec3 q, out float solid) {
             precise float hl2 = hx * hx + hy * hy + hz * hz;
             precise float hl = xsqrt(hl2);
             if (hl > 1e-3) {
-                precise float kq = hall ? 0.03 : 0.1;                        // (#1116) chambers squeeze 0.03: no floating rock
-                precise float kw = hall ? 0.97 : 0.9;
-                precise float rw90 = kw * rw;
+                precise float rw90 = 0.9 * rw;
                 precise float sq = xdiv(rw90, hl);
-                precise float sc = kq + sq;
+                precise float sc = 0.1 + sq;
                 precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
                 bool v22 = caveWalls == 0;                                   // (#1022) 1: ~9 m forms, ~3.2 m creases; 0: v22
                 int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
