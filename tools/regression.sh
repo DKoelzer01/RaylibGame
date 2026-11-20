@@ -106,6 +106,7 @@ planet() {
     H --seed 42 --bench 5 --test-trapping
     H --seed 42 --bench 3 --test-combat
     H --seed 42 --bench 3 --test-bed
+    H --seed 42 --bench 3 --test-save-split # (#1110: records never silently replaced; the MP <-> SP round trip)
     H --seed 42 --bench 5 --test-meteor
     H --seed 42 --bench 3 --test-animal-path
     H --seed 42 --bench 3 --test-progression # wall clock: 120 s per step (flaky: #372)

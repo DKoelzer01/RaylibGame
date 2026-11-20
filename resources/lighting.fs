@@ -281,14 +281,15 @@ void main()
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
         // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206),
-        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595)
-        const int kMaterials = 17;
-        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
-        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45);
+        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595), then
+        // farmland (#1085: tilled dirt, the dirt layer with furrows below)
+        const int kMaterials = 18;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 0.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45, 0.95);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4); // detail normal strength
-        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4, 0.5); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45, 0.0); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
@@ -358,6 +359,16 @@ void main()
                 float glint = step(0.94, hash3(floor(fragTexPos * 7.0)));
                 c = mix(c * 0.6, mineral, 0.2 + 0.35 * fleck + 0.45 * vein);
                 c += mineral * glint * 0.6;
+            }
+            if (i == 17) {
+                // Farmland (#1085): darker turned soil in furrows every 25 cm (the old farmland part's pattern, parts.fs).
+                // Tilling is a free brush, so the furrows follow a body axis across the ground: the coordinate of the
+                // triplanar projection's widest-facing plane that is not the up-most axis (fragTexPos repeats in whole
+                // texture periods, a multiple of 25 cm, so the stripes have no chunk seams).
+                vec3 an = abs(localNormal);
+                float along = an.y >= an.x && an.y >= an.z ? fragTexPos.x : an.x >= an.z ? fragTexPos.z : fragTexPos.x;
+                float f = abs(fract(along / 0.25) - 0.5) * 2.0;
+                c *= vec3(0.78, 0.72, 0.68) * (0.65 + 0.45 * f);
             }
             a += c * wi;
             vec2 ra = vec2(roughOf[i], 1.0);

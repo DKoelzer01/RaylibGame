@@ -38,5 +38,6 @@ void Recorder_Cue();                      // --record-on-cue: start capturing no
 void Recorder_Screenshot();             // F2 (#579): the next finished frame (HUD included) to <root>/<date>/shot-<HHMMSS>/screenshot.png
 std::string Recorder_LastDir();           // the last finished recording's folder ("" if none): bug reports attach it (#169)
 void Recorder_FrameDone();               // end of every frame: counts rendered frames for --record-every
+void Recorder_DrawIndicator();          // (#1119) F10: REC, a red dot and the time, after the capture (never in the recording)
 
 #endif

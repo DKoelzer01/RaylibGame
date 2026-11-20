@@ -171,7 +171,7 @@ void NetClient_SkillSpend(NetClient& c, const std::string& perk);               
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
-void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest (#1085: at the body-local ground)
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

@@ -335,10 +335,10 @@ void Hotbar_Unbind(const std::string&) {
 }
 
 bool Hotbar_PlaceTorch() {
-    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (a placed torch never burns out; fibre
-    // torches burn too fast to set down). It goes into the cell just off the surface, on the nearest plot.
+    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (torches never burn out, #1093; fibre
+    // torches are too flimsy to stand). It goes into the cell just off the surface, on the nearest plot.
     const std::string id = CellId(H().selected);
-    if (id == "fibre_torch") { GameUI_Toast("Fibre torches burn too fast to set down: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    if (id == "fibre_torch") { GameUI_Toast("A fibre torch is too flimsy to stand: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
     if ((id != "torch" && id != "snare") || inventory.count(id) <= 0) return false;
     Planetoid* body = nullptr; Vector3 local{}, n{};
     if (!TerrainTool_LastHit(body, local, n) || !body) return false;

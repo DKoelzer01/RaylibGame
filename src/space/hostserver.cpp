@@ -602,7 +602,7 @@ namespace {
             Farm_FieldsNear(b, b.toLocalD(rit->second.player.position).toFloat(), kFarmRange, m.fields);
             uint64_t h = 1469598103934665603ull ^ b.id;
             auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
-            for (const NetFarmField& f : m.fields) { mix(f.plot); mix((uint64_t)f.part); mix(std::hash<std::string>{}(f.crop)); mix((uint64_t)lroundf(f.growth * 200.0f)); }
+            for (const NetFarmField& f : m.fields) { mix((uint64_t)llroundf(f.x * 20.0f)); mix((uint64_t)llroundf(f.y * 20.0f)); mix((uint64_t)llroundf(f.z * 20.0f)); mix(std::hash<std::string>{}(f.crop)); mix((uint64_t)lroundf(f.growth * 200.0f)); }
             if (h == rit->second.farmHash) continue;
             rit->second.farmHash = h;
             SendMsg(conn, m);
@@ -637,19 +637,17 @@ namespace {
             ++plantsFelled;
             if (pl.tree()) { RemoteXp(session, "chop", (double)hits); RemoteXp(session, "tree_felled"); } // (#920) Woodcutting; Foraging
             else RemoteXp(session, pl.stone() ? "loose_stone" : "bush");
-        } else { // sow / harvest a farmland part
-            Plot* plot = b->plots ? b->plots->byId(a.plot) : nullptr;
-            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::Farmland) { refuse("That farmland isn't there any more"); return; }
-            const Int3 c = plot->parts[a.part].origin;
-            if (Vector3Distance(plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }), me) > kMachineReach) { refuse("That farmland is out of reach"); return; }
-            { const Vector3 fa = plot->toBody({ (c.x + 1.0f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 1.0f) * kCellSize }); if (ClaimBlocks(session, b, fa)) { const std::string why = ClaimRefusal(b, fa); refuse(why.c_str()); return; } } // (#343)
+        } else { // sow / harvest at a point of farmland ground (#1085)
+            const Vector3 ground{ a.x, a.y, a.z };
+            if (Vector3Distance(ground, me) > kMachineReach) { refuse("That farmland is out of reach"); return; }
+            if (ClaimBlocks(session, b, ground)) { const std::string why = ClaimRefusal(b, ground); refuse(why.c_str()); return; } // (#343)
             std::string why;
             if (a.action == 2) {
-                if (!Farm_SowFor(rm.inventory, *b, *plot, a.part, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
+                if (!Farm_SowFor(rm.inventory, *b, ground, a.seed, &why)) { refuse(why.empty() ? nullptr : why.c_str()); return; }
                 TeamEvent(session, "count", "plant");
                 RemoteXp(session, "plant"); // (#920) Farming
             } else {
-                if (Farm_HarvestFor(rm.inventory, *b, *plot, a.part, &why, StatsOf(rm)) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; } // (#920) their Farming perks
+                if (Farm_HarvestFor(rm.inventory, *b, ground, &why, StatsOf(rm)) <= 0) { refuse(why.empty() ? nullptr : why.c_str()); return; } // (#920) their Farming perks
                 TeamEvent(session, "count", "harvest");
                 RemoteXp(session, "harvest"); // (#920) Farming
             }
@@ -1448,12 +1446,14 @@ namespace {
         const auto stat = StatsOf(rm);
         const DigPerkScale perks = TerrainTool_DigPerkScale(tool.type == ToolType::Pickaxe, (int)mat, stat);
         const float baseRadius = (rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius) * perks.radius / p->scale;
-        const bool dig = q.kind == NetEditKind::Dig;
+        const bool dig = q.kind == NetEditKind::Dig, till = q.kind == NetEditKind::Till;
         if (dig && !rule.can) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
+        // (#1085) a till: a shovel or hoe in hand, soil under the aim, the tool's brush at most, centred on the aim
+        if (till && (TillRadius(tool) <= 0.0f || !IsTillable(mat))) { RefuseEdit(conn, q.seq, NetEditRefusal::Tool); return; }
         // The stroke's shape: the tool's sphere (place: 1.3x, the soft blob), its centre where the tool puts it.
-        const float maxRadius = baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
+        const float maxRadius = till ? TillRadius(tool) / p->scale * 1.01f + 1e-4f : baseRadius * (dig ? 1.0f : 1.3f) * 1.01f + 1e-4f;
         const float offset = Vector3Distance(hit, centre);
-        if (q.radius > maxRadius || offset > q.radius * (dig ? 0.5f : 0.3f) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+        if (q.radius > maxRadius || offset > (till ? 0.0f : q.radius * (dig ? 0.5f : 0.3f)) + 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
         // Rate: a token per cooldown (the tool's strokes a second, at least 2, with the perks), up to a small burst.
         const double rate = std::max(rule.strokesPerSecond, 2.0f) * perks.rate;
         if (rm.editTokensAt < 0.0) rm.editTokensAt = SimTime();
@@ -1493,14 +1493,20 @@ namespace {
                 TeamXp(session, ev, share);
                 if (got.gem) TeamXp(session, "gem", 1.0);
             }
+        } else if (till) { // (#1085) the soil there becomes farmland: no cost, no yield
+            e.till = true;
+            out.flags = 16;
+            TeamEvent(session, "count", "till"); RemoteXp(session, "till"); // (#335) the quest's count, Farming XP
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
             before.emplace(q.item, rm.inventory.amount(q.item));
-            if (!rm.creative && !rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
+            e.strength = 0.6f; e.paint = paint;
+            const float cost = TerrainTool_PlaceCost(*p, e); // (#1097) by the ground it adds, as the client reckons it
+            if (cost < 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+            if (!rm.creative && !rm.inventory.removeAmount(q.item, cost)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
             for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) // (#920) our ground now
                 Skills_NoteFill(rm.skills, SkillCell(Vector3Add(hit, Vector3{ (float)dx, (float)dy, (float)dz })), SimTime());
-            e.strength = 0.6f; e.paint = paint;
             out.strength = e.strength; out.paint = (int8_t)paint;
         }
         rm.editTokens -= 1.0;
@@ -1581,11 +1587,8 @@ namespace {
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
             if (ClaimBlocks(session, p, at)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; } // (#343)
             const char* item = PartItem(part);
-            // (#335) a shovel or hoe in hand tills soft ground into farmland for nothing (Farm_Till's rule; a carried farmland item pays first)
-            bool till = false;
-            if (part.type == PartType::Farmland && rm.inventory.count(item) < PartCostCount(part.type))
-                for (const Session& s : sessions) if (s.id == session && rm.inventory.count(s.loadout.held) > 0) { const ToolType t = ToolOf(s.loadout.held).type; till = t == ToolType::Shovel || t == ToolType::Hoe; }
-            const int cost = till ? 0 : PartCostCount(part.type);
+            if (part.type == PartType::Farmland) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; } // (#1085) farmland is tilled ground now (a till edit), not a part
+            const int cost = PartCostCount(part.type);
             if (!rm.creative && rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; } // (#823) free in creative
             uint32_t bannerClaim = 0; // (#343) a claim banner claims the land around it for the placer's team (or is refused: budget, overlap)
             if (const int tier = ClaimBannerTier(part.type); tier >= 0) {
@@ -1609,7 +1612,6 @@ namespace {
                 const int team = TeamOfSession(session);
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
-            if (till) { TeamEvent(session, "count", "till"); RemoteXp(session, "till"); } // (#335)
             if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
