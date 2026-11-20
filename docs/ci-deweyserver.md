@@ -26,7 +26,8 @@ below needs the user's OK.
    ```
    It writes `raylibgame-server-develop.tar.gz` (the newest, replaced atomically), the last 5 builds as
    `raylibgame-server-develop-<run>.tar.gz`, and `raylibgame-server-develop.json` (run id, commit, sha256). A re-run does
-   nothing until a newer successful run exists (exit 0); exit 3 means no run with an unexpired artifact.
+   nothing until a newer run whose package job succeeded exists (exit 0; #1028: failing tests elsewhere in the run
+   don't hold a build back); exit 3 means no such run with an unexpired artifact.
 4. The egg's `DOWNLOAD_URL` = `http://192.168.4.29:8787/raylibgame-server-develop.tar.gz` (a pinned
    `...-develop-<run>.tar.gz` holds a server on one build).
 

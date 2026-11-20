@@ -5,7 +5,7 @@ Three places run checks, each for what it can do safely.
 | Where | Workflow | Triggers | What |
 | --- | --- | --- | --- |
 | GitHub-hosted runners | `workflows/pr-checks.yml` | every PR into `m84-integration` / `develop` / `main` (forks too), pushes to `m84-integration` / `develop`, manual | static checks, Windows build (w64devkit) + `game_tests`, Linux headless build + `game_tests` + a dedicated-server smoke test |
-| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop` / `m84-integration`, nightly 05:00 UTC, manual. **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests`, the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
+| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop` / `m84-integration`, nightly 05:00 UTC, manual. **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests` and the server package (their own job), the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
 | The user's PC | none (agents and the user) | by hand, the midnight regression | rendering, visual baselines and captures, perf timing (quiet windows), the local half of the regression (`tools/regression.sh planet --only local`; the full run when asked) |
 
 Why the split: the repo is public, so hosted runners are free and safe for code from anyone (read-only token, no
@@ -52,6 +52,13 @@ curl, libssl-dev, libegl1) plus ccache, the NVIDIA container runtime with `NVIDI
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
+Three jobs, one after the other on the one runner (#1028): `package` (build, `game_tests`, the server tarball as an
+artifact), `linux-gpu` (the GPU bit-exact check, the headless scenarios, `test_server.sh` / `test_join.sh`, whose
+host and client logs go into the `selfhosted-test-results` artifact) and `regression` (below; nightly or on request). The
+host-side fetch script takes the newest push run whose `package` job succeeded, so a failing test elsewhere in the run
+no longer holds a server build back. Each later job rebuilds incrementally first (a no-op unless another branch's run
+used the build folder in between).
+
 ## The regression, split (#1028)
 
 `tools/regression.sh` tags every test: **H** (headless) checks game state the Linux headless/EGL build computes the same
@@ -70,7 +77,11 @@ are H with a "wall clock" note: a much slower machine could change them.
 
 The job runs in the persistent run folder (`RUNDIR`, so the seed-42 erosion bake is cached), writes a table of every test
 (verdict, seconds) to the job summary (`tools/ci/regression_summary.sh`) and uploads `regression.log` as the artifact
-`regression-headless-log`. Start it by hand on a branch:
+`regression-headless-log`. **Known failures** are listed in `tools/regression_known.txt` (the test's arguments and its
+issue): the summary shows new failures first, then the known ones with their issue, and names a listed test that passed
+(fixed? take its line out). The job fails only on new failures. The PC's half can use the same summary:
+`tools/regression.sh planet --only local | tee r.log; tools/ci/regression_summary.sh r.log tools/regression_known.txt`.
+Start it by hand on a branch:
 `gh workflow run selfhosted.yml -r <branch> -f regression=headless` (`-f ref=<branch>` builds another branch with this
 branch's workflow; `-f regression_sets="planet multiplayer"` adds the multiplayer set).
 
