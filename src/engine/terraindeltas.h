@@ -25,6 +25,12 @@ constexpr int kRegionChunks = 16;               // chunks per region file edge
 // Density per stored unit: +-512 in int16, about 2 km of rock (0.25 a metre) - enough to dig from a
 // mountain top to the mantle (1/256 saturated at ~510 m: an invisible floor). ~6 cm of surface precision.
 constexpr float kDeltaStep = 1.0f / 64.0f;
+// A material channel byte (DeltaChunk::mat): the low 7 bits are VoxelMaterial + 1 (0: the field's own); bit 7 marks a
+// state of the generated ground an edit set (#1085: grass dug to bare dirt, tilled farmland) rather than placed ground.
+// Placed ground digs back as what it cost and no more (#1097); the generated ground's state digs as natural ground.
+constexpr uint8_t kMatState = 0x80;
+inline int MatOf(uint8_t v) { return (int)(v & 0x7F) - 1; }                   // the material, -1: the field's own
+inline bool MatPlaced(uint8_t v) { return (v & 0x7F) != 0 && !(v & kMatState); } // placed ground (a fill, a placed blob)
 
 struct DeltaChunk {
     static constexpr int kN = kDeltaChunk * kDeltaChunk * kDeltaChunk;
@@ -74,8 +80,8 @@ struct DeltaChunk {
         data.shrink_to_fit();
     }
     size_t bytes() const { return sizeof(*this) + data.capacity() * sizeof(int16_t) + (mats ? kN : 0); }
-    // Placed ground's material per lattice point: 0 = the field's own, else VoxelMaterial + 1
-    // (gravel placed stays gravel instead of taking on the dirt or grass the ground has there).
+    // Placed ground's material per lattice point: 0 = the field's own, else VoxelMaterial + 1, bit 7 a generated ground's
+    // state (kMatState, MatOf, MatPlaced) (gravel placed stays gravel instead of taking on the dirt or grass there).
     // Allocated on first use: most chunks are only dug (the 0.25 m lattice made chunks 64x more).
     // (Dense when present: placing ground is rarer than digging.)
     std::unique_ptr<uint8_t[]> mats;
@@ -105,6 +111,8 @@ public:
     // The placed material at a point: the nearest lattice point's, else any of the cell's corners
     // (a surface point lies between a placed solid point and air); -1 where nothing was placed.
     int materialAt(Vector3 p) const;
+    // Placed ground at a lattice point near p (the nearest one): its material, -1 if the ground there was not placed (#1097).
+    int placedAt(Vector3 p) const;
     // Chunks overlapping a body-local box (a build's quick test; empty -> no edits there).
     void chunksIn(Vector3 lo, Vector3 hi, std::vector<std::pair<Key, const DeltaChunk*>>& out) const;
 };

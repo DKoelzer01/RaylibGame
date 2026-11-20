@@ -2203,7 +2203,7 @@ static bool DecodeMaterials(const uint16_t* in, size_t words, DeltaChunk& c) {
         const int zeros = in[w++], count = in[w++];
         if (i + zeros + count > n || w + count > words) return false;
         i += zeros;
-        for (int k = 0; k < count; ++k) c.setMat(i++, (uint8_t)std::min<int>(in[w++], (int)VoxelMaterial::Count));
+        for (int k = 0; k < count; ++k, ++w) c.setMat(i++, (uint8_t)(std::min<int>(in[w] & 0x7F, (int)VoxelMaterial::Count) | (in[w] & kMatState))); // (#1097) bit 7 kept
     }
     return true;
 }

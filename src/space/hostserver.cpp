@@ -1501,10 +1501,12 @@ namespace {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
             before.emplace(q.item, rm.inventory.amount(q.item));
-            if (!rm.creative && !rm.inventory.removeAmount(q.item, 1.0)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
+            e.strength = 0.6f; e.paint = paint;
+            const float cost = TerrainTool_PlaceCost(*p, e); // (#1097) by the ground it adds, as the client reckons it
+            if (cost < 0.05f) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
+            if (!rm.creative && !rm.inventory.removeAmount(q.item, cost)) { RefuseEdit(conn, q.seq, NetEditRefusal::Cost); return; } // (#823) free in creative
             for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) // (#920) our ground now
                 Skills_NoteFill(rm.skills, SkillCell(Vector3Add(hit, Vector3{ (float)dx, (float)dy, (float)dz })), SimTime());
-            e.strength = 0.6f; e.paint = paint;
             out.strength = e.strength; out.paint = (int8_t)paint;
         }
         rm.editTokens -= 1.0;

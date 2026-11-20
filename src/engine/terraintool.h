@@ -77,11 +77,15 @@ void TerrainTool_DrawHUD();                               // 2D, after the scene
 #include <map>
 struct DigYield {
     std::map<std::string, float> items;
+    // (#1097) Placed ground's share: 1.8 of its filler a m^3 (it cost 2), no extras and no perks. TerrainTool_ScaleYield
+    // adds it to `items` after scaling them.
+    std::map<std::string, float> placed;
     const char* gem = nullptr;   // a rare gem or quartz (+1)
     const char* seed = nullptr;  // grass turned up a seed (+1)
     bool ore = false;            // some ore came out (a vein may be nearly done)
 };
 DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost); // gemBoost: x the gem odds (tests, perks)
+float TerrainTool_PlaceCost(const Planetoid& p, const struct TerrainEdit& e); // (#1097) a soft placing blob's filler: 2 a m^3 of ground it adds
 // (#883, #1043) The perks on a stroke, from one player's stats (`stat`: a multiplier by name, 1 = none). The local stroke and
 // the server's check of a joined player's stroke both use these, so a perked stroke is never refused and both credit alike.
 // material: the VoxelMaterial hit; pickaxe: the tool in hand is a pick.
