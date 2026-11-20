@@ -1482,14 +1482,14 @@ bool PlanetField::blockCaveSegs(Vector3 o, float stride, int S, float fp, std::v
 // (kind 2): rubble aprons and the lip over a mouth. A segment whose box doesn't hold q is skipped and the noises are looked
 // up only once one does. The same operations in the same order as terrain.glsl's caveGraphDistance (bit-exact).
 struct CaveNoises { const SimplexNoise &a, &b, &det, &cav, &mou; };
-static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid) {
+static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs, int n, float& solid, float shrink = 0.0f) {
     solid = -1e9f;
     bool any = false;
     float swell = 0.0f, lev = 0.0f, tilt = 0.0f, pocket = 0.0f, rub = 0.0f, shift = 0.0f, big = 0.0f;
     float m = 1e9f;
     for (int i = 0; i < n; ++i) {
         const float* s = segs + 24 * i;
-        if (q.x < s[12] || q.y < s[13] || q.z < s[14] || q.x > s[16] || q.y > s[17] || q.z > s[18]) continue;
+        if (q.x < s[12] + shrink || q.y < s[13] + shrink || q.z < s[14] + shrink || q.x > s[16] - shrink || q.y > s[17] - shrink || q.z > s[18] - shrink) continue;
         if (!any) {
             any = true;
             // The noises carry their own base frequencies (a, b 1/150 m, det 1/70, cav 1/220, mou 1/700), so each factor
@@ -1633,7 +1633,13 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                 }
                 if (n > 0) {
                     float sol = -1e9f;
-                    m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segData, n, sol) + (1.0f - caveWeight) * 20.0f;
+                    // (#1037) A single sample's list holds boxes grown by 36 m (any footprint that carves); a segment matters to
+                    // this sample's density only within the meshing reach (2 x fp + 2, at least 4 m: the solids' -4 cut). Out of a
+                    // segment's shape box by d, its distance is >= 0.89 d + 1.78 and its solid < -4, so testing the box shrunk to
+                    // 1.2 x that reach + 2 m changes no density but skips most noise lookups in rock near caves. Blocks: 0.
+                    const float keep = std::max(2.0f * std::max(fp, 1.0f) + 2.0f, 4.0f) * 1.2f + 2.0f;
+                    const float shrink = tlCaveSegs ? 0.0f : std::max(0.0f, 36.0f - keep);
+                    m = CaveGraphDistance(CaveNoises{ cavesA, cavesB, detail, caverns, caveMouths }, p, segData, n, sol, shrink) + (1.0f - caveWeight) * 20.0f;
                     if (solidOut && sol > -1e8f) *solidOut = sol - (1.0f - caveWeight) * 20.0f;
                     if (hit && m < 1e8f) hit->kind = 1;
                 }
