@@ -2362,13 +2362,14 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
             if (skin && rocks.fractal(1, p.x * 0.12f, p.y * 0.12f, p.z * 0.12f) > 0.15f + 0.2f * rocks.fractal(2, p.x * 14.0f + 97.0f, p.y * 14.0f, p.z * 14.0f)) return VoxelMaterial::Clay; // ragged edges (#609)
             if (!skin) return VoxelMaterial::Clay;
         }
-        // Grassland. Grass is a state of the generated surface (#1085): the band within ~1 m of the density surface reads as
-        // turf (the mesh strays from the height map, which used to bare patches of dirt), and an edit that exposes or makes
-        // ground writes bare dirt over it in the material channel (TerrainDeltas::apply). Deeper: dirt. (The height map's
-        // 0.6 m skin was turf too: a second turf layer where the density surface stands over the height map, and cave
-        // ceilings just under the ground lined with grass.)
+        // Grassland. Grass is a state of the generated surface (#1085): the band within ~1 m of the density surface, and the
+        // height map's 0.6 m skin, read as turf (the mesh strays from the height map, which used to bare patches of dirt); an
+        // edit that exposes or makes ground writes bare dirt over it in the material channel (TerrainDeltas::apply), so a dig
+        // never shows turf. (The skin stays: the spawn search, trees and other height-map samplers read it - without it seed
+        // 42's start moved to frozen tundra.)
         const bool natural = base < ISO_LEVEL + DENSITY_GRADIENT * (1.0f + slack);
         if (natural && slope < 0.3f) return VoxelMaterial::Grass;
+        if (skin) return VoxelMaterial::Grass;
         // Rare small clay pockets in the dirt (#206: a dry start can still find clay by digging), a metre or two across.
         if (rocks.fractal(2, p.x * 0.35f + 731.0f, p.y * 0.35f, p.z * 0.35f) > 0.42f) return VoxelMaterial::Clay;
         return VoxelMaterial::Regolith;                                                                     // grassland over dirt

@@ -4355,21 +4355,34 @@ int main(int argc, char** argv)
                         check(inventory.count("stone_pickaxe") == 0, "broke at its durability");
                         check(Hotbar_Slot(3).empty(), "the broken tool left the hotbar (#209)");
                         toolsLife = life;
-                        // An iron hoe: look at the ground just ahead and till.
+                        toolsPhase = 3;
+                    } else if (toolsPhase == 3 && ((WorldIdle() && player.grounded) || GetTime() - toolsStart > 20.0)) {
+                        // An iron hoe: look at the ground just ahead and till - once the ground there is built (the spawn's
+                        // loading runs while the wear checks above do: the hoe found no ground then, #1085).
                         inventory.add("iron_hoe", 1);
                         terrainTool.heldTool = "iron_hoe";
                         const Vector3 level = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
                         player.forward = Vector3Normalize(Vector3Subtract(level, Vector3Scale(player.up, 0.8f)));
                         player.applyToCamera(world);
                         TerrainTool_Update(world, PlayerInput::None(), true); // aim only
+                        // (#1085) tilling needs soil, and seed 42 starts on frozen tundra: as a cold start does, lay a wide flat pad
+                        // of dirt where the hoe aims (a 6 m sphere's cap: ~1.9 m across its rim, 0.3 m high) and till that. The
+                        // tool's own aim (it marches the density: this bench runs before the chunks are built).
+                        Planetoid* aimBody = nullptr; Vector3 aimLocal{};
+                        const bool aimOk = TerrainTool_AimedGround(&aimBody, &aimLocal) && aimBody == p;
+                        if (aimOk && !IsTillable(p->materialAt(aimLocal))) {
+                            TerrainEdit pad{}; pad.fill = true; pad.radius = 6.0f; pad.paint = (int)VoxelMaterial::Regolith;
+                            pad.center = Vector3Subtract(aimLocal, Vector3Scale(Vector3Normalize(aimLocal), 5.7f));
+                            ApplyTerrainEdit(*p, pad);
+                            TerrainTool_Update(world, PlayerInput::None(), true); // aim again, at the pad
+                            TerrainTool_AimedGround(&aimBody, &aimLocal);
+                            printf("bench: tools: frozen ground under the hoe: laid a dirt pad to till\n");
+                        }
                         // (#1085) farmland is tilled ground: count the 0.25 m grid points of the aimed ground's tangent plane,
                         // within 2.5 m, that read Farmland after the stroke (an iron hoe's 1.6 m brush: ~128; 1 m: ~50)
-                        TerrainHit aimed;
-                        const Vector3 aimDir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-                        const bool aimOk = RaycastTerrain(world, Ray{ world.camera.position, aimDir }, 10.0f, aimed) && aimed.planetoid == p;
                         auto farmlandPoints = [&] {
                             if (!aimOk) return 0;
-                            const Vector3 u = Vector3Normalize(aimed.local);
+                            const Vector3 u = Vector3Normalize(aimLocal);
                             Vector3 ea = Vector3CrossProduct({ 0, 1, 0 }, u);
                             ea = Vector3Length(ea) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(ea);
                             const Vector3 na = Vector3CrossProduct(u, ea);
@@ -4377,7 +4390,7 @@ int main(int argc, char** argv)
                             for (int a = -10; a <= 10; ++a)
                                 for (int b = -10; b <= 10; ++b) {
                                     if (a * a + b * b > 100) continue;
-                                    const Vector3 q = Vector3Add(aimed.local, Vector3Add(Vector3Scale(ea, a * 0.25f), Vector3Scale(na, b * 0.25f)));
+                                    const Vector3 q = Vector3Add(aimLocal, Vector3Add(Vector3Scale(ea, a * 0.25f), Vector3Scale(na, b * 0.25f)));
                                     n += p->materialAt(q) == VoxelMaterial::Farmland ? 1 : 0;
                                 }
                             return n;
@@ -8396,10 +8409,35 @@ int main(int argc, char** argv)
                         bool ok = true;
                         auto check = [&](bool c, const char* what) { if (!c) { printf("bench: farm: FAILED %s\n", what); ok = false; } };
                         const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-                        const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
+                        // Soil to till (#1085: tilling needs it; seed 42's start has ice 3 m ahead): the first tillable ground on
+                        // rings 3-12 m around the feet.
+                        const Vector3 fwd0 = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                        const Vector3 side0 = Vector3CrossProduct(player.up, fwd0);
                         TerrainHit hit;
-                        const bool found = RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit);
-                        check(found, "ground ahead");
+                        bool found = false;
+                        for (float ring = 3.0f; ring <= 12.0f && !found; ring += 3.0f)
+                            for (int k = 0; k < 12 && !found; ++k) {
+                                const float a = k * (2.0f * PI / 12.0f);
+                                const Vector3 at = Vector3Add(feet, Vector3Add(Vector3Scale(fwd0, ring * cosf(a)), Vector3Scale(side0, ring * sinf(a))));
+                                found = RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) &&
+                                        hit.planetoid == p && IsTillable(p->materialAt(hit.local));
+                            }
+                        // None (seed 42 starts on frozen tundra): a cold start's way - place a patch of dirt 3 m ahead and till that.
+                        bool placedDirt = false;
+                        if (!found) {
+                            const Vector3 at = Vector3Add(feet, Vector3Scale(fwd0, 3.0f));
+                            TerrainHit g0;
+                            if (RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, g0) && g0.planetoid == p) {
+                                TerrainEdit fill{}; fill.fill = true; fill.radius = 1.0f; fill.paint = (int)VoxelMaterial::Regolith;
+                                fill.center = Vector3Add(g0.local, Vector3Scale(Vector3Normalize(g0.local), 0.3f));
+                                ApplyTerrainEdit(*p, fill);
+                                found = RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) && hit.planetoid == p &&
+                                        IsTillable(p->materialAt(hit.local));
+                                placedDirt = found;
+                            }
+                        }
+                        check(found, "soil near the start (or placed dirt)");
+                        if (placedDirt) printf("bench: farm: no soil within 12 m of the start: placed a dirt patch and tilled that\n");
                         const bool tilled = found && Farm_Till(world, *p, hit.local);
                         check(tilled, "tilled");
                         // (#1085) farmland is tilled ground: the aimed point reads Farmland, and a crop stands at a point of it
@@ -8448,7 +8486,45 @@ int main(int argc, char** argv)
                             Farm_Update(world, 1.0f);
                             check(Farm_CropCount() == 0, "a dug-up crop is gone");
                         }
-                        printf("bench: farm: tilled, planted (a seed 0.2 m away refused); night 0, 900 s of day %.2f, ripe, harvested; replanted at %.2f survived a save; dug up, gone -> %s\n", farmQuarter, farmGrowth, ok ? "PASS" : "FAIL");
+                        // An old save (#1085): a farmland part on a plot 4 m to the side, with a crop under the old
+                        // "<body>|<plot>|<part>" key. Loading converts it: tilled ground where it stood, the crop on it, no part.
+                        bool converted = false;
+                        {
+                            // 1.8 m beside the first field (dug out above), on the real ground of that column (the density surface)
+                            struct { Vector3 local; } side{};
+                            bool sideOk = false;
+                            const Vector3 col = Vector3Normalize(Vector3Add(ground, Vector3Scale(p->dirToLocal(side0), 1.8f)));
+                            for (float r = Vector3Length(ground) + 3.0f, r0 = Vector3Length(ground) - 3.0f; r > r0 && !sideOk; r -= 0.05f)
+                                if (p->densityAt(Vector3Scale(col, r)) >= ISO_LEVEL) { side.local = Vector3Scale(col, r); sideOk = IsTillable(p->materialAt(side.local)); }
+                            if (sideOk) {
+                                if (!p->plots) p->plots = std::make_unique<PlotSet>();
+                                Plot* plot = p->plots->plotFor(side.local, 0.0f, true); // a new plot anchored there: the part at its origin, as old tills made them
+                                const Part part{ PartType::Farmland, { 0, 0, 0 }, 0, 0 };
+                                if (!BuildTool_ApplyPart(*p, *plot, part)) printf("bench: farm: could not place an old farmland part for the conversion check\n");
+                                else {
+                                    const int idx = plot->partAt(part.origin);
+                                    const std::string path = std::string(GetWorkingDirectory()) + "/farm_old.tmp";
+                                    if (FILE* f = fopen(path.c_str(), "w")) { fprintf(f, "crop %s|%u|%d roots 0.5000\nend_extras\n", p->name.c_str(), plot->id, idx); fclose(f); }
+                                    Farm_Reset();
+                                    if (FILE* f = fopen(path.c_str(), "r")) { loadExtrasHook(f); fclose(f); }
+                                    remove(path.c_str());
+                                    Farm_LoadDone();
+                                    std::string crop; float g = 0.0f;
+                                    const bool gone = plot->parts[idx].type == PartType::Count;
+                                    // where the part stood: its 2 x 2 cell footprint's centre, on the real ground of that column
+                                    Vector3 stood = plot->toBody({ kCellSize, 0.0f, kCellSize });
+                                    const Vector3 sc = Vector3Normalize(stood);
+                                    for (float r = Vector3Length(stood) + 1.5f, r0 = Vector3Length(stood) - 1.5f; r > r0; r -= 0.05f)
+                                        if (p->densityAt(Vector3Scale(sc, r)) >= ISO_LEVEL) { stood = Vector3Scale(sc, r); break; }
+                                    const bool tilledThere = p->materialAt(stood) == VoxelMaterial::Farmland;
+                                    const bool cropThere = Farm_Crop(*p, stood, crop, g) && crop == "roots" && fabsf(g - 0.5f) < 0.01f;
+                                    converted = gone && tilledThere && cropThere;
+                                    printf("bench: farm: an old farmland part on load: part gone %d, ground farmland %d, its crop kept %d\n", (int)gone, (int)tilledThere, (int)cropThere);
+                                }
+                            } else printf("bench: farm: no ground 4 m to the side for the conversion check\n");
+                        }
+                        check(converted, "an old save's farmland part becomes tilled ground with its crop");
+                        printf("bench: farm: tilled, planted (a seed 0.2 m away refused); night 0, 900 s of day %.2f, ripe, harvested; replanted at %.2f survived a save; dug up, gone; an old part converted -> %s\n", farmQuarter, farmGrowth, ok ? "PASS" : "FAIL");
                         benchFarm = false;
                     }
                 } else if (benchQuests && WorldIdle()) {

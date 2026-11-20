@@ -885,6 +885,12 @@ bool TerrainTool_AimingPlant(uint64_t* id) {
     if (hasPlant && id) *id = plantHit.plant.id;
     return hasPlant;
 }
+bool TerrainTool_AimedGround(Planetoid** body, Vector3* local) {
+    if (!hasHit || !hit.planetoid) return false;
+    if (body) *body = hit.planetoid;
+    if (local) *local = hit.local;
+    return true;
+}
 
 // Scripted gathering (tests): dig at a body-local point with the held tool's rules (one item of
 // whatever is there per call, if the tool can dig it), and chop / harvest the nearest plant.
