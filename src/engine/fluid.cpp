@@ -281,6 +281,23 @@ struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0;
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
 std::vector<std::unique_ptr<Site>> sites;
+// Bricks asked for by a tick's face requests, made in one fixed order (#982 / #968): the CPU path met the requests brick by
+// brick in site order and the GPU path slot by slot, so the same brick was made by a different request, the pending queue
+// took a different order, and with kInitPerStep bricks classified a step, different bricks were ready - CPU and GPU parted.
+// Now both queue them here and make them by site, then brick coordinates.
+struct EnsureReq { Site* s; int bi, bj, bk; };
+std::vector<EnsureReq> ensureQueue;
+void FlushEnsures() {
+    if (ensureQueue.empty()) return;
+    for (const auto& sp : sites) {
+        std::vector<std::tuple<int, int, int>> keys;
+        for (const EnsureReq& r : ensureQueue) if (r.s == sp.get()) keys.push_back({ r.bi, r.bj, r.bk });
+        std::sort(keys.begin(), keys.end());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        for (const auto& [bi, bj, bk] : keys) sp->ensure(bi, bj, bk);
+    }
+    ensureQueue.clear();
+}
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
 long long stepCount = 0;
 Fluid::Stats stats;
@@ -492,6 +509,12 @@ inline bool RunsBeside(const Brick& o, int fc) { return !(o.statSet && (o.statSo
 // GPU mode (fluid on compute shaders): CPU-side changes to the mirror (buckets, pumps, springs, levelling) go
 // to the GPU as deltas next tick; bricks waiting for a full upload take theirs from the mirror instead.
 bool gpuMode = false;
+// Tests (#968/#982, RAYLIBGAME_FLUID_TRACE): a face request after a tick - the brick that asked, the face, and whether the
+// neighbour exists (woken) or is made (new) - to diff the CPU and GPU paths.
+inline void TraceRequest(const Brick* br, int face, bool exists) {
+    static const bool t = EnvFlag("RAYLIBGAME_FLUID_TRACE");
+    if (t) printf("fluid trace request %lld: %d,%d,%d face %d %s\n", stepCount, br->bi, br->bj, br->bk, face, exists ? "wake" : "new");
+}
 struct GpuDeltaRec { Brick* b; int i; int d; uint8_t kind; };
 std::vector<GpuDeltaRec> gpuDeltas;
 inline void GpuDelta(Brick* b, int i, int d) {
@@ -1594,10 +1617,12 @@ void GpuReadback() {
             // bricks slept; nor did a resting brick at a dispatch's edge pass its requests on).
             for (int face = 0; face < 6; ++face)
                 if (fl & (2u << face)) {
+                    TraceRequest(br, face, br->nbr[face] != nullptr);
                     if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
-                    else site->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+                    else ensureQueue.push_back({ site, br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2] });
                 }
         }
+        FlushEnsures(); // the missing bricks asked for, in one fixed order (#982)
         // An inactive brick holds no momentum (#855): a slot given back and taken again starts at rest (GpuUploadBrick), so a
         // brick that ran asleep (at a dispatch's edge) drops what it carried, here and in the CPU tick alike.
         for (size_t li = 0; li < G.lastList.size(); ++li)
@@ -1989,10 +2014,12 @@ void CpuTick(int n) {
         // A face request: the neighbour brick is made if missing, woken if asleep (#680: the column pairs ask for sleeping ones).
         for (int face = 0; face < 6; ++face)
             if (fl & (2u << face)) {
+                TraceRequest(br, face, br->nbr[face] != nullptr);
                 if (Brick* o = br->nbr[face]) { o->active = true; o->idle = 0; }
-                else slotSite[i]->ensure(br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2]);
+                else ensureQueue.push_back({ slotSite[i], br->bi + d[face][0], br->bj + d[face][1], br->bk + d[face][2] });
             }
     }
+    FlushEnsures(); // the missing bricks asked for, in one fixed order (#982)
     for (int i = 0; i < processedCount; ++i) if (!slots[i]->active) slots[i]->faces.clear(); // asleep: no momentum (#855, GpuTick)
     for (Brick* b : slots) b->cpuSlot = -1;
 }
