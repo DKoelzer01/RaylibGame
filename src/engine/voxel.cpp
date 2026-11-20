@@ -1801,7 +1801,13 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             const float hl2 = hx * hx + hy * hy + hz * hz;
             const float hl = sqrtf(hl2);
             if (hl > 1e-3f) {
-                const float sc = 0.1f + 0.9f * rw / hl;
+                // (#1116) Chambers squeeze 0.03, not 0.1: their outcrops reach 8 m (ra), and at 0.1 the noise's radial change
+                // (~0.55 x 8 x 0.1 x |grad wn| ~ 1.2 per metre) outran the distance itself, so the field fell again outward and left
+                // floating rock in the halls. RAYLIBGAME_CAVE_HALL_SQUEEZE=k: test only (CPU; --cave-islands), the GPU keeps 0.03.
+                static const float hallK = getenv("RAYLIBGAME_CAVE_HALL_SQUEEZE") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_SQUEEZE")) : 0.03f;
+                static const float hallW = getenv("RAYLIBGAME_CAVE_HALL_SQUEEZE") ? 1.0f - hallK : 0.97f; // the literal 0.97f: bit-exact with terrain.glsl
+                const float kq = hall ? hallK : 0.1f, kw = hall ? hallW : 0.9f;
+                const float sc = kq + kw * rw / hl;
                 const float px = s[0] + abx * t + hx * sc, py = s[1] + aby * t + hy * sc, pz = s[2] + abz * t + hz * sc;
                 // (#1022, user 2026-11-20) Large irregular outcrops: rock forms ~9 m (2 octaves) and creases ~3.2 m (|n|: hard
                 // edges), weights 2.9 / 0.8. RAYLIBGAME_CAVE_WALLS=0: the walls as first merged (v22: ~3 m forms in 3 octaves,
