@@ -672,11 +672,14 @@ static void DrawGrid(float cell = 54.0f) {
         if (kinds > 0) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    // (#1080: the window can be narrow now) wrapped in the room left beside the buttons, not cut at the panel's edge
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", !cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "Tools 1, blocks 256, resources 8192");
-    ImGui::PopStyleColor();
+    // (#1161) Under the buttons, wrapped (beside them it was squeezed to a word a line once the grid took less width); the
+    // stack sizes are the Help tab's, not repeated here.
+    const char* note = !cursorStack.empty() ? "Click: put it down  right-click: one  outside the window: drop it" : nChests > 0 ? TextFormat("%d chest%s within reach", nChests, nChests > 1 ? "s" : "") : "";
+    if (note[0]) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("%s", note);
+        ImGui::PopStyleColor();
+    }
     if (!cursorStack.empty()) { // the held stack follows the mouse, over everything (#192)
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
@@ -1508,14 +1511,11 @@ static void DrawYou() {
     ImGui::Separator();
     const float avW = ImGui::GetContentRegionAvail().x, avH = ImGui::GetContentRegionAvail().y;
     ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 0.75f); // (the column's labels small: at 150% they left the slots no room)
-    const float line = ImGui::GetTextLineHeightWithSpacing(), sy = ImGui::GetStyle().ItemSpacing.y;
     const int slots = (int)Suit_Modules().size();
-    const int modCols = slots > 1 ? 2 : 1, modRows = (slots + modCols - 1) / std::max(1, modCols);
-    // (#889 follow-up) The slots as large as the items grid's cells where the column's height allows: suit and off hand side
-    // by side, the modules two to a row under them, all one size. Down the column: 2 label rows and the button, the
-    // suit row and the module rows.
-    const float fit = (avH - line * 3.6f - sy * 8.0f) / (1.0f + (float)std::max(1, modRows));
-    const float big = std::max(30.0f, std::min(fit, gGridCell > 0.0f ? gGridCell : 120.0f));
+    const int modCols = slots > 1 ? 2 : 1;
+    // (#1148) The slots exactly the items grid's size (suit and off hand side by side, the modules two to a row under them);
+    // a short panel scrolls rather than shrinking them (a height fit had made them half the grid's).
+    const float big = gGridCell > 0.0f ? gGridCell : 54.0f * GameUI_Scale();
     const float cell = big;
     ImGui::BeginGroup();
     const float x0 = ImGui::GetCursorPosX();
