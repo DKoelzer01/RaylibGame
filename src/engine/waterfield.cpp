@@ -173,7 +173,21 @@ float ChunkSampler::openSurface(int si, int ci, int cj, int ck, int kind, int de
             // A moving film (#649): drawn wherever it is, at least kFilmLift over its ground share - a film running down a
             // trench or across dry ground showed nothing until it pooled (the water seemed to skip to where it settled).
             // Resting films keep the sheet rule below (a drained pond's films read as a grid of spikes, #360).
-            return ck + (sh + std::max(f, kFilmLift)) / 255.0f;
+            // (#1091) But a shallow cell that is the edge of a level pool (a side neighbour deep enough to be a sheet, its
+            // top within 8/255 of this one's) is that pool's surface, not a film: lifted, the shallow cells along a flooded
+            // dig's sloping bed stood up over the water as a grid of tilted shards. It takes the sheet rule below (its own
+            // level). RAYLIBGAME_POOL_FILM=0: lifted as before.
+            static const bool poolFilm = !(getenv("RAYLIBGAME_POOL_FILM") && getenv("RAYLIBGAME_POOL_FILM")[0] == '0');
+            bool pooled = false;
+            if (poolFilm) {
+                static const int side4[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+                for (const auto& d : side4) {
+                    uint8_t fo, flo, sho;
+                    if (!cellAt(si, ci + d[0], cj + d[1], ck, fo, flo, sho) || (flo & kSolid) || CellKind(flo) != kind) continue;
+                    if (fo >= kShallow && abs(((int)sho + fo) - ((int)sh + f)) <= 8) { pooled = true; break; }
+                }
+            }
+            if (!pooled) return ck + (sh + std::max(f, kFilmLift)) / 255.0f;
         }
         if (f < kShallow) {
             // Shallow water on no fluid (the ground is in this cell): drawn as part of a sheet - a side neighbour at the
