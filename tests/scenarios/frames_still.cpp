@@ -29,8 +29,8 @@ Vector3 Equator(const Planetoid& b, Vector3 dir) {
     return d;
 }
 
-void StandStep(ScenarioDef& s, const char* name, bool equator) {
-    s.step(std::string("stand still ") + name, kStandSeconds + 90.0, [name, equator](ScenarioCtx& c) {
+void StandStep(ScenarioDef& s, const char* name, bool equator, double maxStepBound) {
+    s.step(std::string("stand still ") + name, kStandSeconds + 90.0, [name, equator, maxStepBound](ScenarioCtx& c) {
         Planetoid& b = *c.body;
         if (!st.placed) {
             st = StillState{};
@@ -68,6 +68,7 @@ void StandStep(ScenarioDef& s, const char* name, bool equator) {
         c.metric(n + " view turn", turn, "deg");
         c.metric(n + " up tilt", tilt, "deg");
         c.lt(n + " feet drift", drift, 0.05);
+        if (maxStepBound > 0.0) c.lt(n + " largest single step", st.maxStep, maxStepBound);
         c.lt(n + " view turn", turn, 0.5);
         c.check(n + " still grounded", player.grounded);
         st.placed = false;
@@ -76,7 +77,7 @@ void StandStep(ScenarioDef& s, const char* name, bool equator) {
 }
 }
 
-SCENARIO("frames/still") {
+static void Build(ScenarioDef& s, double maxStepBound) {
     s.tags = { "frames", "physics", "planet" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 900.0;
@@ -85,6 +86,15 @@ SCENARIO("frames/still") {
         c.waitingFor("an idle world");
         return c.T > 1.0 && WorldIdle();
     });
-    StandStep(s, "start", false);
-    StandStep(s, "equator", true);
+    StandStep(s, "start", false, maxStepBound);
+    StandStep(s, "equator", true, maxStepBound);
+}
+
+// Today's frames (the float Euler body angle): single steps are only reported (13-31 mm at F0).
+SCENARIO("frames/still") { Build(s, 0.0); }
+
+// Plan 11 F1 (#667): RAYLIBGAME_FRAMES=1 - body poses from the double spin angle; no single step over 1 mm.
+SCENARIO("frames/still-pose") {
+    s.env = { { "RAYLIBGAME_FRAMES", "1" } };
+    Build(s, 0.001);
 }
