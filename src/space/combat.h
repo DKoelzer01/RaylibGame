@@ -8,6 +8,7 @@
 
 #include "dvec3.h"
 #include "netid.h"
+#include "damage.h" // (#1215) damage types and status effects
 
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +30,14 @@ struct DamageEvent {
     DVec3 source{};               // the attacker, world space (double: planet scale)
     float knockback = 0.0f;       // m/s away from the source along the ground, before a block
     NetId sourceId = 0;           // who hit (0: the world)
+    // (#1215, combat step 1) What the hit is made of. The defaults (blunt, no effect) leave today's damage unchanged.
+    DamageType type = DamageType::Blunt;
+    StatusKind status = StatusKind::None; // an explicit effect (None: from the type, the heavy / back flags and a bite)
+    float poise = 0.0f;           // poise damage (#1217)
+    uint8_t faction = 0;          // the attacker's faction (friendly fire, #1223)
+    bool parryable = true;        // a melee hit a parry can turn (#1218)
+    bool heavy = false;           // a heavy attack (a slash heavy bleeds)
+    bool fromBehind = false;      // landed on the target's back (a slash bleeds)
 };
 
 struct DamageResult {
@@ -44,6 +53,7 @@ DamageResult Combat_DamageFor(SurvivalState& survival, Player& player, const Dam
 
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);
+void Combat_CurePoison(PlayerSession& s); // (#1215) a herb (the item is still to come)
 
 // Hit feel, the local view only (never the simulation): a short camera shake after applyToCamera, and whether the held
 // tool's animation pauses (hit-stop). Reduce motion turns both off.

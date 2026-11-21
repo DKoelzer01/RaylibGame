@@ -53,8 +53,19 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     sv.blocking = s.terrainTool.rmbBlocks && (in.down(Act::Secondary) || testHoldBlock) && sv.stamina > 0.0f && !sv.dead;
     // Stamina comes back a second after the last spend.
     if (SimTime() - sv.staminaUsedAt >= kRegenDelay) sv.stamina = std::min(100.0f, sv.stamina + kStaminaRegenPerSec * dt);
+    // (#1215) Status effects: their damage over time, and chill's slow (frozen: no moving) on the walk speed.
+    if (Combat1_On() && !sv.dead) {
+        const float dot = Status_Step(sv.status, dt, s.player.inWater, sv.resist);
+        if (dot > 0.0f) {
+            sv.health -= dot;
+            sv.lastHarm = sv.status.poison > 0.0f ? "poison" : sv.status.burn > 0.0f ? "burn" : "bleed"; // (#844 logs)
+        }
+        s.player.statusSpeed = Status_SpeedFactor(sv.status);
+    } else s.player.statusSpeed = 1.0f;
     PickUpGraves(s);
 }
+
+void Combat_CurePoison(PlayerSession& s) { Status_CurePoison(s.survival.status); } // (#1215) a herb, when it exists
 
 DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Combat_DamageFor(s.survival, s.player, e); }
 // (#337) any player's state: the local session's, or a remote player's on a server (its block from its held input).
@@ -88,6 +99,11 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
             sv.stamina = std::max(0.0f, sv.stamina - cost);
             sv.staminaUsedAt = SimTime();
         }
+    }
+    if (Combat1_On()) { // (#1215) the hit's type through the target's resistances and armour (the 10% floor), then its effect
+        if (e.type == DamageType::Energy && p.inWater) amount *= StatusTune::kShockWaterFactor; // shock: x2 in water
+        amount = Damage_Apply(amount, e.type, sv.resist);
+        Status_Apply(sv.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
     }
     sv.health -= amount;
     sv.hitDamageTaken += amount;

@@ -48,6 +48,7 @@ struct Species {
     Vector3 size{ 1, 1, 1 };                         // length, height, width (m)
     Color body = WHITE, head = GRAY;
     float walk = 1.0f, run = 4.0f, health = 10.0f;
+    Resistances resist;                              // (#1215) per damage type and flat armour (species data later, #1223)
     std::vector<std::string> diet;
     std::vector<std::pair<std::string, int>> drops;
     std::string product, productTool;                // "-" none / no tool needed
@@ -138,6 +139,7 @@ struct Animal {
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
+    StatusState status;          // (#1215) burn, chill, bleed, poison
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -559,6 +561,22 @@ bool Animals_Hit(int i, float damage) {
     return false;
 }
 
+// (#1215) A typed hit: through the species' resistances and armour (the 10% floor), its status effect, then the hit itself.
+// RAYLIBGAME_COMBAT1=0: the amount as it is (today).
+bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
+    if (i < 0 || i >= (int)animals.size()) return false;
+    Animal& a = animals[i];
+    float amount = e.amount;
+    if (Combat1_On()) {
+        amount = Damage_Apply(amount, e.type, species[a.species].resist);
+        Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+    }
+    if (dealtOut) *dealtOut = amount;
+    return Animals_Hit(i, amount);
+}
+
+const StatusState* Animals_Status(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].status : nullptr; } // (#1215 tests)
+
 bool Animals_Feed(int i) {
     if (i < 0 || i >= (int)animals.size()) return false;
     Animal& a = animals[i];
@@ -763,6 +781,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         ++simulatedNow; a.simFrame = frameNo;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
+        if (Combat1_On() && a.status.any()) { // (#1215) burn, bleed and poison over time (creatures on land: no water to douse)
+            a.health -= Status_Step(a.status, step, false, s.resist);
+            if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
+        }
         if ((a.settleIn -= step) <= 0.0f) {
             a.settleIn = 1.0f;
             // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
@@ -911,6 +933,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 a.detourTime = 0.0f;
             }
         }
+        if (Combat1_On()) speed *= Status_SpeedFactor(a.status); // (#1215) chilled 0.7, frozen 0
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
