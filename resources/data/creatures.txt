@@ -1,0 +1,21 @@
+# Creatures (#1223, Plan 12): the species from animals.txt that the creature brain drives. animals.txt keeps the body,
+# model, health and drops; a row here adds:
+# id | faction (factions.txt) | key=value ...
+#   behaviour: aggro=passive|defensive|territorial|predator  range= (m, a target this near is taken)  chase= (m, given up past)
+#              angry= (s after a hit)  retreat= (health share; 0 never)  threat=  sleeps=day  fire=scares
+#   senses:    sight= (m in full light)  darksight= (share of it in the dark)  hearing= (m for a loudness-1 noise)
+#              light=none|avoids|drawn
+#   attack:    damage=  reach= (m from its centre)  windup= (s, the telegraph)  cooldown=  knock= (m/s)  poise=
+#              type=blunt|slash|pierce|heat|cold|energy  bite=1
+#   defence:   resist=type:share,...  armour=
+#   spawning:  habitat=surface|night|cave|mouth|dungeon  depth=min-max (m)  dark= (most light it spawns in, 0..1)
+#              cap= (per 64 m chunk)  respawn= (s)  nests=1
+#   loot=item:n,...  (on top of animals.txt's drops)
+#   sound_idle= sound_alert= sound_telegraph= sound_hurt= sound_death=  (names the audio side maps, #1246)
+#
+# The surface hunters reproduce the behaviour from before the framework (#165): the thornback charges within 12 m by day
+# and night, chases a player who hit it for 20 s up to 30 m, runs when under 35% health; the dusk stalker hunts within
+# 70 m after dark, keeps 14 m from fires and leaves at dawn. Both see everything in range (their old rule), strike 0.5 s
+# after the telegraph with a 1.2 s cooldown for 8 (x the difficulty), 2.5 poise a point.
+thornback    | beast | aggro=territorial range=12 chase=30 angry=20 retreat=0.35 sight=1000 darksight=1 hearing=12 damage=8 reach=1.8 windup=0.5 cooldown=1.2 knock=6 type=blunt habitat=surface
+dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 sight=1000 darksight=1 hearing=20 sleeps=day fire=scares damage=8 reach=1.7 windup=0.5 cooldown=1.2 knock=3 type=pierce bite=1 habitat=night

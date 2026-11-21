@@ -40,6 +40,11 @@ uint64_t Animals_LockOn();
 int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
+// (#1223) Cave creature spawning: spawned so far, the sites found in the last pass; spawn on the next update; forget the chunks.
+int Animals_CaveSpawned();
+int Animals_CaveSites();
+void Animals_CaveSpawnNow();
+void Animals_ResetCaveSpawns();
 int Animals_AimedIndex();                 // the animal under the crosshair, -1 none (#1249: studying by looking)
 std::pair<std::string, std::string> Animals_SpeciesOf(int index); // its species (id, display name); empty if none
 void Animals_Reset();
