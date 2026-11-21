@@ -18,6 +18,7 @@ namespace {
 Plot* plot = nullptr;
 int gen = -1, lab1 = -1, lab2 = -1;
 double t0 = 0.0, oneLab = 0.0;
+int unitsAt1s = 0;
 ResearchState& Team() { return Research_Team(ResearchTab_Team()); }
 int PartAt(Int3 c) { return plot ? plot->partAt(c) : -1; }
 }
@@ -25,6 +26,7 @@ int PartAt(Int3 c) { return plot ? plot->partAt(c) : -1; }
 SCENARIO("research/labs") {
     s.tags = { "research", "machines" };
     s.world = ScenarioWorld::Sandbox;
+    s.args = { "--day" };                     // (the labs in daylight)
     s.timeout = 120.0;
     s.step("an LV lab on a generator, a test node queued", 10.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;
@@ -47,7 +49,7 @@ SCENARIO("research/labs") {
             && BuildTool_Place(*c.body, *plot, { PartType::LvLab, { 4, 0, 0 }, 0 }, false);
         if (!c.check("generator, cables and a lab placed", placed)) return true;
         gen = PartAt({ 0, 0, 0 }); lab1 = PartAt({ 4, 0, 0 });
-        c.camera(Vector3Add(ground, Vector3Add(Vector3Scale(at, 4.0f), Vector3Scale(east, -5.0f))), ground, at); // the labs in view
+        c.camera(Vector3Add(ground, Vector3Add(Vector3Scale(at, 2.5f), Vector3Scale(east, -3.5f))), Vector3Add(ground, Vector3Scale(at, 0.5f)), at); // the labs in view
         Factory::Sync(c.world);
         Factory::WaitTicks(3);
         Factory::SetSpeed(20);
@@ -95,9 +97,11 @@ SCENARIO("research/labs") {
     });
     s.step("an LV lab leaves a tier 5 node alone", 20.0, [](ScenarioCtx& c) {
         Factory::Sync(c.world);
-        const int before = ResearchLabs_UnitsCounted();
         ResearchLabs_Update(c.world, c.T);
-        if (c.T - t0 < 6.0) { c.check("no units while only tier 5 is queued", ResearchLabs_UnitsCounted() == before); return false; }
+        // (a tier 3 unit made just before the switch may still be collected in the first second: it is spent, as decided)
+        if (c.T - t0 < 1.0) { unitsAt1s = ResearchLabs_UnitsCounted(); return false; }
+        if (c.T - t0 < 6.0) return false;
+        c.check("no units made while only tier 5 is queued", ResearchLabs_UnitsCounted() == unitsAt1s);
         const MachineView v = Factory::View(c.body->id, plot->id, lab1);
         c.check("the LV lab is not working", v.status != MachineStatus::Working, MachineStatusName(v.status));
         c.check("t5_far untouched", !Team().progress.count("t5_far") && !Team().Done("t5_far"));
