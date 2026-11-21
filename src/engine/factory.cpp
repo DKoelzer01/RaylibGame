@@ -1930,9 +1930,9 @@ TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
     // Ratio out/in of `machine`'s recipe that takes `in` (the first such), counting its first output `out` (or its first).
     auto ratio = [](PartType machine, const std::string& in, const std::string& out) {
         const int inId = tables.item(in), outId = out.empty() ? -1 : tables.item(out);
-        for (const Recipe& r : tables.recipes) {
+        for (const auto& r : tables.recipes) {
             if (r.machine != machine || r.in.empty() || r.out.empty() || r.in[0].item != inId) continue;
-            for (const Stack& o : r.out) if (outId < 0 || o.item == outId) return (double)o.count / r.in[0].count;
+            for (const auto& o : r.out) if (outId < 0 || o.item == outId) return (double)o.count / r.in[0].count;
         }
         return 0.0;
     };
