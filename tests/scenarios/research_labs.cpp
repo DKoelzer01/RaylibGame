@@ -24,7 +24,7 @@ int PartAt(Int3 c) { return plot ? plot->partAt(c) : -1; }
 }
 
 SCENARIO("research/labs") {
-    s.tags = { "research", "machines" };
+    s.tags = { "research", "machines", "factory" }; // (factory: the self-hosted runner runs it, with #1301's tag:factory)
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };                     // (the labs in daylight)
     s.timeout = 120.0;
