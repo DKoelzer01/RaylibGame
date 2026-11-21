@@ -149,6 +149,8 @@ namespace Factory {
     void Crank(uint64_t bodyId, uint32_t plotId, int part);
     // (#1271 L2) A player strikes an anvil with a hammer: its recipe moves on by kStrikeTicks (two strikes can wait).
     void Strike(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1271 L6b) Machine recipes making these items never start (the team's research has not unlocked them); replaces the last list.
+    void SetLockedOutputs(const std::vector<std::string>& outputs);
     // (#1270) A water wheel's or windmill's speed from its river or wind (signed RPM about its plot axis): rotationsources.*
     void SetSourceRpm(uint64_t bodyId, uint32_t plotId, int part, int rpm);
     // (#1269) A rotation part's speed and its network's load (plots near the player; invalid otherwise).

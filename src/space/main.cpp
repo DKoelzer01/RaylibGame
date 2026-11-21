@@ -10472,6 +10472,7 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
+            ResearchGate_Update();                                // (#1271 L6b) machine recipes the research has not unlocked
             MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)

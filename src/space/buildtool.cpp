@@ -187,7 +187,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
     if (part.type == PartType::Farmland) { GameUI_Toast("Farmland is tilled ground now: till soil with a shovel or hoe (RMB)"); return false; } // (#1085)
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
-    if (ResearchGate_On() && !terrainTool.creative && !ResearchGate_PartAllowed(ResearchGate_Team(), t)) { // (#1271, off until the ladder's L6)
+    if (charge && ResearchGate_On() && !terrainTool.creative && !ResearchGate_PartAllowed(ResearchGate_Team(), t)) { // (#1271 L6b: a player's placing; creative and scripted placements are free)
         const ResearchNode* n = ResearchGate_NodeForPart(t);
         GameUI_Toast(TextFormat("Research %s first (Research tab)", n ? n->name.c_str() : "it"));
         Audio_Play(Sfx::Error, 0.5f);
@@ -830,6 +830,15 @@ void Machine_DrawHUD() {
         DrawRectangle(x - 8, y + 66 + 20 * lines, w, 22, Fade(BLACK, 0.55f));
         DrawText(TextFormat("%.1f RPM (%s), stress %d%% - running at %d%%", v.rpm, v.rotStatus, v.stressPercent, v.speedPercent), x, y + 68 + 20 * lines, 16,
                  v.stressPercent > 100 ? Color{ 255, 190, 70, 255 } : RAYWHITE);
+    }
+    { // (#1271 L6b) recipes of this machine the research has not unlocked, and what unlocks them
+        static PartType noteFor = PartType::Count; static std::string note; static double noteAt = -10.0;
+        if (noteFor != machineAim.type || GetTime() - noteAt > 1.0) { note = ResearchGate_MachineLockNote(machineAim.type); noteFor = machineAim.type; noteAt = GetTime(); }
+        if (!note.empty()) {
+            const int ny = y + 66 + 20 * lines + (v.rotation ? 22 : 0);
+            DrawRectangle(x - 8, ny - 2, w, 22, Fade(BLACK, 0.55f));
+            DrawText(note.c_str(), x, ny, 16, Color{ 255, 190, 70, 255 });
+        }
     }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }

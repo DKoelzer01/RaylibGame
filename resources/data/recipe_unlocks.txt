@@ -3,3 +3,6 @@
 # further condition (hidden until it is met).
 explorer_suit | do nights 3
 ore_scanner   | do explored 40
+# (#1271 L6b) the tier 2 milestone hands over the first lab and its pack (and the research begins); later labs come from nodes
+steam_lab     | tier 3
+steam_pack    | tier 3

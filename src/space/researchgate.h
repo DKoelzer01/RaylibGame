@@ -2,7 +2,7 @@
 
 // Research gating and tier milestones (#1271, ladder step L1; the factory and progression doc, section 7.6).
 //
-// INERT in this step: nothing is gated unless the gate is switched on (RAYLIBGAME_LADDER=1, or ResearchGate_SetOn in tests).
+// ON since ladder step L6b (RAYLIBGAME_LADDER=0 or ResearchGate_SetOn(false): off). Creative mode and scripted placements are free.
 // Step L6 switches it on, in the same series as the tier rewrite and the save migration (L7), so no build gates recipes
 // without migrating saves.
 //
@@ -32,6 +32,12 @@ void ResearchGate_SetOn(bool on);
 // The node whose unlocks name it, or nullptr (not gated by research).
 const ResearchNode* ResearchGate_NodeForRecipe(const std::string& output);
 const ResearchNode* ResearchGate_NodeForPart(PartType t); // by its item (PartCostItem) or its machine name
+const ResearchNode* ResearchGate_NodeForMachineItem(const std::string& item); // (#1271 L6b) "machine:<item>"
+// (#1271 L6b) Main thread, every frame (twice a second): the machine recipes (machine_recipes.txt) whose outputs the team's
+// research has not unlocked go to the factory, which never starts them (Factory::SetLockedOutputs); the gate off: none.
+void ResearchGate_Update();
+// (#1271 L6b) For a machine's panel: "2 recipes locked: research Steelmaking (tier 3)", or "" (none locked).
+std::string ResearchGate_MachineLockNote(PartType t);
 // Allowed: the gate is off, no node names it, or its node is done.
 bool ResearchGate_RecipeAllowed(const ResearchState& team, const std::string& output);
 bool ResearchGate_PartAllowed(const ResearchState& team, PartType t);
