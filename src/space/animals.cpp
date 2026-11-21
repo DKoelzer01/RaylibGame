@@ -8,6 +8,7 @@
 #include "audio.h"
 #include "combat.h"
 #include "melee.h"
+#include "creatures.h" // (#1223)
 #include "headless.h"
 #include "net.h"
 #include "playersession.h"
@@ -142,6 +143,10 @@ struct Animal {
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
     StatusState status;          // (#1215) burn, chill, bleed, poison
     PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
+    BrainState brain;            // (#1223) a creature's mind (creatures.txt rows only)
+    bool hurtPending = false;    // (#1223) hit since its last update: by hurtBy (a player: kPlayerPercept | session), from hurtFrom
+    uint64_t hurtBy = 0;
+    Vector3 hurtFrom{};
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -160,6 +165,16 @@ struct Animal {
     Vector3 netPos{}; float netHeading = 0.0f; double netSeen = -1.0;
 };
 std::vector<Animal> animals;
+constexpr uint64_t kPlayerPercept = 1ull << 63; // (#1223) a player's id among a creature's percepts (| its session)
+int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
+// (#1223) Its faction: its creatures.txt row's; a plain animal is livestock (calm) or wild.
+int AnimalFaction(const Animal& a) {
+    const Species& s = species[a.species];
+    if (const CreatureSpec* c = Creature_Spec(s.id)) return c->factionIdx;
+    return Factions().find(s.wild ? "wild" : "livestock");
+}
+struct CreatureHit { uint64_t target, attacker; Vector3 from; DamageEvent e; }; // (#1223) one creature's strike on another
+std::vector<CreatureHit> creatureHits;
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
@@ -193,6 +208,7 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
     for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get()); p && p->name == name) return p;
     return nullptr;
 }
+uint64_t BodyIdOf(const std::string& name) { for (Planetoid* p : Planetoid::All()) if (p->name == name) return p->id; return 0; } // (#1223) creature events
 
 // Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
 // ground in places (density within ~0.06 of iso); they must not stop a walk.
@@ -452,21 +468,65 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
         }
 }
 
-void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr) { // dropsTo (#334): a server's, for the hitting player
+// toGround (#1223): killed by another creature, its drops lie where it fell (a pile anyone picks up), no quest counts.
+void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bool toGround = false) { // dropsTo (#334): a server's, for the hitting player
     const Animal& a = animals[i];
     const Species& s = species[a.species];
-    if (!dropsTo) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
-    if (!dropsTo && s.night) QuestBook_Count("stalker");
+    const CreatureSpec* cs = Creature_Spec(s.id);
+    if (cs) Creature_Event(*cs, CreatureEvent::Death, BodyIdOf(a.body), a.pos);
+    if (!dropsTo && !toGround) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
+    if (!dropsTo && !toGround && s.night) QuestBook_Count("stalker");
+    std::vector<std::pair<std::string, int>> all = s.drops;
+    if (cs) all.insert(all.end(), cs->loot.begin(), cs->loot.end()); // (#1223) the creature's extra loot
     std::string got;
-    for (const auto& d : s.drops) {
+    for (const auto& d : all) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
         if (!itemDB.find(d.first)) continue;
+        if (toGround) { InvSlot st; st.id = d.first; st.centi = (int64_t)n * 100; Combat_DropFor(a.body, DVec3(a.pos), st, ""); continue; }
         if (dropsTo) { dropsTo->push_back({ d.first, n }); continue; }
         inventory.add(d.first, n); got += TextFormat("  +%d %s", n, d.first.c_str());
     }
-    if (!dropsTo) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
+    if (!dropsTo && !toGround) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
     animals.erase(animals.begin() + i);
     if (aimed == i) aimed = -1;
+}
+
+// (#1223) The resistances a hit meets: its creatures.txt row's, else the species'.
+const Resistances& ResistOf(const Animal& a) {
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) return cs->resist;
+    return species[a.species].resist;
+}
+
+// A typed hit's damage on an animal (#1215 types and status, #1217 poise): what to take off its health.
+float TypedAmount(Animal& a, const DamageEvent& e) {
+    float amount = e.amount;
+    // (#1217) Poise: the hit wears it (its poise damage; none given: its amount); broken, the creature staggers (its attack
+    // cancelled), and the first hit while it staggers does x1.5. Small creatures stagger on any heavy hit.
+    if (Combat3_On()) {
+        const Species& sp = species[a.species];
+        if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(sp.health));
+        const bool small = std::max(sp.size.x, std::max(sp.size.y, sp.size.z)) * (0.6f + 0.4f * a.age) <= PoiseTune::kSmallSize;
+        const PoiseHit ph = Poise_Hit(a.poise, e.poise > 0.0f ? e.poise : e.amount, e.heavy, small);
+        amount *= ph.damageScale;
+        if (ph.staggered) { a.windUpAt = -1.0; a.brain.windUpAt = -1.0; }
+    }
+    if (Combat1_On()) {
+        amount = Damage_Apply(amount, e.type, ResistOf(a));
+        Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+    }
+    return amount;
+}
+
+// (#1223) One creature's strike on another: typed damage; the struck one learns who hit it (a creature turns on it, a plain
+// animal runs); a kill leaves its loot on the ground.
+void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from) {
+    Animal& a = animals[i];
+    a.health -= TypedAmount(a, e);
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
+        a.hurtPending = true; a.hurtBy = attacker; a.hurtFrom = from;
+        Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+    } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.state = State::Flee; }
+    if (a.health <= 0.0f) Kill(i, nullptr, true);
 }
 
 } // namespace
@@ -545,11 +605,17 @@ bool Animals_Hit(int i, float damage) {
     if (i < 0 || i >= (int)animals.size()) return false;
     Animal& a = animals[i];
     a.health -= damage;
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
+        // (#1223) A creature: its brain hears who hit it (the local player) and decides (turn on them, retreat, run).
+        a.hurtPending = true; a.hurtBy = kPlayerPercept; a.hurtFrom = a.pos;
+        Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+    } else {
     // Hostile ones fight back until badly hurt; the rest run.
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
     a.fleeFrom = a.pos; // refined to the player's position in the update
     a.state = State::Flee;
+    }
     Audio_Play(Sfx::Dig, 0.5f, 1.6f);
     if (a.health <= 0.0f) { Kill(i); return true; }
     return false;
@@ -559,22 +625,7 @@ bool Animals_Hit(int i, float damage) {
 // RAYLIBGAME_COMBAT1=0: the amount as it is (today).
 bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
     if (i < 0 || i >= (int)animals.size()) return false;
-    Animal& a = animals[i];
-    float amount = e.amount;
-    // (#1217) Poise: the hit wears it (its poise damage; none given: its amount); broken, the creature staggers (its attack
-    // cancelled), and the first hit while it staggers does x1.5. Small creatures stagger on any heavy hit.
-    if (Combat3_On()) {
-        const Species& sp = species[a.species];
-        if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(sp.health));
-        const bool small = std::max(sp.size.x, std::max(sp.size.y, sp.size.z)) * (0.6f + 0.4f * a.age) <= PoiseTune::kSmallSize;
-        const PoiseHit ph = Poise_Hit(a.poise, e.poise > 0.0f ? e.poise : e.amount, e.heavy, small);
-        amount *= ph.damageScale;
-        if (ph.staggered) a.windUpAt = -1.0;
-    }
-    if (Combat1_On()) {
-        amount = Damage_Apply(amount, e.type, species[a.species].resist);
-        Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
-    }
+    const float amount = TypedAmount(animals[i], e); // (#1215, #1217; #1223: a creature's own resistances)
     if (dealtOut) *dealtOut = amount;
     return Animals_Hit(i, amount);
 }
@@ -630,6 +681,20 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
     if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
+    // (#1223) The local player's noise, for creatures' hearing: footsteps every half second (louder sprinting), and each
+    // dig or swing stroke.
+    {
+        static double lastStep = -1e9;
+        static int lastSwings = 0;
+        if (here && !player.flyMode && !survival.dead) {
+            const float sp = Vector3Length(player.velocity);
+            if (player.grounded && sp > 0.5f && simClock - lastStep > 0.5) {
+                Noise_Emit(here->id, playerLocal, sp > player.walkSpeed * 1.2f ? NoiseTune::kSprint : NoiseTune::kWalk, simClock);
+                lastStep = simClock;
+            }
+            if (terrainTool.swings != lastSwings) { lastSwings = terrainTool.swings; Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock); }
+        }
+    }
     // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
     // are simulated around all of them; player-specific behaviour (fleeing the player, following food in hand, night
     // hunters, campfires) still looks at the local player only.
@@ -786,7 +851,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
         if (Combat1_On() && a.status.any()) { // (#1215) burn, bleed and poison over time (creatures on land: no water to douse)
-            a.health -= Status_Step(a.status, step, false, s.resist);
+            a.health -= Status_Step(a.status, step, false, ResistOf(a)); // (#1223: a creature's own resistances)
             if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
         }
         if ((a.settleIn -= step) <= 0.0f) {
@@ -826,7 +891,57 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
         // stalkers will not come within 14 m of one.
         bool hunting = false;
-        if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
+        // (#1223) A creature (a creatures.txt row) is driven by the brain (creatures.h): what it perceives (the nearest player,
+        // creatures of factions it hunts or fears), whether it was hurt, noise it heard, fire, daylight. A plain animal, or
+        // RAYLIBGAME_CREATURES=0: the code below it (the brain's thornback and stalker rows reproduce that code).
+        const CreatureSpec* cs = Creature_Spec(s.id);
+        BrainOut bo;
+        int preyIdx = -1;                      // another creature it goes for (infighting)
+        Vector3 huntAt = tgLocal; float huntDist = pdist;
+        if (cs) {
+            BrainInput bi;
+            bi.now = simClock;
+            bi.health01 = s.health > 0.0f ? a.health / s.health : 1.0f;
+            bi.daylight = !dark;
+            bi.peaceful = !threatsOn || Difficulty_ThreatScale() <= 0.0f;
+            bi.self = a.pos;
+            Vector3 fire{};
+            bi.nearFire = cs->fireScares && NearFire(a.pos, 14.0f, fire);
+            bi.fire = fire;
+            if (sameBody) {
+                Percept p;
+                p.id = kPlayerPercept | tg->session; p.pos = tgLocal; p.dist = pdist; p.faction = Faction_Player();
+                p.seen = Sense_Sees(*cs, pdist, dark && !tg->lit ? 0.0f : 1.0f, true);
+                Vector3 f2; p.safe = NearFire(tgLocal, 10.0f, f2);
+                p.vulnerable = tg->vulnerable;
+                bi.others.push_back(p);
+            }
+            for (size_t j = 0; j < animals.size(); ++j) { // other creatures it has a stance toward, within its sight
+                if (j == i || animals[j].body != a.body) continue;
+                const float d = Vector3Distance(animals[j].pos, a.pos);
+                if (d > std::min(40.0f, cs->sight)) continue;
+                const int fj = AnimalFaction(animals[j]);
+                if (Factions().stance(cs->factionIdx, fj) == Stance::Neutral) continue;
+                Percept p; p.id = animals[j].netId; p.pos = animals[j].pos; p.dist = d; p.faction = fj; p.seen = Sense_Sees(*cs, d, dark ? 0.0f : 1.0f, true);
+                bi.others.push_back(p);
+            }
+            if (a.hurtPending) { bi.hurt = true; bi.hurtBy = a.hurtBy; bi.hurtFrom = (a.hurtBy & kPlayerPercept) ? tgLocal : a.hurtFrom; a.hurtPending = false; }
+            for (const NoiseEvent& n : Noise_Recent(simClock))
+                if (n.body == body->id && n.source != a.netId && Sense_Hears(*cs, Vector3Distance(n.pos, a.pos), n.loudness)) { bi.heardNoise = true; bi.noiseAt = n.pos; break; }
+            const Mood before = a.brain.mood;
+            bo = Brain_Step(a.brain, *cs, bi, step);
+            if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
+                Creature_Event(*cs, CreatureEvent::Alert, body->id, a.pos);
+            if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; }
+            if ((bo.mood == Mood::Chase || bo.mood == Mood::Attack) && a.fleeTimer <= 0.0f) {
+                if (bo.target & kPlayerPercept) hunting = sameBody;
+                else if ((preyIdx = IndexOfNet(bo.target)) >= 0) { hunting = true; huntAt = animals[preyIdx].pos; huntDist = Vector3Distance(huntAt, a.pos); }
+            }
+            if (bo.mood == Mood::Alert && a.fleeTimer <= 0.0f) { // goes to look where the noise was
+                a.state = State::Walk;
+                toward = Vector3Subtract(bo.goal, a.pos); steer = true; speed = s.walk;
+            }
+        } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(tgLocal, 10.0f, fire);
             if (s.night && NearFire(a.pos, 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
@@ -836,33 +951,43 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (!hunting) a.windUpAt = -1.0; // a wind-up broken off (the prey gone or safe) never lands later
         if (hunting) {
             a.state = State::Hunt;
-            toward = Vector3Subtract(tgLocal, a.pos);
+            toward = Vector3Subtract(huntAt, a.pos);
             steer = true;
             speed = s.run * (s.night ? 0.8f : 1.0f);
-            const float reach = 0.5f * s.size.x + 1.0f;
+            const float reach = cs ? cs->reach : 0.5f * s.size.x + 1.0f;
+            const bool atPlayer = preyIdx < 0;
             // A telegraphed attack (#165): in reach it winds up (a growl, a warning) and strikes kBiteWindUp later; the
             // hit goes through Combat_Damage (a shield block, knockback away from it). Out of reach by then: it missed.
-            if (pdist < reach) {
-                speed = 0.0f;
-                if (a.windUpAt < 0.0 && simClock - a.lastBite > 1.2) { // (on simClock: tests step animals many times in a frame)
-                    a.windUpAt = simClock;
-                    if (tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
-                    GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
-                }
+            bool windUp = false, strike = false;
+            if (cs) { // (#1223) the brain's timing (the same numbers for the surface hunters)
+                if (bo.mood == Mood::Attack) speed = 0.0f;
+                windUp = bo.windUpStarted; strike = bo.strike;
+            } else {
+                if (pdist < reach) { speed = 0.0f; windUp = a.windUpAt < 0.0 && simClock - a.lastBite > 1.2; } // (on simClock: tests step animals many times in a frame)
+                strike = a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp;
             }
-            if (a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp) {
+            if (windUp) {
+                a.windUpAt = simClock;
+                if (cs) Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
+                GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
+            }
+            if (strike) {
                 a.windUpAt = -1.0;
                 a.lastBite = simClock;
-                if (pdist < reach + 0.4f) {
+                if (huntDist < reach + 0.4f) {
                     DamageEvent e;
-                    e.amount = 8.0f * Difficulty_ThreatScale();
-                    e.poise = e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
-                    e.kind = s.night ? DamageKind::Bite : DamageKind::Melee;
+                    e.amount = (cs ? cs->damage : 8.0f) * Difficulty_ThreatScale();
+                    e.poise = cs && cs->poise > 0.0f ? cs->poise : e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
+                    e.kind = (cs ? cs->bite : s.night) ? DamageKind::Bite : DamageKind::Melee;
+                    if (cs) e.type = cs->type;
                     e.hasSource = true;
                     e.source = body->toWorldD(DVec3(a.pos));
-                    e.knockback = s.night ? 3.0f : 6.0f; // a ram shoves harder than a bite
+                    e.knockback = cs ? cs->knockback : s.night ? 3.0f : 6.0f; // a ram shoves harder than a bite
                     e.sourceId = a.netId;
-                    if (tg->session != 0) { // (#334) a remote player: its client applies the hit (shield, health), the server the shove
+                    if (cs) e.faction = (uint8_t)std::max(0, cs->factionIdx);
+                    if (!atPlayer) creatureHits.push_back({ animals[preyIdx].netId, a.netId, a.pos, e }); // (#1223) applied after the loop
+                    else if (tg->session != 0) { // (#334) a remote player: its client applies the hit (shield, health), the server the shove
                         if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e);
                     } else {
                         const DamageResult r = Combat_Damage(LocalSession(), e);
@@ -875,7 +1000,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                                    : r.blocked ? TextFormat("You block the %s", s.name.c_str())
                                                : TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
                     }
-                } else if (tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
+                } else if (atPlayer && tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
             }
         } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;
@@ -1040,6 +1165,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // Night hunters gone at daylight.
     for (int k = (int)gone.size() - 1; k >= 0; --k) animals.erase(animals.begin() + gone[k]);
     if (!gone.empty()) aimed = -1;
+    // (#1223) Creatures' strikes on each other, gathered in the loop (a kill shifts the list), found again by id.
+    for (const CreatureHit& h : creatureHits) { const int t = IndexOfNet(h.target); if (t >= 0) HitByCreature(t, h.e, h.attacker, h.from); }
+    creatureHits.clear();
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -1083,7 +1211,6 @@ Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
 WeaponClass gMeleeClass = WeaponClass::Tools;
 int gMeleeHits = 0;                 // hits landed (tests)
 
-int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
 
 Vector3 AnimalForward(const Animal& a) {
     Vector3 east, north;
