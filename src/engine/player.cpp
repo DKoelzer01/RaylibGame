@@ -765,11 +765,14 @@ void Player::aimRay(const Scene& world, const Planetoid& body, DVec3& originLoca
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
-    Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    // The eye's offset from the feet, kept on its own (small numbers): (F4, #1412) the double eye below adds it to the
+    // double feet; eye - feet in render space carried both points' rounding (~61 um 1 km from the render origin).
+    Vector3 eyeOff = Vector3Scale(up, eyeHeight + eyeOffset);
     if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
         const float len = Vector3Length(eyeOffsetH);
-        if (len > 1e-6f) eye = Vector3Add(eye, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
+        if (len > 1e-6f) eyeOff = Vector3Add(eyeOff, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
     }
+    Vector3 eye = Vector3Add(feet, eyeOff);
     lastEyePush = 0.0f;
     // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
     // shape: keep it 0.25 m clear of the terrain (the near plane's reach) so it never looks through a ceiling or an
@@ -806,13 +809,14 @@ void Player::applyToCamera(Scene& world) const {
             eyeDrop = roomy ? eyeDrop + (want - eyeDrop) * (1.0f - expf(-dt / 0.04f)) : want;
         } else eyeDrop += (want - eyeDrop) * (1.0f - expf(-dt / 0.15f)); // back up eased
         eye = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+        eyeOff = Vector3Subtract(eyeOff, Vector3Scale(up, eyeDrop));
         lastEyePush = eyeDrop;
     }
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
     // (F4, #1412) the eye in double: the interpolated feet (double) plus the eye's small offset from them. The render-space
     // camera rounds it (~61 um steps 1 km from the render origin), and aims taken from it wobbled while the player stood still.
-    lastEyeD = renderPosition(SimAlpha()) + DVec3(Vector3Subtract(eye, feet));
+    lastEyeD = renderPosition(SimAlpha()) + DVec3(eyeOff);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
     else cameraUp = up;
