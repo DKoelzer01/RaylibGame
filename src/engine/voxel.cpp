@@ -1328,8 +1328,8 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.18).
-        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.18f;
+        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.6; 0.18 before).
+        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.6f; // (user 2026-11-20: 0.18 -> 0.6)
         const float odds = std::min(0.95f, baseOdds * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
         const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
         // (#1115) The tries look where the cell's ground is steep: a 6 x 6 grid of heights over its surface patch (~43 m apart)
