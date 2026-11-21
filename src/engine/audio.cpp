@@ -59,12 +59,32 @@ namespace {
         std::atomic<float> dir[3] = { 0.0f, 0.0f, -1.0f };
         std::atomic<float> blend{ 0.0f };
         std::atomic<float> air[3] = { 1.0f, 1.0f, 1.0f };
+        std::atomic<float> send{ 0.0f };    // (#1294) how much of the dry sound goes to the reverb
+        uint64_t sendCursor = 0;            // audio thread: where its next block lands in the send ring
     };
     VoiceDsp dsp[AudioMixer::kVoices];
     AudioStream voiceStream[AudioMixer::kVoices] = {};
     std::shared_ptr<const AudioScene> worldScene; // (#1293) the ground and parts around the listener (Audio_SetWorld)
     static_assert(SteamAudio::kMaxVoices == AudioMixer::kVoices, "one Steam Audio source per voice");
     bool steam = false;                 // Steam Audio loaded: every voice is stereo and goes through its effects
+    // (#1294) The reverb: the voices' sends summed in a ring, a stream of its own running Steam Audio's reverb on them.
+    bool reverbLive = false;
+    AudioSendRing sendRing;
+    AudioStream reverbStream = {};
+    AudioBlockFifo reverbFifo;
+    float reverbBlock[AudioBlockFifo::kBlock], reverbL[AudioBlockFifo::kBlock], reverbR[AudioBlockFifo::kBlock];
+    void ReverbCallback(void* out, unsigned int frames) {
+        float* o = (float*)out;
+        unsigned int done = 0;
+        while (done < frames) {
+            if (reverbFifo.available() == 0) {
+                sendRing.read(reverbBlock, AudioBlockFifo::kBlock);
+                SteamAudio::ReverbProcess(reverbBlock, reverbL, reverbR);
+                reverbFifo.fill(reverbL, reverbR);
+            }
+            done += (unsigned int)reverbFifo.pop(o + 2 * done, (int)(frames - done));
+        }
+    }
     constexpr float kAirScale = 8.0f;   // air absorption x8: game-scale dulling with distance (guess, tune by ear)
 
     enum class VKind : uint8_t { None, Pcm, Stream };
@@ -107,6 +127,10 @@ namespace {
             if (d.cursor < d.len) x = d.data[d.cursor++];
             else d.done.store(true, std::memory_order_relaxed);
             d.block[i] = x;
+        }
+        if (reverbLive) { // (#1294) the dry sound into the reverb's send ring
+            const float s = d.send.load(std::memory_order_relaxed);
+            if (s > 0.0f) sendRing.add(d.sendCursor, d.block, n, s);
         }
         const float blend = d.blend.load(std::memory_order_relaxed);
         if (d.fx && blend > 0.0f) {
@@ -195,6 +219,56 @@ namespace {
         return a;
     }
 
+    // (#1240) Footsteps, one short sound per surface (footsteps.cpp plays them with a little pitch jitter): noise shaped by
+    // a fast attack and a decay, filtered to the surface's colour, with its own extra (a click, a thump, grains, a ring).
+    bool MakeProceduralStep(const std::string& surface, std::vector<float>& out) {
+        std::mt19937 rng(std::hash<std::string>{}(surface) & 0xffffffffu);
+        std::uniform_real_distribution<float> n(-1.0f, 1.0f), u01(0.0f, 1.0f);
+        float lp = 0.0f, lp2 = 0.0f, grain = 0.0f;
+        auto env = [](float t, float attack, float decay) { return std::min(1.0f, t / attack) * expf(-t * decay); };
+        if (surface == "stone") { // a hard tap: bright noise and a click
+            out = Synth(0.12f, [&](float t, float) { const float x = n(rng); lp += (x - lp) * 0.3f;
+                return ((x - lp) * 0.9f * env(t, 0.001f, 55.0f)) + sinf(6.2832f * 2300.0f * t) * 0.25f * expf(-t * 220.0f); });
+        } else if (surface == "dirt") { // a dull thud
+            out = Synth(0.15f, [&](float t, float) { lp += (n(rng) - lp) * 0.08f;
+                return lp * 2.2f * env(t, 0.003f, 35.0f) + sinf(6.2832f * 90.0f * t) * 0.35f * expf(-t * 40.0f); });
+        } else if (surface == "grass") { // two quick rustles
+            out = Synth(0.2f, [&](float t, float) { const float x = n(rng); lp += (x - lp) * 0.35f; lp2 += (x - lp2) * 0.06f;
+                const float band = lp - lp2;
+                return band * 1.4f * (env(t, 0.004f, 30.0f) + 0.6f * (t > 0.045f ? env(t - 0.045f, 0.004f, 35.0f) : 0.0f)); });
+        } else if (surface == "sand") { // a soft, longer hiss
+            out = Synth(0.22f, [&](float t, float) { lp += (n(rng) - lp) * 0.4f;
+                return lp * 0.7f * env(t, 0.012f, 22.0f); });
+        } else if (surface == "gravel") { // a crunch: dense little clicks over low noise
+            out = Synth(0.2f, [&](float t, float) {
+                if (u01(rng) < 500.0f / kRate) grain = 0.6f + 0.4f * u01(rng);
+                grain *= 0.985f;
+                lp += (n(rng) - lp) * 0.15f;
+                return (grain * n(rng) * 0.8f + lp * 0.8f) * env(t, 0.002f, 20.0f); });
+        } else if (surface == "snow") { // a squeaky crunch, dull
+            out = Synth(0.24f, [&](float t, float) {
+                if (u01(rng) < 250.0f / kRate) grain = 1.0f;
+                grain *= 0.993f;
+                lp += (n(rng) * grain - lp) * 0.12f;
+                return lp * 2.5f * env(t, 0.01f, 16.0f); });
+        } else if (surface == "wood") { // a hollow knock: a resonance near 170 Hz and its octave
+            out = Synth(0.2f, [&](float t, float) { lp += (n(rng) - lp) * 0.25f;
+                return (sinf(6.2832f * 170.0f * t) * 0.5f + sinf(6.2832f * 340.0f * t) * 0.2f) * expf(-t * 28.0f) + lp * 0.5f * expf(-t * 90.0f); });
+        } else if (surface == "metal") { // a ringing clank: inharmonic partials
+            out = Synth(0.35f, [&](float t, float) { lp += (n(rng) - lp) * 0.5f;
+                return (sinf(6.2832f * 520.0f * t) * 0.3f * expf(-t * 12.0f) + sinf(6.2832f * 1310.0f * t) * 0.2f * expf(-t * 16.0f) +
+                        sinf(6.2832f * 2150.0f * t) * 0.12f * expf(-t * 22.0f)) + lp * 0.4f * expf(-t * 120.0f); });
+        } else if (surface == "water") { // a splash: noise and a few bubbles
+            float bubF = 0.0f, bubT = 1.0f, bubPh = 0.0f;
+            out = Synth(0.3f, [&](float t, float) { lp += (n(rng) - lp) * 0.3f;
+                if (u01(rng) < 60.0f / kRate) { bubF = 400.0f + 700.0f * u01(rng); bubT = 0.0f; }
+                float b = 0.0f;
+                if (bubT < 0.03f) { bubPh += 6.2832f * bubF * (1.0f + 10.0f * bubT) / kRate; b = sinf(bubPh) * (1.0f - bubT / 0.03f) * 0.3f; bubT += 1.0f / kRate; }
+                return lp * 1.2f * env(t, 0.004f, 12.0f) + b * expf(-t * 6.0f); });
+        } else return false;
+        return true;
+    }
+
     // Procedural loops for emitters (later steps tune them and add more; files in resources/audio replace them).
     bool MakeProceduralLoop(const std::string& name, std::vector<float>& out) {
         std::mt19937 rng(std::hash<std::string>{}(name) & 0xffffffffu);
@@ -230,6 +304,7 @@ namespace {
             });
             return true;
         }
+        if (name.rfind("step_", 0) == 0) return MakeProceduralStep(name.substr(5), out); // (#1240)
         return false;
     }
 
@@ -309,6 +384,8 @@ namespace {
         q.done.store(false);
         q.alpha.store(1.0f);
         q.blend.store(0.0f);
+        q.send.store(0.0f);
+        q.sendCursor = 0; // (behind the reader: its first block resyncs it)
         q.fifo.clear();
         SteamAudio::ResetVoice(q.fx); // no HRTF tail from the last sound
         SetAudioStreamVolume(voiceStream[v], 0.0f); // set properly right after (ApplyVoice)
@@ -317,9 +394,20 @@ namespace {
         s.kind = VKind::Pcm;
     }
 
-    void ApplyVoice(int v, float gain, const AudioSpatial& sp, float pitch) {
+    void ApplyVoice(int v, float gainIn, const AudioSpatial& sp, float pitch) {
         VoiceState& s = vs[v];
+        // (#1310) A one-shot at a place gets its distance gain here (an emitter's voice volume has it already).
+        const float gain = s.emitter >= 0 ? gainIn : gainIn * sp.gain;
         const float alpha = AudioOnePoleAlpha(sp.cutoffHz, (float)kRate);
+        if (reverbLive && s.kind == VKind::Pcm) {
+            // (#1294) The reverb send: the room's wet level, the sound's level with only half its distance loss (a
+            // room's reverb is about as loud anywhere in it). Not for UI and music, nor for centred ambience beds.
+            const AudioBus bus = mixer.voice(v).bus;
+            const bool placed = s.positional || (s.emitter >= 0 && emitters.get(s.emitter) && emitters.get(s.emitter)->positional);
+            const bool sends = bus != AudioBus::UI && bus != AudioBus::Music && (placed || bus != AudioBus::Ambience);
+            const float dist = placed ? std::max(sp.gain, 1e-3f) : 1.0f;
+            dsp[v].send.store(sends ? std::min(1.0f, SteamAudio::ReverbWet() * gain / sqrtf(dist)) : 0.0f, std::memory_order_relaxed);
+        }
         if (s.kind == VKind::Pcm) {
             if (fabsf(gain - s.gain) > 1e-4f) SetAudioStreamVolume(voiceStream[v], gain);
             if (fabsf(sp.pan - s.pan) > 1e-3f) SetAudioStreamPan(voiceStream[v], sp.pan);
@@ -425,6 +513,12 @@ void Audio_Init() {
             voiceStream[v] = LoadAudioStream(kRate, 32, steam ? 2 : 1);
             SetAudioStreamCallback(voiceStream[v], kCallbacks[v]);
         }
+        if (steam && SteamAudio::ReverbOn()) { // (#1294) the reverb's own stream, always playing (silent when dry)
+            reverbStream = LoadAudioStream(kRate, 32, 2);
+            SetAudioStreamCallback(reverbStream, ReverbCallback);
+            PlayAudioStream(reverbStream);
+            reverbLive = true;
+        }
         SetMasterVolume(1.0f); // the master volume is a bus gain in v2 (the mixer applies it per voice)
         LOG_INFO("Audio", "audio v2: %d voices, buses, positional sound, emitters and the asset slot (RAYLIBGAME_AUDIO_V2); steam audio: %s\n",
                  AudioMixer::kVoices, SteamAudio::Status());
@@ -440,6 +534,7 @@ void Audio_Shutdown() {
     if (!ready) return;
     if (Audio_V2()) {
         for (int v = 0; v < AudioMixer::kVoices; ++v) { StopVoiceRaw(v); UnloadAudioStream(voiceStream[v]); }
+        if (reverbLive) { StopAudioStream(reverbStream); UnloadAudioStream(reverbStream); reverbLive = false; }
         for (SoundDef& d : table) if (d.stream) UnloadMusicStream(d.music);
         table.clear();
         for (VoiceDsp& q : dsp) { SteamAudio::DestroyVoice(q.fx); q.fx = nullptr; } // the streams are gone: no callback runs
@@ -665,6 +760,11 @@ const char* Audio_SpatialBackend() {
         for (float o : st.occlusion) occluded += o < 0.99f ? 1 : 0;
         snprintf(buf, sizeof buf, "\nocclusion: %lld runs, %.2f ms (max %.2f), %d sources, %d occluded", st.ticks, st.lastMs, st.maxMs, st.sources, occluded);
         s += buf;
+        if (reverbLive) { // (#1294)
+            snprintf(buf, sizeof buf, "\nreverb: enclosed %.0f%%, mean %.1f m, RT60 %.2f/%.2f/%.2f s, wet %.2f",
+                     st.enclosure * 100.0f, st.meanDistance, st.rt60[0], st.rt60[1], st.rt60[2], st.wet);
+            s += buf;
+        }
     }
     return s.c_str();
 }

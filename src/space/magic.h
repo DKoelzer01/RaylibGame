@@ -12,6 +12,8 @@ bool Magic_Enabled(); // RAYLIBGAME_MAGIC=1
 // The start planet's mana field (built on first use from its terrain seed; nullptr without a planet with air, or with
 // magic off).
 const ManaField* Magic_Field(Scene& world);
+// The field of this body if it is the one built (the start planet; any thread may read it once built), else nullptr.
+const ManaField* Magic_FieldFor(const class Planetoid& body);
 // What the place adds at a body-local direction on the start planet now: height, climate, biome, wind and storms (the
 // weather is a pure function of place and world time, so clients agree), depth = m under the surface.
 ManaEnv Magic_EnvAt(Scene& world, Vector3 dir, float depth = 0.0f);
