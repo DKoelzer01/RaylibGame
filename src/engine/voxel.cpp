@@ -1328,8 +1328,56 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.6; 0.18 before).
+        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.6f; // (user 2026-11-20: 0.18 -> 0.6)
+        const float odds = std::min(0.95f, baseOdds * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
         const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
+        // (#1115) The tries look where the cell's ground is steep: a 6 x 6 grid of heights over its surface patch (~43 m apart)
+        // ranks the points by the largest drop to a grid neighbour, and the tries go to the steepest few, jittered by half a
+        // spacing. Random points in the cell's volume (before) mostly missed the patch or fell on gentle ground, so a cell that
+        // rolled a mouth rarely found its face and the user flew around without seeing one.
+        constexpr int kG = 6;
+        float gridStep = 0.0f;                                             // the grid's spacing (m)
+        std::vector<Vector3> steep;                                        // candidate directions, steepest first
+        Vector3 pu1{}, pu2{};
+        static const bool mouthSearch = !(getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH") && getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH")[0] == '0'); // =0: random tries (A/B)
+        if (cellHasMouth && mouthSearch) {
+            const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+            const float cl = Vector3Length(cc);
+            if (cl > 1.0f) {
+                const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+                pu1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                pu2 = Vector3CrossProduct(d0, pu1);
+                const float half = 0.75f * kCaveCell;                      // the patch may sit off the centre's direction
+                float eg[kG + 2][kG + 2]; bool ing[kG + 2][kG + 2]; Vector3 dg[kG + 2][kG + 2];
+                const int n = kG + 2;
+                const float step = 2.0f * half / (n - 1);
+                gridStep = step;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(d0, R), Vector3Add(Vector3Scale(pu1, -half + step * i), Vector3Scale(pu2, -half + step * j))));
+                        const Vector3 onR = Vector3Scale(d, R);
+                        dg[j][i] = d;
+                        ing[j][i] = (int)floorf(onR.x / kCaveCell) == cx && (int)floorf(onR.y / kCaveCell) == cy && (int)floorf(onR.z / kCaveCell) == cz;
+                        eg[j][i] = ing[j][i] ? f.elevation(d) : 0.0f;
+                    }
+                std::vector<std::pair<float, Vector3>> rank;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        if (!ing[j][i] || eg[j][i] < 2.0f) continue;
+                        float drop = 0.0f;
+                        static const int nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+                        for (const auto& o : nb) {
+                            const int a = i + o[0], b = j + o[1];
+                            if (a < 0 || b < 0 || a >= n || b >= n || !ing[b][a]) continue;
+                            drop = std::max(drop, fabsf(eg[b][a] - eg[j][i]));
+                        }
+                        if (drop > 0.2f * step) rank.push_back({ drop, dg[j][i] }); // ~11 degrees or more over a spacing
+                    }
+                std::sort(rank.begin(), rank.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                for (size_t k = 0; k < rank.size() && k < 5; ++k) steep.push_back(rank[k].second);
+            }
+        }
         for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
@@ -1337,6 +1385,10 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             (void)coin;
             if (sl < 1.0f) continue;
             Vector3 dir = Vector3Scale(s, 1.0f / sl);
+            if (!steep.empty()) {                                           // (#1115) near a steep grid point instead
+                const float j1 = (UM(rm) - 0.5f) * gridStep, j2 = (UM(rm) - 0.5f) * gridStep; // within half a spacing
+                dir = Vector3Normalize(Vector3Add(Vector3Scale(steep[(size_t)tries % steep.size()], R), Vector3Add(Vector3Scale(pu1, j1), Vector3Scale(pu2, j2))));
+            }
             const Vector3 onR = Vector3Scale(dir, R);
             if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
             const float e0 = f.elevation(dir);
@@ -1355,7 +1407,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
             const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
             const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
-            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_RISE: the rise within 10 m a face needs (5 m; 2/5 of it within 5 m).
+            static const float needRise = getenv("RAYLIBGAME_CAVE_MOUTH_RISE") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_RISE")) : 5.0f;
+            if (rise10 < needRise || rise5 < 0.4f * needRise || fall4 < 0.5f) continue;
             const float flat = 0.55f + 0.15f * rf;
             const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
             if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
@@ -2533,6 +2587,17 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
 // sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
 // up to the stride where the probe stops (a ring).
+// (#899) A mesh vertex's depth under the surface (m), for the sky terms. Hinted: from the block's height grid (gridElev).
+// Unhinted (dug ground, cave blocks on the CPU path): from the height map - it was 1e9 m, so those blocks skipped the
+// opening and open-column terms while their hinted neighbours took them (a straight lit/dark step at the border).
+// unhintedDepth false: as before (RAYLIBGAME_SKY_UNHINTED=0).
+static float VertexDepth(const PlanetField* planet, bool hinted, float gridElev, Vector3 p, float stride, bool unhintedDepth) {
+    if (!planet) return 1e9f;
+    if (hinted) return planet->radius + gridElev - Vector3Length(p);
+    if (!unhintedDepth) return 1e9f;
+    return planet->radius + planet->elevation(Vector3Normalize(p), std::max(stride, 1.0f)) - Vector3Length(p);
+}
+
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
                               Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev, bool verifyOutside = false) {
     const float d = Vector3Length(p);
@@ -3202,6 +3267,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
             const PlanetField* planetLife = dynamic_cast<const PlanetField*>(&field);
             if (planetLife && !planetLife->foliage) planetLife = nullptr;
             const PlanetField* gridField = grid ? dynamic_cast<const PlanetField*>(&field) : nullptr;
+            const PlanetField* planetField = dynamic_cast<const PlanetField*>(&field); // (#898/#1067) depth without the grid hint
             for (size_t v = 0; v < verts.size(); ++v) {
                 const Vector3 lp = Vector3Scale(verts[v], stride);     // node-relative, in voxels
                 const Vector3 p = Vector3Add(origin, lp);
@@ -3240,7 +3306,14 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     // seen (a cave mouth, a shaft, a pit): at least 0.6 x (1 - depth / 40 m) of the open share (0.42 at 12 m: walls stay
                     // under the open ground and fall off deeper in), the rays checked past the block. The
                     // depth term alone cut to black ~10 m down, under an opening or not; a closed tunnel stays black.
-                    const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p) : 1e9f;
+                    // (#899, #898/#1067) A block meshed without the grid hint - dug or edited ground, and cave blocks over the
+                    // 32-segment GPU limit (the CPU path, common at mouths) - read its depth as 1e9 m, so it skipped the opening and
+                    // open-column terms below while the hinted block beside it took them: a hard, straight lit/dark step along the
+                    // block border under overhangs and at cave mouths (#899), and dug pits lost their sky. Its depth now comes from
+                    // the height map. RAYLIBGAME_SKY_UNHINTED=0: as before (A/B).
+                    static const bool skyUnhinted = !(getenv("RAYLIBGAME_SKY_UNHINTED") && getenv("RAYLIBGAME_SKY_UNHINTED")[0] == '0');
+                    const float depthHere = hinted ? VertexDepth(gridField, true, gElev, p, stride, true)
+                                          : (sky < 0.999f ? VertexDepth(planetField, false, 0.0f, p, stride, skyUnhinted) : 1e9f);
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
                     if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
@@ -3250,7 +3323,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     //    at least 0.85, at any depth (the column walked in 2 m steps; a closed cave stops at its first roof sample).
                     // 2. Under a shaft's foot (karst sink, tube skylight): a pool of up to 0.5, fading from the shaft's radius to 2.5
                     //    radii around its axis and from 4 to 12 m below its foot. RAYLIBGAME_SHAFT_SKY=0: off.
-                    if (shaftSkyOn && stride <= 1.0f && hinted && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
+                    if (shaftSkyOn && stride <= 1.0f && depthHere > 2.0f && depthHere < 150.0f && sky < 0.85f) {
                         const Vector3 upv = Vector3Normalize(p);
                         if (Vector3DotProduct(n, upv) > -0.3f) {
                             const Vector3 p0 = Vector3Add(p, Vector3Scale(n, 0.5f * stride));
@@ -3571,3 +3644,23 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
     std::sort(out.begin(), out.end(), [&](const Vector3& a, const Vector3& b) { return Vector3DotProduct(dir, a) > Vector3DotProduct(dir, b); });
     return out;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
+// in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
+// step along the border. (The old behaviour stays behind RAYLIBGAME_SKY_UNHINTED=0: unhintedDepth false.)
+TEST(Voxel, UnhintedVertexDepthMatchesTheHintedNeighbour) {
+    PlanetField f(42u, 32000.0f, false);
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float e = f.elevation(dir, 1.0f);                       // the grid hint's height here (the same height map)
+        const Vector3 p = Vector3Scale(dir, f.radius + e - 5.0f);      // a vertex 5 m under the surface
+        const float hinted = VertexDepth(&f, true, e, p, 1.0f, true);
+        const float unhinted = VertexDepth(&f, false, 0.0f, p, 1.0f, true);
+        EXPECT_NEAR(hinted, 5.0f, 0.02f);
+        EXPECT_NEAR(unhinted, hinted, 0.05f) << "an unhinted block's vertex depth must match its hinted neighbour's";
+        EXPECT_GT(VertexDepth(&f, false, 0.0f, p, 1.0f, false), 1e8f); // the A/B switch keeps the old 1e9
+    }
+}
+#endif
