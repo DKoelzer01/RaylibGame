@@ -947,7 +947,10 @@ static void DrawCrafting() {
                                id ? id->name.c_str() : in.first.c_str(), all, all > inv ? TextFormat(", %d in chests", all - inv) : "", madeFirst ? "  - made first" : "");
             if (ImGui::IsItemClicked()) { HelpManual_OpenItem(in.first); databaseOpen = true; } // (#826) an ingredient: its page
         }
-        const bool can = direct || plan1.ok;
+        // (#1104) Joined, a client sees no chest's contents (only the machine it watches): with a chest in reach the server,
+        // which counts the inventory and the nearby chests together, decides; it says what was missing if it can't craft it.
+        const bool chestsUnseen = gNetRole == NetRole::Client && uiWorld && !Storage_NearbyChests(*uiWorld).empty();
+        const bool can = direct || plan1.ok || chestsUnseen;
         // Queues n: in creative, or with everything carried, as it was; else the plan's steps, intermediates first.
         auto queueN = [&](int n) {
             if (creative || inventory.canCraft(r)) { craftQueue.push_back({ selectedRecipe, n }); return; }
@@ -991,6 +994,7 @@ static void DrawCrafting() {
                 ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Missing items; a machine makes %s", names.c_str()); ImGui::PopTextWrapPos();
             } else ImGui::TextDisabled("Missing items");
         } else if (pending >= 0) ImGui::TextDisabled("Waiting for items from the chests...");
+        else if (chestsUnseen && !direct && !plan1.ok) ImGui::TextDisabled("The server counts the chests near you too");
         // What this is used by: the recipes that take it.
         ImGui::Separator();
         ImGui::TextUnformatted("Used by:");

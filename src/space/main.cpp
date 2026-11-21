@@ -4776,6 +4776,21 @@ int main(int argc, char** argv)
                     } else if (craftPhase == 5 && GetTime() - craftStart > 0.5) {
                         craftInChest = Storage_CountNearby(world, "iron_ingot");
                         check(craftInChest == craftInv0 + 4, "the chest holds the deposited iron");
+                        // (#1104) a split ingredient: half the coke oven's stone carried, half in the chest (the any_stone family)
+                        Factory::Seed(p->id, craftPlot->id, craftChest, "granite", 12);
+                        inventory.add("granite", 12); inventory.add("clay", 8);
+                        craftPhase = 6; craftStart = GetTime();
+                    } else if (craftPhase == 6 && GetTime() - craftStart > 0.5) {
+                        const int carried = inventory.count("any_stone"), inChest = Storage_CountNearby(world, "any_stone");
+                        check(carried >= 12 && carried + inChest >= 24, "a split ingredient counts the inventory and the chest together (any_stone)");
+                        check(Storage_Pull(world, "any_stone", 24 - carried), "the chest's share is pulled");
+                        craftPhase = 7; craftStart = GetTime();
+                    } else if (craftPhase == 7 && GetTime() - craftStart > 0.5) {
+                        const Recipe* oven = nullptr;
+                        for (const Recipe& rc : itemDB.recipes()) if (rc.output == "coke_oven") oven = &rc;
+                        const bool ovenOk = oven && inventory.canCraft(*oven);
+                        check(ovenOk, "then the coke oven can be crafted (#1104)");
+                        printf("bench: crafting (#1104): 12 granite carried + 12 in the chest -> any_stone %d carried, coke oven craftable %d\n", inventory.count("any_stone"), (int)ovenOk);
                         // #283: a chest takes anything, also items no recipe or fuel list names (they were refused).
                         check(Factory::Accepts(PartType::Chest, "cooked_meat") && Factory::Accepts(PartType::Chest, "ruby") && Factory::Accepts(PartType::Chest, "bench_never_seen_item_283"), "a chest accepts food, gems and unknown items (#283)");
                         if (craftPlot && craftChest >= 0) craftPlot->remove(craftChest);

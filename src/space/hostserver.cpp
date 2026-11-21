@@ -1958,7 +1958,23 @@ namespace {
                 if (!unlocked) { SendMsg(m.conn, MsgChat{ 0, "Your team hasn't unlocked " + rc.output + " yet" }); return; }
                 Inventory& inv = rit->second.inventory;
                 const auto before = AllAmounts(inv);
-                if (q.recursive && !rit->second.creative) {
+                // (#1104) The inventory and the chests near the player together cover the recipe as it is (half the stone carried,
+                // half in a chest): no plan needed, the chests' share is taken below (#854). The recursive planner sees only
+                // what is carried, so it said "Missing items" for a split ingredient.
+                bool useChests = q.useChests;
+                if (q.recursive && !rit->second.creative && !inv.canCraft(rc)) {
+                    std::map<std::string, int> inChests;
+                    for (const auto& [b, pc] : ChestsNear(it->second.session, rit->second))
+                        for (const auto& [id, n] : Factory::ChestContents(b->id, pc.first->id, pc.second)) inChests[id] += n;
+                    bool covered = !inChests.empty();
+                    for (const auto& [want, n] : rc.inputs) {
+                        int have = inv.count(want);
+                        for (const auto& [id, k] : inChests) if (ItemMatches(want, id)) have += k;
+                        covered = covered && have >= n * (int)q.count;
+                    }
+                    if (covered) useChests = true;
+                }
+                if (q.recursive && !rit->second.creative && !useChests) {
                     // (#946) Recursive crafting (#928) planned here, whole: the player's known recipes as the server sees them
                     // (unlocked for its team, every ingredient held once by this inventory), its carried items; then the
                     // steps in order, intermediates first. A step that fails stops the rest (what was made stays).
@@ -2000,7 +2016,7 @@ namespace {
                 if (rit->second.creative) { for (; made < q.count; ++made) inv.addAmount(rc.output, rc.outputCount); } // (#823) creative: free
                 else while (made < q.count && inv.canCraft(rc) && inv.craft(rc)) ++made; // the output counts for the team (inventory.onAdded)
                 if (made > 0) SendChangedItems(m.conn, inv, before);
-                if (made < q.count && q.useChests) { // (#854) what the inventory lacks, from the chests near the player; the craft waits for it
+                if (made < q.count && useChests) { // (#854) what the inventory lacks, from the chests near the player; the craft waits for it
                     const int rest = q.count - made;
                     std::vector<std::pair<std::string, int>> missing;
                     for (const auto& [want, n] : rc.inputs) { const int lack = n * rest - inv.count(want); if (lack > 0) missing.push_back({ want, lack }); }
