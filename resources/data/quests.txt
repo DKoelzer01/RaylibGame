@@ -43,3 +43,12 @@ node | a2 | arcane | a1         | do arcane_sight 1 | Open your magic sight (tap
 node | a3 | arcane | a2         | do arcane_study 3 | Study three things with your sight (hold Y on them) | -
 node | a4 | arcane | a2         | do arcane_node 1  | Stand where ley lines cross | -
 node | a5 | arcane | a3, a4     | do arcane_kinds 3 | Study nodes of three different kinds: they gather in different country | -
+
+# (#1271 L5) Mechanics: the side line through mechanical power (rewards: gears and parts for the next step).
+line | mechanics | Mechanics | 200,160,90
+node | m1 | mechanics | tier 1     | place hand_crank  | Put a hand crank on a shaft     | shaft 4
+node | m2 | mechanics | m1         | place millstone   | Grind with a millstone, turned by the crank (hold RMB on it) | cogwheel 2
+node | m3 | mechanics | m2, tier 2 | place water_wheel | Set a water wheel in a stream   | large_cogwheel 1
+node | m4 | mechanics | m3         | place windmill    | Raise a windmill, high and in the open | cogwheel 2
+node | m5 | mechanics | m3         | place gearbox     | Take a shaft round a corner with a gearbox | stress_gauge 1
+node | m6 | mechanics | m4         | place bellows     | Blow a bloomery with bellows on a shaft | charcoal 8

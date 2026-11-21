@@ -216,7 +216,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         Claims_SetBanner(claim, plot.id, plot.partAt(part.origin));
         GameUI_Toast(TextFormat("Claimed the land %.0f m across around the banner (the map shows it)", kClaimBannerAcross[ClaimBannerTier(t)]));
     }
-    if (IsMachine(part.type) || IsRocketPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
+    if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
     return true;
 }
 

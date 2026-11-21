@@ -1699,7 +1699,7 @@ namespace {
                 const int team = TeamOfSession(session);
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
-            if (IsMachine(part.type) || IsRocketPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
+            if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
             SendToJoined(out);
         }

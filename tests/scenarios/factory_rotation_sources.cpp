@@ -78,7 +78,7 @@ SCENARIO("factory/rotation-sources") {
         Factory::Sync(c.world);
         const RotationView m = View(mill);
         if (c.t < 2.0 || !m.valid) return false;
-        c.near("full wind: 8 RPM", fabsf(m.rpm), 8.0, 0.01);
+        c.near("full wind: 16 RPM", fabsf(m.rpm), 16.0, 0.01);
         c.eq("four sails: 1024 SU", m.capacity, 1024);
         return true;
     });
@@ -87,7 +87,7 @@ SCENARIO("factory/rotation-sources") {
         Factory::Sync(c.world);
         const RotationView m = View(mill);
         if (c.t < 2.0 || !m.valid) return false;
-        c.near("4 m/s: 4 RPM", fabsf(m.rpm), 4.0, 0.01);
+        c.near("4 m/s: 8 RPM", fabsf(m.rpm), 8.0, 0.01);
         return true;
     });
     s.step("a calm stops it", 10.0, [](ScenarioCtx& c) {

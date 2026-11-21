@@ -297,12 +297,12 @@ TEST(RotationPlot, AWaterWheelAndAWindmillTurnAtTheirSampledSpeed) {
     rp.Set(msgs);
     rp.Step(1);
     EXPECT_EQ(rp.SpeedMilli(2), 0) << "nothing sampled yet: still water, calm";
-    rp.SetSourceRpm(1, 12); rp.SetSourceRpm(3, -8);
+    rp.SetSourceRpm(1, 12); rp.SetSourceRpm(3, -16);
     rp.Step(1);
     EXPECT_EQ(rp.SpeedMilli(2), 12000);
     ASSERT_NE(rp.NetOf(2), nullptr);
     EXPECT_EQ(rp.NetOf(2)->capacity, Rotation::kWaterWheel.suPerRpm * 12);
-    EXPECT_EQ(rp.SpeedMilli(4), -8000);
+    EXPECT_EQ(rp.SpeedMilli(4), -16000);
     EXPECT_EQ(rp.NetOf(4)->capacity, 1024) << "four sails of 256 SU at full wind";
     rp.SetSourceRpm(1, 40);                              // a flood: capped at the wheel's top speed
     rp.Step(1);
