@@ -2621,6 +2621,7 @@ int main(int argc, char** argv)
                    ws.preloadNodes, GetTime() - preloadT0, TerrainArena_Stats().vertices / 1048576.0, ws.nodes);
             preloadT0 = -1.0;
         }
+        if (bench && loading) Scenario_Loading(); // (#1422) a run held in a loading screen still beats and times out
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does

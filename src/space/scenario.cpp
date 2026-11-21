@@ -22,6 +22,9 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <atomic>
+#include <mutex>
+#include <thread>
 
 extern const char* kGameVersion;
 int ScenarioProc_Run(const std::string& cmdline, double timeoutSec);
@@ -184,6 +187,34 @@ void Finish(const std::string& verdict, const std::string& reason) {
     Profiler_PrintSummary();
     Profiler_Enable(false);
     WriteResults();
+}
+
+// (#1422) A hang the frame-driven backstops can't see: the main loop blocked inside a step, or the run held in a loading
+// screen (Scenario_Frame runs only out of it). The main thread touches this clock each frame (Scenario_Frame,
+// Scenario_Loading); a watchdog thread ends the run with a clear TIMEOUT when it stops for the scenario's wall backstop (at
+// least 120 s), naming the step and the last note, instead of leaving the parent to kill a silent process.
+std::atomic<double> gLastTouch{ 0.0 };
+std::mutex gWatchMx; // the watchdog's message vs the main thread's notes
+void StartWatchdog() {
+    static bool started = false;
+    if (started) return;
+    started = true;
+    gLastTouch = Wall();
+    std::thread([] {
+        const double limit = std::max(120.0, R.def.timeout * WallFactor());
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (R.finished) return;
+            const double idle = Wall() - gLastTouch.load();
+            if (idle < limit) continue;
+            std::lock_guard<std::mutex> lock(gWatchMx);
+            const std::string step = R.step < (int)R.def.steps.size() ? R.def.steps[R.step].name : std::string("?");
+            const std::string last = R.notes.empty() ? std::string("none") : R.notes.back();
+            Finish("TIMEOUT", "the main loop stopped in step '" + step + "' (no frame for " + Num(idle) + " s; last note: " + last + ")");
+            fflush(stdout);
+            std::_Exit(3);
+        }
+    }).detach();
 }
 
 void SetEnv(const std::string& k, const std::string& v) {
@@ -403,9 +434,11 @@ void Scenario_Setup() {
 bool Scenario_Frame(Scene& world) {
     if (!R.active || R.finished) return false;
     const double now = Wall();
+    gLastTouch = now; // (#1422) the watchdog's clock
     if (R.simStart < 0.0) {
         R.simStart = SimTime(); R.stepSim = SimTime(); R.wallStart = now; R.stepWall = now; R.lastBeat = now;
         printf("scenario: %s: world ready after %.1f s; %zu steps\n", R.def.name.c_str(), now - R.startedAt, R.def.steps.size());
+        StartWatchdog(); // (#1422)
         if (Profiler_On()) { GpuTimer_KeepOn(true); Profiler_Reset(); } // (#871) the passes as cpu:/gpu: zones; the summary from here on (not the loading)
     }
     ScenarioCtx c{ world };
@@ -461,6 +494,24 @@ bool Scenario_Frame(Scene& world) {
     return true;
 }
 
+// (#1422) Each frame of a loading screen once the world was ready: a heartbeat, and the wall backstop (Scenario_Frame doesn't
+// run then, so a run held in a loading screen ended only when the parent killed it, with nothing said).
+void Scenario_Loading() {
+    if (!R.active || R.finished || R.simStart < 0.0) return;
+    const double now = Wall();
+    gLastTouch = now;
+    if (now - R.lastBeat >= 5.0) {
+        R.lastBeat = now;
+        printf("scenario: %s heartbeat: a loading screen during step %d/%zu '%s' (wall %.0f s)\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
+               R.def.steps[R.step].name.c_str(), now - R.wallStart);
+    }
+    if (now - R.wallStart > R.def.timeout * WallFactor()) {
+        Finish("TIMEOUT", "a loading screen held step '" + R.def.steps[R.step].name + "' past the scenario's wall backstop (" + Num(R.def.timeout * WallFactor()) + " s)");
+        fflush(stdout);
+        std::_Exit(3);
+    }
+}
+
 void Scenario_Shutdown() {
     if (!R.active) return;
     Scenario_LegacyFinish(); // (legacyDrives: the shots against their baselines)
@@ -507,7 +558,7 @@ void ScenarioCtx::metric(const std::string& name, double v, const std::string& u
     R.metrics.push_back({ name, unit, v, lowerIsBetter });
     printf("scenario: metric %s = %s %s\n", name.c_str(), Num(v).c_str(), unit.c_str());
 }
-void ScenarioCtx::note(const std::string& text) { R.notes.push_back(text); printf("scenario: %s\n", text.c_str()); }
+void ScenarioCtx::note(const std::string& text) { { std::lock_guard<std::mutex> lock(gWatchMx); R.notes.push_back(text); } printf("scenario: %s\n", text.c_str()); }
 void ScenarioCtx::fail(const std::string& reason) { Finish("FAIL", reason); }
 void ScenarioCtx::waitingFor(const std::string& what) { R.waiting = what; }
 void ScenarioCtx::keepCapture(const std::string& reason) { R.keep = true; R.keepReason = reason; }

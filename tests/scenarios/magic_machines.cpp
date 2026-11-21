@@ -31,10 +31,12 @@ SCENARIO("magic/machines") {
     s.timeout = 90.0;
     s.step("a siphon, a dynamo and a research table on the nearest ley node", 15.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;
+        c.note("step 1: building the mana field"); // (#1422) breadcrumbs: a hang names the last one (the watchdog)
         const ManaField* f = Magic_Field(c.world);
         if (!c.check("the mana field (RAYLIBGAME_MAGIC)", f != nullptr)) return true;
         std::vector<ManaNode> nodes;
         const Vector3 start = c.spawnDirLocal();
+        c.note("step 1: looking for a node within 3 km");
         f->nodesNear(start, 3000.0f, nodes);
         if (!c.check("a node within 3 km of the start", !nodes.empty())) return true;
         const ManaNode* best = &nodes[0];
@@ -45,6 +47,7 @@ SCENARIO("magic/machines") {
         jar = MagicMachines_SiphonJar(*f, nodeGround);
         c.metric("node strength", best->strength, "");
         c.check("the node has a jar", jar != "jar_none", jar);
+        c.note("step 1: placing the machines");
         terrainTool.creative = true;
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         plot = c.body->plots->plotFor(nodeGround, 0.0f, true);
@@ -53,6 +56,7 @@ SCENARIO("magic/machines") {
             && BuildTool_Place(*c.body, *plot, { PartType::ResearchTable, { 0, 0, 4 }, 0 }, false);
         if (!c.check("siphon, dynamo and research table placed", placed)) return true;
         siphon = PartAt({ 0, 0, 0 }); dynamo = PartAt({ 4, 0, 0 });
+        c.note("step 1: waiting for the factory");
         Factory::Sync(c.world);
         Factory::WaitTicks(3);
         Factory::SetSpeed(20);
