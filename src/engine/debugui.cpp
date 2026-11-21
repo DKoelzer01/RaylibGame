@@ -110,6 +110,16 @@ void DebugUI_Draw(Scene& world) {
         if (ImGui::CollapsingHeader("Audio")) {
             float vol = Audio_GetMasterVolume();
             if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 1.0f, "%.2f")) Audio_SetMasterVolume(vol);
+            if (Audio_V2()) { // (#1238) buses, voices, ducking
+                for (int b = 1; b < (int)AudioBus::Count; ++b) {
+                    float bv = Audio_GetBusVolume((AudioBus)b);
+                    if (ImGui::SliderFloat(AudioBus_Name((AudioBus)b), &bv, 0.0f, 1.0f, "%.2f")) Audio_SetBusVolume((AudioBus)b, bv);
+                }
+                const AudioMixer::Stats st = Audio_Stats();
+                ImGui::Text("Voices %d / %d; played %lld, stolen %lld, dropped %lld; duck %.2f", st.active, AudioMixer::kVoices,
+                            st.played, st.stolen, st.dropped, Audio_Mixer().duckLevel());
+                if (ImGui::Button("Duck 3 s")) Audio_DuckFor(3.0);
+            } else ImGui::TextDisabled("RAYLIBGAME_AUDIO_V2=1: buses and voices");
         }
 
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {

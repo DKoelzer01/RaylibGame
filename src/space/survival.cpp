@@ -470,9 +470,21 @@ double QuestBook_CountOf(const std::string& event) { auto it = Q().counts.find(e
 int QuestBook_Tier() { return Q().tier; }
 void QuestBook_SetTier(int t) { Q().tier = std::max(0, t); }
 
+namespace { double clockLast = -1.0; }
+constexpr double kTierClockMaxStep = 5.0; // s: a longer gap between frames is a jump (a load, a skip), not play
+void QuestBook_TickClock(double simTime) {
+    if (simTime < 0.0) { clockLast = -1.0; return; } // (loading: not counted; it starts again after)
+    const double d = simTime - clockLast;
+    if (clockLast >= 0.0 && d > 0.0 && d <= kTierClockMaxStep) Q().tierSeconds[Q().tier] += d;
+    clockLast = simTime;
+}
+double QuestBook_TierSeconds(int tier) { auto it = Q().tierSeconds.find(tier); return it == Q().tierSeconds.end() ? 0.0 : it->second; }
+
 void QuestBook_Reset() {
     LoadTiers();
     Q().tier = 0;
+    Q().tierSeconds.clear();
+    clockLast = -1.0;
     Q().placed.clear();
     Q().visitedBodies.clear();
     Q().reachedOrbit = Q().visitedMoon = Q().visitedRing = false;
@@ -532,6 +544,7 @@ bool QuestBook_TaskDone(int i, int k) { return k >= 0 && k < QuestBook_TaskCount
 
 void QuestBook_Save(FILE* f) {
     fprintf(f, "quest %d\n", Q().tier);
+    for (const auto& [t, s] : Q().tierSeconds) fprintf(f, "tier_time %d %.0f\n", t, s); // (#1199) the tier clock
     for (size_t i = 0; i < tiers.size(); ++i)
         for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
             if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
@@ -546,6 +559,7 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
     LoadTiers();
     char id[64] = {};
     if (strcmp(tok, "quest") == 0) { int t = 0; if (fscanf(f, " %d", &t) == 1) Q().tier = std::max(0, t); return true; }
+    if (strcmp(tok, "tier_time") == 0) { int t = 0; double s = 0; if (fscanf(f, " %d %lf", &t, &s) == 2 && t >= 0) Q().tierSeconds[t] = s; return true; } // (#1199)
     if (strcmp(tok, "quest_done") == 0) {
         int i = 0, k = 0;
         if (fscanf(f, " %d %d", &i, &k) == 2 && i >= 0 && i < (int)tiers.size() && k >= 0 && k < (int)tiers[i].tasks.size()) Q().tasksDone.insert({ i, k });
@@ -693,4 +707,25 @@ bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Invento
     }
     if (local) Audio_Play(Sfx::Error, 0.4f);
     return false;
+}
+
+// (#1199) --tier-report <save>: each quest book's tier clock in a world save (single player: one; a server: one per team).
+int QuestBook_TierReport(const char* path) {
+    FILE* f = fopen(path, "r");
+    if (!f) { printf("tier-report: can't open %s\n", path); return 1; }
+    char tok[128];
+    int books = 0, lastTier = 1 << 30;
+    double total = 0.0;
+    while (fscanf(f, " %127s", tok) == 1) {
+        if (strcmp(tok, "tier_time") != 0) continue;
+        int t = 0; double s = 0.0;
+        if (fscanf(f, " %d %lf", &t, &s) != 2) break;
+        if (t <= lastTier) { if (books) printf("  total: %.2f h\n", total / 3600.0); printf("quest book %d:\n", ++books); total = 0.0; } // (each book saves its tiers in order)
+        lastTier = t; total += s;
+        printf("  tier %d %-28s %7.2f h\n", t, QuestBook_TierName(t), s / 3600.0);
+    }
+    if (books) printf("  total: %.2f h\n", total / 3600.0);
+    else printf("tier-report: no tier clock in %s (saved before #1199?)\n", path);
+    fclose(f);
+    return 0;
 }

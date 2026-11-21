@@ -151,12 +151,14 @@ const char* PartCostItem(PartType t) {
 }
 
 namespace {
+    // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
+    // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
         { "concrete", "Concrete", { 168, 166, 158, 255 } },
-        { "stone", "Stone", { 122, 122, 128, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
-        { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was "dirt" (loose ground is terrain only); old parts become stone brick
         { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
         // Building variety (M21): planks from each tree species, stone kinds from the ground, kiln bricks.
         { "oak_planks", "Oak", { 158, 112, 66, 255 } },
@@ -164,11 +166,11 @@ namespace {
         { "pine_planks", "Pine", { 176, 132, 82, 255 } },
         { "maple_planks", "Maple", { 182, 104, 78, 255 } },
         { "spruce_planks", "Spruce", { 112, 82, 58, 255 } },
-        { "granite", "Granite", { 168, 146, 140, 255 } },
-        { "basalt", "Basalt", { 62, 62, 68, 255 } },
-        { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
-        { "limestone", "Limestone", { 206, 202, 186, 255 } },
-        { "marble", "Marble", { 236, 234, 230, 255 } },
+        { "granite_brick", "Granite brick", { 168, 146, 140, 255 } },
+        { "basalt_brick", "Basalt brick", { 62, 62, 68, 255 } },
+        { "sandstone_brick", "Sandstone brick", { 212, 182, 132, 255 } },
+        { "limestone_brick", "Limestone brick", { 206, 202, 186, 255 } },
+        { "marble_brick", "Marble brick", { 236, 234, 230, 255 } },
         { "brick", "Brick", { 158, 74, 52, 255 } },
         // Decoration (M22): plaster in eight dye colours, stained glass, lamps, polished gems.
         { "white_plaster", "White plaster", { 236, 234, 226, 255 } },
@@ -195,7 +197,7 @@ namespace {
         { "maple_log", "Maple log", { 110, 64, 50, 255 } },
         { "pine_log", "Pine log", { 104, 74, 50, 255 } },
         { "spruce_log", "Spruce log", { 70, 52, 40, 255 } },
-        { "clay", "Clay", { 170, 120, 95, 255 } },
+        { "brick", "Brick", { 158, 74, 52, 255 } }, // #1098: was "clay" (terrain only); old parts become fired brick
         { "ice", "Ice", { 176, 214, 240, 255 } },
         { "coal", "Coal", { 36, 36, 40, 255 } },
     };
@@ -279,14 +281,13 @@ static unsigned char PartPatternOf(const Part& p) {
         if (ends("_plaster")) return PatPlaster;
         if (ends("_glass") || item == "glass") return PatGlass;
         if (ends("_block")) return PatGem;
-        if (item == "stone") return PatStone;
+        if (item == "stone_brick") return PatStone;
         if (item == "iron_plate") return PatMetal;
-        if (item == "dirt") return PatDirt;
         if (item == "heat_shield_tile") return PatTiles;
         if (item == "brick") return PatBrick;
-        if (item == "marble" || item == "limestone") return PatMarble;
-        if (item == "granite" || item == "basalt" || item == "sandstone") return PatPolished;
-        if (item == "clay") return PatClay;
+        // #1098: dressed stone keeps each rock's old look (dirt and clay parts became stone brick and brick)
+        if (item == "marble_brick" || item == "limestone_brick") return PatMarble;
+        if (item == "granite_brick" || item == "basalt_brick" || item == "sandstone_brick") return PatPolished;
         if (item == "ice") return PatIce;
         if (item == "coal") return PatCoal;
         if (item == "lamp") return PatLamp;
@@ -1092,3 +1093,31 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
         if (it->get() == plot) { std::unique_ptr<Plot> p = std::move(*it); plots.erase(it); return p; }
     return nullptr;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1098): stone buildings need bricks; loose ground and raw stone are terrain only ----
+#include "unit_helpers.h"
+
+TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+        EXPECT_LT(BuildMaterialForItem(m), 0) << m;
+    for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
+                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+        EXPECT_GE(BuildMaterialForItem(m), 0) << m;
+}
+
+TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
+    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("brick"), 16);
+    // Each dressed stone keeps its rock's look.
+    auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };
+    EXPECT_EQ(pat("stone_brick"), PatStone);
+    EXPECT_EQ(pat("marble_brick"), PatMarble);
+    EXPECT_EQ(pat("granite_brick"), PatPolished);
+    EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
+}
+#endif

@@ -128,6 +128,13 @@ birch_planks 4       = birch_log 1
 pine_planks 4        = pine_log 1
 maple_planks 4       = maple_log 1
 spruce_planks 4      = spruce_log 1
+# Dressed stone (#1098): stone buildings need bricks; raw stone and loose ground are placed as terrain.
+stone_brick 1        = stone 2
+granite_brick 1      = granite 2
+basalt_brick 1       = basalt 2
+sandstone_brick 1    = sandstone 2
+limestone_brick 1    = limestone 2
+marble_brick 1       = marble 2
 # Decoration (M22): dyes, plaster, stained glass, lamps, gem blocks.
 white_dye 2          = limestone 1
 black_dye 2          = charcoal 1

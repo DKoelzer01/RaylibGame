@@ -473,6 +473,18 @@ void Nav_DrawHUD(Scene& world) {
     BeginShaderMode(miniMask);
     SetShaderValue(miniMask, GetShaderLocation(miniMask, "circle"), circle, SHADER_UNIFORM_VEC3);
     DrawTexturePro(minimap.tex, { 0, 0, (float)m.W, (float)m.H }, { c.x + shift.x, c.y + shift.y, drawn, drawn }, { drawn * 0.5f, drawn * 0.5f }, rot, WHITE);
+    // (#1161, the user) Land claims, as on the full map: a disc in the team's colour (inside the mask: cut at the rim).
+    for (const ClaimView& cl : Claims_Mirror()) {
+        if (cl.body != h.body->name || Vector3Length(cl.centre) < 1.0f) continue;
+        const Vector2 p = OnImage(m, Vector3Normalize(cl.centre));
+        const Vector2 rel = { (p.x - off.x) * k, (p.y - off.y) * k };
+        const Vector2 s = { c.x + rel.x * cr - rel.y * sr, c.y + rel.x * sr + rel.y * cr };
+        const float rp = cl.radius / m.mpp * k;
+        if (Vector2Distance(s, c) > rad + rp) continue;
+        const Color col = { (unsigned char)(cl.colour >> 16), (unsigned char)(cl.colour >> 8), (unsigned char)cl.colour, 255 };
+        DrawCircleV(s, rp, Fade(col, 0.22f));
+        DrawRing(s, std::max(0.0f, rp - 1.5f), rp, 0, 360, 48, Fade(col, 0.9f));
+    }
     EndShaderMode();
     DrawRing(c, rad, rad + 3.0f, 0, 360, 48, Fade(RAYWHITE, 0.6f));
     { // its scale and zoom keys (#278)

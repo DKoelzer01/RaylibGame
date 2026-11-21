@@ -140,6 +140,7 @@ namespace Fluid {
     bool Asleep();              // every brick asleep and nothing queued
     std::string DebugCell(const Planetoid& body, Vector3 local); // tests: "fill N flags SRTD"
     std::string DebugAwake();   // tests (#935): pending and awake bricks by state
+    bool SteadyAt(const Planetoid& body, Vector3 local); // tests (#1131): the brick holding that point is in steady flow (#674)
 }
 
 #endif
