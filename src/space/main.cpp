@@ -12148,12 +12148,26 @@ int main(int argc, char** argv)
             if (feller && felled && !tillSent && pb) {
                 if (tillAt < 0.0) { terrainTool.heldTool = "stone_shovel"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
                 else if (GetTime() > tillAt) {
+                    // (#1107) a ring of spots, 8 directions x 2-4 m: on the real terrain the one spot ahead can be rock or a slope
+                    // (Farm_Till refuses untillable ground before it asks the server); each miss is counted by its reason
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
-                    const Vector3 ahead = Vector3Add(feet, Vector3Scale(Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)))), 3.0f));
-                    TerrainHit hit;
-                    if (RaycastTerrain(world, Ray{ Vector3Add(ahead, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit) && Farm_Till(world, *pb, hit.local)) {
-                        tillGround = hit.local; tillKnown = true;
+                    const Vector3 fwd = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+                    const Vector3 side = Vector3CrossProduct(player.up, fwd);
+                    int noHit = 0, untillable = 0, refused = 0;
+                    std::map<int, int> materials; // untillable ground met, by material
+                    for (int k = 0; k < 24 && !tillKnown; ++k) {
+                        const float a = (k % 8) * (PI / 4.0f), r = 2.0f + (float)(k / 8);
+                        const Vector3 at = Vector3Add(feet, Vector3Add(Vector3Scale(fwd, r * cosf(a)), Vector3Scale(side, r * sinf(a))));
+                        TerrainHit hit;
+                        if (!RaycastTerrain(world, Ray{ Vector3Add(at, Vector3Scale(player.up, 3.0f)), Vector3Negate(player.up) }, 10.0f, hit)) { ++noHit; continue; }
+                        const VoxelMaterial m = pb->materialAt(hit.local);
+                        if (!IsTillable(m)) { ++untillable; ++materials[(int)m]; continue; }
+                        if (Farm_Till(world, *pb, hit.local)) { tillGround = hit.local; tillKnown = true; } else ++refused;
                     }
+                    std::string mats;
+                    for (const auto& [m, n] : materials) mats += TextFormat(" %d:%d", m, n);
+                    printf("bench: net farm (feller): till %s; spots tried: %d no hit, %d untillable (material:count%s), %d refused\n",
+                           tillKnown ? "sent" : "NOT sent", noHit, untillable, mats.c_str(), refused);
                     tillSent = true;
                 }
             }
