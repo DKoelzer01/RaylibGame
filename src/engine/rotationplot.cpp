@@ -56,6 +56,12 @@ bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out
     case PartType::LargeCogwheel: out.geom = MakeCog(c0, axis, true); break;
     case PartType::Gearbox: out.geom = MakeGearbox(c0, axis); break;
     case PartType::HandCrank: out.geom = MakeSource({ c0 }, axis, { { c0, FaceOf(axis, +1) }, { c0, FaceOf(axis, -1) } }, kHandCrank, 0); break;
+    case PartType::Windmill: out.geom = MakeSource({ c0 }, axis, { { c0, FaceOf(axis, +1) }, { c0, FaceOf(axis, -1) } }, Rotation::kWindmill, 0); break; // (#1270)
+    case PartType::WaterWheel: { // (#1270) shafts join at its hub (footprint cell 4), both sides
+        const Cell hub = cells.size() > 4 ? cells[4] : c0;
+        out.geom = MakeSource(cells, axis, { { hub, FaceOf(axis, +1) }, { hub, FaceOf(axis, -1) } }, Rotation::kWaterWheel, 0);
+        break;
+    }
     default: { // a machine: every outer face of its cells along its axis
         std::set<std::tuple<int, int, int>> in;
         for (const Cell& c : cells) in.insert({ c.x, c.y, c.z });
@@ -75,6 +81,8 @@ bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out
 void RotationPlot::Set(std::vector<RotationPartMsg> msgs) {
     std::unordered_map<int, int> held; // cranks still turning keep turning
     for (size_t i = 0; i < parts.size(); ++i) if (i < crankTicks.size() && crankTicks[i] > 0) held[parts[i].part] = crankTicks[i];
+    std::unordered_map<int, int> sampled; // (#1270) wheels and windmills keep their last sampled speed
+    for (size_t i = 0; i < parts.size(); ++i) if (i < sourceRpm.size() && sourceRpm[i] != 0) sampled[parts[i].part] = sourceRpm[i];
     parts = std::move(msgs);
     byPart.clear();
     std::vector<Rotation::Part> geoms;
@@ -84,6 +92,9 @@ void RotationPlot::Set(std::vector<RotationPartMsg> msgs) {
     layout = Rotation::Build(pg.graph);
     crankTicks.assign(parts.size(), 0);
     for (size_t i = 0; i < parts.size(); ++i) if (auto it = held.find(parts[i].part); it != held.end() && parts[i].type == PartType::HandCrank) crankTicks[i] = it->second;
+    sourceRpm.assign(parts.size(), 0);
+    for (size_t i = 0; i < parts.size(); ++i)
+        if (auto it = sampled.find(parts[i].part); it != sampled.end() && (parts[i].type == PartType::WaterWheel || parts[i].type == PartType::Windmill)) sourceRpm[i] = it->second;
     res = Result{};
     Rotation::Step(pg.graph, layout, res);
 }
@@ -104,8 +115,21 @@ void RotationPlot::SetRunning(int part, bool running) {
     if (n.kind == NodeKind::Consumer) n.running = running;
 }
 
+void RotationPlot::SetSourceRpm(int part, int rpm) {
+    auto it = byPart.find(part);
+    if (it == byPart.end()) return;
+    const PartType t = parts[it->second].type;
+    if (t != PartType::WaterWheel && t != PartType::Windmill) return;
+    const int cap = t == PartType::WaterWheel ? Rotation::kWaterWheel.rpm : Rotation::kWindmill.rpm;
+    sourceRpm[it->second] = std::clamp(rpm, -cap, cap);
+}
+
 void RotationPlot::Step(int dt) {
     for (size_t i = 0; i < parts.size(); ++i) {
+        if (parts[i].type == PartType::WaterWheel || parts[i].type == PartType::Windmill) { // (#1270) as the main thread sampled it
+            pg.graph.nodes[NodeOf(*this, (int)i)].sourceRpm = sourceRpm[i];
+            continue;
+        }
         if (parts[i].type != PartType::HandCrank) continue;
         pg.graph.nodes[NodeOf(*this, (int)i)].sourceRpm = crankTicks[i] > 0 ? parts[i].axisSign * kHandCrank.rpm : 0;
         crankTicks[i] = std::max(0, crankTicks[i] - dt);
@@ -148,6 +172,7 @@ uint64_t RotationPlot::Hash() const {
     for (int64_t s : res.speedMilli) mix(s);
     for (Status s : res.status) mix((int)s);
     for (int c : crankTicks) mix(c);
+    for (int r : sourceRpm) mix(r);
     return h;
 }
 
@@ -240,5 +265,36 @@ TEST(RotationPlot, FiveMillstonesOnOneCrankAreTooSlow) {
     rp.Step(1);
     EXPECT_EQ(rp.StatusOf(0), Status::Slowed);
     EXPECT_EQ(rp.ProgressPermille(0), 666);
+}
+
+TEST(RotationPlot, AWaterWheelAndAWindmillTurnAtTheirSampledSpeed) {
+    std::vector<RotationPartMsg> msgs = {
+        Describe(PartType::WaterWheel, { 0, 0, 0 }, 0, 1),  // 3 x 3 cells in z = 0, its hub at (1, 1, 0)
+        Describe(PartType::Shaft, { 1, 1, 1 }, 0, 2),       // on its hub, along z
+        Describe(PartType::Windmill, { 5, 5, 5 }, 0, 3),
+        Describe(PartType::Shaft, { 5, 5, 4 }, 0, 4),
+    };
+    EXPECT_EQ(msgs[0].geom.cells.size(), 9u);
+    EXPECT_EQ(msgs[0].geom.ports.size(), 2u) << "shafts join only at the hub";
+    RotationPlot rp;
+    rp.Set(msgs);
+    rp.Step(1);
+    EXPECT_EQ(rp.SpeedMilli(2), 0) << "nothing sampled yet: still water, calm";
+    rp.SetSourceRpm(1, 12); rp.SetSourceRpm(3, -8);
+    rp.Step(1);
+    EXPECT_EQ(rp.SpeedMilli(2), 12000);
+    ASSERT_NE(rp.NetOf(2), nullptr);
+    EXPECT_EQ(rp.NetOf(2)->capacity, Rotation::kWaterWheel.suPerRpm * 12);
+    EXPECT_EQ(rp.SpeedMilli(4), -8000);
+    EXPECT_EQ(rp.NetOf(4)->capacity, 1024) << "four sails of 256 SU at full wind";
+    rp.SetSourceRpm(1, 40);                              // a flood: capped at the wheel's top speed
+    rp.Step(1);
+    EXPECT_EQ(rp.SpeedMilli(2), Rotation::kWaterWheel.rpm * 1000);
+    rp.Set(msgs);                                        // a layout change keeps the sampled speeds
+    rp.Step(1);
+    EXPECT_EQ(rp.SpeedMilli(2), Rotation::kWaterWheel.rpm * 1000);
+    rp.SetSourceRpm(2, 30);                              // a shaft is no source: ignored
+    rp.Step(1);
+    EXPECT_EQ(rp.SpeedMilli(2), Rotation::kWaterWheel.rpm * 1000);
 }
 #endif

@@ -1,0 +1,21 @@
+# Sound subtitles (#1244, audio plan #1003 step 8): what a sound is called on screen, and whether it is important.
+# Settings > Audio > Subtitles: Off, Important (the default, user decision 2026-11-19), All.
+# A name ending in * matches every sound starting with it. The player's own tool and UI sounds have none.
+# Important sounds also get a direction arc at the screen's edge when their source is out of view.
+# sound            level       text
+machine_stall      important   Machine stalled
+machine_click      all         Stalled machine clicking
+machine_done       all         Machine finished a batch
+hum_*              all         Machine humming
+factory_bed        all         Factory working
+thunder_near       all         Thunder cracks
+thunder_far        all         Distant thunder
+step_*             all         Footsteps
+water              all         Water flowing
+bed_waterfall      all         Waterfall roaring
+bed_rumble         all         Deep rumbling
+drip               all         Water dripping
+creature_telegraph* important  Creature about to attack
+creature_*         all         Creature
+alarm_*            important   Alarm
+mech_*             all         Machinery turning

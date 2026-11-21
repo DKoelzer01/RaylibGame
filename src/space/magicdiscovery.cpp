@@ -5,6 +5,7 @@
 
 #include <raymath.h>
 #include <algorithm>
+#include <map>
 #include <set>
 
 // ---- The rules (pure) ----
@@ -38,6 +39,8 @@ int MagicDiscovery_NodeKindsStudied(const MagicPlayerState& s) {
 
 // ---- The game ----
 #include "magic.h"
+#include "tome.h"
+#include "researchtab.h"
 #include "envflag.h"
 #include <cstdio>
 #include "gamerng.h"
@@ -87,6 +90,7 @@ bool MagicDiscovery_ReadPage() {
     inventory.remove(kPage, 1);
     s.found = true;
     QuestBook_Count("arcane_read");
+    Tome_Team(ResearchTab_Team()).pages.insert("first_sight"); // (#1251) the team's first tome page (research's resonance tuning needs it)
     GameUI_Toast("First Sight. The world is threaded with faint currents: tap Y to see them, hold Y on something to study it.");
     return true;
 }
@@ -117,6 +121,16 @@ void MagicDiscovery_Update(Scene& world, float dt) {
     if (!Magic_Enabled()) return;
     MagicDiscovery_Install();
     MagicPlayerState& s = LocalSession().magic;
+    // Captures (RAYLIBGAME_MAGIC_SHOW_TOME=1, #1251): once the world is idle, a reader who has found magic, with First Sight
+    // and a handful of aspects, and the game window open on the Tome.
+    static bool showTome = EnvFlag("RAYLIBGAME_MAGIC_SHOW_TOME");
+    if (showTome && WorldIdle()) {
+        showTome = false;
+        s.found = true;
+        Tome_Team(ResearchTab_Team()).pages.insert("first_sight");
+        for (const auto& [id, n] : std::map<std::string, float>{ { "air", 7 }, { "light", 5 }, { "order", 6 }, { "crystal", 3 }, { "earth", 4 } }) s.aspects[id] += n;
+        GameUI_ShowTab("Tome");
+    }
     // Finds by item: a page from a chest, a crystal from the rock.
     if (!s.found && inventory.count(kPage) > 0) Find(MagicRoute::Loot);
     if (!s.found && inventory.count(kCrystal) > 0) Find(MagicRoute::Crystal);
