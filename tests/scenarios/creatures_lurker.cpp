@@ -135,13 +135,8 @@ SCENARIO("creatures/lurker-ceiling") {
         if (!moved) {
             moved = true;
             player.posture = Player::Posture::Stand;
-            // Right under it, on the floor below.
-            const Vector3 p = Animals_Position(i);
-            Vector3 under = p;
-            for (float d = 0.0f; d < 12.0f; d += 0.25f) {
-                const Vector3 q = Vector3Subtract(p, Vector3Scale(S.up, d + 0.5f));
-                if (c.field->density(q, nullptr) >= ISO_LEVEL) { under = Vector3Add(q, Vector3Scale(S.up, 0.3f)); break; }
-            }
+            // Right under it: the floor it climbed from.
+            const Vector3 under = Animals_ClingFloor(i);
             player.placeAt(c.world, *c.body, c.body->toWorld(Vector3Add(under, Vector3Scale(S.up, 0.2f))));
             S.health0 = survival.health = 100.0f;
             S.drops0 = Animals_LurkerDrops();

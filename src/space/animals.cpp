@@ -784,6 +784,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
 
 int Animals_CaveSpawned() { return caveSpawned; }
 bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && animals[i].clinging; }
+Vector3 Animals_ClingFloor(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].clingFloor : Vector3{ 0, 0, 0 }; }
 int Animals_LurkerDrops() { return lurkerDrops; }
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
