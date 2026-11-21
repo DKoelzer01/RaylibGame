@@ -157,7 +157,7 @@ SCENARIO("slides/space") {
     // The planet's frame: its axis is local y, the ring in its equatorial (xz) plane. The sun's direction in that frame
     // decides where the day side is: the first pass, over the start, looked at the night side.
     View(s, "limb", [](ScenarioCtx& c, Vector3& eye, Vector3& target, Vector3& up) {
-        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(c.world.sunDirection));
+        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(Vector3Negate(c.world.sunDirection))); // (the first reshoot looked into the sun with the plain sign)
         const Vector3 side = Tangent(sun);
         const Vector3 over = Vector3Normalize(Vector3Add(Vector3Scale(sun, 0.6f), Vector3Scale(side, 0.8f))); // afternoon light
         const Vector3 away = Vector3Normalize(Vector3Subtract(side, Vector3Scale(over, Vector3DotProduct(side, over)))); // the sun behind
@@ -180,7 +180,7 @@ SCENARIO("slides/space") {
         if (!c.check("a body named luna", moon != nullptr)) return false;
         const Vector3 m = c.body->toLocalD(moon->worldPos).toFloat();
         // From the moon's sunlit side, a little off the sun line (the first pass looked at its night side).
-        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(c.world.sunDirection));
+        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(Vector3Negate(c.world.sunDirection))); // (the first reshoot looked into the sun with the plain sign)
         eye = Vector3Add(m, Vector3Add(Vector3Scale(sun, moon->radius * 3.0f), Vector3Scale(Tangent(sun), moon->radius * 1.5f)));
         target = m; up = { 0, 1, 0 };
         return true;
