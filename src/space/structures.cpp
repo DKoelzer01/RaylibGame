@@ -926,6 +926,39 @@ bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, V
     return found;
 }
 
+int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std::vector<SiteInfo>& out) {
+    out.clear();
+    Ensure();
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    if (!pf) return 0;
+    const Vector3 up = Vector3Normalize(local);
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, up);
+    std::unordered_set<uint64_t> seen;
+    auto add = [&](const Site& s) {
+        if (!s.any) return;
+        const Vector3 p = Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir));
+        const float d = Vector3Distance(p, local);
+        if (d > range) return;
+        const Set& S = sets[s.set];
+        uint32_t dh = Hash((uint64_t)s.seed ^ 0xd0d0ull);
+        const bool dungeon = S.dungeon > 0.0f && DungeonsOn() && Unit(dh) < S.dungeon; // (as Build's roll)
+        out.push_back({ p, S.name, S.kind, dungeon, d });
+    };
+    const int R = (int)ceilf(range / kTile) + 1;
+    for (int a = -R; a <= R; ++a)
+        for (int b = -R; b <= R; ++b) {
+            Vector3 centre;
+            const uint64_t tile = TileOf(Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, a * kTile * 0.5f / pf->radius), Vector3Scale(t2, b * kTile * 0.5f / pf->radius)))), pf->radius, &centre);
+            if (!seen.insert(tile).second) continue;
+            add(SiteOf(*pf, tile, centre, pf->radius, StartOf(*pf, body.seed)));
+        }
+    for (int k = 0; k < 2; ++k) add(RingSite(*pf, StartOf(*pf, body.seed), k)); // and the ring sites near the start
+    std::sort(out.begin(), out.end(), [](const SiteInfo& x, const SiteInfo& y) { return x.distance < y.distance; });
+    out.erase(std::unique(out.begin(), out.end(), [](const SiteInfo& x, const SiteInfo& y) { return Vector3Distance(x.at, y.at) < 1.0f; }), out.end());
+    return (int)out.size();
+}
+
 bool Structures_Test(Scene& world, Planetoid& body, Vector3 nearLocal) {
     // Every set built 30 m from the player on each side (forced: slope and nearby plots ignored), each turned a
     // different way; then the loot filled (the chests are within reach). Checks: parts placed (allowing for decay),
