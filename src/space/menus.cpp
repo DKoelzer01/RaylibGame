@@ -440,7 +440,9 @@ void Settings_Apply() {
 bool Menu_IsWorldSave(const std::string& path) {
     const fs::path p(path);
     std::error_code ec;
-    return p.extension() == ".sav" && p.filename() != "bench.sav" && !fs::exists(path + ".synced", ec);
+    const std::string name = p.filename().string();
+    const bool benchSave = name == "bench.sav" || name.rfind("bench-", 0) == 0; // (#1387) bench-<seed>.sav too
+    return p.extension() == ".sav" && !benchSave && !fs::exists(path + ".synced", ec);
 }
 
 std::string Menu_NewSavePath() {
@@ -715,6 +717,8 @@ TEST(Menus, AJoinedGamesCacheIsNotAWorldToHost) { // (#1110: hosting the client'
     EXPECT_TRUE(Menu_IsWorldSave((dir / "world_25.sav").string())) << "a world";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "client_player.sav").string())) << "a joined game's cache (a .synced beside it)";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "bench.sav").string())) << "the bench's";
+    touch("bench-7.sav");
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "bench-7.sav").string())) << "(#1387) a bench save for another seed";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "world_25.sav.synced").string())) << "not a .sav";
     fs::remove_all(dir, ec);
 }

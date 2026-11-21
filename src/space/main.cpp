@@ -239,6 +239,11 @@ static bool gInFrame = false; // between the main loop's BeginDrawing and EndDra
 // --perf-log (#387): once a second, the frames per screen state (menu, newworld, bake, loading, play, paused): count,
 // average and worst frame, to stdout and log.txt. Called once per drawn frame.
 static bool gFpsLog = false;
+// (#1387) The bench save for a seed: seed 42 (and no --seed) keep saves/bench.sav, which tools and scenarios copy by name; any
+// other seed gets its own, so its erosion bake (<save>.erosion, one per save) survives switching seeds (~80 s a re-bake).
+static std::string BenchSavePath(unsigned seed) {
+    return seed == 0 || seed == 42 ? std::string("saves/bench.sav") : "saves/bench-" + std::to_string(seed) + ".sav";
+}
 static void FpsLog_Frame(const char* state) {
     if (!gFpsLog) return;
     static const char* cur = nullptr;
@@ -1218,7 +1223,7 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
-    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
+    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : BenchSavePath(worldGen.seed).c_str()); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
     Scenario_Setup(); // (#870) a scenario saves to its run's scratch dir
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
@@ -1501,7 +1506,7 @@ int main(int argc, char** argv)
             SetWorldSavePath("saves/world.sav");
             generateWorld(world);
         }
-        if (bench) SetWorldSavePath("saves/bench.sav");
+        if (bench) SetWorldSavePath(BenchSavePath(worldGen.seed).c_str());
         if (benchLoadHold) { // --test-load-hold (#901): where the player was saved, body-local, from the record itself
             namespace fs = std::filesystem;
             std::error_code ec;
