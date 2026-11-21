@@ -802,7 +802,10 @@ bool SiteHasWaterNear(Site& s, Vector3 c, float r) {
     return false;
 }
 
-void EnsureAround(Site& s, Vector3 c, float r) {
+// The bricks around a point exist (new ones queued for classification). reclassify: the ones that exist are classified again,
+// keeping their water (a terrain edit changed solidity there); false only makes the missing ones (#1414: a take ran this
+// with reclassify on, so every brick in reach went not-ready and the take, which skips those, removed nothing).
+void EnsureAround(Site& s, Vector3 c, float r, bool reclassify = true) {
     int ci, cj, ck;
     s.cellOf(c, ci, cj, ck);
     const int R = (int)ceilf(r / WaterField::CellSize()) + 2;
@@ -810,7 +813,7 @@ void EnsureAround(Site& s, Vector3 c, float r) {
         for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
             for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi)
                 if (Brick* b = s.ensure(bi, bj, bk)) {
-                    if (b->ready) { // reclassify (solidity changed); keep the water
+                    if (reclassify && b->ready) { // reclassify (solidity changed); keep the water
                         b->ready = false; b->keepFill = true;
                         if (std::find(s.pending.begin(), s.pending.end(), b) == s.pending.end()) s.pending.push_front(b);
                     }
@@ -961,7 +964,7 @@ void ApplyCommand(const Command& c) {
     // Take: from the wettest cells within the radius (sources are free: they refill).
     float want = c.m3 * 255.0f / WaterField::CellVolume();
     const int R = (int)ceilf(c.r / WaterField::CellSize());
-    EnsureAround(*s, c.c, c.r);
+    EnsureAround(*s, c.c, c.r, false); // (#1414) the bricks in reach as they are: a take changes no solidity
     for (int dk = R; dk >= -R && want > 0.0f; --dk)
         for (int dj = -R; dj <= R && want > 0.0f; ++dj)
             for (int di = -R; di <= R && want > 0.0f; ++di) {
