@@ -32,7 +32,9 @@ static constexpr float kKnockLift = 2.0f;             // m/s up with a push on t
 static bool testHoldBlock = false; // --test-combat: RMB held
 static void PickUpGraves(PlayerSession& s);
 
-static bool IsShield(const std::string& id) { return id == "wooden_shield"; }
+// (#1218) Bucklers, round and tower shields (defense.h); RAYLIBGAME_COMBAT4=0: the wooden shield only, as before.
+static bool IsShield(const std::string& id) { return Combat4_On() ? Shield_Of(id) != nullptr : id == "wooden_shield"; }
+static const ShieldSpec& ShieldFor(const std::string& id) { static const ShieldSpec* round = Shield_Of("wooden_shield"); const ShieldSpec* s = Shield_Of(id); return s ? *s : *round; }
 
 // Does RMB already do something with what is in the main hand? Then it keeps doing that, and a shield in the off
 // hand does not block: food and feed (eat, #201), fillers (place), buckets, shovels and hoes (till), torches and
@@ -50,7 +52,10 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     SurvivalState& sv = s.survival;
     // The block: RMB with a shield in the off hand (and RMB not taken by the main hand or build mode), while stamina lasts.
     s.terrainTool.rmbBlocks = IsShield(s.inventory.offHand().id) && !s.buildTool.active && !RmbUsedByHand(s);
+    const bool wasBlocking = sv.blocking;
     sv.blocking = s.terrainTool.rmbBlocks && (in.down(Act::Secondary) || testHoldBlock) && sv.stamina > 0.0f && !sv.dead;
+    if (sv.blocking && !wasBlocking) sv.blockStartedAt = SimTime(); // (#1218) the parry window counts from the raise
+    if (Combat4_On()) { const ShieldSpec& sh = ShieldFor(s.inventory.offHand().id); sv.shieldStops = sh.stops; sv.shieldArcDeg = sh.arcDeg; sv.shieldParryWindow = sh.parryWindow; }
     // Stamina comes back a second after the last spend.
     if (SimTime() - sv.staminaUsedAt >= kRegenDelay) sv.stamina = std::min(100.0f, sv.stamina + kStaminaRegenPerSec * dt);
     // (#1215) Status effects: their damage over time, and chill's slow (frozen: no moving) on the walk speed.
@@ -68,6 +73,31 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
         Poise_Step(sv.poise, dt);
         if (Poise_Staggered(sv.poise)) s.player.statusSpeed *= PoiseTune::kPlayerStaggerSlow;
     }
+    // (#1218) Sprinting spends stamina; run dry, the player is winded; a raised tower shield slows; the dodge.
+    if (Combat4_On() && !sv.dead) {
+        Player& p = s.player;
+        const bool moving = in.down(Act::Forward) || in.down(Act::Back) || in.down(Act::Left) || in.down(Act::Right);
+        if (in.down(Act::Sprint) && moving && p.grounded && !p.flyMode) { sv.stamina = std::max(0.0f, sv.stamina - DefenseTune::kSprintStamina * dt); sv.staminaUsedAt = SimTime(); }
+        if (sv.stamina <= 0.0f && !sv.staminaEmpty) sv.windedLeft = DefenseTune::kWindedTime;
+        sv.staminaEmpty = sv.stamina <= 0.0f;
+        if (sv.windedLeft > 0.0f) { sv.windedLeft = std::max(0.0f, sv.windedLeft - dt); p.statusSpeed *= DefenseTune::kWindedWalk; }
+        if (sv.blocking) p.statusSpeed *= ShieldFor(s.inventory.offHand().id).raisedWalk;
+        sv.dodgeInvuln = std::max(0.0f, sv.dodgeInvuln - dt);
+        // A dodge: double-tap a direction (Settings, on by default), or the dodge key toward the held direction (back if none).
+        static const Act kDirs[4] = { Act::Forward, Act::Back, Act::Left, Act::Right };
+        int dir = -1;
+        if (gDoubleTapDodge) for (int k = 0; k < 4 && dir < 0; ++k) if (in.hit(kDirs[k])) dir = sv.taps.press(k, SimTime());
+        if (dir < 0 && in.hit(Act::Dodge)) { dir = 1; for (int k = 0; k < 4; ++k) if (in.down(kDirs[k])) { dir = k; break; } }
+        if (dir >= 0 && p.grounded && !p.flyMode && p.dodgeLeft <= 0.0f && sv.windedLeft <= 0.0f && sv.stamina >= DefenseTune::kDodgeStamina) {
+            const Vector3 flat = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
+            const Vector3 side = Vector3CrossProduct(flat, p.up); // the walk's right
+            const Vector3 dirs[4] = { flat, Vector3Negate(flat), Vector3Negate(side), side };
+            p.dodgeDir = dirs[dir]; p.dodgeLeft = DefenseTune::kDodgeTime; p.dodgeSpeed = DefenseTune::kDodgeDistance / DefenseTune::kDodgeTime;
+            sv.dodgeInvuln = DefenseTune::kDodgeInvuln;
+            sv.stamina -= DefenseTune::kDodgeStamina; sv.staminaUsedAt = SimTime();
+            ++sv.dodges;
+        }
+    }
     PickUpGraves(s);
 }
 
@@ -78,6 +108,8 @@ DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Comb
 DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e) {
     DamageResult r;
     if (sv.dead || e.amount <= 0.0f) return r;
+    // (#1218) A dodge's invulnerability: the hit passes through.
+    if (Combat4_On() && sv.dodgeInvuln > 0.0f && e.kind != DamageKind::Other) { r.dodged = true; return r; }
     float amount = e.amount, push = e.knockback;
     // Away from the source, level with the ground where the player stands.
     Vector3 away = { 0, 0, 0 };
@@ -90,8 +122,15 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
     // A block stops part of a hit it faces (the source within the arc around the level view) while stamina lasts.
     if (sv.blocking && e.hasSource && Vector3LengthSqr(away) > 0.0f) {
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
-        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= kBlockArcCos) {
-            const float stopped = amount * kShieldBlockFraction;
+        const float arcCos = Combat4_On() ? cosf(sv.shieldArcDeg * DEG2RAD) : kBlockArcCos;
+        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= arcCos) {
+            // (#1218) Raised within the shield's parry window before a parryable melee hit or bite: stopped whole, for no stamina
+            // (the attacker staggers: animals.cpp).
+            if (Combat4_On() && e.parryable && (e.kind == DamageKind::Melee || e.kind == DamageKind::Bite) && SimTime() - sv.blockStartedAt <= sv.shieldParryWindow + 1e-6) {
+                r.parried = true; ++sv.parries;
+                return r;
+            }
+            const float stopped = amount * (Combat4_On() ? sv.shieldStops : kShieldBlockFraction);
             const float cost = stopped * kBlockCostPerDamage;
             if (sv.stamina >= cost) {
                 amount -= stopped;
@@ -117,7 +156,7 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
         const float pmax = Poise_PlayerMax(sv.resist.armour);
         if (sv.poise.max != pmax) { const float f = sv.poise.max > 0.0f ? sv.poise.value / sv.poise.max : 1.0f; sv.poise.max = pmax; sv.poise.value = pmax * f; }
         float pd = e.poise > 0.0f ? e.poise : e.amount * PoiseTune::kAttackPoisePerDamage;
-        if (r.blocked) pd *= 1.0f - kShieldBlockFraction;
+        if (r.blocked) pd *= 1.0f - (Combat4_On() ? sv.shieldStops : kShieldBlockFraction);
         if (Poise_Hit(sv.poise, pd, e.heavy, false, sv.hyperArmour, PoiseTune::kPlayerStaggerTime).staggered) { ++sv.staggers; r.staggered = true; }
     }
     sv.health -= amount;
@@ -613,7 +652,7 @@ bool Combat_TestFrame(Scene& world) {
         t0 = now; step = 3;
         return false;
     case 3: // a shield in the off hand, RMB held, landed again: a hit from in front
-        if (now - t0 < 0.1 || (!p.grounded && now - t0 < 3.0)) return false;
+        if (now - t0 < 0.3 || (!p.grounded && now - t0 < 3.0)) return false; // (#1218) past the parry window: an ordinary block
         check(sv.blocking && s.terrainTool.rmbBlocks, "a shield in the off hand: RMB blocks (and builds nothing)");
         sv.health = sv.stamina = 100.0f;
         local0 = local();

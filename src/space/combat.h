@@ -46,6 +46,8 @@ struct DamageResult {
     bool guardBroken = false;     // the block ran out of stamina
     bool killed = false;          // this hit took the last health
     bool staggered = false;       // (#1217) it broke the player's poise
+    bool parried = false;         // (#1218) a parry stopped it whole (the attacker staggers)
+    bool dodged = false;          // (#1218) a dodge's invulnerability let it pass
 };
 
 DamageResult Combat_Damage(PlayerSession& target, const DamageEvent& e);
@@ -55,6 +57,7 @@ DamageResult Combat_DamageFor(SurvivalState& survival, Player& player, const Dam
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);
 void Combat_CurePoison(PlayerSession& s); // (#1215) a herb (the item is still to come)
+inline bool gDoubleTapDodge = true; // (#1218) double-tapping a direction dodges (Settings, on by default)
 
 // Hit feel, the local view only (never the simulation): a short camera shake after applyToCamera, and whether the held
 // tool's animation pauses (hit-stop). Reduce motion turns both off.

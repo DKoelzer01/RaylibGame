@@ -875,8 +875,13 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e);
                     } else {
                         const DamageResult r = Combat_Damage(LocalSession(), e);
+                        if (r.parried) { // (#1218) a parry staggers the attacker (2 s, #1217)
+                            if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(s.health));
+                            Poise_Stagger(a.poise, PoiseTune::kParryStaggerTime);
+                        }
                         Audio_Play(Sfx::Error, 0.7f, r.blocked ? 0.9f : 0.5f);
-                        GameUI_Toast(r.blocked ? TextFormat("You block the %s", s.name.c_str())
+                        GameUI_Toast(r.parried ? TextFormat("Parried! The %s staggers", s.name.c_str()) : r.dodged ? TextFormat("You dodge the %s", s.name.c_str())
+                                   : r.blocked ? TextFormat("You block the %s", s.name.c_str())
                                                : TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
                     }
                 } else if (tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
@@ -1081,7 +1086,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
 namespace {
 MeleeState gMelee;
 double gMeleeClock = -1.0;
-int gMeleeShocks = 0, gMeleeStaggers = 0;
+int gMeleeShocks = 0, gMeleeStaggers = 0, gMeleeDodges = 0;
 uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
 Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
 WeaponClass gMeleeClass = WeaponClass::Tools;
@@ -1171,8 +1176,10 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
     MeleeInput mi;
     mi.pressed = live && in.hit(Act::Primary) && !gPrimaryLatch.latched &&
                  (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
-    mi.held = live && in.down(Act::Primary);
+    mi.held = live && in.down(Act::Primary) && survival.windedLeft <= 0.0f; // (#1218) winded: no heavies
     mi.block = survival.blocking;
+    mi.dodge = survival.dodges != gMeleeDodges; // (#1218) a dodge started
+    gMeleeDodges = survival.dodges;
     mi.interrupted = survival.shocks != gMeleeShocks || survival.staggers != gMeleeStaggers; // a shock or (#1217) a stagger
     gMeleeShocks = survival.shocks; gMeleeStaggers = survival.staggers;
     mi.stamina = survival.stamina;

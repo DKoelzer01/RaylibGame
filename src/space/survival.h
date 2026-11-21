@@ -7,6 +7,7 @@
 #include <string>
 #include <map>
 #include "damage.h" // (#1215) resistances and status effects
+#include "defense.h" // (#1218)
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -64,6 +65,14 @@ struct SurvivalState {
     PoiseState poise;                                         // (#1217) from armour (combat.cpp sets its size)
     int staggers = 0;                                         // (#1217) times staggered (a melee wind-up sees each one)
     bool hyperArmour = false;                                 // (#1217) in a heavy or two-handed wind-up now: hits don't stagger
+    // (#1218) Parry, dodge and the winded state (defense.h).
+    double blockStartedAt = -1e9;                             // sim time the block was raised (the parry window counts from it)
+    float windedLeft = 0.0f;                                  // s winded left (ran out of stamina: no heavies, no dodge, slow walk)
+    bool staminaEmpty = false;                                // at 0 last step (the winded state starts once per emptying)
+    float dodgeInvuln = 0.0f;                                 // s of a dodge's invulnerability left
+    int dodges = 0, parries = 0;                              // counters (a melee swing sees dodges; tests)
+    float shieldStops = 0.75f, shieldArcDeg = 60.0f, shieldParryWindow = 0.15f; // the off hand's shield (Combat_Step sets it)
+    DoubleTap taps;                                           // the double-tap dodge's last presses
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
