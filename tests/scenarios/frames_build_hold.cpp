@@ -96,6 +96,9 @@ void Build(ScenarioDef& s) {
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
+        // With the frame path (F3 plots, #1381's new plot origin in double) a still player's aim holds exactly; the old path
+        // flips by float steps (hundreds of frames on the runner) and is reported only.
+        if (Frames_On()) c.lt("aim changes while still (frame path)", st.changed, 1);
         buildTool.active = false;
         return true;
     });
