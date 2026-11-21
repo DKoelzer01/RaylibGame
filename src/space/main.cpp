@@ -12656,6 +12656,10 @@ int main(int argc, char** argv)
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    if (b) { // (#901) where we leave, body-local: the server's record should say the same (a hosted save loaded in single player)
+                        const DVec3 at = b->toLocalD(player.position);
+                        printf("join: %s leaves at body %llu local %.3f %.3f %.3f\n", joinName.c_str(), (unsigned long long)b->netId, at.x, at.y, at.z);
+                    }
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
                 }
