@@ -206,6 +206,7 @@ struct Machine {
     Stack out[kSlots];
     Stack fuel;                             // fuel-burning machines and generators: their own fuel slot (#194)
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
+    uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
@@ -369,7 +370,9 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
         if (count <= 0 || toFuel || !dual) return count;
     }
     if (toFuel || !Accepts(m.type, item)) return count;
-    return AddItems(m.in.data(), InSlots(m), item, count);
+    const int left = AddItems(m.in.data(), InSlots(m), item, count);
+    if (left < count && m.fire == kFireOut) m.fire = kFireAuto; // (#1103) something to cook: a put-out campfire lights by itself again
+    return left;
 }
 
 // Burns up to maxTicks of fuel (taking new fuel items from the fuel slot as needed); returns the
@@ -504,6 +507,7 @@ void ApplyLayout(const LayoutMsg& L) {
                 if (tag == "f" && k + 1 < s.size()) { m.fuel.item = tables.item(s[k]); m.fuel.count = atoi(s[k + 1].c_str()); k += 2; }
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
+                else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
             }
             // Saves from before the fuel slot (#194) kept fuel in the inputs: move fuel no recipe of this machine wants
             // into the fuel slot (#229 review), so an old boiler or furnace still burns it.
@@ -598,6 +602,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             return true;
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
+        if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
                 return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
@@ -615,6 +620,12 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             }
             for (size_t ri = 0; ri < tables.recipes.size() && m.recipe < 0; ++ri)
                 if (usable(tables.recipes[ri])) { m.recipe = (int)ri; m.progress = 0; }
+            if (m.recipe < 0 && m.fire == kFireLit) { // (#1103) lit with nothing to cook: it burns its fuel (light, warmth)
+                const int burnt = BurnFuel(m, def, dt);
+                if (burnt > 0) { m.status = MachineStatus::Working; ++active; }
+                else { m.status = MachineStatus::NoFuel; m.fire = kFireAuto; } // burnt out: it lights again by itself
+                continue;
+            }
             if (m.recipe < 0) { m.status = MachineStatus::Idle; continue; } // asleep until items arrive
         }
         const Recipe& r = tables.recipes[m.recipe];
@@ -711,6 +722,8 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
     v.hotOutputs = HeatsItems(m.type);
+    v.canLight = m.type == PartType::Campfire;
+    v.fire = m.fire;
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -792,6 +805,8 @@ void SimLoop() {
                     const int left = InsertInto(m, im.item, im.count, im.kind == 6, buckets);
                     if (left > 0 && im.kind != 2) back.push_back({ im.item, left, im.to });
                     if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets, im.to }); // the emptied buckets
+                } else if (im.kind == 10) { // (#1103) light or put out a campfire
+                    if (m.type == PartType::Campfire) m.fire = im.count ? kFireLit : kFireOut;
                 } else if (im.kind == 7) {
                     if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count); // Waterworks sends only the room (TankRoom)
                     filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
@@ -1020,6 +1035,10 @@ void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::stri
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 6, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
 }
+void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
+}
 int Factory::TankRoom(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
     const auto key = std::make_tuple(body, plot, part);
@@ -1093,6 +1112,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.fuel.count > 0) fprintf(f, " f %s %d", tables.name(m.fuel.item).c_str(), m.fuel.count);
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
+            if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
             fprintf(f, "\n");
         }
     }
