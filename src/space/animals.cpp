@@ -1100,7 +1100,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 const Species& t = species[b.species];
                 if (b.species == a.species && d < 40.0f) { centre = Vector3Add(centre, b.pos); ++herd; }
                 if (s.hostile && !t.hostile && d < bestPrey && threatsOn) { bestPrey = d; a.chase = j; }
-                if (!s.hostile && t.hostile && d < bestThreat && threatsOn) { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = b.pos; }
+                if (!s.hostile && t.hostile && d < bestThreat && threatsOn && !Creature_Spec(s.id)) /* (#1225: a creature's fears are its faction's) */ { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = b.pos; }
             }
             a.herdCentre = herd ? Vector3Scale(centre, 1.0f / herd) : a.pos;
             a.herdSize = herd;

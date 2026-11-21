@@ -15,7 +15,7 @@
 #include <string>
 
 namespace {
-struct St { uint64_t net[3] = {}; float throwerMin = 1e9f; int thrown0 = 0; float health0 = 100.0f; float d0 = 0.0f; int thefts0 = 0; int stone0 = 0; } S;
+struct St { Vector3 stand{}; uint64_t net[3] = {}; float throwerMin = 1e9f, bladeMin = 1e9f; int thrown0 = 0; float health0 = 100.0f; float d0 = 0.0f; int thefts0 = 0; int stone0 = 0; } S;
 
 Vector3 FeetLocal(ScenarioCtx& c) { return c.body->toLocal((player.position - c.world.renderOrigin).toFloat()); }
 int Idx(int k) { return Animals_FindNet(S.net[k]); }
@@ -34,6 +34,7 @@ SCENARIO("creatures/arena-scavenger") {
     s.tags = { "creatures" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
+    s.args = { "--day" }; // daylight: their sight is their own, not the dark's (a separate matter: torches light only 9 m)
 
     s.step("settle", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("1 s of play and an idle world");
@@ -54,17 +55,21 @@ SCENARIO("creatures/arena-scavenger") {
         }
         for (int k = 0; k < 3; ++k) Animals_TestSetGroup(Idx(k), S.net[0], k == 0);
         S.thrown0 = Animals_ProjectilesThrown();
+        S.stand = FeetLocal(c);
         survival.health = 100.0f; S.health0 = 100.0f;
         return true;
     });
     s.step("the thrower throws from a distance; the others close in", 15.0, [](ScenarioCtx& c) {
         survival.health = std::max(survival.health, 40.0f); survival.dead = false;
+        // The player holds their ground (the rams' knockback would carry them out of the thrower's range).
+        if (Vector3Distance(FeetLocal(c), S.stand) > 0.5f) player.placeAt(c.world, *c.body, c.body->toWorld(Vector3Add(S.stand, Vector3Scale(Vector3Normalize(S.stand), 0.05f))));
         const float dt = Dist(c, 0);
         if (dt >= 0.0f && c.t > 1.0) S.throwerMin = std::min(S.throwerMin, dt);
+        for (int k = 1; k < 3; ++k) { const float d = Dist(c, k); if (d >= 0.0f) S.bladeMin = std::min(S.bladeMin, d); }
         if (c.t < 10.0) return false;
         c.gt("stones thrown in 10 s", Animals_ProjectilesThrown() - S.thrown0, 1.5);
         c.gt("the thrower kept its distance (closest, m)", S.throwerMin, 4.0);
-        c.lt("a blade-carrier came close (m)", std::min(Dist(c, 1), Dist(c, 2)), 2.5);
+        c.lt("a blade-carrier came close (closest, m)", S.bladeMin, 2.5);
         c.metric("stones that hit", Animals_ProjectileHits(), "", false);
         survival.health = 100.0f;
         return true;
