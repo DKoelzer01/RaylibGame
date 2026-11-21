@@ -30,9 +30,15 @@ stop_host() { # #795: by the Windows PID too, only while it is still our game.ex
 trap stop_host EXIT
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 280 ]; do sleep 1; done
-join() { RAYLIBGAME_PLANTS_SECONDS=40 RAYLIBGAME_NET_PLANTS_ROLE=$1 timeout 300 "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-plants > "$tmp/$1.log" 2>&1; }
-join watcher & wp=$!
-sleep 2
+join() { RAYLIBGAME_PLANTS_SECONDS=${PLANTS_SECONDS:-40} RAYLIBGAME_NET_PLANTS_ROLE=$1 timeout ${CLIENT_TIMEOUT:-300} "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-plants > "$tmp/$1.log" 2>&1; }
+if [ "${TERRAIN:-}" = default ]; then PLANTS_SECONDS=240 CLIENT_TIMEOUT=600 join watcher & wp=$!; else join watcher & wp=$!; fi
+if [ "${TERRAIN:-}" = default ]; then
+    # (#1107) each client bakes the erosion terrain itself: two at once with the host ran out of memory (bad_alloc). The
+    # feller joins once the watcher's world is ready (the watcher listens longer meanwhile: WATCH_SECONDS).
+    until grep -q "world ready" "$tmp/watcher.log" 2>/dev/null || ! kill -0 "$wp" 2>/dev/null || [ $SECONDS -gt 600 ]; do sleep 2; done
+else
+    sleep 2
+fi
 join feller
 wait $wp
 stop_host
