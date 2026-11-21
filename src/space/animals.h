@@ -49,6 +49,11 @@ int Animals_LurkerDrops();         // (#1224 tests) ceiling drops that landed on
 double Animals_Clock();            // (#1224 tests) the animals' sim clock (noise events are stamped with it)
 // (#1225) Torches creatures carry (lights for the frame, after Events_AddLights); thrown projectiles and thefts (tests).
 void Animals_AddLights(Scene& world);
+// (#1343, #1364) Creature shots and events for clients: the host takes what happened since its last call; a client applies a
+// message (the shots fly here too, the events reach gCreatureEvent).
+struct MsgCreatureFx;
+void Animals_TakeFx(MsgCreatureFx& out);
+void Animals_ApplyFx(const MsgCreatureFx& m);
 int Animals_ProjectilesThrown();
 int Animals_ProjectileHits();
 int Animals_Thefts();

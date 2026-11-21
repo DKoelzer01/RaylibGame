@@ -16,6 +16,7 @@
 #include "claims.h"
 #include "headless.h"
 #include "net.h"
+#include "netproto.h" // (#1343, #1364) creature shots and events to clients
 #include "playersession.h"
 #include "buildtool.h"
 #include "gameui.h"
@@ -200,6 +201,15 @@ int AnimalFaction(const Animal& a) {
 struct CreatureHit { uint64_t target, attacker; Vector3 from; DamageEvent e; }; // (#1223) one creature's strike on another
 std::vector<CreatureHit> creatureHits;
 int shieldBlocks = 0; // (#1227) hits a front shield took (tests)
+// (#1343, #1364) A server's creature shots and events since the host last took them (Animals_TakeFx), for its clients.
+std::vector<MsgCreatureFx::Shot> fxShots;
+std::vector<uint32_t> fxEnded;
+std::vector<MsgCreatureFx::Event> fxEvents;
+void FxEvent(const Animal& a, const CreatureSpec& c, CreatureEvent e, uint64_t bodyId, Vector3 pos) {
+    Creature_Event(c, e, bodyId, pos); // here (sounds through gCreatureEvent)
+    if (gNetRole != NetRole::Host || fxEvents.size() >= 256) return;
+    if (Planetoid* b = Planetoid::find(bodyId)) fxEvents.push_back({ a.netId, (uint8_t)e, (uint8_t)a.species, b->netId, DVec3(pos) });
+}
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
@@ -517,7 +527,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
     const Animal& a = animals[i];
     const Species& s = species[a.species];
     const CreatureSpec* cs = Creature_Spec(s.id);
-    if (cs) Creature_Event(*cs, CreatureEvent::Death, BodyIdOf(a.body), a.pos);
+    if (cs) FxEvent(a, *cs, CreatureEvent::Death, BodyIdOf(a.body), a.pos);
     if (!dropsTo && !toGround) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
     if (!dropsTo && !toGround && s.night) QuestBook_Count("stalker");
     std::vector<std::pair<std::string, int>> all = s.drops;
@@ -610,7 +620,7 @@ void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from)
     a.health -= TypedAmount(a, ef);
     if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
         a.hurtPending = true; a.hurtBy = attacker; a.hurtFrom = from;
-        Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+        FxEvent(a, *cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
     } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.state = State::Flee; }
     if (a.health <= 0.0f) Kill(i, nullptr, true);
     else MaybeSplit(i, e.type); // (#1226)
@@ -702,7 +712,7 @@ bool Animals_Hit(int i, float damage) {
     if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
         // (#1223) A creature: its brain hears who hit it (the local player) and decides (turn on them, retreat, run).
         a.hurtPending = true; a.hurtBy = kPlayerPercept; a.hurtFrom = a.pos;
-        Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+        FxEvent(a, *cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
     } else {
     // Hostile ones fight back until badly hurt; the rest run.
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
@@ -753,14 +763,18 @@ bool Animals_Feed(int i) {
 // hits the first player whose body it passes within 0.45 m of (through Combat_Damage: a raised shield facing it blocks; a
 // dodge passes through; never parried), and stops in rock. Gone after 6 s.
 namespace {
-struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; bool dart = false; }; // (#1228) dart: a sentinel's bolt (pierce, fast, flat)
+struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; bool dart = false; uint32_t id = 0; }; // (#1343) id: a server's shots carry it to clients // (#1228) dart: a sentinel's bolt (pierce, fast, flat)
 std::vector<Projectile> projectiles;
 int projectileHits = 0, projectilesThrown = 0;
 
 void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear, float speed = 16.0f, bool dart = false) {
     Vector3 vel;
     Throw_Aim(from, target, Vector3Normalize(from), speed, 9.81f, vel);
-    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear, dart });
+    static uint32_t nextShot = 1;
+    const uint32_t id = nextShot++;
+    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear, dart, id });
+    if (gNetRole == NetRole::Host && fxShots.size() < 128) // (#1343) its clients fly it too
+        for (Planetoid* b : Planetoid::All()) if (b->name == body) { fxShots.push_back({ id, b->netId, DVec3(from), vel, (uint8_t)(dart ? 2 : spear ? 1 : 0), owner }); break; }
     ++projectilesThrown;
 }
 
@@ -779,7 +793,7 @@ void StepProjectiles(Scene& world, float dt) {
             p.pos = Vector3Add(p.pos, Vector3Scale(p.vel, dt));
             if (body->densityAt(p.pos) >= ISO_LEVEL) gone = true; // into rock or the ground
             // The local player: their body from the feet up 1.7 m.
-            if (!gone && here == body && !survival.dead && !player.flyMode) {
+            if (!gone && here == body && !survival.dead && !player.flyMode && !gAnimalsReplicated) { // (a client only flies them: hits are the server's)
                 const Vector3 pu = Vector3Normalize(feet);
                 if (Melee_SegmentDistance(before, p.pos, feet, Vector3Add(feet, Vector3Scale(pu, 1.7f))) < 0.45f) {
                     DamageEvent e;
@@ -808,7 +822,7 @@ void StepProjectiles(Scene& world, float dt) {
                     break;
                 }
         }
-        if (gone) { projectiles[k] = projectiles.back(); projectiles.pop_back(); }
+        if (gone) { if (gNetRole == NetRole::Host && fxEnded.size() < 128) fxEnded.push_back(p.id); projectiles[k] = projectiles.back(); projectiles.pop_back(); }
         else ++k;
     }
 }
@@ -830,6 +844,34 @@ void DrawProjectiles(Scene& world) {
     }
 }
 } // namespace
+
+
+// (#1343, #1364) The host: what happened since the last call (shots launched, shots ended, creature events), moved out.
+void Animals_TakeFx(MsgCreatureFx& out) {
+    out.shots.swap(fxShots); fxShots.clear();
+    out.ended.swap(fxEnded); fxEnded.clear();
+    out.events.swap(fxEvents); fxEvents.clear();
+}
+
+// (#1343, #1364) A client: the server's shots fly here too (a flight only: hits are the server's), ended ones go, and creature
+// events reach this machine's hook (the sounds and captions, #1363).
+void Animals_ApplyFx(const MsgCreatureFx& m) {
+    LoadSpecies();
+    for (const MsgCreatureFx::Shot& s : m.shots) {
+        const Planetoid* b = Planetoid::findNet(s.body);
+        if (!b) continue;
+        projectiles.push_back({ b->name, s.pos.toFloat(), s.vel, 0.0f, s.owner, simClock, s.kind == 1, s.kind == 2, s.id });
+    }
+    for (uint32_t id : m.ended)
+        for (size_t k = 0; k < projectiles.size(); ++k)
+            if (projectiles[k].id == id) { projectiles[k] = projectiles.back(); projectiles.pop_back(); break; }
+    for (const MsgCreatureFx::Event& e : m.events) {
+        if (e.species >= species.size()) continue;
+        const CreatureSpec* cs = Creature_Spec(species[e.species].id);
+        const Planetoid* b = Planetoid::findNet(e.body);
+        if (cs && b) Creature_Event(*cs, (CreatureEvent)e.kind, b->id, e.pos.toFloat());
+    }
+}
 
 int Animals_ProjectilesThrown() { return projectilesThrown; }
 int Animals_ProjectileHits() { return projectileHits; }
@@ -1024,6 +1066,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (step > 1e-4f) a.gait += step / std::max(0.25f, species[a.species].size.x * 0.45f) * PI; // the walk cycle, as the AI drives it
             ++i;
         }
+        StepProjectiles(world, dt); // (#1343) the server's shots, flown here (no hits: those are the server's)
         lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         return;
     }
@@ -1303,11 +1346,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
             const Mood before = a.brain.mood;
             bo = Brain_Step(a.brain, *cs, bi, step);
-            if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) Creature_Event(*cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
+            if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) FxEvent(a, *cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
             if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
                 printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
-                Creature_Event(*cs, CreatureEvent::Alert, body->id, a.pos);
+                FxEvent(a, *cs, CreatureEvent::Alert, body->id, a.pos);
             if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; }
             if ((bo.mood == Mood::Chase || bo.mood == Mood::Attack) && a.fleeTimer <= 0.0f) {
                 if (bo.target & kPlayerPercept) hunting = sameBody;
@@ -1367,7 +1410,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         a.clingWait += step;
                         if (side < cs->dropRange || a.clingWait > 3.0f) {
                             a.dropIn = 0.35f;
-                            Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                            FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                             if (tg->session == 0 && side < cs->dropRange) { Audio_Play(Sfx::Error, 0.4f, 1.8f); GameUI_Toast("Something rattles overhead!"); }
                         }
                     }
@@ -1439,7 +1482,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     speed = 0.0f;
                     if (a.throwWindAt < 0.0 && simClock - a.lastThrow > cs->throwCooldown) {
                         a.throwWindAt = simClock;
-                        Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                        FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                         if (tg->session == 0) GameUI_Toast(TextFormat(cs->dart ? "The %s charges up!" : "The %s winds up a throw!", s.name.c_str())); // (#1228: a sentinel's charge)
                     }
                     if (a.throwWindAt >= 0.0 && simClock - a.throwWindAt >= cs->throwWindUp) {
@@ -1451,7 +1494,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
             if (windUp) {
                 a.windUpAt = simClock;
-                if (cs) Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                if (cs) FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                 if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
                 GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
             }

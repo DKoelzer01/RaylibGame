@@ -12582,10 +12582,10 @@ int main(int argc, char** argv)
                     const bool moveOk = walked > 15.0 && gJoin.states > 80 && gJoin.worstError < 0.5 && gJoin.corrections * 10 <= gJoin.states;
                     const bool othersOk = (int)seen.size() >= wantOthers && (wantOthers == 0 || othersMoved > 5.0);
                     const bool wantCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
-                    const bool creatureOk = !wantCreature || (creatureNet && creatureGone && creatureMin < creatureFirst);
+                    const bool creatureOk = !wantCreature || (creatureNet && creatureGone && creatureMin < creatureFirst && gJoin.creatureFxMsgs > 0); // (#1343, #1364: its calls and telegraphs reached us)
                     if (wantCreature)
                         printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f -> %s\n", joinName.c_str(),
-                               creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, creatureOk ? "ok" : "FAIL");
+                               creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, gJoin.creatureFxMsgs, creatureOk ? "ok" : "FAIL");
                     const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk;
                     printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",

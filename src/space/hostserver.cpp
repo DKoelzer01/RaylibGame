@@ -245,6 +245,30 @@ namespace {
         body = b->netId; local = b->toLocalD(r.player.position).toFloat(); scale = b->scale;
         return true;
     }
+    // (#1343, #1364) Creature shots launched and ended, and creature events, to each player near them (80 m), each tick
+    // there are any: the clients fly the shots and play the creatures' sounds and captions.
+    void SendCreatureFx(Scene&) {
+        static MsgCreatureFx all;
+        Animals_TakeFx(all);
+        if (all.shots.empty() && all.ended.empty() && all.events.empty()) return;
+        constexpr float kFxRange = 80.0f;
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+            if (rit == remotes.end() || !RemoteLocal(rit->second, body, at, scale)) continue;
+            MsgCreatureFx m;
+            for (const MsgCreatureFx::Shot& s : all.shots)
+                if (s.body == body && Vector3Distance(s.pos.toFloat(), at) * (float)scale <= kFxRange) m.shots.push_back(s);
+            m.ended = all.ended; // (ids it never had are ignored there)
+            for (const MsgCreatureFx::Event& e : all.events)
+                if (e.body == body && Vector3Distance(e.pos.toFloat(), at) * (float)scale <= kFxRange) m.events.push_back(e);
+            if (m.shots.empty() && m.ended.empty() && m.events.empty()) continue;
+            NetWriter w; NetWrite(w, m);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+        all.shots.clear(); all.ended.clear(); all.events.clear();
+    }
     void SendAnimals(Scene& world) {
         if (SimTick() - lastAnimals < kAnimalEvery) return;
         lastAnimals = SimTick();
@@ -2195,6 +2219,7 @@ void Host_Update(Scene& world) {
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
+    SendCreatureFx(world); // (#1343, #1364) their shots and calls
     SendVitals();         // (#337) and each player's survival numbers, to that player
     SendSkills();         // (#920) and their skills, when they changed
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
