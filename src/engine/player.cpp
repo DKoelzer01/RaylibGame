@@ -218,7 +218,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         // space it fires the suit thrusters along the view.
         const Vector3 f = (grounded || gravity >= 0.5f) ? flat : forward;
         if (in.down(Act::Forward)) wish = Vector3Add(wish, f);
-        if (in.down(Act::Back)) wish = Vector3Subtract(wish, f);
+        if (in.down(Act::Back) && !onLadder) wish = Vector3Subtract(wish, f); // (#1105: on a ladder S only climbs down; it walked you off it)
         if (in.down(Act::Right)) wish = Vector3Add(wish, side);
         if (in.down(Act::Left)) wish = Vector3Subtract(wish, side);
         if (Vector3Length(wish) > 0.0f) wish = Vector3Normalize(wish);
@@ -540,13 +540,13 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
         if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));
     }
-    if (onLadder && !grounded) {
-        // (#1105) On a ladder: no gravity; up and down at the climb speed against the surface (W, S; nothing holds), sideways
-        // at most that fast; Space pushes off, back from where the player faces (the ladder), a little up.
+    if (onLadder && !grounded && !wasGrounded) { // (not the step that leaves the ground: its velocity is still the ground's)
+        // (#1105) On a ladder: no gravity; up and down at the climb speed against the surface (W, S; nothing holds); sideways
+        // only as the walking input asks (W into the ladder, A/D along it), never a leftover drift (it carried the player off
+        // the ladder going down); Space pushes off, back from where the player faces (the ladder), a little up.
         const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
-        const Vector3 rel = Vector3Subtract(velocity, surface);
-        Vector3 side = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
-        if (const float sl = Vector3Length(side); sl > kClimbSpeed) side = Vector3Scale(side, kClimbSpeed / sl);
+        Vector3 side = Vector3Subtract(wish, Vector3Scale(up, Vector3DotProduct(wish, up)));
+        if (const float sl = Vector3Length(side); sl > 1e-4f) side = Vector3Scale(side, kClimbSpeed / std::max(1.0f, sl));
         velocity = Vector3Add(surface, Vector3Add(side, Vector3Scale(up, climbInput * kClimbSpeed)));
         gAccel = { 0, 0, 0 };
         if (climbJump) {
