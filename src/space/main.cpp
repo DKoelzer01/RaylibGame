@@ -1723,6 +1723,25 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is a single braceless if)
+        if (std::string(argv[i]) == "--cave-mouths" && i + 1 < argc) {
+            // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
+            // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int mouths = pf->caveMouthsNear(home, R);
+            Vector3 mAt{}, mOut{};
+            const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+            const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
+                   mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
@@ -1775,6 +1794,14 @@ int main(int argc, char** argv)
                    tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
             printf("bench: cave stats: columns a #549 roof collapse opened %lld; mouth columns (open to the sky through a cave on a 15+ degree slope) %lld; trench columns (the same on flatter ground) %lld = %.0f m^2 (%.2f%% of land)\n",
                    collapsedCols, mouthCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            {   // (#1115) Entrances (hillside mouths, sinks, resurgences; not chamber centres) within R, and the nearest one.
+                const int mouths = pf->caveMouthsNear(home, R);
+                Vector3 mAt{}, mOut{};
+                const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+                const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+                printf("bench: cave stats: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m\n",
+                       mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM);
+            }
             printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
             return 0;
         }

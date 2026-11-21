@@ -1328,8 +1328,56 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.6; 0.18 before).
+        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.6f; // (user 2026-11-20: 0.18 -> 0.6)
+        const float odds = std::min(0.95f, baseOdds * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
         const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
+        // (#1115) The tries look where the cell's ground is steep: a 6 x 6 grid of heights over its surface patch (~43 m apart)
+        // ranks the points by the largest drop to a grid neighbour, and the tries go to the steepest few, jittered by half a
+        // spacing. Random points in the cell's volume (before) mostly missed the patch or fell on gentle ground, so a cell that
+        // rolled a mouth rarely found its face and the user flew around without seeing one.
+        constexpr int kG = 6;
+        float gridStep = 0.0f;                                             // the grid's spacing (m)
+        std::vector<Vector3> steep;                                        // candidate directions, steepest first
+        Vector3 pu1{}, pu2{};
+        static const bool mouthSearch = !(getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH") && getenv("RAYLIBGAME_CAVE_MOUTH_SEARCH")[0] == '0'); // =0: random tries (A/B)
+        if (cellHasMouth && mouthSearch) {
+            const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+            const float cl = Vector3Length(cc);
+            if (cl > 1.0f) {
+                const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+                pu1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                pu2 = Vector3CrossProduct(d0, pu1);
+                const float half = 0.75f * kCaveCell;                      // the patch may sit off the centre's direction
+                float eg[kG + 2][kG + 2]; bool ing[kG + 2][kG + 2]; Vector3 dg[kG + 2][kG + 2];
+                const int n = kG + 2;
+                const float step = 2.0f * half / (n - 1);
+                gridStep = step;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(d0, R), Vector3Add(Vector3Scale(pu1, -half + step * i), Vector3Scale(pu2, -half + step * j))));
+                        const Vector3 onR = Vector3Scale(d, R);
+                        dg[j][i] = d;
+                        ing[j][i] = (int)floorf(onR.x / kCaveCell) == cx && (int)floorf(onR.y / kCaveCell) == cy && (int)floorf(onR.z / kCaveCell) == cz;
+                        eg[j][i] = ing[j][i] ? f.elevation(d) : 0.0f;
+                    }
+                std::vector<std::pair<float, Vector3>> rank;
+                for (int j = 0; j < n; ++j)
+                    for (int i = 0; i < n; ++i) {
+                        if (!ing[j][i] || eg[j][i] < 2.0f) continue;
+                        float drop = 0.0f;
+                        static const int nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+                        for (const auto& o : nb) {
+                            const int a = i + o[0], b = j + o[1];
+                            if (a < 0 || b < 0 || a >= n || b >= n || !ing[b][a]) continue;
+                            drop = std::max(drop, fabsf(eg[b][a] - eg[j][i]));
+                        }
+                        if (drop > 0.2f * step) rank.push_back({ drop, dg[j][i] }); // ~11 degrees or more over a spacing
+                    }
+                std::sort(rank.begin(), rank.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+                for (size_t k = 0; k < rank.size() && k < 5; ++k) steep.push_back(rank[k].second);
+            }
+        }
         for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
@@ -1337,6 +1385,10 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             (void)coin;
             if (sl < 1.0f) continue;
             Vector3 dir = Vector3Scale(s, 1.0f / sl);
+            if (!steep.empty()) {                                           // (#1115) near a steep grid point instead
+                const float j1 = (UM(rm) - 0.5f) * gridStep, j2 = (UM(rm) - 0.5f) * gridStep; // within half a spacing
+                dir = Vector3Normalize(Vector3Add(Vector3Scale(steep[(size_t)tries % steep.size()], R), Vector3Add(Vector3Scale(pu1, j1), Vector3Scale(pu2, j2))));
+            }
             const Vector3 onR = Vector3Scale(dir, R);
             if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
             const float e0 = f.elevation(dir);
@@ -1355,7 +1407,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
             const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
             const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
-            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_RISE: the rise within 10 m a face needs (5 m; 2/5 of it within 5 m).
+            static const float needRise = getenv("RAYLIBGAME_CAVE_MOUTH_RISE") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_RISE")) : 5.0f;
+            if (rise10 < needRise || rise5 < 0.4f * needRise || fall4 < 0.5f) continue;
             const float flat = 0.55f + 0.15f * rf;
             const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
             if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
