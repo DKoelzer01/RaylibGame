@@ -82,6 +82,7 @@ struct FactoryStats {
 enum class StatWindow : uint8_t { Minute, Hour, TenHours }; // the last minute (by seconds), hour (by minutes), 10 hours
 struct StatLine {
     std::string item;
+    bool estimated = false;                                        // (#1261) partly from far plots in the summary sim
     double madePerMin = 0, usedPerMin = 0, handInPerMin = 0, handOutPerMin = 0;
     long long made = 0, used = 0, handIn = 0, handOut = 0;      // totals since the world loaded (finished seconds)
     std::vector<float> madeSpark, usedSpark;                      // the window's buckets, oldest first (per bucket)
@@ -96,7 +97,7 @@ struct StatKind {
 struct FactoryStatsView {
     StatWindow window = StatWindow::Minute;                        // the one shown (a longer one not filled yet falls back)
     double coveredMinutes = 0;                                     // how much of it has data
-    int plots = 0;
+    int plots = 0, estimatedPlots = 0;                             // (#1261) plots in the summary sim (their figures are estimates)
     std::vector<StatLine> items;                                   // by item name
     std::vector<StatKind> kinds;                                   // by PartType
     double euMadePerTick = 0, euUsedPerTick = 0, euDemandPerTick = 0;

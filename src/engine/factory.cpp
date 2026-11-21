@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -1243,6 +1244,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         }
         for (Machine& m : ps.machines) { m.dirty = true; m.asleep = false; } // (back near, everything looks again)
         for (size_t k = 0; k < nodes.size(); ++k) ps.machines[nodes[k].mi].status = crafts[k] > 0 ? MachineStatus::Working : MachineStatus::Idle;
+        for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt; // (#1199 counters: the bottleneck finder sees far plots too)
         t += dt;
     }
 }
@@ -1671,10 +1673,14 @@ FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t bo
         for (int i = 0; i < kStatBuckets; ++i) { into.sec[i] += s.sec[i]; into.min[i] += s.min[i]; into.ten[i] += s.ten[i]; }
         into.total += s.total + s.acc; // (live: this second's count too)
     };
+    std::set<int> estimated; // (#1261) items counted on plots in the summary sim
     for (const PlotSim& ps : plots) {
         if (onePlot && (ps.body != body || ps.plot != plot)) continue;
         ++out.plots;
+        const bool summary = ps.mode == PlotSim::Mode::Summary;
+        out.estimatedPlots += summary;
         for (const auto& [id, is] : ps.stats.items) {
+            if (summary) estimated.insert(id);
             ItemSeries& t = items[id];
             addSeries(t.made, is.made); addSeries(t.used, is.used); addSeries(t.handIn, is.handIn); addSeries(t.handOut, is.handOut);
         }
@@ -1690,6 +1696,7 @@ FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t bo
     for (const auto& [id, is] : items) {
         StatLine l;
         l.item = tables.name(id);
+        l.estimated = estimated.count(id) > 0;
         l.madePerMin = perMin(is.made); l.usedPerMin = perMin(is.used); l.handInPerMin = perMin(is.handIn); l.handOutPerMin = perMin(is.handOut);
         l.made = is.made.total; l.used = is.used.total; l.handIn = is.handIn.total; l.handOut = is.handOut.total;
         spark(is.made, l.madeSpark); spark(is.used, l.usedSpark);
