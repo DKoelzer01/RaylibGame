@@ -93,6 +93,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "magic.h"
 #include "magicsight.h"
 #include "magicdiscovery.h"
+#include "magicmachines.h"
 #include "tome.h"
 #include "wind.h"
 #include "storage.h"
@@ -10403,6 +10404,7 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
+            MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory

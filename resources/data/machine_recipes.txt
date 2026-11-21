@@ -123,3 +123,14 @@ mechanical_press | iron_plate 1       | iron_ingot 1              | 100 | 0
 mechanical_press | bronze_plate 1     | bronze_ingot 1            | 100 | 0
 mechanical_press | copper_plate 1     | copper_ingot 1            | 100 | 0
 mechanical_press | tin_plate 1        | tin_ingot 1               | 100 | 0
+
+# Magic (#1252): the mana siphon fills an empty jar with its node's kind (the game sets which: jar_none idles it), 30 s a jar.
+mana_siphon     | jar_earth 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_water 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_fire 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_air 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_aether 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_frost 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_storm 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_shard 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_rot 1 | mana_jar 1 | 600 | 0
