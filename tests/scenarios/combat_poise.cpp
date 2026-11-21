@@ -17,7 +17,7 @@
 #include <string>
 
 namespace {
-struct St { int idx = -1; Vector3 still{}; float poiseBefore = 0.0f; } S;
+struct St { int idx = -1; uint64_t net = 0; Vector3 still{}; float poiseBefore = 0.0f; } S; // (net: across steps an index can shift)
 
 int Fresh(ScenarioCtx& c, const char* species, float spread) {
     const Vector3 home = c.spawnDirLocal();
@@ -55,21 +55,22 @@ SCENARIO("combat/poise") {
         c.near("the next hit does x1.5", Hit(S.idx, 4.0f, 1.0f), 6.0, 1e-3);
         c.near("only the next", Hit(S.idx, 4.0f, 1.0f), 4.0, 1e-3);
         S.still = Animals_Position(S.idx);
+        S.net = Animals_NetId(S.idx);
         return true;
     });
     s.step("it stands while it staggers, then runs", 4.0, [](ScenarioCtx& c) {
-        const PoiseState* p = Animals_Poise(S.idx);
+        const PoiseState* p = Animals_Poise(Animals_FindNet(S.net));
         if (!p) { c.fail("the hornhide is gone"); return true; }
         if (c.t < 0.5) return false;
         static bool checked = false;
         if (!checked) {
             checked = true;
             c.check("still staggered at 0.5 s", Poise_Staggered(*p));
-            c.lt("moved while staggered (m)", Vector3Distance(Animals_Position(S.idx), S.still), 0.05);
+            c.lt("moved while staggered (m)", Vector3Distance(Animals_Position(Animals_FindNet(S.net)), S.still), 0.05);
         }
         if (c.t < 2.5) return false;
         c.check("the stagger is over", !Poise_Staggered(*p));
-        c.gt("then it runs (m from where it stood)", Vector3Distance(Animals_Position(S.idx), S.still), 0.5);
+        c.gt("then it runs (m from where it stood)", Vector3Distance(Animals_Position(Animals_FindNet(S.net)), S.still), 0.5);
         return true;
     });
     s.step("a small creature staggers on any heavy", 2.0, [](ScenarioCtx& c) {
