@@ -1,5 +1,6 @@
 // --crack-check (#725), shared by main.cpp and the visual/crack-check scenario: see crackcheck.h.
 #include "crackcheck.h"
+#include <cstdint>
 #include <vector>
 
 // --crack-check (#725): magenta (the clear colour, nothing drawn) pixels that are holes in the terrain, not open sky. With
