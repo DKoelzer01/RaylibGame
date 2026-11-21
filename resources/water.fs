@@ -10,6 +10,7 @@ in float fragDepth;            // depth to the sea floor (m)
 flat in int fragKind;          // fluid kind (fluids.txt; 0 water)
 in vec4 fragFlow;              // the current (#361): xyz direction (body-aligned), w speed m/s (0: still water)
 in vec3 fragFlowW;             // its direction in world (render) space, as fragNormal
+in float fragGen;              // (#1164) 1: undisturbed generated water (sea, lake): its shores foam
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;           // towards the sun
@@ -155,10 +156,13 @@ void main()
     // the physical sky reflected along the actual reflected ray (the LUT the haze uses), not the flat horizon colour.
     float body = 0.25 + 0.75 * light;
     vec3 deep = vec3(0.004, 0.026, 0.05) * body;
-    float clarity = exp(-fragDepth / 2.5);
     vec3 shallow = vec3(0.02, 0.12, 0.11) * body;
+    // (#1164 part 2) Absorbed per channel over the depth (red first, then green): shallows teal-green, a metre or two
+    // blue-green, deeper water the dark body; the clarity (how much the bed shows, the alpha) follows the light left.
+    vec3 Tr = exp(-fragDepth * vec3(0.7, 0.28, 0.2));
+    float clarity = dot(Tr, vec3(0.2, 0.5, 0.3));
     vec3 refl = SkyPhysToward(reflect(-v, n), skyColor);
-    vec3 color = mix(mix(deep, shallow, clarity), refl, fresnel);
+    vec3 color = mix(mix(deep, shallow, Tr), refl, fresnel);
     vec3 h = normalize(sunDir + v);
     float glint = pow(max(dot(n, h), 0.0), 800.0) * 1.2 * sunVis;
     color += vec3(1.0, 0.95, 0.85) * glint;
@@ -170,6 +174,14 @@ void main()
     // The current's streaks also shade the water itself (lighter and darker bands), so they show under an overcast sky
     // where the reflection is flat; foam is lit, pale and mostly opaque.
     color *= 1.0 + streak * 0.8 * flowAmt;
+    // (#1164 part 2) Shore foam on the sea and lakes (generated water: dug pools and streams have none): a lacy band where
+    // the water is under ~0.4 m deep, surging in and out, out to ~90 m.
+    if (fragGen > 0.5 && fragKind == 0) {
+        float shore = 1.0 - smoothstep(0.03, 0.4, fragDepth);
+        float lace = wNoise(p.xz * 1.7 + vec2(time * 0.25, -time * 0.18), 34.0);
+        float surge = 0.5 + 0.5 * sin(time * 0.9 + fragDepth * 14.0);
+        foam = max(foam, shore * smoothstep(0.55, 0.8, lace * 0.7 + surge * 0.45) * 0.75 * (1.0 - smoothstep(40.0, 90.0, dist)));
+    }
     color = mix(color, vec3(0.7, 0.78, 0.8) * (0.3 + 0.7 * max(light, 0.3 * sunVis)) + skyColor * 0.1, foam);
     alpha = mix(alpha, 0.9, foam);
     vec4 fluidColor = fluidColors[clamp(fragKind, 0, 7)];
