@@ -118,9 +118,19 @@ public:
     int addInstance(const std::string& id, const std::string& data, float heat = 0.0f);
     InvSlot takeInstance(int cell);             // the cell's item, record and all; the cell is emptied (an empty slot if none)
     int countInstances(const std::string& id) const; // items of `id` that carry data
+    bool setInstanceData(int cell, const std::string& newData); // a held item's record changed (wear, sockets); false if no such item
+    int findInstance(const std::string& id, const std::string& data) const; // the cell holding exactly that item, -1 none
+    // (#1446) With `journal` on (a server, for each remote player), every change to an item with data is logged here:
+    // +1 added, -1 taken, 0 its record changed to newData. The server drains it into InventoryDelta messages each tick.
+    struct InstanceChange { std::string id; int sign = 0; std::string data, newData; };
+    std::vector<InstanceChange> instanceLog;
+    bool journal = false;
     bool canCraft(const Recipe& r) const;
     bool craft(const Recipe& r);
-    void clear() { for (auto& s : slots) s = InvSlot{}; partial.clear(); obtained.clear(); }
+    void clear() {
+        if (journal) for (const InvSlot& s : slots) if (!s.empty() && s.hasData()) instanceLog.push_back({ s.id, -1, s.data, {} }); // (#1446)
+        for (auto& s : slots) s = InvSlot{}; partial.clear(); obtained.clear();
+    }
     // Everything ever obtained (crafted, mined, taken from machines), whatever happened to it since:
     // quest tasks count these. Saved with the game.
     std::unordered_map<std::string, double> obtained;

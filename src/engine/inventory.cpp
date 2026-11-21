@@ -379,6 +379,7 @@ int Inventory::addInstance(const std::string& id, const std::string& data, float
     if (cell < 0) { overflowed = true; return -1; }
     InvSlot& s = slots[cell];
     s.id = id; s.centi = 100; s.heat = std::clamp(heat, 0.0f, 1.0f); s.data = data;
+    if (journal) instanceLog.push_back({ id, +1, data, {} });
     obtained[id] += 1.0;
     if (onAdded && muted <= 0) onAdded(id, 1.0);
     return cell;
@@ -388,7 +389,22 @@ InvSlot Inventory::takeInstance(int cell) {
     if (cell < 0 || cell >= kCells || slots[cell].empty()) return InvSlot{};
     InvSlot out = slots[cell];
     slots[cell] = InvSlot{};
+    if (journal && out.hasData()) instanceLog.push_back({ out.id, -1, out.data, {} });
     return out;
+}
+
+bool Inventory::setInstanceData(int cell, const std::string& newData) {
+    if (cell < 0 || cell >= kCells || slots[cell].empty() || !slots[cell].hasData() || newData.empty()) return false;
+    InvSlot& s = slots[cell];
+    if (s.data == newData) return true;
+    if (journal) instanceLog.push_back({ s.id, 0, s.data, newData });
+    s.data = newData;
+    return true;
+}
+
+int Inventory::findInstance(const std::string& id, const std::string& data) const {
+    for (int i = 0; i < kCells; ++i) if (!slots[i].empty() && slots[i].id == id && slots[i].data == data) return i;
+    return -1;
 }
 
 std::unordered_map<std::string, int> Inventory::all() const {
@@ -708,6 +724,30 @@ TEST_F(InventoryTest, ItemsWithDataStaySeparateAndAreNeverSpent) {
     EXPECT_EQ(taken.data, "mark=2");
     EXPECT_TRUE(inv.grid()[cell].empty());
     EXPECT_EQ(inv.countInstances("stone"), 1);
+}
+
+// (#1446 step 2) A server's journal of items with data: what the client is told, in order.
+TEST_F(InventoryTest, InstanceJournalLogsEveryChange) {
+    Inventory inv;
+    inv.journal = true;
+    const int a = inv.addInstance("stone_pickaxe", "h=flint;w=0");
+    ASSERT_GE(a, 0);
+    EXPECT_TRUE(inv.setInstanceData(a, "h=flint;w=1"));
+    EXPECT_TRUE(inv.setInstanceData(a, "h=flint;w=1")) << "unchanged: no entry";
+    inv.add("stone", 3); // plain: never in the journal
+    const int b = inv.addInstance("stone", "mark=1");
+    inv.takeInstance(a);
+    inv.clear();
+    ASSERT_EQ(inv.instanceLog.size(), 5u);
+    EXPECT_EQ(inv.instanceLog[0].sign, +1); EXPECT_EQ(inv.instanceLog[0].data, "h=flint;w=0");
+    EXPECT_EQ(inv.instanceLog[1].sign, 0); EXPECT_EQ(inv.instanceLog[1].data, "h=flint;w=0"); EXPECT_EQ(inv.instanceLog[1].newData, "h=flint;w=1");
+    EXPECT_EQ(inv.instanceLog[2].sign, +1); EXPECT_EQ(inv.instanceLog[2].id, "stone");
+    EXPECT_EQ(inv.instanceLog[3].sign, -1); EXPECT_EQ(inv.instanceLog[3].data, "h=flint;w=1");
+    EXPECT_EQ(inv.instanceLog[4].sign, -1); EXPECT_EQ(inv.instanceLog[4].data, "mark=1") << "clear() logs what it removes";
+    (void)b;
+    Inventory quiet;
+    quiet.addInstance("stone", "x=1");
+    EXPECT_TRUE(quiet.instanceLog.empty()) << "no journal unless asked (single player, clients)";
 }
 
 TEST_F(InventoryTest, AddInstanceFailsWhenNoCellIsFree) {
