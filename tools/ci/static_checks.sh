@@ -10,9 +10,9 @@
 #   2. The erosion bake (src/engine/erosion*.cpp/h) changed in code (not only comments) while kErosionBakeVersion did not:
 #      a warning annotation (stale <save>.erosion caches would load; CLAUDE.md "bump the version on ANY bake code change").
 #   3. A new `gh project` command in tools/ (forbidden by CLAUDE.md: it burns the shared GraphQL budget): an error.
-#   4. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
+#   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #
-# Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 4). Warnings never fail the job.
+# Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
 set -uo pipefail
 export LC_ALL=C # sort and join must agree on the order
@@ -156,7 +156,7 @@ if [ -n "$BASE" ]; then
     fi
 fi
 
-# 4. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
+# 5. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
 #    `--scenario tag:...` lists (parts 1 and 2 of the headless scenarios), not both - unless it carries a local-only tag
 #    (rendering, timing and looks belong on the PC). A new tag in neither list would silently never run there: an error.
 LOCAL_ONLY_TAGS="perf visual fx light"
@@ -164,7 +164,7 @@ WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 if [ -z "$part1" ] || [ -z "$part2" ]; then
-    echo "::error file=$WF::static check 4: the two headless scenario tag lists were not found in the workflow"
+    echo "::error file=$WF::static check 5: the two headless scenario tag lists were not found in the workflow"
     errors=$((errors + 1))
 else
     unplaced=""
