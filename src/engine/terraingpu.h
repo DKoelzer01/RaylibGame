@@ -37,6 +37,7 @@ void TerrainGpu_ClearQueued();                      // drop the queued blocks (a
 // Blocks at or above backgroundFrom (the preload ring, #296) are batched gently while throttled: at most one batch of
 // a few blocks a frame, after everything else, so background builds never crowd the frame.
 void TerrainGpu_SetBackground(float backgroundFrom, bool throttle);
+void TerrainGpu_SetLaunchLimit(int batches); // (#1122) new GPU density batches this frame at most
 // Synchronous (tests): dispatch, wait, read back. False if unavailable.
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 origin, float stride, int S, float footprint,
                             const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out,

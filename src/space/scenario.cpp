@@ -1,5 +1,6 @@
 // Tier 2 scenario runner (#870); see scenario.h.
 #include "scenario.h"
+#include "survival.h"
 #include "fluid.h"
 #include "player.h"
 #include "playersession.h"
@@ -34,6 +35,8 @@ int ScenarioReport_Main(int argc, char** argv); // scenarioreport.cpp
 int ScenarioAB_Main(int argc, char** argv);     // scenarioab.cpp (#871)
 
 namespace fs = std::filesystem;
+void Scenario_LegacySetup();  // (below: the legacyDrives mode)
+void Scenario_LegacyFinish();
 
 namespace {
 
@@ -301,6 +304,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--scenario-report") { std::exit(ScenarioReport_Main(argc - i - 1, argv + i + 1)); }
+        else if (a == "--tier-report" && i + 1 < argc) { std::exit(QuestBook_TierReport(argv[i + 1])); } // (#1199)
         else if (a == "--scenario-ab") { std::exit(ScenarioAB_Main(argc - i - 1, argv + i + 1)); } // (#871) scenarioab.cpp
         else if (a == "--scenario" && i + 1 < argc) sel = argv[++i];
         else if (a == "--scenario-parity" && i + 1 < argc) { // (#968) NAME [TICKS]: the fluid's CPU and GPU paths compared
@@ -393,6 +397,7 @@ void Scenario_Setup() {
     const char* shared = R.def.world == ScenarioWorld::Sandbox ? "saves/sandbox.sav.erosion" : "saves/bench.sav.erosion";
     if (fs::exists(shared, ec)) fs::copy_file(shared, save + ".erosion", fs::copy_options::overwrite_existing, ec);
     SetWorldSavePath(save.c_str());
+    Scenario_LegacySetup(); // (legacyDrives: which bench*.png exist before the run)
 }
 
 bool Scenario_Frame(Scene& world) {
@@ -410,7 +415,11 @@ bool Scenario_Frame(Scene& world) {
     c.t = SimTime() - R.stepSim;
     c.frame = R.frames++;
     c.stepIndex = R.step;
-    if (!c.field) { Finish("ERROR", "no planet field (body 0)"); return false; }
+    if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
+    if (R.def.legacyDrives) { // a legacy bench drives: never hold it; its shots are compared when the game ends
+        if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
+        return false;
+    }
     if (c.T > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
         const bool wall = c.T <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
@@ -454,6 +463,7 @@ bool Scenario_Frame(Scene& world) {
 
 void Scenario_Shutdown() {
     if (!R.active) return;
+    Scenario_LegacyFinish(); // (legacyDrives: the shots against their baselines)
     if (!R.finished) Finish("ERROR", "the game ended before the scenario finished");
     std::error_code ec;
     // Give the planet's erosion bake back to the bench save, so the next run doesn't bake again.
@@ -516,4 +526,102 @@ void ScenarioCtx::camera(Vector3 eyeLocal, Vector3 targetLocal, Vector3 upLocal)
     world.camera.up = body->dirToWorld(upLocal);
     player.flyMode = true;
     player.position = world.renderOrigin + world.camera.position;
+}
+
+// ---- Visual checks against baselines (#870 visual tier) ----
+std::string Scenario_BaselineDir() {
+    const char* e = getenv("RAYLIBGAME_BASELINES");
+    return e && *e ? e : "//DEWEYSERVER/files/claude-media/raylib-baselines";
+}
+namespace {
+// Compares the image file `shotPath` with the scenario's baseline NAME.png (both shrunk to 320x180): records a check (the %
+// of pixels that differ by more than 24 in a channel, under `tolPct`) and a metric (the mean difference). No baseline (or
+// RAYLIBGAME_BASELINE_UPDATE=1): the shot becomes it. On a failure a difference image goes next to the shot.
+bool CompareShot(const std::string& name, const std::string& shotPath, double tolPct) {
+    std::error_code ec;
+    std::string scen = R.def.name;
+    for (char& ch : scen) if (ch == '/' || ch == ':' || ch == '\\') ch = '_';
+    const std::string dir = Scenario_BaselineDir() + "/" + scen, base = dir + "/" + name;
+    const bool update = getenv("RAYLIBGAME_BASELINE_UPDATE") && atoi(getenv("RAYLIBGAME_BASELINE_UPDATE")) != 0;
+    if (!fs::exists(shotPath, ec)) return Record("shot " + name, 0.0, "is", "taken", false, "no image at " + shotPath);
+    if (update || !fs::exists(base, ec)) {
+        fs::create_directories(dir, ec);
+        fs::copy_file(shotPath, base, fs::copy_options::overwrite_existing, ec);
+        const std::string why = update ? "updated (RAYLIBGAME_BASELINE_UPDATE)" : "recorded (there was none)";
+        R.notes.push_back("baseline " + name + " " + why + ": " + base);
+        printf("scenario: baseline %s %s: %s\n", name.c_str(), why.c_str(), base.c_str());
+        return Record("shot " + name, 0.0, "<=", Num(tolPct) + " % differing", !ec, ec ? "could not write the baseline: " + ec.message() : "baseline " + why);
+    }
+    Image a = LoadImage(shotPath.c_str()), b = LoadImage(base.c_str());
+    if (!a.data || !b.data) { if (a.data) UnloadImage(a); if (b.data) UnloadImage(b); return Record("shot " + name, 100.0, "<=", Num(tolPct) + " % differing", false, "could not read the shot or its baseline"); }
+    constexpr int W = 320, H = 180;
+    ImageFormat(&a, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8); ImageFormat(&b, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    ImageResize(&a, W, H); ImageResize(&b, W, H);
+    const Color* pa = (const Color*)a.data; const Color* pb = (const Color*)b.data;
+    int differ = 0; double sum = 0.0;
+    Image d = GenImageColor(W, H, BLACK);
+    Color* pd = (Color*)d.data;
+    for (int i = 0; i < W * H; ++i) {
+        const int dr = abs(pa[i].r - pb[i].r), dg = abs(pa[i].g - pb[i].g), db = abs(pa[i].b - pb[i].b);
+        const int m = std::max(dr, std::max(dg, db));
+        sum += (dr + dg + db) / 3.0;
+        if (m > 24) ++differ;
+        pd[i] = Color{ (unsigned char)std::min(255, dr * 4), (unsigned char)std::min(255, dg * 4), (unsigned char)std::min(255, db * 4), 255 };
+    }
+    const double pct = 100.0 * differ / (W * H);
+    R.metrics.push_back({ "shot " + name + " mean difference", "/255", sum / (W * H), true });
+    const bool ok = Record("shot " + name, pct, "<=", Num(tolPct) + " % differing", pct <= tolPct, "against " + base);
+    if (!ok) {
+        const std::string diffPath = shotPath.substr(0, shotPath.size() - 4) + "_diff.png";
+        ExportImage(d, diffPath.c_str());
+        R.keep = true; R.keepReason = "shot " + name + " differs from its baseline (" + diffPath + ")";
+    }
+    UnloadImage(a); UnloadImage(b); UnloadImage(d);
+    return ok;
+}
+// (legacyDrives) the bench_*.png files in the working directory and their write times when the run began
+std::map<std::string, fs::file_time_type> pngsBefore;
+void SnapshotPngs() {
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(fs::current_path(ec), ec)) {
+        const std::string n = e.path().filename().string();
+        if (n.rfind("bench", 0) == 0 && e.path().extension() == ".png") pngsBefore[n] = fs::last_write_time(e.path(), ec);
+    }
+}
+void CompareLegacyShots() {
+    std::error_code ec;
+    std::vector<std::string> names = R.def.shots;
+    if (names.empty())
+        for (const auto& e : fs::directory_iterator(fs::current_path(ec), ec)) {
+            const std::string n = e.path().filename().string();
+            if (n.rfind("bench", 0) != 0 || e.path().extension() != ".png") continue;
+            auto it = pngsBefore.find(n);
+            if (it == pngsBefore.end() || fs::last_write_time(e.path(), ec) > it->second) names.push_back(n);
+        }
+    std::sort(names.begin(), names.end());
+    fs::create_directories(R.runDir + "/shots", ec);
+    for (const std::string& n : names) {
+        const std::string kept = R.runDir + "/shots/" + n;
+        fs::copy_file(n, kept, fs::copy_options::overwrite_existing, ec);
+        CompareShot(n, ec ? n : kept, R.def.shotTolerance);
+    }
+    if (names.empty()) Record("screenshots written", 0.0, ">", "0", false, "the legacy bench wrote no bench*.png");
+}
+}
+bool ScenarioCtx::shot(const std::string& name, double tolerancePct) {
+    std::error_code ec;
+    fs::create_directories(R.runDir + "/shots", ec);
+    const std::string file = name.size() > 4 && name.substr(name.size() - 4) == ".png" ? name : name + ".png";
+    const std::string path = R.runDir + "/shots/" + file;
+    Image im = LoadImageFromScreen();
+    ExportImage(im, path.c_str());
+    UnloadImage(im);
+    return CompareShot(file, path, tolerancePct);
+}
+void Scenario_LegacySetup() { if (R.active && R.def.legacyDrives) SnapshotPngs(); }
+void Scenario_LegacyFinish() {
+    if (!R.active || !R.def.legacyDrives || R.finished) return;
+    CompareLegacyShots();
+    int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
+    Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " shots differ from their baselines" : "");
 }

@@ -70,6 +70,37 @@ struct FactoryStats {
     double avgTickMs = 0.0, maxTickMs = 0.0;
     long long ticks = 0;
     long long itemsMade = 0;
+    // (#1207) the last minute of ticks (up to 1200), refreshed once a second: whole ticks and their phases (commands in,
+    // the plots, the view block)
+    int recentTicks = 0;
+    double meanTickMs = 0.0, p99TickMs = 0.0, worstRecentMs = 0.0, cmdMs = 0.0, tickOnlyMs = 0.0, viewMs = 0.0;
+};
+
+// (#1199) Production statistics (the Statistics screen, and the oracle the summary sim is checked against). Per item: made and
+// used by machines (crafts, fuel burnt) and put in and taken out by players, per minute over a window and in total; per
+// machine kind: how many there are, their status now, ticks spent in each status, EU made and used per tick.
+enum class StatWindow : uint8_t { Minute, Hour, TenHours }; // the last minute (by seconds), hour (by minutes), 10 hours
+struct StatLine {
+    std::string item;
+    double madePerMin = 0, usedPerMin = 0, handInPerMin = 0, handOutPerMin = 0;
+    long long made = 0, used = 0, handIn = 0, handOut = 0;      // totals since the world loaded (finished seconds)
+    std::vector<float> madeSpark, usedSpark;                      // the window's buckets, oldest first (per bucket)
+};
+struct StatKind {
+    int type = 0;                                                  // PartType
+    int count = 0;
+    int now[8] = {};                                               // machines per MachineStatus now
+    long long ticks[8] = {};                                       // ticks per MachineStatus since the load
+    double euMadePerTick = 0, euUsedPerTick = 0;                   // over the window
+};
+struct FactoryStatsView {
+    StatWindow window = StatWindow::Minute;                        // the one shown (a longer one not filled yet falls back)
+    double coveredMinutes = 0;                                     // how much of it has data
+    int plots = 0;
+    std::vector<StatLine> items;                                   // by item name
+    std::vector<StatKind> kinds;                                   // by PartType
+    double euMadePerTick = 0, euUsedPerTick = 0, euDemandPerTick = 0;
+    long long batteryEnergy = 0, batteryCapacity = 0;              // now
 };
 
 namespace Factory {
@@ -85,6 +116,8 @@ namespace Factory {
     // View() follows one machine at a time (the open machine screen) - never call it for many machines.
     bool Working(uint64_t bodyId, uint32_t plotId, int part);
     FactoryStats Stats();
+    // (#1199) The production statistics over a window: every simulated plot (onePlot false) or one plot. Waits for the tick.
+    FactoryStatsView StatsView(StatWindow window, bool onePlot = false, uint64_t bodyId = 0, uint32_t plotId = 0);
     // Player item transfers (queued for the next tick).
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0); // to (#332): leftovers to that player
     // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).

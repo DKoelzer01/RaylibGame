@@ -62,6 +62,12 @@ struct ScenarioCtx {
     void waitingFor(const std::string& what); // the heartbeat says so
     void keepCapture(const std::string& reason); // keep the recording whatever the verdict (a look change for the user)
     void cue();                               // the recording's first frame from now (--record-on-cue)
+    // Visual checks (#870 visual tier): grab the screen now as NAME.png (in the run's shots/ folder) and compare it with the
+    // baseline on the share (Scenario_BaselineDir()/<scenario>/NAME.png), both shrunk to 320x180: the check fails when more
+    // than tolerancePct % of the pixels differ by more than 24 of 255 in any channel. No baseline yet, or
+    // RAYLIBGAME_BASELINE_UPDATE=1: the shot becomes the baseline (the check passes, noted). On a failure the shot and a
+    // difference image stay in shots/ and the recording is kept.
+    bool shot(const std::string& name, double tolerancePct = 3.0);
 
     // Helpers the fluid and terrain tests share.
     Vector3 spawnDirLocal() const;            // the start's direction, body-local (--spawn-dir override, else the field's)
@@ -86,6 +92,13 @@ struct ScenarioDef {
     std::vector<std::pair<std::string, std::string>> env; // environment set before the game starts
     std::string legacyFlag;                   // the --test-* flag it replaces (the report pairs their verdicts)
     bool record = true;                       // the temporary recording (perf scenarios: off, it costs frame time)
+    bool needsPlanetField = true;             // body 0 must have a PlanetField (false: any body, e.g. the asteroid system, #667)
+    // A legacy bench drives the run (its flag in args, e.g. --shot-graves): the scenario has no steps and never holds the
+    // bench; when the game ends, every bench_*.png it wrote (or just `shots`, if listed) is compared with its baseline, as
+    // c.shot does, and those checks are the verdict. The way to move a screenshot bench without rewriting it (#870).
+    bool legacyDrives = false;
+    std::vector<std::string> shots;           // (legacyDrives) the files to compare, e.g. "bench_graves.png"; empty: all new
+    double shotTolerance = 3.0;               // (legacyDrives) % of differing pixels allowed
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }
@@ -108,5 +121,6 @@ void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
 void Scenario_Shutdown();
 bool Scenario_Active();
+std::string Scenario_BaselineDir(); // RAYLIBGAME_BASELINES, default //DEWEYSERVER/files/claude-media/raylib-baselines
 
 #endif

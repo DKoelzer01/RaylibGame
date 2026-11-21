@@ -10,6 +10,7 @@ in float fragDepth;            // depth to the sea floor (m)
 flat in int fragKind;          // fluid kind (fluids.txt; 0 water)
 in vec4 fragFlow;              // the current (#361): xyz direction (body-aligned), w speed m/s (0: still water)
 in vec3 fragFlowW;             // its direction in world (render) space, as fragNormal
+in float fragGen;              // (#1164) 1: undisturbed generated water (sea, lake): its shores foam
 
 uniform vec3 viewPos;
 uniform vec3 sunDir;           // towards the sun
@@ -54,6 +55,56 @@ float streaks(vec3 q, vec3 fd)
     return (s + 0.5 * valueNoise(q * 2.0)) / 3.5;
 }
 
+// (#1164 part 3) Screen-space reflections: the opaque scene resolved before the water (colour, reverse-Z depth) and this
+// view's matrix (scene.cpp). The reflected ray is marched in growing steps; where it passes just behind the scene's depth
+// it takes that colour (faded toward the screen's edges and along the ray), else the physical sky (SkyPhysToward).
+uniform int ssrOn;
+uniform sampler2D ssrColor;
+uniform sampler2D ssrDepth;
+uniform vec2 ssrSize;
+uniform mat4 ssrViewProj;
+vec4 ssrTrace(vec3 origin, vec3 dir) {
+    float stepLen = 0.6;
+    vec3 pos = origin + dir * 0.3;
+    for (int i = 0; i < 28; ++i) {
+        pos += dir * stepLen;
+        stepLen *= 1.15;
+        vec4 clip = ssrViewProj * vec4(pos, 1.0);
+        if (clip.w <= 0.05) break;
+        vec3 ndc = clip.xyz / clip.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float dS = texture(ssrDepth, uv).r;
+        if (dS <= 0.0) continue;                                   // nothing drawn there (reverse-Z: far = 0)
+        float wS = ndc.z * clip.w / dS;                            // the scene's view distance there (depth = near / w)
+        float behind = clip.w - wS;
+        if (behind > 0.0 && behind < max(1.0, 2.0 * stepLen)) {
+            vec3 c = pow(max(texture(ssrColor, uv).rgb, vec3(0.0)), vec3(2.2)); // display-encoded -> linear
+            vec2 e = min(uv, 1.0 - uv);
+            return vec4(c, smoothstep(0.0, 0.08, min(e.x, e.y)) * (1.0 - float(i) / 28.0));
+        }
+    }
+    return vec4(0.0);
+}
+
+// (#1164) Small waves: value noise on a 2D plane of the body-aligned position, periodic with the 20 m wrap (so chunks meet
+// without a seam), two octaves drifting at different speeds and directions. A height in metres.
+float wHash(vec2 c) { return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453); }
+float wNoise(vec2 uv, float per) {
+    vec2 i = floor(uv), f = fract(uv);
+    f = f * f * (3.0 - 2.0 * f);
+    vec2 i0 = mod(i, per), i1 = mod(i + 1.0, per);
+    return mix(mix(wHash(i0), wHash(vec2(i1.x, i0.y)), f.x), mix(wHash(vec2(i0.x, i1.y)), wHash(i1), f.x), f.y);
+}
+float waveHeight(vec3 p, vec3 nb, float t) {
+    vec3 an = abs(nb);
+    vec2 uv = an.x > an.y && an.x > an.z ? p.yz : (an.y > an.z ? p.zx : p.xy);
+    // 1.25 m and 0.5 m features (16 and 40 cells across the 20 m wrap), ~2.5 cm and ~1 cm high.
+    float a = wNoise(uv * 0.8 + vec2(t * 0.35, t * 0.21), 16.0);
+    float b = wNoise(uv * 2.0 + vec2(-t * 0.6, t * 0.45) + 17.0, 40.0);
+    return 0.025 * a + 0.01 * b;
+}
+
 void main()
 {
     if (any(greaterThan(fragChunkPos, chunkClipMax))) discard;
@@ -69,9 +120,13 @@ void main()
     // shears the pattern. Plus crests across the current running downstream, stronger where it is fast.
     vec3 fdir = fragFlow.xyz;
     float speed = fragFlow.w;
+    // (#1164) The speed the pattern moves at: slow water still visibly moving, fast water capped (user: "slow rivers barely
+    // show movement, fast is too extreme"). 0.05 m/s reads ~0.5 m/s, 0.5 -> 0.87, 2 -> 1.4, capped at 2.2 (5 m/s on). The
+    // real speed still sets the streaks' strength and the foam.
+    float vspeed = speed > 0.01 ? min(2.2, 0.3 + 0.8 * sqrt(speed)) : 0.0;
     const float T = 4.0;
     float ph0 = fract(time / T), ph1 = fract(time / T + 0.5);
-    vec3 p0 = p - fdir * speed * ph0 * T, p1 = p - fdir * speed * ph1 * T;
+    vec3 p0 = p - fdir * vspeed * ph0 * T, p1 = p - fdir * vspeed * ph1 * T;
     vec3 b0 = vec3(sin(p0.x * k * 7.0 + time * 1.3) + sin(p0.z * k * 5.0 - time * 1.1), 0.0,
                    sin(p0.z * k * 9.0 + time * 0.9) + sin(p0.y * k * 6.0 + time * 1.7));
     vec3 b1 = vec3(sin(p1.x * k * 7.0 + time * 1.3) + sin(p1.z * k * 5.0 - time * 1.1), 0.0,
@@ -93,15 +148,27 @@ void main()
         flowAmt = clamp(log2(1.0 + speed / 0.05) / log2(41.0), 0.0, 1.0) * smoothstep(0.01, 0.05, speed);
         const float TF = 2.0;
         float q0 = fract(time / TF), q1 = fract(time / TF + 0.5);
-        float s0 = streaks(p - fd * speed * q0 * TF, fd), s1 = streaks(p - fd * speed * q1 * TF + vec3(7.31, 3.17, 5.53), fd);
+        float s0 = streaks(p - fd * vspeed * q0 * TF, fd), s1 = streaks(p - fd * vspeed * q1 * TF + vec3(7.31, 3.17, 5.53), fd);
         streak = mix(s0, s1, abs(q0 * 2.0 - 1.0)) - 0.5;       // ~ +-0.25
-        float c = dot(p, fd) * 4.0 - time * speed * 4.0;          // crests across the current, 1.6 m apart, running downstream
+        float c = dot(p, fd) * 4.0 - time * vspeed * 4.0;          // crests across the current, 1.6 m apart, running downstream
         bump += (side * streak * 0.5 + fw * (cos(c) * 0.25 + streak * 0.3)) * (0.03 + 0.07 * flowAmt);
         // Whitewater: from ~1 m/s on the streaks' high parts, at most 60% (falls, >= 3 m/s from the mesher).
         foam = smoothstep(0.04, 0.25, streak + 0.1 * clamp((speed - 1.0) / 2.0, 0.0, 1.0)) * clamp((speed - 1.0) / 3.0, 0.0, 0.6);
     }
     bump *= rippleFade;
     n = normalize(n + bump - n * dot(bump, n));
+    // (#1164) Surface detail: the waves' height turned into a tilt by its screen-space gradient (the surface gradient: no
+    // body-to-world matrix needed), out to ~80 m; none on a 20 m wrap seam (fragTexPos jumps there) or for other fluids.
+    vec3 dpx = dFdx(p), dpy = dFdy(p);
+    float waveFade = fragKind == 0 && max(dot(dpx, dpx), dot(dpy, dpy)) < 1.0 ? 1.0 - smoothstep(40.0, 80.0, dist) : 0.0;
+    if (waveFade > 0.0) {
+        vec3 nb = normalize(cross(dpx, dpy));
+        float hw = waveHeight(p, nb, time) * waveFade;
+        vec3 dwx = dFdx(fragPosition), dwy = dFdy(fragPosition);
+        vec3 r1 = cross(dwy, n), r2 = cross(n, dwx);
+        float det = dot(dwx, r1);
+        if (abs(det) > 1e-10) n = normalize(n - sign(det) * (dFdx(hw) * r1 + dFdy(hw) * r2) / abs(det));
+    }
 
     vec3 v = normalize(viewPos - fragPosition);
     float nv = abs(dot(n, v));                                    // also seen from below
@@ -116,11 +183,23 @@ void main()
     }
     sunVis *= sunShadowSimple(fragPosition, 1); // terrain, trees and builds shade the surface
     float light = sunVis * max(dot(n, sunDir), 0.0);
-    vec3 deep = vec3(0.01, 0.05, 0.13) * (0.15 + 0.85 * light); // dark but clearly blue, also from orbit
-    // Clear turquoise in the shallows, deep blue offshore.
-    float clarity = exp(-fragDepth / 5.0);
-    vec3 shallow = vec3(0.03, 0.22, 0.24) * (0.15 + 0.85 * light);
-    vec3 color = mix(mix(deep, shallow, clarity), skyColor, fresnel);
+    // (#1164) Deeper, richer water (it read as a pale blue see-through liquid): a dark blue-green body that light enters
+    // from above (the sky's share always, the sun's where it shines), clear green-teal only in the first metre or two, and
+    // the physical sky reflected along the actual reflected ray (the LUT the haze uses), not the flat horizon colour.
+    float body = 0.25 + 0.75 * light;
+    vec3 deep = vec3(0.004, 0.026, 0.05) * body;
+    vec3 shallow = vec3(0.02, 0.12, 0.11) * body;
+    // (#1164 part 2) Absorbed per channel over the depth (red first, then green): shallows teal-green, a metre or two
+    // blue-green, deeper water the dark body; the clarity (how much the bed shows, the alpha) follows the light left.
+    vec3 Tr = exp(-fragDepth * vec3(0.7, 0.28, 0.2));
+    float clarity = dot(Tr, vec3(0.2, 0.5, 0.3));
+    vec3 rdir = reflect(-v, n);
+    vec3 refl = SkyPhysToward(rdir, skyColor);
+    if (ssrOn != 0 && fragKind == 0 && dot(normalize(fragNormal), v) > 0.0 && dist < 400.0) { // (#1164 part 3) from above, water only
+        vec4 hit = ssrTrace(fragPosition, rdir);
+        refl = mix(refl, hit.rgb, hit.a);
+    }
+    vec3 color = mix(mix(deep, shallow, Tr), refl, fresnel);
     vec3 h = normalize(sunDir + v);
     float glint = pow(max(dot(n, h), 0.0), 800.0) * 1.2 * sunVis;
     color += vec3(1.0, 0.95, 0.85) * glint;
@@ -128,10 +207,18 @@ void main()
     // (Fresnel). Seen from below, the surface is a bright, mostly opaque ceiling. The scene's stencil
     // blends one water layer per pixel, so overlapping LOD copies don't double up.
     bool below = dot(normalize(fragNormal), v) < 0.0;
-    float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.3, clarity), fresnel) + glint, 0.0, 1.0);
+    float alpha = below ? 0.8 : clamp(max(mix(1.0, 0.5, clarity), fresnel) + glint, 0.0, 1.0); // (#1164: 0.3 -> 0.5: less see-through)
     // The current's streaks also shade the water itself (lighter and darker bands), so they show under an overcast sky
     // where the reflection is flat; foam is lit, pale and mostly opaque.
     color *= 1.0 + streak * 0.8 * flowAmt;
+    // (#1164 part 2) Shore foam on the sea and lakes (generated water: dug pools and streams have none): a lacy band where
+    // the water is under ~0.4 m deep, surging in and out, out to ~90 m.
+    if (fragGen > 0.5 && fragKind == 0) {
+        float shore = 1.0 - smoothstep(0.03, 0.4, fragDepth);
+        float lace = wNoise(p.xz * 1.7 + vec2(time * 0.25, -time * 0.18), 34.0);
+        float surge = 0.5 + 0.5 * sin(time * 0.9 + fragDepth * 14.0);
+        foam = max(foam, shore * smoothstep(0.55, 0.8, lace * 0.7 + surge * 0.45) * 0.75 * (1.0 - smoothstep(40.0, 90.0, dist)));
+    }
     color = mix(color, vec3(0.7, 0.78, 0.8) * (0.3 + 0.7 * max(light, 0.3 * sunVis)) + skyColor * 0.1, foam);
     alpha = mix(alpha, 0.9, foam);
     vec4 fluidColor = fluidColors[clamp(fragKind, 0, 7)];

@@ -1,3 +1,4 @@
+#include <functional>
 #include <set>
 #include <map>
 #include <cstring>
@@ -89,6 +90,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "recipebook.h"
 #include "station.h"
 #include "weather.h"
+#include "magic.h"
+#include "magicsight.h"
 #include "wind.h"
 #include "storage.h"
 #include "tools.h"
@@ -352,32 +355,7 @@ static int PartCensusDiff(const PartCensusMap& was, const PartCensusMap& now, co
 }
 static PartCensusMap gBuildCensus;
 
-// --crack-check (#725): magenta (the clear colour, nothing drawn) pixels that are holes in the terrain, not open sky. With
-// the skybox off the sky is magenta too: magenta connected to the screen's top edge (4-way, through the gaps in the HUD's
-// text) is sky; magenta enclosed by drawn pixels is a hole. Colour test loose enough for the tonemapped composite. The sky
-// spreads through magenta-tinted pixels too (anti-aliased edges, where far terrain blends into it), or a horizon pixel pair
-// sealing a bit of sky off reads as a hole (the 4-5 left after the HUD went, #725).
-// step: sample every step-th pixel both ways. skyOut: the magenta samples taken as sky.
-static long CrackHoles(const Color* px, int w, int h, int step, long* skyOut) {
-    auto magenta = [](Color c) { return c.r > 200 && c.g < 60 && c.b > 200; };
-    const int gw = (w + step - 1) / step, gh = (h + step - 1) / step;
-    auto tinted = [](Color c) { return (int)c.r - (int)c.g > 25 && (int)c.b - (int)c.g > 25; }; // magenta, or a blend with it
-    std::vector<uint8_t> m((size_t)gw * gh), t((size_t)gw * gh), seen((size_t)gw * gh, 0);
-    long total = 0;
-    for (int y = 0; y < gh; ++y)
-        for (int x = 0; x < gw; ++x) { const Color c = px[(size_t)(y * step) * w + x * step]; m[(size_t)y * gw + x] = magenta(c); t[(size_t)y * gw + x] = magenta(c) || tinted(c); total += m[(size_t)y * gw + x]; }
-    std::vector<int> stack;
-    for (int x = 0; x < gw; ++x) if (t[x]) { seen[x] = 1; stack.push_back(x); }
-    long sky = 0;
-    while (!stack.empty()) {
-        const int i = stack.back(); stack.pop_back(); sky += m[i];
-        const int x = i % gw, y = i / gw;
-        const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < gw ? i + 1 : -1, y > 0 ? i - gw : -1, y + 1 < gh ? i + gw : -1 };
-        for (int j : nb) if (j >= 0 && t[j] && !seen[j]) { seen[j] = 1; stack.push_back(j); }
-    }
-    if (skyOut) *skyOut = sky;
-    return total - sky;
-}
+#include "crackcheck.h" // (#725) CrackHoles, shared with the visual/crack-check scenario
 
 // #134: the planet's drawn terrain chunks in the view whose 8 box corners are all hidden from the camera behind the height
 // map (each ray sampled every 1/24 of its length; hidden = the ground there is 1 m+ above the ray): an estimate of what Hi-Z
@@ -511,6 +489,8 @@ int main(int argc, char** argv)
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
+    bool benchSweepLook = false; // --sweep-look
+    bool spawnDirLocal = false;  // --spawn-latlon: spawnDir is in the body's frame (the HUD's lat/lon), not the world's
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
@@ -916,6 +896,8 @@ int main(int argc, char** argv)
         }
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
+        if (std::string(argv[i]) == "--sweep-look") benchSweepLook = true; // (#904/#910) with --test-walk: look left and right, 20-40 deg down, while walking
+        if (std::string(argv[i]) == "--spawn-latlon" && i + 2 < argc) { const float la = (float)atof(argv[i + 1]) * DEG2RAD, lo = (float)atof(argv[i + 2]) * DEG2RAD; hasSpawnDir = true; spawnDirLocal = true; spawnDir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) }; } // body-local: turned with the body at the spawn
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
@@ -1634,7 +1616,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world);
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
@@ -1724,6 +1706,95 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is a single braceless if)
+        if (std::string(argv[i]) == "--cave-mouths" && i + 1 < argc) {
+            // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
+            // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int mouths = pf->caveMouthsNear(home, R);
+            Vector3 mAt{}, mOut{};
+            const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+            const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
+                   mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--cave-islands" && i + 1 < argc) {
+            // (#1116) Floating rock in chambers: for each chamber within R m of the start, the density on a 1 m grid over a
+            // box +-50 m across and +-28 m up around its centre (local frame); solid cells connected (6-neighbour) to the
+            // box's boundary are the surrounding rock, any other solid component floats. Prints each chamber's floating
+            // components, their volume and the largest, and the totals.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            std::vector<Vector3> chambers;
+            pf->caveMouthsList(home, R, 3, chambers);
+            const int NX = 101, NY = 57, NZ = 101;                          // x, z across; y up
+            long long totIslands = 0, totVol = 0;
+            long long gIslandH[8] = {}, gIslandR[8] = {}; // (#1116) floating volume (m^3) by its mean height and distance from the chamber centre
+            const auto t0 = std::chrono::steady_clock::now();
+            for (size_t ci = 0; ci < chambers.size(); ++ci) {
+                const Vector3 c = chambers[ci], up = Vector3Normalize(c);
+                const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(up, e1);
+                std::vector<uint8_t> solid((size_t)NX * NY * NZ), seen((size_t)NX * NY * NZ, 0);
+                auto idx = [&](int x, int y, int z) { return ((size_t)y * NZ + z) * NX + x; };
+                for (int y = 0; y < NY; ++y)
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x) {
+                            const Vector3 q = Vector3Add(c, Vector3Add(Vector3Scale(e1, x - 50.0f), Vector3Add(Vector3Scale(up, y - 28.0f), Vector3Scale(e2, z - 50.0f))));
+                            solid[idx(x, y, z)] = pf->baseDensity(q) >= ISO_LEVEL;
+                        }
+                std::vector<int> stack;
+                double sumY = 0.0, sumR = 0.0; // (#1116) the last flooded component's summed height (m from the centre) and distance across
+                auto flood = [&](int sx, int sy, int sz) {                  // marks one solid component, returns its size
+                    long long n = 0;
+                    stack.clear(); stack.push_back((int)idx(sx, sy, sz)); seen[idx(sx, sy, sz)] = 1;
+                    while (!stack.empty()) {
+                        const int k = stack.back(); stack.pop_back(); ++n;
+                        { const int px = k % NX, pz = (k / NX) % NZ, py = k / (NX * NZ); sumY += py - 28.0; sumR += sqrt((px - 50.0) * (px - 50.0) + (pz - 50.0) * (pz - 50.0)); } // (#1116) where it is
+                        const int x = k % NX, z = (k / NX) % NZ, y = k / (NX * NZ);
+                        const int nb[6][3] = { { x - 1, y, z }, { x + 1, y, z }, { x, y - 1, z }, { x, y + 1, z }, { x, y, z - 1 }, { x, y, z + 1 } };
+                        for (const auto& b : nb) {
+                            if (b[0] < 0 || b[1] < 0 || b[2] < 0 || b[0] >= NX || b[1] >= NY || b[2] >= NZ) continue;
+                            const size_t j = idx(b[0], b[1], b[2]);
+                            if (solid[j] && !seen[j]) { seen[j] = 1; stack.push_back((int)j); }
+                        }
+                    }
+                    return n;
+                };
+                for (int y = 0; y < NY; ++y)                                // the surrounding rock: from every boundary cell
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x)
+                            if ((x == 0 || y == 0 || z == 0 || x == NX - 1 || y == NY - 1 || z == NZ - 1) && solid[idx(x, y, z)] && !seen[idx(x, y, z)]) flood(x, y, z);
+                long long islands = 0, vol = 0, largest = 0;
+                for (int y = 0; y < NY; ++y)
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x)
+                            if (solid[idx(x, y, z)] && !seen[idx(x, y, z)]) {
+                                sumY = sumR = 0.0;
+                                const long long n = flood(x, y, z); ++islands; vol += n; largest = std::max(largest, n);
+                                const double my = sumY / n, mr = sumR / n; // (#1116) bins: height -28..+28 m in 8, distance 0..71 m in 8
+                                gIslandH[std::clamp((int)((my + 28.0) / 7.0), 0, 7)] += n; gIslandR[std::clamp((int)(mr / 9.0), 0, 7)] += n;
+                            }
+                totIslands += islands; totVol += vol;
+                const float depth = pf->radius + pf->elevation(up) - Vector3Length(c);
+                printf("bench: cave islands: chamber %zu (%.0f m down): %lld floating pieces, %lld m^3, largest %lld m^3\n", ci, depth, islands, vol, largest);
+            }
+            const float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave islands: %zu chambers within %.0f m: %lld floating pieces, %lld m^3 in all (%.1f s)\n", chambers.size(), R, totIslands, totVol, secs);
+            printf("bench: cave islands: floating m^3 by height from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %+d..%+d:%lld", -28 + 7 * b, -21 + 7 * b, gIslandH[b]); printf("\n");
+            printf("bench: cave islands: floating m^3 by distance across from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %d..%d:%lld", 9 * b, 9 * b + 9, gIslandR[b]); printf("\n");
+            return 0;
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
@@ -1776,6 +1847,14 @@ int main(int argc, char** argv)
                    tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
             printf("bench: cave stats: columns a #549 roof collapse opened %lld; mouth columns (open to the sky through a cave on a 15+ degree slope) %lld; trench columns (the same on flatter ground) %lld = %.0f m^2 (%.2f%% of land)\n",
                    collapsedCols, mouthCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            {   // (#1115) Entrances (hillside mouths, sinks, resurgences; not chamber centres) within R, and the nearest one.
+                const int mouths = pf->caveMouthsNear(home, R);
+                Vector3 mAt{}, mOut{};
+                const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+                const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+                printf("bench: cave stats: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m\n",
+                       mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM);
+            }
             printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
             return 0;
         }
@@ -2364,6 +2443,68 @@ int main(int argc, char** argv)
             return pass ? 0 : 1;
         }
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
+    // (#910) F2's screenshot also writes lod.txt: the camera, the clear-colour pixels (nothing drawn: a hole when enclosed),
+    // and every LOD node within 150 m of the camera with its level, state and whether it is drawn.
+    std::function<std::string(const Image&)> lodDump = [&](const Image& img) -> std::string {
+        std::string out;
+        char line[512];
+        auto add = [&](const char* fmt, auto... a) { snprintf(line, sizeof line, fmt, a...); out += line; };
+        Planetoid* b = player.nearest ? player.nearest : (world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()));
+        add("time %.3f s, frame dt %.4f s\n", GetTime(), GetFrameTime());
+        const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        if (b) {
+            const DVec3 l = b->toLocalD(world.renderOrigin + world.camera.position);
+            const double r = l.length();
+            const Vector3 fl = b->dirToLocal(fwd);
+            add("camera %.5f %.5f, %.2f m from the centre (%.2f m over the radius); look (body) %.3f %.3f %.3f\n",
+                asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r, r - b->radius, fl.x, fl.y, fl.z);
+        }
+        add("player velocity %.2f %.2f %.2f (%.2f m/s), grounded %d, fly %d\n", player.velocity.x, player.velocity.y, player.velocity.z,
+            Vector3Length(player.velocity), (int)player.grounded, (int)player.flyMode);
+        {   // Pixels of the clear colour (exact +-2): with the skybox on, nothing should show it; enclosed = not touching the top edge.
+            const Color cc = world.clearColor;
+            const Color* px = (const Color*)img.data;
+            const int w = img.width, h = img.height;
+            std::vector<uint8_t> m((size_t)w * h), seen((size_t)w * h, 0);
+            long total = 0;
+            for (int i = 0; i < w * h; ++i) { const Color c = px[i]; m[i] = abs(c.r - cc.r) <= 2 && abs(c.g - cc.g) <= 2 && abs(c.b - cc.b) <= 2; total += m[i]; }
+            std::vector<int> st; long top = 0;
+            for (int x = 0; x < w; ++x) if (m[x]) { seen[x] = 1; st.push_back(x); }
+            while (!st.empty()) { const int i = st.back(); st.pop_back(); ++top; const int x = i % w, y = i / w;
+                const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < w ? i + 1 : -1, y > 0 ? i - w : -1, y + 1 < h ? i + w : -1 };
+                for (int j : nb) if (j >= 0 && m[j] && !seen[j]) { seen[j] = 1; st.push_back(j); } }
+            add("clear colour %d,%d,%d: %ld pixels, %ld enclosed (dark scenery can match too)\n", cc.r, cc.g, cc.b, total, total - top);
+        }
+        const WorldStats& s = GetWorldStats();
+        add("world: nodes %d, drawn %d, queued jobs %d, pending uploads %d\n", s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+        if (b) {
+            const Vector3 cam = b->toLocal(world.camera.position);
+            const double now = GetTime();
+            std::unordered_set<const Chunk*> drawn(b->drawList.begin(), b->drawList.end());
+            struct Row { float dist; const Chunk* c; };
+            std::vector<Row> rows;
+            for (const auto& [k, c] : b->nodes) {
+                const Vector3 o = k.origin(); const float sz = k.size();
+                const Vector3 q = { std::clamp(cam.x, o.x, o.x + sz), std::clamp(cam.y, o.y, o.y + sz), std::clamp(cam.z, o.z, o.z + sz) };
+                const float dist = Vector3Distance(q, cam);
+                if (dist <= 150.0f) rows.push_back({ dist, c.get() });
+            }
+            std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b2) { return a.dist < b2.dist; });
+            add("nodes within 150 m: %d (sorted by distance; drawn = in this frame's draw list)\n", (int)rows.size());
+            add("dist_m level x y z size_m drawn ready mesh ring background want req fade_age_s fade_out last_wanted_ago_s\n");
+            int n = 0;
+            for (const Row& r : rows) {
+                if (++n > 600) { add("... %d more\n", (int)rows.size() - 600); break; }
+                const Chunk* c = r.c; const NodeKey& k = c->key;
+                auto rq = b->requestedVersion.find(k);
+                add("%.1f %d %d %d %d %.0f %d %d %d %d %d %u %u %.2f %d %.2f\n", r.dist, k.level, k.x, k.y, k.z, k.size(), (int)drawn.count(c),
+                    (int)c->ready, (int)c->hasMesh(), (int)c->inRing, (int)c->background, c->wanted ? c->wanted->load() : 0u,
+                    rq != b->requestedVersion.end() ? rq->second : 0u, c->fadeT0 >= 0.0 ? now - c->fadeT0 : -1.0, (int)c->fadeOut, now - c->lastWanted);
+            }
+        }
+        return out;
+    };
+    Recorder_SetShotExtra(lodDump);
     // --play-new S (#387): the menus as a player uses them, for --perf-log. 10 s on the title screen; New Game (the New World
     // screen creates after a moment) -> bake -> loading -> S s of play; Save & Quit -> 10 s on the title screen; Load that
     // save -> loading -> 30 s of play; exit.
@@ -9583,7 +9724,7 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDirLocal ? start->dirToWorld(spawnDir) : spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
@@ -9591,6 +9732,19 @@ int main(int argc, char** argv)
                         walkLast = walkFrom; walkPath = 0.0;
                         walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
                         walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
+                    }
+                    if (benchSweepLook) {
+                        // (#904/#910) Looking for rocks on foot: the view sweeps +-70 deg about a heading that drifts (a turn of up to
+                        // ~150 deg/s), pitched 20-40 deg down, so the frustum keeps changing which nodes it wants. The walk follows the view.
+                        static Vector3 heading = { 0, 0, 0 };
+                        const Vector3 up = player.up;
+                        if (Vector3LengthSqr(heading) < 0.5f || fabsf(Vector3DotProduct(heading, up)) > 0.2f)
+                            heading = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(up, Vector3DotProduct(player.forward, up))));
+                        const float t = (float)(GetTime() - walkStart);
+                        const float yaw = 70.0f * sinf(2.0f * PI * t / 3.0f) + 6.0f * t; // drifting heading: the walk wanders (slowly: 25 deg/s walked in 9 m circles)
+                        const float pitch = -(30.0f + 10.0f * sinf(2.0f * PI * t / 4.3f));
+                        Vector3 h = Vector3RotateByAxisAngle(heading, up, yaw * DEG2RAD);
+                        player.forward = Vector3Normalize(Vector3Add(Vector3Scale(h, cosf(pitch * DEG2RAD)), Vector3Scale(up, sinf(pitch * DEG2RAD))));
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -10239,6 +10393,7 @@ int main(int argc, char** argv)
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
+            QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
                 Blueprint_UpdateGhosts(player.nearest, player.nearest->toLocal((player.position - world.renderOrigin).toFloat()), SimTime());
@@ -10514,6 +10669,50 @@ int main(int argc, char** argv)
                 }
             }
         }
+        {   // (#904/#910) --crack-check with RAYLIBGAME_CRACK_EVERY=N: every Nth frame of any phase (the loading screen and spawn
+            // included, as LODs change), count the holes (magenta enclosed by drawn pixels); a frame with any is logged with the
+            // time, the camera's place and the chunk counts, and the worst one saved (bench_holes_worst.png).
+            static const int crackEvery = getenv("RAYLIBGAME_CRACK_EVERY") ? std::max(1, atoi(getenv("RAYLIBGAME_CRACK_EVERY"))) : 0;
+            static long crackFrame = 0;
+            static long worstCrack = 0;
+            if (crackCheck && crackEvery > 0 && gameState == 1 && (++crackFrame % crackEvery) == 0) {
+                Image shot = LoadImageFromScreen();
+                Color* px = LoadImageColors(shot);
+                // Sky between canopies is not a hole: march the pixel's view ray through the density field (edits included).
+                Planetoid* cb = dynamic_cast<Planetoid*>(world.objects.empty() ? nullptr : world.objects[0].get());
+                const float sx = (float)GetScreenWidth() / shot.width, sy = (float)GetScreenHeight() / shot.height;
+                auto rayToSky = [&](int x, int y) {
+                    if (!cb) return false;
+                    const Ray ray = GetScreenToWorldRay({ x * sx, y * sy }, world.camera);
+                    const Vector3 o = cb->toLocal(ray.position), d = cb->dirToLocal(ray.direction);
+                    // Solid right at the start (the eye against a crevice wall: the field and the mesh differ by a few cm) is
+                    // skipped: only ground the ray meets after it has been in open air counts.
+                    bool aired = false;
+                    for (float s = 0.3f; s < 3000.0f; s += 0.5f + s * 0.03f) {
+                        const bool solid = cb->densityAt(Vector3Add(o, Vector3Scale(d, s))) >= ISO_LEVEL;
+                        if (!solid) aired = true; else if (aired || s > 2.0f) return false;
+                    }
+                    return true;
+                };
+                long skyMasked = 0;
+                const long holes = CrackHoles(px, shot.width, shot.height, 2, &skyMasked, rayToSky);
+                UnloadImageColors(px);
+                if (holes > 20) {
+                    const WorldStats& s = GetWorldStats();
+                    std::string where = "?";
+                    if (Planetoid* b = player.nearest) {
+                        const DVec3 l = b->toLocalD(world.renderOrigin + world.camera.position);
+                        const double r = l.length();
+                        where = TextFormat("%.4f %.4f, %.1f m from the centre", asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r);
+                    }
+                    printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
+                           crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+                    if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
+                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
+                }
+                UnloadImage(shot);
+            }
+        }
         if (crackCheck) world.drawSkybox = false;
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
@@ -10618,6 +10817,7 @@ int main(int argc, char** argv)
         if (gameState == 1) Hotbar_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), ship.piloted);
         if (gameState == 1) BuildTool_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1 && !loading) Animals_Aim(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // this frame's camera (#222)
+        if (gameState == 1 && !loading) MagicSight_Update(world, std::min(GameFrameTime(), 0.1f), PlayerInput_If(gameInput && alive && !ship.piloted && !GameUI_InventoryOpen(), PlayerInput_Frame())); // (#1249) RAYLIBGAME_MAGIC
         if (gameState == 1) TerrainTool_Update(world, PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
@@ -13504,6 +13704,8 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
+                Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1
+                MagicSight_DrawHUD(world); // (#1249) RAYLIBGAME_MAGIC=1
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
@@ -13618,8 +13820,13 @@ int main(int argc, char** argv)
             lastFrameEnd = GetTime();
         }
         GpuTimer_Mark("swap+poll");
+        // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
+        Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
+        Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
+        Audio_Update();
         PROFILE_FRAME();
     }
+    LOG_INFO("Main", "main loop ended: %s\n", WindowShouldClose() ? "the window was closed" : "Exit chosen (or a test or server stop)"); // (#1153) a clean exit says so
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
     Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
     if (Profiler_On() && !Scenario_Active()) { // (#886) the play session's profile

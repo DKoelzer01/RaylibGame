@@ -118,6 +118,7 @@ struct QuestBookState {
     std::map<std::string, double> counts;            // events for "do" tasks: eat, feed, penned, till, plant, harvest, ...
     std::set<std::pair<int, int>> tasksDone;         // main line: (tier, task)
     std::set<std::string> treeDone;                  // side lines: node ids (questtree.cpp)
+    std::map<int, double> tierSeconds;               // (#1199) the tier clock: seconds of play in each tier (sim time: not loading or paused)
     // "get" tasks count what was obtained. The local book reads the local inventory's totals (saved with them, as before);
     // a team book keeps its own, the sum of what its members obtained on the server.
     bool ownObtained = false;
@@ -140,6 +141,11 @@ double QuestBook_CountOf(const std::string& event);
 bool QuestBook_Met(const std::string& kind, const std::string& target, double n);
 int QuestBook_Tier();
 void QuestBook_SetTier(int tier);
+// (#1199) The tier clock: call once a frame with the sim time (negative while loading); the time since the last call (none after a load or a jump
+// back) goes to the current tier. QuestBook_TierSeconds: that tier's seconds so far.
+void QuestBook_TickClock(double simTime);
+double QuestBook_TierSeconds(int tier);
+int QuestBook_TierReport(const char* savePath); // (#1199) --tier-report: prints each quest book's hours per tier
 void QuestBook_Reset();                         // a new game: tier 0, nothing done
 void QuestBook_Save(FILE* f);                   // tier, done tasks, placed machines, obtained totals
 bool QuestBook_LoadLine(const char* tok, FILE* f);

@@ -71,6 +71,12 @@ void StandStep(ScenarioDef& s, const char* name, bool equator, double maxStepBou
         if (maxStepBound > 0.0) c.lt(n + " largest single step", st.maxStep, maxStepBound);
         c.lt(n + " view turn", turn, 0.5);
         c.check(n + " still grounded", player.grounded);
+        if (Frames_On()) { // F2a (#1146): standing still is v = 0 in the Fixed frame of the body underfoot
+            const double v = player.frame.vel.length();
+            c.metric(n + " frame speed", v, "m/s");
+            c.check(n + " frame: Fixed on the body underfoot", player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == b.netId);
+            c.lt(n + " frame speed standing", v, 0.01);
+        }
         st.placed = false;
         return true;
     });
