@@ -12,9 +12,7 @@ palette   scene
 air       none
 sky       none
 biomes    Polar
-resources regolith helium3    # mined in tier 8 (Plan 13 step 4, #1276)
+resources regolith anorthite helium3  # tier 9 today (tiers.txt: helium-3 from regolith in the centrifuge); Plan 13 step 4, #1276
 hazards   vacuum              # the pressure-seal suit module (#1004)
-# Today's behaviour, kept as it was: the night hunter comes out on any planet or moon surface after dark (no herds:
-# they need foliage). Plan 13 step 4 decides Luna's own life.
-creatures dusk_stalker
+creatures none                # #1329 (the user, 2026-11-21): no night hunter on the moon
 about     Terra's grey moon: craters and regolith under a black sky, 10 km in radius, low gravity.
