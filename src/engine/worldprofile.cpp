@@ -24,10 +24,9 @@ WorldProfile WorldProfile_Default(BodyKind kind, const std::string& name) {
         p.hasSky = false;
         p.allBiomes = false; p.biomes = { BiomeName(Biome::Polar) };
         p.hazards = { "vacuum" };
-        // Creatures as today: herds need foliage, so only the night hunter, which comes out on any planet or moon
-        // surface after dark (animals.txt's "night" species).
+        // No creatures (#1329, the user 2026-11-21: the night hunter used to come out on moons too).
         p.allCreatures = false;
-        p.creatures = { "dusk_stalker" };
+        p.creatures.clear();
     }
     return p;
 }
@@ -211,7 +210,7 @@ TEST(WorldProfile, DefaultsAreTodaysPlanetAndMoon) {
     const WorldProfile m = WorldProfile_Default(BodyKind::Moon, "y");
     EXPECT_TRUE(m.airless);
     EXPECT_FALSE(m.newWorld || m.erosion || m.foliage || m.planetPalette || m.hasAir || m.hasSky || m.allBiomes);
-    EXPECT_TRUE(m.allowsCreature("dusk_stalker"));
+    EXPECT_FALSE(m.allowsCreature("dusk_stalker")); // #1329: no night hunter on moons
     EXPECT_FALSE(m.allowsCreature("woolback"));
 }
 
