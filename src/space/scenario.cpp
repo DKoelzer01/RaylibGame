@@ -415,7 +415,7 @@ bool Scenario_Frame(Scene& world) {
     c.t = SimTime() - R.stepSim;
     c.frame = R.frames++;
     c.stepIndex = R.step;
-    if (!c.field) { Finish("ERROR", "no planet field (body 0)"); return false; }
+    if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
     if (R.def.legacyDrives) { // a legacy bench drives: never hold it; its shots are compared when the game ends
         if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
         return false;
