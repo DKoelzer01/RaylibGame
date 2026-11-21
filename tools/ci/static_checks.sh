@@ -12,8 +12,9 @@
 #   3. A new `gh project` command in tools/ (forbidden by CLAUDE.md: it burns the shared GraphQL budget): an error.
 #   4. renderOrigin (the drawing-only floating origin, Plan 11 #1412) used more in a file than tools/ci/render_origin_baseline.txt
 #      records, or in a new file: a warning (simulation reads body-local doubles). --render-origin-baseline rewrites it.
+#   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #
-# Exit code 1 only for errors (duplicate / unparsable ids, check 3). Warnings never fail the job.
+# Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
 set -uo pipefail
 export LC_ALL=C # sort and join must agree on the order
@@ -173,6 +174,39 @@ if [ -f "$RO_BASE" ]; then
         done <<< "$rose"
         sum ""; sum "**renderOrigin uses rose** (warning; Plan 11 #1412): $(echo "$rose" | awk '{ printf "%s %s->%s; ", $1, $2, $3 }')"
     fi
+fi
+
+# 5. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
+#    `--scenario tag:...` lists (parts 1 and 2 of the headless scenarios), not both - unless it carries a local-only tag
+#    (rendering, timing and looks belong on the PC). A new tag in neither list would silently never run there: an error.
+LOCAL_ONLY_TAGS="perf visual fx light"
+WF=.github/workflows/selfhosted.yml
+part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+if [ -z "$part1" ] || [ -z "$part2" ]; then
+    echo "::error file=$WF::static check 5: the two headless scenario tag lists were not found in the workflow"
+    errors=$((errors + 1))
+else
+    unplaced=""
+    for f in tests/scenarios/*.cpp; do
+        name=$(grep -o 'SCENARIO("[^"]*")' "$f" | head -1 | sed 's/SCENARIO("\(.*\)")/\1/')
+        [ -n "$name" ] || continue
+        tags=$(grep -o 's.tags = {[^}]*}' "$f" | head -1 | grep -o '"[a-z0-9_-]*"' | tr -d '"' | tr '\n' ' ')
+        in1=0; in2=0; local=0
+        for t in $tags; do
+            for x in $part1; do [ "$t" = "$x" ] && in1=1; done
+            for x in $part2; do [ "$t" = "$x" ] && in2=1; done
+            for x in $LOCAL_ONLY_TAGS; do [ "$t" = "$x" ] && local=1; done
+        done
+        if [ $in1 = 1 ] && [ $in2 = 1 ]; then
+            echo "::error file=$f::scenario $name matches both runner scenario steps (tags: $tags): it would run twice"
+            errors=$((errors + 1))
+        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $local = 0 ]; then
+            echo "::error file=$f::scenario $name matches neither runner scenario step (tags: $tags): add a tag to a list in $WF or a local-only tag ($LOCAL_ONLY_TAGS)"
+            errors=$((errors + 1)); unplaced="$unplaced $name"
+        fi
+    done
+    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi

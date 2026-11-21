@@ -1288,7 +1288,7 @@ int main(int argc, char** argv)
     if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 180, windowTitle("headless").c_str());
-        SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
+        { const int fps = bench ? std::max(0, benchFps) : kSimHz; SetTargetFPS(fps); SetFrameTarget(fps); } // a server ticks at the sim rate
     } else if ((!bench && !benchWindow && playNewSeconds <= 0.0) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
@@ -1296,7 +1296,7 @@ int main(int argc, char** argv)
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
+        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); SetTargetFPS(fps); SetFrameTarget(fps); }
     } else {
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
@@ -1304,7 +1304,7 @@ int main(int argc, char** argv)
         int winW = playNewSeconds > 0.0 ? 1280 : 1920, winH = playNewSeconds > 0.0 ? 720 : 1080;
         for (int i = 1; i + 2 < argc; ++i) if (std::string(argv[i]) == "--window") { winW = std::max(320, atoi(argv[i + 1])); winH = std::max(240, atoi(argv[i + 2])); } // --window W H (#512: menus at 1280x720)
         InitWindow(winW, winH, windowTitle(playNewSeconds > 0.0 ? "play-new" : playLoadSeconds > 0.0 ? "play-load" : "bench").c_str()); // #520
-        SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+        SetTargetFPS(std::max(0, benchFps)); SetFrameTarget(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
@@ -2621,6 +2621,7 @@ int main(int argc, char** argv)
                    ws.preloadNodes, GetTime() - preloadT0, TerrainArena_Stats().vertices / 1048576.0, ws.nodes);
             preloadT0 = -1.0;
         }
+        if (bench && loading) Scenario_Loading(); // (#1422) a run held in a loading screen still beats and times out
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
@@ -6651,7 +6652,20 @@ int main(int argc, char** argv)
                     } else {
                         const Vector3 up = Vector3Normalize(mouthAt);
                         const float r = kMouthDist[mouthPhase - 1];
-                        const Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        // (#1428) Where the ground rises away from the mouth the eye lands inside a hill: back faces culled, the view saw
+                        // through the rock to the land beyond, and the cave passages in it as black tubes (their far walls, unlit). Lifted
+                        // along up until it and 2 m above it are open air (at most 300 m), once per view.
+                        {
+                            static int liftedFor = -1; static float lift = 0.0f;
+                            if (liftedFor != mouthPhase) {
+                                liftedFor = mouthPhase; lift = 0.0f;
+                                while (lift < 300.0f && (p->densityAt(Vector3Add(eye, Vector3Scale(up, lift))) >= ISO_LEVEL ||
+                                                         p->densityAt(Vector3Add(eye, Vector3Scale(up, lift + 2.0f))) >= ISO_LEVEL)) lift += 2.0f;
+                                if (lift > 0.0f) printf("bench: cave mouth: the %d m view's eye was inside the ground: lifted %.0f m\n", (int)r, lift);
+                            }
+                            eye = Vector3Add(eye, Vector3Scale(up, lift));
+                        }
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(mouthAt, Vector3Scale(up, -3.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         if (t > 4.0 && WorldIdle()) {
@@ -13966,6 +13980,7 @@ int main(int argc, char** argv)
             // (#768) a long frame: its main-thread CPU against its wall time (CPU well under wall = the thread waited: starved, or blocked)
             if (workMs > 50.0) printf("bench: soak: long frame %.1f ms wall, %.1f ms main-thread CPU (%.0f%%) at %.1f s\n", workMs, cpuMs, 100.0 * cpuMs / workMs, GetTime());
         }
+        gFrameBusyMs = (float)((GetTime() - gFrameWorkStart) * 1000.0); // (#545) the frame's work, before EndDrawing's wait
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background

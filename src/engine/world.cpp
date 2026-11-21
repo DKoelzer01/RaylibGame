@@ -65,6 +65,7 @@ namespace {
     constexpr float kBackgroundPriority = 1e7f;
     long long gEvicted = 0;                    // cache evictions (#295)
     bool gPreloadUrgent = false;               // spawn preload (#294): ring builds without the spare-time gate
+    bool gZoomUrgent = false;                  // (#1424) a zoom change: the view re-selects at once, unbudgeted until its nodes are built
     std::atomic<int> gForegroundBuilds{ 0 };   // view/edit builds whose closures are alive (#296)
     struct ForegroundToken {
         ForegroundToken() { ++gForegroundBuilds; }
@@ -984,6 +985,7 @@ struct PreloadRing {
 };
 static std::unordered_map<uint64_t, PreloadRing> gPreload;
 static std::unordered_map<uint64_t, int> gCachedCount; // per body, from its last LOD update (#295)
+static std::unordered_map<uint64_t, int> gLodUncovered; // (#1418) per body: desired nodes neither ready nor covered by a kept node (gaps)
 
 // Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
 // overlaps them is ready, so LOD changes never open holes. Returns how many builds it requested.
@@ -1122,6 +1124,22 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
         for (Chunk* c : draw) { const Vector3 lo = c->key.origin(); byDist.push_back({ DistanceToBox(camLocal, lo, Vector3AddValue(lo, c->key.size())), c }); }
         std::sort(byDist.begin(), byDist.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         for (size_t i = 0; i < draw.size(); ++i) draw[i] = byDist[i].second;
+    }
+    {   // (#1418) Gaps: desired nodes not ready that no kept node covers (an ancestor kept, or a kept node inside it). The
+        // finer kept nodes' ancestors in a set, so the test is a walk up each desired node's ancestors, not all pairs.
+        static FlatKeySet keptWithin;
+        keptWithin.reset(retained.size() * 4 + 16);
+        for (const Chunk* r : retained)
+            for (NodeKey k = r->key; k.level <= p.rootLevel; k = parentOf(k)) if (!keptWithin.insert(k)) break;
+        int uncovered = 0;
+        for (const NodeKey& d : desired) {
+            auto n = p.nodes.find(d);
+            if (n != p.nodes.end() && n->second->ready) continue;
+            bool covered = keptWithin.count(d) > 0;
+            for (NodeKey k = parentOf(d); !covered && k.level <= p.rootLevel; k = parentOf(k)) covered = retainedSet.count(k) > 0;
+            if (!covered) ++uncovered;
+        }
+        gLodUncovered[p.id] = uncovered;
     }
     p.drawList = std::move(draw);
 
@@ -1356,6 +1374,10 @@ void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
     s.zoomHalfAngle = halfAngle;
     if (!changed) return;
     s.zoomDir = dir;
+    // (#1424) Opening or closing the telescope re-selects much of the view in one go: its builds bypass the streaming budget until
+    // the view's nodes are in (the budget saw the slow frames of the swap and throttled them: closing took 200-350 ms, was ~25).
+    static const bool zoomUrgentOn = !(getenv("RAYLIBGAME_ZOOM_URGENT") && getenv("RAYLIBGAME_ZOOM_URGENT")[0] == '0');
+    if (zoomUrgentOn) gZoomUrgent = true;
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
@@ -1547,9 +1569,28 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         static const bool budgetOn = !(getenv("RAYLIBGAME_STREAM_BUDGET") && getenv("RAYLIBGAME_STREAM_BUDGET")[0] == '0');
         static long frameNo = 0;
         ++frameNo;
-        const float frameMs = GetFrameTime() * 1000.0f;
+        // (#545) The frame's busy time, not GetFrameTime: that includes the frame-rate cap's or vsync's wait, so a capped game
+        // (60 Hz vsync: 16.7 ms) was throttled as if overloaded while the GPU idled, to ~16 blocks a frame, and the view's
+        // terrain fell behind in flight (gaps for a few frames: ~3500 nodes waiting at 60 m/s and 30 FPS).
+        // RAYLIBGAME_STREAM_BUDGET_BUSY=0: GetFrameTime as before (A/B).
+        static const bool busyOn = !(getenv("RAYLIBGAME_STREAM_BUDGET_BUSY") && getenv("RAYLIBGAME_STREAM_BUDGET_BUSY")[0] == '0');
+        // A frame no longer than the cap's (or vsync's) target was held by it, not by work: its CPU busy time says how loaded it
+        // was. A frame past the target was really late (CPU, or the GPU at the swap: #1122's flight): its full time, as before.
+        const float wallMs = GetFrameTime() * 1000.0f;
+        const bool heldByCap = gTargetFrameMs > 0.0f && wallMs <= gTargetFrameMs * 1.1f + 1.0f;
+        const float frameMs = busyOn && heldByCap && gFrameBusyMs > 0.0f ? gFrameBusyMs : wallMs;
+        // The cap's wait is time the frame had to spare: 7 ms or more of it, both slots (a per-frame limit scales the terrain's
+        // throughput with the frame rate: at 30-60 FPS one batch a frame was too few for flight whatever the busy time).
+        const bool slack = busyOn && heldByCap && gFrameBusyMs > 0.0f && gTargetFrameMs - gFrameBusyMs >= 7.0f;
         int limit = 2;
-        if (budgetOn && !gPreloadUrgent && generationStart < 0.0) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        if (budgetOn && !gPreloadUrgent && !gZoomUrgent && generationStart < 0.0 && !slack) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        static const bool budgetLog = getenv("RAYLIBGAME_BUDGET_LOG") && getenv("RAYLIBGAME_BUDGET_LOG")[0] == '1';
+        static double lastBudgetLog = 0.0;
+        if (budgetLog && GetTime() - lastBudgetLog > 2.0) {
+            lastBudgetLog = GetTime();
+            printf("budget: wall %.1f ms, busy %.1f ms, target %.1f ms, held by the cap %d, slack %d -> launch limit %d; gpu density queue %d\n",
+                   wallMs, gFrameBusyMs, gTargetFrameMs, heldByCap ? 1 : 0, slack ? 1 : 0, limit, TerrainGpu_Pending());
+        }
         TerrainGpu_SetLaunchLimit(limit);
     }
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
@@ -1678,6 +1719,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         bool complete = true;
         for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }
         for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
+        stats.lodUncovered = 0;
+        for (auto it = gLodUncovered.begin(); it != gLodUncovered.end();) it = alive.count(it->first) ? std::next(it) : gLodUncovered.erase(it);
+        for (auto& [id, n] : gLodUncovered) stats.lodUncovered += n;
         stats.evicted = gEvicted;
         stats.waterBuilds = gWaterBuilds.load(); stats.waterMs = gWaterUs.load() / 1000.0;
         stats.waterFullBuilds = gWaterFullBuilds.load(); stats.waterCacheBytes = ChunkWaterCacheBytes();
@@ -1749,6 +1793,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         }
     }
 
+    if (gZoomUrgent && !AnyLodPending(world)) gZoomUrgent = false; // (#1424) the zoomed (or unzoomed) view is in: budget again
     if (generationStart >= 0.0 && PipelineIdle() && !AnyLodPending(world)) {
         stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
         LOG_INFO("World", "ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",

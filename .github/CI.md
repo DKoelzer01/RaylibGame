@@ -59,7 +59,7 @@ The runner has no LAN access: the server package reaches the Pterodactyl server 
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
 Three jobs, each after the one before (#1028), each on any free runner: `package` (build, `game_tests`, the server
-tarball as an artifact), `linux-gpu` (the GPU bit-exact check, the headless scenarios, `test_server.sh` / `test_join.sh`,
+tarball as an artifact), `linux-gpu` (the GPU bit-exact check, the headless scenarios in two steps of 45 min each (#1367: fluid, frames and factory; then the rest), `test_server.sh` / `test_join.sh`,
 whose host and client logs go into the `selfhosted-test-results` artifact) and `regression` (below; nightly or on
 request). **GPU steps only when needed (#1392):** on a push, `tools/ci/gpu_changes.sh` diffs the push against its base;
 the GPU bit-exact check (`--test-terrain-gpu`) and the fluid CPU = GPU parity run only when a shader, the terrain
