@@ -24,8 +24,23 @@ const char* MachineSound_Hum(PartType t) {
         case PartType::MvGenerator: case PartType::Electrolyzer: case PartType::ChemicalReactor: case PartType::Miner: return "hum_mv";
         case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery: case PartType::PrecisionAssembler: return "hum_hv";
         case PartType::FusionReactor: case PartType::MassDriver: return "hum_ev";
-        default: return nullptr; // chests, hand pumps, rocket parts, connectors
+        // (#1269, #1270) mechanical power: transmission clatter, and each rotation machine and source its own voice
+        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::Gearbox: case PartType::HandCrank: return "mech_gears";
+        case PartType::Millstone: return "mech_millstone";
+        case PartType::Saw: return "mech_saw";
+        case PartType::Press: return "mech_press";
+        case PartType::WaterWheel: return "mech_waterwheel";
+        case PartType::Windmill: return "mech_windmill";
+        default: return nullptr; // chests, hand pumps, rocket parts, connectors, gauges
     }
+}
+
+bool MachineSound_IsTransmission(PartType t) {
+    return t == PartType::Shaft || t == PartType::Cogwheel || t == PartType::LargeCogwheel || t == PartType::Gearbox || t == PartType::HandCrank;
+}
+
+float MachineSound_RpmPitch(float rpm) {
+    return std::clamp(fabsf(rpm) / 64.0f, 0.5f, 2.0f); // the loops are made at 64 RPM: slower turning plays them slower
 }
 
 bool MachineSound_IdleHums(PartType t) {
@@ -63,7 +78,7 @@ namespace {
     struct Spot { int part; PartType type; Vector3 centre; }; // centre in plot metres
     struct PlotCache { uint32_t version = ~0u; std::vector<Spot> spots; };
     std::unordered_map<uint64_t, PlotCache> cache;
-    struct Live { uint64_t key; uint64_t body; uint32_t plot; int part; PartType type; DVec3 pos; float dist; int state; };
+    struct Live { uint64_t key; uint64_t body; uint32_t plot; int part; PartType type; DVec3 pos; float dist; int state; float pitch = 1.0f; };
     std::vector<Live> live;
     std::unordered_map<uint64_t, int> lastState;
     std::unordered_map<uint64_t, double> nextClick;
@@ -108,13 +123,36 @@ namespace {
             }
             if (pc.spots.empty()) continue;
             const std::vector<int> stalled = Factory::StalledParts(p.id, plot.id);
+            // (#1269) Rotation parts turn at their network's speed: transmission parts of a plot sound as one clatter at
+            // their middle (a 20-shaft line is one voice, not twenty); machines and sources each by their own RPM.
+            static std::vector<std::pair<int, float>> rpms;
+            rpms.clear();
+            bool anyRotation = false;
+            for (const Spot& s : pc.spots) anyRotation = anyRotation || IsRotationPart(s.type);
+            if (anyRotation) Factory::RotationSpeeds(p.id, plot.id, rpms);
+            auto rpmOf = [&](int part) { for (const auto& kv : rpms) if (kv.first == part) return kv.second; return 0.0f; };
+            Vector3 gearSum{ 0, 0, 0 };
+            int gearN = 0;
+            float gearRpm = 0.0f;
             for (const Spot& s : pc.spots) {
                 const Vector3 at = plot.toBody(s.centre);
                 const float d = Vector3Distance(at, lis);
                 if (d > kRange) continue;
+                if (IsRotationPart(s.type)) {
+                    const float rpm = fabsf(rpmOf(s.part));
+                    if (MachineSound_IsTransmission(s.type)) { gearSum = Vector3Add(gearSum, at); ++gearN; gearRpm += rpm; continue; }
+                    live.push_back({ KeyOf(p.id, plot.id, s.part), p.id, plot.id, s.part, s.type, p.toWorldD(DVec3(at)), d, rpm > 1.0f ? 1 : 0, MachineSound_RpmPitch(rpm) });
+                    continue;
+                }
                 const bool working = Factory::Working(p.id, plot.id, s.part);
                 const bool stall = !working && std::find(stalled.begin(), stalled.end(), s.part) != stalled.end();
                 live.push_back({ KeyOf(p.id, plot.id, s.part), p.id, plot.id, s.part, s.type, p.toWorldD(DVec3(at)), d, working ? 1 : stall ? 2 : 0 });
+            }
+            if (gearN > 0) {
+                const Vector3 at = Vector3Scale(gearSum, 1.0f / gearN);
+                const float rpm = gearRpm / gearN;
+                live.push_back({ KeyOf(p.id, plot.id, -1), p.id, plot.id, -1, PartType::Shaft, p.toWorldD(DVec3(at)), Vector3Distance(at, lis),
+                                 rpm > 1.0f ? 1 : 0, MachineSound_RpmPitch(rpm) });
             }
         }
     }
@@ -143,7 +181,7 @@ void MachineSounds_Update(Scene& world, float dt) {
     for (const Live& m : live) {
         auto it = lastState.find(m.key);
         const MachineCue cue = MachineSound_Cue(it == lastState.end() ? -1 : it->second, m.state);
-        if (m.dist < kCueRange) {
+        if (m.dist < kCueRange && !IsRotationPart(m.type)) { // (a shaft stopping is no finished batch)
             if (cue == MachineCue::Stall) { PlayCue("machine_stall", m.pos, 0.6f); nextClick[m.key] = now + 3.0; }
             else if (cue == MachineCue::Done) PlayCue("machine_done", m.pos, 0.45f);
             else if (m.state == 2 && m.dist < 24.0f && now >= nextClick[m.key]) { PlayCue("machine_click", m.pos, 0.5f); nextClick[m.key] = now + 3.0; }
@@ -195,7 +233,7 @@ void MachineSounds_Update(Scene& world, float dt) {
         if (!m) { Audio_EmitterSetPlaying(s.emitter, false); continue; }
         Audio_EmitterSetPosition(s.emitter, m->pos);
         Audio_EmitterSetVolume(s.emitter, m->state == 1 ? 0.8f : 0.2f); // idle: a quiet hum
-        Audio_EmitterSetPitch(s.emitter, m->state == 1 ? 1.0f : 0.97f);
+        Audio_EmitterSetPitch(s.emitter, m->state == 1 ? m->pitch : 0.97f); // (rotation: by its RPM)
         Audio_EmitterSetPlaying(s.emitter, true);
     }
     // The bed: every other working machine in range, at their middle.
@@ -233,6 +271,19 @@ TEST(MachineSounds, HumsByTypeAndTier) {
     EXPECT_STREQ(MachineSound_Hum(PartType::ArcFurnace), "hum_hv");
     EXPECT_STREQ(MachineSound_Hum(PartType::FusionReactor), "hum_ev");
     EXPECT_EQ(MachineSound_Hum(PartType::Chest), nullptr);
+    // (#1269) mechanical power
+    EXPECT_STREQ(MachineSound_Hum(PartType::Shaft), "mech_gears");
+    EXPECT_STREQ(MachineSound_Hum(PartType::Gearbox), "mech_gears");
+    EXPECT_STREQ(MachineSound_Hum(PartType::WaterWheel), "mech_waterwheel");
+    EXPECT_STREQ(MachineSound_Hum(PartType::Millstone), "mech_millstone");
+    EXPECT_EQ(MachineSound_Hum(PartType::StressGauge), nullptr);
+    EXPECT_TRUE(MachineSound_IsTransmission(PartType::Cogwheel));
+    EXPECT_FALSE(MachineSound_IsTransmission(PartType::Windmill));
+    EXPECT_FALSE(MachineSound_IdleHums(PartType::Shaft));
+    EXPECT_FLOAT_EQ(MachineSound_RpmPitch(64.0f), 1.0f);
+    EXPECT_FLOAT_EQ(MachineSound_RpmPitch(-128.0f), 2.0f);
+    EXPECT_FLOAT_EQ(MachineSound_RpmPitch(8.0f), 0.5f);
+    EXPECT_FLOAT_EQ(MachineSound_RpmPitch(1000.0f), 2.0f);
     EXPECT_TRUE(MachineSound_IdleHums(PartType::Macerator));
     EXPECT_FALSE(MachineSound_IdleHums(PartType::Generator));
     EXPECT_FALSE(MachineSound_IdleHums(PartType::Campfire));
