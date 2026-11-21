@@ -2,6 +2,7 @@
 #include "inventory.h"
 #include "plots.h"
 #include "rotationplot.h"
+#include "rotationsources.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -1232,6 +1233,7 @@ void Factory::Reset() {
     layoutQueue.clear();
     itemQueue.clear();
     sentVersions.clear();
+    RotationSources_Reset(); // (#1270)
 }
 
 void Factory::Sync(Scene& world) {
@@ -1285,6 +1287,7 @@ void Factory::Sync(Scene& world) {
             }
         }
     }
+    RotationSources_Update(world); // (#1270) water wheels and windmills: their river or wind, twice a second
     // Items back from the simulation.
     std::vector<ItemOut> back;
     {

@@ -180,3 +180,5 @@ stress_gauge 1     = shaft 1, any_planks 2, copper_ingot 1
 millstone 1        = any_stone 8, cogwheel 1, any_planks 4
 mechanical_saw 1   = iron_plate 2, shaft 1, any_planks 4
 mechanical_press 1 = iron_ingot 4, shaft 1, any_planks 4
+water_wheel 1      = any_planks 24, shaft 2
+windmill 1         = any_planks 12, rope 8, shaft 1
