@@ -37,7 +37,7 @@ SCENARIO("factory/assembler-pick") {
         terrainTool.creative = true;
         const Vector3 dir = c.spawnDirLocal();
         const Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, dir));
-        const Vector3 at = Vector3Normalize(Vector3Add(Vector3Scale(dir, c.field->radius), Vector3Scale(east, 6.0f)));
+        const Vector3 at = Vector3Normalize(Vector3Add(Vector3Scale(dir, c.field->radius), Vector3Scale(east, 2.0f)));
         const Vector3 ground = Vector3Scale(at, c.field->radius + c.field->elevation(at) + 0.05f);
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         plot = c.body->plots->plotFor(ground, 0.0f, true);
@@ -63,7 +63,7 @@ SCENARIO("factory/assembler-pick") {
         Factory::Sync(c.world);
         const MachineView v = View();
         c.waitingFor(TextFormat("pick '%s', lv packs %d", v.pick.c_str(), Count(v.outSlots, "lv_pack")));
-        if (Count(v.outSlots, "lv_pack") < 2) return false;
+        if (Count(v.outSlots, "lv_pack") < 2 || c.t < 1.5) return false; // (held a moment for the recording)
         c.check("the view carries the pick", v.pick == "lv_pack");
         return c.eq("no circuit while LV packs are picked", Count(v.outSlots, "basic_circuit"), 0);
     });
@@ -73,7 +73,7 @@ SCENARIO("factory/assembler-pick") {
         Factory::Sync(c.world);
         const MachineView v = View();
         c.waitingFor(TextFormat("pick '%s', circuits %d", v.pick.c_str(), Count(v.outSlots, "basic_circuit")));
-        if (Count(v.outSlots, "basic_circuit") < 1) return false;
+        if (Count(v.outSlots, "basic_circuit") < 1 || c.t < 1.5) return false;
         return c.check("the view carries the pick", v.pick == "basic_circuit");
     });
     s.step("picked Any again", 5.0, [](ScenarioCtx& c) {
@@ -81,7 +81,7 @@ SCENARIO("factory/assembler-pick") {
         if (!sent) { sent = true; MachineAct_SetPick(bodyId, plot->id, asmPart, ""); }
         Factory::Sync(c.world);
         const MachineView v = View();
-        if (!v.pick.empty()) return false;
+        if (!v.pick.empty() || c.t < 1.5) return false;
         return c.check("no pick: what its inputs allow", v.pick.empty());
     });
 }

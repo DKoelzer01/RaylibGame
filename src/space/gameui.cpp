@@ -1148,7 +1148,7 @@ static void DrawContainer() {
         if (outs.size() > 1 && !steered && !chest) {
             auto label = [](const std::string& id) { const ItemDef* d = itemDB.find(id); return d ? d->name : id; };
             const std::string now = v.pick.empty() ? std::string("Any (what its inputs allow)") : label(v.pick);
-            ImGui::SetNextItemWidth(300.0f);
+            ImGui::SetNextItemWidth(std::min(300.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Makes").x - ImGui::GetStyle().ItemInnerSpacing.x)); // ("Makes" stays in view on a narrow screen)
             if (ImGui::BeginCombo("Makes", now.c_str())) {
                 if (ImGui::Selectable("Any (what its inputs allow)", v.pick.empty())) MachineAct_SetPick(container.body, container.plot, container.part, "");
                 for (const std::string& o : outs)
