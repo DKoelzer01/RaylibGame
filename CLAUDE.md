@@ -268,8 +268,10 @@ Player and building (2026-11-14)
 - The Help tab is a Factoriopedia-style database; its "Discovered only" choice is saved per world.
 
 Controls and tools
-- Hotbar starts empty; an empty slot is bare hands (no "Hands" item). Loose fillers (gravel, sand,
-  regolith) go into the hand from the hotbar and RMB places them; dirt/stone/etc. are build blocks.
+- Hotbar starts empty; an empty slot is bare hands (no "Hands" item). Ground items (dirt, sand,
+  gravel, clay, regolith and raw stone: stone, granite, marble...) go into the hand and RMB places them as
+  terrain; a tool in hand never places ground. Parts are built from bricks (2 of a stone -> 1 of its brick, by
+  hand), planks, logs, concrete and the rest; loose ground and raw stone are not part materials (user, 2026-11-20, #1098).
 - LMB breaks terrain and built parts; parts need a 0.45 s hold (also outside build mode). A part in
   front of the ground blocks the terrain tool (no digging/tilling/placing through structures).
 - One swing per cooldown (`1/strokesPerSecond`, chops 0.3 s); the cooldown survives button releases,

@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "machinemodels.h"
 #include "machineact.h"
 #include "buildtool.h"
@@ -57,6 +58,21 @@ bool IsMachineItem(const std::string& id) {
 
 // Foundation (#210): the terrain inside the part's cells is subtracted, exactly those boxes (a carve, as mining, but with
 // no yield), and nothing else changes: no fill under it, no brush reaching past it (the plot carries parts above ground).
+namespace {
+    bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
+    std::vector<TerrainEdit> foundationBatch;
+}
+void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
+    static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
+    foundationBatching = on; foundationBatch.clear();
+}
+void BuildTool_EndFoundationBatch(Planetoid& body) {
+    PROFILE_SCOPE("blueprint foundations");
+    foundationBatching = false;
+    if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    foundationBatch.clear();
+}
+
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(part, fp);
@@ -86,6 +102,7 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
         e.radius = h * 1.7320508f; // its bounding reach (dirty chunks, trees, fluid)
         edits.push_back(e);
     }
+    if (foundationBatching) { foundationBatch.insert(foundationBatch.end(), edits.begin(), edits.end()); return; } // (#1167)
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }
 

@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File "${CLAUDE_SKILL_DIR}/scripts/capture.ps
 The script builds `build/check` first (it stops if the build fails), runs the game, waits, and prints the recorder's `record:` lines and the resolved paths (`dir`, `sheet`, `gif`, `log`).
 
 ## Where captures go
-The game resolves the root: `RAYLIBGAME_CAPTURE_ROOT` if set; else the Claude media store on deweyserver, `\\DEWEYSERVER\files\claude-media\raylib-captures`, when reachable; else `%USERPROFILE%\RaylibCaptures`. The root is kept under 10 GB (`RAYLIBGAME_CAPTURE_MAX_GB`): the oldest captures are deleted first. Don't rely on old captures existing; re-capture a baseline when you need one. Captures never go in the repo. The user can also press **F10** in normal play to record (`<root>/<date>/<HHMMSS>/`, every 2 frames, up to 600, GIF + sheet).
+The game resolves the root: `RAYLIBGAME_CAPTURE_ROOT` if set; else the Claude media store on deweyserver, `\\DEWEYSERVER\files\claude-media\raylib-captures`, when reachable; else `%USERPROFILE%\RaylibCaptures`. The root is kept under 10 GB (`RAYLIBGAME_CAPTURE_MAX_GB`): the oldest captures are deleted first. Don't rely on old captures existing; re-capture a baseline when you need one. Captures never go in the repo. The user can also press **F10** in normal play to record (`<root>/<date>/<HHMMSS>/`, every 2 frames until F10 again, at most 30 min; GIF of the first 30 s + sheet).
 
 ## Look at it
 1. Read the contact sheet: the whole run at a glance. Either:

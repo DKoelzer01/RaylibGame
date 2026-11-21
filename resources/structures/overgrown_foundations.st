@@ -6,8 +6,8 @@ weight 1.2
 bury 0.25
 decay 0.25
 dungeon 0.4
-walls block 0 0 0 19 1 13 stone
-fill block 12 0 2 13 1 11 stone
+walls block 0 0 0 19 1 13 stone_brick
+fill block 12 0 2 13 1 11 stone_brick
 clear 4 0 0 7 1 1
 clear 12 0 6 13 1 7
 part post 0 2 0 0 oak_log

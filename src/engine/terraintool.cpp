@@ -277,7 +277,13 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     if (bucket && in.hit(Act::Secondary)) TerrainTool_Bucket(world);
 
     digging = gPrimaryLatch.allows(in.down(Act::Primary)); // (#895: not after a break, until the button is pressed again)
-    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
+    // (#1098, the user) RMB places ground only with a terrain material in hand (dirt, sand, clay, gravel, regolith, raw stone:
+    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. Creative and
+    // the terraform tool place freely.
+    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.creative || terrainTool.terraform;
+    // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
+    const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
+    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
@@ -347,9 +353,9 @@ static bool PayFiller(int& paint, float cost) {
     const std::string off = inventory.offHand().id;
     if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.removeAmount(off, cost))) { paint = FillerMaterial(off); return true; }
     if (terrainTool.creative) { paint = -1; return true; }
-    static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-    for (const char* f : fillers) if (inventory.removeAmount(f, cost)) { paint = FillerMaterial(f); return true; }
-    Toast(TextFormat("Need %.1f stone, dirt, regolith, gravel, sand or concrete for this", cost));
+    // (#1098) no longer "the best one carried": only what is in hand (or the off hand) is placed
+    Toast(FillerMaterial(held) >= 0 || FillerMaterial(off) >= 0 ? TextFormat("Need %.1f of it for this", cost)
+                                                                 : "Hold dirt, sand, clay, gravel or stone to place ground");
     Audio_Play(Sfx::Error, 0.5f);
     return false;
 }
@@ -686,6 +692,9 @@ bool TerrainTool_Stroke(bool dig) {
         if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
+    // (#1098, #1085) Past the till, RMB places ground only with a ground item in hand or in the off hand: a shovel or hoe on
+    // ground that doesn't till (rock) places nothing.
+    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.creative) return false;
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         TerrainEdit e{};
@@ -695,12 +704,11 @@ bool TerrainTool_Stroke(bool dig) {
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
         const float cost = TerrainTool_PlaceCost(p, e); // (#1097) by the ground it adds
         if (cost < 0.05f) { Toast("Already solid there"); return false; }
-        if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler (the one in hand, else the best carried)
+        if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler in hand (#1098: never the best carried)
             std::string pay = FillerMaterial(terrainTool.heldTool) >= 0 ? terrainTool.heldTool : std::string();
             if (pay.empty() && FillerMaterial(inventory.offHand().id) >= 0) pay = inventory.offHand().id; // (#836) the off hand's stack next
-            static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-            for (const char* f : fillers) if (pay.empty() && inventory.amount(f) >= cost) pay = f;
-            if (pay.empty() || inventory.amount(pay) < cost) { Toast(TextFormat("Need %.1f stone, dirt, regolith, gravel, sand or concrete for this", cost)); Audio_Play(Sfx::Error, 0.5f); return false; }
+            if (pay.empty()) { Toast("Hold dirt, sand, clay, gravel or stone to place ground"); Audio_Play(Sfx::Error, 0.5f); return false; }
+            if (inventory.amount(pay) < cost) { Toast(TextFormat("Need %.1f of it for this", cost)); Audio_Play(Sfx::Error, 0.5f); return false; }
             gTerrainToolNetEdit(p, false, hit.local, e.center, e.radius, pay);
             StrokeParticles(p, hit.local, hit.material, false);
             Audio_Play(Sfx::Build, 0.6f);
