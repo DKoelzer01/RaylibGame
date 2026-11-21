@@ -70,6 +70,10 @@ struct CreatureSpec {
     int group = 1;
     bool thrower = false, thief = false, torch = false;
     float throwDamage = 6.0f, throwMin = 5.0f, throwRange = 14.0f, throwWindUp = 0.6f, throwCooldown = 2.8f;
+    // (#1228) ranged=1: every one of its kind shoots (not just a group's thrower) - darts (dart=1: pierce, fast and flat) at
+    // dartSpeed m/s; immune=bleed,poison: those effects never take.
+    bool ranged = false, dart = false, immuneBleed = false, immunePoison = false;
+    float dartSpeed = 28.0f;
     // (#1226) split=1: a slashing or piercing hit that leaves it with more than 6 health splits it in two (blunt and fire's burn
     // don't), up to two generations; corrode=N: its touch wears a held tool by N strokes (and a tool that hits it by a third of
     // that); wet=1: it spawns only where the cave is wet (by the water and sumps).

@@ -73,6 +73,7 @@ struct Species {
     bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
     bool humanoid = false;                            // (#1225) drawn with the avatar rig (cave scavengers)
     bool blob = false;                                // (#1226) a mineral ooze: a wobbling heap, the colour of its ore
+    bool turret = false;                              // (#1228) a ruin sentinel: a pedestal, a turning head and a barrel; its eye glows as it charges
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -116,7 +117,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; else if (w == "blob") s.blob = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; else if (w == "blob") s.blob = true; else if (w == "turret") s.turret = true; }
         }
         species.push_back(s);
     }
@@ -553,6 +554,10 @@ float TypedAmount(Animal& a, const DamageEvent& e) {
     if (Combat1_On()) {
         amount = Damage_Apply(amount, e.type, ResistOf(a));
         Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+        if (const CreatureSpec* im = Creature_Spec(species[a.species].id)) { // (#1228) a construct neither bleeds nor is poisoned
+            if (im->immuneBleed) { a.status.bleed = 0.0f; a.status.bleedStacks = 0; }
+            if (im->immunePoison) a.status.poison = 0.0f;
+        }
     }
     return amount;
 }
@@ -729,14 +734,14 @@ bool Animals_Feed(int i) {
 // hits the first player whose body it passes within 0.45 m of (through Combat_Damage: a raised shield facing it blocks; a
 // dodge passes through; never parried), and stops in rock. Gone after 6 s.
 namespace {
-struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; };
+struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; bool dart = false; }; // (#1228) dart: a sentinel's bolt (pierce, fast, flat)
 std::vector<Projectile> projectiles;
 int projectileHits = 0, projectilesThrown = 0;
 
-void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear) {
+void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear, float speed = 16.0f, bool dart = false) {
     Vector3 vel;
-    Throw_Aim(from, target, Vector3Normalize(from), 16.0f, 9.81f, vel);
-    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear });
+    Throw_Aim(from, target, Vector3Normalize(from), speed, 9.81f, vel);
+    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear, dart });
     ++projectilesThrown;
 }
 
@@ -760,12 +765,12 @@ void StepProjectiles(Scene& world, float dt) {
                 if (Melee_SegmentDistance(before, p.pos, feet, Vector3Add(feet, Vector3Scale(pu, 1.7f))) < 0.45f) {
                     DamageEvent e;
                     e.amount = p.damage * Difficulty_ThreatScale();
-                    e.kind = DamageKind::Projectile; e.type = p.spear ? DamageType::Pierce : DamageType::Blunt;
+                    e.kind = DamageKind::Projectile; e.type = (p.spear || p.dart) ? DamageType::Pierce : DamageType::Blunt;
                     e.parryable = false; e.hasSource = true;
                     e.source = body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f)))); // where it came from
                     e.knockback = 2.0f; e.sourceId = p.owner;
                     const DamageResult r = Combat_Damage(LocalSession(), e);
-                    GameUI_Toast(r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
+                    GameUI_Toast(p.dart ? (r.dodged ? "You dodge a dart" : r.blocked ? "Your shield takes a dart" : "A dart hits you!") : r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
                     ++projectileHits;
                     gone = true;
                 }
@@ -795,6 +800,11 @@ void DrawProjectiles(Scene& world) {
         if (!body) continue;
         const Vector3 w = body->toWorld(p.pos);
         if (Vector3Distance(w, world.camera.position) > 120.0f) continue;
+        if (p.dart) { // (#1228) a glowing bolt along its flight
+            const Vector3 d = Vector3Normalize(body->dirToWorld(p.vel));
+            for (int s = 0; s < 3; ++s) IB_Cube(Vector3Add(w, Vector3Scale(d, -0.12f * s)), { 0.05f, 0.05f, 0.05f }, s == 0 ? Color{ 255, 120, 80, 255 } : Color{ 160, 160, 170, 255 });
+            continue;
+        }
         if (!p.spear) { IB_Cube(w, { 0.16f, 0.14f, 0.16f }, Color{ 120, 115, 105, 255 }); continue; }
         const Vector3 d = Vector3Normalize(body->dirToWorld(p.vel));
         for (int s = -2; s <= 2; ++s) IB_Cube(Vector3Add(w, Vector3Scale(d, 0.3f * s)), { 0.05f, 0.05f, 0.05f }, s == 2 ? Color{ 90, 90, 95, 255 } : Color{ 120, 90, 60, 255 });
@@ -809,6 +819,15 @@ int Animals_ProjectileHits() { return projectileHits; }
 void Animals_AddLights(Scene& world) {
     for (const Animal& a : animals) {
         const CreatureSpec* cs = Creature_Spec(species[a.species].id);
+        if (cs && cs->ranged && cs->dart && a.throwWindAt >= 0.0) { // (#1228) a sentinel charging: its eye lights the room red
+            if (Planetoid* sb = BodyNamed(world, a.body)) {
+                const float ch = std::clamp((float)((simClock - a.throwWindAt) / std::max(0.1f, cs->throwWindUp)), 0.0f, 1.0f);
+                LocalLight L; L.position = sb->toWorld(Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 1.0f))); L.range = 4.0f + 4.0f * ch;
+                L.color = { 1.0f, 0.3f + 0.5f * ch, 0.2f + 0.5f * ch }; L.intensity = 0.6f + 1.2f * ch;
+                if (Vector3Distance(L.position, world.camera.position) < 70.0f) world.localLights.push_back(L);
+            }
+            continue;
+        }
         if (!cs || !cs->torch || a.thrower) continue; // (the thrower's hands hold stones)
         Planetoid* body = BodyNamed(world, a.body);
         if (!body) continue;
@@ -1360,7 +1379,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 }
             }
             // (#1225) The group's thrower keeps its distance from the player it hunts and throws instead of closing in.
-            ranged = hunting && !goingTo && preyIdx < 0 && a.thrower && cs->thrower;
+            ranged = hunting && !goingTo && preyIdx < 0 && ((a.thrower && cs->thrower) || cs->ranged); // (#1228: every sentinel shoots)
         } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(tgLocal, 10.0f, fire);
@@ -1399,11 +1418,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     if (a.throwWindAt < 0.0 && simClock - a.lastThrow > cs->throwCooldown) {
                         a.throwWindAt = simClock;
                         Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
-                        if (tg->session == 0) GameUI_Toast(TextFormat("The %s winds up a throw!", s.name.c_str()));
+                        if (tg->session == 0) GameUI_Toast(TextFormat(cs->dart ? "The %s charges up!" : "The %s winds up a throw!", s.name.c_str())); // (#1228: a sentinel's charge)
                     }
                     if (a.throwWindAt >= 0.0 && simClock - a.throwWindAt >= cs->throwWindUp) {
                         const Vector3 aup = Vector3Normalize(a.pos), tup = Vector3Normalize(tgLocal);
-                        ThrowAt(a.body, Vector3Add(a.pos, Vector3Scale(aup, 1.6f)), Vector3Add(tgLocal, Vector3Scale(tup, 1.1f)), cs->throwDamage, a.netId, false);
+                        ThrowAt(a.body, Vector3Add(a.pos, Vector3Scale(aup, cs->dart ? 1.1f : 1.6f)), Vector3Add(tgLocal, Vector3Scale(tup, 1.1f)), cs->throwDamage, a.netId, false, cs->dart ? cs->dartSpeed : 16.0f, cs->dart);
                         a.throwWindAt = -1.0; a.lastThrow = simClock;
                     }
                 } else a.throwWindAt = -1.0;
@@ -1913,6 +1932,18 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
         DrawCubeB({ 0, sz.y * 0.28f * w * g, 0 }, sz.z * g / w, sz.y * 0.56f * w * g, sz.x * g / w, shade(mix, 1.0f));
         DrawCubeB({ 0, sz.y * 0.6f * w * g, 0 }, sz.z * 0.68f * g, sz.y * 0.4f * g, sz.x * 0.68f * g, shade(mix, 1.12f));
         for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.28f * g, sz.y * (0.55f + 0.1f * (k & 1)) * g, (k == 1 ? 0.25f : -0.15f) * sz.x * g }, sz.z * 0.16f * g, sz.y * 0.16f * g, sz.z * 0.16f * g, shade(oc, 0.95f));
+        return;
+    }
+    if (s.turret) { // (#1228) a ruin sentinel: stone pedestal, a bronze head on it facing its heading, a barrel, and an eye that
+        // glows from dull red to white-hot as a shot charges (the telegraph you can see)
+        const CreatureSpec* tc = Creature_Spec(s.id);
+        const float charge = a.throwWindAt >= 0.0 && tc ? std::clamp((float)((simClock - a.throwWindAt) / std::max(0.1f, tc->throwWindUp)), 0.0f, 1.0f) : 0.0f;
+        DrawCubeB({ 0, sz.y * 0.2f, 0 }, sz.z * 0.9f, sz.y * 0.4f, sz.x * 0.9f, shade(s.body, 0.9f));            // pedestal
+        DrawCubeB({ 0, sz.y * 0.42f, 0 }, sz.z * 0.6f, sz.y * 0.08f, sz.x * 0.6f, shade(s.body, 1.1f));          // collar
+        DrawCubeB({ 0, sz.y * 0.62f, 0 }, sz.z * 0.7f, sz.y * 0.32f, sz.x * 0.7f, shade(s.head, 1.0f));          // head
+        DrawCubeB({ 0, sz.y * 0.64f, sz.x * 0.55f }, sz.z * 0.14f, sz.y * 0.12f, sz.x * 0.5f, shade(s.head, 0.7f)); // barrel
+        const Color eye = { 255, (unsigned char)(60 + 195 * charge), (unsigned char)(40 + 200 * charge * charge), 255 };
+        DrawCubeB({ 0, sz.y * 0.72f, sz.x * 0.36f }, sz.z * 0.22f, sz.y * 0.1f, sz.x * 0.04f, eye);              // the eye
         return;
     }
     if (s.nest) { // (#1223) a nest: a low mound of lumps, the egg-like pods on top (no legs, no head, never moves)

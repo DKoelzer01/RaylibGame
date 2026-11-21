@@ -36,7 +36,7 @@ namespace StatusTune {
 bool Combat1_On(); // RAYLIBGAME_COMBAT1=0: off (A/B)
 
 struct Resistances {
-    float r[(int)DamageType::Count] = {}; // 0..1 per type (1: immune)
+    float r[(int)DamageType::Count] = {}; // -1..1 per type (1: immune; below 0 a weakness, #1228)
     float armour = 0.0f;                  // flat, subtracted after the resistance
 };
 
