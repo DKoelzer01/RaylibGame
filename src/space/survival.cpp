@@ -45,7 +45,7 @@ const char* Difficulty_Name(int d) { return d == 0 ? "Peaceful" : d == 2 ? "Hard
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    struct Food { float value = 0.0f; bool raw = false; };
+    struct Food { float value = 0.0f; bool raw = false; bool cure = false; }; // cure (#1374): cures poison, eaten even when full
     std::unordered_map<std::string, Food> foods;
     bool foodsLoaded = false;
 
@@ -59,8 +59,8 @@ namespace {
             if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
             char id[64] = {}, flag[32] = {};
             float v = 0.0f;
-            // "id | value | raw" (the third column optional)
-            if (sscanf(line, " %63[^ |] | %f | %31[^ |\r\n]", id, &v, flag) >= 2) foods[id] = { v, strcmp(flag, "raw") == 0 };
+            // "id | value | raw/cure" (the third column optional)
+            if (sscanf(line, " %63[^ |] | %f | %31[^ |\r\n]", id, &v, flag) >= 2) foods[id] = { v, strcmp(flag, "raw") == 0, strcmp(flag, "cure") == 0 };
         }
         fclose(f);
     }
@@ -701,8 +701,14 @@ bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Invento
     if (Survival_IsFood(id)) {
         // Eat: not when full (no waste). Raw meat may make you sick: food drains twice as fast a minute.
         const Food& food = foods[id];
-        if (survival.food < 98.0f && inventory.remove(id, 1)) {
+        // (#1374) A curing herb is eaten even when full while poisoned: the cure is the point.
+        const bool curing = food.cure && survival.status.poison > 0.0f;
+        if ((survival.food < 98.0f || curing) && inventory.remove(id, 1)) {
             survival.food = std::min(100.0f, survival.food + food.value);
+            if (food.cure) {
+                if (curing && local) GameUI_Toast("The poison fades");
+                Status_CurePoison(survival.status);
+            }
             if (local) { QuestBook_Count("eat"); if (gSkillEvent) gSkillEvent("eat", 1.0, Vector3{}); } // (#919) Survival XP
             if (food.raw && GameRng_Int(0, 99) < 30) { survival.sickUntil = (float)SimTime() + 60.0f; if (local) GameUI_Toast("You feel sick: cook your meat"); }
             if (local) Audio_Play(Sfx::Pickup, 0.5f, 0.8f);
@@ -782,5 +788,33 @@ TEST(Survival, TheFeltTemperatureEasesAndItsBandDoesNotFlickerAtTheEdge) {
     // No air (vacuum, above the air): none.
     Survival_FeelTemperature(s, NAN, 1.0f / 60.0f);
     EXPECT_TRUE(std::isnan(s.temperature));
+}
+
+// (#1374) Bitterroot cures poison and is eaten even when full while poisoned; full and well, it waits like other food.
+TEST(Survival, BitterrootCuresPoisonEvenWhenFull) {
+    UnitTest::EnsureItemDB();
+    ASSERT_TRUE(Survival_IsFood("bitterroot"));
+    EXPECT_GT(Survival_FoodValue("bitterroot"), 0.0f);
+    SurvivalState s;
+    Inventory inv;
+    inv.add("bitterroot", 3);
+    const SuitStats stats{};
+    s.food = 100.0f;
+    EXPECT_FALSE(Survival_UseItemFor("bitterroot", s, inv, stats, false)) << "full and not poisoned: not eaten";
+    EXPECT_EQ(inv.count("bitterroot"), 3);
+    Status_Apply(s.status, StatusKind::Poison);
+    ASSERT_GT(s.status.poison, 0.0f);
+    EXPECT_TRUE(Survival_UseItemFor("bitterroot", s, inv, stats, false)) << "poisoned: eaten even when full";
+    EXPECT_EQ(s.status.poison, 0.0f);
+    EXPECT_EQ(inv.count("bitterroot"), 2);
+    // Hungry: eaten as food, poisoned or not.
+    s.food = 50.0f;
+    EXPECT_TRUE(Survival_UseItemFor("bitterroot", s, inv, stats, false));
+    EXPECT_GT(s.food, 50.0f);
+    // Berries do not cure.
+    Status_Apply(s.status, StatusKind::Poison);
+    inv.add("berries", 1);
+    EXPECT_TRUE(Survival_UseItemFor("berries", s, inv, stats, false));
+    EXPECT_GT(s.status.poison, 0.0f);
 }
 #endif

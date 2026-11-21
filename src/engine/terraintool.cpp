@@ -932,7 +932,11 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
         if (seed && !itemDB.find(seed)) seed = nullptr;
         if (seed) add(seed, 1);
-        d.toast = TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "");
+        // (#1374) Bitterroot, the poison cure: under one bush in 4, one in 2 in wet country (swamp, jungle).
+        const bool wet = biome == Biome::Swamp || biome == Biome::Jungle;
+        const bool root = ((p.id >> 5) & (wet ? 1u : 3u)) == 0 && itemDB.find("bitterroot");
+        if (root) add("bitterroot", 1);
+        d.toast = TextFormat("+2 fibre%s%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
     }
     return d;
 }
