@@ -1334,6 +1334,11 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
+    // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
+    Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",
+                      "resources/compute/fluid_pack.comp", "resources/compute/fluid_flowpack.comp", "resources/compute/fluid_groups.comp",
+                      "resources/compute/chunk_cull.comp", "resources/compute/tree_cull.comp" });
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
