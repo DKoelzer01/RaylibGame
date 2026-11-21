@@ -120,6 +120,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "watercaves.h"
 #include "machinesounds.h"
 #include "music.h"
+#include "creaturesounds.h"
 #include "subtitles.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
@@ -1338,6 +1339,7 @@ int main(int argc, char** argv)
     
     DebugUI_Init();
     if (!bench) Audio_Init();
+    CreatureSounds_Init(); // (#1246) creature calls through the creature framework's hook (nothing without audio v2)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
@@ -13865,6 +13867,7 @@ int main(int argc, char** argv)
         if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
         if (!gHeadless) MachineSounds_Update(world, GetFrameTime()); // (#1243) hums, stall and done cues, the factory bed
         if (!gHeadless) Music_Update(world, GetFrameTime()); // (#1245) rare calm pieces, the danger layer, stings
+        if (!gHeadless) CreatureSounds_Update(GetFrameTime()); // (#1246) the danger a nearby fight raises (the calls play from the hook)
         Audio_Update();
         PROFILE_FRAME();
     }

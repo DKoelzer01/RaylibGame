@@ -16,6 +16,9 @@ bed_waterfall      all         Waterfall roaring
 bed_rumble         all         Deep rumbling
 drip               all         Water dripping
 creature_telegraph* important  Creature about to attack
-creature_*         all         Creature
+creature_alert*    all         Creature alerted
+creature_hurt*     all         Creature hurt
+creature_death*    all         Creature dies
+creature_*         all         Creature calling
 alarm_*            important   Alarm
 mech_*             all         Machinery turning
