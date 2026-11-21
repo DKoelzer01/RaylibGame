@@ -249,7 +249,7 @@ static void FpsLog_Frame(const char* state) {
         if (cur && n > 0) {
             const char* line = TextFormat("[fps] %.0f s %s: %d frames in %.1f s (%.0f FPS), avg %.1f ms, worst %.1f ms\n", now, cur, n, now - t0, n / std::max(1e-3, now - t0), 1000.0 * sum / n, 1000.0 * worst);
             printf("%s", line);
-            LOG_INFO("%s", line);
+            LOG_INFO("Perf", "%s", line); // (#1378) the category came first: "%s" was taken as one and the line as the format
         }
         cur = state; t0 = now; sum = worst = 0.0; n = 0;
     };
@@ -2479,7 +2479,10 @@ int main(int argc, char** argv)
     std::function<std::string(const Image&)> lodDump = [&](const Image& img) -> std::string {
         std::string out;
         char line[512];
-        auto add = [&](const char* fmt, auto... a) { snprintf(line, sizeof line, fmt, a...); out += line; };
+        auto add = [&](const char* fmt, auto... a) {
+            if constexpr (sizeof...(a) == 0) out += fmt; // (#1378) a plain line: no format string that isn't a literal
+            else { snprintf(line, sizeof line, fmt, a...); out += line; }
+        };
         Planetoid* b = player.nearest ? player.nearest : (world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()));
         add("time %.3f s, frame dt %.4f s\n", GetTime(), GetFrameTime());
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
