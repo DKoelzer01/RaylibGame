@@ -45,6 +45,10 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
 void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part); // (#919) Building XP once the part has stood 5 min
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
+// (#1167) Many parts at once (a blueprint): between Begin and End the foundations' terrain edits are gathered and applied in
+// one batch at End (each part's own batch re-dirtied the same chunks again and again: a freeze on a big blueprint).
+void BuildTool_BeginFoundationBatch();
+void BuildTool_EndFoundationBatch(Planetoid& body);
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,
 // in the server's order, so the plots and their part indices stay the same everywhere): beams as cubes, the foundation.
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
