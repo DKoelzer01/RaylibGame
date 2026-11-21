@@ -24,6 +24,8 @@ Plot* plot = nullptr;
 int distillery = -1, generator = -1, tank = -1, tank2 = -1, cauldron = -1, outlet = -1;
 Vector3 ground{}, up{}, east{};
 int fizzledBefore = 0;
+Vector3 waterAt{};
+constexpr float kWaterM3 = 0.5f;
 int PartAt(Int3 c) { return plot ? plot->partAt(c) : -1; }
 int Count(const std::vector<std::pair<std::string, int>>& slots, const std::string& item) { int n = 0; for (const auto& [id, k] : slots) if (id == item) n += k; return n; }
 Factory::MachineKey Key(ScenarioCtx& c, int part) { return std::make_tuple(c.body->id, plot->id, part); }
@@ -126,6 +128,9 @@ SCENARIO("magic/alchemy") {
         if (!c.check("an outlet on the second run", BuildTool_Place(*c.body, *plot, { PartType::Outlet, { 6, 0, 2 }, 0 }, false)
                      && BuildTool_Place(*c.body, *plot, { PartType::Pipe, { 6, 0, 1 }, 0 }, false))) return true;
         outlet = PartAt({ 6, 0, 2 });
+        // Water poured 2 m past the outlet: the fizzle takes only essence, never another fluid near an outlet.
+        waterAt = plot->toBody({ 6.5f * kCellSize, 0.5f * kCellSize, 6.5f * kCellSize });
+        c.check("water poured near the outlet", Fluid::Pour(*c.body, waterAt, kWaterM3, 0) > 0.0f);
         fizzledBefore = Alchemy_Stats().fizzled;
         return true;
     });
@@ -144,6 +149,9 @@ SCENARIO("magic/alchemy") {
         const float spilledM3 = st.spilled * Alchemy_Settings().spillM3;
         c.metric("essence left in the world after the fizzle", left, "m^3");
         c.check("the spill fizzled away (under a tenth left)", left < 0.1f * spilledM3, TextFormat("%.3f of %.2f m^3", left, spilledM3));
+        const float water = Fluid::WaterAt(*c.body, waterAt, 6.0f);
+        c.metric("water left near the outlet", water, "m^3", false);
+        c.check("the fizzle left the water alone", water > 0.9f * kWaterM3, TextFormat("%.3f of %.2f m^3", water, kWaterM3));
         Factory::SetSpeed(1);
         return true;
     });
