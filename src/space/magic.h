@@ -20,3 +20,8 @@ ManaEnv Magic_EnvAt(Scene& world, Vector3 dir, float depth = 0.0f);
 // nodes as beacons, and a HUD line with the densities at the camera and the nearest node.
 void Magic_DrawDebug3D(Scene& world);
 void Magic_DrawDebugHUD(Scene& world);
+
+// Magic sight's look (#1249): ribbons within `range` m of the camera, nodes within 1.5 x range.
+void Magic_DrawSight3D(Scene& world, float range, bool throughRock);
+// The node whose glow is under the crosshair within `range` m (of those magic sight last drew): false if none.
+bool Magic_SightNodeAhead(Scene& world, float range, ManaNode& out, float& dist);
