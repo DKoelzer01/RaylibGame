@@ -181,6 +181,11 @@ private:
     Vector3 flyLocalFwd{}, flyLocalUp{};
     DVec3 flyCarried{};               // the carried camera in double (float render space rounds it)
     bool flyCarriedValid = false;
+    // (Plan 11 F4, #1412, RAYLIBGAME_FRAMES=1) beyond 2 radii the camera's frame is centred on its body (it moves with it,
+    // without its spin): the camera as a double offset from the body's centre, not a float delta added to a float camera
+    // every frame (which accumulated rounding as drift).
+    DVec3 flyOffset{};
+    uint64_t flyBodyIdPrev = 0;       // the body flyOffset was kept against
     void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
     float jumpBuffer = 0.0f; // seconds a jump press stays pending
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground

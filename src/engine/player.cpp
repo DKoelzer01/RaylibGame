@@ -83,6 +83,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
                 world.camera.position = (flyCarried - world.renderOrigin).toFloat();
                 world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
                 world.camera.up = ref->dirToWorld(flyLocalUp);
+            } else if (Frames_On()) { // (F4, #1412) centred on the body: its centre + the double offset, the view kept
+                const Vector3 view = Vector3Subtract(world.camera.target, world.camera.position);
+                world.camera.position = (ref->worldPos + flyOffset - world.renderOrigin).toFloat();
+                world.camera.target = Vector3Add(world.camera.position, view);
             } else {
                 const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
                 world.camera.position = Vector3Add(world.camera.position, move);
@@ -863,6 +867,10 @@ void Player::recordFly(Scene& world) {
     // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
     const DVec3 cam = world.renderOrigin + world.camera.position;
     flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
+    // (F4, #1412) unmoved by input since the centred carry: keep the double offset (the float camera rounds it each frame)
+    const DVec3 offsetNow = cam - ref->worldPos;
+    if (!(Frames_On() && !rotate && ref->id == flyBodyIdPrev && (offsetNow - flyOffset).length() < 0.01)) flyOffset = offsetNow;
+    flyBodyIdPrev = ref->id;
     flyCarriedValid = false;
     flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
     flyLocalUp = ref->dirToLocal(world.camera.up);
