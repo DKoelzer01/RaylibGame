@@ -161,7 +161,7 @@ const std::vector<ManaNode>& ManaField::tile(int face, int ti, int tj) const {
                     float a = a0 + (i + 0.5f) * cell, b = b0 + (j + 0.5f) * cell;
                     const float h = cell * 0.05f;
                     bool ok = true;
-                    for (int it = 0; it < 6 && ok; ++it) {
+                    for (int it = 0; it < 10 && ok; ++it) {
                         auto val = [&](float x, float y, int f) { return familyValue(f, Vector3Scale(FaceDir(face, x, y), p.radius)); };
                         const float u1 = val(a, b, f1), u2 = val(a, b, f2);
                         const float j11 = (val(a + h, b, f1) - u1) / h, j12 = (val(a, b + h, f1) - u1) / h;
@@ -174,6 +174,7 @@ const std::vector<ManaNode>& ManaField::tile(int face, int ti, int tj) const {
                     if (!ok || a < a0 + i * cell || a >= a0 + (i + 1) * cell || b < b0 + j * cell || b >= b0 + (j + 1) * cell) continue;
                     ManaNode node;
                     node.dir = FaceDir(face, a, b);
+                    if (familyDistance(f1, node.dir) > 2.0f || familyDistance(f2, node.dir) > 2.0f) continue; // not converged
                     node.a = std::min(families[f1].base, families[f2].base);
                     node.b = std::max(families[f1].base, families[f2].base);
                     node.strength = std::min(strength(node.a, node.dir), strength(node.b, node.dir));
