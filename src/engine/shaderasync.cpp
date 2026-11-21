@@ -21,6 +21,12 @@ bool ShaderAsync_Available() {
     gState = 0;
     const char* env = getenv("RAYLIBGAME_ASYNC_SHADERS");
     if (env && env[0] == '0') { LOG_INFO("Shaders", "async compute compiles off (RAYLIBGAME_ASYNC_SHADERS=0)\n"); return false; }
+#if RAYLIBGAME_HEADLESS_PLATFORM
+    // The headless Linux platform (EGL; the server and the CI runner's clients): NVIDIA's driver there reports the compile
+    // complete but does the work when the status is first read (fluid_step.comp: 5-12 s waited after a 4-minute "background"
+    // compile on the runner), so it gains nothing; compile as before unless RAYLIBGAME_ASYNC_SHADERS=1 asks for it.
+    if (!(env && env[0] == '1')) { LOG_INFO("Shaders", "async compute compiles off on the headless platform\n"); return false; }
+#endif
     if (!glad_glGetStringi || !glad_glCreateShader) return false;
     bool khr = false, arb = false;
     GLint n = 0;
