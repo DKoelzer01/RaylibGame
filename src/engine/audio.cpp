@@ -4,12 +4,14 @@
 #include "utils/logger.h"
 #include "profiler.h"
 #include "steamaudio.h"
+#include "audioscene.h"
 
 #include <raylib.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -60,6 +62,8 @@ namespace {
     };
     VoiceDsp dsp[AudioMixer::kVoices];
     AudioStream voiceStream[AudioMixer::kVoices] = {};
+    std::shared_ptr<const AudioScene> worldScene; // (#1293) the ground and parts around the listener (Audio_SetWorld)
+    static_assert(SteamAudio::kMaxVoices == AudioMixer::kVoices, "one Steam Audio source per voice");
     bool steam = false;                 // Steam Audio loaded: every voice is stereo and goes through its effects
     constexpr float kAirScale = 8.0f;   // air absorption x8: game-scale dulling with distance (guess, tune by ear)
 
@@ -409,13 +413,14 @@ void Audio_Init() {
         // (#1292) Steam Audio when its library is there: every voice stereo, through HRTF; else our own panning.
         steam = SteamAudio::Load();
         for (int v = 0; v < AudioMixer::kVoices && steam; ++v)
-            if (!(dsp[v].fx = SteamAudio::CreateVoice())) {
+            if (!(dsp[v].fx = SteamAudio::CreateVoice(v))) {
                 LOG_WARN("Audio", "steam audio: a voice's effects could not be made: using the fallback panning\n");
                 for (int k = 0; k < v; ++k) { SteamAudio::DestroyVoice(dsp[k].fx); dsp[k].fx = nullptr; }
                 SteamAudio::Shutdown();
                 steam = false;
             }
         listener.hrtf = steam;
+        if (steam) SteamAudio::StartSimulation(); // (#1293) occlusion and transmission (RAYLIBGAME_AUDIO_OCCLUSION=0: off)
         for (int v = 0; v < AudioMixer::kVoices; ++v) {
             voiceStream[v] = LoadAudioStream(kRate, 32, steam ? 2 : 1);
             SetAudioStreamCallback(voiceStream[v], kCallbacks[v]);
@@ -439,6 +444,7 @@ void Audio_Shutdown() {
         table.clear();
         for (VoiceDsp& q : dsp) { SteamAudio::DestroyVoice(q.fx); q.fx = nullptr; } // the streams are gone: no callback runs
         SteamAudio::Shutdown();
+        worldScene.reset();
         steam = false;
     } else {
         for (Sound& s : sounds) UnloadSound(s);
@@ -488,6 +494,34 @@ void Audio_Update() {
         if (vs[v].emitter >= 0) if (const AudioEmitters::Emitter* em = emitters.get(vs[v].emitter)) pitch = em->pitch;
         ApplyVoice(v, mixer.gain(v), VoiceSpatial(v), pitch);
     }
+    // (#1293) The occlusion simulation: where each placed voice is, the listener, the world snapshot.
+    if (SteamAudio::Simulating() && worldScene) {
+        PROFILE_SCOPE("audio:occlusion inputs");
+        SteamAudio::SimVoice sv[SteamAudio::kMaxVoices];
+        for (int v = 0; v < AudioMixer::kVoices; ++v) {
+            if (!mixer.voice(v).active || vs[v].kind != VKind::Pcm) continue;
+            if (vs[v].emitter >= 0) {
+                const AudioEmitters::Emitter* em = emitters.get(vs[v].emitter);
+                if (!em || !em->positional) continue;
+                sv[v] = { true, em->pos };
+            } else if (vs[v].positional) sv[v] = { true, vs[v].pos };
+        }
+        const float ahead[3] = { listener.forward.x, listener.forward.y, listener.forward.z }, up[3] = { listener.up.x, listener.up.y, listener.up.z };
+        SteamAudio::SetSimInputs(worldScene, listener.pos, ahead, up, sv);
+    }
+}
+
+void Audio_SetWorld(Scene& world) {
+    // (#1293) A fresh snapshot of the ground and parts around the listener four times a second, or after 4 m.
+    if (!V2Ready() || !SteamAudio::Simulating()) return;
+    static double lastTime = -1e9;
+    static DVec3 lastPos{ 1e30, 1e30, 1e30 };
+    const double now = GetTime();
+    if (now - lastTime < 0.25 && (listener.pos - lastPos).length() < 4.0) return;
+    PROFILE_SCOPE("audio:scene snapshot");
+    lastTime = now;
+    lastPos = listener.pos;
+    worldScene = AudioScene_Snapshot(world, listener.pos);
 }
 
 void Audio_PlayOn(Sfx s, AudioBus bus, AudioPriority priority, float volume, float pitch) {
@@ -624,5 +658,13 @@ const char* Audio_SpatialBackend() {
     static std::string s;
     if (!V2Ready()) return "off (the old engine)";
     s = (steam ? std::string("steam audio ") : std::string("own panning; steam audio ")) + SteamAudio::Status();
+    if (SteamAudio::Simulating()) { // (#1293)
+        const SteamAudio::SimStats st = SteamAudio::GetSimStats();
+        char buf[160];
+        int occluded = 0;
+        for (float o : st.occlusion) occluded += o < 0.99f ? 1 : 0;
+        snprintf(buf, sizeof buf, "\nocclusion: %lld runs, %.2f ms (max %.2f), %d sources, %d occluded", st.ticks, st.lastMs, st.maxMs, st.sources, occluded);
+        s += buf;
+    }
     return s.c_str();
 }
