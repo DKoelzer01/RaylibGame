@@ -135,7 +135,8 @@ void QuestTree_Update() {
         // whose event finished it, through the server's inventory and its deltas
         for (const auto& r : n.reward) if (itemDB.find(r.first)) { if (gQuestReward) gQuestReward(r.first, r.second); else inventory.add(r.first, r.second); }
         const Line* l = LineOf(n.line);
-        const char* news = TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str());
+        const char* news = n.reward.empty() ? TextFormat("%s: %s done", l ? l->name.c_str() : "Quest", n.title.c_str()) // (#1250: no "(+-)" for a node without a reward)
+                                            : TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str());
         if (gQuestNews) gQuestNews(news);
         else { GameUI_Toast(news); Audio_Play(Sfx::Craft, 0.6f, 1.2f); }
     }

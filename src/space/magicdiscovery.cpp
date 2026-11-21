@@ -123,10 +123,10 @@ void MagicDiscovery_Update(Scene& world, float dt) {
     const ManaField* f = Magic_Field(world);
     Planetoid* body = StartPlanet(world);
     const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
-    if (!f || !pf || player.nearest != body) return;
+    if (!f || !pf) return; // (not player.nearest: a bench never sets it)
     const Vector3 local = body->toLocal((player.position - world.renderOrigin).toFloat());
     const float r = Vector3Length(local);
-    if (r < 1.0f) return;
+    if (r < 1.0f || r > pf->radius + 2000.0f) return; // on or near the start planet
     const Vector3 dir = Vector3Scale(local, 1.0f / r);
     const float ground = pf->radius + pf->elevation(dir, 2.0f);
     // Captures (RAYLIBGAME_MAGIC_AT_NODE=1): once the world is idle, the player stands on the nearest node within 3 km, and
@@ -171,7 +171,7 @@ void MagicDiscovery_Update(Scene& world, float dt) {
             const Vector3 at = Vector3Add(Vector3Scale(n.dir, gn + 0.4f), Vector3Add(Vector3Scale(e, cosf(a) * d), Vector3Scale(nn, sinf(a) * d)));
             ParticleBurst b;
             b.kind = ParticleKind::Firefly; b.color = KindColour(n.kind);
-            b.count = 1; b.size = 0.08f + 0.06f * n.strength; b.life = 4.0f; b.speed = 0.25f; b.spread = 0.3f;
+            b.count = 3; b.size = 0.18f + 0.14f * n.strength; b.life = 5.0f; b.speed = 0.35f; b.spread = 0.3f; // (capture 2026-11-21: 0.1 m motes were lost in the grass)
             Particles_Emit(*body, at, b);
         }
     }
