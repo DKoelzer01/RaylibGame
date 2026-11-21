@@ -119,6 +119,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "soundscape.h"
 #include "watercaves.h"
 #include "machinesounds.h"
+#include "music.h"
 #include "subtitles.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
@@ -317,6 +318,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Waterfalls_Reset();
         WaterCaves_Reset(); // (#1242)
         MachineSounds_Reset(); // (#1243)
+        Music_Reset(); // (#1245)
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -11171,7 +11173,7 @@ int main(int argc, char** argv)
                 minimapWithout = Nav_MinimapShown();
                 TakeScreenshot("bench_hud_nomap.png");
                 GameUI_TierBanner(1); // (#226) the tier banner, as tier 1 is reached
-                Audio_Play(Sfx::Fanfare, 0.8f);
+                Audio_Play(Sfx::Fanfare, 0.8f); Music_Event(MusicEvent::Achievement); // (#1245)
             }
             if (f == noMapAt + 90) { // (half a second on: slid in)
                 TakeScreenshot("bench_hud_tier.png");
@@ -13861,6 +13863,7 @@ int main(int argc, char** argv)
         if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
         if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
         if (!gHeadless) MachineSounds_Update(world, GetFrameTime()); // (#1243) hums, stall and done cues, the factory bed
+        if (!gHeadless) Music_Update(world, GetFrameTime()); // (#1245) rare calm pieces, the danger layer, stings
         Audio_Update();
         PROFILE_FRAME();
     }

@@ -314,6 +314,7 @@ namespace {
         if (name == "thunder_far") { out = AudioSynth_Thunder(0.0f, seed); return true; }
         if (name == "drip") { out = AudioSynth_Drip(seed); return true; } // (#1242) cave drips
         if (AudioSynth_Machine(name, seed, out)) return true;            // (#1243) machine hums, the factory bed, cues
+        if (AudioSynth_Music(name, seed, out)) return true;              // (#1245) generative music until real pieces exist
         return false;
     }
 
@@ -763,6 +764,9 @@ void Audio_DuckFor(double seconds) {
 
 AudioMixer::Stats Audio_Stats() { return mixer.stats(); }
 const AudioMixer& Audio_Mixer() { return mixer; }
+
+float Audio_SoundSeconds(int sound) { return sound >= 0 && sound < (int)table.size() ? table[sound].seconds : 0.0f; }
+bool Audio_SoundFromFile(int sound) { return sound >= 0 && sound < (int)table.size() && table[sound].fromFile; }
 
 const char* Audio_SpatialBackend() {
     static std::string s;

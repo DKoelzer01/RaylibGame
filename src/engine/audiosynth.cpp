@@ -340,6 +340,114 @@ bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<floa
     return true;
 }
 
+namespace {
+    float Midi(float m) { return 440.0f * powf(2.0f, (m - 69.0f) / 12.0f); }
+    // sin(2 pi cycles) from a table, the phase kept in double (a minute of a 2 kHz tone is 120 000 cycles): music is
+    // tens of sines a sample over tens of seconds, too slow with sinf when it is made on first use.
+    float SinCycles(double cycles) {
+        static float table[4097];
+        static bool made = false;
+        if (!made) { for (int i = 0; i <= 4096; ++i) table[i] = sinf(kTau * i / 4096.0f); made = true; }
+        const double f = cycles - floor(cycles);
+        const float x = (float)(f * 4096.0);
+        const int i = (int)x;
+        return table[i] + (table[i + 1] - table[i]) * (x - i);
+    }
+    // One sustained tone of a pad: a soft organ-like stack and a slightly detuned twin (a slow chorus).
+    float PadTone(float f, float t, float bright) {
+        const double c = (double)f * t;
+        return SinCycles(c) + bright * (0.3f * SinCycles(2.0 * c) + 0.12f * SinCycles(3.0 * c)) + 0.6f * SinCycles(c * 1.004);
+    }
+    // An echo: y[i] += fb * y[i - delay], in place (generated, then looped: the tail carries into the head by the crossfade).
+    void Echo(std::vector<float>& a, float seconds, float fb) {
+        const int d = (int)(seconds * kRate);
+        for (size_t i = (size_t)d; i < a.size(); ++i) a[i] += fb * a[i - d];
+    }
+    // Crossfade the last `x` samples into the head and keep `len` (a seamless loop).
+    void CloseLoop(std::vector<float>& a, int len) {
+        const int x = (int)a.size() - len;
+        for (int i = 0; i < x; ++i) { const float w = (float)i / x; a[i] = a[i] * w + a[len + i] * (1.0f - w); }
+        a.resize(len);
+    }
+    struct Pluck { float t0, f, amp; };
+}
+
+bool AudioSynth_Music(const std::string& name, unsigned seed, std::vector<float>& out) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    // Calm pads: four chords of `seg` seconds each, a plucked melody over them drawn from a scale, an echo.
+    auto pad = [&](const std::vector<std::vector<float>>& chords, float seg, const std::vector<float>& scale, float pluckRate,
+                   float bright, float echoS, float echoFb, float drone) {
+        const float seconds = seg * chords.size(), xfade = 2.0f;
+        const int len = (int)(seconds * kRate), total = (int)((seconds + xfade) * kRate);
+        out.assign(total, 0.0f);
+        std::vector<Pluck> plucks;
+        for (float t = 0.5f; t < seconds + xfade; t += (0.5f + u(rng)) / std::max(0.05f, pluckRate))
+            plucks.push_back({ t, Midi(scale[(size_t)(u(rng) * scale.size()) % scale.size()]), 0.25f + 0.2f * u(rng) });
+        size_t firstPluck = 0; // (plucks are in time order: only those started within 3 s sound)
+        for (int i = 0; i < total; ++i) {
+            const float t = (float)i / kRate;
+            while (firstPluck < plucks.size() && t - plucks[firstPluck].t0 > 3.0f) ++firstPluck;
+            const int c = (int)(t / seg) % (int)chords.size(), prev = (c + (int)chords.size() - 1) % (int)chords.size();
+            const float into = fmodf(t, seg);
+            const float w = std::min(1.0f, into / 1.5f); // chords glide into each other over 1.5 s
+            float a = 0.0f, b = 0.0f;
+            for (float m : chords[c]) a += PadTone(Midi(m), t, bright);
+            for (float m : chords[prev]) b += PadTone(Midi(m), t, bright);
+            float s = (b * (1.0f - w) + a * w) * 0.12f * (0.85f + 0.15f * sinf(kTau * 0.07f * t));
+            if (drone > 0.0f) s += drone * (SinCycles((double)Midi(38) * t) + 0.5f * SinCycles((double)Midi(45) * t)) * 0.2f;
+            for (size_t k = firstPluck; k < plucks.size() && plucks[k].t0 <= t; ++k) {
+                const Pluck& p = plucks[k];
+                const float tau = t - p.t0;
+                s += p.amp * SinCycles((double)p.f * tau) * expf(-tau * 2.5f) * std::min(1.0f, tau * 300.0f);
+            }
+            out[i] = s;
+        }
+        if (echoFb > 0.0f) Echo(out, echoS, echoFb);
+        CloseLoop(out, len);
+    };
+    if (name == "music_pad_day") // D major, warm: D, Bm, G, A; a pentatonic melody
+        pad({ { 50, 57, 62, 66 }, { 47, 54, 59, 62 }, { 43, 55, 59, 62 }, { 45, 52, 57, 61 } }, 5.0f, { 74, 76, 78, 81, 83, 86 }, 0.9f, 0.8f, 0.3f, 0.25f, 0.0f);
+    else if (name == "music_pad_night") // A minor, soft: Am, F, C, G; a sparse melody with a longer echo
+        pad({ { 45, 52, 57, 60 }, { 41, 53, 57, 60 }, { 48, 55, 60, 64 }, { 43, 55, 59, 62 } }, 5.0f, { 69, 72, 74, 76, 79, 81 }, 0.45f, 0.4f, 0.45f, 0.4f, 0.0f);
+    else if (name == "music_pad_cave") // a low drone, faint chords, high bells far apart with long echoes
+        pad({ { 62, 69 }, { 60, 67 }, { 62, 69 }, { 57, 64 } }, 5.0f, { 74, 77, 79, 81, 84, 86 }, 0.3f, 0.2f, 0.6f, 0.55f, 1.0f);
+    else if (name == "music_pad_space") // two slow, open clusters, shimmering
+        pad({ { 62, 69, 76, 81 }, { 60, 67, 74, 79 } }, 10.0f, { 86, 88, 93, 95 }, 0.2f, 0.25f, 0.7f, 0.5f, 0.0f);
+    else if (name == "music_danger") { // 100 BPM: a low pulse and a tense minor second, tremolo
+        const int len = 12 * kRate;
+        out.assign(len, 0.0f);
+        for (int i = 0; i < len; ++i) {
+            const float t = (float)i / kRate, beat = fmodf(t, 0.6f);
+            const float kick = sinf(kTau * (55.0f + 40.0f * expf(-beat * 30.0f)) * beat) * expf(-beat * 8.0f);
+            const float drone = (sinf(kTau * Midi(40) * t) + sinf(kTau * Midi(41) * t)) * 0.25f * (0.7f + 0.3f * sinf(kTau * 5.0f * t));
+            out[i] = kick * 0.8f + drone;
+        }
+    } else if (name == "music_discovery" || name == "music_achievement") { // stings: bells rising, over a chord
+        const bool disc = name == "music_discovery";
+        const float seconds = disc ? 6.0f : 4.0f;
+        const int len = (int)(seconds * kRate);
+        out.assign(len, 0.0f);
+        const std::vector<float> notes = disc ? std::vector<float>{ 74, 78, 81, 86 } : std::vector<float>{ 72, 76, 79, 84, 88 };
+        const std::vector<float> chord = disc ? std::vector<float>{ 50, 57, 62, 66 } : std::vector<float>{ 48, 55, 60, 64 };
+        const float step = disc ? 0.4f : 0.12f;
+        for (int i = 0; i < len; ++i) {
+            const float t = (float)i / kRate;
+            float s = 0.0f;
+            for (size_t k = 0; k < notes.size(); ++k) {
+                const float tau = t - step * k;
+                if (tau > 0.0f) s += 0.3f * sinf(kTau * Midi(notes[k]) * tau) * expf(-tau * (disc ? 1.5f : 2.5f)) * std::min(1.0f, tau * 300.0f);
+            }
+            const float env = std::min(1.0f, t / 0.5f) * std::max(0.0f, 1.0f - t / seconds);
+            for (float m : chord) s += PadTone(Midi(m), t, 0.5f) * 0.05f * env;
+            out[i] = s;
+        }
+        Echo(out, 0.35f, 0.3f);
+    } else return false;
+    Normalise(out, 0.6f);
+    return true;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1241): the beds are seamless, the same each start, and every named one exists ----
 #include "unit_helpers.h"
@@ -368,5 +476,27 @@ TEST(AudioSynth, ThunderIsBounded) {
     for (float v : t) peak = std::max(peak, fabsf(v));
     EXPECT_NEAR(peak, 0.9f, 1e-4f);
     EXPECT_GT(t.size(), (size_t)44100 * 4);
+}
+
+TEST(AudioSynth, MusicPadsLoopAndStingsAreBounded) {
+    std::vector<float> a, b;
+    ASSERT_TRUE(AudioSynth_Music("music_pad_day", 5u, a));
+    ASSERT_TRUE(AudioSynth_Music("music_pad_day", 5u, b));
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(a.size(), (size_t)(20 * 44100));
+    float peak = 0.0f, meanStep = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) { peak = std::max(peak, fabsf(a[i])); if (i) meanStep += fabsf(a[i] - a[i - 1]); }
+    meanStep /= (float)(a.size() - 1);
+    EXPECT_NEAR(peak, 0.6f, 1e-4f);
+    EXPECT_LT(fabsf(a.front() - a.back()), 0.1f + 8.0f * meanStep); // seamless
+    for (const char* n : { "music_pad_night", "music_pad_cave", "music_pad_space", "music_danger", "music_discovery", "music_achievement" }) {
+        std::vector<float> m;
+        ASSERT_TRUE(AudioSynth_Music(n, 1u, m)) << n;
+        float p = 0.0f;
+        for (float v : m) p = std::max(p, fabsf(v));
+        EXPECT_NEAR(p, 0.6f, 1e-4f) << n;
+    }
+    std::vector<float> none;
+    EXPECT_FALSE(AudioSynth_Music("music_unknown", 1u, none));
 }
 #endif
