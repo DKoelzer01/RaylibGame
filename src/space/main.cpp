@@ -8208,6 +8208,31 @@ int main(int argc, char** argv)
                                 printf("bench: flow dbg shaft %+.0f m: %s  density %.2f\n", h, Fluid::DebugCell(*p, q).c_str(), p->densityAt(q));
                             }
                         }
+                        // (#1091) FLOWDBG=2: while the channel fills, the fills across it near the camera (where the shallow water
+                        // drew diamonds): rows of cells 0.25 m apart sideways, one line per height from the bed up to the sea level.
+                        if (EnvFlag("FLOWDBG") && atoi(getenv("FLOWDBG")) >= 2) {
+                            static int dumped = 0;
+                            const double when[] = { 2.0, 4.0, 6.0, 10.0, 16.0, 30.0 };
+                            if (dumped < 6 && t >= when[dumped]) {
+                                ++dumped;
+                                const Vector3 up = Vector3Normalize(flowEnd);
+                                const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, flowOut));
+                                for (float along : { -2.0f, -4.0f }) {
+                                    printf("bench: flow dbg2 t=%.1f s, %.0f m from the end, fills across (-1.5..+1.5 m) by height over the level:\n", t, along);
+                                    for (float h = 0.25f; h >= -1.6f; h -= 0.25f) {
+                                        std::string row;
+                                        for (float x = -1.5f; x <= 1.51f; x += 0.25f) {
+                                            const Vector3 q = Vector3Add(Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, along)), Vector3Scale(side, x)), Vector3Scale(up, h + 0.6f));
+                                            const std::string d = Fluid::DebugCell(*p, q);
+                                            const bool solid = p->densityAt(q) >= ISO_LEVEL;
+                                            int fill = -1; sscanf(d.c_str(), "fill %d", &fill);
+                                            row += solid ? "  ###" : fill < 0 ? "    ." : TextFormat(" %4d", fill);
+                                        }
+                                        printf("bench: flow dbg2   %+.2f m:%s\n", h, row.c_str());
+                                    }
+                                }
+                            }
+                        }
                         if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 120.0) {
                             TakeScreenshot("bench_flow_end.png");
                             const Fluid::Stats s = Fluid::GetStats();
