@@ -801,7 +801,7 @@ int main(int argc, char** argv)
     float rideSpin = 10.0f;        // --ride-spin D: spin rate for --test-ride (deg/s)
     bool dumpSystem = false;       // --dump-system: print every body after generation
     bool loadSaveAtStart = false;  // --load: load saves/world.sav before starting
-    bool benchLoadHold = false; int loadHoldStage = 0; DVec3 loadHoldFrom{}; // --test-load-hold (#901): after a load the player stays on the saved ground
+    bool benchLoadHold = false, loadHoldTitle = false; int loadHoldStage = 0; DVec3 loadHoldFrom{}; // --test-load-hold (#901): after a load the player stays on the saved ground
     int benchReload = 0; // --test-reload N (#902): load the save again N times in one session, memory checked
     bool benchAtSave = false;      // --at-save
     bool spinTest = false;         // --spin-test: textures must stay attached to a spinning body
@@ -919,6 +919,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--dump-system") dumpSystem = true;
         if (std::string(argv[i]) == "--load") loadSaveAtStart = true;
         if (std::string(argv[i]) == "--test-load-hold") { loadSaveAtStart = true; benchAtSave = true; benchLoadHold = true; } // #901 (with --bench)
+        if (std::string(argv[i]) == "--test-load-hold-title") { loadSaveAtStart = true; benchAtSave = true; benchLoadHold = true; loadHoldTitle = true; } // #901: via the title screen
         if (std::string(argv[i]) == "--test-reload" && i + 1 < argc) { loadSaveAtStart = true; benchReload = atoi(argv[i + 1]); } // #902 (with --bench)
         if (std::string(argv[i]) == "--at-save") { loadSaveAtStart = true; benchAtSave = true; } // --load, and bench from the save's own camera (no respawn)
         if (std::string(argv[i]) == "--ride-spin" && i + 1 < argc) rideSpin = (float)atof(argv[i + 1]);
@@ -13265,6 +13266,14 @@ int main(int argc, char** argv)
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
+            // --test-load-hold-title (#901, the user's way): Save & Quit to the title screen first (the world unloads), then its Load
+            if (benchLoadHold && loadHoldTitle && loadHoldStage == 0 && gameState == 1 && !loading && WorldIdle() && pendingMenu.action == MenuAction::None) {
+                pendingMenu.action = MenuAction::SaveAndQuit; loadHoldStage = 10;
+                printf("bench: load-hold: to the title screen first\n");
+            } else if (benchLoadHold && loadHoldStage == 10 && gameState == 0 && pendingMenu.action == MenuAction::None) {
+                pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/world.sav"; loadHoldStage = 1;
+                printf("bench: load-hold: loading the save from the title screen\n");
+            }
             if (benchLoadHold && gameState == 1) { // --test-load-hold (#901): the save loaded again as the pause menu's Load does
                 if (loadHoldStage == 0 && !loading && WorldIdle() && pendingMenu.action == MenuAction::None) {
                     pendingMenu.action = MenuAction::LoadGame; pendingMenu.path = "saves/world.sav"; loadHoldStage = 1;
