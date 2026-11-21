@@ -1328,7 +1328,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     {
         std::mt19937 rm((unsigned)(CaveCellHash{}(key) ^ 0x5BD1E995u));
         std::uniform_real_distribution<float> UM(0.0f, 1.0f);
-        const float odds = std::min(0.95f, 0.18f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_ODDS: a cell's mouth roll at 1x (0.18).
+        static const float baseOdds = getenv("RAYLIBGAME_CAVE_MOUTH_ODDS") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_ODDS")) : 0.18f;
+        const float odds = std::min(0.95f, baseOdds * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
         const bool cellHasMouth = UM(rm) < odds;                           // one roll a cell; the tries only look for a face
         // (#1115) The tries look where the cell's ground is steep: a 6 x 6 grid of heights over its surface patch (~43 m apart)
         // ranks the points by the largest drop to a grid neighbour, and the tries go to the steepest few, jittered by half a
@@ -1405,7 +1407,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const float rise5 = f.elevation(at(dir, Vector3Scale(uphill, 5.0f))) - e0;
             const float rise10 = f.elevation(at(dir, Vector3Scale(uphill, 10.0f))) - e0;
             const float fall4 = e0 - f.elevation(at(dir, Vector3Scale(uphill, -4.0f)));
-            if (rise10 < 5.0f || rise5 < 2.0f || fall4 < 0.5f) continue;
+            // (#1115 tuning) RAYLIBGAME_CAVE_MOUTH_RISE: the rise within 10 m a face needs (5 m; 2/5 of it within 5 m).
+            static const float needRise = getenv("RAYLIBGAME_CAVE_MOUTH_RISE") ? (float)atof(getenv("RAYLIBGAME_CAVE_MOUTH_RISE")) : 5.0f;
+            if (rise10 < needRise || rise5 < 0.4f * needRise || fall4 < 0.5f) continue;
             const float flat = 0.55f + 0.15f * rf;
             const float r = std::min(2.5f + 2.5f * rr, (rise10 - 1.5f) / (1.6f * 1.6f * flat));
             if (r < 2.0f) continue;                                         // the face is too low for a passable mouth
