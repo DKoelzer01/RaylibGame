@@ -119,6 +119,7 @@ struct ScenarioRegistrar { ScenarioRegistrar(const char* name, const char* file,
 void Scenario_PrepareArgs(int& argc, char**& argv);
 void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
+void Scenario_Loading(); // (#1422) each frame of a loading screen: heartbeats and the wall backstop for a run held there
 void Scenario_Shutdown();
 bool Scenario_Active();
 // (#1216) A scenario drives gameplay input with scripted holds (gFakeHeld): the bench run takes gameplay input while it is set
