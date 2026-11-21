@@ -11053,6 +11053,7 @@ int main(int argc, char** argv)
                 Factory::Insert(chestBody, chestPlot, chestPart, "oak_log", 40);
                 Factory::Insert(chestBody, chestPlot, chestPart, "stone", 64);
                 Factory::Insert(chestBody, chestPlot, chestPart, "iron_ore", 12);
+                Factory::Insert(chestBody, chestPlot, chestPart, "dirt", 2, 0, 50); // (#1102) a fraction: "2.5"
                 inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12);
                 GameUI_OpenContainer(chestBody, chestPlot, chestPart, (int)PartType::Chest);
             }

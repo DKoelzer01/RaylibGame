@@ -330,11 +330,14 @@ struct PlayerGrid : SlotGrid {
         if (GameUI_ContainerOpen()) {
             const std::string id = c.id;
             if (!ContainerTakes(id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str())); return; }
-            const int n = (int)(std::min(centi, c.centi) / 100);
-            if (n <= 0) return;
-            c.centi -= (int64_t)n * 100;
+            const int64_t amount = std::min(centi, c.centi);
+            // (#1102) a chest (here, not as a joined client) keeps the fraction too; a machine takes whole units
+            const bool fractions = container.type == PartType::Chest && !MachineAct_Remote();
+            const int n = (int)(amount / 100), frac = fractions ? (int)(amount % 100) : 0;
+            if (n <= 0 && frac <= 0) return;
+            c.centi -= (int64_t)n * 100 + frac;
             if (c.centi <= 0) c = InvSlot{};
-            MachineAct_Insert(container.body, container.plot, container.part, id, n);
+            MachineAct_Insert(container.body, container.plot, container.part, id, n, false, frac);
             Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
             return;
         }
@@ -391,13 +394,18 @@ struct PlayerGrid : SlotGrid {
 struct ContainerGrid : SlotGrid {
     int which = 0;
     std::vector<std::pair<std::string, int>> slots;
+    std::vector<int> fracs; // (#1102) a chest slot's fraction more (hundredths), as the view has it
     explicit ContainerGrid(int w) : which(w) {}
     int size() const override { return (int)slots.size(); }
     InvSlot at(int i) const override {
         InvSlot s;
-        if (i >= 0 && i < (int)slots.size() && slots[i].second > 0) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100; }
+        const int frac = i >= 0 && i < (int)fracs.size() ? fracs[i] : 0;
+        if (i >= 0 && i < (int)slots.size() && (slots[i].second > 0 || frac > 0)) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100 + frac; }
         return s;
     }
+    // (#1102) A chest here keeps fractions (0.4 dirt); machines hold whole units, and a joined client's moves are whole too
+    // (the fraction stays in its inventory) until the container messages carry fractions.
+    bool keepsFractions() const { return container.type == PartType::Chest && which == 0 && !MachineAct_Remote(); }
     int64_t room(int i, const std::string& id) const override {
         if (which == 1 || id.empty()) return 0; // outputs only give
         const InvSlot s = at(i);
@@ -409,17 +417,19 @@ struct ContainerGrid : SlotGrid {
         return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
-        const int n = (int)(std::min(centi, held.centi) / 100);
-        if (n <= 0 || room(i, held.id) <= 0) return 0;
+        const int64_t amount = std::min({ centi, held.centi, room(i, held.id) });
+        const int n = (int)(amount / 100), frac = keepsFractions() ? (int)(amount % 100) : 0;
+        if ((n <= 0 && frac <= 0) || room(i, held.id) <= 0) return 0;
         if (which == 2) MachineAct_Insert(container.body, container.plot, container.part, held.id, n, true);
-        else if (container.type == PartType::Chest) MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, n, i);
+        else if (container.type == PartType::Chest) MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, n, i, frac);
         else MachineAct_Insert(container.body, container.plot, container.part, held.id, n);
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
-        return (int64_t)n * 100;
+        return (int64_t)n * 100 + frac;
     }
     int64_t take(int i, int64_t centi, InvSlot& held) override {
         const InvSlot s = at(i);
         if (s.empty() || (!held.empty() && held.id != s.id)) return 0;
+        if (s.centi < 100) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); return 0; } // (#1102) only a fraction: to the inventory (the hand holds whole items here)
         const int n = (int)std::clamp<int64_t>(centi / 100, 1, s.centi / 100);
         MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, n);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
@@ -1053,35 +1063,37 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
 
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false) { // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr) { // fracs (#1102): a chest's fractions // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float gap = 4.0f, cell = std::min(54.0f * GameUI_Scale(), (ImGui::GetContentRegionAvail().x - (cols - 1) * gap) / (float)cols); // (#891: at the scale, fitting the column)
     ContainerGrid& grid = ContainerPart(which);
     grid.slots = slots; // (this frame's view: what the rules see)
+    grid.fracs = fracs ? *fracs : std::vector<int>{};
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
         ImGui::InvisibleButton("slot", ImVec2(cell, cell), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-        if (ImGui::IsItemClicked()) OpenIfAlt(slots[i].second > 0 ? slots[i].first : std::string()); // (#826; the rules skip alt-clicks)
+        const InvSlot here = grid.at(i); // (#1102) whole items and a chest's fraction
+        if (ImGui::IsItemClicked()) OpenIfAlt(!here.empty() ? here.id : std::string()); // (#826; the rules skip alt-clicks)
         NoteHover(&grid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
         const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
-        if (slots[i].second > 0) DrawGlow(dl, p, q, Item_GlowOf(slots[i].first, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
-        const auto& s = slots[i];
-        if (s.second > 0) {
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.first);
-            const ItemDef* d = itemDB.find(s.first);
-            CellName(dl, p, q, d ? d->name : s.first, hover);
-            const char* amt = TextFormat("%d", s.second);
+        if (!here.empty()) DrawGlow(dl, p, q, Item_GlowOf(here.id, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
+        if (!here.empty()) {
+            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, here.id);
+            const ItemDef* d = itemDB.find(here.id);
+            CellName(dl, p, q, d ? d->name : here.id, hover);
+            // the amount as the player inventory shows it: "12", "2.5", "0.4"
+            const char* amt = here.centi % 100 == 0 ? TextFormat("%d", (int)(here.centi / 100)) : here.centi % 10 == 0 ? TextFormat("%.1f", here.centi / 100.0) : TextFormat("%.2f", here.centi / 100.0);
             CellCount(dl, p, q, amt); // (#891)
-            if (hover && cursorStack.empty()) ImGui::SetTooltip("%s x%d\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory  wheel: move one)", d ? d->name.c_str() : s.first.c_str(), s.second, d ? d->description.c_str() : "");
+            if (hover && cursorStack.empty()) ImGui::SetTooltip("%s x%s\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory  wheel: move one)", d ? d->name.c_str() : here.id.c_str(), amt, d ? d->description.c_str() : "");
         }
         DrawDragShare(dl, &grid, i, p, q);
         dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255), 4.0f, 0, 1.0f);
@@ -1103,7 +1115,7 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4); // a chest lines up with the player's grid (#495)
+    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti); // a chest lines up with the player's grid (#495)
     if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
@@ -1141,7 +1153,7 @@ static void DrawContainer() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Take all (O)") || PlayerInput_BindingPressed(Act::Extract)) {
-        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) MachineAct_TakeSlot(container.body, container.plot, container.part, i, 0); }
+        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0 || (i < (int)v.inCenti.size() && v.inCenti[i] > 0)) MachineAct_TakeSlot(container.body, container.plot, container.part, i, 0); }
         else MachineAct_Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
     }
