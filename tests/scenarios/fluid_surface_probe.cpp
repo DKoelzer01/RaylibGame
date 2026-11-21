@@ -64,9 +64,9 @@ SCENARIO("fluid/surface-probe") {
             S.poured += Fluid::Pour(*c.body, S.pt(0.6f, 0.6f, -0.25f), 0.08f);
         }
         const float top = S.top(*c.body);
-        if (top > -kDepth + 0.3f) { // once there is a pool to probe
-            const float s = Fluid::SurfaceAbove(*c.body, S.pt(0.0f, 0.0f, -kDepth + 0.05f), 6.0f);
-            const float probe = s > 0.0f ? -kDepth + 0.05f + s : -kDepth;
+        if (top > -kDepth + 0.6f) { // once there is a pool over the probe point
+            const float s = Fluid::SurfaceAbove(*c.body, S.pt(0.0f, 0.0f, -kDepth + 0.3f), 6.0f); // (in the water: the floor's own cell is part ground)
+            const float probe = s > 0.0f ? -kDepth + 0.3f + s : -kDepth;
             ++S.frames;
             const float under = top - probe;
             S.worst = std::max(S.worst, under);
