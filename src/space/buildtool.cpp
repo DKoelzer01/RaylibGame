@@ -14,7 +14,6 @@
 #include "player.h"
 #include "terraintool.h"
 #include "world.h"
-#include "frames.h"
 #include "worldtypes.h"
 #include "simclock.h"
 #include "factory.h"
@@ -39,7 +38,6 @@ namespace {
         Planetoid* body = nullptr;
         Plot* plot = nullptr;           // existing plot to place into (null: start a new one)
         Vector3 newOrigin{};            // body-local, for a new plot
-        DVec3 newOriginD{};             // the same in double (#1381): what the preview draws; newOrigin is it rounded once
         Part part{};
         bool canPlace = false;
         Plot* removePlot = nullptr;
@@ -430,10 +428,6 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
         const Vector3 ground = th.local;
-        // (#1381, RAYLIBGAME_FRAMES=1) the hit in double: the camera's body-local double origin plus the hit distance along
-        // the body-local view. th.local went through a float body-local point (3.9 mm steps at 60 km), and a still player's
-        // sub-millimetre camera wobble flipped a new plot's origin between neighbouring floats.
-        const DVec3 groundD = Frames_On() ? lo + DVec3(Vector3Scale(ld, th.distance / std::max(body->scale, 1e-6f))) : DVec3(ground);
         // The part's extent (cells, from its origin): a plot whose cells come within 6 m of any of it takes it, so a big
         // part never lands on a second, unaligned grid overlapping the first one's parts (#551).
         std::vector<std::pair<Int3, CellShape>> fp;
@@ -471,10 +465,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
                 hi = Vector3Max(hi, Vector3{ (float)c.first.x + 1.0f, (float)c.first.y + 1.0f, (float)c.first.z + 1.0f });
             }
             const float mx = 0.5f * (lo.x + hi.x) * kCellSize, mz = 0.5f * (lo.z + hi.z) * kCellSize;
-            // (the offsets are small: float; the point they move is the double hit)
-            const Vector3 back = Vector3Add(Vector3Add(Vector3Scale(frame.east, mx), Vector3Scale(frame.north, mz)), Vector3Scale(frame.up, lo.y * kCellSize));
-            aim.newOriginD = groundD - DVec3(back); // its bottom on the ground
-            aim.newOrigin = aim.newOriginD.toFloat();
+            aim.newOrigin = Vector3Subtract(ground, Vector3Add(Vector3Scale(frame.east, mx), Vector3Scale(frame.north, mz)));
+            aim.newOrigin = Vector3Subtract(aim.newOrigin, Vector3Scale(frame.up, lo.y * kCellSize)); // its bottom on the ground
         }
     } else {
         return;
@@ -526,7 +518,7 @@ void BuildTool_Draw3D(Scene& world) {
     Planetoid& body = *aim.body;
     const Plot* frame = aim.plot;
     if (!frame) {
-        preview.origin = aim.newOriginD; // (#1381: in double; DVec3(newOrigin) with the switch off, as before)
+        preview.origin = DVec3(aim.newOrigin);
         preview.up = Vector3Normalize(aim.newOrigin);
         preview.east = Vector3CrossProduct({ 0, 1, 0 }, preview.up);
         if (Vector3Length(preview.east) < 0.1f) preview.east = { 1, 0, 0 };

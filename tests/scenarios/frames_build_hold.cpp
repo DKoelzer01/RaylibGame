@@ -22,7 +22,7 @@ struct HoldState {
     bool placed = false, settled = false, aimed = false;
     double t0 = 0.0;
     const Plot* plot = nullptr; Int3 origin{}; Vector3 newOrigin{};
-    int frames = 0, changed = 0, none = 0;
+    int frames = 0, changed = 0, none = 0, cellFlips = 0;
     double maxMove = 0.0; // the new plot origin's largest distance from the first (body-local m)
     // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
     DVec3 feet0{}, cam0{}; Vector3 fwd0{};
@@ -82,6 +82,8 @@ void Build(ScenarioDef& s) {
             const bool same = plot == st.plot && origin.x == st.origin.x && origin.y == st.origin.y && origin.z == st.origin.z &&
                               std::memcmp(&newOrigin, &st.newOrigin, sizeof newOrigin) == 0;
             if (!same) ++st.changed;
+            // A visible flip: another plot, or another cell of the same one (what #551 looked like).
+            if (plot != st.plot || (plot && (origin.x != st.origin.x || origin.y != st.origin.y || origin.z != st.origin.z))) ++st.cellFlips;
             if (!plot) st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
         }
         c.waitingFor("10 s holding still");
@@ -96,9 +98,11 @@ void Build(ScenarioDef& s) {
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
-        // With the frame path (F3 plots, #1381's new plot origin in double) a still player's aim holds exactly; the old path
-        // flips by float steps (hundreds of frames on the runner) and is reported only.
-        if (Frames_On()) c.lt("aim changes while still (frame path)", st.changed, 1);
+        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving under
+        // 5 mm. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing, interpolation; F4 #1412),
+        // and rounding a wobbling value flips between neighbouring floats (3.9 mm apart at 60 km) now and then, either way.
+        c.lt("plot or cell flips while still", st.cellFlips, 1);
+        c.lt("a new plot's origin moved while still (m)", st.maxMove, 0.005);
         buildTool.active = false;
         return true;
     });
