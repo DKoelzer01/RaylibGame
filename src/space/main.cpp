@@ -117,6 +117,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "footsteps.h"
 #include "soundscape.h"
 #include "watercaves.h"
+#include "machinesounds.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -301,6 +302,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Ambience_Reset();
         Waterfalls_Reset();
         WaterCaves_Reset(); // (#1242)
+        MachineSounds_Reset(); // (#1243)
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -13842,6 +13844,7 @@ int main(int argc, char** argv)
         if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
         if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
         if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
+        if (!gHeadless) MachineSounds_Update(world, GetFrameTime()); // (#1243) hums, stall and done cues, the factory bed
         Audio_Update();
         PROFILE_FRAME();
     }

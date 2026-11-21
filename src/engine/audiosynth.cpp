@@ -203,6 +203,102 @@ std::vector<float> AudioSynth_Thunder(float near, unsigned seed) {
     return a;
 }
 
+namespace {
+    // A seamless loop of `seconds`: f(t) for t over seconds + xfade, the tail blended into the head.
+    template <typename F>
+    std::vector<float> Loop(float seconds, float xfade, F f) {
+        const int len = (int)(seconds * kRate), x = (int)(xfade * kRate);
+        std::vector<float> a(len + x);
+        for (int i = 0; i < len + x; ++i) a[i] = f((float)i / kRate);
+        for (int i = 0; i < x; ++i) { const float w = (float)i / x; a[i] = a[i] * w + a[len + i] * (1.0f - w); }
+        a.resize(len);
+        return a;
+    }
+    // A mains-like hum: a fundamental and its harmonics (odd ones stronger), whole cycles in the loop's length.
+    float Hum(float t, float f0, int harmonics, float evenShare) {
+        float s = 0.0f;
+        for (int k = 1; k <= harmonics; ++k) s += sinf(kTau * f0 * k * t) / k * (k % 2 ? 1.0f : evenShare);
+        return s;
+    }
+}
+
+bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<float>& out) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> n(-1.0f, 1.0f), u(0.0f, 1.0f);
+    float lp = 0.0f, lp2 = 0.0f, pop = 0.0f, grain = 0.0f, clank = 0.0f, clankT = 1.0f, clankF = 0.0f;
+    if (name == "hum_fire") { // a roaring fire: low noise, flickering, with pops (campfires, kilns, coke ovens, blast furnaces)
+        out = Loop(6.0f, 1.0f, [&](float t) {
+            lp += (n(rng) - lp) * 0.03f;
+            if (u(rng) < 6.0f / kRate) pop = 0.6f + 0.4f * u(rng);
+            pop *= 0.995f;
+            return lp * 4.0f * (0.7f + 0.3f * sinf(kTau * 0.7f * t)) + pop * n(rng) * 0.5f;
+        });
+    } else if (name == "hum_steam") { // a steam engine: a chug 2.5 times a second over a hiss
+        out = Loop(4.0f, 0.5f, [&](float t) {
+            const float x = n(rng);
+            lp += (x - lp) * 0.2f;
+            const float ph = fmodf(t * 2.5f, 1.0f);
+            const float chug = expf(-ph * 9.0f);
+            lp2 += (x - lp2) * 0.05f;
+            return (x - lp) * 0.25f + lp2 * 3.0f * chug + 0.2f * sinf(kTau * 45.0f * t) * chug;
+        });
+    } else if (name == "hum_lv") { // low voltage: a 50 Hz hum and a soft mechanical whir
+        out = Loop(2.0f, 0.3f, [&](float t) {
+            lp += (n(rng) - lp) * 0.08f;
+            return 0.35f * Hum(t, 50.0f, 6, 0.5f) + lp * 0.8f * (0.8f + 0.2f * sinf(kTau * 3.0f * t));
+        });
+    } else if (name == "hum_mv") { // medium voltage: higher and cleaner, a faint whine
+        out = Loop(2.0f, 0.3f, [&](float t) {
+            lp += (n(rng) - lp) * 0.1f;
+            return 0.3f * Hum(t, 100.0f, 5, 0.6f) + 0.06f * sinf(kTau * 1200.0f * t) + lp * 0.4f;
+        });
+    } else if (name == "hum_hv") { // high voltage: a buzzing 150 Hz and a whine
+        out = Loop(2.0f, 0.3f, [&](float t) {
+            const float buzz = Hum(t, 150.0f, 9, 0.2f);
+            return 0.25f * buzz + 0.07f * sinf(kTau * 2400.0f * t) * (0.7f + 0.3f * sinf(kTau * 0.5f * t));
+        });
+    } else if (name == "hum_ev") { // fusion, mass drivers: a deep throb and a shimmer
+        out = Loop(4.0f, 0.5f, [&](float t) {
+            const float throb = 0.5f + 0.5f * sinf(kTau * 1.5f * t);
+            return 0.4f * sinf(kTau * 40.0f * t) * throb + 0.05f * sinf(kTau * 3000.0f * t) * (0.5f + 0.5f * sinf(kTau * 7.0f * t));
+        });
+    } else if (name == "factory_bed") { // many machines: hums, conveyor rattle and the odd clank, blended
+        out = Loop(10.0f, 1.5f, [&](float t) {
+            lp += (n(rng) - lp) * 0.06f;
+            if (u(rng) < 40.0f / kRate) grain = 0.5f + 0.5f * u(rng);
+            grain *= 0.99f;
+            if (clankT >= 0.25f && u(rng) < 0.7f / kRate) { clankT = 0.0f; clankF = 400.0f + 600.0f * u(rng); clank = 0.4f + 0.4f * u(rng); }
+            float c = 0.0f;
+            if (clankT < 0.25f) { c = clank * expf(-clankT * 18.0f) * (sinf(kTau * clankF * clankT) + 0.5f * sinf(kTau * clankF * 2.71f * clankT)); clankT += 1.0f / kRate; }
+            return 0.25f * Hum(t, 50.0f, 5, 0.5f) + 0.1f * Hum(t, 100.0f, 3, 0.6f) + lp * 0.9f + grain * n(rng) * 0.2f + c * 0.5f;
+        });
+    } else if (name == "machine_stall") { // winding down: a falling tone and a click
+        const int len = (int)(0.6f * kRate);
+        out.resize(len);
+        float ph = 0.0f;
+        for (int i = 0; i < len; ++i) {
+            const float t = (float)i / kRate;
+            ph += kTau * (600.0f - 450.0f * (t / 0.6f)) / kRate;
+            out[i] = sinf(ph) * 0.5f * (1.0f - t / 0.6f) + (t < 0.02f ? n(rng) * 0.6f * (1.0f - t / 0.02f) : 0.0f);
+        }
+    } else if (name == "machine_click") { // a relay's click
+        const int len = (int)(0.04f * kRate);
+        out.resize(len);
+        for (int i = 0; i < len; ++i) { const float t = (float)i / kRate; lp += (n(rng) - lp) * 0.5f; out[i] = (n(rng) - lp) * expf(-t * 150.0f) + 0.3f * sinf(kTau * 2000.0f * t) * expf(-t * 200.0f); }
+    } else if (name == "machine_done") { // a batch done: two soft bell notes
+        const int len = (int)(0.7f * kRate);
+        out.resize(len);
+        for (int i = 0; i < len; ++i) {
+            const float t = (float)i / kRate, t2 = t - 0.12f;
+            float s = sinf(kTau * 880.0f * t) * expf(-t * 7.0f) * std::min(1.0f, t * 400.0f);
+            if (t2 > 0.0f) s += sinf(kTau * 1320.0f * t2) * expf(-t2 * 6.0f) * std::min(1.0f, t2 * 400.0f);
+            out[i] = s * 0.4f;
+        }
+    } else return false;
+    Normalise(out, 0.7f);
+    return true;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1241): the beds are seamless, the same each start, and every named one exists ----
 #include "unit_helpers.h"
