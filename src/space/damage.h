@@ -65,4 +65,43 @@ float Status_Step(StatusState& s, float dt, bool inWater, const Resistances& res
 float Status_SpeedFactor(const StatusState& s);
 void Status_CurePoison(StatusState& s);
 
+
+// ---- Poise and stagger (#1217, combat step 3) ----
+// Every creature has hidden poise that hits wear down (each hit's poise damage: the weapon's, x2 for a heavy). When it
+// breaks the creature staggers (1 s, 2 s after a parry): its attack is cancelled, it can't move, and the next hit does
+// x1.5; its poise is full again. Small creatures stagger on any heavy hit. Unhit for 2 s, poise comes back over 3 s.
+// Players have poise from armour (light armour breaks on one strong bite, heavy on three); a player's stagger is short
+// (0.6 s: a slow, and a melee wind-up broken), and a heavy or two-handed wind-up (hyper-armour) takes the poise damage
+// without staggering. RAYLIBGAME_COMBAT3=0: off (A/B).
+bool Combat3_On();
+
+namespace PoiseTune {
+constexpr float kStaggerTime = 1.0f, kParryStaggerTime = 2.0f, kStaggerBonus = 1.5f;
+constexpr float kRegenDelay = 2.0f, kRegenTime = 3.0f;          // s unhit before it comes back; s from empty to full
+constexpr float kSmallSize = 0.7f;                              // m: a creature this size or smaller staggers on any heavy
+constexpr float kPlayerStaggerTime = 0.6f, kPlayerStaggerSlow = 0.3f; // a player's stagger: walk speed x0.3
+constexpr float kAttackPoisePerDamage = 2.5f;                   // a creature's attack: poise damage per point of damage (8 -> 20, a strong bite)
+}
+
+struct PoiseState {
+    float value = 0.0f, max = 0.0f;  // max 0: not set up yet
+    float stagger = 0.0f;            // s of stagger left
+    float sinceHit = 1e9f;           // s since the last hit (regen waits kRegenDelay)
+    bool bonus = false;              // the next hit while staggered does x1.5
+    bool unstaggerable = false;      // (bosses' phases, later)
+    int staggers = 0;                // times broken (counters, tests)
+};
+
+struct PoiseHit { float damageScale = 1.0f; bool staggered = false; };
+
+void Poise_Init(PoiseState& p, float max);
+// A hit's poise damage. Returns the scale for this hit's damage (x1.5: the first hit on a staggered target) and whether it
+// broke the poise now. hyper: a wind-up with hyper-armour (worn, never broken).
+PoiseHit Poise_Hit(PoiseState& p, float poiseDamage, bool heavy, bool small, bool hyper = false, float staggerTime = PoiseTune::kStaggerTime);
+void Poise_Stagger(PoiseState& p, float seconds); // a parry (#1218): staggered outright
+void Poise_Step(PoiseState& p, float dt);
+inline bool Poise_Staggered(const PoiseState& p) { return p.stagger > 0.0f; }
+float Poise_CreatureMax(float health); // 5 + 0.4 x health (a hornhide, 40: 21)
+float Poise_PlayerMax(float armour);   // 15 + 4.5 x armour: none 15, light (~1) ~20, heavy (10) 60
+
 #endif

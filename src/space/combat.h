@@ -45,6 +45,7 @@ struct DamageResult {
     bool blocked = false;         // a block took part of it
     bool guardBroken = false;     // the block ran out of stamina
     bool killed = false;          // this hit took the last health
+    bool staggered = false;       // (#1217) it broke the player's poise
 };
 
 DamageResult Combat_Damage(PlayerSession& target, const DamageEvent& e);

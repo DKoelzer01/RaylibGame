@@ -94,6 +94,45 @@ float Status_SpeedFactor(const StatusState& s) {
 
 void Status_CurePoison(StatusState& s) { s.poison = 0.0f; }
 
+// ---- Poise (#1217) ----
+bool Combat3_On() {
+    static const bool on = !(getenv("RAYLIBGAME_COMBAT3") && getenv("RAYLIBGAME_COMBAT3")[0] == '0');
+    return on;
+}
+
+void Poise_Init(PoiseState& p, float max) { p.max = std::max(1.0f, max); p.value = p.max; }
+
+PoiseHit Poise_Hit(PoiseState& p, float poiseDamage, bool heavy, bool small, bool hyper, float staggerTime) {
+    PoiseHit h;
+    p.sinceHit = 0.0f;
+    if (p.stagger > 0.0f) { // already staggered: the first hit lands x1.5, and nothing wears it further
+        if (p.bonus) { h.damageScale = PoiseTune::kStaggerBonus; p.bonus = false; }
+        return h;
+    }
+    p.value = std::max(0.0f, p.value - std::max(0.0f, poiseDamage));
+    if (p.unstaggerable || hyper) return h;
+    if (p.value <= 0.0f || (small && heavy)) {
+        p.stagger = staggerTime; p.value = p.max; p.bonus = true; ++p.staggers;
+        h.staggered = true;
+    }
+    return h;
+}
+
+void Poise_Stagger(PoiseState& p, float seconds) {
+    if (p.unstaggerable) return;
+    p.stagger = std::max(p.stagger, seconds); p.value = p.max; p.bonus = true; ++p.staggers;
+}
+
+void Poise_Step(PoiseState& p, float dt) {
+    if (dt <= 0.0f) return;
+    if (p.stagger > 0.0f) { p.stagger = std::max(0.0f, p.stagger - dt); if (p.stagger <= 0.0f) p.bonus = false; }
+    p.sinceHit += dt;
+    if (p.sinceHit >= PoiseTune::kRegenDelay && p.value < p.max) p.value = std::min(p.max, p.value + p.max * dt / PoiseTune::kRegenTime);
+}
+
+float Poise_CreatureMax(float health) { return 5.0f + 0.4f * std::max(0.0f, health); }
+float Poise_PlayerMax(float armour) { return 15.0f + 4.5f * std::max(0.0f, armour); }
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
 // #1215: the damage formula and each status effect, with the decided numbers.
@@ -168,5 +207,55 @@ TEST(Damage, ShockInterruptsForOneStep) {
     EXPECT_TRUE(s.interrupted);
     Status_Step(s, 1.0f / 60.0f, false, {});
     EXPECT_FALSE(s.interrupted);
+}
+
+// #1217: poise wears down, breaks into a stagger with a x1.5 hit, comes back; small creatures and hyper-armour.
+TEST(Poise, BreaksStaggersAndTheNextHitDoesMore) {
+    PoiseState p; Poise_Init(p, 21.0f);          // a hornhide
+    EXPECT_FALSE(Poise_Hit(p, 10.0f, false, false).staggered);
+    EXPECT_FALSE(Poise_Hit(p, 10.0f, false, false).staggered);
+    const PoiseHit br = Poise_Hit(p, 10.0f, false, false); // 30 > 21: broken
+    EXPECT_TRUE(br.staggered); EXPECT_FLOAT_EQ(br.damageScale, 1.0f); // the breaking hit itself: no bonus
+    EXPECT_FLOAT_EQ(p.stagger, PoiseTune::kStaggerTime);
+    EXPECT_FLOAT_EQ(Poise_Hit(p, 5.0f, false, false).damageScale, 1.5f); // the next hit
+    EXPECT_FLOAT_EQ(Poise_Hit(p, 5.0f, false, false).damageScale, 1.0f); // only the first
+    for (int i = 0; i < 70; ++i) Poise_Step(p, 1.0f / 60.0f);
+    EXPECT_FALSE(Poise_Staggered(p));
+    EXPECT_FLOAT_EQ(p.value, p.max);                                      // full again
+    EXPECT_EQ(p.staggers, 1);
+}
+
+TEST(Poise, ComesBackAfterARest) {
+    PoiseState p; Poise_Init(p, 30.0f);
+    Poise_Hit(p, 20.0f, false, false);
+    for (int i = 0; i < 60; ++i) Poise_Step(p, 1.0f / 60.0f); // 1 s: not yet
+    EXPECT_FLOAT_EQ(p.value, 10.0f);
+    for (int i = 0; i < 60 * 4; ++i) Poise_Step(p, 1.0f / 60.0f); // 2 s delay + up to 3 s regen
+    EXPECT_NEAR(p.value, 30.0f, 1e-3f);
+}
+
+TEST(Poise, SmallCreaturesHyperArmourAndParry) {
+    PoiseState small; Poise_Init(small, 100.0f);
+    EXPECT_FALSE(Poise_Hit(small, 1.0f, false, true).staggered);
+    EXPECT_TRUE(Poise_Hit(small, 1.0f, true, true).staggered);  // any heavy
+    PoiseState hy; Poise_Init(hy, 15.0f);
+    EXPECT_FALSE(Poise_Hit(hy, 40.0f, true, false, true).staggered); // hyper-armour: worn, not broken
+    EXPECT_FLOAT_EQ(hy.value, 0.0f);
+    EXPECT_TRUE(Poise_Hit(hy, 1.0f, false, false).staggered);         // out of the wind-up: the next hit breaks it
+    PoiseState pa; Poise_Init(pa, 50.0f);
+    Poise_Stagger(pa, PoiseTune::kParryStaggerTime);
+    EXPECT_FLOAT_EQ(pa.stagger, 2.0f);
+    PoiseState boss; Poise_Init(boss, 5.0f); boss.unstaggerable = true;
+    EXPECT_FALSE(Poise_Hit(boss, 50.0f, true, true).staggered);
+}
+
+TEST(Poise, PlayerArmourBreaksOnBites) {
+    const float bite = 8.0f * PoiseTune::kAttackPoisePerDamage; // a strong bite: 20
+    PoiseState none; Poise_Init(none, Poise_PlayerMax(0.0f));
+    EXPECT_TRUE(Poise_Hit(none, bite, false, false).staggered);
+    PoiseState heavy; Poise_Init(heavy, Poise_PlayerMax(10.0f));
+    EXPECT_FALSE(Poise_Hit(heavy, bite, false, false).staggered);
+    EXPECT_FALSE(Poise_Hit(heavy, bite, false, false).staggered);
+    EXPECT_TRUE(Poise_Hit(heavy, bite, false, false).staggered);  // the third
 }
 #endif

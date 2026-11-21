@@ -141,6 +141,7 @@ struct Animal {
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
     StatusState status;          // (#1215) burn, chill, bleed, poison
+    PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -568,6 +569,16 @@ bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
     if (i < 0 || i >= (int)animals.size()) return false;
     Animal& a = animals[i];
     float amount = e.amount;
+    // (#1217) Poise: the hit wears it (its poise damage; none given: its amount); broken, the creature staggers (its attack
+    // cancelled), and the first hit while it staggers does x1.5. Small creatures stagger on any heavy hit.
+    if (Combat3_On()) {
+        const Species& sp = species[a.species];
+        if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(sp.health));
+        const bool small = std::max(sp.size.x, std::max(sp.size.y, sp.size.z)) * (0.6f + 0.4f * a.age) <= PoiseTune::kSmallSize;
+        const PoiseHit ph = Poise_Hit(a.poise, e.poise > 0.0f ? e.poise : e.amount, e.heavy, small);
+        amount *= ph.damageScale;
+        if (ph.staggered) a.windUpAt = -1.0;
+    }
     if (Combat1_On()) {
         amount = Damage_Apply(amount, e.type, species[a.species].resist);
         Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
@@ -577,6 +588,7 @@ bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
 }
 
 const StatusState* Animals_Status(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].status : nullptr; } // (#1215 tests)
+const PoiseState* Animals_Poise(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].poise : nullptr; } // (#1217 tests)
 
 bool Animals_Feed(int i) {
     if (i < 0 || i >= (int)animals.size()) return false;
@@ -802,6 +814,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         const Vector3 up = Vector3Normalize(a.pos);
         Vector3 east, north;
         TangentFrame(up, east, north);
+        // (#1217) Staggered: its attack is off and it stands where it is until the stagger ends; poise comes back after a rest.
+        if (Combat3_On() && a.poise.max > 0.0f) {
+            Poise_Step(a.poise, step);
+            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; a.state = State::Flee; continue; }
+        }
         // Decide.
         float speed = 0.0f;
         Vector3 toward{};
@@ -848,6 +865,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 if (pdist < reach + 0.4f) {
                     DamageEvent e;
                     e.amount = 8.0f * Difficulty_ThreatScale();
+                    e.poise = e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
                     e.kind = s.night ? DamageKind::Bite : DamageKind::Melee;
                     e.hasSource = true;
                     e.source = body->toWorldD(DVec3(a.pos));
@@ -1063,7 +1081,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
 namespace {
 MeleeState gMelee;
 double gMeleeClock = -1.0;
-int gMeleeShocks = 0;
+int gMeleeShocks = 0, gMeleeStaggers = 0;
 uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
 Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
 WeaponClass gMeleeClass = WeaponClass::Tools;
@@ -1155,10 +1173,11 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
                  (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
     mi.held = live && in.down(Act::Primary);
     mi.block = survival.blocking;
-    mi.interrupted = survival.shocks != gMeleeShocks;
-    gMeleeShocks = survival.shocks;
+    mi.interrupted = survival.shocks != gMeleeShocks || survival.staggers != gMeleeStaggers; // a shock or (#1217) a stagger
+    gMeleeShocks = survival.shocks; gMeleeStaggers = survival.staggers;
     mi.stamina = survival.stamina;
     const MeleeStep o = Melee_Step(gMelee, w, mi, dt);
+    survival.hyperArmour = Combat3_On() && Melee_HyperArmour(gMelee, w); // (#1217) hits don't stagger this wind-up
     if (o.cost > 0.0f) { survival.stamina = std::max(0.0f, survival.stamina - o.cost); survival.staminaUsedAt = now; }
     if (o.tired) GameUI_Toast("Too tired to swing");
     if (o.started) { hitLatch = true; ++terrainTool.swings; Audio_Play(Sfx::Dig, 0.25f, 1.9f); }
