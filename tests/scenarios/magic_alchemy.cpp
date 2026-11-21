@@ -135,11 +135,15 @@ SCENARIO("magic/alchemy") {
         Alchemy_Update(c.world, c.T);
         const AlchemyStats st = Alchemy_Stats();
         c.waitingFor(TextFormat("spilled %d, fizzled %d", st.spilled, st.fizzled - fizzledBefore));
-        if (st.spilled <= 0 || st.fizzled - fizzledBefore < 2) return false;
+        static double fizzledAt = -1.0;
+        if (st.spilled <= 0 || st.fizzled - fizzledBefore < 1) return false;
+        if (fizzledAt < 0.0) fizzledAt = c.T;
+        if (c.T < fizzledAt + 2.0) return false; // the takes reach the world over the next fluid steps
         const Vector3 at = plot->toBody({ 6.5f * kCellSize, 0.5f * kCellSize, 2.5f * kCellSize });
-        const float left = Fluid::FluidAt(*c.body, at, 4.0f, Alchemy_EssenceKind());
-        c.metric("essence left in the world near the outlet", left, "m^3");
-        c.check("spills don't pile up", left < 0.5f, TextFormat("%.2f m^3", left));
+        const float left = Fluid::FluidAt(*c.body, at, 10.0f, Alchemy_EssenceKind());
+        const float spilledM3 = st.spilled * Alchemy_Settings().spillM3;
+        c.metric("essence left in the world after the fizzle", left, "m^3");
+        c.check("the spill fizzled away (under a tenth left)", left < 0.1f * spilledM3, TextFormat("%.3f of %.2f m^3", left, spilledM3));
         Factory::SetSpeed(1);
         return true;
     });
