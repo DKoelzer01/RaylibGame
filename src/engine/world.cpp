@@ -1125,6 +1125,47 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     }
     p.drawList = std::move(draw);
 
+    // (#1170) RAYLIBGAME_HORIZON_STATS=1: every 2 s, how much of what is drawn a tighter horizon occluder would drop. The
+    // current one is the mantle sphere (0.985 R, ~900 m under sea level, safe under any surface). Rows: radii 300 and 100 m
+    // under sea level and sea level (upper bounds: wrong over deeper ground), and the lowest surface within 30 km of the
+    // camera sampled from the height map (a candidate that is safe near the camera).
+    static const bool horizonStats = getenv("RAYLIBGAME_HORIZON_STATS") && getenv("RAYLIBGAME_HORIZON_STATS")[0] == '1';
+    if (horizonStats && !p.flat) {
+        static double lastStats = -1e9;
+        const double now = GetTime();
+        if (now - lastStats > 2.0) {
+            lastStats = now;
+            const auto* pf = dynamic_cast<const PlanetField*>(p.field.get());
+            const float R = pf ? pf->radius * p.scale : 0.0f;
+            float localMin = 1e9f;
+            if (pf) {
+                const Vector3 up = Vector3Normalize(camLocal);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(up, t1);
+                for (int a = -30; a <= 30; ++a)
+                    for (int b = -30; b <= 30; ++b) {
+                        const Vector3 d = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, a * 1000.0f / pf->radius), Vector3Scale(t2, b * 1000.0f / pf->radius))));
+                        localMin = std::min(localMin, pf->elevation(d));
+                    }
+            }
+            const float camH = Vector3Length(camLocal) - R;
+            struct Row { const char* name; float ro; long long nodes = 0, verts = 0; };
+            Row rows[] = { { "mantle (now)", p.field->occluderRadius() * p.scale }, { "sea -300 m", R - 300.0f }, { "sea -100 m", R - 100.0f },
+                           { "sea level", R }, { "local min 30 km", R + std::min(localMin, 0.0f) * p.scale - 20.0f } };
+            long long allNodes = 0, allVerts = 0;
+            for (const Chunk* c : p.drawList) {
+                const long long v = c->arena.valid() ? c->arena.vCount : c->mesh.vertexCount;
+                ++allNodes; allVerts += v;
+                const Vector3 lo = c->key.origin(), hi = Vector3AddValue(lo, c->key.size());
+                for (Row& r : rows) if (BehindHorizon(camLocal, lo, hi, r.ro)) { ++r.nodes; r.verts += v; }
+            }
+            std::string line;
+            for (const Row& r : rows) line += TextFormat(" | %s: %lld nodes %.2f M verts", r.name, r.nodes, r.verts / 1e6);
+            printf("horizon: cam %.0f m over sea level, lowest ground within 30 km %.0f m; drawn %lld nodes %.2f M verts; behind the horizon of%s\n",
+                   camH, localMin, allNodes, allVerts / 1e6, line.c_str());
+        }
+    }
+
     // Clip the one-cell overlap on axes where the +neighbour is drawn at the same level (it would
     // duplicate that neighbour's surface and z-fight); keep it toward other levels to hide cracks.
     static FlatKeySet drawn; // also "on screen" for the frees below
