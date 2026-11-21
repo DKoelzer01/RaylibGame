@@ -87,7 +87,7 @@ struct NetClient {
     int action = 0; float actionPhase = 0.0f;    // our hands now (the game sets them; sent with every input packet)
     // Terrain edits (#329)
     class Inventory* inventory = nullptr;        // follows the server's copy (InventoryDelta); the game's: the local one
-    std::vector<std::pair<std::string, double>> pendingInventory; // (#803) deltas heard before `inventory` was attached, applied then
+    std::vector<MsgInventoryDelta> pendingInventory; // (#803) deltas heard before `inventory` was attached, applied then
     uint32_t editSeq = 0;                        // our requests so far
     int editsSeen = 0, editsOwn = 0, editsRefused = 0, inventoryDeltas = 0;
     int placesSeen = 0;                          // edits that placed ground (the soft brush)
@@ -170,10 +170,13 @@ void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) e
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn
 void NetClient_Craft(NetClient& c, int index, const std::string& output, int count, bool useChests = false, bool recursive = false); // (#338) craft on the server
 void NetClient_SkillSpend(NetClient& c, const std::string& perk);                   // (#920) a perk point, as the server checks it
-void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
+void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi, const std::string& data = {}); // (#865) a pile at the feet, made by the server; data (#1446): that one item
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
 void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest (#1085: at the body-local ground)
 const char* NetClient_StateName(NetClient::State s);
+class Inventory;
+// (#1446) An InventoryDelta applied to an inventory: plain items by amount, an item with data one at a time (by its record).
+void ApplyInventoryDelta(Inventory& inv, const MsgInventoryDelta& d);
 
 #endif

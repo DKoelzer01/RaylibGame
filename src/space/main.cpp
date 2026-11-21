@@ -1606,7 +1606,7 @@ int main(int argc, char** argv)
         gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
-        gDropRequest = [](const std::string& item, int64_t centi) { NetClient_DropItems(gJoin, item, centi); }; // (#865)
+        gDropRequest = [](const std::string& item, int64_t centi, const std::string& data) { NetClient_DropItems(gJoin, item, centi, data); }; // (#865; #1446 data)
         gCreativeGive = [](const std::string& item, int count) { NetClient_CreativeGive(gJoin, item, count); }; // (#866)
         gCraftRequest = [](int index, const std::string& output, int count, bool useChests, bool recursive) { NetClient_Craft(gJoin, index, output, count, useChests, recursive); }; // (#338) and our crafting
         gSkillSpendRequest = [](const std::string& perk) { NetClient_SkillSpend(gJoin, perk); }; // (#920) perk points are the server's

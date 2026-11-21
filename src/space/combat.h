@@ -78,7 +78,7 @@ bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
 // only their walk arms it). A joined client's
 // Combat_Drop sends gDropRequest instead (the item, hundredths of a unit): the server makes the pile and the deltas.
 bool Combat_DropFor(const std::string& body, const DVec3& at, const struct InvSlot& stack, const std::string& who); // at: body-local feet
-inline std::function<void(const std::string& item, int64_t centi)> gDropRequest;
+inline std::function<void(const std::string& item, int64_t centi, const std::string& data)> gDropRequest; // data (#1446): that one item's record
 int Combat_DroppedPiles();
 // (#1225) Cave scavengers steal dropped piles: the nearest within radius (body-local), and taking it whole.
 bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt);
