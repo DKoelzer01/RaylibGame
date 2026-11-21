@@ -19,6 +19,7 @@ constexpr float kExpected = kTunnelTop + (kPour - 48.0f) / 16.0f; // -1 m: the c
 struct State {
     Vector3 home{}, ax{}, ay{};
     float r0 = 0.0f, poured = 0.0f;
+    double vol0 = 0.0; // the simulated volume once the pour is done (m^3)
     double nextPour = 0.0;
     int k = 0;
     Vector3 pt(float x, float y, float h) const {
@@ -74,7 +75,9 @@ static void Build(ScenarioDef& s) {
             ++S.k;
             S.poured += Fluid::Pour(*c.body, S.pt(x, y, -0.5f), 0.25f);
         }
-        return S.poured >= kPour;
+        if (S.poured < kPour) return false;
+        S.vol0 = Fluid::GetStats().volume; // the sandbox has no other water: the simulated volume is what was poured
+        return true;
     });
     s.step("level out", 150.0, [](ScenarioCtx& c) {
         S.camera(c);
@@ -83,6 +86,11 @@ static void Build(ScenarioDef& s) {
         const float nearL = S.level(*c.body, -10.0f), farL = S.level(*c.body, 10.0f);
         const float tunnel = Fluid::WaterAt(*c.body, S.pt(0.0f, 0.0f, 0.5f * (kFloor + kTunnelTop)), 0.5f);
         const float lost = Fluid::PourDropped();
+        const double vol1 = Fluid::GetStats().volume;
+        c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
+        c.metric("simulated volume after the pour", S.vol0, "m^3", false);
+        c.metric("simulated volume at the end", vol1, "m^3", false);
+        c.near("no water lost or made while it levels (m^3)", vol1, S.vol0, 0.5);
         c.note("near pit " + std::to_string(nearL) + " m, far pit " + std::to_string(farL) + " m (expected " + std::to_string(kExpected) +
                "), tunnel middle " + std::to_string(tunnel) + " m^3 in a 1 m box, poured " + std::to_string(S.poured) + " m^3 (dropped " + std::to_string(lost) + ")");
         c.metric("near pit level", nearL, "m", false);
@@ -96,5 +104,7 @@ static void Build(ScenarioDef& s) {
 }
 
 SCENARIO("fluid/u-bend") { Build(s); }
+// The CPU kernel without the pass: the baseline the pressure variant is compared with.
+SCENARIO("fluid/u-bend-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "0" } }; Build(s); }
 // The pressure pass (#1168) on the CPU kernel, where it is built so far (fluid_step.comp follows): the same U-bend.
 SCENARIO("fluid/u-bend-pressure") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }

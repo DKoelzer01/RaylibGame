@@ -79,10 +79,11 @@ struct Pass {
         return std::min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u);
     }
     // ---- The pressure pass (#1168), run in the vertical pass (0) from A and the last substep's heads (g.pr). ----
-    // A neighbour's head: its last substep's if its slot runs this tick; else (a read-only ring slot) its own surface.
+    // A neighbour's head: its last substep's if its slot runs this tick; a read-only ring slot (a sleeping brick) holds the
+    // heads it went to sleep with (the host copies every slot's); with none stored, its own surface.
     int32_t headPrev(int gi, bool proc) const {
         const uint32_t c = inC[gi];
-        if (proc) return g.pr[gi];
+        if (proc || g.pr[gi] > 0) return g.pr[gi];
         return F(c) >= CAP(c) ? 255 : (int32_t)(SH(c) + F(c));
     }
     // This cell's head now: a part-filled cell's is its surface; a full one's is the highest of its own surface, the cell
@@ -103,6 +104,17 @@ struct Pass {
             if (dz > 0) h = std::max(h, hn + 255);
             else if (dz < 0) { if (F(inC[gn]) >= CAP(inC[gn])) h = std::max(h, hn - 256); }
             else h = std::max(h, hn - 1);
+        }
+        // A sleeping neighbour (a ring slot) whose stored head this one would raise is asked to wake (a face request, as the
+        // column pairs ask): resting water used to sleep before the pressure crossed it, and a covered tunnel never passed it.
+        for (int k = 0; k < 6; ++k) {
+            const int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
+            bool pn; int face;
+            const int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
+            if (gn < 0 || pn || !sameWater(inC[gn], kind)) continue;
+            const bool nFull = F(inC[gn]) >= CAP(inC[gn]);
+            const int32_t want = dz > 0 ? h - 256 : dz < 0 ? h + 255 : h - 1; // what this cell would give it
+            if (nFull && want > headPrev(gn, false) + p.wakeUnits) g.flags[slot] |= 1u << (1 + face);
         }
         return h;
     }
@@ -640,6 +652,7 @@ struct Pass {
             int upOut = 0, upIn = 0;
             if (p.pressure) {
                 g.prN[gi] = headNow(slot, x, y, z, c);
+                if (std::abs(g.prN[gi] - g.pr[gi]) > p.wakeUnits) g.flags[slot] |= 1u; // a moving head keeps its brick awake
                 upOut = upMove(gi);
                 upIn = (gb >= 0 && pB) ? upMove(gb) : 0;
             }
