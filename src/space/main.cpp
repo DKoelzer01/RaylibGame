@@ -8210,6 +8210,20 @@ int main(int argc, char** argv)
                         }
                         // (#1091) FLOWDBG=2: while the channel fills, the fills across it near the camera (where the shallow water
                         // drew diamonds): rows of cells 0.25 m apart sideways, one line per height from the bed up to the sea level.
+                        // (#1091) FLOWDBG=3: the thin layer's row (-0.50 m, 4 m from the end) every frame from 14 to 14.5 s, printed
+                        // when it changes: a layer that flips each tick (momentum sloshing) alternates; a frozen film repeats.
+                        if (EnvFlag("FLOWDBG") && atoi(getenv("FLOWDBG")) >= 3 && t >= 14.0 && t < 14.5) {
+                            static std::string lastRow;
+                            const Vector3 up = Vector3Normalize(flowEnd);
+                            const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, flowOut));
+                            std::string row;
+                            for (float x = -1.5f; x <= 1.51f; x += 0.25f) {
+                                const Vector3 q = Vector3Add(Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, -4.0f)), Vector3Scale(side, x)), Vector3Scale(up, -0.5f + 0.6f));
+                                int fill = -1; sscanf(Fluid::DebugCell(*p, q).c_str(), "fill %d", &fill);
+                                row += p->densityAt(q) >= ISO_LEVEL ? "  ###" : fill < 0 ? "    ." : TextFormat(" %4d", fill);
+                            }
+                            if (row != lastRow) { printf("bench: flow dbg3 t=%.3f s:%s\n", t, row.c_str()); lastRow = row; }
+                        }
                         if (EnvFlag("FLOWDBG") && atoi(getenv("FLOWDBG")) >= 2) {
                             static int dumped = 0;
                             const double when[] = { 2.0, 4.0, 6.0, 10.0, 16.0, 30.0 };
