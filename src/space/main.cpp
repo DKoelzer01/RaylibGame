@@ -10835,7 +10835,7 @@ int main(int argc, char** argv)
                     printf("bench: holes: frame %ld, t=%.2f s, rec frame %d, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
                            crackFrame, GetTime(), Recorder_Captured(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
                     if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
-                    { static int saved = 0; static const int saveCap = getenv("RAYLIBGAME_CRACK_SAVE") ? atoi(getenv("RAYLIBGAME_CRACK_SAVE")) : 24; if (saved < saveCap) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
+                    { static int saved = 0; static const int saveCap = getenv("RAYLIBGAME_CRACK_SAVE") ? atoi(getenv("RAYLIBGAME_CRACK_SAVE")) : 24; static const double saveAfter = getenv("RAYLIBGAME_CRACK_SAVE_AFTER") ? atof(getenv("RAYLIBGAME_CRACK_SAVE_AFTER")) : 0.0; if (saved < saveCap && GetTime() >= saveAfter) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
                 }
                 UnloadImage(shot);
             }
