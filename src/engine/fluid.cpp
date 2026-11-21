@@ -2820,6 +2820,27 @@ int Fluid::HeadAt(const Planetoid& body, Vector3 local) {
     return -1;
 }
 
+double Fluid::VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
+    if (running.load()) WaitIdle();
+    std::lock_guard<std::mutex> lock(simMx);
+    double v = 0.0;
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        for (auto& kv : s->bricks) {
+            const Brick& b = *kv.second;
+            if (!b.ready) continue;
+            for (int i = 0; i < B3; ++i) {
+                if (b.fill[i] == 0) continue;
+                const int x = i % B, y = (i / B) % B, z = i / (B * B);
+                const Vector3 d = Vector3Subtract(s->cellPoint(b.bi * B + x + 0.5f, b.bj * B + y + 0.5f, b.bk * B + z + 0.5f), centre);
+                if (fabsf(Vector3DotProduct(d, ax)) <= half.x && fabsf(Vector3DotProduct(d, ay)) <= half.y && fabsf(Vector3DotProduct(d, az)) <= half.z)
+                    v += b.fill[i] / 255.0 * WaterField::CellVolume();
+            }
+        }
+    }
+    return v;
+}
+
 bool Fluid::Asleep() {
     // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
     // went at tick 4038 in one run and 4040 in an identical one), so wait for it, as Update does each tick.

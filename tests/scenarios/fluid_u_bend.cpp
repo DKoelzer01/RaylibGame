@@ -102,17 +102,6 @@ static void Build(ScenarioDef& s) {
         for (float h = kFloor + 0.125f; h < 0.0f; h += 0.25f) { nearCol += digit(-10.0f, h); farCol += digit(10.0f, h); }
         for (float x = -8.0f; x <= 8.0f; x += 1.0f) tun += digit(x, 0.5f * (kFloor + kTunnelTop));
         c.note("fill by row from the floor up: near " + nearCol + ", far " + farCol + "; tunnel (-8..8 m) " + tun);
-        // Where the volume is: the cells sampled every 0.25 m (one fluid cell per sample) over each region, with a margin; the
-        // tunnel's top row (under the roof) separately. What the total holds beyond these is outside the carve.
-        auto region = [&](float x0, float x1, float h0, float h1) {
-            double v = 0.0;
-            for (float x = x0 + 0.125f; x < x1; x += 0.25f)
-                for (float y = -1.5f + 0.125f; y < 1.5f; y += 0.25f)
-                    for (float h = h0 + 0.125f; h < h1; h += 0.25f) v += Fluid::WaterAt(*c.body, S.pt(x, y, h), 0.0f);
-            return v;
-        };
-        const double vNear = region(-12.5f, -7.75f, kFloor - 0.5f, 1.0f), vFar = region(7.75f, 12.5f, kFloor - 0.5f, 1.0f);
-        const double vTunnel = region(-7.75f, 7.75f, kFloor - 0.5f, kTunnelTop - 0.25f), vRoof = region(-7.75f, 7.75f, kTunnelTop - 0.25f, kTunnelTop + 0.5f);
         { // The pressure heads (CPU mode, the pass on; fill units over each cell's bottom, 255 a row): along the floor, near
           // pit to far pit, then up the far leg. A chain that formed reads ~(near surface rows) x 255 at the floor, falling by
           // 1 a cell along the tunnel and by 256 a row up the far leg.
@@ -121,23 +110,24 @@ static void Build(ScenarioDef& s) {
             for (float h = kFloor + 0.125f; h < 0.0f; h += 0.5f) farUp += std::to_string(Fluid::HeadAt(*c.body, S.pt(10.0f, 0.0f, h))) + " ";
             c.note("heads along the floor (x -10..10 m): " + floorH + "| up the far leg (every 0.5 m): " + farUp);
         }
-        { // The rest, coarsely (every 0.5 m, each sample standing for its 8 cells): on the ground around the site, in the rock
-          // beside the pits and tunnel (|y| 1.5-6 m), and under the floor. Finds where water that left the U-bend went.
-            auto coarse = [&](float x0, float x1, float y0, float y1, float h0, float h1) {
-                double v = 0.0;
-                for (float x = x0 + 0.25f; x < x1; x += 0.5f)
-                    for (float y = y0 + 0.25f; y < y1; y += 0.5f)
-                        for (float h = h0 + 0.25f; h < h1; h += 0.5f) v += 8.0 * Fluid::WaterAt(*c.body, S.pt(x, y, h), 0.0f);
-                return v;
+        { // Where the volume is, from the simulation's own bricks (Fluid::VolumeIn; the drawn snapshot missed ~12 m^3 of the
+          // same water, #1168): each pit, the tunnel, its top row under the roof, and anything else within 40 m.
+            auto box = [&](float x0, float x1, float y0, float y1, float h0, float h1) {
+                const Vector3 centre = S.pt(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (h0 + h1));
+                return Fluid::VolumeIn(*c.body, centre, S.ax, S.ay, Vector3Normalize(centre), { 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0.5f * (h1 - h0) });
             };
-            const double ground = coarse(-40.0f, 40.0f, -40.0f, 40.0f, 1.0f, 4.0f) + coarse(-40.0f, 40.0f, -40.0f, 40.0f, 0.0f, 1.0f) - coarse(-12.5f, 12.5f, -1.5f, 1.5f, 0.0f, 1.0f);
-            const double beside = coarse(-14.0f, 14.0f, 1.5f, 6.0f, kFloor - 0.5f, 0.0f) + coarse(-14.0f, 14.0f, -6.0f, -1.5f, kFloor - 0.5f, 0.0f);
-            const double under = coarse(-14.0f, 14.0f, -2.0f, 2.0f, kFloor - 3.0f, kFloor - 0.5f);
-            c.note(TextFormat("outside the U-bend, coarsely (m^3): on the ground (80 x 80 m, to 4 m up) %.2f, in the rock beside %.2f, under the floor %.2f",
-                              ground, beside, under));
+            const double vNear = box(-12.5f, -7.75f, -1.5f, 1.5f, kFloor - 0.5f, 1.0f), vFar = box(7.75f, 12.5f, -1.5f, 1.5f, kFloor - 0.5f, 1.0f);
+            const double vTunnel = box(-7.75f, 7.75f, -1.5f, 1.5f, kFloor - 0.5f, kTunnelTop - 0.25f);
+            const double vRoof = box(-7.75f, 7.75f, -1.5f, 1.5f, kTunnelTop - 0.25f, kTunnelTop + 0.5f);
+            const double vAll = box(-40.0f, 40.0f, -40.0f, 40.0f, kFloor - 3.0f, 4.0f);
+            double snap = 0.0; // the same U-bend through the drawn snapshot (WaterAt), for comparison
+            for (float x = -12.5f + 0.125f; x < 12.5f; x += 0.25f)
+                for (float y = -1.5f + 0.125f; y < 1.5f; y += 0.25f)
+                    for (float h = kFloor - 0.5f + 0.125f; h < 1.0f; h += 0.25f) snap += Fluid::WaterAt(*c.body, S.pt(x, y, h), 0.0f);
+            c.note(TextFormat("volume from the bricks (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row %.2f; elsewhere within 40 m %.2f, "
+                              "beyond %.2f (of %.2f); the U-bend through the drawn snapshot %.2f",
+                              vNear, vFar, vTunnel, vRoof, vAll - (vNear + vFar + vTunnel + vRoof), vol1 - vAll, vol1, snap));
         }
-        c.note(TextFormat("volume by region (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row and roof %.2f; outside %.2f of %.2f",
-                          vNear, vFar, vTunnel, vRoof, vol1 - (vNear + vFar + vTunnel + vRoof), vol1));
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
         c.metric("simulated volume after the pour", S.vol0, "m^3", false);
         c.metric("simulated volume at the end", vol1, "m^3", false);
