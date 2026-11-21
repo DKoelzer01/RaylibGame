@@ -41,13 +41,15 @@ SCENARIO("combat/parry-dodge") {
         player.spawnOn(c.world, *c.body, c.spawnDirWorld());
         InvSlot& off = LocalSession().inventory.grid()[Inventory::kOffHand];
         off.id = "wooden_shield"; off.centi = 100;
+        // An empty hand: a tool or filler in the selected cell keeps RMB for itself (a shovel tills), and the shield won't block.
+        for (int k = 0; k < 10; ++k) if (LocalSession().inventory.grid()[Inventory::kGrid + k].id.empty()) { LocalSession().hotbar.selected = k; break; }
         gScenarioInput = true;
         return true;
     });
     s.step("parry: raised just before the hit", 5.0, [](ScenarioCtx& c) {
         if (c.t < 0.5) return false; // standing
         if (!(gFakeHeld & kRmb)) { gFakeHeld |= kRmb; S.frame0 = c.frame; return false; }
-        if (!survival.blocking) { c.waitingFor("the block to go up"); return false; }
+        if (!survival.blocking) { c.waitingFor("the block to go up: rmbBlocks " + std::to_string(LocalSession().terrainTool.rmbBlocks) + " off " + LocalSession().inventory.offHand().id + " rmb held " + std::to_string((PlayerInput_Step().held >> (int)Act::Secondary) & 1) + " stamina " + std::to_string(survival.stamina)); return false; }
         if (c.frame < S.frame0 + 4) return false; // ~50 ms after the raise
         survival.health = 100.0f; survival.stamina = 100.0f;
         const int parries0 = survival.parries;
