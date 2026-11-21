@@ -503,7 +503,8 @@ int G_Capacity();                     // the GPU brick pool (below)
 constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; b->steady = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
-static const bool kPressure = FluidKernel::Params{}.pressure; // the pressure pass (#1168, CPU-only opt-in for now)
+// The pressure pass (#1168, CPU-only opt-in for now). Read on first use, not at static init: a scenario's s.env is set in main().
+static bool PressureOn() { static const bool on = FluidKernel::Params{}.pressure; return on; }
 // Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
 // (water never enters it) nor a dry brick above (water rises into it only through sources, pours or levelling, which wake
 // it). Under and over a big pool they were most of every dispatch.
@@ -1974,7 +1975,7 @@ void CpuTick(int n) {
         std::copy(c, c + B3, &g.b[(size_t)i * B3]);
         if (b->faces.size() == (size_t)B3) std::copy(b->faces.begin(), b->faces.end(), &g.faceP[(size_t)i * B3]);
         else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
-        if (kPressure) { // (#1168) the heads, as the faces; a brick new to the sim starts at none (the first substep fills them)
+        if (PressureOn()) { // (#1168) the heads, as the faces; a brick new to the sim starts at none (the first substep fills them)
             if (b->press.size() == (size_t)B3) std::copy(b->press.begin(), b->press.end(), &g.pr[(size_t)i * B3]);
             else std::fill(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3, 0);
         }
@@ -2010,7 +2011,7 @@ void CpuTick(int n) {
     ParallelSlots(processedCount, [&](int i) {
         Brick* br = slots[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
-        if (kPressure) br->press.assign(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3); // (#1168)
+        if (PressureOn()) br->press.assign(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3); // (#1168)
         { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
             const uint32_t* m = &g.gmask[(size_t)i * 6];
             const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;

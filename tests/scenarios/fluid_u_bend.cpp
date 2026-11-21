@@ -43,7 +43,7 @@ struct State {
 } S;
 }
 
-SCENARIO("fluid/u-bend") {
+static void Build(ScenarioDef& s) {
     s.tags = { "fluid", "water", "physics-reference" };
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };
@@ -94,3 +94,7 @@ SCENARIO("fluid/u-bend") {
         return true;
     });
 }
+
+SCENARIO("fluid/u-bend") { Build(s); }
+// The pressure pass (#1168) on the CPU kernel, where it is built so far (fluid_step.comp follows): the same U-bend.
+SCENARIO("fluid/u-bend-pressure") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }
