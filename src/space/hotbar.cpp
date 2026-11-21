@@ -1,4 +1,5 @@
 #include "hotbar.h"
+#include "uipalette.h"
 #include "playersession.h"
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
@@ -290,7 +291,7 @@ void Hotbar_DrawHUD(bool piloting) {
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
-                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
+                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, UiPalette_Lerp(left));
             }
         }
         std::string name = ShortName(id);

@@ -26,6 +26,8 @@
 #include "net.h"
 #include <ctime>
 
+#include "uipalette.h"
+
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
@@ -545,7 +547,8 @@ void BuildTool_Draw3D(Scene& world) {
     // The part's real shape (#197): each footprint cell's faces (slopes, corners, beams as they will be), translucent
     // green (or red: can't place) with their edges, inflated 2 cm about the cell centre so they stand off the blocks
     // around them (#199), both sides drawn.
-    auto ghost = [&](const Plot& p, const std::vector<std::pair<Int3, CellShape>>& cells, Color fill, Color edge) {
+    // cross: can't place - each face also gets its diagonals, a cue that doesn't depend on telling the colours apart (#1432).
+    auto ghost = [&](const Plot& p, const std::vector<std::pair<Int3, CellShape>>& cells, Color fill, Color edge, bool cross) {
         std::vector<std::vector<Vector3>> faces;
         rlDrawRenderBatchActive();
         rlPushMatrix();
@@ -563,6 +566,11 @@ void BuildTool_Draw3D(Scene& world) {
             for (const auto& poly : faces) {
                 for (size_t i = 1; i + 1 < poly.size(); ++i) DrawTriangle3D(toPlot(poly[0]), toPlot(poly[i]), toPlot(poly[i + 1]), fill);
                 for (size_t i = 0; i < poly.size(); ++i) DrawLine3D(toPlot(poly[i]), toPlot(poly[(i + 1) % poly.size()]), edge);
+                if (cross && poly.size() >= 3) { // corner to the opposite corner (a triangle: each corner to the far edge's middle)
+                    const size_t n = poly.size();
+                    if (n >= 4) for (size_t i = 0; i < n / 2; ++i) DrawLine3D(toPlot(poly[i]), toPlot(poly[i + n / 2]), edge);
+                    else for (size_t i = 0; i < 3; ++i) DrawLine3D(toPlot(poly[i]), toPlot(Vector3Scale(Vector3Add(poly[(i + 1) % 3], poly[(i + 2) % 3]), 0.5f)), edge);
+                }
             }
         }
         rlDrawRenderBatchActive();
@@ -573,7 +581,7 @@ void BuildTool_Draw3D(Scene& world) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(aim.part, fp);
     if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true, world.renderOrigin); // the whole blueprint instead of one part
-    else ghost(*frame, fp, aim.canPlace ? Fade(GREEN, 0.28f) : Fade(RED, 0.30f), aim.canPlace ? GREEN : RED);
+    else ghost(*frame, fp, aim.canPlace ? Fade(Ui().good, 0.28f) : Fade(Ui().bad, 0.30f), aim.canPlace ? Ui().good : Ui().bad, !aim.canPlace);
     if (aim.removePlot && aim.removePart >= 0) {
         Plot::Footprint(aim.removePlot->parts[aim.removePart], fp);
         for (const auto& c : fp) box(*aim.removePlot, c.first, Fade(ORANGE, 0.7f));
