@@ -1721,6 +1721,24 @@ int main(int argc, char** argv)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--cave-mouths" && i + 1 < argc) {
+            // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
+            // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int mouths = pf->caveMouthsNear(home, R);
+            Vector3 mAt{}, mOut{};
+            const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+            const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
+                   mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
             // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
