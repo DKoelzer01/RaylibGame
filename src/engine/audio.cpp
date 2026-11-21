@@ -6,6 +6,7 @@
 #include "steamaudio.h"
 #include "audioscene.h"
 #include "audiosynth.h"
+#include "subtitles.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -457,6 +458,7 @@ namespace {
         vs[v].positional = pos != nullptr;
         if (pos) { vs[v].pos = *pos; vs[v].att = att; }
         ApplyVoice(v, mixer.gain(v), VoiceSpatial(v), mixer.voice(v).pitch);
+        Subtitles_OnSound(d.name, pos, listener); // (#1244)
     }
 
     bool V2Ready() { return ready && Audio_V2(); }
@@ -497,6 +499,7 @@ void Audio_Init() {
     std::vector<float> pcm[(int)Sfx::Count];
     MakeProceduralSfx(pcm);
     if (Audio_V2()) {
+        Subtitles_Load(); // (#1244)
         table.clear();
         for (int i = 0; i < (int)Sfx::Count; ++i) {
             SoundDef d;
@@ -596,6 +599,10 @@ void Audio_Update() {
         float pitch = mixer.voice(v).pitch;
         if (vs[v].emitter >= 0) if (const AudioEmitters::Emitter* em = emitters.get(vs[v].emitter)) pitch = em->pitch;
         ApplyVoice(v, mixer.gain(v), VoiceSpatial(v), pitch);
+        // (#1244) An emitter heard now keeps its caption up (a loop has no start to report). Not when nearly silent.
+        if (vs[v].emitter >= 0 && vs[v].gain > 0.02f)
+            if (const AudioEmitters::Emitter* em = emitters.get(vs[v].emitter))
+                Subtitles_OnSound(table[em->sound].name, em->positional ? &em->pos : nullptr, listener);
     }
     // (#1293) The occlusion simulation: where each placed voice is, the listener, the world snapshot.
     if (SteamAudio::Simulating() && worldScene) {
