@@ -40,7 +40,9 @@ fi
 cpids=()
 for n in alice bob; do
     shot=""; [ "$n" = bob ] && shot="bench_join_bob.png" # bob turns to alice and takes a picture (in the working directory)
-    RAYLIBGAME_JOIN_SHOT="$shot" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_JOIN_OTHERS=1 RAYLIBGAME_JOIN_LINGER=20 \
+    # (#828) TEAM=1 (default): alice invites bob into her team; bob stays 20 s longer to see her "last seen" once she leaves
+    linger=20; [ "${TEAM:-1}" = 1 ] && [ "$n" = bob ] && linger=40
+    RAYLIBGAME_JOIN_SHOT="$shot" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_JOIN_OTHERS=1 RAYLIBGAME_JOIN_LINGER=$linger RAYLIBGAME_JOIN_TEAM="${TEAM:-1}" \
         timeout 600 "$exe" --join "127.0.0.1:$port" --name "$n" --bench 3 --test-join > "$tmp/$n.log" 2>&1 &
     cpids+=($!)
 done
