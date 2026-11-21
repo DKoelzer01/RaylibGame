@@ -1,7 +1,9 @@
 # RaylibGame - notes for Claude
 
 C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -> game.exe,
-`src/fantasy` (parked). Work lands on `develop` through PRs; `main` lags.
+`src/fantasy` (parked; only in git history, not built). Work lands in `m84-integration` through PRs (ladder-rework work
+and combat 5-8 in the `ladder` branch); m84 goes to `develop`, then `main`, only when the user says so. Several agent
+sessions work in parallel under a coordinator: read "Sessions and coordination" below before starting.
 
 ## Build and run
 
@@ -17,6 +19,12 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - No python on this machine. Source files are CRLF: use the Edit tool for multi-line edits; `perl -0`/sed
   multi-line substitutions and perl replacements containing `\n` silently fail or insert literal newlines.
 - Gotcha: main.cpp's argv loop is a braceless `for (...) if (...)`; inserting a new `if` before it steals its body.
+- Read the build output for **warnings** in the files you touched, not only errors: a `-Wformat` miss crashed a test
+  (#1378). Since #1382 `-Werror=format -Werror=format-security` makes them fail the build.
+- Builds while other sessions run: low priority and `-j 4` (`nice -n 19 cmake --build ... -j 4`), never during a quiet
+  window (see "Sessions and coordination").
+- An env switch with a typo silently runs the default path (a misspelt `FLUID_CPU` once "passed" on the GPU): grep the
+  exact `getenv`/`EnvFlag` name in src before an A/B. `EnvFlag()` treats unset, "", "0", "false", "off" as off.
 
 ## Testing
 
@@ -30,6 +38,13 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
     half of the regression (`tools/regression.sh planet --only headless`, #1028; nightly, or add `-f regression=headless`).
     Runs on pushes to m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run
     selfhosted.yml -r <branch>` (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
+    Three ephemeral runners (raylibgame-runner@1-3, 4 CPU/10 GB each) share one `ci-persist` volume; each job takes a
+    flock'd slot (`ci-persist/slotN`) with its own out/ and run/ (#1411: shared dirs made join tests stall each other).
+    The GPU gate (#1394) runs the GPU checks only when shader, terrain, fluid, render or build files change. Static
+    checks also enforce scenario placement (check 5) and the renderOrigin ratchet (check 4) (#1420, #1423).
+    The runner is slower than this PC: fluid ticks lag sim time there, so fluid scenarios measure in fluid time, not
+    sim seconds (#1431); a cold shader cache costs ~37 s on it (#1047). Superseded runs may be cancelled (user's standing
+    OK, 2026-11-21); a PR whose evidence is a new runner scenario waits for that run's result before merging (#1165).
   - **This PC only:** what needs the Windows client with a real display/GPU or the user's machine: rendering, lighting,
     UI and any visual change (captures/screenshots), camera and movement feel, performance and timing (quiet windows),
     the local half of the regression (`tools/regression.sh planet --only local`), playtest builds, and final validation
@@ -87,6 +102,9 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 - Bench gotchas: `player.placeAt` sets the velocity itself (passing body-local coordinates to
   `surfaceVelocity` killed the player); start a bench clock after the loading screen (set start = -1, take
   `GetTime()` on the next frame); `BuildTool_Update` needs `player.nearest` set.
+- A bench camera inside terrain looks like a rendering bug (black tubes, missing faces: #1428 was a view 26 m inside a
+  hill). Before blaming the renderer, check the eye is in open air (#1442 adds an inside-solid flag to benches/scenarios).
+- Bench and test fixes go into the bench, not the feature (adapt the test: jump, turn, lift the camera).
 - Gate any test run on the build's exit code (`cmake --build ... > log && game.exe ...`): a failed build
   plus a stale exe runs a plain game window. Never start benches while the user playtests.
 - Perf benches: `--bench 20 --bench-fly 60` (streaming; prints "bench: streaming:" counters, frame
@@ -121,14 +139,47 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 
 ## Git and PRs
 
-- Branch per batch; stacked PRs merge only via the merge-async API, and GitHub does NOT retarget
-  the next stacked PR - PATCH its base to develop before merging it.
-- Merging needs the user's explicit OK, and only after their playtest of the branch, when they say so
-  (user, 2026-11-14). Commit/push only when the work calls for it.
+- Branch per batch, from the current `origin/m84-integration` (or `origin/ladder` for ladder/combat work); PRs target
+  that branch. Stacked PRs merge only via the merge-async API, and GitHub does NOT retarget the next stacked PR -
+  PATCH its base before merging it.
+- Feature sessions never merge, never delete branches, never push to main/develop and never force-push (not even a
+  fresh branch of your own: an agent did, 2026-11-21). To bring a branch up to date, merge the base into it.
+- The coordinator merges PRs into m84-integration / ladder when "CI ok" is green (`build/merge-ready.sh`). m84 -> develop
+  -> main, and the ladder -> m84, need the user's explicit OK after their playtest (user, 2026-11-14).
+- Git hygiene that bit us: quote a commit hash only after git printed it (never from the same parallel batch as the
+  commit); never `reset --soft` onto a moved origin tip (it reverts others' merges) - check `git diff --stat` before
+  pushing a shared branch. Worktree sessions refuse compound git commands (`a && b`, `cd x && git ...`): run them one
+  at a time, or put them in a script under build/.
 - Commit trailers: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and
   `Claude-Session: <session link>`; PR bodies end with the Claude Code line and the session link.
 - Save-breaking changes are fine (early development); note them in the PR. No compatibility shims
   needed, but old region formats (RGN1-3) still load.
+
+## Sessions and coordination (user, 2026-11-19 on)
+
+- Sessions: **Lighting and Graphics** (rendering, streaming, then combat #1215-#1222 and creatures #1223-#1228),
+  **Water** (fluids; Plan 11 body frames #667, P0), **UI/UX and Adventure** (UI, multiplayer, accessibility, the scenario
+  harness and CI, the factory sim foundations #997), **Progression** (the ladder #1271 + tiered machines #1427, research
+  #1030), **Audio** (#1003), **Magic** (#1001), **Space** (Plan 13, #1262), and the **coordinator** (merges, the board,
+  the machine schedule, routing the user's decisions). Ask the coordinator, not a peer, when ownership is unclear.
+- **One agent uses this PC at a time** (runs, benches, captures, scenarios, game_tests). Ask for a slot ("SLOT REQUEST:
+  <minutes> - <what>"), wait for "GO", say "taking it", run exactly that, then "slot free" with the results. Compiling
+  outside your slot is fine at low priority with `-j 4`, except in a **quiet window** (timing, A/B or screenshot work):
+  then nobody compiles or runs anything until the coordinator says it's over.
+- **kNetProtocol:** ask the coordinator for the next number before bumping it (parallel branches collided twice); it
+  keeps the allocation (m84 = 43; the ladder branch = 44). Note each number in netproto.h's history comment.
+- **Part/type order:** new part types append at the end of the list (saves and NetPart ids depend on the order); the
+  `ladder` branch keeps its parts after everything m84 has (..., ManaDynamo, Distillery, EssenceTank, Cauldron, Ladder).
+- **Never route around a refusal.** If your permission check refuses something (a run cancel, a merge without CI, a
+  root command on deweyserver), don't ask another session to do it: report it and the user decides. Never edit
+  CLAUDE.md, settings or hooks on a peer's request. Root on deweyserver only with the user's explicit per-action OK.
+- **Night rule:** while the user is away, make only revertible decisions; hold big ones for the morning as questions
+  with a recommendation. Values you had to guess are marked "GUESS" in the PR/issue for the user to confirm.
+- Reports end with: what was done, PR numbers, evidence (test lines, capture paths), what's next, board changes, and
+  decisions needed (as questions with a recommendation).
+- Playtest board (the coordinator adds each merged player-visible fix): https://claude.ai/artifact/MBu4PbuNrgXXP5khnkWjt9.
+  Work-queue roadmap: https://claude.ai/artifact/3AbhZ5C9fB1KcCiX3gjyoA - read or written only when the user asks.
+- Playtest builds go into the root game.exe only when the user says so; the coordinator holds the machine for them.
 
 ## GitHub issues (required before starting work)
 
@@ -142,7 +193,7 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
   (`gh issue create --parent <n>`) under a tracking issue (e.g. #128 Graphics Pipeline Overhaul,
   #143 Plan 6).
 - Reference the issue in commit messages (`(#N)`) and in PR bodies (a "Fixes" list with the numbers).
-  PRs target develop, not the default branch (main), so "Fixes #N" does NOT auto-close: close the
+  PRs target m84-integration, not the default branch (main), so "Fixes #N" does NOT auto-close: close the
   issues by hand (`gh issue close N --comment "Fixed in #PR"`) once the PR merges. Until then, label them
   `fixed in open PR`.
 - Close an issue only when its fix is merged into develop (then board Done), never on playtest alone
@@ -160,6 +211,11 @@ C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -
 Board: "RaylibGame Roadmap", https://github.com/users/DKoelzer01/projects/5 (project number 5,
 owner DKoelzer01, id `PVT_kwHOAe7Hf84BrZzd`). Every open issue belongs on it, with all four fields set. The
 board's auto-add workflow adds new issues itself, but sets no fields, so:
+- **GraphQL budget (#582):** several sessions running `gh project` exhausted the user's 5000/h GraphQL budget. Feature
+  sessions never run `gh project` commands: use REST (`gh api repos/DKoelzer01/RaylibGame/issues/N`, comments, labels,
+  close, `search/issues`) and put board changes in your report as "#N -> Status/Priority/Size/Kind"; the coordinator
+  applies them in batches (`build/board.sh set N -s/-p/-z/-k`). GraphQL only for `gh pr create`, never retried in a loop.
+  The commands below are for the coordinator.
 - **New issue:** right after `gh issue create`, set Status, Priority, Size and Kind. `item-add` either adds it or fails
   with "Content already exists" (auto-add was first); then look the item id up instead:
   `gh project item-add 5 --owner DKoelzer01 --url <issue url> --format json --jq .id` gives the item id, then
@@ -193,10 +249,23 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
 - Plan 2 (early game, done): https://claude.ai/artifact/RL22kZ7VBMugAFgGRPS3cE
 - Plan 3 (Terra tiers, space): https://claude.ai/artifact/XVw45AC6vwYitbdhaeP2xL - M21-M24 done (M24 on PR #28).
 - Plan 4 (flowing water): https://claude.ai/artifact/27xL5j1zkirSe8pDZgPz59
-- **Current plans:** Plan 7 (erosion-shaped terrain + all-voxel water, #351):
-  https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg - merged into develop (#371) on by default since the #362 gate (RAYLIBGAME_EROSION=0: off).
-  Plan 8: https://claude.ai/artifact/LFnRaLaCPdgEPsuX7L6dJb (PR #374, branch m51-plan8, waits on the user's playtest).
-  Roadmap trackers: #158 features, #128 graphics, #303 multiplayer; playtest findings #187, #250.
+- **Current plans and design docs (2026-11-21)** - read your area's doc before starting:
+  - Plan 11, body-relative physics frames (#667, **P0**, Water): https://claude.ai/artifact/2nJjsd4cSHYP6rj4UAnxSK.
+    Behind `RAYLIBGAME_FRAMES=1` while it lands (F3+); code reading positions near a body uses `toLocalOf`. F5 (vehicles
+    and stations), F7 (save format) next; Space's star/orbit, stations and lander work waits on them.
+  - Factory and Progression (the ladder #1271, research #1030, factory sim #997): https://claude.ai/artifact/F68hF9Yd8aXM4J9KLeGPCn.
+  - Plan 13, Space (#1262; tiers 8-15): https://claude.ai/artifact/NaNNSfcfJs6r1an5SFU7m7.
+  - Combat (#1215-#1222; decisions in its section 14): https://claude.ai/artifact/EH4w7X5sJ6YS6Hm9vMJ3XJ.
+  - Plan 12, creatures (#1223-#1228): https://claude.ai/artifact/BAuGD4A613nu9LZyuDvjPG.
+  - Magic (#1001, issues #1248-#1259; decisions in section 14; `RAYLIBGAME_MAGIC=1`): https://claude.ai/artifact/QiR81H8phuCeuERszbm5Nf.
+  - Audio (#1003, #1238-#1246, Steam Audio #1020; v2 behind `RAYLIBGAME_AUDIO_V2=1`, fetch the SDK with
+    tools/fetch_steamaudio.sh; voice chat is OUT of scope): https://claude.ai/artifact/2DUKL3mr2JMLTfZRFN3ccA.
+  - Overhangs and arches (#999, #1231-#1237): https://claude.ai/artifact/8nKfS1yZy41f2i2HXsqthH.
+  - Caves, Plan 10 (#615): https://claude.ai/artifact/C3DCqMnRnuc2Nni1BeeZjA. Plan 9 (formations, #586, done):
+    https://claude.ai/artifact/DtYGaq5ruSCQ2hcfEBKJ2B. Accessibility (#1017): https://claude.ai/artifact/Pkxw3MRbMvZA1PdA4p3yeQ.
+  - Trackers: #158 features, #128 graphics, #303 multiplayer, #719 dungeons, #1429 multiblocks (later).
+- Earlier plans (done or superseded): Plan 7 erosion terrain (#351, https://claude.ai/artifact/EXix8zmVSS2WRUSLAsovJg,
+  default since #362, `RAYLIBGAME_EROSION=0` = off), Plan 8 (https://claude.ai/artifact/LFnRaLaCPdgEPsuX7L6dJb).
 - Plan 7 details: with erosion (the default) the 3D band is off (RAYLIBGAME_3D=0/1 overrides). Gullies (ErosionGullies,
   RAYLIBGAME_GULLIES=0 A/B); glacial (RAYLIBGAME_GLACIAL); rivers on the bake grid, carve-only water (--water-stats raises
   nothing). Tests: --test-flow-sea, --test-pond, --test-pump-hand, --test-hover. Open questions for the user are on #351.
@@ -240,8 +309,27 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   (#311): `--host <save> [--port N] [--seed N] [--autosave-minutes N]` loads the save (keeping its seed) or creates it (the
   --seed, else a printed random seed), autosaves every 30 min (0 = off) and on shutdown, runs `--headless` and answers "join" with
   the JoinInfo + shower (src/space/hostserver.*); `--test-host` (loopback client; SKIP without GNS), `--test-shower`.
-- Inventory: 45 grid cells + 10 hotbar cells (indices 45-54). `Hotbar_Bind` moves a stack (items must be carried);
-  `Inventory::preferred` = the selected hotbar cell is used first.
+- Inventory: `Inventory::kGrid` (50) grid cells drawn 10 wide, then 10 hotbar cells (50-59), then the off hand (60)
+  (#495; `kOldGrid` = 45 for old saves). Chests have as many cells as the grid. `Hotbar_Bind` moves a stack (items must
+  be carried); `Inventory::preferred` = the selected hotbar cell is used first.
+- Streaming budget (#1202): chunk work per frame is capped by a time budget (`RAYLIBGAME_STREAM_BUDGET=0` = off,
+  `_BUSY=0` = the old frame-time measure). Anything the player must see at once bypasses it: closing the telescope
+  hit 300 ms frames until zoom changes went urgent (#1424/#1441).
+- Shader compiles (#1386): compute shaders compile asynchronously where the driver supports it
+  (`RAYLIBGAME_ASYNC_SHADERS=0` = off; off by default on the headless Linux platform, where NVIDIA's driver does the
+  work on the first status read anyway). `RAYLIBGAME_COLD_SHADERS=1` forces a cold compile to measure it: a cold cache
+  is ~2.9 s for fluid_step.comp + 2.5 s for terrain_density.comp here, ~37 s on the runner (#1047).
+- Fluids: the U-bend pressure pass (#1168/#1395) is CPU-only and opt-in (`RAYLIBGAME_FLUID_PRESSURE=1`) until
+  fluid_step.comp has it - CPU and GPU kernels must agree (`RAYLIBGAME_FLUID_TRACE=1` = the parity trace, #968). Rivers
+  are infinite carved water with no dry reaches: a dry river bed is a bug (#1438). Shore stripes while a channel fills
+  (#1091) are a moving flow pattern held by two deliberate rules (giver-not-resting, minSpread), parked for a spreading
+  design.
+- Fly camera (#1436): on the frame its follow mode flips (spinning frame <-> centred at 2 radii) or its reference body
+  changes (SOI), it is carried with the body and mode it was recorded in; skipping that carry left it a frame of orbital
+  motion behind (3 m hops at the moon).
+- Factory (#997): machines sleep when idle (`RAYLIBGAME_FACTORY_SLEEP=0` = off), distant factories run as a summary
+  sim (`RAYLIBGAME_FACTORY_SUMMARY=0` = off), worker threads <= 4 and <= half the cores (`RAYLIBGAME_FACTORY_WORKERS`).
+- Weather captures: `RAYLIBGAME_WEATHER_FORCE=0..3` (clear .. storm).
 - Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
   together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
   mouth). Graph tunnels (step 2 #995, on by default since step 3 #1022; `RAYLIBGAME_CAVES=0` = the old noise caves): per-256 m-cell passages,
@@ -356,6 +444,30 @@ Water (Plan 4, user answers)
   with marching cubes on the fill amounts. Replaces the per-column span design.
 - Fluid cells are 0.25 m by default (user, 2026-11-17, #714); `RAYLIBGAME_FLUID_CELL=1` is the old 1 m grid (opt-in).
   A save records its cell size; sites saved at another size are dropped on load (their simulated water starts over).
+
+Rulings 2026-11-19 to 2026-11-21 (user)
+- Order: Plan 11 body frames (#667) is P0; the research/tech tree (#1030) follows it. Combat 5-8 (#1219-#1222) are built in
+  the `ladder` branch now; the ladder lands in m84 once, after the tiered machines and the user's playtest.
+- The ladder (#1271): tiers 0-7 rewritten; Progression builds the anvil (shared with combat 5); research gates hand
+  recipes, machine placement AND machine recipes; machines removed by the rework are refunded into chests; tiers 8+
+  follow Plan 13 (8 Orbit+Luna, 9 Belt, 10 Tempest+fusion; Space writes them). The macerator is core at tier 4; tier 4
+  adds an LV assembler.
+- Tiered machines (#1427, part of the ladder rework): every machine gets a variant for each tier after the one it's
+  introduced in, each with its own recipe (not crafted from the previous tier's machine). A tier unlocks its recipes;
+  lower-tier recipes run in higher-tier machines, overclocked x2 speed for x3 EU/t per tier step, no cap. Non-electric
+  machines serve tiers 1-3; from LV, electric tiered successors replace them.
+- Disassembly: an assembler mode, one recipe level down (direct inputs). Yield by the item's tier vs the assembler's:
+  same 50%, one above 10%, two above 1%, more 0; one below 75%, two or more below 100%. Whole parts (circuits,
+  components) come back as a % chance per unit; raw resources come back exactly, scaled by the yield.
+- Multiblocks (#1429, later): built from many subcomponents (newer GregTech / Immersive Engineering style), not "a bigger
+  cube" except where that makes sense.
+- Alchemy: one generic essence fluid with the aspect tagged per container/network; spills fizzle (no world spill yet,
+  #1414). No ley thread (#1249).
+- Ladders (#1105): made from planks; W climbs; no stamina cost.
+- Accessibility (#1017): colour-vision setting and cues (#1432) -> simulated colour blindness check (#1433) -> controllers,
+  which wait for Steam Input (#1434).
+- Slideshow (#1071): UI/UX builds hand-placed shots. #1170 horizon culling: closed as measured (<= 3% gain).
+- Bench/scenario runs should flag frames where the camera or player is inside solid (#1442).
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.
