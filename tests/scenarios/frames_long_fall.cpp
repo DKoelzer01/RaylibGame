@@ -55,7 +55,7 @@ Vector3 DryNear(const PlanetField& f, Vector3 dir, const DVec3& axis) {
 }
 }
 
-SCENARIO("frames/long-fall") {
+static void BuildLongFall(ScenarioDef& s) {
     s.tags = { "frames", "physics", "planet" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 420.0;
@@ -100,7 +100,8 @@ SCENARIO("frames/long-fall") {
             st.maxLanding = std::max(st.maxLanding, (double)player.landingSpeed); // into the floor (its normal: less on a slope)
             if (!player.grounded) { // the fall speed against the turning ground, the last airborne frame before touchdown
                 const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-                st.fallSpeed = Vector3Length(Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
+                // (with RAYLIBGAME_FRAMES=1 the airborne velocity is the frame velocity, against the ground already: F2b)
+                st.fallSpeed = Frames_On() ? Vector3Length(player.velocity) : Vector3Length(Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
             }
             if (!player.grounded) return false;
             const double t = c.T - st.t0;
@@ -132,3 +133,7 @@ SCENARIO("frames/long-fall") {
         });
     }
 }
+
+SCENARIO("frames/long-fall") { BuildLongFall(s); }
+// Plan 11 F2b (#1146): the same with RAYLIBGAME_FRAMES=1 (the player's velocity in the Fixed frame, Frames_Acceleration's spin forces).
+SCENARIO("frames/long-fall-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; BuildLongFall(s); }

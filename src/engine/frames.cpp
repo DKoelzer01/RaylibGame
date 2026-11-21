@@ -7,6 +7,15 @@
 
 // Plan 11 (#667). See frames.h.
 
+// Read on first use, not in a static initialiser: a scenario's s.env is set inside main() (Scenario_PrepareArgs), after
+// static initialisers ran - read there, every "-pose" scenario ran with the switch off.
+static int gFramesOn = -1; // -1: not read yet
+bool Frames_On() {
+    if (gFramesOn < 0) { const char* e = getenv("RAYLIBGAME_FRAMES"); gFramesOn = (e && e[0] == '1') ? 1 : 0; }
+    return gFramesOn == 1;
+}
+void Frames_SetOn(bool on) { gFramesOn = on ? 1 : 0; }
+
 namespace {
 constexpr double kInf = 1e300;
 DVec3 Cross(const DVec3& a, const DVec3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }

@@ -9,6 +9,7 @@
 #include "combat.h"
 #include "melee.h"
 #include "creatures.h" // (#1223)
+#include "footsteps.h" // (#1240) step noise for creature hearing
 #include "claims.h"
 #include "headless.h"
 #include "net.h"
@@ -557,6 +558,13 @@ bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& 
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
+int Animals_AimedIndex() { return aimed >= 0 && aimed < (int)animals.size() ? aimed : -1; }
+std::pair<std::string, std::string> Animals_SpeciesOf(int i) {
+    LoadSpecies();
+    if (i < 0 || i >= (int)animals.size() || animals[i].species < 0 || animals[i].species >= (int)species.size()) return {};
+    const Species& s = species[animals[i].species];
+    return { s.id, s.name };
+}
 bool Animals_Aiming() { return aimed >= 0 || hitLatch || Animals_MeleeBusy(); }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
@@ -778,7 +786,6 @@ int Animals_CaveSpawned() { return caveSpawned; }
 bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && animals[i].clinging; }
 int Animals_LurkerDrops() { return lurkerDrops; }
 double Animals_Clock() { return simClock; }
-const std::string& Animals_SpeciesOf(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? species[animals[i].species].id : none; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
 void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }
@@ -812,18 +819,24 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
     if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
-    // (#1223) The local player's noise, for creatures' hearing: footsteps every half second (louder sprinting), and each
-    // dig or swing stroke.
+    // (#1223) Players' noise, for creatures' hearing. Footsteps and landings come from the footsteps module (#1240: each step's
+    // loudness by surface, pace and posture - crouched and prone are quiet); 1 there (walking on stone) is 0.4 here (a walk is
+    // heard within 0.4 x a creature's hearing). Each dig or swing stroke of the local player is loud (melee hits: MeleeFrame).
     {
-        static double lastStep = -1e9;
+        static double lastStepTime = -1e9;
         static int lastSwings = 0;
-        if (here && !player.flyMode && !survival.dead) {
-            const float sp = Vector3Length(player.velocity);
-            if (player.grounded && sp > 0.5f && simClock - lastStep > 0.5 && player.posture == Player::Posture::Stand) { // (#1224) sneaking (crouched, prone): silent
-                Noise_Emit(here->id, playerLocal, sp > player.walkSpeed * 1.2f ? NoiseTune::kSprint : NoiseTune::kWalk, simClock, kPlayerPercept);
-                lastStep = simClock;
-            }
-            if (terrainTool.swings != lastSwings) { lastSwings = terrainTool.swings; Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock, kPlayerPercept); }
+        for (const StepNoise& n : Footsteps_RecentNoises()) {
+            if (n.time <= lastStepTime) continue;
+            lastStepTime = n.time;
+            Planetoid* b = nullptr;
+            if (n.who == 0) b = here;
+            else for (const AnimalTarget& t : gAnimalTargets) if (t.session == n.who) { b = Planetoid::findNet(t.body); break; }
+            if (!b) continue;
+            Noise_Emit(b->id, b->toLocalD(n.pos).toFloat(), n.loudness * 0.4f, simClock, kPlayerPercept | n.who);
+        }
+        if (here && !player.flyMode && !survival.dead && terrainTool.swings != lastSwings) {
+            lastSwings = terrainTool.swings;
+            Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock, kPlayerPercept);
         }
     }
     // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
@@ -1085,7 +1098,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 a.state = State::Walk;
                 toward = Vector3Subtract(bo.goal, a.pos); steer = true; speed = s.walk;
             }
-            // (#1224) Ceiling clingers (the tunnel lurker): idle in a cave with a ceiling 2.2-12 m over it, it climbs up and waits
+            // (#1224) Ceiling clingers (the tunnel lurker): idle in a cave with a ceiling 2.2-20 m over it (chambers run tall), it climbs up and waits
             // there. Prey heard or seen right under it (within dropRange sideways): a rattle (the telegraph), and 0.35 s later it
             // drops onto them (damage x dropScale, a heavy hit). Prey it hunts but that stays clear for 3 s: it drops anyway
             // and gives chase. Hit or staggered: it falls.
@@ -1134,7 +1147,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     if (a.clinging) { a.moveSpeed = 0.0f; a.state = State::Rest; continue; } // hanging on: no walking
                 } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0) {
                     float up = 0.0f; bool roof = false;
-                    for (float h = 0.5f; h <= 12.0f; h += 0.25f)
+                    for (float h = 0.5f; h <= 20.0f; h += 0.25f)
                         if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; }
                     if (roof && up >= 2.2f) {
                         a.clingFloor = a.pos;

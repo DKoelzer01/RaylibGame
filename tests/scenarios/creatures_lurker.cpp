@@ -115,7 +115,12 @@ SCENARIO("creatures/lurker-ceiling") {
         player.posture = Player::Posture::Crouch;
         const int i = Animals_FindNet(S.net);
         if (i < 0) { c.fail("the lurker is gone"); return true; }
-        if (!Animals_Clinging(i)) { c.waitingFor("the lurker on the ceiling"); return false; }
+        if (!Animals_Clinging(i)) {
+            const Vector3 p = Animals_Position(i), u = Vector3Normalize(p);
+            float roof = -1.0f; for (float h = 0.5f; h <= 30.0f; h += 0.5f) if (c.field->density(Vector3Add(p, Vector3Scale(u, h)), nullptr) >= ISO_LEVEL) { roof = h; break; }
+            c.waitingFor("the lurker on the ceiling: depth " + std::to_string(c.field->radius + c.field->elevation(u) - Vector3Length(p)) + " m, roof " + std::to_string(roof) + " m up, from the floor point " + std::to_string(Vector3Distance(p, S.floor)) + " m");
+            return false;
+        }
         c.check("clinging", true);
         const Vector3 p = Animals_Position(i);
         c.gt("up off the floor (m)", Vector3DotProduct(Vector3Subtract(p, S.floor), S.up), 1.5);

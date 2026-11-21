@@ -77,6 +77,15 @@ const char* PartName(PartType t) {
         case PartType::Gate: return "gate";
         case PartType::Cabin: return "cabin";
         case PartType::StationCore: return "station_core";
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand crank";
+        case PartType::StressGauge: return "stress gauge";
+        case PartType::Millstone: return "millstone";
+        case PartType::Saw: return "mechanical saw";
+        case PartType::Press: return "mechanical press";
         default: return "?";
     }
 }
@@ -117,6 +126,9 @@ const char* PartMachineName(PartType t) {
         case PartType::PrecisionAssembler: return "precision_assembler";
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
+        case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
+        case PartType::Saw: return "mechanical_saw";
+        case PartType::Press: return "mechanical_press";
         default: return nullptr;
     }
 }
@@ -146,6 +158,12 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large_cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand_crank";
+        case PartType::StressGauge: return "stress_gauge";
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -262,6 +280,10 @@ static Color PartColor(PartType t) {
         case PartType::Gate: return { 165, 120, 70, 255 };
         case PartType::Cabin: return { 200, 205, 215, 255 };
         case PartType::StationCore: return { 230, 220, 120, 255 };
+        case PartType::Gearbox: return { 150, 112, 70, 255 };     // (#1269) a wooden casing
+        case PartType::StressGauge: return { 160, 120, 76, 255 };
+        case PartType::Millstone: return { 140, 138, 132, 255 };
+        case PartType::Saw: case PartType::Press: return { 146, 108, 68, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -308,6 +330,8 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
+        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: return PatPlanks; // (#1269) wooden frames
+        case PartType::Millstone: return PatStone;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -319,7 +343,13 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     CellShape full;
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
+        case PartType::Gearbox: case PartType::StressGauge: // (#1269)
             out.push_back({ { 0, 0, 0 }, full }); break;
+        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: { // (#1269) the whole cell, but not "full":
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
@@ -327,6 +357,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
+        case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs
@@ -756,6 +787,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
         const Part& pp = parts[ref.part];
+        if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)

@@ -1762,9 +1762,9 @@ void GameUI_Draw(Scene& world) {
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
         ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
-        if (ScreenTab("Database", "", databaseOpen, smallW, tabH)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
+        if (ScreenTab("Database", "", databaseOpen, smallW, tabH, true)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
         ImGui::SameLine(0.0f, 6.0f * s);
-        if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
+        if (ScreenTab("Close", "Esc", false, smallW, tabH, true)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
         gGridCell = SlotCellFor(ImGui::GetContentRegionAvail()); // (#1148) one slot size for the Inventory, Crafting and Catalog pages

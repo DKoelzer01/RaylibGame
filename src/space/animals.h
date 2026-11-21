@@ -30,6 +30,8 @@ void Animals_DrawHUD();
 struct PlayerInput;
 void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
+int Animals_AimedIndex();                 // the animal under the crosshair, -1 none (#1249: studying by looking)
+std::pair<std::string, std::string> Animals_SpeciesOf(int index); // its species (id, display name); empty if none
 // (#1216) Melee in phases (melee.h): a swing under way (the terrain tool holds off too), its pose for the held tool (phase:
 // 1 wind-up, 2 hit window, 3 recovery; f its progress; charge 0..1 the heavy's extra pull; back: the chained light), the soft
 // lock-on (the view eases toward it; 0 none), hits landed (tests).
@@ -41,7 +43,6 @@ int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
 // (#1223) Cave creature spawning: spawned so far, the sites found in the last pass; spawn on the next update; forget the chunks.
-const std::string& Animals_SpeciesOf(int index); // (#1223 tests) its species id ("" none)
 bool Animals_Clinging(int index);  // (#1224 tests) on a cave ceiling
 int Animals_LurkerDrops();         // (#1224 tests) ceiling drops that landed on a player
 double Animals_Clock();            // (#1224 tests) the animals' sim clock (noise events are stamped with it)
