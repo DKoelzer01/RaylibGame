@@ -515,6 +515,17 @@ namespace {
         add("craft and place a macerator (#996: a tier 4 core node now, the user's decision)", [] {
             return Craft("lv_hull", 1) && Craft("copper_wire", 8) && Craft("basic_circuit", 2) && Craft("macerator", 1) && Place("macerator", PartType::Macerator, { 6, 0, 8 });
         });
+        add("tier 4's tasks all done (its research milestone waits for the LV assembler)", [] {
+            static double told = 0.0;
+            bool all = true;
+            for (int k = 0; k < QuestBook_TaskCount(4); ++k)
+                if (!QuestBook_TaskDone(4, k)) {
+                    all = false;
+                    if (GetTime() - told > 10.0) printf("bench: progression: tier 4 task not done yet: %s\n", QuestBook_TaskText(4, k));
+                }
+            if (!all && GetTime() - told > 10.0) told = GetTime();
+            return all;
+        });
         if (full) BuildFull();
     }
 
