@@ -30,6 +30,44 @@ void Animals_DrawHUD();
 struct PlayerInput;
 void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
+int Animals_AimedIndex();                 // the animal under the crosshair, -1 none (#1249: studying by looking)
+std::pair<std::string, std::string> Animals_SpeciesOf(int index); // its species (id, display name); empty if none
+// (#1216) Melee in phases (melee.h): a swing under way (the terrain tool holds off too), its pose for the held tool (phase:
+// 1 wind-up, 2 hit window, 3 recovery; f its progress; charge 0..1 the heavy's extra pull; back: the chained light), the soft
+// lock-on (the view eases toward it; 0 none), hits landed (tests).
+bool Animals_MeleeBusy();
+bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back);
+void Animals_LockOnView(Scene& world, float dt);
+uint64_t Animals_LockOn();
+int Animals_MeleeHits();
+const struct MeleeState& Animals_Melee();
+void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
+// (#1223) Cave creature spawning: spawned so far, the sites found in the last pass; spawn on the next update; forget the chunks.
+bool Animals_Clinging(int index);  // (#1224 tests) on a cave ceiling
+Vector3 Animals_ClingFloor(int index); // (#1224 tests) the floor under where it hangs (where it climbed from)
+int Animals_LurkerDrops();         // (#1224 tests) ceiling drops that landed on a player
+double Animals_Clock();            // (#1224 tests) the animals' sim clock (noise events are stamped with it)
+// (#1225) Torches creatures carry (lights for the frame, after Events_AddLights); thrown projectiles and thefts (tests).
+void Animals_AddLights(Scene& world);
+// (#1343, #1364) Creature shots and events for clients: the host takes what happened since its last call; a client applies a
+// message (the shots fly here too, the events reach gCreatureEvent).
+struct MsgCreatureFx;
+void Animals_TakeFx(MsgCreatureFx& out);
+void Animals_ApplyFx(const MsgCreatureFx& m);
+int Animals_ProjectilesThrown();
+int Animals_ProjectileHits();
+int Animals_Thefts();
+int Animals_ShieldBlocks();               // (#1227 tests) hits a front shield took
+const char* Animals_MoodName(int index);  // (#1227 tests) its brain's mood ("sleep", "chase", ...)
+int Animals_OozeSplits();                 // (#1226 tests) oozes cut in two
+int Animals_Generation(int index);        // (#1226 tests) 0 whole, 1-2 split off
+const std::string& Animals_Ore(int index); // (#1226 tests) an ooze's ore
+bool Animals_Thrower(int index);
+void Animals_TestSetGroup(int index, uint64_t group, bool thrower); // (#1225 tests) make a group by hand
+int Animals_CaveSpawned();
+int Animals_CaveSites();
+void Animals_CaveSpawnNow();
+void Animals_ResetCaveSpawns();
 void Animals_Reset();
 void Animals_Save(FILE* f);
 bool Animals_LoadLine(const char* tok, FILE* f);
@@ -47,6 +85,10 @@ double Animals_BiteWindUp();            // s from a hostile's warning to its str
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
+// (#1215) A typed hit (damage.h): through the species' resistances, with its status effect; true if it fell. dealtOut: the damage.
+bool Animals_HitEvent(int index, const struct DamageEvent& e, float* dealtOut = nullptr);
+const struct StatusState* Animals_Status(int index);         // (#1215 tests) its status effects (nullptr: no such animal)
+const struct PoiseState* Animals_Poise(int index);           // (#1217 tests) its poise and stagger (nullptr: no such animal)
 bool Animals_Feed(int index);                                  // with the player's food for it
 int Animals_YoungCount();
 double Animals_LastUpdateMs();

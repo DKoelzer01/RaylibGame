@@ -5,6 +5,7 @@
 // for the zones "blueprint place" and "blueprint foundations").
 #include "scenario.h"
 #include "blueprint.h"
+#include "buildtool.h"
 #include "plots.h"
 #include "terraintool.h"
 #include "world.h"
@@ -19,7 +20,7 @@ Blueprint Slab(int w, int d, int h) { // w x d cubes, h layers
         bp.parts.push_back({ PartType::Cube, { x, y, z }, 0, (uint8_t)mat });
     return bp;
 }
-struct Run { int parts = 0; double placeMs = 0.0, worstFrameMs = 0.0; int placed = 0; };
+struct Run { int parts = 0; double placeMs = 0.0, worstFrameMs = 0.0; int placed = 0, drainFrames = 0, pendingAfter = 0; }; // drain: (#1183) frames the queued foundations took
 Run runs[2];
 int stage = 0;
 double settleUntil = 0.0;
@@ -38,7 +39,9 @@ SCENARIO("perf/blueprint-place") {
         if (stage == 1 || stage == 3) { // the second after a placement: its worst frame
             Run& r = runs[stage / 2];
             if (c.T > settleUntil - 0.95) r.worstFrameMs = std::max(r.worstFrameMs, frameMs);
+            if (BuildTool_PendingFoundations() > 0) ++r.drainFrames; // (#1183) still being laid, a share a frame
             if (c.T < settleUntil) return false;
+            r.pendingAfter = BuildTool_PendingFoundations();
             ++stage;
             return false;
         }
@@ -47,6 +50,8 @@ SCENARIO("perf/blueprint-place") {
                 c.eq(TextFormat("%d-part blueprint: every part placed", r.parts), r.placed, r.parts);
                 c.metric(TextFormat("%d-part blueprint: the placement call", r.parts), r.placeMs, "ms");
                 c.metric(TextFormat("%d-part blueprint: the worst frame in the next second", r.parts), r.worstFrameMs, "ms");
+                c.metric(TextFormat("%d-part blueprint: frames until its foundations were all laid", r.parts), r.drainFrames, "frames");
+                c.eq(TextFormat("%d-part blueprint: its foundations all laid within the second", r.parts), r.pendingAfter, 0);
             }
             return true;
         }

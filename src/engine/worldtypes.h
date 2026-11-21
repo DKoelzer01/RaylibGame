@@ -11,6 +11,7 @@
 #include "object.h"
 #include "voxel.h"
 #include "bodies.h"
+#include "worldprofile.h"
 #include "foliage.h"
 #include "trees.h"
 #include "farsphere.h"
@@ -79,6 +80,7 @@ public:
     uint64_t netId = 0;                                  // stable across runs and machines (netid.h, #317); 0 until assigned
     unsigned int seed;
     BodyKind kind = BodyKind::Asteroid;
+    std::shared_ptr<const WorldProfile> profile;         // planets and moons: what the world is like (worldprofile.h, #1274); null otherwise
     float surfaceGravity = 9.81f;                        // m/s^2 at gravityRadius
     float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;

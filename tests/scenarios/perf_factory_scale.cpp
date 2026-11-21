@@ -35,7 +35,7 @@ uint64_t body0 = 0; uint32_t plot0 = 0; int mac0 = -1, chest0 = -1; // the first
 }
 
 SCENARIO("perf/factory-scale") {
-    s.tags = { "perf", "factory" };
+    s.tags = { "perf", "factory-scale" }; // (not "factory": the runner runs that tag, and this one is a quiet-machine timing)
     s.world = ScenarioWorld::Sandbox;
     s.record = false;
     s.timeout = 150.0;

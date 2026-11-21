@@ -18,6 +18,7 @@
 #include "simclock.h"
 #include "factory.h"
 #include "blueprint.h"
+#include <deque>
 #include "claims.h"
 #include "playerrecord.h"
 #include "menus.h"
@@ -61,6 +62,16 @@ bool IsMachineItem(const std::string& id) {
 namespace {
     bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
     std::vector<TerrainEdit> foundationBatch;
+    // (#1183) A blueprint's foundations land over the next frames: the edits wait here (with their body) and each frame
+    // applies them in small groups until kFoundationFrameMs is spent; the parts are placed at once. (The terrain edit was
+    // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
+    struct PendingFoundation { uint64_t body; TerrainEdit edit; };
+    std::deque<PendingFoundation> foundationsPending;
+    // A frame's share for foundations: at 3 ms a 60-part placement lays in ~4 frames, its worst frame 6.7 ms (from ~12 ms
+    // in one frame; perf/blueprint-place, 2026-11-21). An edit costs ~0.16 ms; a 1 ms budget (11 frames) measured no lower
+    // worst frame (8-12 ms either way: the cost after a placement is not the edit). RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 3.0; }();
+    constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
 }
 void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
     static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
@@ -69,8 +80,23 @@ void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch
 void BuildTool_EndFoundationBatch(Planetoid& body) {
     PROFILE_SCOPE("blueprint foundations");
     foundationBatching = false;
-    if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    static const bool async = !(getenv("RAYLIBGAME_BLUEPRINT_ASYNC") && getenv("RAYLIBGAME_BLUEPRINT_ASYNC")[0] == '0');
+    if (async) for (const TerrainEdit& e : foundationBatch) foundationsPending.push_back({ body.id, e });
+    else if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
     foundationBatch.clear();
+}
+int BuildTool_PendingFoundations() { return (int)foundationsPending.size(); }
+void BuildTool_ApplyPendingFoundations(double budgetMs) {
+    if (foundationsPending.empty()) return;
+    PROFILE_SCOPE("blueprint foundations (queued)");
+    const double t0 = GetTime();
+    std::vector<TerrainEdit> group;
+    while (!foundationsPending.empty() && (budgetMs <= 0.0 || (GetTime() - t0) * 1000.0 < budgetMs)) {
+        const uint64_t id = foundationsPending.front().body;
+        group.clear();
+        while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+    }
 }
 
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
@@ -270,6 +296,7 @@ void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part&
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
+    BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
@@ -579,6 +606,7 @@ namespace {
     struct FarmAim { uint64_t body = 0; Vector3 local{}; bool on = false; } farmAim; // (#1085) farmland ground or a crop, aimed
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
+    double crankAt = -10.0; // (#1269) the last frame a hand crank was turned (GetTime)
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
@@ -595,7 +623,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -622,6 +650,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
+    if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it
+        if (!buildTool.active && in.down(Act::Secondary)) { Factory::Crank(machineAim.body, machineAim.plot, machineAim.part); crankAt = GetTime(); }
+        return;
+    }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) return; // shafts, cogs, gearboxes, gauges: looked at only
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
@@ -725,6 +758,22 @@ void Machine_DrawHUD() {
         }
         return;
     }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) { // (#1269) a shaft line: its speed and its network's load
+        const RotationView rv = Factory::RotationAt(machineAim.body, machineAim.plot, machineAim.part);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        const bool crank = machineAim.type == PartType::HandCrank;
+        DrawRectangle(x - 8, y - 6, 420, crank ? 100 : 76, Fade(BLACK, 0.55f));
+        DrawText(PartName(machineAim.type), x, y, 20, SKYBLUE);
+        if (!rv.valid) { DrawText("...", x, y + 24, 16, RAYWHITE); return; }
+        const Color amber = { 255, 190, 70, 255 };
+        if (rv.jam[0]) DrawText(TextFormat("jammed: %s", rv.jam), x, y + 24, 16, Color{ 255, 110, 90, 255 });
+        else DrawText(TextFormat("%.1f RPM  (%s)", fabsf(rv.rpm), rv.status), x, y + 24, 16, RAYWHITE);
+        if (rv.demand > 0 || rv.capacity > 0)
+            DrawText(TextFormat("stress %d%% - running at %d%%  (%d / %d SU)", rv.stressPercent, rv.speedPercent, rv.demand, rv.capacity), x, y + 44, 16, rv.stressPercent > 100 ? amber : RAYWHITE);
+        else DrawText("no load", x, y + 44, 16, RAYWHITE);
+        if (crank) DrawText(GetTime() - crankAt < 0.2 ? "turning" : "hold RMB to turn it", x, y + 68, 16, GetTime() - crankAt < 0.2 ? Color{ 120, 200, 255, 255 } : RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::Cable) { // its power network (#570): what feeds it and what flowed in the last tick
         const CableView cv = Factory::Cable(machineAim.body, machineAim.plot, machineAim.cell);
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
@@ -755,6 +804,11 @@ void Machine_DrawHUD() {
         DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
     }
     int ty = y + 40;
+    if (v.rotation) { // (#1269) the shaft it runs on
+        DrawRectangle(x - 8, y + 66 + 20 * lines, w, 22, Fade(BLACK, 0.55f));
+        DrawText(TextFormat("%.1f RPM (%s), stress %d%% - running at %d%%", v.rpm, v.rotStatus, v.stressPercent, v.speedPercent), x, y + 68 + 20 * lines, 16,
+                 v.stressPercent > 100 ? Color{ 255, 190, 70, 255 } : RAYWHITE);
+    }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);

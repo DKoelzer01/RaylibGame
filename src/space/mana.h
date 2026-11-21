@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 constexpr int kManaMaxKinds = 16; // decided (2026-11-21): 16 kinds max in v1
@@ -41,3 +42,15 @@ bool Mana_Cancels(int a, int b); // a and b are each other's inverse
 int Mana_Aether();               // the cancel kind
 // Conversion rates (mana.txt "rate" lines): combine, split, invert, cancel, alone, from_aether. 0 if unknown.
 float Mana_Rate(const std::string& name);
+
+// The algebra on amounts (#1252, magic step 5; the doc 3.1). Each takes what it is given and says what it used and what
+// comes out; `bonus` (0..1) closes the gap to 90% that research pages and machines earn later (0 = the base rates).
+// Two kinds may share a jar or a pipe unless they cancel (a kind and its inverse annihilate).
+bool Mana_CanShare(int a, int b);
+struct ManaYield { int kind = -1; float out = 0.0f, usedA = 0.0f, usedB = 0.0f; };
+ManaYield Mana_CombineAmounts(int a, float amountA, int b, float amountB, float bonus = 0.0f); // A + B (or A + ~A: Aether)
+ManaYield Mana_InvertAmount(int a, float amount, float bonus = 0.0f);                       // A -> ~A
+ManaYield Mana_ToAether(int a, float amount, float bonus = 0.0f);                           // a kind alone -> Aether
+ManaYield Mana_FromAether(int base, float aether, float bonus = 0.0f);                       // Aether -> a base kind
+// Splitting a compound back: `out` of each of its two parts (kinds in `kind` and the returned pair).
+std::pair<ManaYield, ManaYield> Mana_Split(int compound, float amount, float bonus = 0.0f);

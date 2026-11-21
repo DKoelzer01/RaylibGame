@@ -7,6 +7,7 @@
 #include "worldtypes.h"
 #include "SimplexNoise.h"
 #include "menus.h"    // settings.reduceFlashing (#1162)
+#include "soundscape.h" // (#1241) thunder
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -163,7 +164,11 @@ void Weather_Update(Scene& world, float dt, float realDt) {
             flashAz = az; flashEl = el;
         }
     }
-    if (thunderAt > 0.0 && GameClock() > thunderAt) { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); thunderAt = -1.0; }
+    if (thunderAt > 0.0 && GameClock() > thunderAt) {
+        if (Audio_V2()) Soundscape_Thunder(world, (float)(thunderAt - lastFlash)); // (#1241) a rumble from the strike's side
+        else { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); }
+        thunderAt = -1.0;
+    }
     {
         const float ts = (float)(GameClock() - lastFlash);
         float e = 0.0f;
