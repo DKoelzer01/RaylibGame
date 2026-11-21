@@ -13,6 +13,7 @@
 #include "net.h"
 #include "netid.h"
 #include "inventory.h"
+#include "itemdata.h"
 #include "player.h"
 #include "playerrecord.h"
 #include "teamquests.h"
@@ -96,6 +97,7 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         const InvSlot& s = t.inv.grid()[i];
         if (!s.empty()) fprintf(f, "slot %d %s %lld\n", i, s.id.c_str(), (long long)s.centi);
         if (!s.empty() && s.heat > 0.0f) fprintf(f, "slot_heat %d %.3f\n", i, s.heat); // still hot (#580)
+        if (!s.empty() && s.hasData() && ItemData::Valid(s.data)) fprintf(f, "slot_data %d %s\n", i, s.data.c_str()); // (#1446) its own record
     }
     if (t.local) {
         fprintf(f, "creative %d\n", terrainTool.creative ? 1 : 0);
@@ -187,6 +189,19 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         if (read && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
             InvSlot& s = t.inv.grid()[i];
             if (s.empty()) { s.id = id; s.centi = c; } else { ++t.inv.muted; t.inv.addAmount(id, c / 100.0); --t.inv.muted; } // no pickup feed for a load
+        }
+        return true;
+    }
+    if (strcmp(tok, "slot_data") == 0) { // (#1446) after its slot line: that one item's own record (no spaces, see itemdata.h)
+        int i = 0; char data[512] = {};
+        if (fscanf(f, " %d %511s", &i, data) == 2 && i >= 0 && i < Inventory::kCells && !t.inv.grid()[i].empty() && ItemData::Valid(data)) {
+            InvSlot& s = t.inv.grid()[i];
+            s.data = data;
+            if (s.centi > 100) { // a plain stack loaded into this cell (a save from before): one unit keeps the record, the rest goes elsewhere
+                const int64_t extra = s.centi - 100;
+                s.centi = 100;
+                ++t.inv.muted; t.inv.addAmount(s.id, extra / 100.0); --t.inv.muted;
+            }
         }
         return true;
     }
@@ -699,6 +714,28 @@ TEST_F(SaveTest, PlayerRecordRoundTrip) {
     EXPECT_TRUE(sv2.hasBed); EXPECT_EQ(sv2.bedBody, "terra"); EXPECT_EQ(sv2.bedPlot, 4u); EXPECT_EQ(sv2.bedCell[0], -2); EXPECT_EQ(sv2.bedCell[2], 9);
     EXPECT_NE(m2.kept.find("hotbar 0 45"), std::string::npos) << "a line the server doesn't hold is kept: " << m2.kept;
     EXPECT_NE(m2.kept.find("map_pin 1 2 3 home"), std::string::npos) << m2.kept;
+}
+
+// (#1446) Items with their own data keep it, one unit each, in their cells, across a save.
+TEST_F(SaveTest, PlayerRecordKeepsItemData) {
+    Player p; p.forward = { 0, 0, 1 };
+    Inventory inv; SurvivalState sv;
+    const int a = inv.addInstance("stone_pickaxe", "h=flint;g=oak;w=12");
+    const int b = inv.addInstance("iron_ingot", "q=104");
+    inv.add("iron_ingot", 3);
+    ASSERT_GE(a, 0); ASSERT_GE(b, 0);
+    PlayerRecordMeta meta; meta.uuid = PlayerId_FromName("datum"); meta.name = "datum";
+    const std::string path = PlayerRecord_Path(meta.uuid);
+    ASSERT_TRUE(PlayerRecord_Write(path, p, inv, sv, meta, 0.0));
+    EXPECT_NE(Slurp(path).find("slot_data"), std::string::npos);
+    Player p2; Inventory inv2; SurvivalState sv2; PlayerRecordMeta m2;
+    ASSERT_TRUE(PlayerRecord_Read(path, p2, inv2, sv2, m2));
+    EXPECT_EQ(inv2.grid()[a].data, "h=flint;g=oak;w=12");
+    EXPECT_EQ(inv2.grid()[b].data, "q=104");
+    EXPECT_EQ(inv2.grid()[b].centi, 100) << "one unit with the record";
+    EXPECT_EQ(inv2.count("iron_ingot"), 3) << "the plain ingots apart from it";
+    EXPECT_EQ(inv2.countInstances("iron_ingot"), 1);
+    EXPECT_EQ(m2.kept.find("slot_data"), std::string::npos) << "read, not kept as text: " << m2.kept;
 }
 
 // (#920) A remote player's skills in their record: read into their SkillState, written from it, never kept as text too.

@@ -1,0 +1,19 @@
+# Part materials (#1449, #1219): what a composed item's head, handle and binding are made of.
+#   tier:      the tool tier a head gives (tools.h: 1 stone, 2 iron, 3 steel, 4 titanium; bronze digs as iron, #1271 L2)
+#   hardness:  a head's bite: weapon damage (3 + 3 x hardness) and dig speed against its tier's reference
+#   toughness: durability: a head's strokes = 25 x toughness, times the handle's and the binding's factor
+#   density:   g/cm3: weight
+#   sockets:   gem sockets a head or binding of it gives (#1219: one from bronze, two from steel)
+#   factor:    as a handle or binding: its durability factor (1 = the usual)
+# Default parts (what an old tool converts to): wood handle, fibre binding up to iron; leather for bronze; iron for steel up.
+# material | name     | r,g,b       | tier | hardness | toughness | density | sockets | factor
+stone      | Stone    | 140,135,130 | 1    | 1.0      | 6         | 2.7     | 0       | 0.9
+flint      | Flint    | 90,85,80    | 1    | 1.2      | 5         | 2.6     | 0       | 0.8
+bone       | Bone     | 225,215,190 | 1    | 0.8      | 5         | 1.9     | 0       | 0.9
+wood       | Wood     | 150,110,70  | 0    | 0.4      | 4         | 0.7     | 0       | 1.0
+fibre      | Fibre    | 170,190,110 | 0    | 0.1      | 1         | 0.3     | 0       | 1.0
+leather    | Leather  | 140,95,60   | 0    | 0.2      | 3         | 0.9     | 0       | 1.0
+bronze     | Bronze   | 205,150,75  | 2    | 2.0      | 16        | 8.8     | 1       | 1.1
+iron       | Iron     | 175,170,175 | 2    | 2.0      | 16        | 7.9     | 0       | 1.0
+steel      | Steel    | 125,128,140 | 3    | 3.0      | 36        | 7.8     | 2       | 1.0
+titanium   | Titanium | 205,180,215 | 4    | 4.0      | 80        | 4.5     | 2       | 1.0
