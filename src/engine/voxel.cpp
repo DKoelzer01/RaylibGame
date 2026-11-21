@@ -1665,6 +1665,74 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             }
         }
     }
+    // (#1181) Sinkholes: hillside mouths need a real face, so on flat or gently rolling ground (a swamp or meadow start)
+    // there were none for kilometres. A collapse pit: a round shaft 2-4 m across at a gentle spot of the cell's ground,
+    // flaring into a funnel at the top, 8-16 m down to a rubble cone, and a passage from its foot wandering level-ish
+    // under the ground (it ends where its roof would thin under 4 m). ~1 in 16 surface cells at 1x (~1 per km^2), its own
+    // random numbers (the same sinks at any abundance, more with more); none in karst (the dolines are its sinks), the sea
+    // or water. Mouth kind 1 (a shaft), so #1067's light pool falls under it. Built from the same segment kinds as the
+    // others: caveDistance and terrain.glsl are unchanged. RAYLIBGAME_CAVE_SINKHOLES=0: off.
+    static const bool sinkholesOn = !(getenv("RAYLIBGAME_CAVE_SINKHOLES") && getenv("RAYLIBGAME_CAVE_SINKHOLES")[0] == '0');
+    if (sinkholesOn) {
+        std::mt19937 rs((unsigned)(CaveCellHash{}(key) ^ 0x51A4C0DEu));
+        std::uniform_real_distribution<float> US(0.0f, 1.0f);
+        const float sinkOdds = std::min(0.95f, 0.065f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float roll = US(rs);
+        const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+        const float cl = Vector3Length(cc);
+        if (roll < sinkOdds && cl > 1.0f) {
+            const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+            const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 a2 = Vector3CrossProduct(d0, a1);
+            auto at = [&](Vector3 base, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(base, R), off)); };
+            auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                segs->push_back(sg);
+            };
+            for (int tries = 0; tries < 8; ++tries) {
+                const float u = (US(rs) - 0.5f) * 1.4f * kCaveCell, v = (US(rs) - 0.5f) * 1.4f * kCaveCell;
+                const Vector3 dir = at(d0, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v)));
+                const Vector3 onR = Vector3Scale(dir, R);
+                if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+                const float e0 = f.elevation(dir);
+                if (e0 < 3.0f) continue;                                               // the sea, a shore, a flooded hollow
+                if (f.karstWeight(onR) >= 0.3f) continue;                              // karst has its dolines
+                if (f.inlandWaterNear(dir, 20.0f)) continue;                           // not into a river or a lake
+                const float g1 = (f.elevation(at(dir, Vector3Scale(a1, 6.0f))) - f.elevation(at(dir, Vector3Scale(a1, -6.0f)))) / 12.0f;
+                const float g2 = (f.elevation(at(dir, Vector3Scale(a2, 6.0f))) - f.elevation(at(dir, Vector3Scale(a2, -6.0f)))) / 12.0f;
+                if (g1 * g1 + g2 * g2 > 0.18f * 0.18f) continue;                       // gentle ground (~10 degrees): hills have mouths
+                const float sr = 1.0f + 1.0f * US(rs), sdepth = 8.0f + 8.0f * US(rs);
+                const Vector3 top = Vector3Scale(dir, R + e0 + 2.0f), rim = Vector3Scale(dir, R + e0 - 1.5f);
+                const Vector3 bot = Vector3Scale(dir, R + e0 - sdepth);
+                push(top, rim, 2.2f * sr, 1.15f * sr, 1.0f, 0);                       // the funnel: a collapsed lip
+                push(rim, bot, 1.15f * sr, sr, 1.0f, 0);                               // the shaft
+                const Vector3 coneC = Vector3Scale(dir, R + e0 - sdepth - 0.45f * sr);
+                push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.8f * sr, 0.8f * sr, 0.35f, 2);
+                data->mouths.push_back({ Vector3Scale(dir, R + e0), dir, 1, sr, sdepth });
+                // The passage from the foot: 6-12 segments, turning gently, falling ~1 m in 15, radius 1.8-3.2 m.
+                const float ang = US(rs) * 2.0f * PI;
+                Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(a1, cosf(ang)), Vector3Scale(a2, sinf(ang))));
+                Vector3 pos = Vector3Scale(dir, R + e0 - sdepth + 0.6f * sr), pdir = dir;
+                float r = 1.6f + 0.6f * US(rs), h = e0 - sdepth + 0.6f * sr;
+                const int n = 6 + (int)(7.0f * US(rs));
+                for (int k = 0; k < n; ++k) {
+                    const float L = 12.0f + 8.0f * US(rs);
+                    const float turn = (US(rs) - 0.5f) * 0.8f;
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(pdir, head), sinf(turn))));
+                    const float r2 = std::clamp(r + (US(rs) - 0.5f) * 1.2f, 1.8f, 3.2f);
+                    const float h2 = h - L / 15.0f;
+                    const Vector3 dir2 = at(pdir, Vector3Scale(head, L));
+                    const float e2 = f.elevation(dir2);
+                    if (e2 - h2 - 1.5f * r2 < 4.0f) break;                             // the roof would thin out: it ends here
+                    const Vector3 pos2 = Vector3Scale(dir2, R + h2);
+                    push(pos, pos2, r, r2, 0.9f, 0);
+                    pos = pos2; pdir = dir2; r = r2; h = h2;
+                    head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(pdir, Vector3DotProduct(head, pdir))));
+                }
+                break;
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
     return sh.map.emplace(key, data).first->second;
