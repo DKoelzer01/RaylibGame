@@ -802,13 +802,18 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
 
 // (#997, user decision 2026-11-21) Parallel plots: plots share no conveyors, cables or machines, so the plots due this tick
 // tick on up to kMaxWorkers threads (the tick thread is one of them), each writing only its own plots; their counts are
-// summed in plot order after the join, so the result is the same as one thread's (unit test: 1 vs 4 workers). Default 1
-// worker; RAYLIBGAME_FACTORY_WORKERS=N (A/B) until a benchmark shows a win. A fork/join costs ~40-60 us (measured), so a
-// tick with little to do stays on the tick thread.
+// summed in plot order after the join, so the result is the same as one thread's (unit test: 1 vs 4 workers). Default:
+// one worker per 4 hardware threads, 1 to 4 (the bench won: 4 workers -35 to -40% of the tick, no frame cost seen; it
+// leaves most cores to chunk building); RAYLIBGAME_FACTORY_WORKERS=N overrides. A fork/join costs ~40-60 us (measured),
+// so a tick with little to do stays on the tick thread.
 constexpr int kMaxWorkers = 4;
+constexpr int kHardwareThreadsPerWorker = 4;
 constexpr int kParallelMinMachines = 800; // machines due this tick below which one thread is quicker (guess: to tune)
 int parallelMinMachines = kParallelMinMachines; // (the unit test lowers it)
-int workerCount = [] { const char* e = getenv("RAYLIBGAME_FACTORY_WORKERS"); return e ? std::clamp(atoi(e), 1, kMaxWorkers) : 1; }();
+int workerCount = [] {
+    if (const char* e = getenv("RAYLIBGAME_FACTORY_WORKERS")) return std::clamp(atoi(e), 1, kMaxWorkers);
+    return std::clamp((int)std::thread::hardware_concurrency() / kHardwareThreadsPerWorker, 1, kMaxWorkers);
+}();
 
 struct PlotJob { PlotSim* ps; int dt; long long made = 0; int active = 0; };
 class WorkerPool {
