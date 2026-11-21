@@ -18,7 +18,7 @@
 
 namespace {
 struct St {
-    int idx = -1; Vector3 at{}, face{};
+    uint64_t net = 0; Vector3 at{}, face{};
     float hp0 = 0.0f, stamina0 = 0.0f; int hits0 = 0, swings0 = 0, heavies0 = 0;
     double tStart = -1, tHit = -1, tContact = -1, tIdle = -1, tSecond = -1, tHit2 = -1;
     long pressFrame = -1; int presses = 0;
@@ -41,7 +41,9 @@ Vector3 GroundAhead(ScenarioCtx& c, float d, float deg, Vector3& flat, Vector3& 
     return Vector3Scale(dir, c.field->radius + c.field->elevation(dir));
 }
 
-void Pin() { if (S.idx >= 0) Animals_TestPin(S.idx, S.at, S.face); }
+// The dummy's index now, by its stable id (an index shifts when another animal goes).
+int Idx() { return S.net ? Animals_FindNet(S.net) : -1; }
+void Pin() { if (Idx() >= 0) Animals_TestPin(Idx(), S.at, S.face); }
 
 Vector3 DummyCentre() { return Vector3Add(S.at, Vector3Scale(Vector3Normalize(S.at), 0.6f)); } // half a hornhide's 1.2 m
 
@@ -53,7 +55,7 @@ void LookAtDummy(ScenarioCtx& c) {
 
 void ResetTrack() {
     const MeleeState& m = Animals_Melee();
-    S.hp0 = Animals_HealthOf(S.idx); S.stamina0 = survival.stamina; S.hits0 = Animals_MeleeHits();
+    S.hp0 = Animals_HealthOf(Idx()); S.stamina0 = survival.stamina; S.hits0 = Animals_MeleeHits();
     S.swings0 = m.swings; S.heavies0 = m.heavies;
     S.tStart = S.tHit = S.tContact = S.tIdle = S.tSecond = S.tHit2 = -1; S.pressFrame = -1; S.presses = 0;
 }
@@ -94,7 +96,7 @@ SCENARIO("combat/melee") {
         const int before = Animals_Count();
         Animals_Spawn(c.world, *c.body, "hornhide", S.at, 1, false, 0.01f);
         if (!c.check("a hornhide for the dummy", Animals_Count() > before)) { c.fail("no dummy"); return true; }
-        S.idx = Animals_Count() - 1;
+        S.net = Animals_NetId(Animals_Count() - 1);
         gScenarioInput = true; // scripted LMB and middle mouse through the real input path
         Pin(); LookAtDummy(c);
         return true;
@@ -111,7 +113,7 @@ SCENARIO("combat/melee") {
                 "contact " + std::to_string(S.tContact - S.tStart) + " s after the start");
         c.near("light swing, start to idle (s)", S.tIdle - S.tStart, 0.65, 1.5 * kStep);
         c.eq("one hit per target per swing", Animals_MeleeHits() - S.hits0, 1);
-        c.near("light damage (bare hands)", S.hp0 - Animals_HealthOf(S.idx), 2.0, 1e-3);
+        c.near("light damage (bare hands)", S.hp0 - Animals_HealthOf(Idx()), 2.0, 1e-3);
         c.near("light stamina", S.stamina0 - survival.stamina, 6.0, 0.5);
         return true;
     });
@@ -124,7 +126,7 @@ SCENARIO("combat/melee") {
         if (S.tIdle < 0) { c.waitingFor("the heavy swing to finish"); return false; }
         c.eq("it became a heavy", Animals_Melee().heavies - S.heavies0, 1);
         c.near("heavy wind-up (s)", S.tHit - S.tStart, 0.40, 1.5 * kStep);
-        c.near("heavy damage (x1.8)", S.hp0 - Animals_HealthOf(S.idx), 3.6, 1e-3);
+        c.near("heavy damage (x1.8)", S.hp0 - Animals_HealthOf(Idx()), 3.6, 1e-3);
         c.near("heavy stamina (x1.7)", S.stamina0 - survival.stamina, 10.2, 0.5);
         return true;
     });
