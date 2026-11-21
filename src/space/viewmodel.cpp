@@ -1,4 +1,5 @@
 #include "viewmodel.h"
+#include "animals.h"
 #include "buildtool.h"
 #include "gameui.h"
 #include "hotbar.h"
@@ -33,7 +34,8 @@ namespace {
     // Swing (a mining stroke or a chop) and dip (switching what is held), 0..1 progress.
     int seenSwings = 0;
     float swing = 1.0f, dip = 1.0f, lowered = 0.0f;
-    std::string held;            // what the hand holds: "" hands, a tool id, or an item id (a cube)
+    bool meleeOn = false; float mPitch = 0.0f, mYaw = 0.0f, mSide = 0.0f; // (#1216) the melee swing's pose (degrees, m)
+    std::string held;           // what the hand holds: "" hands, a tool id, or an item id (a cube)
     bool visible = false;
 
     std::string Held() {
@@ -110,6 +112,23 @@ void Viewmodel_Update(Scene& world, float dt) {
     // Swing on each stroke or chop; dip when what is held changes.
     if (terrainTool.swings != seenSwings) { seenSwings = terrainTool.swings; swing = 0.0f; }
     swing = std::min(1.0f, swing + dt / std::max(terrainTool.swingTime, 0.1f)); // one swing per cooldown
+    // (#1216) A melee swing in phases: the wind-up cocks the tool back and to the right (further for a heavy), the hit window
+    // brings it across and down, the recovery returns it; the chained light swings back the other way. Held still while
+    // dt is 0 (the hit-stop).
+    if (dt > 0.0f || !Animals_MeleeBusy()) {
+        int ph = 0; float f = 0.0f, charge = 0.0f; bool back = false;
+        meleeOn = Animals_MeleePose(ph, f, charge, back);
+        mPitch = mYaw = mSide = 0.0f;
+        if (meleeOn) {
+            const float k = 1.0f + 0.4f * charge;
+            const float cockP = 40.0f * k, cockY = 35.0f * k, endP = -50.0f, endY = -40.0f;
+            if (ph == 1) { const float e = f * f * (3.0f - 2.0f * f); mPitch = cockP * e; mYaw = cockY * e; }
+            else if (ph == 2) { mPitch = cockP + (endP - cockP) * f; mYaw = cockY + (endY - cockY) * f; }
+            else { const float e = 1.0f - f; mPitch = endP * e; mYaw = endY * e; }
+            if (back) mYaw = -mYaw;
+            mSide = 0.06f * (mYaw / 40.0f);
+        }
+    }
     const std::string now = Held();
     if (now != held) { held = now; dip = 0.0f; flames.clear(); }
     dip = std::min(1.0f, dip + dt / 0.25f);
@@ -158,9 +177,9 @@ void Viewmodel_Draw(Scene& world) {
     rlDisableBackfaceCulling();
 
     // The hand's pose: low right, bobbing, swinging, dipping, lowered while a screen is open.
-    const float s = sinf(PI * swing), d = sinf(PI * dip);
-    const Vector3 base = { 0.27f + bob.x, -0.235f + bob.y - 0.12f * d - 0.3f * lowered, -0.52f - 0.06f * s };
-    const Matrix hand = MatrixMultiply(MatrixRotateXYZ({ DEG2RAD * (8.0f - 55.0f * s), DEG2RAD * -12.0f, DEG2RAD * 4.0f }), MatrixTranslate(base.x, base.y, base.z));
+    const float s = meleeOn ? 0.0f : sinf(PI * swing), d = sinf(PI * dip);
+    const Vector3 base = { 0.27f + bob.x + mSide, -0.235f + bob.y - 0.12f * d - 0.3f * lowered, -0.52f - 0.06f * s };
+    const Matrix hand = MatrixMultiply(MatrixRotateXYZ({ DEG2RAD * (8.0f - 55.0f * s + mPitch), DEG2RAD * (-12.0f - mYaw), DEG2RAD * 4.0f }), MatrixTranslate(base.x, base.y, base.z));
     auto local = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), hand); };
 
     const Color glove = { 176, 186, 198, 255 }, cuff = { 120, 130, 145, 255 };

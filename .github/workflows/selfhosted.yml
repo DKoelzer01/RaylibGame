@@ -26,7 +26,7 @@ on:
       regression_sets:
         description: "Regression sets, space-separated (planet, eroded, multiplayer)"
         required: false
-        default: planet
+        default: planet multiplayer
         type: string
 
 permissions:
@@ -149,7 +149,7 @@ jobs:
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           set +e
-          "$OUT/bin/game" --scenario tag:fluid,tag:craft,tag:skills,tag:world,tag:frames,tag:caves --scenario-no-record --scenario-out "$RUN/scenarios" \
+          "$OUT/bin/game" --scenario tag:fluid,tag:craft,tag:skills,tag:world,tag:frames,tag:factory,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios" \
             > scenarios.log 2>&1
           rc=$?
           set -e
@@ -194,7 +194,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     env:
-      SETS: ${{ inputs.regression_sets || 'planet' }}
+      SETS: ${{ inputs.regression_sets || 'planet multiplayer' }} # (#1367) the net tests too: they had not run since they moved to their own set
       SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

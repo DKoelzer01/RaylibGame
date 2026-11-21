@@ -52,12 +52,23 @@ enum class PartType : uint8_t {
     PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
     Bed,                                                             // a bed (#800): right-click it to respawn there while it stands
     ClaimBanner, ClaimBanner2, ClaimBanner3, ClaimBanner4,            // (#343) claim banners: placed in multiplayer, they claim 100 / 200 / 400 / 800 m across for the team
+    // (#159, #1269) mechanical power (rotationplot.*): 1-cell transmission parts along their local z axis, a hand crank, a
+    // stress gauge on a shaft line, and the machines rotation drives (1 m, 2x2x2 cells)
+    Shaft, Cogwheel, LargeCogwheel, Gearbox, HandCrank, StressGauge,
+    Millstone, Saw, Press,
+    WaterWheel, Windmill,                                            // (#1270) rotation sources from the river and the wind (rotationsources.*)
+    LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
+    ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo; }
+// (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
+inline bool IsRotationPart(PartType t) { return t >= PartType::Shaft && t <= PartType::Windmill; }
+// (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
+inline bool IsSpinningPart(PartType t) { return t == PartType::Shaft || t == PartType::Cogwheel || t == PartType::LargeCogwheel || t == PartType::HandCrank || t == PartType::WaterWheel || t == PartType::Windmill; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
 inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material

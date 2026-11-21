@@ -82,6 +82,10 @@ struct Player {
     float postureEye(Posture p) const { return p == Posture::Prone ? kProneEye : p == Posture::Crouch ? kCrouchEye : standEye; }
     bool roomAbove(Scene& world, float toHeight) const; // nothing solid between the capsule's top now and toHeight
     float walkSpeed = 6.0f;
+    float statusSpeed = 1.0f;         // (#1215) status effects on the walk: chilled 0.7, frozen 0 (Combat_Step sets it)
+    // (#1218) A dodge under way (Combat_Step starts it): a fixed step along dodgeDir (world, level) for dodgeLeft s.
+    Vector3 dodgeDir = { 0, 0, 0 };
+    float dodgeLeft = 0.0f, dodgeSpeed = 0.0f;
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
     // you off it like a jump does (grounded velocity is overwritten by walking each step); in the air it adds.
@@ -156,6 +160,7 @@ private:
     // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
     // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
     bool fxActive = false;
+    bool movedOutside = false; // (F2d) moved from outside since the last update (spawn, placeAt, respawn, load)
     double viewR[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }; // F2c: the frame body's rotation at the end of the last update
     uint64_t viewBody = 0;                                            // its runtime id (0: no view carry yet)
     Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
