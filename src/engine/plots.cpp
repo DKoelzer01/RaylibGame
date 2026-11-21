@@ -86,6 +86,8 @@ const char* PartName(PartType t) {
         case PartType::Millstone: return "millstone";
         case PartType::Saw: return "mechanical saw";
         case PartType::Press: return "mechanical press";
+        case PartType::WaterWheel: return "water wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
         default: return "?";
     }
 }
@@ -164,6 +166,8 @@ const char* PartCostItem(PartType t) {
         case PartType::Gearbox: return "gearbox";
         case PartType::HandCrank: return "hand_crank";
         case PartType::StressGauge: return "stress_gauge";
+        case PartType::WaterWheel: return "water_wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
@@ -345,9 +349,14 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
         case PartType::Gearbox: case PartType::StressGauge: // (#1269)
             out.push_back({ { 0, 0, 0 }, full }); break;
-        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: { // (#1269) the whole cell, but not "full":
+        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face
             out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::WaterWheel: { // (#1270) 1.5 m across, one cell thick: 3 x 3 cells (rows of x, then y), its hub the middle one (index 4)
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f;
+            for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) out.push_back({ { x, y, 0 }, s });
             break;
         }
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
