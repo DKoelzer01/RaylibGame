@@ -100,7 +100,7 @@ float TopReach(PartType type) {
     case PartType::Refinery: return 1.85f;
     case PartType::Miner: return 0.93f;
     case PartType::PrecisionAssembler: return 0.95f;
-    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return 0.42f; // (#1193) the dish on its mast
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: return 0.42f; // (#1193) the dish on its mast
     case PartType::FusionReactor: return 0.29f;
     case PartType::MassDriver: return 1.3f;
     case PartType::Torch: return 0.25f;
@@ -267,8 +267,8 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPopMatrix();
         break;
     }
-    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: { // (#1193) a research lab: a white bench, flasks, a dish on a mast
-        const Color band = type == PartType::LvLab ? Color{ 90, 150, 220, 255 } : type == PartType::MvLab ? Color{ 230, 150, 60, 255 } : Color{ 180, 90, 210, 255 }; // its tier's colour
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: { // (#1193; #1271 L6: the steam lab too) a research lab: a white bench, flasks, a dish on a mast
+        const Color band = type == PartType::SteamLab ? Color{ 190, 150, 90, 255 } : type == PartType::LvLab ? Color{ 90, 150, 220, 255 } : type == PartType::MvLab ? Color{ 230, 150, 60, 255 } : Color{ 180, 90, 210, 255 }; // its tier's colour
         p.cube({ 0, top * 0.55f, 0 }, { f.w * 1.01f, 0.06f, f.d * 1.01f }, band);
         for (int k = -1; k <= 1; ++k) p.cyl({ k * 0.18f, top, 0.12f }, 0.05f, 0.03f, 0.16f, kGlass);  // flasks
         rlPushMatrix(); rlTranslatef(-0.25f, top, -0.2f); rlRotatef(working ? t * 45.0f : 0.0f, 0, 1, 0);

@@ -116,3 +116,5 @@ mechanical_press | tin_plate 1        | tin_ingot 1               | 100 | 0
 mechanical_press | steel_plate 1      | steel_ingot 1             | 160 | 0
 mechanical_press | aluminium_plate 1  | aluminium_ingot 1         | 120 | 0
 mechanical_press | titanium_plate 1   | titanium_ingot 1          | 200 | 0
+# (#1271 L6) the steam lab (a rotation machine: 200 ticks at its rated 32 RPM)
+steam_lab        | research_t3 1      | steam_pack 1              | 200 | 0

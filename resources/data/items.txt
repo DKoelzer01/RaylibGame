@@ -253,3 +253,4 @@ windmill         | Windmill         | 20  | 226,218,196 | Mechanical power from 
 steam_engine     | Steam engine     | 20  | 120,100, 80 | Set it against a boiler: the boiler's steam turns its shaft at 64 RPM with 1024 SU while its machines have work.
 dynamo           | Dynamo           | 20  | 184,110, 60 | Rotation into 32 V EU: up to 32 EU a tick at 64 RPM, onto the cables it touches. It loads its shaft like a machine (512 SU at 64 RPM).
 electric_motor   | Electric motor   | 20  | 110,120,140 | 32 V EU into rotation: draws 16 EU a tick from its cables and turns its shaft at 64 RPM with 256 SU while that shaft's machines have work.
+steam_lab        | Steam lab        | 20  | 190,150, 90 | The first research lab: driven by a shaft (16 RPM and up), it turns steam packs into tier 3 research for your team's queue (Research tab).

@@ -59,3 +59,5 @@ fuel helium3 12000
 fuel peat 1000
 fuel fibre 100
 fuel crude_oil 2400
+# (#1271 L6) the steam lab: driven by a shaft (rotation), it researches tier 3 with steam packs
+steam_lab        | 0  | rotation | 0  |

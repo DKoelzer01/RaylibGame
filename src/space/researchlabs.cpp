@@ -14,7 +14,7 @@
 namespace {
 double nextAt = 0.0;
 int unitsCounted = 0;
-int LabTier(PartType t) { return t == PartType::LvLab ? 4 : t == PartType::MvLab ? 5 : t == PartType::HvLab ? 7 : 0; }
+int LabTier(PartType t) { return t == PartType::SteamLab ? 3 : t == PartType::LvLab ? 4 : t == PartType::MvLab ? 5 : t == PartType::HvLab ? 7 : 0; }
 }
 
 int ResearchLabs_Update(Scene& world, double now, bool force) {
