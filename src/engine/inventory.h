@@ -71,7 +71,10 @@ struct InvSlot {
     std::string id;
     int64_t centi = 0;
     float heat = 0.0f; // #580: 1 fresh out of a furnace, kiln or crucible, cooling to 0 (Inventory::cool); merges average it by amount
+    std::string data;  // (#1446) this one item's own record (itemdata.h: parts, quality, sockets, wear); "" = a plain item.
+                       // A cell with data holds exactly one unit and never merges with another.
     bool empty() const { return centi <= 0 || id.empty(); }
+    bool hasData() const { return !data.empty(); }
     double amount() const { return centi / 100.0; }
 };
 
@@ -105,9 +108,16 @@ public:
     static constexpr float kCoolSeconds = 90.0f;
     void add(const std::string& id, int count) { if (count > 0) addAmount(id, count); }
     bool remove(const std::string& id, int count) { return removeAmount(id, count); }
+    // Plain items only (#1446): add, remove, count and amount never touch a cell with data, so paying for a recipe or a
+    // build never takes someone's weapon. Items with data go in with addInstance and out with takeInstance (a cell).
     bool removeAmount(const std::string& id, double amount);
     int count(const std::string& id) const;     // whole units
     double amount(const std::string& id) const; // with the fraction
+    // (#1446) One item with its own record into an empty cell (a tool prefers an empty hotbar cell, as plain tools do).
+    // Returns the cell, or -1 when no cell is free (overflowed is set). data "" adds one plain unit instead.
+    int addInstance(const std::string& id, const std::string& data, float heat = 0.0f);
+    InvSlot takeInstance(int cell);             // the cell's item, record and all; the cell is emptied (an empty slot if none)
+    int countInstances(const std::string& id) const; // items of `id` that carry data
     bool canCraft(const Recipe& r) const;
     bool craft(const Recipe& r);
     void clear() { for (auto& s : slots) s = InvSlot{}; partial.clear(); obtained.clear(); }
