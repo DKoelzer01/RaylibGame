@@ -76,6 +76,7 @@ SCENARIO("world/ladder") {
         startH = Vector3DotProduct(feet, upL);
         startHealth = survival.health;
         gScenarioInput = true;
+        gScenarioCamera = true; // (the view from behind the player, for the recording)
         return true;
     });
     s.step("settle on the ground", 5.0, [](ScenarioCtx& c) { FollowCam(c); return c.t > 1.0 && player.grounded; });
@@ -135,7 +136,7 @@ SCENARIO("world/ladder") {
         Hold(0);
         c.gt("standing on the wall's top (m above the ground)", Height(c), kWallCells * kCellSize - 0.2);
         c.eq("health after the whole climb", survival.health, startHealth, 0.01);
-        gScenarioInput = false;
+        gScenarioInput = false; gScenarioCamera = false;
         c.keepCapture("the ladder and the climb (a new part the user sees)");
         return true;
     });
