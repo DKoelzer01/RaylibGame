@@ -21,6 +21,9 @@ struct RecipeBookState {
 
 bool RecipeBook_Known(const Recipe& r);
 bool RecipeBook_Unlocked(const Recipe& r);  // (#338) its recipe_unlocks condition alone, on the selected quest book (a server: the team's)
+// (#1271 L6b) Found and unlocked, but its research node not done (the gate on): shown locked, with why ("" when not).
+bool RecipeBook_LockedByResearch(const Recipe& r);
+std::string RecipeBook_LockReason(const Recipe& r);
 // (#338) Craft recipe `index` (into itemDB.recipes()) `count` times: in single player here, from the inventory; in a joined game a request
 // to the server (gCraftRequest; the result comes back as inventory deltas). The one entry point for the crafting screens.
 bool Crafting_Request(int index, int count = 1);

@@ -1677,6 +1677,10 @@ namespace {
             if (part.type == PartType::Farmland) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; } // (#1085) farmland is tilled ground now (a till edit), not a part
             const int cost = PartCostCount(part.type);
             if (!rm.creative && rm.inventory.count(item) < cost) { RefusePart(conn, q.seq, NetPartRefusal::Cost); return; } // (#823) free in creative
+            if (!rm.creative && ResearchGate_On()) if (const int team = TeamOfSession(session); team && !ResearchGate_PartAllowed(Research_Team(team), part.type)) { // (#1271 L6b) the team's research
+                if (const uint32_t c = ConnOf(session)) SendMsg(c, MsgChat{ 0, "Your team hasn't researched that machine yet (Research tab)" });
+                RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
+            }
             uint32_t bannerClaim = 0; // (#343) a claim banner claims the land around it for the placer's team (or is refused: budget, overlap)
             if (const int tier = ClaimBannerTier(part.type); tier >= 0) {
                 const int team = TeamOfSession(session);

@@ -1,5 +1,10 @@
 #include "researchgate.h"
 #include "researchtab.h"
+#include "factory.h"
+#include "net.h"
+#include "simclock.h"
+#include "terraintool.h"
+#include <algorithm>
 
 #include <cstdio>
 #include <cstdlib>
@@ -42,7 +47,7 @@ bool KnownFind(const std::string& f) { for (const char* k : kFinds) if (f == k) 
 } // namespace
 
 bool ResearchGate_On() {
-    if (gateOn < 0) { const char* e = getenv("RAYLIBGAME_LADDER"); gateOn = e && e[0] == '1' ? 1 : 0; }
+    if (gateOn < 0) { const char* e = getenv("RAYLIBGAME_LADDER"); gateOn = e && e[0] == '0' ? 0 : 1; } // (#1271 L6b) on; RAYLIBGAME_LADDER=0: off
     return gateOn == 1;
 }
 void ResearchGate_SetOn(bool on) { gateOn = on ? 1 : 0; }
@@ -77,6 +82,51 @@ bool ResearchGate_PartAllowed(const ResearchState& s, PartType t) {
 }
 
 void ResearchGate_SelectTeam(int team) { selectedTeam = team; }
+
+const ResearchNode* ResearchGate_NodeForMachineItem(const std::string& item) {
+    const Index& ix = Idx();
+    auto it = ix.machine.find(item);
+    return it == ix.machine.end() ? nullptr : it->second;
+}
+
+void ResearchGate_Update() {
+    if (gNetRole == NetRole::Client) return; // (the server's factory runs the machines)
+    static double next = 0.0;
+    static std::vector<std::string> sent;
+    static bool sentOnce = false;
+    const double now = SimTime();
+    if (next - now > 1.0) next = now;
+    if (now < next) return;
+    next = now + 0.5;
+    std::vector<std::string> locked;
+    if (ResearchGate_On() && !terrainTool.creative) { // (creative: every machine recipe)
+        const ResearchState& team = ResearchGate_Team();
+        for (const Factory::RecipeInfo& r : Factory::RecipeList())
+            for (const auto& o : r.out)
+                if (!ResearchGate_RecipeAllowed(team, o.first)) locked.push_back(o.first);
+        std::sort(locked.begin(), locked.end());
+        locked.erase(std::unique(locked.begin(), locked.end()), locked.end());
+    }
+    if (sentOnce && locked == sent) return;
+    sentOnce = true;
+    sent = locked;
+    Factory::SetLockedOutputs(locked);
+}
+
+std::string ResearchGate_MachineLockNote(PartType t) {
+    if (terrainTool.creative) return "";
+    if (!ResearchGate_On()) return "";
+    const ResearchState& team = ResearchGate_Team();
+    int n = 0;
+    const ResearchNode* first = nullptr;
+    for (const Factory::RecipeInfo& r : Factory::RecipeList()) {
+        if (r.machine != t || r.out.empty() || ResearchGate_RecipeAllowed(team, r.out[0].first)) continue;
+        ++n;
+        if (!first) first = ResearchGate_NodeForRecipe(r.out[0].first);
+    }
+    if (!n) return "";
+    return std::to_string(n) + (n == 1 ? " recipe" : " recipes") + " locked: research " + (first ? first->name + " (tier " + std::to_string(first->tier) + ")" : std::string("it"));
+}
 const ResearchState& ResearchGate_Team() { return Research_Team(selectedTeam ? selectedTeam : ResearchTab_Team()); }
 
 bool ResearchGate_LoadMilestonesText(const std::string& text, std::string& error) {
@@ -187,7 +237,7 @@ namespace {
 struct GateOn { bool was; GateOn() : was(ResearchGate_On()) { ResearchGate_SetOn(true); } ~GateOn() { ResearchGate_SetOn(was); } };
 }
 
-TEST(ResearchGate, OffByDefaultItGatesNothing) {
+TEST(ResearchGate, OffItGatesNothing) {
     ASSERT_TRUE(Research_Load());
     const bool was = ResearchGate_On();
     ResearchGate_SetOn(false);

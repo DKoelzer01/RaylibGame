@@ -867,9 +867,10 @@ static void DrawCrafting() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (size_t i = 0; i < recipes.size(); ++i) {
         const Recipe& r = recipes[i];
-        if (!RecipeBook_Known(r)) { ++hidden; continue; }
+        const bool known = RecipeBook_Known(r), locked = !known && RecipeBook_LockedByResearch(r); // (#1271 L6b) found, but its research not done: shown locked
+        if (!known && !locked) { ++hidden; continue; }
         if (!RecipeBook_Matches(r, q)) continue;
-        const bool can = canMakeAt((int)i); // (#928: intermediates counted)
+        const bool can = !locked && canMakeAt((int)i); // (#928: intermediates counted)
         if (cat == CraftCat::CanMake && !can) continue;
         if (cat != CraftCat::All && cat != CraftCat::CanMake && CategoryOf(r.output) != cat) continue;
         if (shown % cols != 0) ImGui::SameLine(0.0f, gap);
@@ -877,7 +878,7 @@ static void DrawCrafting() {
         const ItemDef* out = itemDB.find(r.output);
         ImGui::PushID((int)i);
         const ImVec2 p = ImGui::GetCursorScreenPos(), qd(p.x + cell, p.y + cell);
-        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell)) && !OpenIfAlt(r.output)) { selectedRecipe = (int)i; recipePageOpen = true; }
+        if (ImGui::InvisibleButton("recipe", ImVec2(cell, cell)) && !locked && !OpenIfAlt(r.output)) { selectedRecipe = (int)i; recipePageOpen = true; }
         const bool hover = ImGui::IsItemHovered(), sel = recipePageOpen && selectedRecipe == (int)i;
         if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
         if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
@@ -890,7 +891,8 @@ static void DrawCrafting() {
         }
         dl->AddRect(p, qd, sel ? IM_COL32(224, 169, 64, 255) : hover ? IM_COL32(220, 220, 220, 255) : can ? IM_COL32(90, 150, 95, 255) : IM_COL32(64, 66, 72, 255),
                     4.0f, 0, sel || hover ? 2.0f : 1.0f);
-        if (hover) ImGui::SetTooltip("%s%s", out ? out->name.c_str() : r.output.c_str(), r.outputCount > 1 ? TextFormat("  x%d", r.outputCount) : "");
+        if (locked) { CellText(dl, CellFontSize(cell), ImVec2(p.x + 4, p.y + 3), IM_COL32(255, 190, 70, 255), "locked"); } // (#1271 L6b)
+        if (hover) ImGui::SetTooltip("%s%s%s%s", out ? out->name.c_str() : r.output.c_str(), r.outputCount > 1 ? TextFormat("  x%d", r.outputCount) : "", locked ? "\n" : "", locked ? RecipeBook_LockReason(r).c_str() : "");
         ImGui::PopID();
     }
     if (shown == 0) ImGui::TextDisabled(cat == CraftCat::CanMake ? "Nothing you can make right now" : "No known recipe matches");

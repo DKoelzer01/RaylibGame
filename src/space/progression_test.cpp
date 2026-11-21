@@ -21,6 +21,7 @@
 #include "suit.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
+#include "researchgate.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -687,6 +688,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
         if (!field || !body->trees) { printf("bench: --test-progression needs the planet\n"); return -1; }
         inventory.clear();
         QuestBook_SetTier(0);
+        ResearchGate_SetOn(false); // (#1271 L6b) the research is not scripted yet (the next ladder step scripts packs, labs and milestones)
         Factory::SetSpeed(60);
         home = body->toLocalOf(player.position, world.renderOrigin);
         if (!body->plots) body->plots = std::make_unique<PlotSet>();

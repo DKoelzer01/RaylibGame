@@ -442,6 +442,7 @@ namespace {
         if (t.kind == "get") return ObtainedTotal(t.target) >= t.n - 1e-6;
         if (t.kind == "place") return Q().placed.count(t.target) > 0;
         if (t.kind == "orbit") return Q().reachedOrbit;
+        if (t.kind == "tier") return Q().tier >= atoi(t.target.c_str()); // (#1271 L6b) "tier N": the book has reached tier N (a tier's milestone handed over)
         if (t.kind == "visit") return t.target == "moon" ? Q().visitedMoon : Q().visitedRing;
         if (t.kind == "do") { auto it = Q().counts.find(t.target); return it != Q().counts.end() && it->second >= t.n - 1e-6; }
         return false;

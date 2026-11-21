@@ -435,6 +435,11 @@ std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nearQueue;
 struct MoveMsg { uint64_t fromBody; uint32_t fromPlot; uint64_t toBody; uint32_t toPlot; };
 std::vector<MoveMsg> moveQueue;               // plots that changed body / id (rocket launch, landing)
 bool resetRequested = false;
+// (#1271 L6b) machine recipes the research has not unlocked (by output item): queued from the main thread, applied at the
+// command phase (lockedSim is read by the plots' ticks, never written while they run)
+std::vector<int> lockedQueue; bool lockedQueued = false;
+std::unordered_set<int> lockedSim;
+bool RecipeLocked(const Recipe& r) { if (lockedSim.empty()) return false; for (const Stack& s : r.out) if (lockedSim.count(s.item)) return true; return false; }
 struct ItemOut { int item = 0, count = 0; uint32_t to = 0; int centi = 0; }; // (#1102) centi: a fraction more (from a chest) // (#332) to: the player it goes to (0: this game's own inventory)
 std::vector<ItemOut> results;     // sim -> main: (item, count) back to the inventory
 std::vector<ItemOut> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
@@ -948,7 +953,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
-                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
+                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
@@ -1529,6 +1534,7 @@ void SimLoop() {
                 std::lock_guard<std::mutex> q(queueMutex);
                 layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
+                if (lockedQueued) { lockedSim = std::unordered_set<int>(lockedQueue.begin(), lockedQueue.end()); lockedQueued = false; } // (#1271 L6b)
             }
             if (reset) { plots.clear(); plotIndexDirty = true; emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
@@ -1998,6 +2004,13 @@ std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, ui
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
+}
+void Factory::SetLockedOutputs(const std::vector<std::string>& outputs) { // (#1271 L6b)
+    LoadRecipes();
+    std::vector<int> ids;
+    for (const std::string& o : outputs) ids.push_back(tables.item(o));
+    std::lock_guard<std::mutex> q(queueMutex);
+    lockedQueue = std::move(ids); lockedQueued = true;
 }
 void Factory::Strike(uint64_t body, uint32_t plot, int part) { // (#1271 L2)
     std::lock_guard<std::mutex> q(queueMutex);

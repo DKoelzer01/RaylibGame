@@ -86,9 +86,24 @@ void RecipeBook_Update() {
 
 bool RecipeBook_Unlocked(const Recipe& r) {
     Load();
-    if (ResearchGate_On() && !ResearchGate_RecipeAllowed(ResearchGate_Team(), r.output)) return false; // (#1271) off until the ladder's L6
+    if (ResearchGate_On() && !ResearchGate_RecipeAllowed(ResearchGate_Team(), r.output)) return false; // (#1271) its research node
     auto it = unlocks.find(r.output);
     return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+}
+
+bool RecipeBook_LockedByResearch(const Recipe& r) {
+    if (terrainTool.creative || !ResearchGate_On() || ResearchGate_RecipeAllowed(ResearchGate_Team(), r.output)) return false;
+    Load();
+    for (const auto& in : r.inputs) if (!RecipeBook_Discovered(in.first)) return false; // (not found yet: still to discover)
+    auto it = unlocks.find(r.output);
+    return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+}
+
+std::string RecipeBook_LockReason(const Recipe& r) {
+    if (!RecipeBook_LockedByResearch(r)) return "";
+    const ResearchNode* n = ResearchGate_NodeForRecipe(r.output);
+    if (!n) n = ResearchGate_NodeForMachineItem(r.output);
+    return n ? "Locked: research " + n->name + " (tier " + std::to_string(n->tier) + ", Research tab)" : "Locked: research it first";
 }
 
 bool Crafting_Request(int index, int count) {
