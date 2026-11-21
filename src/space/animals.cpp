@@ -66,6 +66,7 @@ struct Species {
     std::vector<Biome> biomes;         // Plan 5 B: where herds live (empty: by latitude)
     bool biped = false, wool = false, horns = false, spikes = false, beak = false, tail = false, ears = false, longBody = false; // model (Plan 5 A)
     bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
+    bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -109,7 +110,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; }
         }
         species.push_back(s);
     }
@@ -151,6 +152,10 @@ struct Animal {
     bool hurtPending = false;    // (#1223) hit since its last update: by hurtBy (a player: kPlayerPercept | session), from hurtFrom
     uint64_t hurtBy = 0;
     Vector3 hurtFrom{};
+    double heardPlayerAt = -1e9; // (#1224) sim time it last heard a player (a blind hunter tracks by this)
+    bool clinging = false;       // (#1224) on a cave ceiling (pos), waiting over clingFloor
+    float dropIn = -1.0f, clingWait = 0.0f; // the drop's telegraph left (s, -1 none); s it has heard prey not under it
+    Vector3 clingFloor{};
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -169,7 +174,7 @@ struct Animal {
     Vector3 netPos{}; float netHeading = 0.0f; double netSeen = -1.0;
 };
 std::vector<Animal> animals;
-constexpr uint64_t kPlayerPercept = 1ull << 63; // (#1223) a player's id among a creature's percepts (| its session)
+constexpr uint64_t kPlayerPercept = kPlayerSource; // (#1223) a player's id among a creature's percepts (| its session)
 int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
 // (#1223) Its faction: its creatures.txt row's; a plain animal is livestock (calm) or wild.
 int AnimalFaction(const Animal& a) {
@@ -669,6 +674,7 @@ struct ChunkId { int x, y, z, species; bool operator<(const ChunkId& o) const { 
 std::map<ChunkId, SpawnChunk> spawnChunks;
 double lastCaveSpawn = -1e9;
 int caveSpawned = 0, caveSites = 0;
+int lurkerDrops = 0; // (#1224) drops that landed on a player (tests)
 
 ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
@@ -769,6 +775,9 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
 } // namespace
 
 int Animals_CaveSpawned() { return caveSpawned; }
+bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && animals[i].clinging; }
+int Animals_LurkerDrops() { return lurkerDrops; }
+double Animals_Clock() { return simClock; }
 const std::string& Animals_SpeciesOf(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? species[animals[i].species].id : none; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
@@ -810,11 +819,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         static int lastSwings = 0;
         if (here && !player.flyMode && !survival.dead) {
             const float sp = Vector3Length(player.velocity);
-            if (player.grounded && sp > 0.5f && simClock - lastStep > 0.5) {
-                Noise_Emit(here->id, playerLocal, sp > player.walkSpeed * 1.2f ? NoiseTune::kSprint : NoiseTune::kWalk, simClock);
+            if (player.grounded && sp > 0.5f && simClock - lastStep > 0.5 && player.posture == Player::Posture::Stand) { // (#1224) sneaking (crouched, prone): silent
+                Noise_Emit(here->id, playerLocal, sp > player.walkSpeed * 1.2f ? NoiseTune::kSprint : NoiseTune::kWalk, simClock, kPlayerPercept);
                 lastStep = simClock;
             }
-            if (terrainTool.swings != lastSwings) { lastSwings = terrainTool.swings; Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock); }
+            if (terrainTool.swings != lastSwings) { lastSwings = terrainTool.swings; Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock, kPlayerPercept); }
         }
     }
     // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
@@ -985,7 +994,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.health -= Status_Step(a.status, step, false, ResistOf(a)); // (#1223: a creature's own resistances)
             if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
         }
-        if ((a.settleIn -= step) <= 0.0f) {
+        if ((a.settleIn -= step) <= 0.0f && !a.clinging) { // (#1224: not while on a ceiling)
             a.settleIn = 1.0f;
             // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
             // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
@@ -1058,7 +1067,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
             if (a.hurtPending) { bi.hurt = true; bi.hurtBy = a.hurtBy; bi.hurtFrom = (a.hurtBy & kPlayerPercept) ? tgLocal : a.hurtFrom; a.hurtPending = false; }
             for (const NoiseEvent& n : Noise_Recent(simClock))
-                if (n.body == body->id && n.source != a.netId && Sense_Hears(*cs, Vector3Distance(n.pos, a.pos), n.loudness)) { bi.heardNoise = true; bi.noiseAt = n.pos; break; }
+                if (n.body == body->id && n.source != a.netId && Sense_Hears(*cs, Vector3Distance(n.pos, a.pos), n.loudness)) {
+                    bi.heardNoise = true; bi.noiseAt = n.pos;
+                    if (n.source & kPlayerPercept) a.heardPlayerAt = simClock; // (#1224) the player made it
+                }
+            for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
             const Mood before = a.brain.mood;
             bo = Brain_Step(a.brain, *cs, bi, step);
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
@@ -1071,6 +1084,66 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (bo.mood == Mood::Alert && a.fleeTimer <= 0.0f) { // goes to look where the noise was
                 a.state = State::Walk;
                 toward = Vector3Subtract(bo.goal, a.pos); steer = true; speed = s.walk;
+            }
+            // (#1224) Ceiling clingers (the tunnel lurker): idle in a cave with a ceiling 2.2-12 m over it, it climbs up and waits
+            // there. Prey heard or seen right under it (within dropRange sideways): a rattle (the telegraph), and 0.35 s later it
+            // drops onto them (damage x dropScale, a heavy hit). Prey it hunts but that stays clear for 3 s: it drops anyway
+            // and gives chase. Hit or staggered: it falls.
+            if (cs->ceiling) {
+                const Vector3 aup = Vector3Normalize(a.pos);
+                if (a.clinging) {
+                    const bool knocked = bi.hurt || (Combat3_On() && Poise_Staggered(a.poise));
+                    auto fall = [&]() { a.pos = a.prevPos = a.clingFloor; a.clinging = false; a.dropIn = -1.0f; a.clingWait = 0.0f; };
+                    if (knocked) fall();
+                    else if (a.dropIn >= 0.0f) {
+                        a.dropIn -= step;
+                        if (a.dropIn <= 0.0f) {
+                            const Vector3 below = a.clingFloor;
+                            fall();
+                            if (sameBody && hunting && preyIdx < 0) {
+                                const Vector3 d = Vector3Subtract(tgLocal, below);
+                                const float side = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, Vector3DotProduct(d, aup))));
+                                if (side < 1.8f && fabsf(Vector3DotProduct(d, aup)) < 2.5f) {
+                                    DamageEvent e;
+                                    e.amount = cs->damage * cs->dropScale * Difficulty_ThreatScale();
+                                    e.poise = e.amount * PoiseTune::kAttackPoisePerDamage;
+                                    e.heavy = true; e.kind = DamageKind::Melee; e.type = cs->type;
+                                    e.hasSource = true; e.source = body->toWorldD(DVec3(below)); e.knockback = cs->knockback; e.sourceId = a.netId;
+                                    e.faction = (uint8_t)std::max(0, cs->factionIdx);
+                                    if (tg->session != 0) { if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e); }
+                                    else {
+                                        const DamageResult r = Combat_Damage(LocalSession(), e);
+                                        GameUI_Toast(r.dodged ? TextFormat("The %s drops - you roll clear", s.name.c_str()) : TextFormat("The %s drops on you!", s.name.c_str()));
+                                    }
+                                    ++lurkerDrops;
+                                    a.lastBite = simClock;
+                                    a.brain.lastStrike = simClock; // its cooldown starts with the drop
+                                }
+                            }
+                        }
+                    } else if (hunting && preyIdx < 0) {
+                        const Vector3 d = Vector3Subtract(tgLocal, a.clingFloor);
+                        const float side = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, Vector3DotProduct(d, aup))));
+                        a.clingWait += step;
+                        if (side < cs->dropRange || a.clingWait > 3.0f) {
+                            a.dropIn = 0.35f;
+                            Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                            if (tg->session == 0 && side < cs->dropRange) { Audio_Play(Sfx::Error, 0.4f, 1.8f); GameUI_Toast("Something rattles overhead!"); }
+                        }
+                    }
+                    if (a.clinging) { a.moveSpeed = 0.0f; a.state = State::Rest; continue; } // hanging on: no walking
+                } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0) {
+                    float up = 0.0f; bool roof = false;
+                    for (float h = 0.5f; h <= 12.0f; h += 0.25f)
+                        if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; }
+                    if (roof && up >= 2.2f) {
+                        a.clingFloor = a.pos;
+                        a.pos = a.prevPos = Vector3Add(a.pos, Vector3Scale(aup, up - 0.3f));
+                        a.clinging = true; a.clingWait = 0.0f; a.dropIn = -1.0f;
+                        a.moveSpeed = 0.0f; a.state = State::Rest;
+                        continue;
+                    }
+                }
             }
         } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
@@ -1085,6 +1158,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             toward = Vector3Subtract(huntAt, a.pos);
             steer = true;
             speed = s.run * (s.night ? 0.8f : 1.0f);
+            if (cs && cs->burst) speed *= fmodf((float)simClock + (a.rng % 97) * 0.01f, cs->burstOn + cs->burstOff) < cs->burstOn ? 1.0f : 0.33f; // (#1224) bursts
             const float reach = cs ? cs->reach : 0.5f * s.size.x + 1.0f;
             const bool atPlayer = preyIdx < 0;
             // A telegraphed attack (#165): in reach it winds up (a growl, a warning) and strikes kBiteWindUp later; the
@@ -1467,6 +1541,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
         survival.lastDealtAt = now;
         ++gMeleeHits;
+        Noise_Emit(here->id, eye, NoiseTune::kHit, simClock, kPlayerPercept); // (#1224) combat is loud
         if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId); } // (#334) a client: the server decides
         else Animals_HitEvent(h.i, e);
     }
@@ -1647,17 +1722,21 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
         box({ 0, bodyY + bodyH * 0.8f, -len * 0.48f }, { sz.z * 0.12f, sz.y * (s.biped ? 0.3f : 0.45f), sz.z * 0.12f }, s.biped ? 140.0f : 35.0f, sway, shade(s.body, 0.85f));
     }
     // Legs: two segments, swinging from the hips; diagonal pairs in step (bipeds: alternating).
-    const int legs = s.biped ? 2 : 4;
+    // (#1224) Six legs (hexa): three pairs splayed out to the sides, an alternating tripod gait, the body slung low.
+    const int legs = s.biped ? 2 : s.hexa ? 6 : 4;
     const Color legC = shade(s.body, 0.8f);
     for (int l = 0; l < legs; ++l) {
-        const bool right = l & 1, front = s.biped ? true : (l & 2) != 0;
-        const float phase = s.biped ? (right ? PI : 0.0f) : ((right != front) ? PI : 0.0f);
+        const bool right = l & 1, front = s.biped ? true : s.hexa ? (l >> 1) == 0 : (l & 2) != 0;
+        const int row = l >> 1; // hexa: 0 front, 1 middle, 2 back
+        const float phase = s.biped ? (right ? PI : 0.0f) : s.hexa ? ((right != (row == 1)) ? PI : 0.0f) : ((right != front) ? PI : 0.0f);
         const float ang = resting ? 80.0f : swing * sinf(a.gait + phase) * RAD2DEG;
         const float knee = resting ? -150.0f : std::max(0.0f, -sinf(a.gait + phase)) * swing * 60.0f;
-        const Vector3 hip = { (right ? 0.32f : -0.32f) * sz.z, bodyY + bodyH * 0.15f, s.biped ? 0.0f : (front ? 0.3f : -0.33f) * len };
-        const float upper = legH * 0.55f, lowerLen = legH * 0.5f, w = sz.z * (s.biped ? 0.1f : 0.16f);
+        const float hipZ = s.biped ? 0.0f : s.hexa ? (0.34f - 0.34f * row) * len : (front ? 0.3f : -0.33f) * len;
+        const Vector3 hip = { (right ? 0.32f : -0.32f) * sz.z * (s.hexa ? 1.3f : 1.0f), bodyY + bodyH * 0.15f, hipZ };
+        const float upper = legH * 0.55f, lowerLen = legH * 0.5f, w = sz.z * (s.biped ? 0.1f : s.hexa ? 0.1f : 0.16f);
         rlPushMatrix();
         rlTranslatef(hip.x, hip.y, hip.z);
+        if (s.hexa) rlRotatef(right ? 40.0f : -40.0f, 0, 0, 1); // splayed out sideways
         rlRotatef(ang, 1, 0, 0);
         DrawCubeB({ 0, -upper * 0.5f, 0 }, w * 1.15f, upper, w * 1.15f, legC);
         rlTranslatef(0, -upper, 0);
@@ -1692,7 +1771,7 @@ void Animals_Draw3D(Scene& world) {
         Vector3 east, north;
         TangentFrame(lup, east, north);
         const Vector3 f = body->dirToWorld(Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading))));
-        const Vector3 u = body->dirToWorld(lup);
+        const Vector3 u = body->dirToWorld(a.clinging ? Vector3Negate(lup) : lup); // (#1224) upside down on a ceiling
         const Vector3 r = Vector3CrossProduct(u, f); // right-handed (r, u, f)
         const float k = 0.6f + 0.4f * a.age;
         const float light = 1.0f; // lit by the instance batch shader (sun, shadows, headlamp)

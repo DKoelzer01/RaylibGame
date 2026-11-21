@@ -56,6 +56,12 @@ struct CreatureSpec {
     float threat = 1.0f;       // how dangerous it looks to others (fear and target choice)
     bool sleepsByDay = false;  // a night creature: rests in daylight
     bool fireScares = false;   // keeps 14 m from fires; a player by a fire within 10 m is safe from it
+    // (#1224) Movement: clings to cave ceilings while it waits and drops on what passes under (the drop: damage x dropScale, a
+    // heavy hit); runs in bursts (full speed for burstOn s, then a third of it for burstOff s).
+    bool ceiling = false;
+    float dropScale = 1.5f, dropRange = 3.0f;
+    bool burst = false;
+    float burstOn = 1.2f, burstOff = 0.8f;
     // Its attack (the combat steps' timing: telegraphed wind-up, the strike, a cooldown).
     float damage = 8.0f, reach = 1.0f, windUp = 0.5f, cooldown = 1.2f, knockback = 6.0f, poise = 0.0f;
     DamageType type = DamageType::Blunt;
@@ -97,6 +103,7 @@ bool Sense_Hears(const CreatureSpec& c, float dist, float loudness);
 
 // Noise events (body-local, kept 1.5 s): footsteps and sprinting, digging, combat, falls. Loudness 1 ~ a sprint; 2 a hit.
 struct NoiseEvent { uint64_t body = 0; Vector3 pos{}; float loudness = 1.0f; double at = 0.0; uint64_t source = 0; };
+constexpr uint64_t kPlayerSource = 1ull << 63; // (#1224) a noise source (or percept id) that is a player (| its session)
 namespace NoiseTune { constexpr double kKeep = 1.5; constexpr float kWalk = 0.4f, kSprint = 1.0f, kDig = 1.2f, kHit = 2.0f; }
 void Noise_Emit(uint64_t body, Vector3 local, float loudness, double now, uint64_t source = 0);
 const std::vector<NoiseEvent>& Noise_Recent(double now); // drops the old ones
@@ -114,6 +121,7 @@ struct Percept {
     int faction = -1;
     float threat = 1.0f;
     bool seen = false;         // within sight (light, line of sight)
+    bool heard = false;        // (#1224) it made a noise this one heard lately (a blind hunter goes by this alone)
     bool safe = false;         // a player by a fire it fears: untouchable
     bool vulnerable = true;    // a player inside a cockpit is not
 };

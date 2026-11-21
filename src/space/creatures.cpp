@@ -135,6 +135,10 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "light") { if (v == "none") c.light = LightPref::None; else if (v == "avoids") c.light = LightPref::Avoids; else if (v == "drawn") c.light = LightPref::Drawn; else ok = false; }
         else if (k == "sleeps") c.sleepsByDay = v == "day" || v == "1";
         else if (k == "fire") c.fireScares = v == "scares" || v == "1";
+        else if (k == "ceiling") c.ceiling = v == "1" || v == "yes";
+        else if (k == "drop") ok = num(c.dropScale);
+        else if (k == "droprange") ok = num(c.dropRange);
+        else if (k == "burst") c.burst = v == "1" || v == "yes";
         else if (k == "damage") ok = num(c.damage);
         else if (k == "reach") ok = num(c.reach);
         else if (k == "windup") ok = num(c.windUp);
@@ -301,8 +305,8 @@ BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, 
             const bool angryAt = in.now < s.angryUntil && p.id == s.angryAt;
             const bool hostile = ft.stance(c.factionIdx, p.faction) == Stance::Hostile;
             bool want = false;
-            if (c.aggro == Aggro::Predator) want = hostile && p.dist < c.aggroRange && p.seen;
-            else if (c.aggro == Aggro::Territorial) want = (hostile && p.dist < c.aggroRange && p.seen) || angryAt;
+            if (c.aggro == Aggro::Predator) want = hostile && p.dist < c.aggroRange && (p.seen || p.heard);
+            else if (c.aggro == Aggro::Territorial) want = (hostile && p.dist < c.aggroRange && (p.seen || p.heard)) || angryAt;
             else want = angryAt; // defensive
             if (!want || p.dist >= (c.aggro == Aggro::Predator ? c.aggroRange : c.chaseRange)) continue;
             if (!best || p.dist < best->dist) best = &p;
@@ -503,5 +507,22 @@ TEST(Creatures, SpawnFitsAndDue) {
     EXPECT_EQ(Spawn_Due(c, ch, 1, 700.0), 0);
     ch.hasNest = true; ch.nestDestroyed = true;
     EXPECT_EQ(Spawn_Due(c, ch, 0, 5000.0), 0);
+}
+
+// #1224: a blind hunter (sight 0) goes by sound alone: a heard player is chased, a silent one (sneaking) is not.
+TEST(Creatures, BlindHunterBySound) {
+    if (Faction_Player() < 0 || Factions().find("lurker") < 0) GTEST_SKIP() << "factions.txt not found";
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("tunnel_lurker | lurker | aggro=predator range=24 sight=0 darksight=0 hearing=22 ceiling=1 burst=1 drop=1.5", c, &err)) << err;
+    c.factionIdx = Factions().find(c.faction);
+    EXPECT_TRUE(c.ceiling); EXPECT_TRUE(c.burst); EXPECT_FLOAT_EQ(c.dropScale, 1.5f);
+    EXPECT_FALSE(Sense_Sees(c, 3.0f, 1.0f, true));              // blind, even in full light
+    EXPECT_TRUE(Sense_Hears(c, 20.0f, NoiseTune::kSprint));      // a sprint at 20 m
+    EXPECT_FALSE(Sense_Hears(c, 12.0f, NoiseTune::kWalk));       // a walk only within ~9 m
+    Percept p; p.id = 7; p.dist = 10.0f; p.pos = { 10, 0, 0 }; p.faction = Faction_Player();
+    BrainState s; BrainInput in; in.now = 0.0; in.others = { p };
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Idle);      // silent: nothing
+    in.others[0].heard = true;
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Chase);     // heard: it comes
 }
 #endif
