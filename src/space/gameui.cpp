@@ -1345,8 +1345,12 @@ static void DrawSkills() {
     double into = xp; for (int k = 1; k <= level; ++k) into -= Skills_XpForLevel(k);
     ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f), "%s  level %d", d.name.c_str(), level);
     ImGui::SameLine();
-    ImGui::TextDisabled("  %.0f / %.0f XP to level %d   |   %d point%s to spend   |   world XP rate %gx", into, Skills_XpForLevel(level + 1), level + 1,
-                        Skills_PointsFree(st, d.id), Skills_PointsFree(st, d.id) == 1 ? "" : "s", worldXpRate);
+    ImGui::TextDisabled("  %.0f / %.0f XP to level %d", into, Skills_XpForLevel(level + 1), level + 1);
+    { // (#828) the points on a line of their own (the header ran out of the pane at 1080p)
+        const int pts = Skills_PointsFree(st, d.id);
+        ImGui::TextColored(pts > 0 ? ImVec4(0.55f, 0.9f, 0.6f, 1.0f) : ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "%d point%s to spend", pts, pts == 1 ? "" : "s");
+        ImGui::SameLine(); ImGui::TextDisabled("   world XP rate %gx", worldXpRate);
+    }
     std::string earns;
     for (const auto& [ev, x] : d.xp) earns += TextFormat("%s%s %g", earns.empty() ? "" : ", ", ev.c_str(), x);
     ImGui::TextDisabled("XP from: %s", earns.empty() ? "nothing yet" : earns.c_str());
@@ -1354,8 +1358,8 @@ static void DrawSkills() {
     // (#828) The perk tree as nodes, a row per tier (the plan's grid): learned (green), can learn now (amber: click it),
     // locked or not yet (grey). Each node: its name, ranks and effect; hover for its cost, what it needs and why not.
     bool any = false;
-    const int kNodeCols = 4;
-    const float gap = fh * 0.6f, nodeW = (ImGui::GetContentRegionAvail().x - gap * (kNodeCols - 1)) / kNodeCols, nodeH = fh * 4.6f;
+    const int kNodeCols = 3; // (4 left names and their ranks overlapping at 1080p)
+    const float gap = fh * 0.6f, nodeW = (ImGui::GetContentRegionAvail().x - gap * (kNodeCols - 1)) / kNodeCols, nodeH = fh * 5.0f;
     for (int tier = 1; tier <= 3; ++tier) {
         const int need = kSkillTierLevel[tier - 1];
         ImGui::TextColored(level >= need ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.55f, 1.0f), "Tier %d  (level %d)%s", tier, need, level >= need ? "" : "  - locked");
@@ -1376,18 +1380,28 @@ static void DrawSkills() {
             const ImU32 text = canLearn ? IM_COL32(240, 200, 110, 255) : learned ? IM_COL32(150, 235, 165, 255) : IM_COL32(150, 155, 165, 255);
             dl->AddRectFilled(a, b, hovered ? IM_COL32(34, 44, 58, 255) : IM_COL32(22, 30, 40, 255), 6.0f);
             dl->AddRect(a, b, edge, 6.0f, 0, canLearn || learned ? 2.0f : 1.0f);
-            const float pad = fh * 0.4f;
+            const float pad = fh * 0.4f, small = fh * 0.8f;
+            dl->PushClipRect(ImVec2(a.x + 2, a.y + 2), ImVec2(b.x - 2, b.y - 2), true); // every line stays in its node
             dl->AddText(ImVec2(a.x + pad, a.y + pad), text, p.name.c_str());
-            const char* ranks = TextFormat("%d/%d", rank, p.ranks);
-            dl->AddText(ImVec2(b.x - pad - ImGui::CalcTextSize(ranks).x, a.y + pad), text, ranks);
+            // the effect: at most two lines (the rest in the tooltip), above the status row
+            dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(b.x, b.y - pad - small * 1.15f), true);
             dl->AddText(ImGui::GetFont(), fh * 0.85f, ImVec2(a.x + pad, a.y + pad + fh * 1.25f), IM_COL32(190, 196, 206, 255), p.text.c_str(), nullptr, nodeW - 2.0f * pad);
-            const char* status = full ? "learned" : canLearn ? "click to learn" : why.c_str();
-            dl->AddText(ImGui::GetFont(), fh * 0.8f, ImVec2(a.x + pad, b.y - pad - fh * 0.85f), canLearn ? IM_COL32(230, 180, 60, 255) : IM_COL32(130, 136, 146, 255), status);
+            dl->PopClipRect();
+            // the status row: what you can do (or why not: just "locked" under a locked tier, whose header says so) and the ranks
+            const char* status = full ? "learned" : canLearn ? "can learn" : level < need ? "locked" : why.c_str(); // (click the node: the tooltip says so)
+            const char* ranks = TextFormat("rank %d/%d", rank, p.ranks);
+            const float rw = ImGui::GetFont()->CalcTextSizeA(small, FLT_MAX, 0.0f, ranks).x;
+            dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(b.x - pad - rw - pad, b.y), true);
+            dl->AddText(ImGui::GetFont(), small, ImVec2(a.x + pad, b.y - pad - small), canLearn ? IM_COL32(230, 180, 60, 255) : IM_COL32(130, 136, 146, 255), status);
+            dl->PopClipRect();
+            dl->AddText(ImGui::GetFont(), small, ImVec2(b.x - pad - rw, b.y - pad - small), learned ? IM_COL32(150, 235, 165, 255) : IM_COL32(130, 136, 146, 255), ranks);
+            dl->PopClipRect();
             if (hovered) {
                 ImGui::BeginTooltip();
                 ImGui::TextUnformatted(p.name.c_str());
                 ImGui::TextDisabled("%s", p.text.c_str());
                 ImGui::TextDisabled("%d point%s a rank, %d rank%s", p.cost, p.cost == 1 ? "" : "s", p.ranks, p.ranks == 1 ? "" : "s");
+                if (canLearn) ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.25f, 1.0f), "Click to learn a rank");
                 if (!p.needs.empty()) {
                     std::string n;
                     for (const std::string& q : p.needs) { const PerkDef* qd = Skills_FindPerk(q); n += (n.empty() ? "" : ", ") + (qd ? qd->name : q); }
