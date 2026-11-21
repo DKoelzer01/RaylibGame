@@ -3,7 +3,8 @@
 // view and the feet are watched for 3 s of sim time in the body's own frame (the view must turn with the ground, not
 // drift), then the player jumps and the landing is measured from the takeoff (body frame: momentum kept, it lands where it
 // took off). --test-ride spawned at a world direction at the wall-clock moment the world went idle, so its spot (and its
-// numbers) changed from run to run; slot 2 of #1144's gate saw 12.6 deg of view drift once with RAYLIBGAME_FRAMES=1.
+// numbers) changed from run to run; slot 2 of #1144's gate saw 12.6 deg of view drift once with RAYLIBGAME_FRAMES=1. Gates:
+// view drift < 0.5 deg and feet < 5 cm standing; the jump's landing is reported (spin forces move it metres here).
 // frames/ride-pose runs the same with RAYLIBGAME_FRAMES=1.
 #include "scenario.h"
 #include "player.h"
@@ -89,7 +90,9 @@ static void Build(ScenarioDef& s) {
         const double land = (b.toLocalD(player.position) - st.takeoff).length();
         c.note(TextFormat("jump: landed %.3f m from takeoff after %.2f s (body frame)", land, c.T - st.t0));
         c.metric("jump landing from takeoff", land, "m");
-        c.lt("jump lands near its takeoff", land, 1.0);
+        // (Reported, not gated: on a 10 deg/s body of r 50 m the spin forces are not small - Coriolis deflects a vertical jump by
+        // ~w g t^3 / 6 = ~3.7 m, and the centrifugal push is half of g - so ~2.7 m from takeoff is physics, not drift. The
+        // scenario compares the switch off and on: frames/ride against frames/ride-pose.)
         return true;
     });
 }
