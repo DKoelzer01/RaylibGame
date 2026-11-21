@@ -294,7 +294,7 @@ namespace {
             return true;
         });
         add("dig 72 stone (any rock, #587)", [] { return DigFor("any_stone", 72, 5.0f); });
-        add("dig 28 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
+        add("dig 44 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(44) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
             if (!started) { started = true; if (!Place("campfire", PartType::Campfire, { 0, 0, 0 })) return false; return false; }
@@ -362,7 +362,7 @@ namespace {
             if (!fed) { fed = true; Give("press", "iron_bloom", 72); }
             return Collect("press", "iron_ingot", 72 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
         });
-        add("press 8 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 8); } return Collect("press", "bronze_plate", 8); });
+        add("press 16 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 16); } return Collect("press", "bronze_plate", 16); });
         // Tier 3: a boiler and a steam engine, coke, steel.
         add("craft a boiler, a steam engine and cogwheels", [] {
             return Craft("bronze_plate", 10) && Craft("boiler", 1) && Craft("iron_plate", 6) && Craft("cogwheel", 2) && Craft("steam_engine", 1);
