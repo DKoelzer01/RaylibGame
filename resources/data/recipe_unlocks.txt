@@ -6,3 +6,5 @@ ore_scanner   | do explored 40
 # (#1271 L6b) the tier 2 milestone hands over the first lab and its pack (and the research begins); later labs come from nodes
 steam_lab     | tier 3
 steam_pack    | tier 3
+# (#1271 L6c) the LV assembler comes with tier 4: it makes the LV packs tier 4's research needs
+lv_assembler  | tier 4

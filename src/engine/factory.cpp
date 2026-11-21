@@ -3034,4 +3034,31 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
     EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 1) << "the third strike: an ingot";
     plots.clear(); plotIndexDirty = true;
 }
+// (#1271 L6c) The LV assembler: on a generator's power it assembles basic circuits from their parts; switched to
+// disassembly (#1427 to come) it waits, and switched back it goes on.
+TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 } }, {}, Row(0, 4, -1)));
+    PlotSim& ps = *FindPlot(9, 5);
+    Machine& gen = ps.machines[ps.byPart.at(0)];
+    Machine& asm1 = ps.machines[ps.byPart.at(1)];
+    int b = 0;
+    InsertInto(gen, tables.item("coal"), 16, true, b);
+    InsertInto(asm1, tables.item("vacuum_tube"), 8, false, b);
+    InsertInto(asm1, tables.item("copper_wire"), 16, false, b);
+    InsertInto(asm1, tables.item("steel_plate"), 4, false, b);
+    int ticks = 160;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == tables.item("basic_circuit")) { ticks = r.ticks; break; }
+    long long made = 0; int active = 0;
+    asm1.mode = 1;
+    for (int t = 0; t < 3 * ticks; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 0) << "set to disassemble: it waits";
+    EXPECT_EQ(asm1.status, MachineStatus::Idle);
+    asm1.mode = 0;
+    for (int t = 0; t < 2 * ticks + 40; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "two circuits in two crafts' time";
+    EXPECT_EQ(CountItems(asm1.in.data(), InSlots(asm1), tables.item("vacuum_tube")), 4);
+    plots.clear(); plotIndexDirty = true;
+}
 #endif

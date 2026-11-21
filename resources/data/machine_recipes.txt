@@ -140,3 +140,7 @@ anvil            | bronze_axe_head 1  | rough_bronze_axe_head 1   | 80  | 0
 mechanical_press | iron_ingot 1       | iron_bloom 1              | 100 | 0
 # (#1271 L6b-2) the steam assembler makes steam packs (twice as fast as by hand, and without you)
 steam_assembler  | steam_pack 1       | iron_plate 1, cogwheel 1, coal 1 | 100 | 0
+# (#1271 L6c) the LV assembler: the real route for circuits and the LV/MV packs (tiers per recipe come with #1427)
+lv_assembler     | basic_circuit 1    | vacuum_tube 2, copper_wire 4, steel_plate 1 | 160 | 16
+lv_assembler     | lv_pack 2          | steel_plate 1, copper_wire 2, vacuum_tube 1 | 200 | 12
+lv_assembler     | mv_pack 2          | basic_circuit 2, steel_plate 1, iron_crushed 3 | 300 | 24
