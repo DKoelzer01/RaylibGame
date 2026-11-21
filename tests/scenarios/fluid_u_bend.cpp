@@ -102,6 +102,19 @@ static void Build(ScenarioDef& s) {
         for (float h = kFloor + 0.125f; h < 0.0f; h += 0.25f) { nearCol += digit(-10.0f, h); farCol += digit(10.0f, h); }
         for (float x = -8.0f; x <= 8.0f; x += 1.0f) tun += digit(x, 0.5f * (kFloor + kTunnelTop));
         c.note("fill by row from the floor up: near " + nearCol + ", far " + farCol + "; tunnel (-8..8 m) " + tun);
+        // Where the volume is: the cells sampled every 0.25 m (one fluid cell per sample) over each region, with a margin; the
+        // tunnel's top row (under the roof) separately. What the total holds beyond these is outside the carve.
+        auto region = [&](float x0, float x1, float h0, float h1) {
+            double v = 0.0;
+            for (float x = x0 + 0.125f; x < x1; x += 0.25f)
+                for (float y = -1.5f + 0.125f; y < 1.5f; y += 0.25f)
+                    for (float h = h0 + 0.125f; h < h1; h += 0.25f) v += Fluid::WaterAt(*c.body, S.pt(x, y, h), 0.0f);
+            return v;
+        };
+        const double vNear = region(-12.5f, -7.75f, kFloor - 0.5f, 1.0f), vFar = region(7.75f, 12.5f, kFloor - 0.5f, 1.0f);
+        const double vTunnel = region(-7.75f, 7.75f, kFloor - 0.5f, kTunnelTop - 0.25f), vRoof = region(-7.75f, 7.75f, kTunnelTop - 0.25f, kTunnelTop + 0.5f);
+        c.note(TextFormat("volume by region (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row and roof %.2f; outside %.2f of %.2f",
+                          vNear, vFar, vTunnel, vRoof, vol1 - (vNear + vFar + vTunnel + vRoof), vol1));
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
         c.metric("simulated volume after the pour", S.vol0, "m^3", false);
         c.metric("simulated volume at the end", vol1, "m^3", false);
