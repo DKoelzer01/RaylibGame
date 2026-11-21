@@ -219,6 +219,56 @@ namespace {
         return a;
     }
 
+    // (#1240) Footsteps, one short sound per surface (footsteps.cpp plays them with a little pitch jitter): noise shaped by
+    // a fast attack and a decay, filtered to the surface's colour, with its own extra (a click, a thump, grains, a ring).
+    bool MakeProceduralStep(const std::string& surface, std::vector<float>& out) {
+        std::mt19937 rng(std::hash<std::string>{}(surface) & 0xffffffffu);
+        std::uniform_real_distribution<float> n(-1.0f, 1.0f), u01(0.0f, 1.0f);
+        float lp = 0.0f, lp2 = 0.0f, grain = 0.0f;
+        auto env = [](float t, float attack, float decay) { return std::min(1.0f, t / attack) * expf(-t * decay); };
+        if (surface == "stone") { // a hard tap: bright noise and a click
+            out = Synth(0.12f, [&](float t, float) { const float x = n(rng); lp += (x - lp) * 0.3f;
+                return ((x - lp) * 0.9f * env(t, 0.001f, 55.0f)) + sinf(6.2832f * 2300.0f * t) * 0.25f * expf(-t * 220.0f); });
+        } else if (surface == "dirt") { // a dull thud
+            out = Synth(0.15f, [&](float t, float) { lp += (n(rng) - lp) * 0.08f;
+                return lp * 2.2f * env(t, 0.003f, 35.0f) + sinf(6.2832f * 90.0f * t) * 0.35f * expf(-t * 40.0f); });
+        } else if (surface == "grass") { // two quick rustles
+            out = Synth(0.2f, [&](float t, float) { const float x = n(rng); lp += (x - lp) * 0.35f; lp2 += (x - lp2) * 0.06f;
+                const float band = lp - lp2;
+                return band * 1.4f * (env(t, 0.004f, 30.0f) + 0.6f * (t > 0.045f ? env(t - 0.045f, 0.004f, 35.0f) : 0.0f)); });
+        } else if (surface == "sand") { // a soft, longer hiss
+            out = Synth(0.22f, [&](float t, float) { lp += (n(rng) - lp) * 0.4f;
+                return lp * 0.7f * env(t, 0.012f, 22.0f); });
+        } else if (surface == "gravel") { // a crunch: dense little clicks over low noise
+            out = Synth(0.2f, [&](float t, float) {
+                if (u01(rng) < 500.0f / kRate) grain = 0.6f + 0.4f * u01(rng);
+                grain *= 0.985f;
+                lp += (n(rng) - lp) * 0.15f;
+                return (grain * n(rng) * 0.8f + lp * 0.8f) * env(t, 0.002f, 20.0f); });
+        } else if (surface == "snow") { // a squeaky crunch, dull
+            out = Synth(0.24f, [&](float t, float) {
+                if (u01(rng) < 250.0f / kRate) grain = 1.0f;
+                grain *= 0.993f;
+                lp += (n(rng) * grain - lp) * 0.12f;
+                return lp * 2.5f * env(t, 0.01f, 16.0f); });
+        } else if (surface == "wood") { // a hollow knock: a resonance near 170 Hz and its octave
+            out = Synth(0.2f, [&](float t, float) { lp += (n(rng) - lp) * 0.25f;
+                return (sinf(6.2832f * 170.0f * t) * 0.5f + sinf(6.2832f * 340.0f * t) * 0.2f) * expf(-t * 28.0f) + lp * 0.5f * expf(-t * 90.0f); });
+        } else if (surface == "metal") { // a ringing clank: inharmonic partials
+            out = Synth(0.35f, [&](float t, float) { lp += (n(rng) - lp) * 0.5f;
+                return (sinf(6.2832f * 520.0f * t) * 0.3f * expf(-t * 12.0f) + sinf(6.2832f * 1310.0f * t) * 0.2f * expf(-t * 16.0f) +
+                        sinf(6.2832f * 2150.0f * t) * 0.12f * expf(-t * 22.0f)) + lp * 0.4f * expf(-t * 120.0f); });
+        } else if (surface == "water") { // a splash: noise and a few bubbles
+            float bubF = 0.0f, bubT = 1.0f, bubPh = 0.0f;
+            out = Synth(0.3f, [&](float t, float) { lp += (n(rng) - lp) * 0.3f;
+                if (u01(rng) < 60.0f / kRate) { bubF = 400.0f + 700.0f * u01(rng); bubT = 0.0f; }
+                float b = 0.0f;
+                if (bubT < 0.03f) { bubPh += 6.2832f * bubF * (1.0f + 10.0f * bubT) / kRate; b = sinf(bubPh) * (1.0f - bubT / 0.03f) * 0.3f; bubT += 1.0f / kRate; }
+                return lp * 1.2f * env(t, 0.004f, 12.0f) + b * expf(-t * 6.0f); });
+        } else return false;
+        return true;
+    }
+
     // Procedural loops for emitters (later steps tune them and add more; files in resources/audio replace them).
     bool MakeProceduralLoop(const std::string& name, std::vector<float>& out) {
         std::mt19937 rng(std::hash<std::string>{}(name) & 0xffffffffu);
@@ -254,6 +304,7 @@ namespace {
             });
             return true;
         }
+        if (name.rfind("step_", 0) == 0) return MakeProceduralStep(name.substr(5), out); // (#1240)
         return false;
     }
 
