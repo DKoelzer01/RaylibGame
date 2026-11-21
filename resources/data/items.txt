@@ -91,6 +91,12 @@ steel_axe        | Steel axe        | tool | 125,120,130 | Fells trees quickly.
 titanium_pickaxe | Titanium pickaxe | tool | 205,180,215 | The biggest bite.
 titanium_shovel  | Titanium shovel  | tool | 205,180,205 | The widest shovel.
 titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few swings.
+# (#1449) Composed tools: one item per class; each copy is made of its own parts (head, handle, binding), which set its
+# tier, speed, durability and damage (composed_classes.txt, part_materials.txt). Old per-material tools convert on load.
+tool_pickaxe     | Pickaxe          | tool | 160,155,150 | Its head sets what it can mine: stone and the common ores; iron or better for bauxite; steel for ilmenite.
+tool_shovel      | Shovel           | tool | 160,145,125 | Digs dirt, sand, gravel and snow; a harder head digs wider and faster.
+tool_axe         | Axe              | tool | 160,135,115 | Fells trees, and fights as an axe; a harder head fells faster.
+tool_hoe         | Hoe              | tool | 160,150,130 | Tills soil into farmland (RMB); an iron or better head tills a wider patch.
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.

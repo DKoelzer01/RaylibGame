@@ -1343,6 +1343,7 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    gToolDataOf = ToolWear_HeldData; // (#1449) a composed tool named by id: the held copy's parts
     // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
     // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
     Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",

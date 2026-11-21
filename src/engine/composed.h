@@ -6,6 +6,7 @@
 // resources/data/composed_classes.txt, materials from part_materials.txt; every stat comes from the parts here, in one place.
 // Old per-material tool ids (stone_pickaxe, bronze_axe ...) convert through Composed_FromLegacy.
 
+#include <map>
 #include <string>
 #include "tools.h"
 
@@ -45,5 +46,10 @@ ComposedStats Composed_Stats(const std::string& id, const std::string& data);
 std::string Composed_MakeData(const std::string& head, const std::string& handle = {}, const std::string& binding = {}, int qualityPct = 100);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
+class Inventory;
+// (#1449) The single conversion point for old tools: every cell holding an old per-material tool (stone_pickaxe ...) becomes its
+// class with the default parts (one item per cell). wearUsed (the old per-id wear, may be null): each id's wear moves into
+// the first copy converted, and its entry goes. Only classes the item table knows are converted. Returns how many.
+int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed);
 
 #endif

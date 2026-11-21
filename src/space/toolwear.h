@@ -24,5 +24,7 @@ void ToolWear_DrawRepairUI();                     // ImGui, in the Crafting tab
 void ToolWear_Reset();
 void ToolWear_Save(FILE* f);
 bool ToolWear_LoadLine(const char* tok, FILE* f);
+// (#1449) A composed tool's copy in use: its record ("" none). The game sets gToolDataOf (tools.h) to this.
+std::string ToolWear_HeldData(const std::string& id);
 
 #endif
