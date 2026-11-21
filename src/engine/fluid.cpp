@@ -2820,8 +2820,9 @@ int Fluid::HeadAt(const Planetoid& body, Vector3 local) {
     return -1;
 }
 
-double Fluid::VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
-    if (running.load()) WaitIdle();
+// Tests (#1168): the simulation's cells whose centres lie in a box, summed - their water, or the water they can hold.
+static double SumCellsIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half, bool capacity) {
+    if (running.load()) Fluid::WaitIdle();
     std::lock_guard<std::mutex> lock(simMx);
     double v = 0.0;
     for (auto& s : sites) {
@@ -2830,15 +2831,22 @@ double Fluid::VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector
             const Brick& b = *kv.second;
             if (!b.ready) continue;
             for (int i = 0; i < B3; ++i) {
-                if (b.fill[i] == 0) continue;
+                const int units = capacity ? ((b.flags[i] & kSolid) ? 0 : 255 - b.shut[i]) : b.fill[i];
+                if (units == 0) continue;
                 const int x = i % B, y = (i / B) % B, z = i / (B * B);
                 const Vector3 d = Vector3Subtract(s->cellPoint(b.bi * B + x + 0.5f, b.bj * B + y + 0.5f, b.bk * B + z + 0.5f), centre);
                 if (fabsf(Vector3DotProduct(d, ax)) <= half.x && fabsf(Vector3DotProduct(d, ay)) <= half.y && fabsf(Vector3DotProduct(d, az)) <= half.z)
-                    v += b.fill[i] / 255.0 * WaterField::CellVolume();
+                    v += units / 255.0 * WaterField::CellVolume();
             }
         }
     }
     return v;
+}
+double Fluid::VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
+    return SumCellsIn(body, centre, ax, ay, az, half, false);
+}
+double Fluid::CapacityIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half) {
+    return SumCellsIn(body, centre, ax, ay, az, half, true);
 }
 
 bool Fluid::Asleep() {
