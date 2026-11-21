@@ -1288,6 +1288,7 @@ int main(int argc, char** argv)
         if (bench && GetTime() - lastPrint > 5.0) { lastPrint = GetTime(); printf("bench: world generation: %s %.0f%%\n", what, progress * 100.0f); }
         BeginDrawing();
         ClearBackground(BLACK);
+        Slideshow_Draw(0.5f); // (#1070) the screenshots behind every loading screen, as the world's loading bar has them (#386)
         const int bw = GetScreenWidth() / 3, bx = (GetScreenWidth() - bw) / 2, by = GetScreenHeight() / 2;
         DrawText(what, bx, by - 40, 28, RAYWHITE);
         DrawRectangle(bx, by, bw, 14, Fade(RAYWHITE, 0.15f));
@@ -1522,6 +1523,7 @@ int main(int argc, char** argv)
             while ((gJoin.state == NetClient::State::Connecting || gJoin.state == NetClient::State::AwaitingWelcome) && GetTime() - a0 < kClientConnectTimeout + 1.0 && !WindowShouldClose()) {
                 NetClient_Update(gJoin);
                 BeginDrawing(); ClearBackground(BLACK);
+                Slideshow_Draw(0.5f); // (#1070) the screenshots behind the join too
                 DrawText(waiting.c_str(), 40, 40, 30, RAYWHITE);
                 if (retrySeconds > 0.0) DrawText(TextFormat("%.0f s", GetTime() - t0), 40, 84, 24, Fade(RAYWHITE, 0.6f));
                 EndDrawing();
