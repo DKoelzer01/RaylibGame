@@ -27,10 +27,17 @@ bool Aim(ScenarioCtx& c, float side, Vector3& local) {
     Planetoid* body = nullptr; Vector3 n{};
     return TerrainTool_LastHit(body, local, n);
 }
+// The ground under the aimed point is farmland (the tilled state, #1085): its material a hand's breadth down. (Farm_Aims
+// also says yes near a crop field: the wrong probe here.)
+bool Farmland(ScenarioCtx& c, Vector3 spot) {
+    return c.body->materialAt(Vector3Subtract(spot, Vector3Scale(Vector3Normalize(spot), 0.12f))) == VoxelMaterial::Farmland;
+}
 // RMB held for one update with `held` in hand (the caller waited out the cooldown): what the player's RMB does there.
 void Rmb(ScenarioCtx& c, const char* held) {
     if (inventory.count(held) <= 0) inventory.add(held, 1); // (the tool in hand must be carried: HeldTool reads the inventory)
     terrainTool.heldTool = held;
+    terrainTool.holdingItem = false; // (as the hotbar's take() does when a tool or ground item is selected: the start's hotbar
+                                     // slot held food, which keeps RMB from striking at all)
     c.note(TextFormat("RMB with %s: holdingItem %d rmbBlocks %d cooldown %.2f", held, terrainTool.holdingItem ? 1 : 0, terrainTool.rmbBlocks ? 1 : 0, TerrainTool_Cooldown()));
     PlayerInput in; in.hold(Act::Secondary);
     TerrainTool_Update(c.world, in, true);
@@ -42,7 +49,7 @@ SCENARIO("farm/till-rmb") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 60.0;
     static int stage = 0;
-    static float side = -6.0f;
+    static float side = -12.0f; static double rmbAt = 0.0;
     static int strokes0 = 0;
     static double dirt0 = 0.0;
     static Vector3 spot{};
@@ -58,7 +65,7 @@ SCENARIO("farm/till-rmb") {
         if (TerrainTool_Cooldown() > 0.0f) return false; // one stroke per cooldown: wait it out in sim time
         if (phase == 0) { // a fresh spot (3 m apart); with placedDirt, a patch of dirt laid there first
             if (!Aim(c, side, spot)) { c.fail("no ground ahead"); return true; }
-            c.check(TextFormat("case %d: not farmland before", i), !Farm_Aims(*c.body, spot));
+            c.check(TextFormat("case %d: not farmland before", i), !Farmland(c, spot));
             if (k.placedDirt) { inventory.add("dirt", 20); Rmb(c, "dirt"); }
             ++stage;
             return false;
@@ -67,20 +74,21 @@ SCENARIO("farm/till-rmb") {
             Aim(c, side, spot);
             strokes0 = terrainTool.swings;
             dirt0 = inventory.amount("dirt");
-            Rmb(c, k.tool);
+            Rmb(c, k.tool); rmbAt = c.T;
             ++stage;
             return false;
         }
+        if (c.T - rmbAt < 0.5) return false; // (the till's ground edit lands over the next frames)
         Aim(c, side, spot);
         const std::string what = std::string(k.tool) + (k.placedDirt ? " on placed dirt" : " on the natural ground");
         if (k.tills) {
-            c.check(("RMB tills: " + what).c_str(), Farm_Aims(*c.body, spot), TextFormat("strokes %d -> %d", strokes0, terrainTool.swings));
+            c.check(("RMB tills: " + what).c_str(), Farmland(c, spot), TextFormat("strokes %d -> %d", strokes0, terrainTool.swings));
         } else {
-            c.check("RMB with a pickaxe tills nothing (the control)", !Farm_Aims(*c.body, spot));
+            c.check("RMB with a pickaxe tills nothing (the control)", !Farmland(c, spot));
             c.eq("RMB with a pickaxe strikes nothing", terrainTool.swings - strokes0, 0);
         }
         c.eq(("no ground placed or paid: " + what).c_str(), inventory.amount("dirt"), dirt0);
-        side += 3.0f;
+        side += 6.0f; // (6 m apart: a till brush and the farm aim reach past 3 m)
         ++stage;
         return false;
     });
