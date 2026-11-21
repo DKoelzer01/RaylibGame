@@ -41,10 +41,16 @@ struct State {
         e.radius = Vector3Length(e.half);
         return e;
     }
-    // The water level (m against the ground) in a pit at x: the top of the highest wet cell, scanning down from over the
-    // rim. (#1168: the first surface going up from the floor read a gap in a rising column as the level, and the pour,
-    // gated on it, kept pouring into a full pit.)
+    // The water level (m against the ground) in a pit at x, as the game reads it: Fluid::SurfaceAbove from 0.3 m over the
+    // floor (the floor's own cell is part ground). #1376: it stopped at the first cell short of full, so in a column the
+    // pressure pass lifts it read the level metres low, and the pour (gated on it) ran the pit over; this scenario fails
+    // without that fix (the spill check).
     float level(const Planetoid& p, float x) const {
+        const float s = Fluid::SurfaceAbove(p, pt(x, 0.0f, kFloor + 0.3f), 6.0f);
+        return s > 0.0f ? kFloor + 0.3f + s : kFloor;
+    }
+    // The top of the highest wet cell (scanning down from over the rim): reported beside the level as a check on it.
+    float topCell(const Planetoid& p, float x) const {
         const float cs = WaterField::CellSize();
         for (float h = 1.0f - 0.5f * cs; h > kFloor; h -= cs) {
             const float w = Fluid::WaterAt(p, pt(x, 0.0f, h), 0.0f) / WaterField::CellVolume();
@@ -113,6 +119,8 @@ static void Build(ScenarioDef& s) {
         if (!((c.t > 10.0 && Fluid::Asleep()) || c.t > 120.0)) return false;
         c.note("levels over time (near/far m, awake bricks a, settled s): " + S.trace);
         const float nearL = S.level(*c.body, -10.0f), farL = S.level(*c.body, 10.0f);
+        c.note(TextFormat("the levels as SurfaceAbove reads them, near %.3f / far %.3f m; the highest wet cells' tops %.3f / %.3f m", nearL, farL,
+                          S.topCell(*c.body, -10.0f), S.topCell(*c.body, 10.0f)));
         const float tunnel = Fluid::WaterAt(*c.body, S.pt(0.0f, 0.0f, 0.5f * (kFloor + kTunnelTop)), 0.5f);
         const float lost = Fluid::PourDropped();
         const double vol1 = Fluid::GetStats().volume;
