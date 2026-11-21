@@ -28,17 +28,18 @@ furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
 furnace         | glass 1          | sand 4                    | 160 | 8
 macerator       | sand 2           | stone 1                   | 100 | 4
 macerator       | gravel 2         | concrete 1                | 100 | 4
-# Milestone 8. LV ore processing: ore -> 2 crushed -> purified (water) -> dust + byproduct -> ingot.
-macerator       | iron_crushed 2     | iron_ore 1                | 150 | 8
-macerator       | copper_crushed 2   | copper_ore 1              | 150 | 8
-macerator       | tin_crushed 2      | tin_ore 1                 | 150 | 8
-macerator       | bauxite_crushed 2  | bauxite_ore 1             | 150 | 8
-macerator       | ilmenite_crushed 2 | ilmenite_ore 1            | 150 | 8
-ore_washer      | iron_purified 1    | iron_crushed 1, water 1   | 100 | 8
-ore_washer      | copper_purified 1  | copper_crushed 1, water 1 | 100 | 8
-ore_washer      | tin_purified 1     | tin_crushed 1, water 1    | 100 | 8
-ore_washer      | bauxite_purified 1 | bauxite_crushed 1, water 1 | 100 | 8
-ore_washer      | ilmenite_purified 1 | ilmenite_crushed 1, water 1 | 100 | 8
+# Milestone 8. Ore processing (#996, ladder L4): the LV macerator alone gives x1.5 (2 ore -> 3 crushed, smelted 1:1); the MV
+# chain (washer: 3 crushed -> 4 purified; centrifuge: dust + byproduct; dust smelted 1:1) gives x2 plus the byproducts.
+macerator       | iron_crushed 3     | iron_ore 2                | 300 | 8
+macerator       | copper_crushed 3   | copper_ore 2              | 300 | 8
+macerator       | tin_crushed 3      | tin_ore 2                 | 300 | 8
+macerator       | bauxite_crushed 3  | bauxite_ore 2             | 300 | 8
+macerator       | ilmenite_crushed 3 | ilmenite_ore 2            | 300 | 8
+ore_washer      | iron_purified 4   | iron_crushed 3, water 1   | 300 | 8
+ore_washer      | copper_purified 4 | copper_crushed 3, water 1 | 300 | 8
+ore_washer      | tin_purified 4    | tin_crushed 3, water 1    | 300 | 8
+ore_washer      | bauxite_purified 4| bauxite_crushed 3, water 1 | 300 | 8
+ore_washer      | ilmenite_purified 4| ilmenite_crushed 3, water 1 | 300 | 8
 centrifuge      | iron_dust 4, nickel_dust 1     | iron_purified 4     | 200 | 10
 centrifuge      | copper_dust 4, gold_dust 1     | copper_purified 4   | 200 | 10
 centrifuge      | tin_dust 4, iron_dust 1        | tin_purified 4      | 200 | 10
