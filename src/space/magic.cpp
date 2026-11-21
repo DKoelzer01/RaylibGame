@@ -125,7 +125,8 @@ void Magic_DrawDebug3D(Scene& world) {
     for (size_t i = 0; i < overlay.segs.size(); ++i) {
         const ManaSegment& s = overlay.segs[i];
         const Vector3 a = Vector3Subtract(overlay.segPos[2 * i], anchor), b = Vector3Subtract(overlay.segPos[2 * i + 1], anchor);
-        if (Vector3Length(a) > kOverlayRange + kOverlayRebuild) continue;
+        // Along the ground, not from the sea-level anchor: on high ground every piece was over the range (capture 2026-11-21).
+        if (Vector3Length(Vector3Subtract(a, Vector3Scale(dir, Vector3DotProduct(a, dir)))) > kOverlayRange) continue;
         const Color c = KindColour(Mana_Find(s.base == kManaEarth ? "earth" : s.base == kManaWater ? "water" : s.base == kManaFire ? "fire" : "air"),
                                    (unsigned char)(60 + 195 * s.strength));
         DrawLine3D(a, b, c);

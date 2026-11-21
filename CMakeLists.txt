@@ -142,6 +142,12 @@ if(ENABLE_GNS)
         target_link_libraries(engine PUBLIC OpenSSL::Crypto dl pthread)
     endif()
 endif()
+# Steam Audio (#1020, #1292): loaded at run time (src/engine/steamaudio.cpp), so building needs only its vendored headers.
+# tools/fetch_steamaudio.sh puts phonon.dll in deps/steamaudio; when it is there (at configure time) the game build copies
+# it next to the exe. Without it the game uses its own panning.
+target_include_directories(engine PRIVATE third_party/steamaudio/include)
+target_link_libraries(engine PUBLIC ${CMAKE_DL_LIBS})
+set(STEAMAUDIO_DLL "${CMAKE_SOURCE_DIR}/deps/steamaudio/lib/windows-x64/phonon.dll")
 if(RAYLIBGAME_HEADLESS)
     target_compile_definitions(engine PUBLIC RAYLIBGAME_HEADLESS_PLATFORM=1) # RaylibHeadless_GLMode() exists (gpucompute.cpp)
 endif()
@@ -186,6 +192,10 @@ function(add_game target dir)
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # glibc stays shared (dlopen of libEGL needs it); the C++ runtime goes in, so any glibc 2.36+ distro runs it.
         target_link_options(${target} PRIVATE -static-libstdc++ -static-libgcc)
+    endif()
+    if(WIN32 AND EXISTS "${STEAMAUDIO_DLL}") # (#1292) Steam Audio next to the exe (it is found there first)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${STEAMAUDIO_DLL}" "${GAME_OUTPUT_DIR}/phonon.dll" VERBATIM)
     endif()
     # Assets load relative to the working directory: put the exe at the repo root.
     set_target_properties(${target} PROPERTIES
