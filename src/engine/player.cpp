@@ -366,7 +366,12 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         if (al > 1e-4f) along = Vector3Scale(along, wl / al);
         Vector3 walk = Vector3Scale(along, walkSpeed * statusSpeed * (inWater ? 0.55f : 1.0f)); // wading is slow; (#1215) chill
         walk = Vector3Add(walk, Vector3Scale(Vector3Subtract(riverCurrent, Vector3Scale(n, Vector3DotProduct(riverCurrent, n))), 0.4f)); // wading in a river: pushed downstream (#361)
-        if (smoothMotion) {
+        if (dodgeLeft > 0.0f) { // (#1218) a dodge: a fixed step along the ground, whatever the keys
+            const Vector3 dd = Vector3Subtract(dodgeDir, Vector3Scale(n, Vector3DotProduct(dodgeDir, n)));
+            const float dl = Vector3Length(dd);
+            if (dl > 1e-4f) walk = Vector3Scale(dd, dodgeSpeed / dl);
+        }
+        if (smoothMotion && dodgeLeft <= 0.0f) {
             // Reduce motion: ease into and out of walking (instant starts and stops are hard to watch).
             const Vector3 cur = Vector3Subtract(velocity, Vector3Scale(n, Vector3DotProduct(velocity, n)));
             const Vector3 dv = Vector3Subtract(walk, cur);
@@ -449,6 +454,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         }
     }
     pendingPush = { 0, 0, 0 };
+    if (dodgeLeft > 0.0f) dodgeLeft = std::max(0.0f, dodgeLeft - dt); // (#1218)
     // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.
