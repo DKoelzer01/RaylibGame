@@ -4,6 +4,9 @@
 #include "net.h"
 #include "simclock.h"
 #include "terraintool.h"
+#include "inventory.h"
+#include "gameui.h"
+#include "survival.h"
 #include <algorithm>
 
 #include <cstdio>
@@ -89,6 +92,7 @@ const ResearchNode* ResearchGate_NodeForMachineItem(const std::string& item) {
     return it == ix.machine.end() ? nullptr : it->second;
 }
 
+void CheckThroughput(); // (#1271 L6b-2, below)
 void ResearchGate_Update() {
     if (gNetRole == NetRole::Client) return; // (the server's factory runs the machines)
     static double next = 0.0;
@@ -98,6 +102,8 @@ void ResearchGate_Update() {
     if (next - now > 1.0) next = now;
     if (now < next) return;
     next = now + 0.5;
+    static double nextThroughput = 0.0;
+    if (now >= nextThroughput || nextThroughput - now > 20.0) { nextThroughput = now + 10.0; if (ResearchGate_On()) CheckThroughput(); } // (#1271 L6b-2)
     std::vector<std::string> locked;
     if (ResearchGate_On() && !terrainTool.creative) { // (creative: every machine recipe)
         const ResearchState& team = ResearchGate_Team();
@@ -176,6 +182,10 @@ bool ResearchGate_LoadMilestonesText(const std::string& text, std::string& error
     return true;
 }
 
+void ResearchGate_InstallTierGate() { // (#1271 L6b-2) tiers 3-7 close on their research milestone as well as their tasks (the gate on)
+    gQuestTierGate = [](int tier) { return !ResearchGate_On() || tier < 3 || tier > 7 || ResearchGate_MilestoneMet(ResearchGate_Team(), tier); };
+}
+
 bool ResearchGate_LoadMilestones(const char* path) {
     std::ifstream f(path);
     if (!f) return false;
@@ -227,6 +237,93 @@ bool ResearchGate_MilestoneMet(const ResearchState& s, int tier) {
     if (!m || !ResearchGate_CoreDone(s, tier)) return false;
     for (int l = 0; l < (int)m->lines.size(); ++l) if (!s.milestoneDone.count({ tier, l })) return false;
     return true;
+}
+
+// ---- (#1271 L6b-2) Working on the milestone: hand-ins at a lab, builds, throughput ----
+namespace {
+ResearchState& TeamMut() { return Research_Team(selectedTeam ? selectedTeam : ResearchTab_Team()); }
+void Mark(ResearchState& s, int tier, int line, const std::string& what) {
+    if (!s.milestoneDone.insert({ tier, line }).second) return;
+    GameUI_Toast(TextFormat("Tier %d milestone: %s", tier, what.c_str()));
+}
+}
+
+std::string ResearchGate_LineLabel(const MilestoneLine& l) {
+    std::string s;
+    for (const MilestoneOption& o : l.options) {
+        if (!s.empty()) s += " or ";
+        if (o.kind == "deliver") s += "deliver " + std::to_string(o.count) + " " + o.what;
+        else if (o.kind == "build" && o.what == "throughput") s += "make " + std::to_string(o.count) + " " + o.item + " a minute for " + std::to_string(o.minutes) + " minutes";
+        else s += o.kind + " " + o.what;
+    }
+    return s;
+}
+
+int ResearchGate_HandIn() {
+    const int tier = QuestBook_Tier();
+    const TierMilestone* m = tier >= 3 && tier <= 7 ? ResearchGate_Milestone(tier) : nullptr;
+    if (!m) return 0;
+    ResearchState& s = TeamMut();
+    int done = 0;
+    for (int l = 0; l < (int)m->lines.size(); ++l) {
+        if (s.milestoneDone.count({ tier, l })) continue;
+        const MilestoneLine& line = m->lines[l];
+        for (const MilestoneOption& o : line.options) {
+            if (o.kind == "deliver" && o.count > 0 && inventory.count(o.what) >= o.count) {
+                inventory.remove(o.what, o.count);
+                Mark(s, tier, l, line.text.empty() ? ResearchGate_LineLabel(line) : line.text); ++done; break;
+            }
+            if (o.kind == "find") { // its sample, or (the finds step is to come) a ruin's schematic standing in
+                const std::string sample = o.what + "_sample";
+                const char* use = inventory.count(sample) > 0 ? sample.c_str() : inventory.count("ruin_schematic") > 0 ? "ruin_schematic" : nullptr;
+                if (use) { inventory.remove(use, 1); Mark(s, tier, l, line.text.empty() ? ResearchGate_LineLabel(line) : line.text); ++done; break; }
+            }
+        }
+    }
+    return done;
+}
+
+void ResearchGate_MarkBuild(const std::string& what) {
+    ResearchState& s = TeamMut();
+    for (int tier = 3; tier <= 7; ++tier)
+        if (const TierMilestone* m = ResearchGate_Milestone(tier))
+            for (int l = 0; l < (int)m->lines.size(); ++l)
+                for (const MilestoneOption& o : m->lines[l].options)
+                    if (o.kind == "build" && o.what == what) Mark(s, tier, l, m->lines[l].text.empty() ? ResearchGate_LineLabel(m->lines[l]) : m->lines[l].text);
+}
+
+bool ResearchGate_ThroughputMet(const std::vector<float>& b, int perMinute, int minutes) {
+    if (perMinute <= 0 || minutes <= 0 || (int)b.size() < minutes) return false;
+    double sum = 0.0;
+    for (int i = (int)b.size() - minutes; i < (int)b.size(); ++i) {
+        if (b[i] < 0.8f * perMinute) return false; // no minute under 80% (decided)
+        sum += b[i];
+    }
+    return sum / minutes >= perMinute;
+}
+
+// Every 10 s: the current tier's throughput lines, from the statistics' per-minute buckets (machine crafts only).
+void CheckThroughput() {
+    const int tier = QuestBook_Tier();
+    const TierMilestone* m = tier >= 3 && tier <= 7 ? ResearchGate_Milestone(tier) : nullptr;
+    if (!m) return;
+    ResearchState& s = TeamMut();
+    bool any = false;
+    for (int l = 0; l < (int)m->lines.size() && !any; ++l)
+        if (!s.milestoneDone.count({ tier, l })) for (const MilestoneOption& o : m->lines[l].options) any = any || (o.kind == "build" && o.what == "throughput");
+    if (!any) return;
+    const FactoryStatsView v = Factory::StatsView(StatWindow::Hour);
+    for (int l = 0; l < (int)m->lines.size(); ++l) {
+        if (s.milestoneDone.count({ tier, l })) continue;
+        for (const MilestoneOption& o : m->lines[l].options) {
+            if (o.kind != "build" || o.what != "throughput") continue;
+            for (const StatLine& sl : v.items)
+                if (sl.item == o.item && v.coveredMinutes >= o.minutes && ResearchGate_ThroughputMet(sl.madeSpark, o.count, o.minutes)) {
+                    Mark(s, tier, l, m->lines[l].text.empty() ? ResearchGate_LineLabel(m->lines[l]) : m->lines[l].text);
+                    break;
+                }
+        }
+    }
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
@@ -328,5 +425,22 @@ TEST(ResearchGate, AMilestoneNeedsTheCoreResearchAndEveryLine) {
     ResearchState team;
     Research_Merge(s, team);
     EXPECT_EQ(team.milestoneDone, s.milestoneDone);
+}
+
+// (#1271 L6b-2) A throughput target: a 10-minute mean of at least N a minute, no minute under 80% of N (decided).
+TEST(ResearchGate, ThroughputNeedsTheMeanAndNoWeakMinute) {
+    std::vector<float> steady(12, 15.0f);
+    EXPECT_TRUE(ResearchGate_ThroughputMet(steady, 15, 10));
+    EXPECT_FALSE(ResearchGate_ThroughputMet(steady, 16, 10)) << "the mean under the target";
+    std::vector<float> dip = steady;
+    dip[8] = 11.0f; // under 0.8 x 15 = 12
+    EXPECT_FALSE(ResearchGate_ThroughputMet(dip, 15, 10)) << "one weak minute";
+    std::vector<float> burst = steady;
+    burst[0] = 0.0f; // outside the last 10 minutes: it doesn't count
+    EXPECT_TRUE(ResearchGate_ThroughputMet(burst, 15, 10));
+    EXPECT_FALSE(ResearchGate_ThroughputMet(std::vector<float>(5, 30.0f), 15, 10)) << "not 10 minutes of data yet";
+    MilestoneLine l;
+    l.options = { { "build", "throughput", "basic_circuit", 15, 10 }, { "build", "throughput", "lv_pack", 9, 10 } };
+    EXPECT_EQ(ResearchGate_LineLabel(l), "make 15 basic_circuit a minute for 10 minutes or make 9 lv_pack a minute for 10 minutes");
 }
 #endif

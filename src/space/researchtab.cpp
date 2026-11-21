@@ -4,6 +4,7 @@
 #include "net.h"
 #include "playerrecord.h"
 #include "research.h"
+#include "researchgate.h"
 #include "survival.h"
 #include "tome.h"          // (#1251) tome pages per team
 #include "playersession.h" // the local player's magic state (found)
@@ -202,7 +203,15 @@ void ResearchTab_Draw() {
     int core = 0, coreDone = 0;
     for (const ResearchNode& n : Research_Nodes()) if (n.tier == mt && n.core) { ++core; coreDone += st.Done(n.id); }
     ImGui::Text("Core research: %d / %d", coreDone, core);
-    ImGui::TextDisabled("Still to come with the milestones: an item delivery, a working build and an exploration find.");
+    // (#1271 L6b-2) the milestone's lines, in any order: deliveries (handed in at a lab: I), a working build, finds
+    if (const TierMilestone* m = ResearchGate_Milestone(mt))
+        for (int l = 0; l < (int)m->lines.size(); ++l) {
+            const bool done = st.milestoneDone.count({ mt, l }) > 0;
+            const std::string text = m->lines[l].text.empty() ? ResearchGate_LineLabel(m->lines[l]) : m->lines[l].text;
+            if (done) ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "[x] %s", text.c_str());
+            else ImGui::Text("[ ] %s", text.c_str());
+        }
+    ImGui::TextDisabled("Deliveries and finds: look at a lab and press I with them in your inventory (a ruin's schematic stands in for any find for now).");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
 }

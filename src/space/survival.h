@@ -152,6 +152,8 @@ QuestBookState& QuestBook_Selected();
 // these while it evaluates a team's book (the completing player is paid through Host_Give; the team hears the news).
 inline std::function<void(const std::string& item, int count)> gQuestReward;
 inline std::function<void(const std::string& text)> gQuestNews;
+// (#1271 L6b-2) Whether a tier may close beyond its tasks (the research milestone of tiers 3-7); unset: tasks alone.
+inline std::function<bool(int tier)> gQuestTierGate;
 void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
 // Events counted for "do <event> <n>" tasks (eat, feed, penned, till, plant, harvest, waypoint, modules, explored).

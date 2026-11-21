@@ -529,6 +529,7 @@ void QuestBook_Update() {
                 open = open && Done(Q().tier, k);
             }
         }
+        if (open && gQuestTierGate && !gQuestTierGate(Q().tier)) open = false; // (#1271 L6b-2) from tier 3, the research milestone too
         if (!open) break;
         ++Q().tier;
         if (Q().tier < (int)tiers.size()) {

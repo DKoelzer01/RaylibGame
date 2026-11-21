@@ -707,6 +707,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
         return;
     }
+    if (in.hit(Act::Insert) && (machineAim.type == PartType::SteamLab || (machineAim.type >= PartType::LvLab && machineAim.type <= PartType::HvLab)) && ResearchGate_HandIn() > 0) return; // (#1271 L6b-2) milestone deliveries and finds, at a lab
     if (in.hit(Act::Insert)) {
         // Everything in the inventory the machine might take: fuel for generators, recipe inputs,
         // anything for a chest (the simulation hands back what does not fit).

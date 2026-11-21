@@ -201,3 +201,5 @@ anvil 1            = bronze_ingot 6
 clay_mould 1       = clay 2
 bronze_pickaxe 1   = bronze_pick_head 1, any_planks 2
 bronze_axe 1       = bronze_axe_head 1, any_planks 2
+# (#1271 L6b-2) the steam assembler (unlocked by its research node)
+steam_assembler 1  = iron_plate 4, cogwheel 4, any_planks 8

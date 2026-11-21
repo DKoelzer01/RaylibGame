@@ -46,6 +46,7 @@ constexpr ConsumerSpec kMechPump  { 4, 8, 32 };
 // the motor draws kMotorEuPerTick and turns its shaft as a source (at full power: its rated speed and capacity).
 constexpr ConsumerSpec kDynamo    { 8, 16, 64 };  // 512 SU at 64 RPM
 constexpr ConsumerSpec kSteamLab  { 4, 16, 32 };  // (#1271 L6) the steam lab: a research unit at its rated speed in its recipe's time
+constexpr ConsumerSpec kSteamAssembler { 4, 16, 32 }; // (#1271 L6b-2) a steam pack in its recipe's time at 32 RPM
 constexpr SourceSpec kMotor       { 64, 4 };      // 256 SU
 constexpr int kDynamoEuPerTick = 32;             // an LV generator's worth
 constexpr int kMotorEuPerTick = 16;
