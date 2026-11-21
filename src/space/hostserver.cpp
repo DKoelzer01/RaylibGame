@@ -1517,6 +1517,7 @@ namespace {
             e.till = true;
             out.flags = 16;
             TeamEvent(session, "count", "till"); RemoteXp(session, "till"); // (#335) the quest's count, Farming XP
+            printf("host: session %u tilled (edit %u, radius %.2f m)\n", session, q.seq, q.radius); // (#1107) an accepted till, to trace it
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }

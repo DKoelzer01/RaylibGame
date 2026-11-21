@@ -12192,6 +12192,7 @@ int main(int argc, char** argv)
                        gJoin.skills.xp["woodcutting"], gJoin.skills.xp["foraging"], gJoin.skills.xp["farming"]);
                 // (#1107) where a till goes missing: did the server's edits arrive (ours among them, or refused), and what the
                 // ground at the tilled spot reads as now (Farmland is what sowing needs)
+                printf("bench: net sync (%s, #1107): syncing %d, queued %d, done at %.1f s\n", role ? role : "?", (int)gJoin.syncing, gJoin.syncQueued, gJoin.syncDoneAt);
                 printf("bench: net edits (%s, #1107): requested %u (till hook %d), seen %d, own %d, refused %d (why mask %u); tilled spot %s material %d (farmland %d)\n",
                        role ? role : "?", gJoin.editSeq, (int)(gFarmTillRequest != nullptr), gJoin.editsSeen, gJoin.editsOwn, gJoin.editsRefused, gJoin.refusedWhy, tillKnown ? "known" : "unknown",
                        pb && tillKnown ? (int)pb->materialAt(tillGround) : -1, (int)VoxelMaterial::Farmland);
