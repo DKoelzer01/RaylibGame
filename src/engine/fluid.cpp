@@ -2541,10 +2541,15 @@ float Fluid::SurfaceAbove(const Planetoid& body, Vector3 local, float reach) {
         if (s.body != body.id) continue;
         uint8_t f, fl, sh; float frac;
         if (!PubCell(s, local, 0, f, fl, &frac, &sh) || f == 0) continue;
-        float h = (sh + f) / 255.0f - frac;
-        for (int k = 1; k <= (int)(reach / WaterField::CellSize()) && sh + f >= 255; ++k) {
-            if (!PubCell(s, local, k, f, fl, nullptr, &sh) || (fl & kSolid)) break;
-            h += f > 0 ? (sh + f) / 255.0f : 0.0f;
+        // Up the column while the cell above holds water: a part-full cell under water is not the surface (#1168: a column
+        // the pressure pass is lifting has cells a little short of full, and moving water has them too); it counts as full.
+        float part = (sh + f) / 255.0f, h = part - frac;
+        for (int k = 1; k <= (int)(reach / WaterField::CellSize()); ++k) {
+            uint8_t f2, fl2, sh2;
+            if (!PubCell(s, local, k, f2, fl2, nullptr, &sh2) || (fl2 & kSolid) || f2 == 0) break;
+            h += 1.0f - part;           // the cell below is under water: full
+            part = (sh2 + f2) / 255.0f;
+            h += part;
         }
         return h * WaterField::CellSize(); // m
     }
