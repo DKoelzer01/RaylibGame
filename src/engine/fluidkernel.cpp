@@ -637,6 +637,9 @@ struct Pass {
         if (fl & SOLID) { outC[gi] = c; if (pass == 2) g.faceP[gi] = Vec4{}; return; }
         const int f = (int)F(c);
         uint32_t kind = KIND(c);
+        // (#1168) This substep's head becomes the one the next substep reads. Per cell in the apply pass (only the vertical
+        // pass reads heads), not a buffer swap: a slot keeps its latest heads while it sleeps, as the GPU's persistent slots do.
+        if (pass == 2 && p.pressure) g.pr[gi] = g.prN[gi];
         if (pass == 0) {
             g.delta[gi] = 0; // the column flows planned next (#680), and their limiter's demand
             g.dem[gi] = 0u; g.cap[gi] = 0u;
@@ -840,7 +843,6 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list) {
     RunPass(g, p, list, 1);
     if (p.columns && !quarter) RunPass(g, p, list, 3); // the column pairs' scaled move (#680)
     RunPass(g, p, list, 2);
-    if (p.pressure) std::swap(g.pr, g.prN); // (#1168) this substep's heads are the next one's
 }
 
 float HalfRound(float f) { return H(f); } // tests (#968): the half rounding the shader's packHalf2x16 must match

@@ -127,5 +127,8 @@ static void Build(ScenarioDef& s) {
 SCENARIO("fluid/u-bend") { Build(s); }
 // The CPU kernel without the pass: the baseline the pressure variant is compared with.
 SCENARIO("fluid/u-bend-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "0" } }; Build(s); }
-// The pressure pass (#1168) on the CPU kernel, where it is built so far (fluid_step.comp follows): the same U-bend.
-SCENARIO("fluid/u-bend-pressure") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }
+// The pressure pass (#1168), on the default (GPU) path; --scenario-parity fluid/u-bend-pressure runs it on both and
+// compares them cell by cell (it sets FLUID_CPU itself, so this variant leaves it alone).
+SCENARIO("fluid/u-bend-pressure") { s.env = { { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }
+// The pass on the CPU kernel (a headless server's path).
+SCENARIO("fluid/u-bend-pressure-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }

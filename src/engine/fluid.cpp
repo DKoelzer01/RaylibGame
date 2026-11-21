@@ -144,7 +144,7 @@ struct Brick {
     int statSolid = 0; // solid cells (all solid: nothing to run, #669)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
-    std::vector<int32_t> press;           // CPU mode, the pressure pass (#1168): each cell's head between ticks (empty: none yet)
+    std::vector<int32_t> press;           // the pressure pass (#1168): each cell's head between ticks (CPU), or while its GPU slot is given back (empty: none)
     std::vector<int16_t> colFlow;         // the drawn current (#677): per column (x + 16 y) its flow along east, north (cm/s); empty: none yet
     std::vector<int16_t> drawnFlow; int flowStep = -100000; // the current the chunks last drew, and when (#677: a steady stream's levels never change, so it redraws on its flow)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
@@ -468,6 +468,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
     b.ready = true;
     b.upload = true; // GPU mode: the classified brick goes up whole
     b.faces.clear(); // CPU mode: a (re)classified brick starts at rest (#654)
+    b.press.clear(); // and without heads (#1168: both modes; the GPU upload then gives its slot none)
     b.keepFill = false;
     b.active = true; b.idle = 0; b.changed = true;
 }
@@ -1334,6 +1335,8 @@ struct GpuState {
     ComputeProgram step, delta;
     ComputeBuffer a, b, nbrs, list, inS, flags, deltas;
     ComputeBuffer faceP, faceN;            // face flows (#642, fluid_step.comp): applied (a vec4 a cell) / new (two vec4 a cell)
+    ComputeBuffer press, pressN;           // the pressure pass (#1168): each cell's head (int, by slot, kept while the slot is
+                                           // held) and this substep's (scratch); bound only with the pass on
     // Async readback (#669): the dispatch's flags and its bricks' cells packed (fluid_pack.comp) are copied into a persistent
     // mapped buffer behind a fence and read the next tick; without buffer storage, the old per-brick downloads.
     ComputeProgram pack, flowPack; // flowPack: per column the solver's current, for drawing (#677)
@@ -1387,6 +1390,7 @@ bool GpuInit() {
         G.a.create(64 * kCellsPerBrick * 4); G.b.create(64 * kCellsPerBrick * 4);
         const std::vector<float> noFlow((size_t)64 * kCellsPerBrick * 8, 0.0f);
         G.faceP.create(64 * kCellsPerBrick * kFacePBytes, noFlow.data()); G.faceN.create(64 * kCellsPerBrick * kFaceNBytes, noFlow.data());
+        if (PressureOn()) { G.press.create(64 * kCellsPerBrick * 4, noFlow.data()); G.pressN.create(64 * kCellsPerBrick * 4, noFlow.data()); } // (#1168: zeros)
         G.capacity = 64;
         G.owner.assign(64, nullptr); G.ownerSite.assign(64, nullptr);
         const std::vector<unsigned> zeros(64, 0u);
@@ -1423,6 +1427,7 @@ void GpuGrow(int need) {
     grow(G.b, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4);
     grow(G.faceP, G.capacity * kCellsPerBrick * kFacePBytes, cap * kCellsPerBrick * kFacePBytes);
     grow(G.faceN, G.capacity * kCellsPerBrick * kFaceNBytes, cap * kCellsPerBrick * kFaceNBytes);
+    if (PressureOn()) { grow(G.press, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4); grow(G.pressN, G.capacity * kCellsPerBrick * 4, cap * kCellsPerBrick * 4); }
     grow(G.flags, G.capacity * 4, cap * 4);
     grow(G.sinkOut, G.capacity * 4, cap * 4);
     if (G.colOn) grow(G.col, G.capacity * kCellsPerBrick * kColBytes, cap * kCellsPerBrick * kColBytes);
@@ -1448,6 +1453,10 @@ void GpuUploadBrick(const Brick& b) {
     G.b.upload(packed.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
     static const std::vector<float> noFlow((size_t)kCellsPerBrick * 4, 0.0f); // a (re)classified brick starts at rest (#642)
     G.faceP.upload(noFlow.data(), kCellsPerBrick * kFacePBytes, b.slot * kCellsPerBrick * kFacePBytes);
+    if (PressureOn()) { // (#1168) the heads it had when its slot was given back (as the CPU keeps them), else none
+        static const std::vector<int32_t> none(kCellsPerBrick, 0);
+        G.press.upload(b.press.size() == (size_t)kCellsPerBrick ? b.press.data() : none.data(), kCellsPerBrick * 4, b.slot * kCellsPerBrick * 4);
+    }
     if (G.groupsOn) { static const unsigned all[6] = { ~0u, ~0u, ~0u, ~0u, ~0u, ~0u }; G.mask.upload(all, 24, b.slot * 24); } // every group listed once: the next substeps narrow it
 }
 
@@ -1702,6 +1711,7 @@ void GpuTick(int n) {
             if (!br.ready) continue;
             const bool needed = slotTick - br.slotNeeded <= kSlotKeepTicks;
             if (br.slot >= 0 && !needed && !br.active && !br.upload) { // released
+                if (PressureOn()) { br.press.resize(kCellsPerBrick); G.press.download(br.press.data(), kCellsPerBrick * 4, br.slot * kCellsPerBrick * 4); } // (#1168, rare)
                 G.owner[br.slot] = nullptr; G.ownerSite[br.slot] = nullptr;
                 br.slot = -1; --used; G.nbrDirty = true; ++slotReleases;
                 continue;
@@ -1823,6 +1833,8 @@ void GpuTick(int n) {
     static unsigned evapTick = 0;
     GpuFlowResolve(); // which bricks the flow watches need this dispatch (#392)
     G.nbrs.bind(2); G.list.bind(3); G.inS.bind(4); G.flags.bind(5); G.watch.bind(6); G.flux.bind(7); G.faceP.bind(8); G.faceN.bind(9); G.sinkOut.bind(12);
+    G.step.setInt("pressure", PressureOn() ? 1 : 0);
+    if (PressureOn()) { G.press.bind(14); G.pressN.bind(15); } // the pressure pass (#1168)
     const unsigned bricks = (unsigned)list.size(); // 2D dispatch: 64 groups of 64 cells per brick, one row per brick
     // The dry-cell skip (#675, fluid_groups.comp): each substep runs only the 64-cell groups near water, by indirect dispatch.
     G.step.setInt("useGroups", G.groupsOn ? 1 : 0);

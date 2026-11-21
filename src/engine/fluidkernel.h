@@ -70,8 +70,8 @@ struct Grid {
     std::vector<uint16_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
     // The pressure pass (#1168), per cell: the head H of the free surface a water cell is connected to, in fill units (255 a
-    // row) above the cell's own bottom. pr: the last substep's (read), prN: this substep's (written by the vertical pass);
-    // swapped at the substep's end. The host carries pr per brick between ticks, as faceP.
+    // row) above the cell's own bottom. pr: the last substep's (read by the vertical pass), prN: this substep's (written by it);
+    // the apply pass copies prN to pr per cell. The host carries pr per brick between ticks, as faceP.
     std::vector<int32_t> pr, prN;
     // The dry-cell skip (#747, as the GPU's #675 fluid_groups.comp): per slot, 3 rotating substeps x 64 group bits (the
     // 64-cell groups that held water: group = z * 4 + y / 4), and the groups the next substep runs. groupsFull: the next
