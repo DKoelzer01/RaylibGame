@@ -297,7 +297,7 @@ namespace {
             terrainTool.heldTool = "stone_pickaxe";
             return true;
         });
-        add("dig 72 stone (any rock, #587)", [] { return DigFor("any_stone", 72, 5.0f); });
+        add("dig 90 stone (any rock, #587)", [] { return DigFor("any_stone", 90, 5.0f); });
         add("dig 44 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(44) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
@@ -313,7 +313,7 @@ namespace {
             return Survival_UseItem("berries") && QuestBook_CountOf("eat") >= 1.0;
         });
         add("find ore veins", [] { FindOre(); return true; });
-        add("mine 80 copper, 12 tin, 190 iron ore and 140 coal", [] { return MineOre("copper_ore", 80) && MineOre("tin_ore", 12) && MineOre("iron_ore", 190) && MineOre("coal", 140); });
+        add("mine 80 copper, 12 tin, 200 iron ore and 140 coal", [] { return MineOre("copper_ore", 80) && MineOre("tin_ore", 12) && MineOre("iron_ore", 200) && MineOre("coal", 140); });
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
         add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 80); Give("kiln", "any_log", 16); } return Collect("kiln", "copper_ingot", 80); });
         add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 12); Give("kiln", "any_log", 3); } return Collect("kiln", "tin_ingot", 12); });
@@ -341,13 +341,13 @@ namespace {
             return Collect("anvil", "bronze_pick_head", 1) && Craft("bronze_pickaxe", 1);
         });
         // Tier 2 (#1271): charcoal, a bloomery, ingots at the anvil; a windmill turns a press.
-        add("burn 188 logs into charcoal in the campfire (coal under them)", [] {
+        add("burn 198 logs into charcoal in the campfire (coal under them)", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("campfire", "coal", 30); Give("campfire", "any_log", 188); }
-            return Collect("campfire", "charcoal", 188);
+            if (!fed) { fed = true; Give("campfire", "coal", 30); Give("campfire", "any_log", 198); }
+            return Collect("campfire", "charcoal", 198);
         });
         add("craft and place a bloomery", [] { return Craft("bloomery", 1) && Place("bloomery", PartType::Bloomery, { 3, 0, 12 }); });
-        add("smelt 188 iron blooms", [] { static bool fed = false; if (!fed) { fed = true; Give("bloomery", "iron_ore", 188); Give("bloomery", "charcoal", 188); } return Collect("bloomery", "iron_bloom", 188); }); // 2 ore stay for the electric furnace
+        add("smelt 198 iron blooms", [] { static bool fed = false; if (!fed) { fed = true; Give("bloomery", "iron_ore", 198); Give("bloomery", "charcoal", 198); } return Collect("bloomery", "iron_bloom", 198); }); // 2 ore stay for the electric furnace
         add("hammer 16 blooms into iron at the anvil", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("anvil", "iron_bloom", 16); }
@@ -361,12 +361,15 @@ namespace {
             return Place("press", PartType::Press, { 6, 0, 12 }) && PlaceO("shaft", PartType::Shaft, { 8, 0, 12 }, { 1, 0, 0 })
                 && Place("gearbox", PartType::Gearbox, { 9, 0, 12 }) && PlaceO("windmill", PartType::Windmill, { 10, 0, 12 }, { 1, 0, 0 });
         });
-        add("press 172 blooms into iron with the windmill (its 5 minutes of tier 2)", [] {
+        add("press 182 blooms into iron with the windmill (its 5 minutes of tier 2)", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("press", "iron_bloom", 172); }
-            return Collect("press", "iron_ingot", 172 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
+            if (!fed) { fed = true; Give("press", "iron_bloom", 182); }
+            return Collect("press", "iron_ingot", 182 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
         });
         add("press 16 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 16); } return Collect("press", "bronze_plate", 16); });
+        // Glass first: the steam labs take 2 each.
+        add("dig 96 sand", [] { return DigSand(96); });
+        add("make 24 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 96); Give("kiln", "any_log", 7); } return Collect("kiln", "glass", 24); });
         // (#1271 L6b-3) Tier 3 with the research gate on: the steam lab and its packs come with tier 3; a steam lab over the
         // windmill's gearbox researches steam power, a second on the steam engine's shaft wire drawing (tier 3's working build).
         add("tier 3: a steam lab over the windmill's gearbox", [] {
@@ -439,8 +442,6 @@ namespace {
             return inventory.count("hide") >= 4;
         });
         // Tier 3: glass, vacuum tubes; a field; two suit modules.
-        add("dig 88 sand", [] { return DigSand(88); });
-        add("make 22 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 88); Give("kiln", "any_log", 6); } return Collect("kiln", "glass", 22); });
         add("craft 18 vacuum tubes", [] { return Craft("copper_wire", 36) && Craft("vacuum_tube", 18); });
         add("tier 3's milestone: hand in 50 steel plates, 20 cogwheels, 10 vacuum tubes and a find at a lab", [] {
             if (!Craft("cogwheel", 20)) return false;
