@@ -1924,9 +1924,18 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         }
         const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
         const float rough = 1.0f + bk * big;
-        static const bool hallSwellTest = !(getenv("RAYLIBGAME_CAVE_HALL_SWELL") && getenv("RAYLIBGAME_CAVE_HALL_SWELL")[0] == '0'); // (#1116 isolation, CPU only: 0 = a hall's swell and outline wobble at passage size)
-        const float hk = hall && !hallSwellTest ? std::min(1.0f, 8.0f / r) : 1.0f;
-        const float rs = (1.0f + (swell - 1.0f) * hk) * (1.0f + (rough - 1.0f) * hk);
+        // (#1116) A chamber's swell (+-30% over ~10 m) and outline term at a passage's size: on a 30 m hall they moved the wall
+        // +-9 m within 10 m and folded it back along rays (floating shells on the upper walls; --cave-islands 800 at seed 42:
+        // 3349 m^3 -> 1500). The same operations as terrain.glsl (bit-exact; passages keep swell x rough).
+        // RAYLIBGAME_CAVE_HALL_SWELL=1: as before (CPU only, A/B).
+        static const bool hallSwellOld = getenv("RAYLIBGAME_CAVE_HALL_SWELL") && getenv("RAYLIBGAME_CAVE_HALL_SWELL")[0] == '1';
+        float rs = swell * rough;
+        if (hall && !hallSwellOld) {
+            const float hk = std::min(1.0f, 8.0f / r);
+            const float sw0 = swell - 1.0f, sw1 = sw0 * hk, sw = 1.0f + sw1;
+            const float rg0 = rough - 1.0f, rg1 = rg0 * hk, rg = 1.0f + rg1;
+            rs = sw * rg;
+        }
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
         static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
         const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;

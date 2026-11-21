@@ -464,6 +464,16 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float bk = mouth ? 0.4 : 0.2;
         precise float rough = 1.0 + bk * big;
         precise float rs = swell * rough;
+        if (hall) {                                                   // (#1116) a chamber's swell and outline at a passage's size
+            precise float hk = min(1.0, xdiv(8.0, r));
+            precise float sw0 = swell - 1.0;
+            precise float sw1 = sw0 * hk;
+            precise float sw = 1.0 + sw1;
+            precise float rg0 = rough - 1.0;
+            precise float rg1 = rg0 * hk;
+            precise float rg = 1.0 + rg1;
+            rs = sw * rg;
+        }
         precise float rw = r * max(0.7, rs);
         precise float pk = hv > 0.0 ? pocket : 0.0;
         precise float vfac = U.w * (1.0 + 0.5 * pk);
