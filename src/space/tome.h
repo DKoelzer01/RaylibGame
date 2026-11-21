@@ -62,3 +62,7 @@ bool Tome_Unlock(TomeState& team, MagicPlayerState& me, const ResearchState& res
 void Tome_ApplyEffects(const TomeState& team, MagicPlayerState& me);
 // The cross link: a research node that needs a tome page may start only once the team owns it.
 bool Tome_ResearchAllowed(const ResearchNode& n, const TomeState& team);
+// Spending an item for its aspects (the research table's job; until the table is a placeable machine, owning its page is
+// enough): one unit leaves the inventory and gives its aspects in full. False (nothing spent) without the page, without
+// the item, or for an item made of nothing known.
+bool Tome_SpendItem(const TomeState& team, MagicPlayerState& me, class Inventory& inv, const std::string& item);

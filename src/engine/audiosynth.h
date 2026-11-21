@@ -10,7 +10,10 @@
 
 struct AudioBedRecipe {
     float wind = 0.0f, birds = 0.0f, crickets = 0.0f, frogs = 0.0f, insects = 0.0f, surf = 0.0f, rain = 0.0f, leaves = 0.0f;
+    float rumble = 0.0f; // (#1242) a deep, slowly heaving rumble (lava under a volcano)
 };
+// (#1242) A water drop falling into a pool from a cave ceiling: a short rising "plink" and a little splash.
+std::vector<float> AudioSynth_Drip(unsigned seed);
 // The recipe of a procedural bed by name ("bed_forest_day", ...); false: no such bed.
 bool AudioSynth_BedRecipe(const std::string& name, AudioBedRecipe& r);
 // A seamless loop of `seconds` mixing the recipe's layers (seeded by name: the same bed every start).

@@ -38,6 +38,8 @@ bool AudioSynth_BedRecipe(const std::string& name, AudioBedRecipe& r) {
     else if (name == "bed_shore") { r.wind = 0.4f; r.surf = 1.0f; r.birds = 0.15f; }
     else if (name == "bed_rain") { r.rain = 1.0f; }
     else if (name == "bed_rain_leaves") { r.leaves = 1.0f; r.rain = 0.3f; }
+    else if (name == "bed_waterfall") { r.rain = 1.0f; r.surf = 0.8f; } // (#1242) a roar: dense hiss over heavy swells
+    else if (name == "bed_rumble") { r.rumble = 1.0f; }                 // (#1242) deep under a volcano
     else return false;
     return true;
 }
@@ -62,6 +64,7 @@ std::vector<float> AudioSynth_Bed(const AudioBedRecipe& r, float seconds, unsign
     float iLp = 0.0f, iLp2 = 0.0f;
     float sLp = 0.0f;
     float rLp = 0.0f, drop = 0.0f, leaf = 0.0f, leafLp = 0.0f;
+    float rbBrown = 0.0f, rbLp = 0.0f;
     for (int i = 0; i < total; ++i) {
         const float t = i * dt;
         float s = 0.0f;
@@ -143,11 +146,33 @@ std::vector<float> AudioSynth_Bed(const AudioBedRecipe& r, float seconds, unsign
             leafLp += (leaf * n(rng) - leafLp) * 0.35f;
             s += r.leaves * leafLp * 0.9f;
         }
+        if (r.rumble > 0.0f) { // brown noise far down, heaving slowly, with a 31 Hz drone
+            rbBrown = rbBrown * 0.999f + n(rng) * 0.02f;
+            rbLp += (rbBrown - rbLp) * 0.004f;
+            s += r.rumble * (rbLp * 30.0f * (0.6f + 0.4f * sinf(kTau * 0.11f * t)) + 0.15f * sinf(kTau * 31.0f * t));
+        }
         a[i] = s;
     }
     for (int i = 0; i < x; ++i) { const float w = (float)i / x; a[i] = a[i] * w + a[len + i] * (1.0f - w); }
     a.resize(len);
     Normalise(a, 0.7f);
+    return a;
+}
+
+std::vector<float> AudioSynth_Drip(unsigned seed) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> n(-1.0f, 1.0f), u(0.0f, 1.0f);
+    const int len = (int)(0.18f * kRate);
+    std::vector<float> a(len);
+    const float f0 = 700.0f + 500.0f * u(rng); // the bubble's ring rises as it closes (a "plink")
+    float phase = 0.0f, lp = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const float t = (float)i / kRate;
+        phase += kTau * f0 * (1.0f + 2.5f * t / 0.18f) / kRate;
+        lp += (n(rng) - lp) * 0.4f;
+        a[i] = sinf(phase) * expf(-t * 35.0f) * std::min(1.0f, t * 800.0f) + lp * 0.25f * expf(-t * 120.0f);
+    }
+    Normalise(a, 0.8f);
     return a;
 }
 

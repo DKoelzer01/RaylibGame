@@ -52,6 +52,11 @@ ResearchSight Research_Sight(const ResearchState& s, const ResearchNode& n, int 
 // A player joining a team: the team gets what the joiner had (decided: the team's research, and leaving keeps yours):
 // done is the union, progress the larger, insight the larger; the team's queue stays.
 void Research_Merge(const ResearchState& from, ResearchState& into);
+// (#1193) Labs: the first queued node a lab of `maxTier` can run (startable, its tier at most the lab's; nullptr none), and
+// `units` research units of `tier` added to the first such queued node of that tier. A node with all its units is done
+// and leaves the queue; the names of the nodes done are returned.
+const ResearchNode* Research_HeadFor(const ResearchState& s, int maxTier);
+std::vector<std::string> Research_AddUnits(ResearchState& s, int tier, int units);
 
 // The team record's block (saved with the world as team_research <id> ... team_research_end).
 ResearchState& Research_Team(int team);
