@@ -3,6 +3,7 @@
 
 #include <raylib.h>
 #include "dvec3.h"
+#include "frames.h"
 #include <cstdint>
 #include <algorithm>
 
@@ -45,6 +46,10 @@ struct Player {
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
+    // Plan 11 F2a (#667, #1146): with RAYLIBGAME_FRAMES=1, the player's state in its body frame (body NetId, Fixed below
+    // the line, Centred above; double position and the frame velocity: in Fixed the speed against the ground, airborne
+    // too), refreshed at the end of every update. Observed only for now (tests, net); F2b makes it the state physics runs on.
+    FramePos frame{};
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
     bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
     Vector3 riverCurrent{ 0, 0, 0 };  // in a river: its current (world m/s, #361): carries a swimmer, pushes a wader
@@ -139,6 +144,7 @@ private:
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
 
+    void updateFrame(Scene& world);
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
     // Airborne near a body: carried with its motion each frame and moved by velocity relative to its
@@ -147,6 +153,16 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
+    // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
+    bool fxActive = false;
+    bool movedOutside = false; // (F2d) moved from outside since the last update (spawn, placeAt, respawn, load)
+    double viewR[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }; // F2c: the frame body's rotation at the end of the last update
+    uint64_t viewBody = 0;                                            // its runtime id (0: no view carry yet)
+    Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
+    Vector3 airVelDir{};
+    float airVelLen = 0.0f;
+    uint64_t airVelBody = 0;
     // Airborne near an orbiting body we move in its free-falling frame: its velocity at the end of
     // last frame (its change is added to ours), and whether this frame uses felt gravity.
     Vector3 airFrameVel{};
