@@ -41,10 +41,12 @@ struct RotationPlot {
     Rotation::Layout layout;
     Rotation::Result res;
     std::vector<int> crankTicks;                 // per part: ticks left turning (hand cranks)
+    std::vector<int> sourceRpm;                  // (#1270) per part: water wheels and windmills, as last sampled (signed RPM)
     bool empty() const { return parts.empty(); }
     // A new layout: rebuilds the graph; cranks still held keep turning.
     void Set(std::vector<RotationPartMsg> msgs);
     void Hold(int part);                         // a player turns this crank (for kCrankHoldTicks)
+    void SetSourceRpm(int part, int rpm);        // (#1270) a water wheel's or windmill's speed now (from rotationsources.*)
     void SetRunning(int part, bool running);     // a consumer has a recipe this tick (only running ones load the net)
     void Step(int dt);                           // dt ticks: cranks count down, then one solve
     bool Has(int part) const { return byPart.count(part) > 0; }
