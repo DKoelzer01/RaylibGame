@@ -12,6 +12,8 @@
 #include "terraintool.h"
 #include "tools.h"
 #include "toolwear.h"
+#include "hotbar.h"
+#include "skills.h"
 #include "world.h"
 #include <raymath.h>
 #include <string>
@@ -70,13 +72,15 @@ SCENARIO("tools/composed-convert") {
         terrainTool.heldTool = "tool_pickaxe";
         c.eq("ToolOf the held composed pickaxe: tier", ToolOf("tool_pickaxe").tier, 1);
         int strokes = 0;
-        for (int n = 0; n < 6; ++n) if (AimDown(c) && TerrainTool_Stroke(true)) { ++strokes; ++terrainTool.swings; } // (as an input swing counts)
+        for (int n = 0; n < 6; ++n) if (AimDown(c) && TerrainTool_Stroke(true)) ++strokes; // (each stroke counts a swing: the main loop wears the held tool by them)
         c.eq("dig strokes made", strokes, 6);
         return true;
     });
     s.step("the main loop wore the held copy", 5.0, [](ScenarioCtx& c) {
         if (S.pick < 0) return true;
         if (c.t < 0.2) return false; // the frame's wear pass (main.cpp) has run
+        c.note(TextFormat("held '%s', hotbar selected %d, preferred %d, swings %d, pick_wear stat %.2f, creative %d", terrainTool.heldTool.c_str(),
+                          Hotbar_Selected(), inventory.preferred, terrainTool.swings, Skills_Stat(LocalSession().skills, "pick_wear"), terrainTool.creative ? 1 : 0));
         const int cell = CellOf("tool_pickaxe");
         c.check("the pickaxe is still held", cell >= 0);
         if (cell >= 0) c.eq("its wear after six strokes", ItemData::GetInt(inventory.grid()[cell].data, "w", 0), 26);
