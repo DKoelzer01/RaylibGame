@@ -637,25 +637,32 @@ static void DrawCell(int i, float cw, float cell) {
 
 // cell: a cell's size (px): 54 beside another screen; the Inventory screen sizes it to fill its area (#887).
 static void DrawGrid(float cell = 54.0f) {
-    const float gap = 4.0f, bin = std::min(cell, 64.0f * GameUI_Scale()); // (the bin stays a modest square)
+    const float gap = 4.0f, bin = cell; // (#1148, #1161: the bin and the off hand at the one slot size, side by side)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int i = 0; i < Inventory::kSlots; ++i) {
-        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them). The
-        // off-hand cell is beside the player now (#822).
+        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them); the off
+        // hand and the bin under them (#1161).
         const bool hotbar = i >= Inventory::kGrid;
         if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
         else if (i < Inventory::kGrid ? i % Inventory::kCols != 0 : true) ImGui::SameLine(0.0f, gap);
         DrawCell(i, hotbar ? (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar : cell, cell); // the hotbar row as wide as the grid
     }
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    // (#1161, the user) The off hand beside the bin, under the hotbar: on every page with the items grid (it was on the
+    // Inventory page's You panel only).
+    DrawCell(Inventory::kOffHand, cell, cell);
+    if (ImGui::IsItemHovered() && inventory.grid()[Inventory::kOffHand].empty())
+        ImGui::SetTooltip("Off hand: a shield blocks (hold RMB); a torch lights;\nfood or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
+    ImGui::SameLine(0.0f, gap);
     { // the bin, under the hotbar (#564)
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + bin, p.y + bin);
         if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
         if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
-        const ImVec2 sz = ImGui::CalcTextSize("Bin");
-        dl->AddText(ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
+        const float fs = CellFontSize(bin); // (#1161: the cells' label size: the window's font ran out of a small cell)
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Bin");
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
         dl->AddRect(p, q, hover ? IM_COL32(230, 150, 140, 255) : IM_COL32(110, 60, 60, 255), 4.0f, 0, 1.0f);
         if (hover) ImGui::SetTooltip(!cursorStack.empty() ? "Click: delete the held stack" : !binned.empty() ? "Click: take the deleted stack back" :
                                      "The bin: put a stack here to delete it\n(or click outside the window to drop it on the ground)");
@@ -1535,15 +1542,8 @@ static void DrawYou() {
     const float big = gGridCell > 0.0f ? gGridCell : 54.0f * GameUI_Scale();
     const float cell = big;
     ImGui::BeginGroup();
-    const float x0 = ImGui::GetCursorPosX();
     ImGui::TextDisabled("Suit");
-    ImGui::SameLine(); ImGui::SetCursorPosX(x0 + big + 4.0f);
-    ImGui::TextDisabled("Off hand");
-    SuitSlot(big);
-    ImGui::SameLine(0.0f, 4.0f);
-    DrawCell(Inventory::kOffHand, big, big);
-    if (ImGui::IsItemHovered() && inventory.grid()[Inventory::kOffHand].empty())
-        ImGui::SetTooltip("Off hand: a shield blocks (hold RMB); a torch lights;\nfood or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
+    SuitSlot(big); // (#1161: the off hand moved beside the bin, under the hotbar)
     int fitted = 0; for (const std::string& m : Suit_Modules()) fitted += m.empty() ? 0 : 1;
     ImGui::TextDisabled("Modules %d/%d", fitted, slots);
     for (int i = 0; i < slots; ++i) { if (i % modCols) ImGui::SameLine(0.0f, 4.0f); ModuleSlot(i, cell); }
@@ -1645,7 +1645,7 @@ static void DrawItemsPanel() {
     const ImVec2 a = ImGui::GetContentRegionAvail();
     const float gap = 4.0f, pad = ImGui::GetStyle().WindowPadding.x * 2.0f;
     const float cell = gGridCell; // (#1148) the one slot size of every item page (SlotCellFor, set as the screen opens)
-    const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + cell + pad);
+    const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + 2.0f * cell + gap + pad); // (#1161: the off hand, the bin and the buttons)
     ImGui::BeginChild("invgrid", ImVec2(std::min(panelW, a.x * 0.72f), 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted("Items");
     DrawGrid(cell);
