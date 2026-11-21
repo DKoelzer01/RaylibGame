@@ -9,6 +9,7 @@
 
 #include <raylib.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -222,6 +223,25 @@ struct Net {
     long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
 };
 
+// (#1199) Production statistics: a count kept in Factorio's windows, rolled once a second of factory time: the last minute by
+// seconds, the last hour by minutes, the last 10 hours by 10 minutes, and the total. Sim thread only (under simMutex).
+constexpr int kStatBuckets = 60;
+struct Series {
+    std::array<int32_t, kStatBuckets> sec{}, min{};      // (a minute of a big HV plot is ~6e8 EU: fits)
+    std::array<int64_t, kStatBuckets> ten{};             // (10 minutes of it does not)
+    int32_t acc = 0, minAcc = 0;
+    int64_t tenAcc = 0;
+    long long total = 0;
+    void add(long long n) { acc += (int32_t)n; }
+};
+struct ItemSeries { Series made, used, handIn, handOut; }; // machine crafts and fuel burnt; a player's inserts and takes
+struct PlotStats {
+    std::map<int, ItemSeries> items;                        // by item id (ordered: deterministic)
+    std::map<int, Series> euMade, euUsed;                   // EU by machine kind (PartType)
+    Series euDemand;                                        // EU the consumers asked for (satisfaction = used / demand)
+    std::map<int, std::array<long long, 8>> statusTicks;    // ticks per status, by machine kind (the bottleneck finder)
+};
+
 struct PlotSim {
     uint64_t body = 0;
     uint32_t plot = 0, version = 0;
@@ -230,7 +250,24 @@ struct PlotSim {
     std::unordered_map<int, int> byPart;
     std::vector<Net> itemNets, powerNets;
     std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
+    PlotStats stats;                        // (#1199)
 };
+PlotStats* gCount = nullptr;  // the plot ticking now (BurnFuel counts the fuel it takes into it)
+long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
+
+// Once a second: each count's second into the rings, minutes and 10 minutes as they complete.
+void RollSeries(Series& s) {
+    const int slot = (int)(statSeconds % kStatBuckets);
+    s.sec[slot] = s.acc; s.minAcc += s.acc; s.total += s.acc; s.acc = 0;
+    if ((statSeconds + 1) % 60 == 0) { s.min[(statSeconds / 60) % kStatBuckets] = s.minAcc; s.tenAcc += s.minAcc; s.minAcc = 0; }
+    if ((statSeconds + 1) % 600 == 0) { s.ten[(statSeconds / 600) % kStatBuckets] = s.tenAcc; s.tenAcc = 0; }
+}
+void RollStats(PlotStats& st) {
+    for (auto& [id, is] : st.items) { RollSeries(is.made); RollSeries(is.used); RollSeries(is.handIn); RollSeries(is.handOut); }
+    for (auto& [k, s] : st.euMade) RollSeries(s);
+    for (auto& [k, s] : st.euUsed) RollSeries(s);
+    RollSeries(st.euDemand);
+}
 
 struct LayoutMsg {
     uint64_t body; uint32_t plot, version;
@@ -384,6 +421,7 @@ int BurnFuel(Machine& m, const MachineDef& def, int maxTicks) {
             if (m.fuel.count <= 0 || !IsFuel(def, m.fuel.item)) break;
             const int f = m.fuel.item;
             if (--m.fuel.count == 0) m.fuel.item = -1;
+            if (gCount) gCount->items[f].used.add(1); // (#1199) fuel burnt is used
             auto it = fuelTicks.find(f);
             m.energy = it != fuelTicks.end() ? it->second : 200;
         }
@@ -541,6 +579,7 @@ void ApplyLayout(const LayoutMsg& L) {
 
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
+    gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
     // Power: generators burn fuel into EU at their voltage; batteries buffer; consumers on a network
     // above their voltage refuse it.
     for (Net& net : ps.powerNets) {
@@ -561,8 +600,12 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Generator) supply += GeneratorStep(m, def, dt, std::max(0LL, demand + batteryRoom - supply));
+            if (def.power != Power::Generator) continue;
+            const long long eu = GeneratorStep(m, def, dt, std::max(0LL, demand + batteryRoom - supply));
+            supply += eu;
+            if (eu > 0) ps.stats.euMade[(int)m.type].add(eu); // (#1199)
         }
+        ps.stats.euDemand.add(demand);
         // Share: generation first, then the batteries; a shortfall slows every consumer equally.
         const long long fromBatteries = std::max(0LL, std::min(batteryAvail, demand - supply));
         const long long avail = supply + fromBatteries;
@@ -572,6 +615,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (def.power == Power::Eu && m.recipe >= 0 && def.volts >= net.voltage) {
                 const long long need = (long long)tables.recipes[m.recipe].eu * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
+                if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
             }
         }
         net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
@@ -653,10 +697,13 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
             for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
-            for (const Stack& s : r.out) made += s.count;
+            for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
+            for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
             m.recipe = -1; m.progress = 0;
         }
     }
+    // (#1199) Time per status by machine kind: every machine, every tick of this step.
+    for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt;
     // Items: each conveyor network moves items from outputs (and chests) to machines that take them.
     for (Net& net : ps.itemNets) {
         net.credit = std::min(net.credit + kConveyorItemsPerSecond * dt, kConveyorItemsPerSecond * kTicksPerSecond * 2);
@@ -769,7 +816,7 @@ void SimLoop() {
                 layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
             }
-            if (reset) { plots.clear(); emaMs = maxMs = 0.0; }
+            if (reset) { plots.clear(); emaMs = maxMs = 0.0; statSeconds = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
             for (const MoveMsg& mv : moves)
                 if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
@@ -799,10 +846,12 @@ void SimLoop() {
                             if (k > 0) { if (s.count <= 0) { s = Stack{}; s.item = im.item; } s.count += k; left -= k; }
                         }
                     }
+                    if (im.count - left > 0) p->stats.items[im.item].handIn.add(im.count - left); // (#1199)
                     if (left > 0) back.push_back({ im.item, left, im.to });
                 } else if (im.kind == 0 || im.kind == 2 || im.kind == 6 || im.kind == 9) { // (9 on a machine: routed, as Insert)
                     int buckets = 0;
                     const int left = InsertInto(m, im.item, im.count, im.kind == 6, buckets);
+                    if (im.count - left > 0) p->stats.items[im.item].handIn.add(im.count - left); // (#1199)
                     if (left > 0 && im.kind != 2) back.push_back({ im.item, left, im.to });
                     if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets, im.to }); // the emptied buckets
                 } else if (im.kind == 10) { // (#1103) light or put out a campfire
@@ -811,7 +860,7 @@ void SimLoop() {
                     if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count); // Waterworks sends only the room (TankRoom)
                     filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 3) {
-                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in.data(), kChestSlots, im.item)); TakeItems(m.in.data(), kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k, im.to }); }
+                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in.data(), kChestSlots, im.item)); TakeItems(m.in.data(), kChestSlots, im.item, k); if (k > 0) { back.push_back({ im.item, k, im.to }); p->stats.items[im.item].handOut.add(k); } }
                 } else if (im.kind == 5) {
                     TakeItems(m.out, kSlots, im.item, im.count); // a pump's water leaves through its pipes (nothing to the inventory)
                     drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
@@ -819,7 +868,7 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item | hot, s[im.item].count, im.to }); s[im.item] = Stack{}; }
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to }); s[im.item] = Stack{}; }
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
@@ -827,6 +876,7 @@ void SimLoop() {
                     if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
                         toCursor.push_back({ s[im.item].item | hot, k, im.to });
+                        p->stats.items[s[im.item].item].handOut.add(k); // (#1199)
                         s[im.item].count -= k;
                         if (s[im.item].count <= 0) s[im.item] = Stack{};
                     }
@@ -834,7 +884,7 @@ void SimLoop() {
                     Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
-                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
+                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
                 }
             }
             // Tick: near plots every tick; far plots once a second with a 20x step.
@@ -847,6 +897,8 @@ void SimLoop() {
                 if (ps.nearPlayer) TickPlot(ps, 1, made, active);
                 else if ((t + (long long)i) % kTicksPerSecond == 0) TickPlot(ps, kTicksPerSecond, made, active);
             }
+            gCount = nullptr;
+            if ((t + 1) % kTicksPerSecond == 0) { for (PlotSim& ps : plots) RollStats(ps.stats); ++statSeconds; } // (#1199) a second of factory time
             const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
             emaMs = emaMs == 0.0 ? ms : emaMs * 0.95 + ms * 0.05;
             maxMs = std::max(maxMs, ms);
@@ -1017,6 +1069,69 @@ CableView Factory::Cable(uint64_t body, uint32_t plot, Int3 cell) {
 FactoryStats Factory::Stats() {
     std::lock_guard<std::mutex> v(viewMutex);
     return stats;
+}
+
+FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t body, uint32_t plot) {
+    FactoryStatsView out;
+    std::lock_guard<std::mutex> lock(simMutex);
+    // The window shown: a longer one with no finished bucket yet falls back to the shorter.
+    const long long secs = statSeconds;
+    if (window == StatWindow::TenHours && secs < 600) window = StatWindow::Hour;
+    if (window == StatWindow::Hour && secs < 60) window = StatWindow::Minute;
+    out.window = window;
+    const int filled = (int)std::min<long long>(kStatBuckets, window == StatWindow::Minute ? secs : window == StatWindow::Hour ? secs / 60 : secs / 600);
+    const double bucketMin = window == StatWindow::Minute ? 1.0 / 60.0 : window == StatWindow::Hour ? 1.0 : 10.0; // minutes per bucket
+    out.coveredMinutes = filled * bucketMin;
+    const long long newest = window == StatWindow::Minute ? secs - 1 : window == StatWindow::Hour ? secs / 60 - 1 : secs / 600 - 1;
+    auto bucket = [&](const Series& s, size_t i) -> long long { return window == StatWindow::Minute ? s.sec[i] : window == StatWindow::Hour ? s.min[i] : s.ten[i]; };
+    auto sum = [&](const Series& s) { long long n = 0; for (size_t i = 0; i < kStatBuckets; ++i) n += bucket(s, i); return n; };
+    auto perMin = [&](const Series& s) { return out.coveredMinutes > 0 ? (double)sum(s) / out.coveredMinutes : 0.0; };
+    auto perTick = [&](const Series& s) { return out.coveredMinutes > 0 ? (double)sum(s) / (out.coveredMinutes * 60.0 * kTicksPerSecond) : 0.0; };
+    auto spark = [&](const Series& s, std::vector<float>& v) { // oldest first
+        v.resize(filled);
+        for (int i = 0; i < filled; ++i) v[i] = (float)bucket(s, (size_t)(((newest - (filled - 1) + i) % kStatBuckets + kStatBuckets) % kStatBuckets));
+    };
+    // Sum the plots in scope into one set of series (bucket by bucket).
+    std::map<int, ItemSeries> items;
+    std::map<int, Series> euMade, euUsed;
+    Series demand;
+    std::map<int, StatKind> kinds;
+    auto addSeries = [](Series& into, const Series& s) {
+        for (int i = 0; i < kStatBuckets; ++i) { into.sec[i] += s.sec[i]; into.min[i] += s.min[i]; into.ten[i] += s.ten[i]; }
+        into.total += s.total + s.acc; // (live: this second's count too)
+    };
+    for (const PlotSim& ps : plots) {
+        if (onePlot && (ps.body != body || ps.plot != plot)) continue;
+        ++out.plots;
+        for (const auto& [id, is] : ps.stats.items) {
+            ItemSeries& t = items[id];
+            addSeries(t.made, is.made); addSeries(t.used, is.used); addSeries(t.handIn, is.handIn); addSeries(t.handOut, is.handOut);
+        }
+        for (const auto& [k, s] : ps.stats.euMade) addSeries(euMade[k], s);
+        for (const auto& [k, s] : ps.stats.euUsed) addSeries(euUsed[k], s);
+        addSeries(demand, ps.stats.euDemand);
+        for (const auto& [k, t] : ps.stats.statusTicks) { StatKind& sk = kinds[k]; sk.type = k; for (int i = 0; i < 8; ++i) sk.ticks[i] += t[i]; }
+        for (const Machine& m : ps.machines) {
+            StatKind& sk = kinds[(int)m.type]; sk.type = (int)m.type; ++sk.count; ++sk.now[(int)m.status & 7];
+            if (m.type == PartType::Battery) { out.batteryEnergy += m.energy; out.batteryCapacity += kBatteryCapacity; }
+        }
+    }
+    for (const auto& [id, is] : items) {
+        StatLine l;
+        l.item = tables.name(id);
+        l.madePerMin = perMin(is.made); l.usedPerMin = perMin(is.used); l.handInPerMin = perMin(is.handIn); l.handOutPerMin = perMin(is.handOut);
+        l.made = is.made.total; l.used = is.used.total; l.handIn = is.handIn.total; l.handOut = is.handOut.total;
+        spark(is.made, l.madeSpark); spark(is.used, l.usedSpark);
+        out.items.push_back(std::move(l));
+    }
+    std::sort(out.items.begin(), out.items.end(), [](const StatLine& a, const StatLine& b) { return a.item < b.item; });
+    for (auto& [k, sk] : kinds) {
+        if (auto it = euMade.find(k); it != euMade.end()) { sk.euMadePerTick = perTick(it->second); out.euMadePerTick += sk.euMadePerTick; }
+        if (auto it = euUsed.find(k); it != euUsed.end()) { sk.euUsedPerTick = perTick(it->second); out.euUsedPerTick += sk.euUsedPerTick; }
+        out.kinds.push_back(sk);
+    }
+    out.euDemandPerTick = perTick(demand);
+    return out;
 }
 
 void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
