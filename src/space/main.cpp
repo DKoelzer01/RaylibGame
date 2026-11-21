@@ -13818,7 +13818,9 @@ int main(int argc, char** argv)
             lastFrameEnd = GetTime();
         }
         GpuTimer_Mark("swap+poll");
-        Audio_Update(); // (#1238) audio v2: ducking, finished voices, bus gains (nothing in the old engine)
+        // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
+        Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
+        Audio_Update();
         PROFILE_FRAME();
     }
     LOG_INFO("Main", "main loop ended: %s\n", WindowShouldClose() ? "the window was closed" : "Exit chosen (or a test or server stop)"); // (#1153) a clean exit says so

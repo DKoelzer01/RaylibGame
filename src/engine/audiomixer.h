@@ -40,8 +40,11 @@ public:
     // A voice for a new sound, or -1 when it was dropped (every voice holds a higher priority). `stolenSound` gets the
     // sound id the chosen voice was playing when it was stolen from a still-playing sound (-1 otherwise): the backend
     // stops it. `lengthSeconds` < 0 = loops until released. Critical sounds duck for their length.
-    int play(double now, int sound, AudioBus bus, AudioPriority priority, float volume, float pitch, float lengthSeconds, int* stolenSound = nullptr);
+    // stealEqual = false: only free voices and strictly lower priorities (emitters re-acquiring a voice every frame must
+    // not take turns stealing each other's).
+    int play(double now, int sound, AudioBus bus, AudioPriority priority, float volume, float pitch, float lengthSeconds, int* stolenSound = nullptr, bool stealEqual = true);
     void release(int voice);                      // stopped (by the backend, or a loop ended)
+    void setVolume(int voice, float volume);      // the voice's own volume (emitters: distance and fades)
     void update(double now, float dt);            // expires finished voices, moves the duck envelope
     void duckFor(double now, double seconds);     // duck music and ambience until now + seconds (alarms, combat)
 

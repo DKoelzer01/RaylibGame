@@ -92,6 +92,7 @@ struct ScenarioDef {
     std::vector<std::pair<std::string, std::string>> env; // environment set before the game starts
     std::string legacyFlag;                   // the --test-* flag it replaces (the report pairs their verdicts)
     bool record = true;                       // the temporary recording (perf scenarios: off, it costs frame time)
+    bool needsPlanetField = true;             // body 0 must have a PlanetField (false: any body, e.g. the asteroid system, #667)
     // A legacy bench drives the run (its flag in args, e.g. --shot-graves): the scenario has no steps and never holds the
     // bench; when the game ends, every bench_*.png it wrote (or just `shots`, if listed) is compared with its baseline, as
     // c.shot does, and those checks are the verdict. The way to move a screenshot bench without rewriting it (#870).
