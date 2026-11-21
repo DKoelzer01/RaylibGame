@@ -22,13 +22,13 @@ SCENARIO("caves/sinkhole") {
     s.timeout = 150.0;
 
     s.step("settle", 60.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play and an idle world"); return c.T >= 2.0 && WorldIdle(); });
-    s.step("find a sinkhole near the start", 1.0, [](ScenarioCtx& c) {
+    s.step("the nearest sinkhole to the start", 1.0, [](ScenarioCtx& c) {
         const Vector3 home = c.field->findSpawnDir(c.body->seed);
-        S.found = c.field->nearestCaveMouth(home, 3000.0f, S.at, S.out, 1); // kind 1: shafts (sinkholes, karst sinks, skylights)
-        if (!c.check("a sinkhole or shaft within 3 km of the start", S.found)) { c.fail("none found"); return true; }
+        S.found = c.field->nearestCaveMouth(home, 5000.0f, S.at, S.out, 1); // kind 1: shafts (sinkholes, karst sinks, skylights)
+        if (!c.check("a sinkhole or shaft within 5 km of the start", S.found)) { c.fail("none found"); return true; }
         const float dist = Vector3Distance(Vector3Scale(Vector3Normalize(S.at), c.field->radius), Vector3Scale(home, c.field->radius));
         c.metric("nearest shaft entrance from the start (m)", dist, "m");
-        c.lt("nearest shaft entrance from the start (m)", dist, 3000.0);
+        c.lt("nearest shaft entrance from the start (m): the user's goal is one within ~1 km of every spawn", dist, 1000.0);
         S.up = Vector3Normalize(S.at);
         S.side = Vector3Normalize(Vector3CrossProduct(S.up, fabsf(S.up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
         // Open down the shaft: air 3 m under the rim and 6 m down (every sinkhole is 8 m+ deep).
