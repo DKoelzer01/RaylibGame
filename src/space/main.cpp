@@ -8216,13 +8216,20 @@ int main(int argc, char** argv)
                             static std::string lastRow;
                             const Vector3 up = Vector3Normalize(flowEnd);
                             const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, flowOut));
-                            std::string row;
-                            for (float x = -1.5f; x <= 1.51f; x += 0.25f) {
-                                const Vector3 q = Vector3Add(Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, -4.0f)), Vector3Scale(side, x)), Vector3Scale(up, -0.5f + 0.6f));
-                                int fill = -1; sscanf(Fluid::DebugCell(*p, q).c_str(), "fill %d", &fill);
-                                row += p->densityAt(q) >= ISO_LEVEL ? "  ###" : fill < 0 ? "    ." : TextFormat(" %4d", fill);
+                            // Each column's thin cell and the cell under it, as fill/ground-share and flags (S solid, D dug, ...).
+                            auto cellAt = [&](float x, float h) {
+                                const Vector3 q = Vector3Add(Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, -4.0f)), Vector3Scale(side, x)), Vector3Scale(up, h + 0.6f));
+                                int fill = -1, sh = 0; char fl[8] = "";
+                                sscanf(Fluid::DebugCell(*p, q).c_str(), "fill %d sh %d flags %7s", &fill, &sh, fl);
+                                return fill < 0 ? std::string("        .") : std::string(TextFormat(" %3d/%3d%-2s", fill, sh, fl));
+                            };
+                            std::string row, below;
+                            for (float x = -1.5f; x <= 1.51f; x += 0.25f) { row += cellAt(x, -0.5f); below += cellAt(x, -0.75f); }
+                            if (row != lastRow) {
+                                printf("bench: flow dbg3 t=%.3f s, thin:  %s\n", t, row.c_str());
+                                printf("bench: flow dbg3 t=%.3f s, below: %s\n", t, below.c_str());
+                                lastRow = row;
                             }
-                            if (row != lastRow) { printf("bench: flow dbg3 t=%.3f s:%s\n", t, row.c_str()); lastRow = row; }
                         }
                         if (EnvFlag("FLOWDBG") && atoi(getenv("FLOWDBG")) >= 2) {
                             static int dumped = 0;

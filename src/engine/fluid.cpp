@@ -2868,9 +2868,9 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
-        uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) continue;
-        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
+        uint8_t f, fl, sh = 0;
+        if (!PubCell(s, local, 0, f, fl, nullptr, &sh)) continue;
+        return TextFormat("fill %d sh %d flags %s%s%s%s%s", f, sh, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
     }
     return "no site";
 }
