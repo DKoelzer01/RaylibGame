@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "claims.h"
 #include "machineact.h"
 #include "playerinput.h"
 #include "hotbar.h"
@@ -1442,6 +1443,40 @@ static void DrawTeam() {
         if (ImGui::Button("Rename") && rename[0]) { say(std::string("/team name ") + rename); rename[0] = 0; }
     }
     if (t.members.size() > 1 && ImGui::Button("Leave the team")) say("/team leave");
+    // (#828) Land claims (#343): the team's own, the other teams' it has heard of (and whether they let you in), and for the
+    // owner, which teams may build on yours (/claim ally, /claim unally: the server keeps the list; /claims prints it).
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "Land claims");
+    int ours = 0, theirs = 0;
+    for (const ClaimView& cv : Claims_Mirror()) (cv.ours ? ours : theirs) += 1;
+    if (ours == 0) ImGui::TextDisabled("None yet. Craft a claim banner and place it: only your team may build, dig or open chests inside.");
+    if ((ours > 0 || theirs > 0) && ImGui::BeginTable("claims", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (int pass = 0; pass < 2; ++pass) // ours first
+            for (const ClaimView& cv : Claims_Mirror()) {
+                if (cv.ours != (pass == 0)) continue;
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const ImVec4 col((cv.colour >> 16 & 255) / 255.0f, (cv.colour >> 8 & 255) / 255.0f, (cv.colour & 255) / 255.0f, 1.0f);
+                ImGui::TextColored(col, "%s", cv.ours ? "Your team" : cv.teamName.c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(cv.body.c_str());
+                ImGui::TableNextColumn();
+                ImGui::Text("%.0f m across", 2.0f * cv.radius);
+                ImGui::TableNextColumn();
+                if (!cv.ours) { if (cv.allowed) ImGui::TextColored(ImVec4(0.55f, 0.9f, 0.55f, 1.0f), "lets you in"); else ImGui::TextDisabled("closed to you"); }
+            }
+        ImGui::EndTable();
+    }
+    if (youOwn) {
+        static char ally[32] = {};
+        ImGui::SetNextItemWidth(220 * s);
+        ImGui::InputTextWithHint("##ally", "another team's name", ally, sizeof(ally));
+        ImGui::SameLine();
+        if (ImGui::Button("Let them in") && ally[0]) { say(std::string("/claim ally ") + ally); ally[0] = 0; }
+        ImGui::SameLine();
+        if (ImGui::Button("Shut them out") && ally[0]) { say(std::string("/claim unally ") + ally); ally[0] = 0; }
+    }
+    if (ImGui::SmallButton("List claims and allies in chat")) say("/claims");
     ImGui::Separator();
     ImGui::SetNextItemWidth(420 * s);
     if (ImGui::InputTextWithHint("##teamsay", "say to your team (Enter)", teamSay, sizeof(teamSay), ImGuiInputTextFlags_EnterReturnsTrue) && teamSay[0]) {
