@@ -5301,6 +5301,21 @@ int main(int argc, char** argv)
                         benchShotTabs = 32; frames = 0;
                     } else if (benchShotTabs == 32 && ++frames == 40) {
                         TakeScreenshot("bench_team.png");
+                        { // (#828) the Skills tab: the first skill at level 7 (tier 1 open, tier 2 not), one perk learned
+                            SkillState& st = LocalSession().skills;
+                            if (!Skills_All().empty()) {
+                                const std::string id = Skills_All()[0].id;
+                                double xp = 0.0; for (int k = 1; k <= 7; ++k) xp += Skills_XpForLevel(k);
+                                st.xp[id] = xp + 1.0;
+                                std::string bought;
+                                for (const PerkDef& p : Skills_Perks()) if (p.skill == id && p.tier == 1 && Skills_Buy(st, p.id)) { bought = p.name; break; }
+                                printf("bench: skills tab: %s at level 7, learned %s\n", Skills_All()[0].name.c_str(), bought.empty() ? "nothing" : bought.c_str());
+                            }
+                        }
+                        GameUI_ShowTab("Skills");
+                        benchShotTabs = 33; frames = 0;
+                    } else if (benchShotTabs == 33 && ++frames == 40) {
+                        TakeScreenshot("bench_skills.png");
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
