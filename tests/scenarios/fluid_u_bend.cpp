@@ -26,6 +26,7 @@ struct State {
     float r0 = 0.0f, poured = 0.0f;
     double vol0 = 0.0; // the simulated volume once the pour is done (m^3)
     double lastPour = 0.0; // when the pour last added water (s, step time)
+    double nextTrace = 0.0; std::string trace; // the levels over time while it levels out (#1168)
     double nextPour = 0.0;
     int k = 0;
     Vector3 pt(float x, float y, float h) const {
@@ -98,7 +99,13 @@ static void Build(ScenarioDef& s) {
     s.step("level out", 150.0, [](ScenarioCtx& c) {
         S.camera(c);
         c.waitingFor("the water asleep (or 120 s)");
+        if (c.t >= S.nextTrace) { // (#1168) the levels over time, and how much of the water is still awake
+            S.nextTrace = c.t + 5.0;
+            const Fluid::Stats st = Fluid::GetStats();
+            S.trace += TextFormat("%.0fs %.2f/%.2f a%d s%d; ", c.t, S.level(*c.body, -10.0f), S.level(*c.body, 10.0f), st.activeBricks, st.settled);
+        }
         if (!((c.t > 10.0 && Fluid::Asleep()) || c.t > 120.0)) return false;
+        c.note("levels over time (near/far m, awake bricks a, settled s): " + S.trace);
         const float nearL = S.level(*c.body, -10.0f), farL = S.level(*c.body, 10.0f);
         const float tunnel = Fluid::WaterAt(*c.body, S.pt(0.0f, 0.0f, 0.5f * (kFloor + kTunnelTop)), 0.5f);
         const float lost = Fluid::PourDropped();
