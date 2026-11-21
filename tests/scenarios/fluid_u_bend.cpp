@@ -127,6 +127,15 @@ static void Build(ScenarioDef& s) {
             c.note(TextFormat("volume from the bricks (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row %.2f; elsewhere within 40 m %.2f, "
                               "beyond %.2f (of %.2f); the U-bend through the drawn snapshot %.2f",
                               vNear, vFar, vTunnel, vRoof, vAll - (vNear + vFar + vTunnel + vRoof), vol1 - vAll, vol1, snap));
+            // That "elsewhere", by place (bricks): over the pits and the ground (from 1 m up), beside the U-bend (|y| 1.5-6 m,
+            // floor to 1 m up), past its ends (|x| 12.5-20 m), and under its floor.
+            const double over = box(-40.0f, 40.0f, -40.0f, 40.0f, 1.0f, 4.0f);
+            const double beside = box(-14.0f, 14.0f, 1.5f, 6.0f, kFloor - 0.5f, 1.0f) + box(-14.0f, 14.0f, -6.0f, -1.5f, kFloor - 0.5f, 1.0f);
+            const double ends = box(-20.0f, -12.5f, -1.5f, 1.5f, kFloor - 0.5f, 1.0f) + box(12.5f, 20.0f, -1.5f, 1.5f, kFloor - 0.5f, 1.0f);
+            const double under = box(-20.0f, 20.0f, -6.0f, 6.0f, kFloor - 3.0f, kFloor - 0.5f);
+            const double gap = box(-7.75f, 7.75f, -1.5f, 1.5f, kTunnelTop + 0.5f, 1.0f); // over the tunnel's roof, under the ground
+            c.note(TextFormat("elsewhere by place (m^3): from 1 m over the ground up %.2f, beside %.2f, past the ends %.2f, under the floor %.2f, "
+                              "over the tunnel's roof %.2f", over, beside, ends, under, gap));
         }
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
         c.metric("simulated volume after the pour", S.vol0, "m^3", false);
