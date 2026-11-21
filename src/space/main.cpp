@@ -13132,7 +13132,8 @@ int main(int argc, char** argv)
                 if (std::filesystem::exists("saves/bench.sav.regions")) std::filesystem::copy("saves/bench.sav.regions", std::string(hostCopy) + ".regions", std::filesystem::copy_options::recursive, ec);
                 if (!std::filesystem::exists(hostCopy)) { printf("bench: mp menu: needs saves/bench.sav (run any --bench once) -> FAIL\n"); benchMpMenu = false; windowKeepAlive = false; }
                 else {
-                    pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::HostGame; pendingMenu.path = hostCopy; pendingMenu.port = kPort; pendingMenu.maxPlayers = 4;
+                    pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::HostGame; pendingMenu.port = kPort; pendingMenu.maxPlayers = 4;
+                    pendingMenu.path = getenv("RAYLIBGAME_MPMENU_NEW") ? std::string() : std::string(hostCopy); // (#1147: =1 hosts a new world through the New World screen)
                     pendingMenu.name = "tester"; pendingMenu.suitColor = 0x3E86D8;
                     step = 3; t0 = GetTime();
                 }
@@ -13141,6 +13142,11 @@ int main(int argc, char** argv)
                 portTaken = !HostProcess_PortFree(kPort);
                 for (const auto& [session, name] : gJoin.roster) rosterOk = rosterOk || name == "tester";
                 printf("bench: mp menu: hosted and joined after %.0f s: server running %d, port taken %d, on the roster %d\n", GetTime() - t0, (int)hostedOk, (int)portTaken, (int)rosterOk);
+                if (getenv("RAYLIBGAME_MPMENU_NEW")) { // (#1147) the world the New World screen chose: its seed came through the server
+                    const bool seedOk = worldGen.seed == 4242u;
+                    printf("bench: host new world (#1147): the joined world's seed %u (want 4242): %s\n", worldGen.seed, seedOk ? "yes" : "NO");
+                    hostedOk = hostedOk && seedOk;
+                }
                 pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::SaveAndQuit;
                 step = 4; t0 = GetTime();
             } else if (step == 4 && gameState == 0) {
@@ -13383,16 +13389,17 @@ int main(int argc, char** argv)
             // The New World screen's choice from last frame (#504). --test-menus creates with its own seed after a moment.
             NewWorldChoice nw = pendingNewWorld;
             pendingNewWorld = NewWorldChoice{};
-            if (gameState == 3 && (benchMenus || playNewSeconds > 0.0) && nw.kind == NewWorldChoice::None) { // --play-new (#387) too
+            if (gameState == 3 && (benchMenus || playNewSeconds > 0.0 || (benchMpMenu && hostNewWorldPending)) && nw.kind == NewWorldChoice::None) { // --play-new (#387) too
                 ++newWorldFrames;
                 if (newWorldFrames == 15 && benchMenus) { TakeScreenshot("bench_menu_newworld.png"); printf("bench: menus: New Game -> the New World screen (#504): yes\n"); }
-                if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = worldGen.seed; }
+                if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = benchMpMenu ? 4242u : worldGen.seed; } // (--test-mp-menu with RAYLIBGAME_MPMENU_NEW: a chosen seed, #1147)
             }
             if (gameState == 3 && hostNewWorldPending && nw.kind == NewWorldChoice::Create) {
                 // (#1147) Hosting a new world: its save gets the choice (the seed in the server's config, <save>.worldgen beside
                 // it, the difficulty and XP rate in settings.txt, which the server reads), and the server builds it.
                 hostNewWorldPending = false;
                 const std::string save = Menu_NewSavePath();
+                if (bench) printf("bench: host new world (#1147): save %s, seed %u, the screen's parameters in %s.worldgen\n", save.c_str(), nw.seed, save.c_str());
                 SetWorldSavePath(save.c_str());
                 NewWorld_Apply(nw);
                 settings.difficulty = nw.difficulty; settings.xpRate = nw.xpRate; Settings_Save();
