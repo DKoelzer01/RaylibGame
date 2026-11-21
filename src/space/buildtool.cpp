@@ -18,6 +18,7 @@
 #include "simclock.h"
 #include "factory.h"
 #include "blueprint.h"
+#include <deque>
 #include "claims.h"
 #include "playerrecord.h"
 #include "menus.h"
@@ -61,6 +62,16 @@ bool IsMachineItem(const std::string& id) {
 namespace {
     bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
     std::vector<TerrainEdit> foundationBatch;
+    // (#1183) A blueprint's foundations land over the next frames: the edits wait here (with their body) and each frame
+    // applies them in small groups until kFoundationFrameMs is spent; the parts are placed at once. (The terrain edit was
+    // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
+    struct PendingFoundation { uint64_t body; TerrainEdit edit; };
+    std::deque<PendingFoundation> foundationsPending;
+    // A frame's share for foundations: at 3 ms a 60-part placement lays in ~4 frames, its worst frame 6.7 ms (from ~12 ms
+    // in one frame; perf/blueprint-place, 2026-11-21). An edit costs ~0.16 ms; a 1 ms budget (11 frames) measured no lower
+    // worst frame (8-12 ms either way: the cost after a placement is not the edit). RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 3.0; }();
+    constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
 }
 void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
     static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
@@ -69,8 +80,23 @@ void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch
 void BuildTool_EndFoundationBatch(Planetoid& body) {
     PROFILE_SCOPE("blueprint foundations");
     foundationBatching = false;
-    if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    static const bool async = !(getenv("RAYLIBGAME_BLUEPRINT_ASYNC") && getenv("RAYLIBGAME_BLUEPRINT_ASYNC")[0] == '0');
+    if (async) for (const TerrainEdit& e : foundationBatch) foundationsPending.push_back({ body.id, e });
+    else if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
     foundationBatch.clear();
+}
+int BuildTool_PendingFoundations() { return (int)foundationsPending.size(); }
+void BuildTool_ApplyPendingFoundations(double budgetMs) {
+    if (foundationsPending.empty()) return;
+    PROFILE_SCOPE("blueprint foundations (queued)");
+    const double t0 = GetTime();
+    std::vector<TerrainEdit> group;
+    while (!foundationsPending.empty() && (budgetMs <= 0.0 || (GetTime() - t0) * 1000.0 < budgetMs)) {
+        const uint64_t id = foundationsPending.front().body;
+        group.clear();
+        while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+    }
 }
 
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
@@ -269,6 +295,7 @@ void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part&
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
+    BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);

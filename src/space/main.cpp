@@ -1302,6 +1302,7 @@ int main(int argc, char** argv)
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
     // progress, so the window stays responsive. From inside a frame (the debug menu's Regenerate) just wait.
+    gBeforeSaveWorld = [] { BuildTool_ApplyPendingFoundations(0.0); }; // (#1183) a save holds every queued foundation
     gWorldGenWait = [bench](float progress, const char* what) {
         if (gJoin.conn) NetClient_Update(gJoin); // --join: keep the connection alive through a long bake (pings; the server times out at 15 s)
         if (gInFrame || !IsWindowReady()) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); return; }

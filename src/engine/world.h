@@ -206,6 +206,8 @@ Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
 // double from its double spin angle.
 void BodyRotationAndSpin(const Planetoid& body, double r[3][3], DVec3& omega);
 
+// (#1183) the game's work to finish before a save (queued blueprint foundations); nullptr: none
+inline void (*gBeforeSaveWorld)() = nullptr;
 bool SaveWorld(Scene& world);          // saves/world.sav
 // Game-specific save data. The load hook must read everything up to and including "end_extras".
 extern std::function<void(FILE*)> saveExtrasHook;

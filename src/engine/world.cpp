@@ -2457,6 +2457,7 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
 }
 
 bool SaveWorld(Scene& world) {
+    if (gBeforeSaveWorld) gBeforeSaveWorld(); // (#1183) queued foundations land first (their terrain is saved with them)
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
     const std::string tmpPath = SAVE_PATH_STR + ".tmp";
