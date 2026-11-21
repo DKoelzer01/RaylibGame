@@ -1547,7 +1547,16 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         static const bool budgetOn = !(getenv("RAYLIBGAME_STREAM_BUDGET") && getenv("RAYLIBGAME_STREAM_BUDGET")[0] == '0');
         static long frameNo = 0;
         ++frameNo;
-        const float frameMs = GetFrameTime() * 1000.0f;
+        // (#545) The frame's busy time, not GetFrameTime: that includes the frame-rate cap's or vsync's wait, so a capped game
+        // (60 Hz vsync: 16.7 ms) was throttled as if overloaded while the GPU idled, to ~16 blocks a frame, and the view's
+        // terrain fell behind in flight (gaps for a few frames: ~3500 nodes waiting at 60 m/s and 30 FPS).
+        // RAYLIBGAME_STREAM_BUDGET_BUSY=0: GetFrameTime as before (A/B).
+        static const bool busyOn = !(getenv("RAYLIBGAME_STREAM_BUDGET_BUSY") && getenv("RAYLIBGAME_STREAM_BUDGET_BUSY")[0] == '0');
+        // A frame no longer than the cap's (or vsync's) target was held by it, not by work: its CPU busy time says how loaded it
+        // was. A frame past the target was really late (CPU, or the GPU at the swap: #1122's flight): its full time, as before.
+        const float wallMs = GetFrameTime() * 1000.0f;
+        const bool heldByCap = gTargetFrameMs > 0.0f && wallMs <= gTargetFrameMs * 1.1f + 1.0f;
+        const float frameMs = busyOn && heldByCap && gFrameBusyMs > 0.0f ? gFrameBusyMs : wallMs;
         int limit = 2;
         if (budgetOn && !gPreloadUrgent && generationStart < 0.0) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
         TerrainGpu_SetLaunchLimit(limit);
