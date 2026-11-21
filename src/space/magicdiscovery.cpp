@@ -38,6 +38,8 @@ int MagicDiscovery_NodeKindsStudied(const MagicPlayerState& s) {
 
 // ---- The game ----
 #include "magic.h"
+#include "envflag.h"
+#include <cstdio>
 #include "gamerng.h"
 #include "gameui.h"
 #include "inventory.h"
@@ -127,6 +129,32 @@ void MagicDiscovery_Update(Scene& world, float dt) {
     if (r < 1.0f) return;
     const Vector3 dir = Vector3Scale(local, 1.0f / r);
     const float ground = pf->radius + pf->elevation(dir, 2.0f);
+    // Captures (RAYLIBGAME_MAGIC_AT_NODE=1): once the world is idle, the player stands on the nearest node within 3 km, and
+    // the camera watches it from 9 m off and 4 m up every frame (the subject stays in view).
+    static int atNode = EnvFlag("RAYLIBGAME_MAGIC_AT_NODE") ? 0 : -1;
+    static ManaNode watched;
+    if (atNode == 0 && WorldIdle()) {
+        std::vector<ManaNode> near;
+        f->nodesNear(dir, 3000.0f, near);
+        float best = 1e9f;
+        for (const ManaNode& n : near) if (const float d = acosf(std::clamp(Vector3DotProduct(dir, n.dir), -1.0f, 1.0f)); d < best) { best = d; watched = n; }
+        if (!near.empty()) {
+            const float gn = pf->radius + std::max(pf->elevation(watched.dir, 2.0f), 0.0f);
+            player.placeAt(world, *body, body->toWorld(Vector3Scale(watched.dir, gn + 1.0f)));
+            printf("magic: at node: %s, %.0f m from the start\n", watched.kind >= 0 ? Mana_Kind(watched.kind).name.c_str() : "?", best * pf->radius);
+        }
+        atNode = near.empty() ? 2 : 1;
+    }
+    if (atNode == 1) {
+        const float gn = pf->radius + std::max(pf->elevation(watched.dir, 2.0f), 0.0f);
+        Vector3 e = Vector3CrossProduct({ 0.0f, 1.0f, 0.0f }, watched.dir);
+        if (Vector3Length(e) < 1e-4f) e = { 1.0f, 0.0f, 0.0f };
+        e = Vector3Normalize(e);
+        const Vector3 at = Vector3Scale(watched.dir, gn + 1.0f);
+        world.camera.position = body->toWorld(Vector3Add(at, Vector3Add(Vector3Scale(e, 9.0f), Vector3Scale(watched.dir, 4.0f))));
+        world.camera.target = body->toWorld(at);
+        world.camera.up = body->dirToWorld(watched.dir);
+    }
     std::vector<ManaNode> nodes;
     f->nodesNear(dir, 40.0f, nodes);
     // Faint motes rise over a node, sight or no sight: the place itself hums (the doc's "humming fault spring, glowing pool").
