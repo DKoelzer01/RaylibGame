@@ -36,15 +36,16 @@ aside=""
 if [ -e saves/world.sav ]; then aside="$tmp/aside"; mkdir -p "$aside"; for f in saves/world.sav*; do mv "$f" "$aside/"; done; fi
 for f in "$tmp"/host.sav*; do cp -r "$f" "saves/world.sav${f#$tmp/host.sav}"; done
 RAYLIBGAME_PLAYER_UUID="$uuid" timeout 300 "$exe" --seed 42 --bench 60 --test-load-hold > "$tmp/sp.log" 2>&1
-grep -h "^bench: load-hold" "$tmp/sp.log" | head -6
+grep -h "^bench: load-hold" "$tmp/sp.log" | grep -v "waiting\| t=" | tail -2
 rm -rf saves/world.sav*
 [ -n "$aside" ] && for f in "$aside"/*; do mv "$f" saves/; done
-# The verdict: the record holds where she left (within 1 m), and single player puts her there (the load-hold test's own PASS)
+# The verdict: the record holds where she left (within 2 m: her last steps against the server's acknowledged state), and
+# single player puts her there (the load-hold test's own PASS)
 ok=1
-cx=$(echo "$left" | awk '{print $7, $8, $9}'); rx=$(echo "$recLine" | awk '{print $3, $4, $5}')
+cx=$(echo "$left" | awk '{print $8, $9, $10}'); rx=$(echo "$recLine" | awk '{print $3, $4, $5}') # ("join: alice leaves at body N local x y z")
 d=$(awk -v a="$cx" -v b="$rx" 'BEGIN { split(a, p, " "); split(b, q, " "); if (length(p) < 3 || length(q) < 3) { print -1; exit }
      print sqrt((p[1]-q[1])^2 + (p[2]-q[2])^2 + (p[3]-q[3])^2) }')
 echo "the record is $d m from where she left"
-awk -v d="$d" 'BEGIN { exit !(d >= 0 && d < 1.0) }' || { echo "  FAIL: the server's record isn't where she left"; ok=0; }
+awk -v d="$d" 'BEGIN { exit !(d >= 0 && d < 2.0) }' || { echo "  FAIL: the server's record isn't where she left"; ok=0; }
 grep -q "^bench: load-hold.*PASS" "$tmp/sp.log" || { echo "  FAIL: single player didn't keep her at the record's position"; ok=0; }
 echo "=== test_hosted_load: $([ $ok = 1 ] && echo PASS || echo FAIL) after $SECONDS s ($tmp)"

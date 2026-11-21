@@ -265,6 +265,12 @@ multiplayer() {
         echo "=== tools/test_net_plants.sh on the default terrain (#1107)" | tee -a "$log"
         TERRAIN=default PORT=27969 EXE="$gexe" bash "$here/tools/test_net_plants.sh" 2>&1 | grep "=== test_net_plants" | sed 's/=== test_net_plants: \([A-Z]*\).*/bench: plants near the spawn on the default terrain (#1107): -> \1/' | tee -a "$log"
     fi
+    # A menu-hosted save loaded in single player (#901): the server's record holds where the player left, and single player
+    # puts them there (as the same player)
+    if netscript headless "tools/test_hosted_load.sh (#901)"; then
+        echo "=== tools/test_hosted_load.sh (#901)" | tee -a "$log"
+        PORT=27976 EXE="$gexe" bash "$here/tools/test_hosted_load.sh" 2>&1 | grep "=== test_hosted_load\|  FAIL" | sed 's/=== test_hosted_load: \([A-Z]*\).*/bench: a hosted save loaded in single player keeps the position (#901): -> \1/' | tee -a "$log"
+    fi
     if netscript headless "tools/test_animals_net.sh (#334)"; then
         echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
         EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
