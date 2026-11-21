@@ -2,6 +2,7 @@
 #include "machinemodels.h"
 #include "machineact.h"
 #include "buildtool.h"
+#include "researchgate.h"
 #include "playerinput.h"
 #include "waterworks.h"
 #include "survival.h"
@@ -150,6 +151,12 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
     if (part.type == PartType::Farmland) { GameUI_Toast("Farmland is tilled ground now: till soil with a shovel or hoe (RMB)"); return false; } // (#1085)
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
+    if (ResearchGate_On() && !terrainTool.creative && !ResearchGate_PartAllowed(ResearchGate_Team(), t)) { // (#1271, off until the ladder's L6)
+        const ResearchNode* n = ResearchGate_NodeForPart(t);
+        GameUI_Toast(TextFormat("Research %s first (Research tab)", n ? n->name.c_str() : "it"));
+        Audio_Play(Sfx::Error, 0.5f);
+        return false;
+    }
     const char* item = PartItem(part);
     // (#900) A claim banner claims its ground for the placer's team here too, as a server does for a joined player (or it
     // is refused, nothing spent: over the budget, or over another team's claim).

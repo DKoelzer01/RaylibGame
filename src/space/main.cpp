@@ -71,6 +71,7 @@
 #include "commandline.h"
 #include "research.h"
 #include "researchtab.h"
+#include "researchgate.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -1317,6 +1318,7 @@ int main(int argc, char** argv)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
+    ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)

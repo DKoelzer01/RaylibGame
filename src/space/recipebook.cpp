@@ -1,4 +1,5 @@
 #include "recipebook.h"
+#include "researchgate.h"
 #include "playerinput.h"
 #include "playersession.h"
 #include "simclock.h"
@@ -45,8 +46,7 @@ bool RecipeBook_Known(const Recipe& r) {
     if (terrainTool.creative) return true;
     Load();
     for (const auto& in : r.inputs) if (!RecipeBook_Discovered(in.first)) return false;
-    auto it = unlocks.find(r.output);
-    return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+    return RecipeBook_Unlocked(r); // its recipe_unlocks condition, and (#1271, off until L6) its research node
 }
 
 bool RecipeBook_Matches(const Recipe& r, const std::string& q) {
@@ -86,6 +86,7 @@ void RecipeBook_Update() {
 
 bool RecipeBook_Unlocked(const Recipe& r) {
     Load();
+    if (ResearchGate_On() && !ResearchGate_RecipeAllowed(ResearchGate_Team(), r.output)) return false; // (#1271) off until the ladder's L6
     auto it = unlocks.find(r.output);
     return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
 }
