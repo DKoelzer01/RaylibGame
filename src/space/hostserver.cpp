@@ -1,4 +1,5 @@
 #include "hostserver.h"
+#include "researchgate.h"
 #include "netinterest.h"
 #include "netguard.h"
 #include "gputimer.h"
@@ -1952,7 +1953,7 @@ namespace {
                 bool unlocked = true;
                 if (const int team = TeamOfSession(it->second.session)) {
                     QuestBookState& book = TeamQuests_Book(team);
-                    QuestBook_Select(&book); unlocked = RecipeBook_Unlocked(rc); QuestBook_Select(nullptr);
+                    QuestBook_Select(&book); ResearchGate_SelectTeam(team); unlocked = RecipeBook_Unlocked(rc); QuestBook_Select(nullptr); ResearchGate_SelectTeam(0); // (#1271) its team's research too
                 }
                 if (rit->second.creative) unlocked = true; // (#823) creative: every recipe, free
                 if (!unlocked) { SendMsg(m.conn, MsgChat{ 0, "Your team hasn't unlocked " + rc.output + " yet" }); return; }
@@ -1963,7 +1964,7 @@ namespace {
                     // (unlocked for its team, every ingredient held once by this inventory), its carried items; then the
                     // steps in order, intermediates first. A step that fails stops the rest (what was made stays).
                     const int team = TeamOfSession(it->second.session);
-                    if (team) QuestBook_Select(&TeamQuests_Book(team));
+                    if (team) { QuestBook_Select(&TeamQuests_Book(team)); ResearchGate_SelectTeam(team); }
                     std::vector<char> knownK(recipes.size(), 0);
                     for (size_t k = 0; k < recipes.size(); ++k) {
                         bool ok = !team || RecipeBook_Unlocked(recipes[k]);
@@ -1974,7 +1975,7 @@ namespace {
                         }
                         knownK[k] = ok;
                     }
-                    if (team) QuestBook_Select(nullptr);
+                    if (team) { QuestBook_Select(nullptr); ResearchGate_SelectTeam(0); }
                     knownK[q.recipe] = 1; // (the target itself: unlocked, checked above)
                     std::set<std::string> machineMade;
                     for (const auto& ri : Factory::RecipeList()) for (const auto& o : ri.out) machineMade.insert(o.first);
@@ -2096,7 +2097,7 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, int count, float heat) {
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };

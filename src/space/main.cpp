@@ -71,6 +71,8 @@
 #include "commandline.h"
 #include "research.h"
 #include "researchtab.h"
+#include "researchgate.h"
+#include "researchlabs.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -115,6 +117,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "avatar.h"
 #include "footsteps.h"
 #include "soundscape.h"
+#include "watercaves.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -298,6 +301,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Particles_Clear();
         Ambience_Reset();
         Waterfalls_Reset();
+        WaterCaves_Reset(); // (#1242)
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -1319,6 +1323,7 @@ int main(int argc, char** argv)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
+    ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
     if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
@@ -10397,6 +10402,7 @@ int main(int argc, char** argv)
             GpuTimer_CpuMark("step: animals");
             if (!loading) Weather_Update(world, simDt * timeScale * gDebugTimeScale, simDt); // the sky, rain and snow, lightning (the gusts on real time, #888)
             Factory::Sync(world);                                // machine layouts in, items out
+            ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
@@ -11051,6 +11057,7 @@ int main(int argc, char** argv)
                 Factory::Insert(chestBody, chestPlot, chestPart, "oak_log", 40);
                 Factory::Insert(chestBody, chestPlot, chestPart, "stone", 64);
                 Factory::Insert(chestBody, chestPlot, chestPart, "iron_ore", 12);
+                Factory::Insert(chestBody, chestPlot, chestPart, "dirt", 2, 0, 50); // (#1102) a fraction: "2.5"
                 inventory.add("stone_pickaxe", 1); inventory.add("oak_log", 12);
                 GameUI_OpenContainer(chestBody, chestPlot, chestPart, (int)PartType::Chest);
             }
@@ -13759,6 +13766,7 @@ int main(int argc, char** argv)
                     // Entering the game holds it half a second; a spawn only until the streamer has had a few
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
+                    Soundscape_PreloadStep(); // (#1241) one procedural ambience bed a frame behind the bar, not mid-play
                     const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
                     if (built) barClosing = true; // fill to the end first (a few frames), then close
                     const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
@@ -13833,6 +13841,7 @@ int main(int argc, char** argv)
         Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
         if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
         if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
+        if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
         Audio_Update();
         PROFILE_FRAME();
     }

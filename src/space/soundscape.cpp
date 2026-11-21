@@ -177,6 +177,32 @@ void Soundscape_Update(Scene& world, float dt) {
     }
 }
 
+float Soundscape_Air() { return inputs.air; }
+float Soundscape_HeightAboveGround() { return inputs.heightAboveGround; }
+
+void Soundscape_PreloadStep() {
+    if (!Audio_V2()) return;
+    if (!loaded) Load();
+    // Every sound the table names, then thunder: the first not yet looked up (Audio_Sound caches it, a file or synthesised).
+    static std::vector<std::string> names;
+    static size_t next = 0;
+    if (names.empty()) {
+        for (const AmbienceTable::Bed& b : table.biome) { names.push_back(b.day); names.push_back(b.night); }
+        names.insert(names.end(), { table.rain, table.leaves, table.wind, "thunder_near", "thunder_far",
+                                    "water", "bed_waterfall", "bed_rumble", "drip" }); // (#1242 water and caves too)
+    }
+    while (next < names.size()) {
+        const std::string& n = names[next++];
+        if (n.empty()) continue;
+        bool seen = false;
+        for (size_t k = 0; k + 1 < next && !seen; ++k) seen = names[k] == n;
+        if (seen) continue;
+        PROFILE_SCOPE("audio:preload bed");
+        Audio_Sound(n.c_str());
+        return; // one a frame
+    }
+}
+
 void Soundscape_Thunder(Scene& world, float delay) {
     const float dist = std::max(0.0f, delay) * 343.0f;
     const bool near = dist < 450.0f;

@@ -57,15 +57,16 @@ enum class PartType : uint8_t {
     Shaft, Cogwheel, LargeCogwheel, Gearbox, HandCrank, StressGauge,
     Millstone, Saw, Press,
     WaterWheel, Windmill,                                            // (#1270) rotation sources from the river and the wind (rotationsources.*)
+    LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
     SteamEngine, Dynamo, Motor,                                      // (#1271 L3) a boiler's steam into rotation; rotation into 32 V EU and back
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::SteamEngine && t <= PartType::Motor); }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || (t >= PartType::SteamEngine && t <= PartType::Motor); }
 // (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
-inline bool IsRotationPart(PartType t) { return t >= PartType::Shaft && t <= PartType::Motor; }
+inline bool IsRotationPart(PartType t) { return (t >= PartType::Shaft && t <= PartType::Windmill) || (t >= PartType::SteamEngine && t <= PartType::Motor); }
 // (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
 inline bool IsSpinningPart(PartType t) { return t == PartType::Shaft || t == PartType::Cogwheel || t == PartType::LargeCogwheel || t == PartType::HandCrank || t == PartType::WaterWheel || t == PartType::Windmill; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }

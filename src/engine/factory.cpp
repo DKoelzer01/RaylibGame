@@ -44,7 +44,10 @@ namespace {
 // Data
 // ---------------------------------------------------------------------------------------------
 
-struct Stack { int item = -1, count = 0; };
+// (#1102) centi: hundredths of one more item (0-99), the player inventory's resolution: chests keep fractions (0.4 dirt);
+// a slot holding only a fraction is not empty. Machines craft and conveyors move whole items only.
+struct Stack { int item = -1, count = 0, centi = 0; };
+inline bool Empty(const Stack& s) { return s.count <= 0 && s.centi <= 0; }
 // #580: results taken from a heating machine's output carry this bit on their item index: they reach the inventory hot.
 constexpr int kHotItem = 1 << 30;
 static bool HeatsItems(PartType t) {
@@ -310,7 +313,7 @@ struct LayoutMsg {
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
     std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; int centi = 0; }; // (#1102) centi: a fraction (hundredths) more, for a chest // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -323,7 +326,7 @@ std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nearQueue;
 struct MoveMsg { uint64_t fromBody; uint32_t fromPlot; uint64_t toBody; uint32_t toPlot; };
 std::vector<MoveMsg> moveQueue;               // plots that changed body / id (rocket launch, landing)
 bool resetRequested = false;
-struct ItemOut { int item = 0, count = 0; uint32_t to = 0; }; // (#332) to: the player it goes to (0: this game's own inventory)
+struct ItemOut { int item = 0, count = 0; uint32_t to = 0; int centi = 0; }; // (#1102) centi: a fraction more (from a chest) // (#332) to: the player it goes to (0: this game's own inventory)
 std::vector<ItemOut> results;     // sim -> main: (item, count) back to the inventory
 std::vector<ItemOut> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
 void (*cursorSink)(const std::string&, int, float) = nullptr;
@@ -406,14 +409,29 @@ int AddItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
         if (s[i].item == item && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
+        if (Empty(s[i])) { s[i] = Stack{}; s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
     return count;
 }
-bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
+// (#1102) A fraction of an item (hundredths, 0-99) into these slots: onto a stack of it with room (100 hundredths make one
+// more), else an empty slot. Returns the hundredths that did not fit.
+int AddCenti(Stack* s, int n, int item, int centi) {
+    if (centi <= 0) return 0;
+    const int cap = tables.cap(item);
+    for (int i = 0; i < n; ++i)
+        if (s[i].item == item && !Empty(s[i]) && s[i].count < cap) {
+            s[i].centi += centi;
+            if (s[i].centi >= 100) { s[i].centi -= 100; ++s[i].count; }
+            return 0;
+        }
+    for (int i = 0; i < n; ++i)
+        if (Empty(s[i])) { s[i] = Stack{}; s[i].item = item; s[i].centi = centi; return 0; }
+    return centi;
+}
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (Empty(s[i]) || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
 int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item) { const int k = std::min(count, s[i].count); s[i].count -= k; count -= k; if (!s[i].count) s[i].item = -1; }
+        if (s[i].item == item) { const int k = std::min(count, s[i].count); s[i].count -= k; count -= k; if (Empty(s[i])) s[i] = Stack{}; } // (#1102: a fraction keeps its item)
 }
 int InSlots(const Machine& m) { return m.type == PartType::Chest ? kChestSlots : kSlots; }
 
@@ -607,7 +625,7 @@ void ApplyLayout(const LayoutMsg& L) {
             auto num = [&]() { return k < s.size() ? atoi(s[k++].c_str()) : 0; };
             m.recipe = num(); m.progress = num(); m.energy = num(); m.fuelEU = num();
             const int nin = num();
-            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.in.data(), InSlots(m), item, c); }
+            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const double a = atof(s[k + 1].c_str()); k += 2; const int c = (int)a, centi = (int)lround((a - c) * 100.0); AddItems(m.in.data(), InSlots(m), item, c); if (centi > 0) AddCenti(m.in.data(), InSlots(m), item, std::min(centi, 99)); } // (#1102) "2.50": a fraction
             const int nout = num();
             for (int j = 0; j < nout && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.out, kSlots, item, c); }
             // Then tagged extras: "f item count" (the fuel slot), "w litres", "h heat".
@@ -1037,7 +1055,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     };
     v.input = list(m.in.data(), InSlots(m));
     v.output = list(m.out, kSlots);
-    for (int i = 0; i < InSlots(m); ++i) v.inSlots.push_back({ m.in[i].count > 0 ? tables.name(m.in[i].item) : std::string(), m.in[i].count });
+    for (int i = 0; i < InSlots(m); ++i) { v.inSlots.push_back({ !Empty(m.in[i]) ? tables.name(m.in[i].item) : std::string(), m.in[i].count }); v.inCenti.push_back(m.in[i].centi); } // (#1102)
     if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
     if (Def(m.type).power == Power::Rotation) { // (#1269)
         v.rotation = true;
@@ -1115,22 +1133,32 @@ void SimLoop() {
                 Machine& m = p->machines[it->second];
                 m.dirty = true; // (#1214) any command on a machine wakes it and its network
                 if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
-                    int left = im.count;
+                    int left = im.count, leftCenti = im.centi;
                     if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
                         Stack& s = m.in[im.amount];
-                        if (s.count <= 0 || s.item == im.item) {
+                        if (Empty(s) || s.item == im.item) {
+                            if (Empty(s)) { s = Stack{}; s.item = im.item; }
                             const int k = std::min(left, tables.cap(im.item) - std::max(0, s.count));
-                            if (k > 0) { if (s.count <= 0) { s = Stack{}; s.item = im.item; } s.count += k; left -= k; }
+                            if (k > 0) { s.count += k; left -= k; }
+                            if (leftCenti > 0 && s.count < tables.cap(im.item)) { // (#1102) the fraction too, while there is room
+                                s.centi += leftCenti; leftCenti = 0;
+                                if (s.centi >= 100) { s.centi -= 100; ++s.count; }
+                            }
+                            if (Empty(s)) s = Stack{};
                         }
                     }
                     if (im.count - left > 0) p->stats.items[im.item].handIn.add(im.count - left); // (#1199)
-                    if (left > 0) back.push_back({ im.item, left, im.to });
+                    if (left > 0 || leftCenti > 0) back.push_back({ im.item, left, im.to, leftCenti });
                 } else if (im.kind == 0 || im.kind == 2 || im.kind == 6 || im.kind == 9) { // (9 on a machine: routed, as Insert)
                     int buckets = 0;
                     const int left = InsertInto(m, im.item, im.count, im.kind == 6, buckets);
                     if (im.count - left > 0) p->stats.items[im.item].handIn.add(im.count - left); // (#1199)
                     if (left > 0 && im.kind != 2) back.push_back({ im.item, left, im.to });
                     if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets, im.to }); // the emptied buckets
+                    if (im.centi > 0) { // (#1102) a fraction: a chest keeps it; a machine crafts whole items, so it goes back
+                        const int c = m.type == PartType::Chest ? AddCenti(m.in.data(), kChestSlots, im.item, im.centi) : im.centi;
+                        if (c > 0 && im.kind != 2) back.push_back({ im.item, 0, im.to, c });
+                    }
                 } else if (im.kind == 10) { // (#1103) light or put out a campfire
                     if (m.type == PartType::Campfire) m.fire = im.count ? kFireLit : kFireOut;
                 } else if (im.kind == 7) {
@@ -1145,23 +1173,25 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to }); s[im.item] = Stack{}; }
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; }
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) {
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
-                        toCursor.push_back({ s[im.item].item | hot, k, im.to });
+                        if (k > 0) toCursor.push_back({ s[im.item].item | hot, k, im.to });
                         p->stats.items[s[im.item].item].handOut.add(k); // (#1199)
                         s[im.item].count -= k;
-                        if (s[im.item].count <= 0) s[im.item] = Stack{};
+                        // (#1102) the whole slot taken: its fraction goes to the inventory (the cursor holds whole items from here)
+                        if (s[im.item].count <= 0 && s[im.item].centi > 0) { back.push_back({ s[im.item].item, 0, im.to, s[im.item].centi }); s[im.item].centi = 0; }
+                        if (Empty(s[im.item])) s[im.item] = Stack{};
                     }
                 } else {
                     Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
-                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
+                    for (int i = 0; i < n; ++i) if (!Empty(s[i])) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
                 }
             }
             const auto t1 = clk::now(); // (#1207) commands done
@@ -1338,6 +1368,7 @@ void Factory::Sync(Scene& world) {
                             const int dep = pf ? pf->depositNear(at, 40.0f) : -1;
                             variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
                         }
+                        if (part.type >= PartType::LvLab && part.type <= PartType::HvLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
@@ -1369,7 +1400,7 @@ void Factory::Sync(Scene& world) {
         cur.swap(cursorResults);
     }
     // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
-    for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else inventory.addAmount(id, r.count, h); } // (#332) a server: to that player
+    for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; const double amount = r.count + r.centi / 100.0; /* (#1102) */ if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, amount, h); else inventory.addAmount(id, amount, h); } // (#332) a server: to that player
     for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else if (cursorSink) cursorSink(id, r.count, h); else inventory.addAmount(id, r.count, h); }
 }
 
@@ -1379,10 +1410,10 @@ void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot,
     m.amount = count; m.to = to; // (#854) a server: that player's inventory (its client puts it on its cursor)
     itemQueue.push_back(m);
 }
-void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to) {
+void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to, int centi) {
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 9, body, plot, part, tables.item(item), count };
-    m.amount = slot; m.to = to;
+    m.amount = slot; m.to = to; m.centi = std::clamp(centi, 0, 99); // (#1102)
     itemQueue.push_back(m);
 }
 void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
@@ -1473,9 +1504,9 @@ FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t bo
     return out;
 }
 
-void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
+void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to, int centi) {
     std::lock_guard<std::mutex> q(queueMutex);
-    ItemMsg m{ 0, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
+    ItemMsg m{ 0, body, plot, part, tables.item(item), count }; m.to = to; m.centi = std::clamp(centi, 0, 99); itemQueue.push_back(m); // (#1102)
 }
 void Factory::Extract(uint64_t body, uint32_t plot, int part, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
@@ -1488,6 +1519,37 @@ void Factory::TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int whi
 void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 6, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
+}
+// (#1193) Between ticks (the sim holds simMutex for a whole tick): a machine's one output, and its outputs taken by name.
+bool Factory::SetVariant(uint64_t body, uint32_t plot, int part, const std::string& item) {
+    std::lock_guard<std::mutex> lock(simMutex);
+    PlotSim* p = FindPlot(body, plot);
+    auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+    if (!p || it == p->byPart.end()) return false;
+    Machine& m = p->machines[it->second];
+    const int v = item.empty() ? -1 : tables.item(item);
+    if (m.variant == v) return true;
+    m.variant = v;
+    m.dirty = true; // (#1214) a sleeping lab wakes: its new node's recipe may start now
+    // A recipe of another output stops (its inputs are only taken when it finishes, #193: nothing is lost).
+    if (m.recipe >= 0 && (v < 0 || tables.recipes[m.recipe].out.empty() || tables.recipes[m.recipe].out[0].item != v)) { m.recipe = -1; m.progress = 0; }
+    return true;
+}
+std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, uint32_t plot, int part, const std::string& prefix) {
+    std::vector<std::pair<std::string, int>> out;
+    std::lock_guard<std::mutex> lock(simMutex);
+    PlotSim* p = FindPlot(body, plot);
+    auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+    if (!p || it == p->byPart.end()) return out;
+    for (Stack& s : p->machines[it->second].out) {
+        if (s.count <= 0) continue;
+        const std::string name = tables.name(s.item);
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        out.push_back({ name, s.count });
+        s = Stack{};
+        p->machines[it->second].dirty = true; // (#1214) room in its outputs: a lab that waited on them goes on
+    }
+    return out;
 }
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
@@ -1591,9 +1653,9 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
         if (ps.body != bodyId) continue;
         for (const Machine& m : ps.machines) {
             fprintf(f, "m %u %d %d %d %d %d", ps.plot, m.part, m.recipe, m.progress, m.energy, m.fuelEU);
-            int nin = 0; for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) ++nin;
+            int nin = 0; for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) ++nin;
             fprintf(f, " %d", nin);
-            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count);
+            for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) { if (m.in[i].centi > 0) fprintf(f, " %s %d.%02d", tables.name(m.in[i].item).c_str(), m.in[i].count, m.in[i].centi); else fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count); } // (#1102) a fraction: "2.50"
             int nout = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) ++nout;
             fprintf(f, " %d", nout);
             for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) fprintf(f, " %s %d", tables.name(m.out[i].item).c_str(), m.out[i].count);
@@ -1944,5 +2006,51 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     EXPECT_GT(CountItems(M(furnace).out, kSlots, tables.item("iron_ingot")), 0) << "the dynamo-powered furnace smelted";
     EXPECT_GT(CountItems(M(press2).out, kSlots, tables.item("iron_plate")), 0) << "the motor-driven press pressed plates";
     plots.clear(); plotIndexDirty = true;
+}
+
+// (#1102) A chest keeps fractions as the player inventory does: 2.5 + 0.4 dirt is 2.9 in its slot; a slot holding only a
+// fraction is not overwritten; a machine takes whole units and gives the fraction back; taking the chest's contents gives
+// the fractions back. Through the factory thread's messages, as the game sends them.
+TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
+    LoadRecipes();
+    Factory::Start();
+    {
+        LayoutMsg L{};
+        L.body = 11; L.plot = 1; L.version = 1;
+        const PartType types[2] = { PartType::Chest, PartType::Macerator };
+        for (int i = 0; i < 2; ++i) {
+            std::vector<Int3> cells;
+            for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ i * 3 + dx, dy, dz });
+            L.machines.push_back({ i, types[i] }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        }
+        std::lock_guard<std::mutex> q(queueMutex);
+        layoutQueue.push_back(L);
+    }
+    Factory::WaitTicks(2);
+    { std::lock_guard<std::mutex> v(viewMutex); results.clear(); }
+    Factory::InsertSlot(11, 1, 0, "dirt", 2, 0, 0, 50);  // 2.5 dirt into slot 0
+    Factory::Insert(11, 1, 0, "dirt", 0, 0, 40);          // 0.4 more (routed: onto the dirt)
+    Factory::InsertSlot(11, 1, 0, "sand", 0, 1, 0, 30);   // only 0.3 sand in slot 1
+    Factory::InsertSlot(11, 1, 0, "stone", 5, 1);         // 5 stone aimed at slot 1: it holds sand, so they come back
+    Factory::Insert(11, 1, 1, "stone", 1, 0, 50);         // 1.5 stone into the macerator: it keeps 1, the 0.5 comes back
+    Factory::View(11, 1, 0);
+    Factory::WaitTicks(3);
+    const MachineView v = Factory::View(11, 1, 0);
+    ASSERT_GE(v.inSlots.size(), 2u);
+    ASSERT_GE(v.inCenti.size(), 2u);
+    EXPECT_EQ(v.inSlots[0].first, "dirt");
+    EXPECT_EQ(v.inSlots[0].second * 100 + v.inCenti[0], 290) << "2.5 + 0.4 dirt";
+    EXPECT_EQ(v.inSlots[1].first, "sand") << "a fraction-only slot is not overwritten";
+    EXPECT_EQ(v.inSlots[1].second * 100 + v.inCenti[1], 30);
+    auto back = [&](const char* item) { long long centi = 0; std::lock_guard<std::mutex> l(viewMutex); for (const ItemOut& r : results) if (tables.name(r.item & ~kHotItem) == item) centi += (long long)r.count * 100 + r.centi; return centi; };
+    EXPECT_EQ(back("stone"), 500 + 50) << "the 5 stone the sand's slot refused, and the macerator's 0.5";
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    Factory::Extract(11, 1, 0); // take everything out of the chest
+    Factory::WaitTicks(2);
+    EXPECT_EQ(back("dirt"), 290);
+    EXPECT_EQ(back("sand"), 30);
+    Factory::Stop();
+    plots.clear(); plotIndexDirty = true;
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
 }
 #endif

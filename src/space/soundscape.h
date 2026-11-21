@@ -38,6 +38,12 @@ void Ambience_Targets(const AmbienceTable& t, const AmbienceInputs& in, std::vec
 float Ambience_Muffle(const AmbienceInputs& in);
 
 void Soundscape_Update(Scene& world, float dt);   // once a frame (v2)
+// As of the last update (other sound systems, #1242): the air (0 vacuum .. 1) and the listener's height over the ground
+// (m, negative underground; large off a planet).
+float Soundscape_Air();
+float Soundscape_HeightAboveGround();
+// One bed a call, made ahead (a procedural bed takes a moment to synthesise): call it each loading-screen frame.
+void Soundscape_PreloadStep();
 // Thunder `delay` seconds after its flash (the strike is delay x 343 m away, toward world.lightningDir).
 void Soundscape_Thunder(Scene& world, float delay);
 

@@ -84,23 +84,30 @@ void Telescope_DrawHUD(Scene& world) {
     const char* zoom = TextFormat("x%.0f", telescope.zoom);
     const char* label = target ? TextFormat("%s %s  %.0f km", BodyKindName(target->kind), target->name.c_str(), targetDist / 1000.0f) : nullptr;
     // A planet or moon with a world file (#1296, #1274): its description, and its air and hazards, under the name.
-    std::string about, hazards;
+    std::string about, hazards, resources;
     if (target && target->profile) {
         about = target->profile->about;
         std::string list;
         for (const std::string& hz : target->profile->hazards) list += (list.empty() ? "" : ", ") + hz;
         hazards = std::string(target->profile->hasAir ? "Air" : "No air") + "   Hazards: " + (list.empty() ? "none" : list);
+        // (#1276) what it is a source of: the world file's item ids, by their item names
+        for (const std::string& id : target->profile->resources) {
+            const ItemDef* it = itemDB.find(id);
+            resources += (resources.empty() ? "Resources: " : ", ") + (it ? it->name : id);
+        }
     }
     int bw = std::max(MeasureText(zoom, 24), label ? MeasureText(label, 18) : 0);
     if (!about.empty()) bw = std::max(bw, MeasureText(about.c_str(), 16));
     if (!hazards.empty()) bw = std::max(bw, MeasureText(hazards.c_str(), 16));
+    if (!resources.empty()) bw = std::max(bw, MeasureText(resources.c_str(), 16));
     bw += 16;
-    const int bh = (label ? 56 : 30) + (about.empty() ? 0 : 22) + (hazards.empty() ? 0 : 22);
+    const int bh = (label ? 56 : 30) + (about.empty() ? 0 : 22) + (hazards.empty() ? 0 : 22) + (resources.empty() ? 0 : 22);
     DrawRectangle((int)c.x - bw / 2, y - 4, bw, bh, Fade(BLACK, 0.5f));
     DrawText(zoom, (int)c.x - MeasureText(zoom, 24) / 2, y, 24, RAYWHITE);
     if (label) DrawText(label, (int)c.x - MeasureText(label, 18) / 2, y + 30, 18, Fade(SKYBLUE, 0.9f));
     int ly = y + 54;
     if (!about.empty()) { DrawText(about.c_str(), (int)c.x - MeasureText(about.c_str(), 16) / 2, ly, 16, Fade(RAYWHITE, 0.85f)); ly += 22; }
-    if (!hazards.empty()) DrawText(hazards.c_str(), (int)c.x - MeasureText(hazards.c_str(), 16) / 2, ly, 16, Fade(target->profile->hazards.empty() ? LIGHTGRAY : ORANGE, 0.9f));
+    if (!hazards.empty()) { DrawText(hazards.c_str(), (int)c.x - MeasureText(hazards.c_str(), 16) / 2, ly, 16, Fade(target->profile->hazards.empty() ? LIGHTGRAY : ORANGE, 0.9f)); ly += 22; }
+    if (!resources.empty()) DrawText(resources.c_str(), (int)c.x - MeasureText(resources.c_str(), 16) / 2, ly, 16, Fade(LIME, 0.85f));
     DrawText("wheel zoom   T lower", 10, h - 30, 20, Fade(RAYWHITE, 0.7f));
 }
