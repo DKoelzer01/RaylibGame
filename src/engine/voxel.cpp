@@ -2533,6 +2533,17 @@ void BuildChunkMesh(const DensityField& field, const TerrainDeltas& deltas, Chun
 // start on the vertex and take the nearest sample: on a steep wall a point a metre above a vertex rounded to the solid
 // sample behind it about half the time once samples were 1-2 m apart, so mid-range cliffs read as roofed (dark blotches),
 // up to the stride where the probe stops (a ring).
+// (#899) A mesh vertex's depth under the surface (m), for the sky terms. Hinted: from the block's height grid (gridElev).
+// Unhinted (dug ground, cave blocks on the CPU path): from the height map - it was 1e9 m, so those blocks skipped the
+// opening and open-column terms while their hinted neighbours took them (a straight lit/dark step at the border).
+// unhintedDepth false: as before (RAYLIBGAME_SKY_UNHINTED=0).
+static float VertexDepth(const PlanetField* planet, bool hinted, float gridElev, Vector3 p, float stride, bool unhintedDepth) {
+    if (!planet) return 1e9f;
+    if (hinted) return planet->radius + gridElev - Vector3Length(p);
+    if (!unhintedDepth) return 1e9f;
+    return planet->radius + planet->elevation(Vector3Normalize(p), std::max(stride, 1.0f)) - Vector3Length(p);
+}
+
 static float OverheadOpenness(const DensityField& field, const TerrainDeltas& deltas, const float* ext, int E, Vector3 eo, float stride,
                               Vector3 p, Vector3 n, const PlanetField::Column3D* col, const float* elev, bool verifyOutside = false) {
     const float d = Vector3Length(p);
@@ -3245,8 +3256,8 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     // block border under overhangs and at cave mouths (#899), and dug pits lost their sky. Its depth now comes from
                     // the height map. RAYLIBGAME_SKY_UNHINTED=0: as before (A/B).
                     static const bool skyUnhinted = !(getenv("RAYLIBGAME_SKY_UNHINTED") && getenv("RAYLIBGAME_SKY_UNHINTED")[0] == '0');
-                    const float depthHere = hinted ? gridField->radius + gElev - Vector3Length(p)
-                                          : (skyUnhinted && planetField && sky < 0.999f ? planetField->radius + planetField->elevation(Vector3Normalize(p), std::max(stride, 1.0f)) - Vector3Length(p) : 1e9f);
+                    const float depthHere = hinted ? VertexDepth(gridField, true, gElev, p, stride, true)
+                                          : (sky < 0.999f ? VertexDepth(planetField, false, 0.0f, p, stride, skyUnhinted) : 1e9f);
                     static const bool mouthOn = !(getenv("RAYLIBGAME_CAVE_MOUTH_SKY") && getenv("RAYLIBGAME_CAVE_MOUTH_SKY")[0] == '0'); // A/B (#898): 0 = the depth term alone
                     if (mouthOn && sky < 0.999f && depthHere < 40.0f && stride <= 1.0f) sky = std::max(sky, 0.6f * (1.0f - depthHere / 40.0f)) * OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe, true);
                     else if (sky > 0.02f) sky *= OverheadOpenness(field, deltas, ext.data(), E, eo, stride, p, n, pc, pe);
@@ -3577,3 +3588,23 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
     std::sort(out.begin(), out.end(), [&](const Vector3& a, const Vector3& b) { return Vector3DotProduct(dir, a) > Vector3DotProduct(dir, b); });
     return out;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
+// in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
+// step along the border. (The old behaviour stays behind RAYLIBGAME_SKY_UNHINTED=0: unhintedDepth false.)
+TEST(Voxel, UnhintedVertexDepthMatchesTheHintedNeighbour) {
+    PlanetField f(42u, 32000.0f, false);
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float e = f.elevation(dir, 1.0f);                       // the grid hint's height here (the same height map)
+        const Vector3 p = Vector3Scale(dir, f.radius + e - 5.0f);      // a vertex 5 m under the surface
+        const float hinted = VertexDepth(&f, true, e, p, 1.0f, true);
+        const float unhinted = VertexDepth(&f, false, 0.0f, p, 1.0f, true);
+        EXPECT_NEAR(hinted, 5.0f, 0.02f);
+        EXPECT_NEAR(unhinted, hinted, 0.05f) << "an unhinted block's vertex depth must match its hinted neighbour's";
+        EXPECT_GT(VertexDepth(&f, false, 0.0f, p, 1.0f, false), 1e8f); // the A/B switch keeps the old 1e9
+    }
+}
+#endif
