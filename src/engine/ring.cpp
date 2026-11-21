@@ -1,4 +1,6 @@
 #include "ring.h"
+#include "gpumem.h"
+#include "netid.h"
 #include "factory.h"
 #include "bodies.h"
 #include "player.h"
@@ -82,6 +84,7 @@ namespace {
             for (int k = 0; k < kVariants; ++k) {
                 RockMesh& m = gMeshes[l][k];
                 BuildRock(m, l == 0 ? 2 : 1, k);
+                GpuMemTag gm85_("ring"); // VRAM accounting (#302)
                 m.vboPos = rlLoadVertexBuffer(m.pos.data(), (int)(m.pos.size() * sizeof(float)), false);
                 m.vboNrm = rlLoadVertexBuffer(m.nrm.data(), (int)(m.nrm.size() * sizeof(float)), false);
             }
@@ -103,6 +106,7 @@ namespace {
         gBand.vertexCount = (int)(d.size() / 3);
         gBand.vao = rlLoadVertexArray();
         rlEnableVertexArray(gBand.vao);
+        GpuMemTag gm106_("ring"); // VRAM accounting (#302)
         gBand.vbo = rlLoadVertexBuffer(d.data(), (int)(d.size() * sizeof(float)), false);
         rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0);
         rlEnableVertexAttribute(0);
@@ -214,35 +218,42 @@ int RingSystem::nearestRock(DVec3 w, double* distance) const {
 
 static double PromoteReach(const RingRock& r) { return std::max(250.0, 14.0 * r.radius) + r.radius; }
 
-void RingSystem::update(Scene& world, DVec3 focus) {
+void RingSystem::update(Scene& world, const std::vector<DVec3>& foci) {
     if (Planetoid::find(parentId) != parent) return;
+    if (foci.empty()) return;
     if (bins.empty() || fabs(WorldTime() - binnedAt) > kRebinSeconds) rebin();
-    // Demote rocks left behind (not those with a build plot: its machines need the body).
+    // Demote rocks left behind by every focus (not those with a build plot: its machines need the body).
     for (auto it = promoted.begin(); it != promoted.end();) {
         Planetoid* body = Planetoid::find(it->second);
         const int rock = it->first;
         if (!body) { it = promoted.erase(it); continue; }
-        const double d = (body->worldPos - focus).length();
+        double d = 1e300;
+        for (const DVec3& f : foci) d = std::min(d, (body->worldPos - f).length());
         if (d > 1.6 * PromoteReach(rocks[rock]) && !(body->plots && body->plots->partCount() > 0)) {
             it = promoted.erase(it);
             demote(world, rock, body);
         } else ++it;
     }
-    // Promote nearby rocks, nearest first, up to the cap.
-    const DVec3 rel = focus - parent->worldPos;
-    const double ang = atan2(rel.z, rel.x);
-    const double rho = sqrt(rel.x * rel.x + rel.z * rel.z);
-    if (rho < innerRadius - 3000.0 || rho > outerRadius + 3000.0 || fabs(rel.y) > thickness + 3000.0) return; // far from the band
-    std::vector<std::pair<double, int>> want;
-    ForBinsAround(bins, ang, 3000.0 / innerRadius, [&](int k) {
-        if (promoted.count(k)) return;
-        const double d = (rockPosition(k) - focus).length();
-        if (d < PromoteReach(rocks[k])) want.push_back({ d, k });
-    });
-    std::sort(want.begin(), want.end());
-    for (const auto& w : want) {
-        if ((int)promoted.size() >= kMaxPromoted) break;
-        promote(world, w.second);
+    // Promote rocks near each focus, nearest first, up to kMaxPromoted per focus (#318: every player gets the rocks
+    // around them, however many are already up around the others).
+    const int cap = kMaxPromoted * (int)foci.size();
+    for (const DVec3& focus : foci) {
+        const DVec3 rel = focus - parent->worldPos;
+        const double ang = atan2(rel.z, rel.x);
+        const double rho = sqrt(rel.x * rel.x + rel.z * rel.z);
+        if (rho < innerRadius - 3000.0 || rho > outerRadius + 3000.0 || fabs(rel.y) > thickness + 3000.0) continue; // far from the band
+        std::vector<std::pair<double, int>> want;
+        ForBinsAround(bins, ang, 3000.0 / innerRadius, [&](int k) {
+            const double d = (rockPosition(k) - focus).length();
+            if (d < PromoteReach(rocks[k])) want.push_back({ d, k });
+        });
+        std::sort(want.begin(), want.end());
+        int mine = 0; // this focus's rocks, counting those already up
+        for (const auto& w : want) {
+            if (mine >= kMaxPromoted || (int)promoted.size() >= cap) break;
+            ++mine;
+            if (!promoted.count(w.second)) promote(world, w.second);
+        }
     }
 }
 
@@ -250,6 +261,7 @@ void RingSystem::promote(Scene& world, int rock) {
     const RingRock& r = rocks[rock];
     auto p = std::make_unique<Planetoid>(TextFormat("%s_%d", name.c_str(), rock), rockPosition(rock), Vector3{ 0, 0, 0 }, 1.0f, r.seed, r.radius);
     p->kind = BodyKind::Asteroid;
+    p->netId = NetId_Make(NetKind::RingRock, ((uint64_t)NetId_NameHash(name.c_str()) << 32) | (uint32_t)rock); // stable (#317)
     p->spin = { 0.0f, r.spin, 0.0f };
     p->rotation = { 0.0f, (float)fmod(r.spin * WorldTime(), 360.0), 0.0f };
     p->surfaceGravity = RingRockGravity(r.radius * kMeanSurface);
@@ -376,6 +388,7 @@ void RingSystem::drawRocks(Scene& world, const RenderContext& ctx, bool rebuild)
                 rlEnableVertexArray(vao[s]);
             }
             if (vbo[s]) rlUnloadVertexBuffer(vbo[s]);
+            GpuMemTag gm379_("ring"); // VRAM accounting (#302)
             vbo[s] = rlLoadVertexBuffer(b.data(), (int)(b.size() * sizeof(float)), true);
             const int stride = 12 * (int)sizeof(float);
             rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);

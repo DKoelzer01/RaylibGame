@@ -1,0 +1,6 @@
+# Code owners (#1016): changes to CI, workflows and runner setup request the owner's review.
+# Workflows can run on the self-hosted runner on deweyserver, so they need a human look before merging.
+/.github/                      @DKoelzer01
+/tools/build_linux.sh          @DKoelzer01
+/tools/pterodactyl/            @DKoelzer01
+/tools/build_gns.sh            @DKoelzer01

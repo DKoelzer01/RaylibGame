@@ -16,6 +16,7 @@
 #include "worldtypes.h"
 #include "animals.h"
 #include "farming.h"
+#include "tools.h"
 #include "navigation.h"
 #include "suit.h"
 
@@ -34,6 +35,11 @@ namespace {
     std::vector<Step> steps;
     size_t current = 0;
     double stepStart = 0.0, testStart = 0.0;
+    std::vector<std::string> stepHistory; // the current step, a line a second (#372: printed if it fails)
+    struct PendingGive { std::string machine, item; int count; };
+    std::vector<PendingGive> pendingGives; // deliveries waiting for the factory to take a machine in (#372)
+    int frameNo = 0, placedFrame = -100; // test frames; the last Place()
+    void FlushGives();
     Planetoid* body = nullptr;
     const PlanetField* field = nullptr;
     Plot* plot = nullptr;
@@ -55,7 +61,7 @@ namespace {
     }
 
     // Like a player putting building stone, logs and gems in a chest: digging and chopping now give
-    // those too (M21, M22), and a full 45-slot grid refuses a craft's output.
+    // those too (M21, M22), and a full grid refuses a craft's output.
     void Stash() {
         static const char* kStash[] = { "granite", "basalt", "sandstone", "limestone", "marble",
                                         "quartz", "amethyst", "ruby", "sapphire", "emerald", "grain_seeds", "root_seeds", "flax_seeds", "berries" };
@@ -115,6 +121,25 @@ namespace {
             }
         return inventory.count("sand") >= want;
     }
+    // Clay (#206): a terrain material now (river and pond beds, swamps, rare pockets in the dirt): search outward
+    // from the start through the soil layer and dig what turns up. Prints how far the nearest clay was.
+    bool DigClay(int want) {
+        float first = -1.0f;
+        for (float r = 0.0f; r < 600.0f && inventory.count("clay") < want; r += 4.0f)
+            for (int a = 0; a < (r < 1.0f ? 1 : 64) && inventory.count("clay") < want; ++a) {
+                const float ang = a * 2.0f * PI / 64.0f;
+                const Vector3 d = Offset(cosf(ang) * r, sinf(ang) * r);
+                for (float depth = 0.8f; depth <= 2.2f && inventory.count("clay") < want; depth += 0.7f) {
+                    const Vector3 p = Vector3Subtract(Surface(d), Vector3Scale(d, depth));
+                    const float base = field->baseDensity(p);
+                    if (base < ISO_LEVEL || field->material(p, base) != VoxelMaterial::Clay) continue;
+                    if (first < 0.0f) first = r;
+                    for (int k = 0; k < 4 && inventory.count("clay") < want; ++k) TerrainTool_DigAt(*body, Vector3Subtract(p, Vector3Scale(d, 0.5f * k)));
+                }
+            }
+        printf("bench: progression: nearest clay %.0f m from the start; %d clay\n", first, inventory.count("clay"));
+        return inventory.count("clay") >= want;
+    }
     // Ore: find vein samples of each kind under the area once, then dig them.
     void FindOre() {
         for (float e = -160.0f; e <= 160.0f; e += 4.0f)
@@ -130,7 +155,8 @@ namespace {
                 }
             }
         // Deposits of the rarer kinds are worth a trip: prospect further and deeper for any missing.
-        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal" }) {
+        // (#532/#593: every kind the ladder mines - a start can sit where the near ground has no copper or iron)
+        for (const char* rare : { "bauxite_ore", "ilmenite_ore", "coal", "iron_ore", "copper_ore", "tin_ore" }) {
             if (orePoints[rare].size() >= 40) continue;
             for (float e = -800.0f; e <= 800.0f && orePoints[rare].size() < 400; e += 8.0f)
                 for (float n = -800.0f; n <= 800.0f && orePoints[rare].size() < 400; n += 8.0f) {
@@ -146,10 +172,23 @@ namespace {
         }
         for (auto& kv : orePoints) printf("bench: progression: %zu %s samples under the area\n", kv.second.size(), kv.first.c_str());
     }
+    // The pickaxe the script last held: when it wears out, a player crafts another (#587's harder strata wear the stone
+    // pickaxe out before the MV ladder; without one the digs failed silently and used up the ore samples).
+    std::string lastPickaxe;
+    bool KeepPickaxe() {
+        if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) > 0) { lastPickaxe = terrainTool.heldTool; return true; }
+        if (lastPickaxe.empty() || !Craft(lastPickaxe, 1)) return false;
+        printf("bench: progression: crafted a new %s (the last one wore out)\n", lastPickaxe.c_str());
+        terrainTool.heldTool = lastPickaxe;
+        return true;
+    }
     bool MineOre(const std::string& kind, int want) {
         auto& pts = orePoints[kind];
         size_t& i = oreNext[kind];
-        while (inventory.count(kind) < want && i < pts.size()) TerrainTool_DigAt(*body, pts[i++]);
+        while (inventory.count(kind) < want && i < pts.size()) {
+            if (!KeepPickaxe()) break;
+            TerrainTool_DigAt(*body, pts[i++]);
+        }
         return inventory.count(kind) >= want;
     }
 
@@ -157,6 +196,7 @@ namespace {
         const int before = plot->partCount();
         if (!BuildTool_Place(*body, *plot, { t, cell, 0 }, true)) { printf("bench: progression: could not place a %s\n", name.c_str()); failed = 1; return false; }
         parts[name] = (int)plot->parts.size() - 1;
+        placedFrame = frameNo; // gives wait a few frames: the layout goes to the factory with the next Sync (#372)
         return plot->partCount() == before + 1;
     }
     void Give(const std::string& machine, const std::string& item, int count) {
@@ -175,20 +215,57 @@ namespace {
             return;
         }
         count = std::min(count, inventory.count(item));
-        if (count > 0 && inventory.remove(item, count)) Factory::Insert(body->id, plot->id, parts[machine], item, count);
+        if (count <= 0) return;
+        // The factory takes a just-placed machine's layout on a later frame: an insert for a part it doesn't know is
+        // refunded to the inventory, and the step then waited on a machine with nothing in it (#372; found by the
+        // lighting session). The layout goes over with the next frame's Factory::Sync: deliveries within 3 frames of a Place() wait.
+        if (frameNo - placedFrame < 3) { pendingGives.push_back({ machine, item, count }); return; }
+        if (inventory.remove(item, count)) Factory::Insert(body->id, plot->id, parts[machine], item, count);
+    }
+    void FlushGives() {
+        if (pendingGives.empty() || frameNo - placedFrame < 3) return;
+        Factory::WaitTicks(2); // the factory has taken the layout in
+        std::vector<PendingGive> again;
+        for (const PendingGive& g : pendingGives) {
+            if (frameNo - placedFrame < 3) { again.push_back(g); continue; }
+            const int c = std::min(g.count, inventory.count(g.item));
+            if (c > 0 && inventory.remove(g.item, c)) Factory::Insert(body->id, plot->id, parts[g.machine], g.item, c);
+        }
+        pendingGives.swap(again);
     }
     // Run a machine until `item` reaches `want` in the inventory (taking its output now and then).
     bool Collect(const std::string& machine, const std::string& item, int want) {
         static std::map<std::string, double> lastTake; // per machine (one shared timer starved the second of two)
         if (GetTime() - lastTake[machine] > 0.25) { lastTake[machine] = GetTime(); Factory::Extract(body->id, plot->id, parts[machine]); }
-        // The boiler needs water (#229): a bucket now and then, as a player scooping from the river would (a full
-        // tank refuses it and it comes back).
+        // The boiler needs water (#229): a bucket whenever its tank has room for one, as a player keeping it filled
+        // from the river would. Not a bucket a real second (#372): the factory runs at 60x here (~1200 ticks a second at
+        // 1 L a tick of burning), so the tank ran dry now and then; a dry boiler cools as fast as it warms, and each
+        // refill burnt logs warming it again, until the 7 logs were gone with the hammer unpowered.
         static double lastWater = 0.0;
-        if (parts.count("boiler") && GetTime() - lastWater > 1.0) {
-            lastWater = GetTime();
-            if (inventory.count("water_bucket") == 0) inventory.add("water_bucket", 1);
-            if (inventory.remove("water_bucket", 1)) Factory::Insert(body->id, plot->id, parts["boiler"], "water_bucket", 1);
-            if (inventory.count("bucket") > 0) inventory.remove("bucket", inventory.count("bucket")); // the empties (refilled at the river)
+        if (parts.count("boiler") && GetTime() - lastWater > 0.05) {
+            const MachineView b = Factory::View(body->id, plot->id, parts["boiler"]); // watched: fills from the next tick
+            if (!b.valid || b.water <= b.waterMax - 1000) {
+                lastWater = GetTime();
+                if (inventory.count("water_bucket") == 0) inventory.add("water_bucket", 1);
+                if (inventory.remove("water_bucket", 1)) Factory::Insert(body->id, plot->id, parts["boiler"], "water_bucket", 1);
+                if (inventory.count("bucket") > 0) inventory.remove("bucket", inventory.count("bucket")); // the empties (refilled at the river)
+            }
+        }
+        // A second-by-second record of the machine (and the boiler, the generators), printed if the step fails (#372).
+        static double lastNote = 0.0;
+        if (GetTime() - lastNote > 1.0) {
+            lastNote = GetTime();
+            std::string line = TextFormat("t=%3.0f s", GetTime() - stepStart);
+            for (const std::string& name : { machine, std::string("boiler"), std::string("generator"), std::string("generator2") }) {
+                if (!parts.count(name) || (name != machine && line.find(" " + name + ":") != std::string::npos)) continue;
+                const MachineView v = Factory::View(body->id, plot->id, parts[name]);
+                if (!v.valid) continue;
+                line += TextFormat(" | %s: %s %d/%d en %d", name.c_str(), MachineStatusName(v.status), v.progress, v.duration, v.energy);
+                if (v.waterMax > 0) line += TextFormat(" water %d heat %d", v.water, v.heat);
+                if (v.hasFuelSlot) line += TextFormat(" fuel x%d", v.fuelSlot.second);
+            }
+            stepHistory.push_back(line);
+            if (stepHistory.size() > 40) stepHistory.erase(stepHistory.begin());
         }
         return inventory.count(item) >= want;
     }
@@ -206,8 +283,8 @@ namespace {
             terrainTool.heldTool = "stone_pickaxe";
             return true;
         });
-        add("dig 72 stone", [] { return DigFor("stone", 72, 5.0f); });
-        add("craft clay, a crucible mould and a campfire", [] { return Craft("clay", 28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
+        add("dig 72 stone (any rock, #587)", [] { return DigFor("any_stone", 72, 5.0f); });
+        add("dig 28 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
             if (!started) { started = true; if (!Place("campfire", PartType::Campfire, { 0, 0, 0 })) return false; return false; }
@@ -226,7 +303,7 @@ namespace {
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
         add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "any_log", 8); } return Collect("kiln", "copper_ingot", 38); });
         add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "any_log", 2); } return Collect("kiln", "tin_ingot", 8); });
-        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 38); Give("kiln", "any_log", 10); } return Collect("kiln", "iron_ingot", 38); });
+        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 50); Give("kiln", "any_log", 12); } return Collect("kiln", "iron_ingot", 50); }); // plates come from ingots now (#212); 2 ore stay for the electric furnace
         add("alloy 28 bronze", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "any_log", 3); }
@@ -284,12 +361,24 @@ namespace {
         add("till a field and plant seeds from the bushes", [] {
             while (inventory.count("grain_seeds") + inventory.count("root_seeds") + inventory.count("flax_seeds") < 1)
                 if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
-            const Vector3 g = Surface(Offset(-20.0f, 10.0f));
+            // (#1085) a till paints the ground's surface band: the real ground in that column (the density surface, from 3 m over
+            // the height map down; the mesh strays from the height map), not the height map's point
+            const Vector3 col = Offset(-20.0f, 10.0f);
+            auto ground = [&] {
+                Vector3 g = Surface(col);
+                for (float r = Vector3Length(g) + 3.0f, r0 = Vector3Length(g) - 3.0f; r > r0; r -= 0.05f)
+                    if (body->densityAt(Vector3Scale(col, r)) >= ISO_LEVEL) { g = Vector3Scale(col, r); break; }
+                return g;
+            };
+            Vector3 g = ground();
+            if (!IsTillable(body->materialAt(g))) { // frozen ground or rock: a cold start places dirt and tills that
+                TerrainEdit fill{}; fill.fill = true; fill.radius = 1.0f; fill.paint = (int)VoxelMaterial::Regolith;
+                fill.center = Vector3Add(g, Vector3Scale(col, 0.3f));
+                ApplyTerrainEdit(*body, fill);
+                g = ground();
+            }
             if (!Farm_Till(*scene, *body, g)) { printf("bench: progression: could not till\n"); failed = 1; return false; }
-            for (auto& pl : body->plots->plots)
-                for (int i = (int)pl->parts.size() - 1; i >= 0; --i)
-                    if (pl->parts[i].type == PartType::Farmland && Farm_Plant(*body, *pl, i, "")) return QuestBook_CountOf("plant") >= 1.0;
-            return false;
+            return Farm_Plant(*body, g, "") && QuestBook_CountOf("plant") >= 1.0; // (#1085) on the tilled ground itself
         });
         add("water the field: a bucket of water poured beside it", [] {
             // The bucket's pour (TerrainTool_Bucket counts "pour" through the game's hook), done directly:
@@ -406,7 +495,14 @@ namespace {
     void BuildFull() {
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
-            return MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("stone", 40, 6.0f);
+            const bool ok = MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("any_stone", 40, 6.0f);
+            static bool told = false; // (the step retries every frame)
+            if (!ok && !told && (told = true)) printf("bench: progression: the MV ladder dig stopped at iron %d/185, coal %d/530, copper %d/160, any_stone %d/40 "
+                            "(samples left: iron %zu, coal %zu, copper %zu; holding %s x%d)\n", inventory.count("iron_ore"), inventory.count("coal"),
+                            inventory.count("copper_ore"), inventory.count("any_stone"), orePoints["iron_ore"].size() - oreNext["iron_ore"],
+                            orePoints["coal"].size() - oreNext["coal"], orePoints["copper_ore"].size() - oreNext["copper_ore"],
+                            terrainTool.heldTool.empty() ? "nothing" : terrainTool.heldTool.c_str(), terrainTool.heldTool.empty() ? 0 : inventory.count(terrainTool.heldTool));
+            return ok;
         });
         add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
@@ -549,10 +645,13 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
     }
     if (failed) return -1;
     if (current >= steps.size()) return 1;
+    ++frameNo;
+    FlushGives(); // deliveries to machines the factory had not taken in yet (#372)
     if (steps[current].run()) {
         printf("bench: progression: [%5.1f s] %s (quest tier %d)\n", GetTime() - testStart, steps[current].name.c_str(), QuestBook_Tier());
         ++current;
         stepStart = GetTime();
+        stepHistory.clear();
         if (current >= steps.size()) {
             Factory::SetSpeed(1);
             if (ev) {
@@ -580,6 +679,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
                    v.energy, v.energyMax, v.input.c_str(), v.output.c_str(), v.hasFuelSlot ? TextFormat(", fuel %s x%d", v.fuelSlot.first.c_str(), v.fuelSlot.second) : "");
         }
         printf("bench: progression:   inventory: water %d, hydrogen %d, oxygen %d\n", inventory.count("water"), inventory.count("hydrogen"), inventory.count("oxygen"));
+        for (const std::string& h : stepHistory) printf("bench: progression:   history %s\n", h.c_str()); // the step's last 40 s (#372)
         Factory::SetSpeed(1);
         return -1;
     }

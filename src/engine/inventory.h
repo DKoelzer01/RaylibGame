@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 #include "voxel.h"
 
@@ -65,18 +66,39 @@ inline bool IsWildcardItem(const std::string& id) { return id.rfind("any_", 0) =
 struct InvSlot {
     std::string id;
     int64_t centi = 0;
+    float heat = 0.0f; // #580: 1 fresh out of a furnace, kiln or crucible, cooling to 0 (Inventory::cool); merges average it by amount
     bool empty() const { return centi <= 0 || id.empty(); }
     double amount() const { return centi / 100.0; }
 };
 
+// How an item glows (#580): heat (a hot ingot: dark red -> orange -> yellow-white as it gets hotter) or a constant glow
+// from resources/data/item_glow.txt (radioactive materials). strength 0 = no glow. Used by the held item; the inventory,
+// hotbar and machine-slot icons can draw it over the icon.
+struct ItemGlow { Color color = BLACK; float strength = 0.0f; };
+ItemGlow Item_GlowOf(const std::string& id, float heat);
+inline ItemGlow Item_Glow(const InvSlot& s) { return s.empty() ? ItemGlow{} : Item_GlowOf(s.id, s.heat); }
+
 class Inventory {
 public:
-    static constexpr int kCols = 9, kRows = 5, kSlots = kCols * kRows;
-    Inventory() : slots(kSlots) {}
+    // The 10 x 5 grid (as wide as the hotbar, #495), then the hotbar's 10 cells (#209: the hotbar holds real stacks;
+    // keys 1-0 = cells kGrid..kSlots-1).
+    static constexpr int kCols = 10, kRows = 5, kGrid = kCols * kRows, kHotbar = 10, kSlots = kGrid + kHotbar;
+    // Saves before #495 had a 9 x 5 grid: their hotbar and off-hand cells sit kGrid - kOldGrid lower.
+    static constexpr int kOldGrid = 45;
+    static int SavedCell(int i, int savedCols) { return savedCols != kCols && i >= kOldGrid ? i + kGrid - kOldGrid : i; }
+    // The off-hand cell (#165) after them: what the other hand holds (a shield: RMB blocks; a torch later). Nothing is
+    // filled into it or taken from it except by hand, and it is used last when paying for something.
+    static constexpr int kOffHand = kSlots, kCells = kSlots + 1;
+    int preferred = -1; // a cell used first when taking items out (the selected hotbar cell: the tool in hand wears)
+    Inventory() : slots(kCells) {}
+    const InvSlot& offHand() const { return slots[kOffHand]; }
     // Mining produces fractional amounts: hundredths go into the grid, smaller remainders carry over.
     void addFractional(const std::string& id, float amount);
     // Returns what did not fit (the grid is full); `overflowed` is set so the game can say so.
-    double addAmount(const std::string& id, double amount);
+    // heat (#580): how hot what comes in is (0 cold .. 1 straight out of a furnace); stacks it joins average it by amount.
+    double addAmount(const std::string& id, double amount, float heat = 0.0f);
+    void cool(float dt);           // hot stacks cool to nothing over kCoolSeconds (#580)
+    static constexpr float kCoolSeconds = 90.0f;
     void add(const std::string& id, int count) { if (count > 0) addAmount(id, count); }
     bool remove(const std::string& id, int count) { return removeAmount(id, count); }
     bool removeAmount(const std::string& id, double amount);
@@ -97,8 +119,12 @@ public:
     std::vector<InvSlot>& grid() { return slots; }
     const std::vector<InvSlot>& grid() const { return slots; }
     void swapSlots(int a, int b);  // move/swap two cells, merging same items up to the stack limit
-    void sort();                   // by kind, then name; merges partial stacks
+    void sort();                   // the main grid by kind, then name; merges partial stacks (the hotbar stays as it is)
     bool overflowed = false;       // set when something did not fit; the game clears it after warning
+    // Pickup feed (#208): called with what actually went in (not what overflowed); the game sets it on the player's
+    // inventory. muted > 0 (loading a save) skips it.
+    std::function<void(const std::string&, double)> onAdded;
+    int muted = 0;
 private:
     // Room for `id` across the grid in hundredths (existing stacks plus empty slots).
     int64_t room(const std::string& id) const;
@@ -106,6 +132,6 @@ private:
     std::unordered_map<std::string, float> partial;
 };
 
-extern Inventory inventory;
+extern Inventory& inventory;   // the local PlayerSession's (#313)
 
 #endif

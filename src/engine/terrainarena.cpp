@@ -1,4 +1,5 @@
 #include "terrainarena.h"
+#include "gpumem.h"
 #include "voxel.h"
 #include "frustum.h"
 #include "gpucompute.h"
@@ -8,6 +9,12 @@
 #include "external/glad.h"
 #include <rlgl.h>
 #include <raymath.h>
+#include <atomic>
+
+// Set once the arena is up: the mesh workers then pack the attributes themselves (TerrainArena_Pack), off the main thread (#302).
+static std::atomic<bool> gPackOnWorkers{ false };
+// #480: chunks by how many distinct materials they hold (1..16+), for sizing the palette.
+static std::atomic<long long> gPaletteUse[17];
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -19,17 +26,26 @@ extern "C" void* glfwGetProcAddress(const char* name); // raylib links GLFW
 
 namespace {
     constexpr int kRecordLocation = 9;     // per-draw attributes 9-13, after raylib's default attributes (0-8)
-    constexpr int kRecordTexels = 5;       // model rows 0-2, texturing origin, clip
+    constexpr int kRecordFloatTexels = 5;  // model rows 0-2, texturing origin, clip (float attributes 9-13)
+    constexpr int kRecordTexels = 6;       // + the material palette (#480: 16 ids, a uvec4 at location 15; 14 is occlusion)
+    constexpr int kPaletteLocation = 15;
+    constexpr int kPaletteSlots = 16;      // #480 (user 2026-11-15: 16, headroom for future biomes; seed 42 has at most 7 in a chunk)
+    constexpr int kCodeLocation = 7;       // the vertex's material code (lighting.vs arenaCode; raylib's bone ids slot, unused here)
 
     // Positions in their own stream (the shadow passes read only them); everything else interleaved.
-    struct Attr { float nrm[3], uv[2], uv2[2], tan[4]; unsigned char col[4]; };
-    static_assert(sizeof(Attr) == 48, "interleaved terrain attributes");
+    // The packed vertex (#302, #480: 28 B with the position, was 64): an octahedral normal (2 x snorm16); the material code
+    // (bits 0-11: the triangle's three palette slots, 12-13: which corner this is; the chunk's palette, in its table entry,
+    // names each slot's material: up to 16 of 256 per chunk); canopy, the climate (bit fields), ore kind and sky as unorm16;
+    // ambient occlusion (#132) as unorm16.
+    struct Attr { int16_t nrm[2]; uint16_t code, occ; uint16_t tan[4]; };
+    static_assert(sizeof(Attr) == 16, "packed terrain attributes");
+    // (The climate in tan[1] is bit fields: see TerrainArena_Upload.)
     constexpr size_t kPosBytes = 12;
 
     struct Command { GLuint count, instanceCount, firstIndex; GLint baseVertex; GLuint baseInstance; };
     static_assert(sizeof(Command) == 20, "indirect command");
-    struct TableEntry { float origin[3], size; float clip[4]; GLuint iCount, iFirst, vFirst, pad; }; // chunk_cull.comp Chunk
-    static_assert(sizeof(TableEntry) == 48, "chunk table entry");
+    struct TableEntry { float origin[3], size; float clip[4]; GLuint iCount, iFirst, vFirst, pad; GLuint palette[4]; }; // chunk_cull.comp Chunk
+    static_assert(sizeof(TableEntry) == 64, "chunk table entry");
 
     // First-fit range allocator over [0, cap), free ranges coalesced.
     struct Ranges {
@@ -64,7 +80,7 @@ namespace {
         GLuint vao = 0, vaoDepth = 0, pos = 0, attr = 0, ibo = 0;
         GLuint table = 0, list = 0, records = 0, indirect = 0;
         // #286 indirect count (4.6 / ARB_indirect_parameters): the visible commands compacted in order, and their count.
-        typedef void (__stdcall* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
+        typedef void (GLAD_API_PTR* PfnDrawCount)(GLenum, GLenum, const void*, GLintptr, GLsizei, GLsizei);
         PfnDrawCount drawCount = nullptr;
         GLuint compacted = 0, counts = 0;
         ComputeProgram compact;
@@ -78,7 +94,7 @@ namespace {
         int ringCap = 0, ringPos = 0;
         std::vector<GLuint> queued;
         ComputeProgram cull;
-        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap; } cl{}; // looked up once
+        struct CullLocs { GLint count, base, rot, scale, offset, texPeriod, useFrustum, planes, useColumn, colPoint, colDir, colRadius, overlap, hizOn, hizTex, hizSize, hizLevels, prevViewProj, prevRot, prevScale, prevOffset, hizCam, hizNear; } cl{}; // looked up once
         struct DrawLocs { GLuint shader; GLint arena, viewProj, model; };
         std::vector<DrawLocs> drawLocs; // per draw shader (hot reload makes new ids)
         int draws = 0, flushes = 0;
@@ -87,11 +103,14 @@ namespace {
     void BindRecords() {
         // Per-draw records as instanced attributes: each command's baseInstance picks its record.
         glBindBuffer(GL_ARRAY_BUFFER, S.records);
-        for (int k = 0; k < kRecordTexels; ++k) {
+        for (int k = 0; k < kRecordFloatTexels; ++k) {
             glVertexAttribPointer(kRecordLocation + k, 4, GL_FLOAT, GL_FALSE, kRecordTexels * 16, (void*)(size_t)(k * 16));
             glEnableVertexAttribArray(kRecordLocation + k);
             glVertexAttribDivisor(kRecordLocation + k, 1);
         }
+        glVertexAttribIPointer(kPaletteLocation, 4, GL_UNSIGNED_INT, kRecordTexels * 16, (void*)(size_t)(kRecordFloatTexels * 16));
+        glEnableVertexAttribArray(kPaletteLocation);
+        glVertexAttribDivisor(kPaletteLocation, 1);
     }
 
     void BindAttributes() {
@@ -101,12 +120,11 @@ namespace {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, (GLsizei)kPosBytes, nullptr);
         glBindBuffer(GL_ARRAY_BUFFER, S.attr);
         const GLsizei st = sizeof(Attr);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, uv));
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, nrm));
-        glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, st, (void*)offsetof(Attr, col));
-        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, tan));
-        glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, st, (void*)offsetof(Attr, uv2));
-        for (int a = 0; a <= 5; ++a) glEnableVertexAttribArray(a);
+        glVertexAttribPointer(2, 2, GL_SHORT, GL_TRUE, st, (void*)offsetof(Attr, nrm));                 // octahedral (lighting.vs decodes)
+        glVertexAttribPointer(4, 4, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, tan));        // climate bit fields in y
+        glVertexAttribIPointer(kCodeLocation, 1, GL_UNSIGNED_SHORT, st, (void*)offsetof(Attr, code));  // #480: the triangle's slots + corner
+        glVertexAttribPointer(14, 1, GL_UNSIGNED_SHORT, GL_TRUE, st, (void*)offsetof(Attr, occ)); // #132 (after the records, 9-13)
+        for (int a : { 0, 2, 4, kCodeLocation, 14 }) glEnableVertexAttribArray(a);
         BindRecords();
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, S.ibo);
         // Depth VAO: positions and records only.
@@ -125,7 +143,13 @@ namespace {
         GLuint b = 0;
         glGenBuffers(1, &b);
         glBindBuffer(GL_COPY_WRITE_BUFFER, b);
+        GpuMemTag gm130_("terrain arena"); // VRAM accounting (#302)
+        while (glGetError() != GL_NO_ERROR) {} // (earlier errors are not this allocation's)
         glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, usage);
+        // Out of video memory (#902): said so, not a buffer with no storage that later draws and copies run into.
+        if (glGetError() == GL_OUT_OF_MEMORY)
+            LOG_FATAL("Arena", "out of video memory growing the terrain arena to %.0f MB (from %.0f MB; %.0f MB of GPU memory tracked in use)\n",
+                      newBytes / 1048576.0, oldBytes / 1048576.0, GpuMem_Total() / 1048576.0);
         if (old && oldBytes) {
             glBindBuffer(GL_COPY_READ_BUFFER, old);
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)oldBytes);
@@ -160,17 +184,18 @@ namespace {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_ARENA");
-        if (env && env[0] == '0') { logger.logf("[Arena] off (RAYLIBGAME_ARENA=0)\n"); return false; }
+        if (env && env[0] == '0') { LOG_INFO("Arena", "off (RAYLIBGAME_ARENA=0)\n"); return false; }
         if (rlGetVersion() != RL_OPENGL_43 || !glad_glMultiDrawElementsIndirect || !glad_glCopyBufferSubData || !Compute_Available()) {
-            logger.logf("[Arena] multi-draw indirect / compute unavailable: per-chunk draws\n");
+            LOG_WARN("Arena", "multi-draw indirect / compute unavailable: per-chunk draws\n");
             return false;
         }
-        if (!S.cull.load("resources/compute/chunk_cull.comp")) { logger.logf("[Arena] chunk_cull.comp failed: per-chunk draws\n"); return false; }
+        if (!S.cull.load("resources/compute/chunk_cull.comp")) { LOG_WARN("Arena", "chunk_cull.comp failed: per-chunk draws\n"); return false; }
         {
             const GLuint p = S.cull.id;
             auto L = [p](const char* n) { return glGetUniformLocation(p, n); };
             S.cl = { L("count"), L("base"), L("rot"), L("scale"), L("offset"), L("texPeriod"), L("useFrustum"), L("planes"),
-                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap") };
+                     L("useColumn"), L("colPoint"), L("colDir"), L("colRadius"), L("overlap"),
+                     L("hizOn"), L("hizTex"), L("hizSize"), L("hizLevels"), L("prevViewProj"), L("prevRot"), L("prevScale"), L("prevOffset"), L("hizCam"), L("hizNear") }; // (#134)
         }
         {   // #286: RAYLIBGAME_INDIRECT_COUNT=1 draws only the visible commands (compacted in order, indirect count draws).
             const char* ic = getenv("RAYLIBGAME_INDIRECT_COUNT");
@@ -180,7 +205,7 @@ namespace {
                 if (S.drawCount && !S.compact.load("resources/compute/chunk_compact.comp")) S.drawCount = nullptr;
                 if (S.drawCount) { S.cpCount = glGetUniformLocation(S.compact.id, "count"); S.cpBase = glGetUniformLocation(S.compact.id, "base"); }
             }
-            logger.logf("[Arena] draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
+            LOG_INFO("Arena", "draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
         }
         const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
@@ -194,7 +219,8 @@ namespace {
         glGenVertexArrays(1, &S.vaoDepth);
         EnsureRing(1); // creates the ring buffers and binds the VAOs
         S.ok = true;
-        logger.logf("[Arena] terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
+        gPackOnWorkers = true;
+        LOG_INFO("Arena", "terrain mesh arena: %d vertices, %d indices, GPU chunk culling\n", v0, i0);
         return true;
     }
 
@@ -204,14 +230,14 @@ namespace {
         S.attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
         S.verts.grow(newCap);
         BindAttributes();
-        logger.logf("[Arena] vertices grown to %d\n", newCap);
+        LOG_INFO("Arena", "vertices grown to %d\n", newCap);
     }
     void GrowIndices(int newCap) {
         const int oldCap = S.idx.cap;
         S.ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
         S.idx.grow(newCap);
         BindAttributes();
-        logger.logf("[Arena] indices grown to %d\n", newCap);
+        LOG_INFO("Arena", "indices grown to %d\n", newCap);
     }
     // Grows by half (not double: a doubled multi-hundred-MB buffer would be mostly empty) until n fits.
     int AllocVerts(int n) {
@@ -268,17 +294,18 @@ namespace {
         if (St.tried) return St.ok;
         St.tried = true;
         const char* e = getenv("RAYLIBGAME_UPLOAD_STAGING");
-        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { logger.logf("[Arena] uploads: glBufferSubData\n"); return false; }
+        if ((e && e[0] == '0') || !GL_Caps().bufferStorage) { LOG_INFO("Arena", "uploads: glBufferSubData\n"); return false; }
         St.cap = 16u << 20;
         glGenBuffers(1, &St.buf);
         glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
         const GLbitfield flags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+        GpuMemTag gm278_("upload ring"); // VRAM accounting (#302)
         glBufferStorage(GL_COPY_READ_BUFFER, (GLsizeiptr)St.cap, nullptr, flags);
         St.ptr = (unsigned char*)glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)St.cap, flags);
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
-        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; logger.logf("[Arena] uploads: glBufferSubData (staging map failed)\n"); return false; }
+        if (!St.ptr) { glDeleteBuffers(1, &St.buf); St.buf = 0; LOG_WARN("Arena", "uploads: glBufferSubData (staging map failed)\n"); return false; }
         St.ok = true;
-        logger.logf("[Arena] uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
+        LOG_INFO("Arena", "uploads: persistent mapped staging ring (%zu MB)\n", St.cap >> 20);
         return true;
     }
 
@@ -301,21 +328,112 @@ namespace {
     }
 }
 
+void TerrainArena_PaletteUse(long long out[17]) { for (int k = 0; k < 17; ++k) out[k] = gPaletteUse[k].load(); }
+bool TerrainArena_PackOnWorkers() { return gPackOnWorkers.load(std::memory_order_relaxed); }
+
+void TerrainArena_Pack(const ChunkMeshData& d, ArenaPacked& out) {
+    out = ArenaPacked{};
+    const int nv0 = (int)(d.positions.size() / 3), ni = (int)d.indices.size();
+    if (nv0 == 0) return;
+    // Each vertex's material: the mesher's id, or the strongest of the 8 legacy weights.
+    const bool ids = d.matIds.size() >= (size_t)nv0;
+    const bool uv = d.texcoords.size() >= (size_t)nv0 * 2, uv2 = d.texcoords2.size() >= (size_t)nv0 * 2, tan = d.tangents.size() >= (size_t)nv0 * 4;
+    const bool col = d.colors.size() >= (size_t)nv0 * 4;
+    auto materialOf = [&](int i) -> int {
+        if (ids) return d.matIds[i];
+        float w[8] = { col ? d.colors[i * 4] / 255.0f : 0.0f, col ? d.colors[i * 4 + 1] / 255.0f : 0.0f, col ? d.colors[i * 4 + 2] / 255.0f : 0.0f,
+                       col ? d.colors[i * 4 + 3] / 255.0f : 0.0f, uv ? d.texcoords[i * 2] : 0.0f, uv ? d.texcoords[i * 2 + 1] : 0.0f,
+                       uv2 ? d.texcoords2[i * 2] : 0.0f, uv2 ? d.texcoords2[i * 2 + 1] : 0.0f };
+        int best = 0;
+        for (int k = 1; k < 8; ++k) if (w[k] > w[best]) best = k;
+        return best;
+    };
+    // Material -> palette slot, in order of first use (#480: 16 of 256 per chunk; past 16, the first slot).
+    int slotOf[256];
+    std::fill(std::begin(slotOf), std::end(slotOf), -1);
+    int used = 0, distinct = 0;
+    std::vector<unsigned char> slot((size_t)nv0);
+    for (int i = 0; i < nv0; ++i) {
+        const int id = materialOf(i);
+        if (slotOf[id] < 0) {
+            ++distinct;
+            if (used < kPaletteSlots) { slotOf[id] = used; out.palette[used++] = (unsigned char)id; }
+        }
+        slot[i] = (unsigned char)std::max(slotOf[id], 0);
+    }
+    gPaletteUse[std::min(distinct, 16)]++;
+    // A triangle whose corners are of different materials gets its own three vertices, each with the triangle's
+    // three slots and which corner it is: lighting.vs turns the corner into barycentrics and lighting.fs blends the
+    // three materials (3 interpolants instead of a weight per slot: 16 cost +32% near pass). The rest share vertices.
+    int mixed = 0;
+    for (int t = 0; t + 2 < ni; t += 3) {
+        const int a = d.indices[t], b = d.indices[t + 1], c = d.indices[t + 2];
+        if (slot[a] != slot[b] || slot[a] != slot[c]) ++mixed;
+    }
+    const bool split = mixed > 0 && nv0 + 3 * mixed <= 65535; // 16-bit indices: past that, borders go hard-edged
+    const int nv = split ? nv0 + 3 * mixed : nv0;
+    out.attr.assign((size_t)nv * sizeof(Attr), 0);
+    Attr* v = reinterpret_cast<Attr*>(out.attr.data());
+    // Inline rounding (+0.5 and truncate): lroundf is a library call on mingw, and this loop packs every terrain vertex.
+    auto un16 = [](float x) { return (uint16_t)(int)(std::clamp(x, 0.0f, 1.0f) * 65535.0f + 0.5f); };
+    auto sn16 = [](float x) { const float s = std::clamp(x, -1.0f, 1.0f) * 32767.0f; return (int16_t)(int)(s + (s >= 0.0f ? 0.5f : -0.5f)); };
+    auto fill = [&](Attr& o, int i) {
+        // Octahedral normal: project onto the octahedron, fold the lower half over.
+        float nx = d.normals[i * 3], ny = d.normals[i * 3 + 1], nz = d.normals[i * 3 + 2];
+        const float l1 = fabsf(nx) + fabsf(ny) + fabsf(nz);
+        if (l1 > 1e-12f) { nx /= l1; ny /= l1; nz /= l1; } else { nx = 0.0f; ny = 1.0f; nz = 0.0f; }
+        float ox = nx, oy = nz; // the encoding's plane is x/z, folded over y (the octant of -y)
+        if (ny < 0.0f) { ox = (1.0f - fabsf(nz)) * (nx >= 0.0f ? 1.0f : -1.0f); oy = (1.0f - fabsf(nx)) * (nz >= 0.0f ? 1.0f : -1.0f); }
+        o.nrm[0] = sn16(ox); o.nrm[1] = sn16(oy);
+        const int s = slot[i];
+        o.code = (uint16_t)(s | s << 4 | s << 8); // a shared vertex: its own slot at every corner
+        if (tan) {
+            // The climate (2 + temperature step 0-62 + moisture < 1; under 1.5: none) as bit fields, so it comes back exact:
+            // (step + 1) * 1024 + moisture * 1023, 0 = none (lighting.vs rebuilds 2 + step + moisture).
+            const float c = d.tangents[i * 4 + 1];
+            uint16_t packed = 0;
+            if (c >= 1.5f) {
+                const int step = std::clamp((int)floorf(c) - 2, 0, 62);
+                packed = (uint16_t)((step + 1) * 1024 + std::clamp((int)((c - floorf(c)) * 1023.0f + 0.5f), 0, 1023));
+            }
+            o.tan[0] = un16(d.tangents[i * 4]); o.tan[1] = packed;
+            o.tan[2] = un16(d.tangents[i * 4 + 2]); o.tan[3] = un16(d.tangents[i * 4 + 3]);
+        } else { o.tan[0] = o.tan[1] = o.tan[2] = 0; o.tan[3] = 65535; }
+        o.occ = d.occlusion.size() >= (size_t)nv0 ? un16(d.occlusion[i]) : 0;
+    };
+    for (int i = 0; i < nv0; ++i) fill(v[i], i);
+    if (split) {
+        out.positions.resize((size_t)nv * 3);
+        memcpy(out.positions.data(), d.positions.data(), (size_t)nv0 * 3 * sizeof(float));
+        out.indices = d.indices;
+        int next = nv0;
+        for (int t = 0; t + 2 < ni; t += 3) {
+            const int c[3] = { d.indices[t], d.indices[t + 1], d.indices[t + 2] };
+            if (slot[c[0]] == slot[c[1]] && slot[c[0]] == slot[c[2]]) continue;
+            const uint16_t tri = (uint16_t)(slot[c[0]] | slot[c[1]] << 4 | slot[c[2]] << 8);
+            for (int k = 0; k < 3; ++k) {
+                fill(v[next], c[k]);
+                v[next].code = (uint16_t)(tri | k << 12);
+                memcpy(&out.positions[(size_t)next * 3], &d.positions[(size_t)c[k] * 3], 3 * sizeof(float));
+                out.indices[t + k] = (unsigned short)next;
+                ++next;
+            }
+        }
+    }
+    out.valid = true;
+}
+
 ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     ArenaAlloc a;
     if (!Init() || d.positions.empty() || d.indices.empty()) return a;
-    const int nv = (int)(d.positions.size() / 3), ni = (int)d.indices.size();
-    std::vector<Attr> v(nv);
-    const bool uv = d.texcoords.size() >= (size_t)nv * 2, uv2 = d.texcoords2.size() >= (size_t)nv * 2, tan = d.tangents.size() >= (size_t)nv * 4;
-    const bool col = d.colors.size() >= (size_t)nv * 4;
-    for (int i = 0; i < nv; ++i) {
-        Attr& o = v[i];
-        memcpy(o.nrm, &d.normals[i * 3], 12);
-        if (uv) memcpy(o.uv, &d.texcoords[i * 2], 8); else o.uv[0] = o.uv[1] = 0.0f;
-        if (uv2) memcpy(o.uv2, &d.texcoords2[i * 2], 8); else o.uv2[0] = o.uv2[1] = 0.0f;
-        if (tan) memcpy(o.tan, &d.tangents[i * 4], 16); else { o.tan[0] = o.tan[1] = o.tan[2] = 0.0f; o.tan[3] = 1.0f; }
-        if (col) memcpy(o.col, &d.colors[i * 4], 4); else memset(o.col, 255, 4);
-    }
+    // Packed on the worker (#302) unless it was built before the arena came up.
+    ArenaPacked local;
+    const ArenaPacked* pk = &d.arena;
+    if (!d.arena.valid) { TerrainArena_Pack(d, local); pk = &local; }
+    const float* posData = pk->positions.empty() ? d.positions.data() : pk->positions.data();
+    const unsigned short* idxData = pk->indices.empty() ? d.indices.data() : pk->indices.data();
+    const int nv = (int)(pk->attr.size() / sizeof(Attr)), ni = (int)d.indices.size();
+    const unsigned char* v = pk->attr.data();
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;
     a.iFirst = AllocIndices(ni);
@@ -326,9 +444,9 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     if (at != SIZE_MAX) {
         // Into the staging ring, then copied into the arena on the GPU (#286).
         const size_t oPos = at, oAttr = (oPos + posBytes + 15) & ~(size_t)15, oIdx = (oAttr + attrBytes + 15) & ~(size_t)15;
-        memcpy(St.ptr + oPos, d.positions.data(), posBytes);
-        memcpy(St.ptr + oAttr, v.data(), attrBytes);
-        memcpy(St.ptr + oIdx, d.indices.data(), idxBytes);
+        memcpy(St.ptr + oPos, posData, posBytes);
+        memcpy(St.ptr + oAttr, v, attrBytes);
+        memcpy(St.ptr + oIdx, idxData, idxBytes);
         glBindBuffer(GL_COPY_READ_BUFFER, St.buf);
         glBindBuffer(GL_COPY_WRITE_BUFFER, S.pos);
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)oPos, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes);
@@ -342,13 +460,13 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         ++St.staged;
     } else {
         glBindBuffer(GL_ARRAY_BUFFER, S.pos);
-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes, d.positions.data());
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * kPosBytes, (GLsizeiptr)posBytes, posData);
         glBindBuffer(GL_ARRAY_BUFFER, S.attr);
-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v.data());
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)a.vFirst * sizeof(Attr), (GLsizeiptr)attrBytes, v);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         // The element buffer binding is VAO state: upload through COPY_WRITE so no VAO is disturbed.
         glBindBuffer(GL_COPY_WRITE_BUFFER, S.ibo);
-        glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes, d.indices.data());
+        glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)a.iFirst * sizeof(uint16_t), (GLsizeiptr)idxBytes, idxData);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
         ++St.direct;
     }
@@ -357,8 +475,9 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     e.origin[0] = o.x; e.origin[1] = o.y; e.origin[2] = o.z; e.size = d.key.size();
     e.clip[0] = e.clip[1] = e.clip[2] = 1e30f;
     e.iCount = (GLuint)ni; e.iFirst = (GLuint)a.iFirst; e.vFirst = (GLuint)a.vFirst;
+    memcpy(e.palette, pk->palette, kPaletteSlots); // #480: the chunk's materials (chunk_cull.comp copies them into its records)
     WriteTable(a.slot, &e, sizeof(e));
-    a.clip = { 1e30f, 1e30f, 1e30f };
+    a.clip = { 1e30f, 1e30f, 1e30f }; a.fade = 0.0f;
     return a;
 }
 
@@ -371,12 +490,12 @@ void TerrainArena_Free(ArenaAlloc& a) {
     a = ArenaAlloc{};
 }
 
-void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip) {
+void TerrainArena_Queue(ArenaAlloc& a, Vector3 clip, float fade) {
     if (!a.valid()) return;
-    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z) {
-        const float c[4] = { clip.x, clip.y, clip.z, 0.0f };
+    if (clip.x != a.clip.x || clip.y != a.clip.y || clip.z != a.clip.z || fade != a.fade) {
+        const float c[4] = { clip.x, clip.y, clip.z, fade };
         WriteTable(a.slot, c, sizeof(c), offsetof(TableEntry, clip));
-        a.clip = clip;
+        a.clip = clip; a.fade = fade;
     }
     S.queued.push_back((GLuint)a.slot);
 }
@@ -394,7 +513,6 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glBufferSubData(GL_COPY_WRITE_BUFFER, (GLintptr)(base * sizeof(GLuint)), (GLsizeiptr)(n * sizeof(GLuint)), S.queued.data());
     glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
     S.cull.use();
-    const GLuint prog = S.cull.id;
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, S.table);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, S.list); // whole buffer: a range bind needs GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT-aligned offsets (it failed, and the pass culled a stale list)
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, S.indirect);
@@ -414,7 +532,25 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
     glUniform3f(S.cl.colDir, cull.colDir.x, cull.colDir.y, cull.colDir.z);
     glUniform1f(S.cl.colRadius, cull.colRadius);
     glUniform1f(S.cl.overlap, (CHUNK_SIZE + 1.0f) / CHUNK_SIZE);
+    const bool hiz = cull.hizTex != 0 && useFrustum; // #134
+    glUniform1i(S.cl.hizOn, hiz ? 1 : 0);
+    if (hiz) {
+        constexpr int kHizUnit = 7;
+        glActiveTexture(GL_TEXTURE0 + kHizUnit);
+        glBindTexture(GL_TEXTURE_2D, cull.hizTex);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(S.cl.hizTex, kHizUnit);
+        glUniform2f(S.cl.hizSize, (float)cull.hizW, (float)cull.hizH);
+        glUniform1i(S.cl.hizLevels, cull.hizLevels);
+        glUniformMatrix4fv(S.cl.prevViewProj, 1, GL_FALSE, MatrixToFloat(cull.hizViewProj));
+        glUniformMatrix3dv(S.cl.prevRot, 1, GL_TRUE, cull.hizBody.rot);
+        glUniform1d(S.cl.prevScale, cull.hizBody.scale);
+        glUniform3d(S.cl.prevOffset, cull.hizBody.offset[0], cull.hizBody.offset[1], cull.hizBody.offset[2]);
+        glUniform3f(S.cl.hizCam, cull.hizCam.x, cull.hizCam.y, cull.hizCam.z); // (#910)
+        glUniform1f(S.cl.hizNear, cull.hizNear);
+    }
     glDispatchCompute((GLuint)((n + 63) / 64), 1, 1);
+    if (hiz) { glActiveTexture(GL_TEXTURE0 + 7); glBindTexture(GL_TEXTURE_2D, 0); glActiveTexture(GL_TEXTURE0); }
     if (S.drawCount) {
         // #286: the visible commands compacted in order, and their count (chunk_compact.comp).
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);

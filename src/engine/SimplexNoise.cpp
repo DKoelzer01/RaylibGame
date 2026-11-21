@@ -571,3 +571,47 @@ float SimplexNoise::fractal(size_t octaves, float x, float y, float z) const {
     }
     return (output / denom);
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#869): the SSE2 four-sample noise is bit-identical to the scalar one (--profile-density's check) ----
+#include "unit_helpers.h"
+#include <cstring>
+#include <random>
+
+TEST(SimplexNoise, Noise4IsBitIdenticalToNoise) {
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> big(-5000.0f, 5000.0f), small(-2.0f, 2.0f);
+    int differ = 0;
+    for (int k = 0; k < 250000; ++k) {
+        float xs[4], ys[4], zs[4], o[4];
+        auto& d = (k & 1) ? big : small; // far coordinates, and the lattice near the origin
+        for (int l = 0; l < 4; ++l) { xs[l] = d(rng); ys[l] = d(rng); zs[l] = d(rng); }
+        SimplexNoise::noise4(xs, ys, zs, o);
+        for (int l = 0; l < 4; ++l) {
+            const float s = SimplexNoise::noise(xs[l], ys[l], zs[l]);
+            if (memcmp(&s, &o[l], sizeof s) != 0 && ++differ <= 5)
+                ADD_FAILURE() << "noise4 " << o[l] << " != noise " << s << " at " << xs[l] << ", " << ys[l] << ", " << zs[l];
+        }
+    }
+    EXPECT_EQ(differ, 0) << "of 1M samples";
+}
+
+TEST(SimplexNoise, StaysInRange) {
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<float> d(-100.0f, 100.0f);
+    for (int k = 0; k < 100000; ++k) {
+        const float n = SimplexNoise::noise(d(rng), d(rng), d(rng));
+        ASSERT_GE(n, -1.0f); ASSERT_LE(n, 1.0f);
+    }
+}
+
+TEST(SimplexNoise, FractalLimitedWithoutFootprintIsFractal) {
+    const SimplexNoise n(0.01f, 1.0f, 2.0f, 0.5f, 3.0f, 5.0f, 7.0f);
+    std::mt19937 rng(9);
+    std::uniform_real_distribution<float> d(-3000.0f, 3000.0f);
+    for (int k = 0; k < 2000; ++k) {
+        const float x = d(rng), y = d(rng), z = d(rng);
+        EXPECT_EQ(n.fractalLimited(6, 0.0f, x, y, z), n.fractal(6, x, y, z));
+    }
+}
+#endif

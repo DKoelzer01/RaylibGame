@@ -1,0 +1,16 @@
+# Menu and loading-screen slides (#386): "file | caption". Every PNG/JPG in this folder is shown; a caption is optional.
+# First set: shots from the test scenes (--shot-biomes, --sun-elev, --day, all with --no-hud), made into slides with
+# game.exe --to-slide <shot.png> <slide.jpg>. To be replaced by curated shots (a base, other planets and moons).
+start.jpg           | Terra: the start
+sunset.jpg          | Terra: sunset over the start
+biome_forest.jpg    | Terra: temperate forest
+biome_meadow.jpg    | Terra: meadow
+biome_savanna.jpg   | Terra: savanna
+biome_desert.jpg    | Terra: desert dunes
+biome_badlands.jpg  | Terra: badlands
+biome_jungle.jpg    | Terra: jungle
+biome_swamp.jpg     | Terra: swamp
+biome_taiga.jpg     | Terra: taiga
+biome_tundra.jpg    | Terra: tundra
+biome_alpine.jpg    | Terra: alpine
+biome_island.jpg    | Terra: a floating island

@@ -1,0 +1,127 @@
+# Skills (#167, #883): use-based XP, a perk point per level, trees in three tiers. Never gates tech; no level cap.
+# The user's answers (2026-11-18): about +10% per rank, capped by ranks; perks and suit modules stack; death costs some XP
+# toward the next level (never a level); respec with a craftable item; an XP-rate world setting.
+#
+#   skill <id> "<name>"                          a skill (the tab lists them in this order)
+#   xp <skill> <event> <xp>                      XP per event (the events the game counts: see skills.h)
+#   perk <id> <skill> <tier 1-3> <cost> <ranks> "<name>" "<what one rank does>"
+#   needs <perk> <perk it needs>                 a prerequisite (its first rank)
+#   effect <perk> <stat> <per rank>              a stat multiplier: 1 + ranks x per rank (stats: skills.h)
+#   ability <perk> <ability id>                  an action with its own key (slice 3)
+# Tiers open at skill level 5, 15 and 30.
+
+skill mining "Mining"
+skill digging "Digging"
+skill woodcutting "Woodcutting"
+skill foraging "Foraging"
+skill farming "Farming"
+skill building "Building"
+skill athletics "Athletics"
+skill survival "Survival"
+
+# ---- XP per event (slice 1: the events counted today) ----
+xp mining rock_stroke 1
+xp mining ore_stroke 3
+xp mining gem 25
+xp digging soil_stroke 1
+xp woodcutting chop 2
+xp woodcutting tree_felled 10
+xp foraging bush 3
+xp foraging loose_stone 2
+xp farming till 2
+xp farming plant 2
+xp farming harvest 4
+xp building part_kept 3
+xp athletics walk_10m 1
+xp athletics soft_landing 5
+xp survival night 40
+xp survival eat 2
+
+# ---- Mining's tree (slice 1) ----
+perk quick_pick mining 1 1 3 "Quick Pick" "Rock strokes 10% faster"
+effect quick_pick rock_speed 0.10
+perk ore_sense mining 1 1 3 "Ore Sense" "10% more ore per stroke"
+effect ore_sense ore_yield 0.10
+perk light_hands mining 1 1 2 "Light Hands" "Picks wear 10% slower"
+effect light_hands pick_wear -0.10
+perk gem_eye mining 2 2 2 "Gem Eye" "Gems turn up 25% more often"
+needs gem_eye ore_sense
+effect gem_eye gem_chance 0.25
+perk vein_follower mining 2 2 2 "Vein Follower" "Ore strokes 15% faster"
+needs vein_follower quick_pick
+effect vein_follower ore_speed 0.15
+perk stone_skin mining 2 1 2 "Stone Mason" "10% more stone of the rock's own kind"
+effect stone_skin stone_yield 0.10
+perk deep_core mining 3 3 1 "Deep Core" "Rock strokes reach 15% farther"
+needs deep_core vein_follower
+effect deep_core rock_radius 0.15
+perk ground_slam mining 3 3 1 "Ground Slam" "An ability: one wide stroke (slice 3)"
+needs ground_slam deep_core
+ability ground_slam ground_slam
+
+# ---- The other trees (#919, slice 2a): each stat is read where it acts (skills.h lists them) ----
+# Digging: soil strokes (a shovel or hands on dirt, sand, clay, gravel), the carve's size there, shovel and hoe wear.
+perk quick_spade digging 1 1 3 "Quick Spade" "Soil strokes 10% faster"
+effect quick_spade soil_speed 0.10
+perk steady_haft digging 1 1 2 "Steady Haft" "Shovels and hoes wear 10% slower"
+effect steady_haft shovel_wear -0.10
+perk wide_scoop digging 2 2 2 "Wide Scoop" "Soil strokes carve 10% wider"
+needs wide_scoop quick_spade
+effect wide_scoop soil_radius 0.10
+perk earth_mover digging 3 3 1 "Earth Mover" "Soil strokes 15% faster again"
+needs earth_mover wide_scoop
+effect earth_mover soil_speed 0.15
+# Woodcutting: chops at trunks and bushes, logs per felled tree, axe wear.
+perk sharp_edge woodcutting 1 1 3 "Sharp Edge" "Chops 10% faster"
+effect sharp_edge chop_speed 0.10
+perk lumberjack woodcutting 1 1 3 "Lumberjack" "10% more logs from a felled tree"
+effect lumberjack log_yield 0.10
+perk oiled_haft woodcutting 1 1 2 "Oiled Haft" "Axes wear 10% slower"
+effect oiled_haft axe_wear -0.10
+perk timber woodcutting 2 2 1 "Timber" "25% more logs again"
+needs timber lumberjack
+effect timber log_yield 0.25
+perk feller woodcutting 3 3 1 "Feller" "Chops 20% faster again"
+needs feller sharp_edge
+effect feller chop_speed 0.20
+# Foraging: fibre from bushes, stones picked off the ground.
+perk nimble_fingers foraging 1 1 3 "Nimble Fingers" "15% more fibre from a bush"
+effect nimble_fingers fibre_yield 0.15
+perk keen_eye foraging 1 1 2 "Keen Eye" "25% more stone from loose stones"
+effect keen_eye stone_find 0.25
+perk gatherer foraging 2 2 1 "Gatherer" "25% more fibre again"
+needs gatherer nimble_fingers
+effect gatherer fibre_yield 0.25
+# Farming: crops and seeds at harvest.
+perk green_thumb farming 1 1 3 "Green Thumb" "10% more crop at harvest"
+effect green_thumb crop_yield 0.10
+perk seed_saver farming 1 1 2 "Seed Saver" "25% more seeds at harvest"
+effect seed_saver seed_yield 0.25
+perk bumper_crop farming 2 2 1 "Bumper Crop" "25% more crop again"
+needs bumper_crop green_thumb
+effect bumper_crop crop_yield 0.25
+# Building: taking parts down (the LMB hold).
+perk quick_hands building 1 1 3 "Quick Hands" "Parts come down 15% faster"
+effect quick_hands break_speed 0.15
+perk demolisher building 2 2 1 "Demolisher" "Parts come down 25% faster again"
+needs demolisher quick_hands
+effect demolisher break_speed 0.25
+# Athletics: walking speed (stacks with servo legs), the speed a landing is safe at.
+perk long_stride athletics 1 1 3 "Long Stride" "Walk 5% faster"
+effect long_stride walk_speed 0.05
+perk light_landing athletics 1 1 2 "Light Landing" "Landings are safe 10% faster"
+effect light_landing fall_safe 0.10
+perk marathon athletics 2 2 1 "Marathon" "Walk 10% faster again"
+needs marathon long_stride
+effect marathon walk_speed 0.10
+perk cats_feet athletics 3 3 1 "Cat's Feet" "Landings are safe 20% faster again"
+needs cats_feet light_landing
+effect cats_feet fall_safe 0.20
+# Survival: hunger, the cold (both stack with the suit's).
+perk iron_stomach survival 1 1 3 "Iron Stomach" "Hunger 10% slower"
+effect iron_stomach hunger -0.10
+perk thick_skin survival 1 1 2 "Thick Skin" "The cold bites 15% less"
+effect thick_skin cold -0.15
+perk hardy survival 2 2 1 "Hardy" "Hunger 15% slower again"
+needs hardy iron_stomach
+effect hardy hunger -0.15

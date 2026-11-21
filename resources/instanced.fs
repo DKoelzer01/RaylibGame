@@ -42,7 +42,7 @@ void main()
         float sun = ndl > 0.0 ? sunVis * ndl * sunShadowNormal(fragPosition, n, sunDir, 1) * fragSky : 0.0;
         vec3 v = normalize(viewPos - fragPosition);
         float spec = pow(max(dot(n, normalize(sunDir + v)), 0.0), 32.0) * 0.1 * sun;
-        color = albedo * ((hemiOn() ? hemiAmbient(ambient, n) * 1.4 : ambient * (1.4 + 0.3 * n.y)) * fragSky + vec3(1.0, 0.96, 0.88) * sun + lampLight(fragPosition, n)) + vec3(spec);
+        color = albedo * ((hemiOn() ? hemiAmbient(ambient, n) * 1.4 : ambient * (1.4 + 0.3 * n.y)) * fragSky + vec3(1.0, 0.96, 0.88) * sunTint() * sun + lampLight(fragPosition, n)) + vec3(spec);
     }
     float dist = length(viewPos - fragPosition), fogDist = dist;
     if (fogShell.w > 0.0) {
@@ -53,5 +53,5 @@ void main()
         fogDist = max(0.0, min(t1, fogDist) - max(t0, 0.0));
     }
     color = mix(color, fogColor, clamp(1.0 - exp(-fogDensity * fogDist), 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), fragColor.a);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), fragColor.a);
 }

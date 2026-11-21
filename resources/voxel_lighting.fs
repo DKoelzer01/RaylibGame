@@ -72,5 +72,5 @@ void main()
     finalColor += fragColor*(ambient/10.0)*colDiffuse;
 
     // Gamma correction
-    finalColor = pow(finalColor, vec4(1.0/2.2));
+    finalColor = pow(max(finalColor, vec4(0.0)), vec4(1.0/2.2));
 }

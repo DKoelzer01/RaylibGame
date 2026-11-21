@@ -1,8 +1,13 @@
 #include "recipebook.h"
+#include "playerinput.h"
+#include "playersession.h"
+#include "simclock.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "survival.h"
 #include "terraintool.h"
+#include "audio.h"
+#include <algorithm>
 
 #include <raylib.h>
 #include <cctype>
@@ -14,9 +19,7 @@ namespace {
     struct Unlock { std::string kind, target; double n = 1.0; };
     std::map<std::string, Unlock> unlocks; // output -> its extra condition
     bool loaded = false;
-    std::set<std::string> known;           // outputs known at the last check
-    bool primed = false;                   // the first check after a reset is silent
-    double lastCheck = -10.0;
+    RecipeBookState& R() { return LocalSession().recipes; } // the local player's (#313)
 
     void Load() {
         if (loaded) return;
@@ -58,25 +61,49 @@ bool RecipeBook_Matches(const Recipe& r, const std::string& q) {
     return false;
 }
 
-void RecipeBook_Reset() { known.clear(); primed = false; lastCheck = -10.0; }
+void RecipeBook_Reset() { R().known.clear(); R().primed = false; R().lastCheck = -10.0; }
 
 int RecipeBook_KnownCount() { int n = 0; for (const Recipe& r : itemDB.recipes()) n += RecipeBook_Known(r) ? 1 : 0; return n; }
 
 void RecipeBook_Update() {
-    if (GetTime() - lastCheck < 1.0 || terrainTool.creative) return;
-    lastCheck = GetTime();
+    if (SimTime() - R().lastCheck < 1.0 || terrainTool.creative) return;
+    R().lastCheck = SimTime();
     std::set<std::string> now;
     for (const Recipe& r : itemDB.recipes()) if (RecipeBook_Known(r)) now.insert(r.output);
-    if (primed) {
+    if (R().primed) {
         std::string list;
         int fresh = 0;
         for (const std::string& o : now)
-            if (!known.count(o)) {
+            if (!R().known.count(o)) {
                 if (fresh < 3) { const ItemDef* d = itemDB.find(o); list += (list.empty() ? "" : ", ") + (d ? d->name : o); }
                 ++fresh;
             }
-        if (fresh > 0) GameUI_Toast(TextFormat("New recipe%s: %s%s (Tab)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : ""));
+        if (fresh > 0) { const std::string key = PlayerInput_KeyName(PlayerInput_Binding(Act::Crafting)); GameUI_Toast(TextFormat("New recipe%s: %s%s (%s: crafting)", fresh > 1 ? "s" : "", list.c_str(), fresh > 3 ? TextFormat(" and %d more", fresh - 3) : "", key.c_str())); } // (#827: the key as bound)
     }
-    known.swap(now);
-    primed = true;
+    R().known.swap(now);
+    R().primed = true;
+}
+
+bool RecipeBook_Unlocked(const Recipe& r) {
+    Load();
+    auto it = unlocks.find(r.output);
+    return it == unlocks.end() || QuestBook_Met(it->second.kind, it->second.target, it->second.n);
+}
+
+bool Crafting_Request(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    const Recipe& r = recipes[index];
+    if (gCraftRequest) { gCraftRequest(index, r.output, std::min(count, 64), true, false); return true; } // (#854: from nearby chests too, as the screen counts them) // the server crafts and says so
+    int made = 0;
+    while (made < count && inventory.canCraft(r) && inventory.craft(r)) ++made;
+    if (made > 0) Audio_Play(Sfx::Craft);
+    return made > 0;
+}
+
+bool Crafting_RequestRecursive(int index, int count) {
+    const auto& recipes = itemDB.recipes();
+    if (!gCraftRequest || index < 0 || index >= (int)recipes.size() || count < 1) return false;
+    gCraftRequest(index, recipes[index].output, std::min(count, 64), false, true); // (#946) one request: the server plans it whole
+    return true;
 }

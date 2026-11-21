@@ -64,9 +64,11 @@ public:
     double innerRadius = 0, outerRadius = 0, thickness = 0;
     int largeCount = 0;
 
-    // Main thread, once a frame after the bodies moved: promote rocks near `focus` (world space) to
-    // voxel bodies, demote those left behind.
-    void update(Scene& world, DVec3 focus);
+    // Main thread, once a frame after the bodies moved: promote rocks near any of `foci` (world space: the camera and
+    // every interest centre, #318) to voxel bodies, demote those left behind by all of them. Each focus may hold up to
+    // kMaxPromoted rocks of its own nearest.
+    void update(Scene& world, const std::vector<DVec3>& foci);
+    void update(Scene& world, DVec3 focus) { update(world, std::vector<DVec3>{ focus }); }
     // Draw the instances (mid and near passes) and the band (far pass).
     void drawRocks(Scene& world, const RenderContext& ctx, bool rebuild); // rebuild: first pass of the frame
     void drawBand(Scene& world, const RenderContext& ctx);

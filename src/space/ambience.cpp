@@ -11,6 +11,8 @@
 #include "worldtypes.h"
 #include "fluid.h"
 #include "trees.h"
+#include "menus.h"
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <raymath.h>
@@ -210,6 +212,23 @@ void Ambience_Update(Scene& world, float dt) {
         if (Vector3Distance(plot->toBody({ 0, 0, 0 }), local) > 160.0f) continue;
         for (size_t i = 0; i < plot->parts.size(); ++i) {
             const Part& part = plot->parts[i];
+            if (part.type == PartType::Torch) { // a placed torch's flame (#558: particles, it was two glowing boxes)
+                Vector3 at;
+                if (Machine_SmokePoints(*plot, i, &at, 1) == 0 || Vector3Distance(at, local) > 60.0f) continue;
+                ParticleBurst fire;
+                fire.kind = ParticleKind::Fire; fire.color = { 255, 140, 40, 255 };
+                fire.count = std::max(1, (int)(tick * 16.0f)); fire.size = 0.11f; fire.life = 0.45f; fire.speed = 0.45f; fire.spread = 0.12f;
+                fire.dir = plot->up;
+                Particles_Emit(*body, at, fire);
+                if (GetRandomValue(0, 5) == 0) {
+                    ParticleBurst wisp;
+                    wisp.kind = ParticleKind::Smoke; wisp.color = { 120, 118, 115, 255 };
+                    wisp.count = 1; wisp.size = 0.08f; wisp.life = 1.6f; wisp.speed = 0.5f; wisp.spread = 0.15f;
+                    wisp.dir = plot->up;
+                    Particles_Emit(*body, Vector3Add(at, Vector3Scale(plot->up, 0.2f)), wisp);
+                }
+                continue;
+            }
             if (!SmokyMachine(part.type)) continue;
             // From the chimney tops of the model (#220: the base assumed the footprint ran +x/+z from the origin cell,
             // so rotated machines smoked from the opposite corner, in the air).
@@ -240,4 +259,124 @@ void Ambience_Update(Scene& world, float dt) {
             }
         }
     }
+}
+
+// Local lights (#139) near the camera: lamp blocks (steady warm white), lit campfires (flickering orange) and working
+// fire machines (a dim glow at the door; the arc furnace blue-white). Each plot's light spots are cached per version.
+void Ambience_GatherLights(Scene& world) {
+    world.localLights.clear();
+    Planetoid* body = player.nearest;
+    if (!body || !body->plots) return;
+    const Vector3 cam = body->toLocal(world.camera.position);
+    static int lampMat = -2;
+    if (lampMat == -2) lampMat = BuildMaterialForItem("lamp");
+    struct Spot { int part; Vector3 centre; uint8_t kind; }; // kind: 0 lamp, 1 campfire, 2 fire machine, 3 arc furnace, 4 placed torch
+    struct Cached { uint32_t version = 0xFFFFFFFFu; std::vector<Spot> spots; };
+    static std::unordered_map<uint64_t, Cached> cache;
+    static std::vector<std::pair<Int3, CellShape>> fp;
+    const float t = (float)fmod(GameClock(), 3600.0); // flicker stops behind the pause menu (#511)
+    for (auto& plot : body->plots->plots) {
+        if (Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 300.0f) continue;
+        Cached& c = cache[(body->id * 1315423911ull) ^ plot->id];
+        if (c.version != plot->version) {
+            c.version = plot->version;
+            c.spots.clear();
+            for (size_t i = 0; i < plot->parts.size(); ++i) {
+                const Part& p = plot->parts[i];
+                int kind = -1;
+                if (p.type == PartType::Campfire) kind = 1;
+                else if (p.type == PartType::Torch) kind = 4;
+                else if (p.type == PartType::ArcFurnace) kind = 3;
+                else if (p.type == PartType::Kiln || p.type == PartType::CokeOven || p.type == PartType::BlastFurnace || p.type == PartType::Furnace ||
+                         p.type == PartType::AlloySmelter) kind = 2;
+                else if (lampMat >= 0 && IsShape(p.type) && p.material == lampMat) kind = 0;
+                if (kind < 0) continue;
+                Plot::Footprint(p, fp);
+                if (fp.empty()) continue;
+                Vector3 sum{};
+                for (auto& cell : fp) sum = Vector3Add(sum, { (cell.first.x + 0.5f) * kCellSize, (cell.first.y + 0.5f) * kCellSize, (cell.first.z + 0.5f) * kCellSize });
+                c.spots.push_back({ (int)i, Vector3Scale(sum, 1.0f / fp.size()), (uint8_t)kind });
+            }
+        }
+        for (const Spot& s : c.spots) {
+            const Vector3 at = plot->toBody(s.centre);
+            if (Vector3Distance(at, cam) > 110.0f) continue;
+            LocalLight L;
+            L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, s.kind == 1 ? 0.3f : 0.0f)));
+            if (s.kind == 0) { L.range = 8.0f; L.color = { 1.0f, 0.92f, 0.76f }; L.intensity = 1.1f; }
+            else if (s.kind == 4) { // a placed torch (#218): always lit, flickering, from its flame (top of the post)
+                const float flicker = settings.fireFlicker ? 0.85f + 0.1f * sinf(t * 13.0f + s.part) + 0.05f * sinf(t * 31.0f + s.part) : 0.85f; // #558: steady when off
+                L.position = body->toWorld(Vector3Add(at, Vector3Scale(plot->up, 0.4f)));
+                L.range = 10.0f; L.color = { 1.0f, 0.62f, 0.3f }; L.intensity = 1.3f * flicker;
+            }
+            else {
+                if (!Factory::Working(body->id, plot->id, s.part)) continue;
+                const float flicker = settings.fireFlicker ? 0.82f + 0.12f * sinf(t * 11.0f + s.part) + 0.06f * sinf(t * 27.3f + 2.0f * s.part) : 0.82f;
+                if (s.kind == 1) { L.range = 11.0f; L.color = { 1.0f, 0.55f, 0.22f }; L.intensity = 1.7f * flicker; }
+                else if (s.kind == 2) { L.range = 5.0f; L.color = { 1.0f, 0.5f, 0.2f }; L.intensity = 0.9f * flicker; }
+                else { L.range = 6.0f; L.color = { 0.75f, 0.85f, 1.0f }; L.intensity = 1.2f * flicker; }
+            }
+            world.localLights.push_back(L);
+        }
+    }
+    // (#972, user 2026-11-19) Room bounce light: sunlit floor patches under a roof (the sun in through a door or a window)
+    // light the room a little. Every half second, the plots within 40 m: each building-block cell with air over it, a roof
+    // over that (a solid cell within 6 m straight up) and a clear line to the sun through the plot (12 m) is a sunlit
+    // indoor floor cell; they are binned into 2 m squares, each a faint, wide point light 0.4 m over the patch in the sun's
+    // colour times the floor's, strength by its sunlit area, the sun's height and the cloud cover. RAYLIBGAME_ROOM_BOUNCE=0:
+    // off. The lights are cached between updates (they follow the sun slowly).
+    static const bool bounceOn = !(getenv("RAYLIBGAME_ROOM_BOUNCE") && getenv("RAYLIBGAME_ROOM_BOUNCE")[0] == '0');
+    static std::vector<LocalLight> bounce; // positions BODY-LOCAL: the body spins between updates (render space drifted off)
+    static double nextBounce = 0.0;
+    if (bounceOn && GetTime() >= nextBounce) {
+        nextBounce = GetTime() + 0.5;
+        const double bt0 = GetTime(); int bounceCells = 0;
+        bounce.clear();
+        const Vector3 sunL = body->dirToLocal(Vector3Normalize(world.sunDirection));
+        const float cloud = std::clamp(world.weatherCloud, 0.0f, 1.0f);
+        for (auto& plot : body->plots->plots) {
+            if (plot->cells.empty() || Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > 40.0f + 0.5f * kCellSize * 64.0f) continue;
+            const Vector3 s = { Vector3DotProduct(sunL, plot->east), Vector3DotProduct(sunL, plot->up), Vector3DotProduct(sunL, plot->north) };
+            if (s.y < 0.05f) continue;                                      // the sun is down (for this plot)
+            const float sunK = std::min(1.0f, s.y * 3.0f) * (1.0f - 0.8f * cloud);
+            auto solid = [&](int x, int y, int z) {
+                auto it = plot->cells.find(Int3{ x, y, z });
+                return it != plot->cells.end() && PartBlocksSky(plot->parts[it->second.part]);
+            };
+            struct Bin { int n = 0; Vector3 sum{}, col{}; };
+            std::unordered_map<long long, Bin> bins;
+            for (const auto& [c, ref] : plot->cells) {
+                if (!PartBlocksSky(plot->parts[ref.part]) || solid(c.x, c.y + 1, c.z)) continue; // a floor: solid, air over it
+                const Vector3 top = { (c.x + 0.5f) * kCellSize, (c.y + 1.0f) * kCellSize, (c.z + 0.5f) * kCellSize };
+                if (Vector3Distance(plot->toBody(top), cam) > 40.0f) continue;
+                bool roofed = false;
+                for (int k = 2; k <= 12 && !roofed; ++k) roofed = solid(c.x, c.y + k, c.z);
+                if (!roofed) continue;                                       // outdoors: the sky's ambient covers it
+                bool lit = true;
+                for (float t = 0.6f; t <= 24.0f && lit; t += 0.5f) {         // cells: 12 m toward the sun
+                    const Vector3 q = { c.x + 0.5f + s.x * t, c.y + 1.05f + s.y * t, c.z + 0.5f + s.z * t };
+                    lit = !solid((int)floorf(q.x), (int)floorf(q.y), (int)floorf(q.z));
+                }
+                if (!lit) continue;
+                Bin& b = bins[((long long)(c.x >> 2) * 73856093LL) ^ ((long long)(c.y) * 19349663LL) ^ ((long long)(c.z >> 2) * 83492791LL)];
+                const Color mc = GetBuildMaterial(plot->parts[ref.part].material).color;
+                ++bounceCells; b.n++; b.sum = Vector3Add(b.sum, top); b.col = Vector3Add(b.col, { mc.r / 255.0f, mc.g / 255.0f, mc.b / 255.0f });
+            }
+            for (const auto& [k, b] : bins) {
+                if (bounce.size() >= 24) break;
+                LocalLight L;
+                const Vector3 at = Vector3Add(plot->toBody(Vector3Scale(b.sum, 1.0f / b.n)), Vector3Scale(plot->up, 0.4f));
+                L.position = at; // body-local (to render space each frame, below)
+                static const float brange = getenv("RAYLIBGAME_ROOM_BOUNCE_RANGE") ? (float)atof(getenv("RAYLIBGAME_ROOM_BOUNCE_RANGE")) : 4.0f; L.range = brange;
+                const Vector3 alb = Vector3Scale(b.col, 1.0f / b.n);
+                L.color = { 1.0f * alb.x, 0.96f * alb.y, 0.88f * alb.z };   // the sun's warm white off the floor
+                static const float gain = getenv("RAYLIBGAME_ROOM_BOUNCE_GAIN") ? (float)atof(getenv("RAYLIBGAME_ROOM_BOUNCE_GAIN")) : 1.0f; // tuning
+                L.intensity = 0.012f * std::min(b.n, 16) * sunK * gain;              // a full 2 m patch: ~0.19 at noon (small and faded: the user, #972)
+                bounce.push_back(L);
+            }
+        }
+        static const bool bounceLog = getenv("RAYLIBGAME_ROOM_BOUNCE_LOG") && getenv("RAYLIBGAME_ROOM_BOUNCE_LOG")[0] == '1';
+        if (bounceLog) printf("room bounce: %zu lights from %d sunlit indoor floor cells in %.3f ms (cloud %.2f)\n", bounce.size(), bounceCells, (GetTime() - bt0) * 1000.0, cloud);
+    }
+    if (bounceOn) for (LocalLight L : bounce) { L.position = body->toWorld(L.position); world.localLights.push_back(L); }
 }

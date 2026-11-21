@@ -1,4 +1,7 @@
+#include "fluid.h"
+#include "playerinput.h"
 #include "navigation.h"
+#include "claims.h"
 #include "survival.h"
 #include "animals.h"
 #include "farsphere.h"
@@ -28,7 +31,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 
 constexpr float kTileSize = 256.0f;
-constexpr float kRevealRadius = 150.0f;
+constexpr float kRevealRadius = 450.0f; // #278: 3x (was 150 m); stamped on a 100 m grid (tiles are 256 m)
 const Vector3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 const Vector3 kU[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 } };
 const Vector3 kV[6] = { { 0, 0, 1 }, { 0, 0, -1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
@@ -73,7 +76,10 @@ struct Here {
 };
 Here Locate(Scene& world) {
     Here h;
-    Planetoid* p = player.nearest;
+    // (#937) Flying, player.nearest is never set: the body the fly camera follows instead (as the HUD's readout does).
+    // Without it the minimap and compass vanished in fly mode (and every bench, whose camera flies).
+    bool rotate = false;
+    Planetoid* p = player.nearest ? player.nearest : player.flyReference(world, rotate);
     if (!p || p->flat || !p->field) return h;
     auto pf = std::dynamic_pointer_cast<const PlanetField>(p->field);
     if (!pf) return h;
@@ -106,6 +112,7 @@ float BearingOf(Vector3 up, Vector3 d) {
 struct MapImage {
     std::shared_ptr<const PlanetField> field;
     std::shared_ptr<const TileSet> tiles;
+    uint64_t body = 0;                  // its planetoid (the water field: drained ponds, #360)
     Vector3 centre{}, east{}, north{};  // body-local frame of the image centre
     float mpp = 1.0f;                   // metres per pixel
     int W = 0, H = 0;
@@ -148,7 +155,7 @@ void RenderRows(MapImage& m, int y0, int y1) {
             Vector3 c = SurfaceAlbedo(f, dir, h, slope, f.foliage, f.foliageSeed, water);
             if (!water && f.inlandWaterNear(dir, 0.0f, m.mpp)) {
                 const float w = f.waterElevation(dir, m.mpp);
-                if (w != PlanetField::kNoWater && w > h) { c = { 0.04f, 0.16f, 0.30f }; water = true; }
+                if (w != PlanetField::kNoWater && w > h && Fluid::GeneratedWaterValid(m.body, Vector3Scale(dir, f.radius + w - 0.2f))) { c = { 0.04f, 0.16f, 0.30f }; water = true; } // not a drained pond (#360)
             }
             const float shade = water ? 1.0f : std::clamp(0.55f + 0.75f * Vector3DotProduct(n, light), 0.35f, 1.25f);
             c = Vector3Scale(c, shade * 1.6f); // a little brighter than the lit terrain: a map, not a photo
@@ -160,6 +167,7 @@ void RenderRows(MapImage& m, int y0, int y1) {
 std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, int W, int H, bool circle) {
     auto m = std::make_shared<MapImage>();
     m->field = h.field;
+    m->body = h.body->id;
     auto it = explored.find(h.body->name);
     m->tiles = std::make_shared<const TileSet>(it != explored.end() ? it->second : TileSet{});
     m->centre = centre;
@@ -171,7 +179,7 @@ std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, i
     const int block = 16;
     for (int y = 0; y < H; y += block) {
         const int y1 = std::min(H, y + block);
-        WorldJobs().submit(circle ? 300.0f : 200.0f, [m, y, y1] { RenderRows(*m, y, y1); });
+        JobSystem::tagNext(JobTag::NavMap); WorldJobs().submit(circle ? 300.0f : 200.0f, [m, y, y1] { RenderRows(*m, y, y1); });
     }
     return m;
 }
@@ -208,6 +216,11 @@ constexpr int kMapPixels = 640;
 constexpr int kMiniPixels = 256;             // the minimap image: a margin around the view (it shifts as you move)
 constexpr float kMiniMetres = 440.0f;        // ...metres across
 constexpr float kMiniView = 300.0f;          // metres the minimap circle shows
+// Minimap zoom (#278): - and = (and the keypad) scale the view, the image and the re-render distance.
+const float kMiniZooms[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+int miniZoom = 1;
+bool minimapForce = false;
+float MiniZoom() { return kMiniZooms[miniZoom]; }
 bool dragging = false, dragMoved = false; // a drag pans; a press and release in place is a click
 Vector2 dragFrom{};
 double mapDirtyAt = -1.0;
@@ -263,11 +276,17 @@ void Nav_ToggleMap() {
 int Nav_ExploredTiles(const std::string& body) { auto it = explored.find(body); return it == explored.end() ? 0 : (int)it->second.size(); }
 int Nav_WaypointCount() { return (int)waypoints.size(); }
 bool Nav_MinimapReady() { return minimap.tex.id != 0; }
+static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
+bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.25; } // (#937: 0.25 s, so one slow frame does not blink the readout)
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
 
-void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name) {
+void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
     waypoints.push_back({ body, name, Vector3Normalize(dir) });
-    QuestBook_Count("waypoint");
+    if (byPlayer) QuestBook_Count("waypoint");
+}
+
+void Nav_RemoveWaypoint(const std::string& body, const std::string& name) {
+    waypoints.erase(std::remove_if(waypoints.begin(), waypoints.end(), [&](const Waypoint& w) { return w.body == body && w.name == name; }), waypoints.end());
 }
 
 float Nav_Heading(Scene& world) {
@@ -282,22 +301,20 @@ float Nav_Bearing(Scene& world, Vector3 dir) {
     return BearingOf(h.up, Vector3Subtract(Vector3Normalize(dir), h.up));
 }
 
-void Nav_Update(Scene& world, bool inputEnabled) {
+void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
+    if (gameInput) { // minimap zoom (#278): - out, = (+) in
+        const int was = miniZoom;
+        if (PlayerInput_BindingPressed(Act::ZoomOut) || IsKeyPressed(KEY_KP_SUBTRACT)) miniZoom = std::min(miniZoom + 1, (int)(sizeof(kMiniZooms) / sizeof(kMiniZooms[0])) - 1);
+        if (PlayerInput_BindingPressed(Act::ZoomIn) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
+        if (miniZoom != was) minimapForce = true;
+    }
     const Here h = Locate(world);
     // Reveal the ground around the player a few times a second.
-    if (h.body && GetTime() - lastReveal > 0.3) {
-        lastReveal = GetTime();
+    if (h.body && SimTime() - lastReveal > 0.3) {
+        lastReveal = SimTime();
         TileSet& set = explored[h.body->name];
         const size_t before = set.size();
-        Vector3 east, north;
-        if (!Frame(h.up, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(h.up, east)); }
-        const float R = h.field->radius;
-        for (float a = -kRevealRadius; a <= kRevealRadius; a += 50.0f)
-            for (float b = -kRevealRadius; b <= kRevealRadius; b += 50.0f) {
-                if (a * a + b * b > kRevealRadius * kRevealRadius) continue;
-                const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(h.up, R), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
-                set.insert(TileKey(d, R));
-            }
+        Nav_RevealTiles(h.up, h.field->radius, set);
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
@@ -307,10 +324,11 @@ void Nav_Update(Scene& world, bool inputEnabled) {
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
         const bool moved = !minimap.shown || minimapBody != h.body->name ||
-                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f ||
+                           Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f * MiniZoom() || minimapForce ||
                            (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
-            minimap.pending = StartImage(h, h.up, kMiniMetres / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
+            minimap.pending = StartImage(h, h.up, kMiniMetres * MiniZoom() / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
+            minimapForce = false;
             minimapAt = GetTime();
             minimapBody = h.body->name;
             minimapTilesVersion = ver;
@@ -428,6 +446,7 @@ void Nav_DrawHUD(Scene& world) {
     }
     // Minimap (with a Map): north-up image turned so the view points up; a circle.
     if (!HasMap() || !minimap.tex.id || !minimap.shown || minimapBody != h.body->name) return;
+    minimapDrawnAt = GetTime();
     const MapImage& m = *minimap.shown;
     const float size = 200.0f, rad = size * 0.5f;
     const Vector2 c = { sw - rad - 20.0f, 150.0f + rad };
@@ -437,7 +456,7 @@ void Nav_DrawHUD(Scene& world) {
     // player has moved since, and clip it to the circle as it is drawn (the mask no longer moves with
     // the image).
     const Vector2 off = OnImage(m, h.up);
-    const float k = size / (m.W * kMiniView / kMiniMetres); // screen pixels per image pixel
+    const float k = size * m.mpp / (kMiniView * MiniZoom()); // screen pixels per image pixel (from the shown image's own scale: right while a new zoom renders)
     const float drawn = m.W * k;
     const float sr = sinf(rot * DEG2RAD), cr = cosf(rot * DEG2RAD);
     const Vector2 shift = { -(off.x * cr - off.y * sr) * k, -(off.x * sr + off.y * cr) * k };
@@ -454,8 +473,24 @@ void Nav_DrawHUD(Scene& world) {
     BeginShaderMode(miniMask);
     SetShaderValue(miniMask, GetShaderLocation(miniMask, "circle"), circle, SHADER_UNIFORM_VEC3);
     DrawTexturePro(minimap.tex, { 0, 0, (float)m.W, (float)m.H }, { c.x + shift.x, c.y + shift.y, drawn, drawn }, { drawn * 0.5f, drawn * 0.5f }, rot, WHITE);
+    // (#1161, the user) Land claims, as on the full map: a disc in the team's colour (inside the mask: cut at the rim).
+    for (const ClaimView& cl : Claims_Mirror()) {
+        if (cl.body != h.body->name || Vector3Length(cl.centre) < 1.0f) continue;
+        const Vector2 p = OnImage(m, Vector3Normalize(cl.centre));
+        const Vector2 rel = { (p.x - off.x) * k, (p.y - off.y) * k };
+        const Vector2 s = { c.x + rel.x * cr - rel.y * sr, c.y + rel.x * sr + rel.y * cr };
+        const float rp = cl.radius / m.mpp * k;
+        if (Vector2Distance(s, c) > rad + rp) continue;
+        const Color col = { (unsigned char)(cl.colour >> 16), (unsigned char)(cl.colour >> 8), (unsigned char)cl.colour, 255 };
+        DrawCircleV(s, rp, Fade(col, 0.22f));
+        DrawRing(s, std::max(0.0f, rp - 1.5f), rp, 0, 360, 48, Fade(col, 0.9f));
+    }
     EndShaderMode();
     DrawRing(c, rad, rad + 3.0f, 0, 360, 48, Fade(RAYWHITE, 0.6f));
+    { // its scale and zoom keys (#278)
+        const char* t = TextFormat("%.0f m  (-/=)", kMiniView * MiniZoom());
+        DrawText(t, (int)(c.x - MeasureText(t, 14) * 0.5f), (int)(c.y + rad + 8.0f), 14, Fade(RAYWHITE, 0.7f));
+    }
     // Waypoints and the start on it.
     auto onMini = [&](Vector3 dir, Color col) {
         const Vector2 p = OnImage(m, dir);
@@ -508,6 +543,16 @@ void Nav_DrawMap(Scene& world) {
         const Vector2 off = Vector3LengthSqr(mapCentre) > 0.5f ? OnImage(m, mapCentre) : Vector2{ 0, 0 };
         auto toScreen = [&](Vector3 dir) { const Vector2 p = OnImage(m, dir); return Vector2{ r.x + r.width * 0.5f + (p.x - off.x) * k / scale, r.y + r.height * 0.5f + (p.y - off.y) * k / scale }; };
         BeginScissorMode((int)r.x, (int)r.y, (int)r.width, (int)r.height);
+        // (#343) land claims (a joined game's): circles in the team's colour, its name in the middle
+        for (const ClaimView& c : Claims_Mirror()) {
+            if (c.body != h.body->name || Vector3Length(c.centre) < 1.0f) continue;
+            const Vector2 cp = toScreen(Vector3Normalize(c.centre));
+            const float rp = c.radius / m.mpp * k / scale;
+            const Color col = { (unsigned char)(c.colour >> 16), (unsigned char)(c.colour >> 8), (unsigned char)c.colour, 255 };
+            DrawCircleV(cp, rp, Fade(col, 0.18f));
+            DrawCircleLinesV(cp, rp, Fade(col, 0.9f));
+            if (rp > 14.0f) { const char* t = TextFormat("%s%s", c.teamName.c_str(), c.ours ? " (yours)" : c.allowed ? " (ally)" : ""); DrawText(t, (int)(cp.x - MeasureText(t, 14) * 0.5f), (int)cp.y - 7, 14, Fade(RAYWHITE, 0.85f)); }
+        }
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), GREEN, "Start", 7.0f);
         for (const Waypoint& w : waypoints) if (w.body == h.body->name) DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
         // The player and where they look.
@@ -570,4 +615,17 @@ bool Nav_LoadLine(const char* tok, FILE* f) {
         return true;
     }
     return false;
+}
+
+int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {
+    const size_t before = set.size();
+    Vector3 east, north;
+    if (!Frame(up, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(up, east)); }
+    for (float a = -kRevealRadius; a <= kRevealRadius; a += 100.0f)
+        for (float b = -kRevealRadius; b <= kRevealRadius; b += 100.0f) {
+            if (a * a + b * b > kRevealRadius * kRevealRadius) continue;
+            const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(up, R), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
+            set.insert(TileKey(d, R));
+        }
+    return (int)(set.size() - before);
 }

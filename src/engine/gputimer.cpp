@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "utils/logger.h"
+#include "profiler.h"
 
 // glad's GL entry points, as raylib loads them (the same trick as viewmodel.cpp's glClear).
 extern "C" {
@@ -29,7 +30,7 @@ extern "C" {
 namespace {
     constexpr unsigned int kTimeElapsed = 0x88BF, kResult = 0x8866, kResultAvailable = 0x8867;
     constexpr int kFrames = 4, kMarks = 24;
-    struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false; };
+    struct Slot { unsigned int q[kMarks + 1] = {}; const char* name[kMarks + 1] = {}; int used = 0; bool pending = false, tailEnded = false; }; // tailEnded: the segment after the last mark was closed by the next frame (#180)
     Slot slots[kFrames];
     int cur = -1;
     bool enabled = false, made = false, open = false;
@@ -56,19 +57,29 @@ namespace {
         glad_glGetQueryObjectiv(s.q[s.used - 1], kResultAvailable, &avail);
         if (!avail) return; // dropped rather than waited for
         double frame = 0.0;
-        for (int i = 0; i < s.used; ++i) {
+        const int last = s.tailEnded ? s.used : s.used - 1; // the "(between frames)" tail too, when the next frame closed it (#180)
+        if (s.tailEnded) { int tailAvail = 0; glad_glGetQueryObjectiv(s.q[s.used], kResultAvailable, &tailAvail); if (!tailAvail) return; }
+        for (int i = 0; i <= last; ++i) {
             uint64_t ns = 0;
             glad_glGetQueryObjectui64v(s.q[i], kResult, &ns);
             const double ms = (double)ns / 1e6;
             AddTo(sums, s.name[i], ms);
-            frame += ms;
+            if (Profiler_On()) Profiler_Sample((std::string("gpu:") + s.name[i]).c_str(), ms); // (#871) the run summary's GPU passes
+            if (i < s.used) frame += ms; // the tail (GPU idle between frames included) shows as its own column, outside the total
         }
         totalMs += frame;
         ++frames;
     }
 }
 
-void GpuTimer_Enable(bool on) { enabled = on && Ready(); }
+static bool gGpuTimerKeepOn = false; // GpuTimer_KeepOn (#871)
+void GpuTimer_KeepOn(bool on) { gGpuTimerKeepOn = on; if (on) GpuTimer_Enable(true); }
+void GpuTimer_Enable(bool on) {
+    on = on || gGpuTimerKeepOn;
+    // Turned off with a query open (#180): end it, or it stays open (and the next frame's tail would read a running query).
+    if (!on && enabled && open) { rlDrawRenderBatchActive(); glad_glEndQuery(kTimeElapsed); open = false; }
+    enabled = on && Ready();
+}
 
 void GpuTimer_BeginFrame() {
     if (!enabled) return;
@@ -77,11 +88,13 @@ void GpuTimer_BeginFrame() {
         rlDrawRenderBatchActive();
         glad_glEndQuery(kTimeElapsed);
         open = false;
+        slots[cur].tailEnded = true;
     }
     cur = (cur + 1) % kFrames;
     Collect(slots[cur]); // written kFrames frames ago
     Slot& s = slots[cur];
     s.used = 0;
+    s.tailEnded = false;
     s.pending = true;
     s.name[0] = "start";
     glad_glBeginQuery(kTimeElapsed, s.q[0]);
@@ -110,23 +123,26 @@ void GpuTimer_Print() {
 }
 
 namespace {
-    // Slow frames (benches): a frame's CPU marks, printed when the frame took over 20 ms (at most 10 of them).
+    // Slow frames (benches): a frame's CPU marks, printed when its marks summed over 20 ms or its wall time was over 50 ms (at most 60 of them).
     std::vector<std::pair<const char*, double>> frameMarks;
     double frameMs = 0.0;
-    int slowPrinted = 0;
+    int slowPrinted = 0, slowLimit = 60; double slowMs = 20.0; // GpuTimer_SetSlowReport
+    std::chrono::steady_clock::time_point frameWallStart{}; // wall time includes what no mark covers (#509: 130-270 ms frames whose marks summed to 5-12 ms)
     const auto gRunStart = std::chrono::steady_clock::now(); // program start (static init)
 }
 
-void GpuTimer_CpuFrameStart() {
-    if (enabled && cpuStarted && frameMs > 20.0 && slowPrinted < 10) {
+void GpuTimer_CpuFrameStart(bool reportSlow) {
+    const auto wallNow = std::chrono::steady_clock::now();
+    const double wallMs = cpuStarted ? std::chrono::duration<double, std::milli>(wallNow - frameWallStart).count() : 0.0;
+    if (reportSlow && enabled && cpuStarted && (frameMs > slowMs || wallMs > std::max(50.0, slowMs)) && slowPrinted < slowLimit) {
         ++slowPrinted;
-        printf("bench: slow frame %.1f ms (cpu) at %.1f s, frame %ld:", frameMs, std::chrono::duration<double>(std::chrono::steady_clock::now() - gRunStart).count(), cpuFrames);
+        printf("bench: slow frame %.1f ms (cpu), %.1f ms wall (%.1f unmarked) at %.1f s, frame %ld:", frameMs, wallMs, wallMs - frameMs, std::chrono::duration<double>(std::chrono::steady_clock::now() - gRunStart).count(), cpuFrames);
         for (const auto& m : frameMarks) if (m.second > 1.0) printf(" %s %.1f", m.first, m.second);
         printf("\n");
     }
     frameMarks.clear(); frameMs = 0.0;
     if (!enabled) { cpuStarted = false; return; }
-    cpuLast = std::chrono::steady_clock::now();
+    cpuLast = frameWallStart = wallNow;
     cpuStarted = true;
     ++cpuFrames;
 }
@@ -136,6 +152,7 @@ void GpuTimer_CpuMark(const char* name) {
     const auto now = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(now - cpuLast).count();
     AddTo(cpuSums, name, ms);
+    if (Profiler_On()) Profiler_Sample((std::string("cpu:") + name).c_str(), ms); // (#871) and its CPU passes
     frameMarks.push_back({ name, ms }); frameMs += ms;
     cpuLast = now;
 }
@@ -159,8 +176,9 @@ void GpuTimer_LogAndReset(const char* tag) {
     snprintf(buf, sizeof(buf), "%s cpu per frame (%ld):", tag, cpuFrames); c += buf;
     for (const Sum& x : cpuSums) { snprintf(buf, sizeof(buf), " %s %.2f", x.name, cpuFrames ? x.ms / cpuFrames : 0.0); c += buf; total += x.ms; }
     snprintf(buf, sizeof(buf), " | total %.2f ms\n", cpuFrames ? total / cpuFrames : 0.0); c += buf;
-    logger.logf("%s", g.c_str());
-    logger.logf("%s", c.c_str());
+    LOG_INFO("Perf", "%s", g.c_str());
+    LOG_INFO("Perf", "%s", c.c_str());
     sums.clear(); frames = 0; totalMs = 0.0;
     cpuSums.clear(); cpuFrames = 0;
 }
+void GpuTimer_SetSlowReport(double ms, int limit) { slowMs = ms; slowLimit = limit; slowPrinted = 0; }

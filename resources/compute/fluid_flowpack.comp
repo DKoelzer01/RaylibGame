@@ -1,0 +1,57 @@
+#version 430
+// The drawn current of simulated water (#677, #695): per processed brick, per column (16 x 16), the solver's flow at the
+// column's surface - the top water cell's +x / +y planned face flows (m^3/s, momentum and share) over the column's wetted depth below it (within the
+// brick; a column's top cell carries the flow of the column), as cm/s in two int16. Copied into the mapped readback with
+// the cells (fluid.cpp GpuTick): 1 KB a brick, against 32 KB for the faces themselves.
+// Column-pair flow (#680, #855): a run's pairs live in its bottom cell's record - Q per side (x +x, y +y, z -x, w -y) and the
+// units each pair moved this substep (z: +x | +y << 16, w: -x | -y << 16). The current is what moved (units, signed by Q)
+// over the run's depth: the top cell's record is empty, and Q alone counted momentum too small to move a unit, which over a
+// shore's 2 cm film read as ~1 m/s and kept its brick awake as steady flow for good.
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer Cells { uint cells[]; };  // A: slot * 4096 + cell
+layout(std430, binding = 3) readonly buffer List { uint list[]; };    // the processed slots
+layout(std430, binding = 9) readonly buffer FacesN { uvec4 faceN[]; };  // per cell, the last substep's plan: x = packHalf2x16(+x, +y) total flow
+layout(std430, binding = 13) writeonly buffer FlowOut { uint flowOut[]; }; // list index * 256 + column
+uniform uint count;
+uniform float cellSize; // m
+uniform int columns;    // 1: the column-pair flow (records at run bottoms)
+uniform float unitFlow; // columns: m^3/s for one unit moved a substep (1 / (dt * units per m^3))
+
+const uint SOLID = 1u;
+
+void main() {
+    uint li = gl_WorkGroupID.y;
+    if (li >= count) return;
+    uint slot = list[li];
+    uint col = gl_LocalInvocationID.x; // x + 16 y
+    float depth = 0.0;
+    vec2 v = vec2(0.0);
+    uint bottom = 0xFFFFFFFFu; // the current run's bottom cell (columns)
+    for (uint z = 0u; z < 16u; ++z) {
+        uint i = slot * 4096u + col + 256u * z;
+        uint c = cells[i];
+        uint f = c & 255u, fl = (c >> 8) & 255u;
+        if (f == 0u || (fl & SOLID) != 0u) { depth = 0.0; bottom = 0xFFFFFFFFu; continue; }
+        if (bottom == 0xFFFFFFFFu) bottom = i;
+        depth += float(f) / 255.0 * cellSize;
+        bool top = true;
+        if (z + 1u < 16u) { uint a = cells[i + 256u]; top = (a & 255u) == 0u || (((a >> 8) & 255u) & SOLID) != 0u; }
+        if (!top) continue;
+        vec2 q;
+        if (columns != 0) {
+            uvec4 r = faceN[bottom];
+            vec4 Q = vec4(unpackHalf2x16(r.x), unpackHalf2x16(r.y));
+            q = vec2(sign(Q.x) * float(r.z & 0xFFFFu) - sign(Q.z) * float(r.w & 0xFFFFu),
+                     sign(Q.y) * float(r.z >> 16) - sign(Q.w) * float(r.w >> 16)) * unitFlow;
+        } else {
+            // Cells (#935): what moved across the top cell's own +x / +y faces this substep (fluid_step.comp's pass 2, signed
+            // units in w). The planned flow (x) counted momentum that never moved a unit - against a settled brick's edge a
+            // channel at rest read 3 m/s and stayed awake as steady flow; moved units still count a thin stream's share.
+            uint w = faceN[i].w;
+            q = vec2(float(int(w << 16) >> 16), float(int(w) >> 16)) * unitFlow;
+        }
+        v = q / (cellSize * max(depth, 0.02)); // the highest surface in the column wins
+    }
+    ivec2 cm = clamp(ivec2(round(v * 100.0)), ivec2(-32000), ivec2(32000));
+    flowOut[li * 256u + col] = (uint(cm.x) & 0xFFFFu) | (uint(cm.y) << 16);
+}

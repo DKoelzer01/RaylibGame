@@ -33,6 +33,7 @@
 uniform vec4 noiseParams[N_COUNT];
 uniform float planetRadius;
 uniform int planetMoon;
+uniform vec4 genParams;     // #504 WorldGenParams: x ocean, y mountains, z roughness, w 1 / biome size (as PlanetField::land, climateAt)
 
 const int kPerm[256] = int[256](
     151, 160, 137, 91, 90, 15,
@@ -62,6 +63,17 @@ float xsqrt(float x) {
     precise float s = sqrt(x);
     precise float r = fma(-s, s, x);
     precise float res = fma(r, 0.5 / s, s);
+    // (#1022) One Newton step can round the wrong way when the root lies near a midpoint between two floats (l2 = 64 + 1 ulp:
+    // the CPU's sqrtf gives 8, this gave 8 + 1 ulp). Settle it exactly: e = x - res^2 is exact (fma), and x lies above the
+    // midpoint res + u/2 iff e - res*u > 0 (every term is a multiple of u^2, so these compare exactly; u = the ulp up), below
+    // res - d/2 iff e + res*d <= 0 (d = the ulp down).
+    precise float e = fma(-res, res, x);
+    precise float up = uintBitsToFloat(floatBitsToUint(res) + 1u);
+    precise float dn = uintBitsToFloat(floatBitsToUint(res) - 1u);
+    precise float u = up - res, d = res - dn;
+    precise float eu = e - res * u, ed = e + res * d;
+    if (eu > 0.0) return up;
+    if (ed <= 0.0) return dn;
     return res;
 }
 
@@ -165,17 +177,17 @@ Land landAt(vec3 dir, float fp) {
         l.h = hm;
         return l;
     }
-    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz);
+    precise float c = fractalLimited(N_CONTINENTS, 4, fp, sx, sy, sz) - 0.15 * genParams.x;
     precise float base = c < 0.0 ? c * 650.0 : c * 200.0;
     precise float landMask = tSmooth(-0.02, 0.06, c);
     precise float mountainMask = tSmooth(0.08, 0.35, c);
     precise float h = base;
     if (mountainMask > 0.0) {
         precise float r = 1.0 - abs(fractalLimited(N_RIDGES, 5, fp, sx, sy, sz));
-        l.ridge = r * r * r * 1400.0 * mountainMask;
+        l.ridge = r * r * r * 1400.0 * mountainMask * genParams.y;
         h += l.ridge;
     }
-    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask);
+    h += fractalLimited(N_HILLS, 3, fp, sx, sy, sz) * (25.0 + 60.0 * mountainMask) * genParams.z;
     precise float valleyWeight = landMask * clamp(2.0 - xdiv(fp, 64.0), 0.0, 1.0);
     l.valley = 1.0;
     precise float ravineWeight = landMask * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
@@ -186,7 +198,7 @@ Land landAt(vec3 dir, float fp) {
             if (r < 0.006) h -= xsqrt(1.0 - xdiv(r, 0.006)) * 90.0 * region * ravineWeight;
         }
     }
-    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5;
+    l.detail = fractalLimited(N_DETAIL, 2, fp, sx, sy, sz) * 2.5 * genParams.z;
     precise float iceCap = tSmooth(0.86, 0.92, abs(dir.y) + 0.03 * fractalLimited(N_CLIMATE, 2, fp, sx, sy, sz));
     precise float hd = h + l.detail;
     if (iceCap > 0.0 && hd < 2.0) { hd += (2.0 - hd) * iceCap; h = hd - l.detail; }
@@ -201,7 +213,7 @@ Land landAt(vec3 dir, float fp) {
 vec2 climateAt(vec3 dir, float elev) {
     if (planetMoon != 0) return vec2(-20.0, 0.0);
     precise float lat = abs(dir.y);
-    precise float x = dir.x * planetRadius, y = dir.y * planetRadius, z = dir.z * planetRadius;
+    precise float x = dir.x * planetRadius * genParams.w, y = dir.y * planetRadius * genParams.w, z = dir.z * planetRadius * genParams.w;
     precise float temp = 30.0 - 44.0 * (lat * xsqrt(lat)) - xdiv(6.5 * max(elev, 0.0), 1000.0) + 7.0 * fractal(N_TEMP, 2, x, y, z);
     precise float moist = 0.5 + 0.85 * fractal(N_MOIST, 3, x, y, z) + 0.08 * (1.0 - tSmooth(10.0, 150.0, elev));
     return vec2(temp, clamp(moist, 0.0, 1.0));
@@ -225,12 +237,6 @@ float biomeShape(vec3 dir, float h, float fp) {
         precise float crest = sm * sm;
         precise float swell = 0.55 + 0.45 * fractal(N_MOIST, 1, x * 6.0, y * 6.0, z * 6.0);
         dh += desert * crest * 9.0 * swell * tSmooth(4.0, 20.0, h) * clamp(2.0 - xdiv(fp, 24.0), 0.0, 1.0);
-    }
-    if (badlands > 0.0) {
-        const float step_ = 14.0;
-        precise float t = xdiv(h, step_), f = t - floor(t);
-        precise float terraced = (floor(t) + tSmooth(0.72, 0.92, f)) * step_;
-        dh += (terraced - h) * badlands;
     }
     if (swamp > 0.0) {
         precise float floorH = 3.5 + 1.5 * fractal(N_BIOME_JITTER, 1, x, y, z);
@@ -265,6 +271,9 @@ float elevationBase(vec3 dir, float fp) {
 
 uniform float mantleRadius;
 int islandCount = 0;   // set per block by the includer
+int caveSegCount = 0;  // (#615 step 2) the block's cave segments, set by the includer (caveSegData)
+int cavesGraph = 0;    // 1: graph tunnels instead of the noise tunnels (RAYLIBGAME_CAVES=1)
+int caveWalls = 1;     // (#1022) 1: the larger-outcrop walls (default); 0: the v22 walls (RAYLIBGAME_CAVE_WALLS=0)
 
 float waveSin(float x) {
     precise float u = x * 0.15915494, f = u - floor(u);
@@ -366,6 +375,7 @@ float islandTop(vec3 p, float q) {
 }
 
 vec4 islandData(int i, int k);
+vec4 caveSegData(int i, int k); // (#615 step 2) segment i: (a, ra), (b, rb), (up, flat)
 
 // PlanetField::floatingIsland: metres inside an island (< 0 outside).
 float floatingIsland(vec3 p, float d) {
@@ -397,7 +407,164 @@ float floatingIsland(vec3 p, float d) {
 }
 
 // PlanetField::densityNear with the column given.
-float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf) {
+// (#615 step 3) The graph tunnels' distance at q and `solid` (rubble aprons): PlanetField's CaveGraphDistance (voxel.cpp),
+// the same operations in the same order. Every sum handed to xdiv / xsqrt sits in a precise variable first (else the
+// compiler may fuse it into FMAs and miss the CPU by an ulp).
+float caveGraphDistance(vec3 q, out float solid) {
+    solid = -1e9;
+    bool any = false;
+    precise float swell = 0.0, lev = 0.0, tilt = 0.0, pocket = 0.0, rub = 0.0, shift = 0.0, big = 0.0;
+    precise float m = 1e9;
+    for (int i = 0; i < caveSegCount; ++i) {
+        vec4 lo = caveSegData(i, 3), hi = caveSegData(i, 4);
+        if (q.x < lo.x || q.y < lo.y || q.z < lo.z || q.x > hi.x || q.y > hi.y || q.z > hi.z) continue;
+        if (!any) {
+            any = true; // every a * b + c handed to fractal() sits in a precise variable (arguments may be fused into FMAs)
+            // Factors = features per metre x (1 / the noise's own base frequency), as CaveGraphDistance (voxel.cpp).
+            precise float qx = q.x * 13.5, qy = q.y * 13.5, qz = q.z * 13.5;
+            precise float qx17 = qx + 17.0, qy29 = qy + 29.0, qz41 = qz + 41.0;
+            precise float wx, wy, wz;
+            wx = q.x + 3.0 * fractal(N_CAVES_A, 1, qx17, qy, qz);
+            wy = q.y + 3.0 * fractal(N_CAVES_A, 1, qx, qy29, qz);
+            wz = q.z + 3.0 * fractal(N_CAVES_A, 1, qx, qy, qz41);
+            swell = 1.0 + 0.3 * fractal(N_CAVES_B, 1, wx * 15.0, wy * 15.0, wz * 15.0);
+            lev = 0.45 + 0.25 * fractal(N_CAVERNS, 1, wx * 13.2, wy * 13.2, wz * 13.2);
+            precise float tx = wx * 35.0 + 7.0;
+            tilt = 0.6 * fractal(N_CAVE_MOUTHS, 1, tx, wy * 35.0, wz * 35.0);
+            precise float px = wx * 14.0 + 53.0;
+            pocket = max(0.0, fractal(N_DETAIL, 1, px, wy * 14.0, wz * 14.0));
+            precise float rx = wx * 35.0 + 71.0;
+            rub = fractal(N_DETAIL, 1, rx, wy * 35.0, wz * 35.0);
+            precise float sx = wx * 6.0 + 13.0;
+            shift = 0.4 * fractal(N_CAVES_B, 1, sx, wy * 6.0, wz * 6.0);
+            precise float gx = wx * 22.0 + 91.0;
+            big = fractal(N_CAVERNS, 1, gx, wy * 22.0, wz * 22.0);
+        }
+        vec4 A = caveSegData(i, 0), Bs = caveSegData(i, 1), U = caveSegData(i, 2), Sd = caveSegData(i, 5);
+        precise float abx = Bs.x - A.x, aby = Bs.y - A.y, abz = Bs.z - A.z;
+        precise float apx = q.x - A.x, apy = q.y - A.y, apz = q.z - A.z;
+        precise float num = apx * abx + apy * aby + apz * abz;
+        precise float den = abx * abx + aby * aby + abz * abz;
+        precise float t = clamp(xdiv(num, den), 0.0, 1.0);
+        precise float hx = apx - abx * t, hy = apy - aby * t, hz = apz - abz * t;
+        precise float hv = hx * U.x + hy * U.y + hz * U.z;
+        precise float hhx = hx - U.x * hv, hhy = hy - U.y * hv, hhz = hz - U.z * hv;
+        precise float hs = hhx * Sd.x + hhy * Sd.y + hhz * Sd.z;
+        precise float r = A.w + (Bs.w - A.w) * t;
+        float kind = lo.w;
+        bool mouth = kind > 0.5 && kind < 1.5, hall = kind > 2.5;   // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        if (kind > 1.5 && kind < 2.5) {
+            precise float va = xdiv(hv, U.w);
+            precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
+            precise float la = xsqrt(la2);
+            precise float rr = r * (1.0 + 0.3 * rub);
+            solid = max(solid, rr - la);
+            continue;
+        }
+        precise float bk = mouth ? 0.4 : 0.2;
+        precise float rough = 1.0 + bk * big;
+        precise float rs = swell * rough;
+        precise float rw = r * max(0.7, rs);
+        precise float pk = hv > 0.0 ? pocket : 0.0;
+        precise float vfac = U.w * (1.0 + 0.5 * pk);
+        precise float hp = hs - shift * rw;
+        precise float hvM = hv - 0.5 * hp;
+        precise float hvT = mouth ? hvM : hv;
+        precise float v2 = xdiv(hvT, vfac);
+        precise float lh = hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp;
+        precise float v22 = v2 * v2;
+        precise float l2 = max(0.0, lh) + v22;
+        precise float len = xsqrt(l2);
+        precise float rub6 = 0.35 * max(0.0, rub);
+        precise float rubble = mouth ? rub6 : 0.0;
+        precise float levK = mouth ? 0.45 : lev;
+        precise float tiltK = mouth || hall ? 0.0 : tilt;
+        precise float flo = hall ? 0.4 * r : levK * rw;
+        precise float floorCut = (0.0 - hv) - flo * U.w + 0.5 * tiltK * hp + rubble;
+        // (#1022) Noise grows the wall inward, looked up at a point squeezed radially toward the wall (no voids behind it).
+        precise float intrude = 0.0;
+        precise float core = 0.5 * rw, far_ = rw + 40.0;
+        if (len > core && len < far_) {
+            precise float hl2 = hx * hx + hy * hy + hz * hz;
+            precise float hl = xsqrt(hl2);
+            if (hl > 1e-3) {
+                precise float rw90 = 0.9 * rw;
+                precise float sq = xdiv(rw90, hl);
+                precise float sc = 0.1 + sq;
+                precise float px = A.x + abx * t + hx * sc, py = A.y + aby * t + hy * sc, pz = A.z + abz * t + hz * sc;
+                bool v22 = caveWalls == 0;                                   // (#1022) 1: ~9 m forms, ~3.2 m creases; 0: v22
+                int o3 = v22 ? 3 : 2, o1 = v22 ? 2 : 1;
+                precise float f3 = v22 ? 24.5 : 7.8, f1 = v22 ? 135.0 : 47.0;
+                precise float g3 = v22 ? 2.6 : 2.9, g1 = v22 ? 1.4 : 0.8;
+                precise float p3x = px * f3 + 101.0;
+                precise float r3 = fractal(N_DETAIL, o3, p3x, py * f3, pz * f3);
+                precise float p1x = px * f1 + 7.0;
+                precise float r1 = fractal(N_CAVES_B, o1, p1x, py * f1, pz * f1);
+                precise float cr = 0.3 - abs(r1);
+                precise float wn0 = 0.35 + g3 * r3 + g1 * cr;
+                precise float wn = max(0.0, wn0);
+                precise float fnum = len - 0.5 * rw;
+                precise float fden = 0.4 * rw;
+                precise float fa = xdiv(fnum, fden);
+                precise float fc = clamp(fa, 0.0, 1.0);
+                precise float fade = fc * fc * (3.0 - 2.0 * fc);
+                precise float akk = mouth ? 0.65 : 0.55;
+                precise float ra = hall ? min(rw, 8.0) : rw;
+                intrude = akk * ra * fade * wn;
+            }
+        }
+        precise float lw = len - rw + intrude;
+        m = min(m, max(lw, floorCut));
+    }
+    return m;
+}
+
+// (#615 step 1) The caves in one place, bit-exact with PlanetField::caveDistance (voxel.cpp): metres to the nearest cave
+// wall (< 0 inside; 1e9 where none reaches). Worm tunnels with #549's mouth regions (thin roofs collapse; #971: not in wet
+// lowlands, cwet) and caverns.
+float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float solid) {
+    solid = -1e9;
+    precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
+    if (cavesGraph == 1) { // (#615 step 2) graph tunnels (no mouths yet) and the caverns: as PlanetField::caveDistance
+        precise float mg = 1e9;
+        if (caveWeight > 0.0 && depth > -12.0 && d > mantleRadius + 20.0) { // (#615 step 3: up to the surface at mouths)
+            if (depth > -12.0 && caveSegCount > 0) { precise float sol; mg = caveGraphDistance(p, sol) + (1.0 - caveWeight) * 20.0; if (sol > -1e8) { precise float so = sol - (1.0 - caveWeight) * 20.0; solid = so; } }
+            // (#1058) no noise caverns with graph caves: chambers in the graph replace them
+        }
+        return mg;
+    }
+    precise float caveTop = 5.0;
+    precise float mouth = 0.0; // #549: in mouth regions tunnels open at full width where they meet the surface
+    if (depth < 14.0 && depth > -14.0 && caveWeight > 0.0 && planetMoon == 0) { mouth = tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z)); if (mouth > 0.0) mouth = mouth * (1.0 - cwet); caveTop = 5.0 - 7.5 * mouth; } // (#971) wet lowlands keep their roofs
+    // #549: in mouth regions a roof thinner than 4 m collapses.
+    precise float gate = mouth > 0.0 ? -14.0 : caveTop;
+    precise float m = 1e9;
+    if (caveWeight > 0.0 && depth > gate && d > mantleRadius + 20.0) {
+        precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
+        precise float reach = mouth > 0.0 ? max(near_, 4.0 + 1.0 - depth) : near_;
+        precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
+        if ((a - K_TUNNEL_LEVEL) * 100.0 <= reach) {
+            precise float top = clamp(xdiv(depth - caveTop, 8.0), 0.0, 1.0);
+            top = top + (1.0 - top) * mouth;
+            precise float fade = top * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
+            precise float t = max(a, abs(fractal(N_CAVES_B, 2, p.x, p.y, p.z)));
+            m = (t - K_TUNNEL_LEVEL) * 100.0 + (1.0 - fade * caveWeight) * 20.0;
+            if (mouth > 0.0 && m > 0.0) {
+                precise float roof = depth + m;
+                precise float c = mouth * clamp((4.0 + 1.0 - roof) * 0.5, 0.0, 1.0);
+                m = m + (-2.0 - m) * c;
+            }
+        }
+        if (depth > 30.0 && d > mantleRadius + 40.0) {
+            precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
+            precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
+            m = min(m, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
+        }
+    }
+    return m;
+}
+
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet) { // cwet (#971): the wet lowland column
     precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     precise float depth = surface - d;
     if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
@@ -406,24 +573,12 @@ float densityNear(vec3 p, float d, float surface, float fp, float cmask, float c
         precise float m = rockFeature(p, d, surface, fp);
         if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
-    precise float caveWeight = clamp(2.0 - xdiv(fp, 8.0), 0.0, 1.0);
-    precise float caveTop = 5.0;
-    if (depth < 14.0 && depth > -3.0 && caveWeight > 0.0 && planetMoon == 0) caveTop = 5.0 - 7.5 * tSmooth(0.3, 0.45, fractal(N_CAVE_MOUTHS, 1, p.x, p.y, p.z));
-    if (caveWeight > 0.0 && depth > caveTop && d > mantleRadius + 20.0) {
+    { // caves (#615 step 1: caveDistance, bit-exact with the CPU's)
+        precise float solid;
+        precise float m = caveDistance(p, d, depth, fp, cwet, solid);
         precise float near_ = 2.0 * max(fp, 1.0) + 2.0;
-        precise float m = 1e9;
-        precise float a = abs(fractal(N_CAVES_A, 2, p.x, p.y, p.z));
-        if ((a - K_TUNNEL_LEVEL) * 100.0 <= near_) {
-            precise float fade = min(1.0, xdiv(depth - caveTop, 8.0)) * min(1.0, xdiv(d - mantleRadius - 20.0, 10.0));
-            precise float t = max(a, abs(fractal(N_CAVES_B, 2, p.x, p.y, p.z)));
-            m = (t - K_TUNNEL_LEVEL) * 100.0 + (1.0 - fade * caveWeight) * 20.0;
-        }
-        if (depth > 30.0 && d > mantleRadius + 40.0) {
-            precise float fade = min(1.0, xdiv(depth - 30.0, 20.0)) * min(1.0, xdiv(d - mantleRadius - 40.0, 20.0));
-            precise float c = fractal(N_CAVERNS, 2, p.x, p.y * 1.4, p.z);
-            m = min(m, (K_CAVERN_LEVEL - c) * 120.0 + (1.0 - fade * caveWeight) * 30.0);
-        }
         if (m < near_) v = min(v, ISO_LEVEL + DENSITY_GRADIENT * m);
+        if (solid > -4.0) { precise float vs = ISO_LEVEL + DENSITY_GRADIENT * solid; v = max(v, vs); } // (#615 step 3) rubble aprons, after the carve
     }
     if (depth < -15.0 && planetMoon == 0) {
         precise float m = floatingIsland(p, d);

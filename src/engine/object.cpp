@@ -1,4 +1,5 @@
 #include "object.h"
+#include "gpumem.h"
 #include "textobject.h"
 #include "gameobject.h"
 #include <raymath.h>
@@ -83,7 +84,7 @@ void GameObject::drawDepthOnly(const RenderContext& ctx) {
 
 Chunk::~Chunk() { wanted->store(0); releaseMesh(); }
 
-void Chunk::releaseMesh() {
+void Chunk::releaseMesh(bool keepWater) {
     TerrainArena_Free(arena);
     if (mesh.vaoId > 0) {
         UnloadMesh(mesh); // frees GPU buffers and the MemAlloc'd CPU arrays
@@ -95,6 +96,7 @@ void Chunk::releaseMesh() {
     }
     mesh = Mesh{};
     Foliage_Release(grass);
+    if (keepWater) return;
     if (waterMesh.vaoId > 0) UnloadMesh(waterMesh);
     waterMesh = Mesh{};
 }
@@ -118,20 +120,35 @@ static T* CopyToRaylib(const std::vector<T>& v) {
     return p;
 }
 
+// The water surface from a build (full or water-only): every fluid surface in this node (may exist without any
+// terrain surface: open sea). A vertex's second texcoord is its fluid kind (#360).
+void Chunk::uploadWater(const ChunkMeshData& data) {
+    if (waterMesh.vaoId > 0) UnloadMesh(waterMesh);
+    waterMesh = Mesh{};
+    waterSeq = data.waterSeq;
+    if (data.waterPositions.empty()) return;
+    waterMesh.vertexCount = (int)(data.waterPositions.size() / 3);
+    waterMesh.triangleCount = (int)(data.waterIndices.size() / 3);
+    waterMesh.vertices = CopyToRaylib(data.waterPositions);
+    waterMesh.normals = CopyToRaylib(data.waterNormals);
+    if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
+    if (!data.waterFlow.empty()) waterMesh.colors = CopyToRaylib(data.waterFlow); // the current (#361)
+    waterMesh.indices = CopyToRaylib(data.waterIndices);
+    GpuMemTag gmWater_("water"); // VRAM accounting (#302)
+    UploadMesh(&waterMesh, false);
+    if (waterMesh.vaoId > 0) DropCpuVertexData(waterMesh);
+}
+
 void Chunk::setMesh(const ChunkMeshData& data) {
     ready = true;
-    releaseMesh();
-    if (!data.waterPositions.empty()) {
-        // Sea surface (may exist without any terrain surface in the node: open sea).
-        waterMesh.vertexCount = (int)(data.waterPositions.size() / 3);
-        waterMesh.triangleCount = (int)(data.waterIndices.size() / 3);
-        waterMesh.vertices = CopyToRaylib(data.waterPositions);
-        waterMesh.normals = CopyToRaylib(data.waterNormals);
-        if (!data.waterDepth.empty()) waterMesh.texcoords = CopyToRaylib(data.waterDepth);
-        waterMesh.indices = CopyToRaylib(data.waterIndices);
-        UploadMesh(&waterMesh, false);
-        if (waterMesh.vaoId > 0) DropCpuVertexData(waterMesh);
-    }
+    // Water a water-only rebuild meshed from a newer snapshot stays (this build saw older water); it is redrawn
+    // against the new terrain soon (waterDirty).
+    const bool keepWater = data.waterSeq < waterSeq;
+    releaseMesh(keepWater);
+    waterCache = data.waterCache;
+    // A change it must show (the kept water is cut by the old terrain): not held back by the coarse nodes' gate (#381 review).
+    if (keepWater) { waterDirty = true; waterMag = 255; waterDirtySince = GetTime(); }
+    else uploadWater(data);
     Foliage_Upload(grass, data.grass);
     if (data.positions.empty()) return; // node has no terrain surface
     if (TerrainArena_Available()) { arena = TerrainArena_Upload(data); return; } // shared buffers, one draw per pass
@@ -144,6 +161,7 @@ void Chunk::setMesh(const ChunkMeshData& data) {
     if (!data.texcoords2.empty()) mesh.texcoords2 = CopyToRaylib(data.texcoords2); // material weights 6-7
     if (!data.tangents.empty()) mesh.tangents = CopyToRaylib(data.tangents);       // w: sky exposure
     mesh.indices = CopyToRaylib(data.indices);
+    GpuMemTag gm147_("terrain chunks"); // VRAM accounting (#302)
     UploadMesh(&mesh, false);
     if (mesh.vaoId > 0) DropCpuVertexData(mesh);
 }
@@ -240,6 +258,14 @@ void Chunk::drawChunk(const RenderContext& ctx, const Matrix& m) {
         DrawMesh(mesh, *ctx.terrainMaterial, m);
     }
     if (ctx.drawCalls) (*ctx.drawCalls)++;
+}
+
+float Chunk::lodFade(double now) const {
+    if (fadeT0 < 0.0) return 0.0f;
+    const float t = (float)((now - fadeT0) / kLodFadeSeconds);
+    if (t >= 1.0f) return fadeOut ? -0.9999f : 0.0f; // done: an outgoing node is gone (until the list drops it), a new one whole
+    const float s = std::clamp(t, 0.001f, 0.999f);
+    return fadeOut ? -s : s;
 }
 
 void Chunk::drawWater(const RenderContext& ctx, const Matrix& m) {

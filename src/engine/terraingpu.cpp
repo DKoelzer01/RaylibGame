@@ -1,4 +1,5 @@
 #include "terraingpu.h"
+#include "gpumem.h"
 #include "glcaps.h"
 #include "gputimer.h"
 #include "gpucompute.h"
@@ -11,17 +12,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <atomic>
 #include <memory>
 #include <mutex>
 
 namespace {
-    struct BlockGpu { float o[4], n[4], t1[4], t2[4], s[4]; int a[4], b[4]; }; // terrain_density.comp Block
-    static_assert(sizeof(BlockGpu) == 112, "std430 Block");
+    struct BlockGpu { float o[4], n[4], t1[4], t2[4], s[4]; int a[4], b[4], c[4]; }; // terrain_density.comp Block (c: #615 cave segments)
+    static_assert(sizeof(BlockGpu) == 128, "std430 Block");
 
     constexpr int kMaxBlocks = 32;          // per batch
     constexpr int kSlots = 2;               // batches in flight
     constexpr int kMaxBackgroundBlocks = 8; // per batch of background blocks while throttled (#296)
+    constexpr int kMaxSkipped = 256;        // other bodies' blocks a batch looks past before it is sent as it is (#387)
     float gBackgroundFrom = 3.0e38f;
     bool gBackgroundThrottle = false;
 
@@ -45,10 +48,11 @@ namespace {
                 glGenBuffers(1, &r.buf);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, r.buf);
                 const GLbitfield flags = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+                GpuMemTag gm48_("gpu readback"); // VRAM accounting (#302)
                 glBufferStorage(GL_COPY_WRITE_BUFFER, (GLsizeiptr)cap, nullptr, flags | GL_CLIENT_STORAGE_BIT);
                 r.ptr = (float*)glMapBufferRange(GL_COPY_WRITE_BUFFER, 0, (GLsizeiptr)cap, flags);
                 glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
-                if (!r.ptr) { glDeleteBuffers(1, &r.buf); r.buf = 0; r.cap = 0; ringOk = false; logger.logf("[TerrainGpu] persistent map failed: readback by copy\n"); return -1; }
+                if (!r.ptr) { glDeleteBuffers(1, &r.buf); r.buf = 0; r.cap = 0; ringOk = false; LOG_WARN("TerrainGpu", "persistent map failed: readback by copy\n"); return -1; }
                 r.cap = cap;
             }
             r.busy.store(true);
@@ -58,7 +62,7 @@ namespace {
     }
 
     struct Slot {
-        ComputeBuffer grid, islands, out, blocks;
+        ComputeBuffer grid, islands, out, blocks, caves;
         int rb = -1;                        // the ring buffer this batch is copied into (-1: read back by copy)
         GLsync fence = nullptr;
         std::vector<GpuBlockJob> jobs;
@@ -72,9 +76,16 @@ namespace {
         ComputeProgram prog;
         Slot slots[kSlots];
         std::mutex m;
-        std::deque<GpuBlockJob> queue;
+        // In priority order (lower first, FIFO among equals by submission number). A map, not a deque (#387): view blocks
+        // inserted ahead of the preload ring's long background tail, and blocks taken out of the middle, moved every job
+        // behind them (O(n) under the lock the main thread's pump waits on), which grew with the queue until 3 FPS.
+        std::map<std::pair<float, uint64_t>, GpuBlockJob> queue;
+        uint64_t nextSeq = 0;
         const PlanetField* field = nullptr;   // whose uniforms are set
-        const PlanetField* verified = nullptr; // checked against the CPU (its first batch)
+        // Fields checked against the CPU (their first batch). A set, not one pointer: with the planet and its moon both
+        // streaming, batches alternate between them and a single pointer re-ran the CPU check (a whole block sampled on
+        // the main thread) on every batch (#387).
+        std::vector<const PlanetField*> verified;
         bool disabled = false;                 // a GPU / CPU mismatch turned the GPU path off
         long long blocks = 0, batches = 0;
         double latencyMs = 0.0;
@@ -91,17 +102,17 @@ namespace {
         if (S.tried) return S.ok;
         S.tried = true;
         const char* env = getenv("RAYLIBGAME_GPU_TERRAIN");
-        if (env && env[0] == '0') { logger.logf("[TerrainGpu] off (RAYLIBGAME_GPU_TERRAIN=0)\n"); return false; }
+        if (env && env[0] == '0') { LOG_INFO("TerrainGpu", "off (RAYLIBGAME_GPU_TERRAIN=0)\n"); return false; }
         if (!Compute_Available() || !glad_glFenceSync || !S.prog.load("resources/compute/terrain_density.comp")) {
-            logger.logf("[TerrainGpu] unavailable: density blocks on the CPU\n");
+            LOG_WARN("TerrainGpu", "unavailable: density blocks on the CPU\n");
             return false;
         }
         S.ok = true;
         // RAYLIBGAME_GPU_READBACK_COPY=1: the old copy readback (A/B).
         const char* rbEnv = getenv("RAYLIBGAME_GPU_READBACK_COPY");
         ringOk = GL_Caps().bufferStorage && glad_glCopyBufferSubData && !(rbEnv && rbEnv[0] == '1');
-        logger.logf("[TerrainGpu] readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
-        logger.logf("[TerrainGpu] density blocks on the GPU\n");
+        LOG_INFO("TerrainGpu", "readback: %s\n", ringOk ? "persistent mapped ring" : "copy");
+        LOG_INFO("TerrainGpu", "density blocks on the GPU\n");
         return true;
     }
 
@@ -114,6 +125,7 @@ namespace {
         rlSetUniform(S.prog.uniform("noiseParams"), params.data(), RL_SHADER_UNIFORM_VEC4, (int)params.size() / 4);
         S.prog.setFloat("planetRadius", pf.radius);
         S.prog.setInt("planetMoon", pf.isMoon() ? 1 : 0);
+        { const float gp[4] = { pf.gen.ocean, pf.gen.mountains, pf.gen.roughness, 1.0f / std::max(pf.gen.biomeSize, 0.1f) }; rlSetUniform(S.prog.uniform("genParams"), gp, RL_SHADER_UNIFORM_VEC4, 1); } // #504 (as land(), climateAt())
         S.prog.setFloat("mantleRadius", pf.mantleRadiusValue());
         S.prog.setFloat("outerR", pf.radius + pf.maxElevationValue());
         S.prog.setFloat("innerR", pf.radius + pf.minElevationValue());
@@ -125,7 +137,7 @@ namespace {
         const PlanetField& pf = *sl.jobs.front().field;
         SetField(pf);
         std::vector<BlockGpu> blocks;
-        std::vector<float> grid, isl;
+        std::vector<float> grid, isl, cav;
         sl.outOffset.clear();
         size_t out = 0;
         int maxN = 0;
@@ -137,26 +149,35 @@ namespace {
             b.t1[0] = g.t1.x; b.t1[1] = g.t1.y; b.t1[2] = g.t1.z; b.t1[3] = g.umin;
             b.t2[0] = g.t2.x; b.t2[1] = g.t2.y; b.t2[2] = g.t2.z; b.t2[3] = g.vmin;
             b.s[0] = g.su; b.s[1] = g.sv;
-            b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 4);
+            b.a[0] = j.block.E; b.a[1] = g.nu; b.a[2] = g.nv; b.a[3] = (int)(grid.size() / 8); // nodes (two vec4 each)
             b.b[0] = (int)(isl.size() / 12); b.b[1] = (int)(j.islands.size() / 12); b.b[2] = (int)out;
+            b.c[0] = (int)(cav.size() / 24); b.c[1] = (int)(j.caveSegs.size() / 24); b.c[2] = PlanetField::CavesGraph() ? 1 : 0; { static const int walls = getenv("RAYLIBGAME_CAVE_WALLS") && getenv("RAYLIBGAME_CAVE_WALLS")[0] == '0' ? 0 : 1; b.c[3] = walls; } // (#1022) 1: the larger outcrops, 0: the v22 walls // (#615 step 2)
             blocks.push_back(b);
-            for (size_t k = 0; k < g.h.size(); ++k) { const float v[4] = { g.h[k], g.cols[k].mask, g.cols[k].f, 0.0f }; grid.insert(grid.end(), v, v + 4); }
+            for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
+                const PlanetField::Column3D& c = g.cols[k];
+                const float v[8] = { g.h[k], c.mask, c.f, c.wet, 0.0f, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland
+                grid.insert(grid.end(), v, v + 8);
+            }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
+            cav.insert(cav.end(), j.caveSegs.begin(), j.caveSegs.end());
             sl.outOffset.push_back(out);
             const int n = j.block.E * j.block.E * j.block.E;
             out += (size_t)n;
             maxN = std::max(maxN, n);
         }
         if (isl.empty()) isl.assign(12, 0.0f);
+        if (cav.empty()) cav.assign(24, 0.0f);
         sl.outCount = out;
         Ensure(sl.grid, grid.size() * 4);
         Ensure(sl.islands, isl.size() * 4);
+        Ensure(sl.caves, cav.size() * 4);
         Ensure(sl.out, out * 4);
         Ensure(sl.blocks, blocks.size() * sizeof(BlockGpu));
         sl.grid.upload(grid.data(), (unsigned)(grid.size() * 4));
         sl.islands.upload(isl.data(), (unsigned)(isl.size() * 4));
+        sl.caves.upload(cav.data(), (unsigned)(cav.size() * 4));
         sl.blocks.upload(blocks.data(), (unsigned)(blocks.size() * sizeof(BlockGpu)));
-        sl.grid.bind(0); sl.islands.bind(1); sl.out.bind(2); sl.blocks.bind(3);
+        sl.grid.bind(0); sl.islands.bind(1); sl.out.bind(2); sl.blocks.bind(3); sl.caves.bind(4);
         S.prog.use();
         rlComputeShaderDispatch((unsigned)((maxN + 63) / 64), (unsigned)blocks.size(), 1);
         glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
@@ -189,9 +210,8 @@ void TerrainGpu_Submit(GpuBlockJob&& job) {
     std::lock_guard<std::mutex> lock(S.m);
     // In priority order (lower first, FIFO among equals): a dig's remesh (negative) goes ahead of the
     // background LOD builds instead of waiting behind them.
-    auto it = S.queue.end();
-    while (it != S.queue.begin() && std::prev(it)->priority > job.priority) --it;
-    S.queue.insert(it, std::move(job));
+    const float priority = job.priority;
+    S.queue.emplace(std::make_pair(priority, S.nextSeq++), std::move(job));
 }
 
 int TerrainGpu_Pending() {
@@ -200,6 +220,14 @@ int TerrainGpu_Pending() {
     for (const Slot& sl : S.slots) n += (int)sl.jobs.size();
     return n;
 }
+
+void TerrainGpu_ClearQueued() {
+    std::lock_guard<std::mutex> lock(S.m);
+    S.queue.clear(); // their fields (the old world's, with its erosion bake) go with them
+}
+
+static std::atomic<bool> gHold{ false };
+void TerrainGpu_SetHold(bool hold) { gHold.store(hold); }
 
 void TerrainGpu_SetBackground(float from, bool throttle) { gBackgroundFrom = from; gBackgroundThrottle = throttle; }
 
@@ -238,16 +266,41 @@ void TerrainGpu_Pump() {
         // The first batch of each field is checked against the CPU once (one block, ~4 ms): the GPU path rests
         // on bit-exact results (collision reads the CPU field), which another driver might not give (FMA,
         // denormals, sqrt). On any difference the GPU path turns off and this batch is redone on the CPU.
-        if (!sl.jobs.empty() && S.verified != sl.jobs.front().field) {
+        // RAYLIBGAME_GPU_VERIFY_ALL=1 (tests, #357): every block of every batch against the CPU, counting the blocks
+        // that differ (printed at exit) instead of switching the GPU path off.
+        static const bool verifyAll = getenv("RAYLIBGAME_GPU_VERIFY_ALL") && getenv("RAYLIBGAME_GPU_VERIFY_ALL")[0] == '1';
+        if (verifyAll && !S.disabled) {
+            static long long checked = 0, differ = 0;
+            static bool reported = (atexit([] { printf("bench: terrain gpu verify: %lld blocks checked, %lld differ from the CPU\n", checked, differ); }), true);
+            (void)reported;
+            for (size_t k = 0; k < sl.jobs.size(); ++k) {
+                const GpuBlockJob& j = sl.jobs[k];
+                const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
+                std::vector<float> cpu(n);
+                j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
+                ++checked;
+                if (memcmp(cpu.data(), all.get() + sl.outOffset[k], n * sizeof(float)) != 0) {
+                    if (differ++ < 5) {
+                        size_t bad = 0; float worst = 0.0f;
+                        size_t at = 0;
+                        for (size_t q = 0; q < n; ++q) { const float e = fabsf(cpu[q] - all.get()[sl.outOffset[k] + q]); if (e > 0.0f) ++bad; if (e > worst) { worst = e; at = q; } }
+                        const int E = j.block.E;
+                        printf("bench: terrain gpu verify: block at (%.1f, %.1f, %.1f) stride %.2f: %zu of %zu samples differ, worst %.3g (sample %d %d %d: cpu %.9g gpu %.9g)\n",
+                               j.block.origin.x, j.block.origin.y, j.block.origin.z, j.block.stride, bad, n, worst,
+                               (int)(at % E), (int)(at / E % E), (int)(at / E / E), cpu[at], all.get()[sl.outOffset[k] + at]);
+                    }
+                }
+            }
+        } else if (!sl.jobs.empty() && std::find(S.verified.begin(), S.verified.end(), sl.jobs.front().field) == S.verified.end()) {
             const GpuBlockJob& j = sl.jobs.front();
             const size_t n = (size_t)j.block.E * j.block.E * j.block.E;
             std::vector<float> cpu(n);
             j.field->sampleBlock(j.block.origin, j.block.stride, j.block.E, j.block.footprint, j.grid, cpu.data());
             if (memcmp(cpu.data(), all.get() + sl.outOffset[0], n * sizeof(float)) != 0) {
-                logger.logf("[TerrainGpu] GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
+                LOG_WARN("TerrainGpu", "GPU density differs from the CPU on this driver: density blocks back on the CPU\n");
                 S.disabled = true;
             } else {
-                S.verified = j.field;
+                S.verified.push_back(j.field);
             }
         }
         if (S.disabled) { // redone on the CPU, into a writable buffer (the ring is mapped read-only)
@@ -274,16 +327,22 @@ void TerrainGpu_Pump() {
         {
             std::lock_guard<std::mutex> lock(S.m);
             const PlanetField* f = nullptr;
-            int background = 0;
+            int background = 0, skipped = 0;
             for (auto it = S.queue.begin(); it != S.queue.end() && (int)sl.jobs.size() < kMaxBlocks;) {
-                if (it->wanted && !it->wanted()) { it = S.queue.erase(it); continue; }
-                if (gBackgroundThrottle && it->priority >= gBackgroundFrom) { // the rest of the queue is background too
+                GpuBlockJob& j = it->second;
+                if (gHold.load() && j.priority >= 0.0f) break; // #387 back-pressure: only edits while the uploads catch up
+                if (j.wanted && !j.wanted()) { it = S.queue.erase(it); continue; }
+                if (gBackgroundThrottle && j.priority >= gBackgroundFrom) { // the rest of the queue is background too
                     if (backgroundSent || background >= kMaxBackgroundBlocks) break;
                     ++background;
                 }
-                if (f && it->field != f) { ++it; continue; }
-                f = it->field;
-                sl.jobs.push_back(std::move(*it));
+                if (f && j.field != f) { // another body's block: the next batch takes it (#387: don't walk the whole queue)
+                    if (++skipped > kMaxSkipped) break;
+                    ++it;
+                    continue;
+                }
+                f = j.field;
+                sl.jobs.push_back(std::move(j));
                 it = S.queue.erase(it);
             }
             if (background > 0) backgroundSent = true;
@@ -307,7 +366,7 @@ void TerrainGpu_Pump() {
 }
 
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 o, float stride, int SS, float fp,
-                            const PlanetField::BlockGrid& g, const std::vector<float>& islands, float* out) {
+                            const PlanetField::BlockGrid& g, const std::vector<float>& islands, float* out, const std::vector<float>* caveSegs) {
     if (!Init()) return false;
     // Tests only, with nothing streaming: refuse (the caller samples on the CPU) rather than share slot 0 with
     // queued or in-flight chunk builds.
@@ -322,6 +381,7 @@ bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 o, float stride, int 
     j.block.origin = o; j.block.stride = stride; j.block.E = SS; j.block.footprint = fp;
     j.grid = g;
     j.islands = islands;
+    if (caveSegs) j.caveSegs = *caveSegs;
     sl.jobs.push_back(std::move(j));
     Dispatch(sl);
     while (!Done(sl, 1000000000ull)) {}
@@ -343,14 +403,23 @@ void TerrainGpu_Unload() {
     for (Slot& sl : S.slots) {
         if (sl.fence) glDeleteSync(sl.fence);
         sl.fence = nullptr;
+        // A batch dropped in flight never reached a worker, so nothing else frees its readback buffer: each quit while
+        // streaming lost one or two of the six (#556). The GPU runs in order, so its pending copy finishes before any reuse.
+        if (sl.rb >= 0) ring[sl.rb].busy.store(false);
+        sl.rb = -1;
         sl.jobs.clear();
         sl.outOffset.clear();
-        sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy();
+        sl.grid.destroy(); sl.islands.destroy(); sl.out.destroy(); sl.blocks.destroy(); sl.caves.destroy();
     }
     S.prog.unload();
     std::lock_guard<std::mutex> lock(S.m);
     S.queue.clear();
     S.tried = S.ok = false;
-    S.field = S.verified = nullptr;
+    S.field = nullptr;
+    S.verified.clear();
     S.disabled = false;
+    // The old world's GPU memory freed now, not when the driver gets round to it (#902): unloadWorld deletes the terrain
+    // arena (GBs after a long play) and these buffers, and the next world reserves its own arena a moment later - with
+    // both resident a third load ran the machine out of memory. One wait behind the loading screen.
+    glFinish();
 }

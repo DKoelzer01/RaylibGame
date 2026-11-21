@@ -3,6 +3,7 @@
 #include "plots.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
+#include "simclock.h"
 #include "scene.h"
 #include <raymath.h>
 
@@ -40,9 +41,20 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 
 struct Stack { int item = -1, count = 0; };
+// #580: results taken from a heating machine's output carry this bit on their item index: they reach the inventory hot.
+constexpr int kHotItem = 1 << 30;
+static bool HeatsItems(PartType t) {
+    switch (t) {
+        case PartType::Furnace: case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace:
+        case PartType::AlloySmelter: case PartType::ArcFurnace: case PartType::Campfire: return true;
+        default: return false;
+    }
+}
 constexpr int kSlots = 4;
-constexpr int kStackMax = 64;
-constexpr int kChestSlots = 16;
+// A slot holds as much as a player inventory cell (#566: StackLimit: 8192 resources, 256 blocks, 1 tool), but conveyors and
+// inserters keep only kFeedMax of an item in a machine's inputs (a buffer, not a store).
+constexpr int kFeedMax = 64;
+constexpr int kChestSlots = Inventory::kGrid; // as many cells as the player's main inventory (#495: 50, drawn 10 wide)
 
 struct Recipe {
     PartType machine;
@@ -59,10 +71,15 @@ struct Tables {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
         if (it != itemIds.end()) return it->second;
-        itemIds[n] = (int)itemNames.size();
+        const int id = (int)itemNames.size();
+        if (id < kMaxCapItems) caps[id] = StackLimit(n); // written before the id is handed out (under the lock)
+        itemIds[n] = id;
         itemNames.push_back(n);
-        return (int)itemNames.size() - 1;
+        return id;
     }
+    // Whole units of the item a slot holds (#566: the player inventory's StackLimit). Lock-free: the sim thread asks
+    // per stack move, and an id's cap never changes once it is interned.
+    int cap(int id) const { return id >= 0 && id < kMaxCapItems ? caps[id] : 64; }
     int find(const std::string& n) { // -1 if never seen
         std::lock_guard<std::mutex> lock(mutex);
         auto it = itemIds.find(n);
@@ -73,6 +90,8 @@ struct Tables {
         return id >= 0 && id < (int)itemNames.size() ? itemNames[id] : std::string();
     }
 private:
+    static constexpr int kMaxCapItems = 4096;
+    int caps[kMaxCapItems] = {};
     std::mutex mutex;
     std::vector<std::string> itemNames;
     std::unordered_map<std::string, int> itemIds;
@@ -167,7 +186,7 @@ void LoadRecipes() {
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
     }
-    logger.logf("[Factory] %zu machine recipes\n", tables.recipes.size());
+    LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -183,9 +202,11 @@ struct Machine {
     int part = -1;
     PartType type = PartType::Count;
     std::vector<Int3> cells;
-    Stack in[kChestSlots], out[kSlots];     // chests use in[] as storage
+    std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
+    Stack out[kSlots];
     Stack fuel;                             // fuel-burning machines and generators: their own fuel slot (#194)
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
+    uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
@@ -196,7 +217,10 @@ struct Machine {
     int received = 0;                       // EU this tick (consumers)
 };
 
-struct Net { std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV; };
+struct Net {
+    std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
+    long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
+};
 
 struct PlotSim {
     uint64_t body = 0;
@@ -205,6 +229,7 @@ struct PlotSim {
     std::vector<Machine> machines;
     std::unordered_map<int, int> byPart;
     std::vector<Net> itemNets, powerNets;
+    std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
 };
 
 struct LayoutMsg {
@@ -213,8 +238,9 @@ struct LayoutMsg {
     std::vector<std::vector<Int3>> machineCells;
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
+    uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; }; // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -227,19 +253,36 @@ std::vector<std::pair<uint64_t, std::pair<uint32_t, bool>>> nearQueue;
 struct MoveMsg { uint64_t fromBody; uint32_t fromPlot; uint64_t toBody; uint32_t toPlot; };
 std::vector<MoveMsg> moveQueue;               // plots that changed body / id (rocket launch, landing)
 bool resetRequested = false;
-std::vector<std::pair<int, int>> results;     // sim -> main: (item, count) back to the inventory
-std::vector<std::pair<int, int>> refunds;     // sim thread: contents of removed machines (to results)
+struct ItemOut { int item = 0, count = 0; uint32_t to = 0; }; // (#332) to: the player it goes to (0: this game's own inventory)
+std::vector<ItemOut> results;     // sim -> main: (item, count) back to the inventory
+std::vector<ItemOut> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
+void (*cursorSink)(const std::string&, int, float) = nullptr;
+std::vector<ItemOut> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
 std::tuple<uint64_t, uint32_t, int> watchKey{ 0, 0, -1 };
 MachineView watchView;
+std::tuple<uint64_t, uint32_t, int, int, int> cableKey{ 0, 0, 0, 0, 0 }; // body, plot, cell (#570)
+CableView cableView;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::pair<int, int>>> chestView; // chests of plots near the player: (item, count)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpView;     // water pumps (every plot): water units in their outputs
 std::map<std::tuple<uint64_t, uint32_t, int>, int> pumpPending;  // pump water drained (queued) but not yet out of pumpView (viewMutex)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> tankView;     // boilers (every plot): litres of room in their tanks (#229 review)
 std::map<std::tuple<uint64_t, uint32_t, int>, int> tankPending;  // litres sent by AddWater but not yet in a tank (viewMutex)
-inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) { return (body * 1315423911ull) ^ ((uint64_t)plot << 24) ^ (uint64_t)(uint32_t)part; }
+// A 64-bit mix of (body, plot, part) (#180: the old XOR of shifted fields collided easily).
+inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
+    auto mix = [](uint64_t x) { x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull; return x ^ (x >> 31); };
+    return mix(mix(body) ^ (((uint64_t)plot << 32) | (uint32_t)part));
+}
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
+std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
+std::vector<Factory::MachineKey> watchMany;                         // (#332) a server's open machines (viewMutex)
+std::map<Factory::MachineKey, MachineView> watchManyViews;
+std::vector<Vector3> nearPoints;                                    // (#332) main thread: a server's players
+bool remoteMode = false;                                            // (#332) a client: views from the server
+std::map<Factory::MachineKey, MachineView> remoteViews;
+std::unordered_set<uint64_t> remoteWorking;
+std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> remoteWorkingByPlot;
 FactoryStats stats;
 
 std::thread simThread;
@@ -248,6 +291,21 @@ std::atomic<long long> tickCount{ 0 };
 std::atomic<int> simSpeed{ 1 };
 std::condition_variable tickCv;
 std::mutex tickCvMutex;
+// The sim clock (#315): the main thread grants ticks from its simulation steps (Factory::Advance) and WaitTicks; the
+// thread runs one per credit, so the factory pauses with the game and keeps its pace at any frame rate.
+std::atomic<long long> tickCredit{ 0 };
+std::condition_variable creditCv;
+std::mutex creditMutex;
+double creditAccum = 0.0; // main thread: fractional ticks owed
+void GrantTicks(long long n, long long cap) {
+    {
+        std::lock_guard<std::mutex> lk(creditMutex);
+        long long c = tickCredit.load() + n;
+        if (cap > 0 && c > cap) c = std::max(tickCredit.load(), cap); // don't race to catch up after a stall (never drops WaitTicks credit)
+        tickCredit = c;
+    }
+    creditCv.notify_all();
+}
 
 std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts already sent
 
@@ -258,13 +316,14 @@ PlotSim* FindPlot(uint64_t body, uint32_t plot) {
 
 // Adds items to a stack array; returns the count that did not fit.
 int AddItems(Stack* s, int n, int item, int count) {
+    const int cap = tables.cap(item);
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item && s[i].count < kStackMax) { const int k = std::min(count, kStackMax - s[i].count); s[i].count += k; count -= k; }
+        if (s[i].item == item && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, kStackMax); s[i].count = k; count -= k; }
+        if (s[i].count == 0) { s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
     return count;
 }
-bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < kStackMax)) return true; return false; }
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (s[i].count == 0 || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
 int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
@@ -304,14 +363,16 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
     if (HasFuelSlot(m.type) && IsFuel(def, item) && (toFuel || !dual || m.fuel.count == 0)) {
         int k = 0;
         if (m.fuel.count == 0 || m.fuel.item == item) { // one kind of fuel at a time
-            k = std::min(count, kStackMax - m.fuel.count);
+            k = std::min(count, tables.cap(item) - m.fuel.count);
             if (k > 0) { m.fuel.item = item; m.fuel.count += k; }
         }
         count -= k;
         if (count <= 0 || toFuel || !dual) return count;
     }
     if (toFuel || !Accepts(m.type, item)) return count;
-    return AddItems(m.in, InSlots(m), item, count);
+    const int left = AddItems(m.in.data(), InSlots(m), item, count);
+    if (left < count && m.fire == kFireOut) m.fire = kFireAuto; // (#1103) something to cook: a put-out campfire lights by itself again
+    return left;
 }
 
 // Burns up to maxTicks of fuel (taking new fuel items from the fuel slot as needed); returns the
@@ -366,6 +427,7 @@ long long GeneratorStep(Machine& m, const MachineDef& def, int dt, long long nee
 void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     ps.itemNets.clear();
     ps.powerNets.clear();
+    ps.cableNet.clear();
     std::unordered_map<Int3, int> machineAt;
     for (size_t i = 0; i < ps.machines.size(); ++i) {
         ps.machines[i].itemNet = ps.machines[i].powerNet = -1;
@@ -382,6 +444,7 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
             seen.insert(start);
             while (!stack.empty()) {
                 const Int3 c = stack.back(); stack.pop_back();
+                if (power) ps.cableNet[c] = (int)nets.size(); // this network's id (pushed below)
                 for (const Int3& d : dirs) {
                     const Int3 n = { c.x + d.x, c.y + d.y, c.z + d.z };
                     if (cells.count(n) && !seen.count(n)) { seen.insert(n); stack.push_back(n); }
@@ -425,6 +488,7 @@ void ApplyLayout(const LayoutMsg& L) {
         auto it = ps->byPart.find(part);
         if (it != ps->byPart.end() && ps->machines[it->second].type == type) m = ps->machines[it->second];
         m.part = part; m.type = type; m.cells = L.machineCells[i];
+        m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
@@ -434,7 +498,7 @@ void ApplyLayout(const LayoutMsg& L) {
             auto num = [&]() { return k < s.size() ? atoi(s[k++].c_str()) : 0; };
             m.recipe = num(); m.progress = num(); m.energy = num(); m.fuelEU = num();
             const int nin = num();
-            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.in, InSlots(m), item, c); }
+            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.in.data(), InSlots(m), item, c); }
             const int nout = num();
             for (int j = 0; j < nout && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.out, kSlots, item, c); }
             // Then tagged extras: "f item count" (the fuel slot), "w litres", "h heat".
@@ -443,6 +507,7 @@ void ApplyLayout(const LayoutMsg& L) {
                 if (tag == "f" && k + 1 < s.size()) { m.fuel.item = tables.item(s[k]); m.fuel.count = atoi(s[k + 1].c_str()); k += 2; }
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
+                else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
             }
             // Saves from before the fuel slot (#194) kept fuel in the inputs: move fuel no recipe of this machine wants
             // into the fuel slot (#229 review), so an old boiler or furnace still burns it.
@@ -451,7 +516,7 @@ void ApplyLayout(const LayoutMsg& L) {
                     Stack& st = m.in[j];
                     if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
                     if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
-                    const int k = std::min(st.count, kStackMax - m.fuel.count);
+                    const int k = std::min(st.count, tables.cap(st.item) - m.fuel.count);
                     m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
                     if (!st.count) st.item = -1;
                 }
@@ -465,9 +530,9 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count });
-        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count });
+        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
+        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
+        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
     }
     ps->machines = std::move(next);
     ps->byPart = std::move(byPart);
@@ -509,6 +574,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
             }
         }
+        net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
         long long surplus = supply - std::min(supply, demand);
         long long drain = fromBatteries;
         for (int mi : net.machines) {
@@ -532,10 +598,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         // Inputs are only checked when a craft starts and taken when it finishes (#193): take an input out
         // meanwhile and the craft is cancelled, its progress lost. Fuel has its own slot (#194).
         auto inputsHere = [&](const Recipe& r) {
-            for (const Stack& s : r.in) if (CountItems(m.in, kSlots, s.item) < s.count) return false;
+            for (const Stack& s : r.in) if (CountItems(m.in.data(), kSlots, s.item) < s.count) return false;
             return true;
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
+        if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
                 return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r);
@@ -553,6 +620,12 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             }
             for (size_t ri = 0; ri < tables.recipes.size() && m.recipe < 0; ++ri)
                 if (usable(tables.recipes[ri])) { m.recipe = (int)ri; m.progress = 0; }
+            if (m.recipe < 0 && m.fire == kFireLit) { // (#1103) lit with nothing to cook: it burns its fuel (light, warmth)
+                const int burnt = BurnFuel(m, def, dt);
+                if (burnt > 0) { m.status = MachineStatus::Working; ++active; }
+                else { m.status = MachineStatus::NoFuel; m.fire = kFireAuto; } // burnt out: it lights again by itself
+                continue;
+            }
             if (m.recipe < 0) { m.status = MachineStatus::Idle; continue; } // asleep until items arrive
         }
         const Recipe& r = tables.recipes[m.recipe];
@@ -578,7 +651,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             bool fits = true;
             for (const Stack& s : r.out) if (AddItems(trial, kSlots, s.item, s.count) > 0) { fits = false; break; }
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
-            for (const Stack& s : r.in) TakeItems(m.in, kSlots, s.item, s.count); // consumed now, at the end (#193)
+            for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
             for (const Stack& s : r.out) made += s.count;
             m.recipe = -1; m.progress = 0;
@@ -593,7 +666,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             for (int s = 0; s < n && !moved; ++s) {
                 Machine& src = ps.machines[net.machines[(net.rr + s) % n]];
                 const bool chest = src.type == PartType::Chest;
-                Stack* from = chest ? src.in : src.out;
+                Stack* from = chest ? src.in.data() : src.out;
                 const int fromN = chest ? kChestSlots : kSlots;
                 for (int i = 0; i < fromN && !moved; ++i) {
                     if (from[i].count <= 0) continue;
@@ -601,8 +674,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
                         if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
-                        if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in, kChestSlots, item, 1) == 0) moved = true; }
-                        else if (dst.type != PartType::Chest && CountItems(dst.in, kSlots, item) < kStackMax &&
+                        if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
+                        else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
                                  !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
                             int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
                             if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
@@ -618,6 +691,25 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     }
 }
 
+// The watched cable's network (#570), under viewMutex.
+void FillCableView() {
+    const auto& [b, pl, x, y, z] = cableKey;
+    cableView = CableView{};
+    const PlotSim* p = FindPlot(b, pl);
+    if (!p) return;
+    cableView.valid = true;
+    auto it = p->cableNet.find(Int3{ x, y, z });
+    if (it == p->cableNet.end() || it->second < 0 || it->second >= (int)p->powerNets.size()) return;
+    const Net& net = p->powerNets[it->second];
+    cableView.voltage = net.voltage;
+    for (int mi : net.machines) {
+        const Power pw = Def(p->machines[mi].type).power;
+        cableView.generators += pw == Power::Generator; cableView.batteries += pw == Power::Battery; cableView.consumers += pw == Power::Eu;
+    }
+    cableView.supply = (float)net.supply / (float)net.ticks;
+    cableView.demand = (float)net.demand / (float)net.ticks;
+}
+
 void FillView(const PlotSim& ps, int part, MachineView& v) {
     v = MachineView{};
     auto it = ps.byPart.find(part);
@@ -629,25 +721,40 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
+    v.hotOutputs = HeatsItems(m.type);
+    v.canLight = m.type == PartType::Campfire;
+    v.fire = m.fire;
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
-    auto list = [](const Stack* s, int n) {
+    auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
+        std::vector<std::pair<int, int>> total;
+        for (int i = 0; i < n; ++i) {
+            if (s[i].count <= 0) continue;
+            auto it = std::find_if(total.begin(), total.end(), [&](const auto& t) { return t.first == s[i].item; });
+            if (it == total.end()) total.push_back({ s[i].item, s[i].count }); else it->second += s[i].count;
+        }
         std::string out;
-        for (int i = 0; i < n; ++i) if (s[i].count > 0) { if (!out.empty()) out += ", "; out += tables.name(s[i].item) + " x" + std::to_string(s[i].count); }
+        for (const auto& t : total) { if (!out.empty()) out += ", "; out += tables.name(t.first) + " x" + std::to_string(t.second); }
         return out.empty() ? std::string("-") : out;
     };
-    v.input = list(m.in, InSlots(m));
+    v.input = list(m.in.data(), InSlots(m));
     v.output = list(m.out, kSlots);
     for (int i = 0; i < InSlots(m); ++i) v.inSlots.push_back({ m.in[i].count > 0 ? tables.name(m.in[i].item) : std::string(), m.in[i].count });
     if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
 }
 
 void SimLoop() {
+    Log_SetThreadName("factory");
     using clk = std::chrono::steady_clock;
-    auto next = clk::now();
     double emaMs = 0.0, maxMs = 0.0;
     while (running) {
-        next += std::chrono::microseconds(1000000 / (kTicksPerSecond * std::max(1, simSpeed.load()))); // tests may run the clock faster
+        {   // One tick per credit from the sim clock (#315).
+            std::unique_lock<std::mutex> lk(creditMutex);
+            creditCv.wait_for(lk, std::chrono::milliseconds(100), [] { return tickCredit.load() > 0 || !running; });
+            if (!running) break;
+            if (tickCredit.load() <= 0) continue;
+            --tickCredit;
+        }
         const auto t0 = clk::now();
         {
             std::lock_guard<std::mutex> lock(simMutex);
@@ -668,7 +775,8 @@ void SimLoop() {
                 if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
-            std::vector<std::pair<int, int>> back;
+            std::vector<ItemOut> toCursor; // kind 8 (#192)
+            std::vector<ItemOut> back;
             back.swap(refunds); // removed machines' contents (from this tick's layouts)
             std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> drained; // pump drains applied this tick (pumpPending)
             std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> filled;  // tank fills applied this tick (tankPending)
@@ -676,33 +784,57 @@ void SimLoop() {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
-                    if (im.kind == 0) back.push_back({ im.item, im.count });
+                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
                     if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     if (im.kind == 7) filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     continue;
                 }
                 Machine& m = p->machines[it->second];
-                if (im.kind == 0 || im.kind == 2 || im.kind == 6) {
+                if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
+                    int left = im.count;
+                    if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
+                        Stack& s = m.in[im.amount];
+                        if (s.count <= 0 || s.item == im.item) {
+                            const int k = std::min(left, tables.cap(im.item) - std::max(0, s.count));
+                            if (k > 0) { if (s.count <= 0) { s = Stack{}; s.item = im.item; } s.count += k; left -= k; }
+                        }
+                    }
+                    if (left > 0) back.push_back({ im.item, left, im.to });
+                } else if (im.kind == 0 || im.kind == 2 || im.kind == 6 || im.kind == 9) { // (9 on a machine: routed, as Insert)
                     int buckets = 0;
                     const int left = InsertInto(m, im.item, im.count, im.kind == 6, buckets);
-                    if (left > 0 && im.kind != 2) back.push_back({ im.item, left });
-                    if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets }); // the emptied buckets
+                    if (left > 0 && im.kind != 2) back.push_back({ im.item, left, im.to });
+                    if (buckets > 0 && im.kind != 2) back.push_back({ BucketItem(), buckets, im.to }); // the emptied buckets
+                } else if (im.kind == 10) { // (#1103) light or put out a campfire
+                    if (m.type == PartType::Campfire) m.fire = im.count ? kFireLit : kFireOut;
                 } else if (im.kind == 7) {
                     if (Def(m.type).waterPerTick > 0) m.water = std::min(kWaterTank, m.water + im.count); // Waterworks sends only the room (TankRoom)
                     filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 3) {
-                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in, kChestSlots, im.item)); TakeItems(m.in, kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k }); }
+                    if (m.type == PartType::Chest) { const int k = std::min(im.count, CountItems(m.in.data(), kChestSlots, im.item)); TakeItems(m.in.data(), kChestSlots, im.item, k); if (k > 0) back.push_back({ im.item, k, im.to }); }
                 } else if (im.kind == 5) {
                     TakeItems(m.out, kSlots, im.item, im.count); // a pump's water leaves through its pipes (nothing to the inventory)
                     drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                 } else if (im.kind == 4) {
-                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in;
+                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
-                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item, s[im.item].count }); s[im.item] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) { back.push_back({ s[im.item].item | hot, s[im.item].count, im.to }); s[im.item] = Stack{}; }
+                } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
+                    Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
+                    const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
+                    if (im.item >= 0 && im.item < n && s[im.item].count > 0) {
+                        const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
+                        toCursor.push_back({ s[im.item].item | hot, k, im.to });
+                        s[im.item].count -= k;
+                        if (s[im.item].count <= 0) s[im.item] = Stack{};
+                    }
                 } else {
-                    Stack* s = m.type == PartType::Chest ? m.in : m.out;
+                    Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
-                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item, s[i].count }); s[i] = Stack{}; }
+                    const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
+                    for (int i = 0; i < n; ++i) if (s[i].count > 0) { back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
                 }
             }
             // Tick: near plots every tick; far plots once a second with a 20x step.
@@ -724,7 +856,10 @@ void SimLoop() {
                 stats.avgTickMs = emaMs; stats.maxTickMs = maxMs; stats.ticks = t + 1; stats.itemsMade += made;
                 const auto& [b, pl, part] = watchKey;
                 if (PlotSim* p = FindPlot(b, pl)) FillView(*p, part, watchView); else watchView = MachineView{};
+                for (const auto& k : watchMany) { const auto& [wb, wp, wpart] = k; if (PlotSim* p = FindPlot(wb, wp)) FillView(*p, wpart, watchManyViews[k]); else watchManyViews[k] = MachineView{}; } // (#332)
+                FillCableView();
                 for (auto& r : back) results.push_back(r);
+                for (auto& r : toCursor) cursorResults.push_back(r);
                 chestView.clear();
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
@@ -735,9 +870,9 @@ void SimLoop() {
                 for (const PlotSim& ps : plots)
                     for (const Machine& m : ps.machines)
                         if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
-                workingView.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
+                workingView.clear(); workingByPlot.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
                 for (const PlotSim& ps : plots)
-                    if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) workingView.insert(WorkingKey(ps.body, ps.plot, m.part));
+                    if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) { workingView.insert(WorkingKey(ps.body, ps.plot, m.part)); workingByPlot[{ ps.body, ps.plot }].push_back(m.part); }
                 for (const PlotSim& ps : plots)
                     for (const Machine& m : ps.machines)
                         if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
@@ -753,8 +888,6 @@ void SimLoop() {
         }
         tickCount++;
         tickCv.notify_all();
-        std::this_thread::sleep_until(next);
-        if (clk::now() > next + std::chrono::milliseconds(250)) next = clk::now(); // don't race to catch up after a stall
     }
 }
 
@@ -786,8 +919,8 @@ void Factory::Reset() {
 void Factory::Sync(Scene& world) {
     if (!running) Start();
     static double lastNear = 0.0;
-    const bool nearCheck = GetTime() - lastNear > 0.5;
-    if (nearCheck) lastNear = GetTime();
+    const bool nearCheck = SimTime() - lastNear > 0.5 || SimTime() < lastNear;
+    if (nearCheck) lastNear = SimTime();
     for (auto& obj : world.objects) {
         auto* body = dynamic_cast<Planetoid*>(obj.get());
         if (!body || !body->plots) continue;
@@ -796,6 +929,7 @@ void Factory::Sync(Scene& world) {
             auto sv = sentVersions.find(key);
             if (sv == sentVersions.end() || sv->second != pl->version) {
                 LayoutMsg L{ body->id, pl->id, pl->version, {}, {}, {}, {}, {} };
+                L.refundTo = pl->refundTo; pl->refundTo = 0; // (#854)
                 std::vector<std::pair<Int3, CellShape>> fp;
                 for (size_t i = 0; i < pl->parts.size(); ++i) {
                     const Part& part = pl->parts[i];
@@ -825,26 +959,59 @@ void Factory::Sync(Scene& world) {
             }
             if (nearCheck) {
                 const Vector3 o = body->toWorld({ (float)pl->origin.x, (float)pl->origin.y, (float)pl->origin.z });
-                const bool near = Vector3Distance(o, world.camera.position) < 1000.0f;
+                bool near = Vector3Distance(o, world.camera.position) < 1000.0f;
+                for (const Vector3& np : nearPoints) near = near || Vector3Distance(o, np) < 1000.0f; // (#332) a server: its players
                 std::lock_guard<std::mutex> q(queueMutex);
                 nearQueue.push_back({ body->id, { pl->id, near } });
             }
         }
     }
     // Items back from the simulation.
-    std::vector<std::pair<int, int>> back;
+    std::vector<ItemOut> back;
     {
         std::lock_guard<std::mutex> v(viewMutex);
         back.swap(results);
     }
-    for (auto& r : back) inventory.add(tables.name(r.first), r.second);
+    std::vector<ItemOut> cur;
+    {
+        std::lock_guard<std::mutex> v(viewMutex);
+        cur.swap(cursorResults);
+    }
+    // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
+    for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else inventory.addAmount(id, r.count, h); } // (#332) a server: to that player
+    for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else if (cursorSink) cursorSink(id, r.count, h); else inventory.addAmount(id, r.count, h); }
 }
+
+void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count, uint32_t to) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    ItemMsg m{ 8, body, plot, part, which == 2 ? 0 : slot, which };
+    m.amount = count; m.to = to; // (#854) a server: that player's inventory (its client puts it on its cursor)
+    itemQueue.push_back(m);
+}
+void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    ItemMsg m{ 9, body, plot, part, tables.item(item), count };
+    m.amount = slot; m.to = to;
+    itemQueue.push_back(m);
+}
+void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
     const auto key = std::make_tuple(body, plot, part);
+    if (remoteMode) { // (#332) a client: the server's view (asked for when the key changes)
+        if (watchKey != key) { watchKey = key; if (gFactoryRemoteWatch) gFactoryRemoteWatch(body, plot, part); }
+        auto it = remoteViews.find(key); return it == remoteViews.end() ? MachineView{} : it->second;
+    }
     if (watchKey != key) { watchKey = key; return MachineView{}; } // filled from the next tick on
     return watchView;
+}
+
+CableView Factory::Cable(uint64_t body, uint32_t plot, Int3 cell) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    const auto key = std::make_tuple(body, plot, cell.x, cell.y, cell.z);
+    if (cableKey != key) { cableKey = key; return CableView{}; } // filled from the next tick on
+    return cableView;
 }
 
 FactoryStats Factory::Stats() {
@@ -852,21 +1019,25 @@ FactoryStats Factory::Stats() {
     return stats;
 }
 
-void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
-    itemQueue.push_back({ 0, body, plot, part, tables.item(item), count });
+    ItemMsg m{ 0, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
 }
-void Factory::Extract(uint64_t body, uint32_t plot, int part) {
+void Factory::Extract(uint64_t body, uint32_t plot, int part, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
-    itemQueue.push_back({ 1, body, plot, part, -1, 0 });
+    ItemMsg m{ 1, body, plot, part, -1, 0 }; m.to = to; itemQueue.push_back(m);
 }
-void Factory::TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int which) {
+void Factory::TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int which, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
-    itemQueue.push_back({ 4, body, plot, part, which == 2 ? 0 : slot, which });
+    ItemMsg m{ 4, body, plot, part, which == 2 ? 0 : slot, which }; m.to = to; itemQueue.push_back(m);
 }
-void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
-    itemQueue.push_back({ 6, body, plot, part, tables.item(item), count });
+    ItemMsg m{ 6, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
+}
+void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
 }
 int Factory::TankRoom(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
@@ -883,13 +1054,42 @@ void Factory::AddWater(uint64_t body, uint32_t plot, int part, int litres) {
     itemQueue.push_back({ 7, body, plot, part, -1, litres });
 }
 bool Factory::TakesWater(PartType type) { LoadRecipes(); return Def(type).waterPerTick > 0; }
+std::vector<Factory::RecipeInfo> Factory::RecipeList() {
+    LoadRecipes();
+    std::vector<RecipeInfo> out;
+    for (const auto& r : tables.recipes) { // (the factory's own recipe type: "Recipe" alone is ambiguous with the hand recipes here)
+        RecipeInfo ri;
+        ri.machine = r.machine; ri.ticks = r.ticks; ri.eu = r.eu;
+        for (const Stack& s : r.in) ri.in.push_back({ tables.name(s.item), s.count });
+        for (const Stack& s : r.out) ri.out.push_back({ tables.name(s.item), s.count });
+        out.push_back(std::move(ri));
+    }
+    return out;
+}
+std::vector<std::string> Factory::FuelsOf(PartType type) {
+    LoadRecipes();
+    std::vector<std::string> out;
+    for (int f : Def(type).fuels) out.push_back(tables.name(f));
+    return out;
+}
 void Factory::Seed(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 2, body, plot, part, tables.item(item), count });
 }
 
+void Factory::Advance(float simDt) {
+    if (remoteMode) return; // (#332) a client: the server simulates
+    const int speed = std::max(1, simSpeed.load());
+    creditAccum += (double)simDt * kTicksPerSecond * speed;
+    const long long n = (long long)creditAccum;
+    creditAccum -= (double)n;
+    if (n > 0) GrantTicks(n, std::max(2, kTicksPerSecond * speed / 4)); // at most 250 ms behind
+}
+
 void Factory::WaitTicks(int n) {
     const long long target = tickCount.load() + n;
+    GrantTicks(n, 0); // tests wait on the main thread, which grants no steps meanwhile
+
     std::unique_lock<std::mutex> lk(tickCvMutex);
     tickCv.wait_for(lk, std::chrono::seconds(30), [&] { return tickCount.load() >= target; });
 }
@@ -912,6 +1112,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.fuel.count > 0) fprintf(f, " f %s %d", tables.name(m.fuel.item).c_str(), m.fuel.count);
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
+            if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
             fprintf(f, "\n");
         }
     }
@@ -964,14 +1165,23 @@ bool Factory::Accepts(PartType type, const std::string& item) {
 
 void Factory::SetSpeed(int ticksPerTick) { simSpeed = std::max(1, ticksPerTick); }
 
-void Factory::Take(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
+void Factory::Take(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
-    itemQueue.push_back({ 3, body, plot, part, tables.item(item), count });
+    ItemMsg m{ 3, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
 }
 
 std::vector<std::pair<std::string, int>> Factory::ChestContents(uint64_t body, uint32_t plot, int part) {
     std::vector<std::pair<std::string, int>> out;
     std::lock_guard<std::mutex> v(viewMutex);
+    if (remoteMode) { // (#854) a client: the chest's view the server sends for the chests near us
+        auto rv = remoteViews.find(std::make_tuple(body, plot, part));
+        if (rv != remoteViews.end()) for (const auto& s : rv->second.inSlots) if (s.second > 0) {
+            bool merged = false;
+            for (auto& o : out) if (o.first == s.first) { o.second += s.second; merged = true; }
+            if (!merged) out.push_back(s);
+        }
+        return out;
+    }
     auto it = chestView.find(std::make_tuple(body, plot, part));
     if (it == chestView.end()) return out;
     for (const auto& s : it->second) {
@@ -999,5 +1209,43 @@ void Factory::Drain(uint64_t body, uint32_t plot, int part, const std::string& i
 
 bool Factory::Working(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
+    if (remoteMode) return remoteWorking.count(WorkingKey(body, plot, part)) > 0; // (#332)
     return workingView.count(WorkingKey(body, plot, part)) > 0;
 }
+
+// ---- Multiplayer (#332) ----
+void Factory::WatchMany(const std::vector<MachineKey>& keys) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    watchMany = keys;
+    for (auto it = watchManyViews.begin(); it != watchManyViews.end();)
+        it = std::find(keys.begin(), keys.end(), it->first) == keys.end() ? watchManyViews.erase(it) : std::next(it);
+}
+MachineView Factory::Watched(const MachineKey& key) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = watchManyViews.find(key);
+    return it == watchManyViews.end() ? MachineView{} : it->second;
+}
+void Factory::SetNearPoints(const std::vector<Vector3>& points) { nearPoints = points; }
+std::vector<int> Factory::WorkingParts(uint64_t body, uint32_t plot) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto it = workingByPlot.find({ body, plot });
+    return it == workingByPlot.end() ? std::vector<int>{} : it->second;
+}
+void Factory::SetRemote(bool remote) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    remoteMode = remote;
+    remoteViews.clear(); remoteWorking.clear(); remoteWorkingByPlot.clear();
+}
+bool Factory::Remote() { return remoteMode; }
+void Factory::SetRemoteView(const MachineKey& key, const MachineView& view) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    remoteViews[key] = view;
+}
+void Factory::SetRemoteWorking(uint64_t body, uint32_t plot, const std::vector<int>& parts) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    auto& was = remoteWorkingByPlot[{ body, plot }];
+    for (int p : was) remoteWorking.erase(WorkingKey(body, plot, p));
+    was = parts;
+    for (int p : parts) remoteWorking.insert(WorkingKey(body, plot, p));
+}
+void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSink; }

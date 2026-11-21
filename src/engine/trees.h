@@ -27,6 +27,7 @@
 
 #include <raylib.h>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -39,19 +40,23 @@ class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-// Tree variants are species x 2 shapes: 0-1 oak, 2-3 birch, 4-5 maple (broadleaf), 6-7 pine, 8-9 spruce
-// (conifers); then 10-12 bushes and 13 loose stones.
-constexpr int kTreeVariants = 14;
-constexpr int kFirstBush = 10;
-constexpr int kStoneVariant = 13;           // loose stones on the ground: picked up for stone (the first stone tools)
+// Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules):
+// 0-3 oak, 4-7 birch, 8-11 maple (broadleaf), 12-15 pine, 16-19 spruce
+// (conifers); then 20-22 bushes and 23 loose stones.
+constexpr int kTreeVariants = 24;
+constexpr int kFirstBush = 20;
+constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
+constexpr int kStoneVariant = 23;           // loose stones on the ground: picked up for stone (the first stone tools)
 // Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
 // over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
 enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
 struct WoodSpeciesDef { const char* log; const char* name; bool conifer; Vector3 bark, leaf; };
 const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
-inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / 2); }  // trees only (v < kFirstBush)
+inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / kTreeClasses); }  // trees only (v < kFirstBush)
+inline int SizeClassOfVariant(int v) { return v % kTreeClasses; }                          // 0 small .. 3 extra large
 
 constexpr float kTreeTileSize = 64.0f;      // m
+constexpr float kTreeInterestRange = 192.0f; // m: tiles kept around other interest centres (other players, #318)
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
 constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
@@ -80,6 +85,10 @@ struct Plant {
     int variant;
     bool tree() const { return variant < kFirstBush; }
     bool stone() const { return variant == kStoneVariant; }
+    // A tree trunk's volume relative to a medium broadleaf at scale 1 (0.3 m radius, ~5.2 m): chop hits and logs (#274).
+    float trunkVolume() const { return tree() ? radius * radius * height / (0.09f * 5.2f) : 0.0f; }
+    // Chop work and yield grow a little slower than the volume (volume^0.7): a medium oak ~14 hits / 5 logs, a giant ~55 / 26.
+    float chopSize() const { return std::pow(trunkVolume(), 0.7f); }
 };
 struct PlantHit {
     Plant plant;
@@ -107,6 +116,9 @@ struct TreeTile {
     bool pending = false;                      // a rebuild is queued
 };
 
+// (#893 tests) the scatter around dir as generated (no edits or removals), counted within range m: trees, bushes, loose stones.
+class PlanetField;
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones);
 class TreeSystem {
 public:
     TreeSystem(std::shared_ptr<const PlanetField> field, unsigned int seed);
@@ -115,6 +127,9 @@ public:
     // Main thread, once a frame: request tiles near the camera (body-local), drop far ones, take
     // finished tiles, rebuild the draw batches when needed.
     void update(Planetoid& body, Vector3 camLocal);
+    // Other interest centres on this body (body-local; #318: other players on a server): their nearby tiles stay loaded.
+    void setInterest(std::vector<Vector3> centresLocal) { interest = std::move(centresLocal); }
+    int readyTilesNear(Vector3 local, float range) const; // built tiles whose centre is within range (arc, m)
     // Instanced draw (tree shader bound by the scene; its view-projection set).
     void draw(const Planetoid& body, const RenderContext& ctx, int onlyLod = -1, int set = 0); // onlyLod 1: simple far meshes only (the mid pass); set: 0 all, 1/2 the far/near shadow casters
     // The shadow cascades' axis (body-local direction toward the sun): the caster sets are trees near it. Rebuilds the
@@ -126,12 +141,15 @@ public:
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
     void plantsNear(Vector3 local, float range, std::vector<Plant>& out) const; // trees, bushes and stones (tests)
     // The nearest loaded plant (tree or bush) to a body-local point.
-    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone = false) const; // stone: loose stones (else bushes when !tree)
+    bool nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone = false, int sizeClass = -1) const; // stone: loose stones (else bushes when !tree); sizeClass: trees of that class only (#274)
     // The nearest plant a body-local ray hits within maxDistance.
     bool raycast(Vector3 localOrigin, Vector3 localDir, float maxDistance, PlantHit& hit) const;
     // Chop / harvest: gone now, regrows later.
-    void remove(uint64_t id);
+    void remove(uint64_t id, double when = -1.0); // when: the world time it was removed (< 0: now; a joined client: the server's, #335)
+    bool findPlant(uint64_t id, Plant& out) const; // a plant standing in a loaded tile (#335: the server checks a chop)
     const PlantRemovals& removals() const { return *removed; }
+    std::shared_ptr<const PlantRemovals> removalsShared() const { return removed; } // (#335: the server diffs it; copy-on-write)
+    void mergeRemovals(const std::vector<std::pair<uint64_t, double>>& list); // (#335) a joined client: the server's, many at once
     void setRemovals(const PlantRemovals& r);  // from a save: rebuilds every tile
     // Keep an area free of plants (the start: where the player stands and the ship parks).
     void addClearing(Vector3 localCentre, float radius);
@@ -139,7 +157,7 @@ public:
     int loadedTiles() const { return (int)tiles.size(); }
     int instanceCount() const { return drawnInstances; }
     // Tests: trees per species in loaded tiles within `range` of a body-local point.
-    void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count]) const;
+    void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes = nullptr) const; // classes: kTreeClasses counts (#274)
 
 private:
     struct Shared;                             // results queue shared with worker jobs
@@ -163,6 +181,7 @@ private:
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeVariants] = {}, culledVbo[2 * kTreeVariants] = {}, cmdBuf = 0;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
+    std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;
 
     void request(const TreeTileKey& key, TreeTile& tile, float priority);

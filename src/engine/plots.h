@@ -46,10 +46,20 @@ enum class PartType : uint8_t {
     Pipe, Outlet,                                                    // water pipes from pumps, and outlets that pour it out (Plan 4, F6)
     FusionReactor, MassDriver,                                       // EV machines of tiers 9-10 (M24)
     HandPump,                                                        // a hand-worked water pump (#280): hold RMB on it to pump into its pipes
+    Torch,                                                           // a placed torch (#218): a thin post with a flame, lights its surroundings (#139)
+    Snare,                                                           // a snare on the ground (#176): small game gets caught now and then (trapping.cpp)
+    Meteorite,                                                       // a fallen meteorite (#177): 1 m of space rock; broken, it gives nickel-iron and rare ores
+    PressurePlate, GasVent,                                          // dungeon traps (#719, dungeontraps.cpp): a plate (material 0: a falling block, 1: darts) and a vent of poison gas
+    Bed,                                                             // a bed (#800): right-click it to respawn there while it stands
+    ClaimBanner, ClaimBanner2, ClaimBanner3, ClaimBanner4,            // (#343) claim banners: placed in multiplayer, they claim 100 / 200 / 400 / 800 m across for the team
     Count
 };
+// (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
+inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
+constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
 inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver; }
 inline bool IsRocketPart(PartType t) { return (t >= PartType::RocketEngine && t <= PartType::LandingLeg) || t == PartType::Cabin || t == PartType::StationCore; }
+inline bool IsBeam(PartType t) { return t == PartType::Beam2 || t == PartType::Beam4 || t == PartType::Beam8; } // a placement mode now: a line of cubes (#200)
 inline bool IsShape(PartType t) { return t <= PartType::Beam8 || (t >= PartType::Slab && t <= PartType::Post); } // structure: built from a material
 // The shapes in the build wheel's order (the detail shapes of M21 after the beams).
 constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slope, PartType::Corner, PartType::Beam2, PartType::Beam4, PartType::Beam8,
@@ -76,10 +86,15 @@ struct Part {
     uint8_t orient;     // 0..23
     uint8_t material = 0; // shapes: BuildMaterial index
 };
+bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
 // (dot(n, p) <= d keeps the solid side).
+// The face polygons of a cell shape (#197: the build preview), in cell units [0, 1]: the cube's faces clipped by the
+// shape's planes, then the caps on those planes.
+struct CellShape;
+void CellShapeFaces(const CellShape& shape, std::vector<std::vector<Vector3>>& out);
 struct CellShape {
     bool full = true;
     int planes = 0;
@@ -100,6 +115,8 @@ public:
     float air = 0.0f;                   // rocket life support: minutes of breathable air loaded (saved)
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
+    std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
+    uint32_t refundTo = 0;              // (#854) a server: the player whose removal is next to reach the factory (its machines' contents go to them)
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
@@ -111,6 +128,8 @@ public:
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
+    // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
+    static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
     int place(const Part& p);           // part index, or -1 if blocked
     bool remove(int partIndex);
@@ -147,6 +166,9 @@ public:
     // `reach` of it, or a new one anchored there (up = radial).
     Plot* plotFor(Vector3 bodyLocal, float reach, bool create);
     Plot* byId(uint32_t id);
+    // A new plot anchored at a body-local point (up = radial), with this id (multiplayer, #330: a client makes the plot
+    // the server made, the same frame from the same float origin). nullptr if the id is taken.
+    Plot* createAt(uint32_t id, Vector3 bodyLocal);
     Plot* adopt(std::unique_ptr<Plot> plot);          // move a plot in (from another body), with a fresh id
     std::unique_ptr<Plot> release(Plot* plot);        // take one out
     int partCount() const;

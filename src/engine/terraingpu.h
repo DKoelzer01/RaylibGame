@@ -21,6 +21,7 @@ struct GpuBlockJob {
     ChunkBlock block;
     PlanetField::BlockGrid grid;
     std::vector<float> islands;                     // PlanetField::blockIslands
+    std::vector<float> caveSegs;                    // PlanetField::blockCaveSegs (#615 step 2)
     std::function<bool()> wanted;                   // false: dropped (superseded)
     float priority = 0.0f;                          // the build job's (lower first: edits are negative)
     // Main thread: the batch's samples (shared by its blocks) and this block's first one (E^3 floats).
@@ -31,12 +32,15 @@ bool TerrainGpu_Available();
 void TerrainGpu_Submit(GpuBlockJob&& job);          // any thread
 void TerrainGpu_Pump();                             // main thread, once a frame
 int TerrainGpu_Pending();                           // queued + in flight
+void TerrainGpu_SetHold(bool hold);                 // #387: true = no new batches but edits (the upload backlog is long)
+void TerrainGpu_ClearQueued();                      // drop the queued blocks (a world unloads: #387); batches in flight finish
 // Blocks at or above backgroundFrom (the preload ring, #296) are batched gently while throttled: at most one batch of
 // a few blocks a frame, after everything else, so background builds never crowd the frame.
 void TerrainGpu_SetBackground(float backgroundFrom, bool throttle);
 // Synchronous (tests): dispatch, wait, read back. False if unavailable.
 bool TerrainGpu_SampleBlock(const PlanetField& pf, Vector3 origin, float stride, int S, float footprint,
-                            const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out);
+                            const PlanetField::BlockGrid& grid, const std::vector<float>& islands, float* out,
+                            const std::vector<float>* caveSegs = nullptr); // (#615) the block's cave segments (blockCaveSegs)
 struct TerrainGpuStats { long long blocks = 0, batches = 0; double avgLatencyMs = 0.0; };
 TerrainGpuStats TerrainGpu_Stats();
 void TerrainGpu_Unload();

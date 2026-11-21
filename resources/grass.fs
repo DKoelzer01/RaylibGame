@@ -78,7 +78,7 @@ void main()
     // Thin blades: light from the ground's angle to the sun, wrapped so backlit grass still glows.
     float ndl = dot(normalize(fragUp), sunDir);
     float direct = sunVis * sunShadowSimple(fragPosition, 1) * clamp(ndl * 0.6 + 0.4, 0.0, 1.0) * smoothstep(-0.05, 0.1, ndl);
-    vec3 color = albedo * (hemiAmbient(ambient, normalize(fragUp)) * 1.5 + vec3(1.0, 0.96, 0.88) * direct + lampLight(fragPosition, normalize(fragUp)));
+    vec3 color = albedo * (hemiAmbient(ambient, normalize(fragUp)) * 1.5 + vec3(1.0, 0.96, 0.88) * sunTint() * direct + lampLight(fragPosition, normalize(fragUp)));
 
     float fogDist = dist;
     if (fogShell.w > 0.0) {
@@ -90,5 +90,5 @@ void main()
     }
     float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, fogColor, clamp(fog, 0.0, 1.0));
-    finalColor = vec4(pow(color, vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
+    finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), alphaToCoverage > 0.5 ? fade : 1.0);
 }
