@@ -5,9 +5,12 @@
 #include "playerrecord.h"
 #include "research.h"
 #include "survival.h"
+#include "tome.h"          // (#1251) tome pages per team
+#include "playersession.h" // the local player's magic state (found)
 #include "imgui.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <map>
 
@@ -18,6 +21,17 @@ float zoom = 1.0f;
 const char* TierName(int t) {
     static const char* kNames[] = { "Steam and steel", "LV", "MV", "HV", "Rocketry" };
     return t >= 3 && t <= 7 ? kNames[t - 3] : "";
+}
+// A name that fits `room` px at `size`: whole, else cut at a word with "..." (the tooltip has it all).
+std::string Fit(const std::string& s, float size, float room) {
+    ImFont* font = ImGui::GetFont();
+    if (font->CalcTextSizeA(size, FLT_MAX, 0.0f, s.c_str()).x <= room) return s;
+    std::string cut = s;
+    while (!cut.empty() && font->CalcTextSizeA(size, FLT_MAX, 0.0f, (cut + "...").c_str()).x > room) {
+        const size_t sp = cut.find_last_of(' ');
+        cut.resize(sp == std::string::npos || sp == 0 ? cut.size() - 1 : sp);
+    }
+    return cut + "...";
 }
 ImU32 LineColour(const std::string& line) {
     if (line == "combat") return IM_COL32(220, 110, 100, 255);
@@ -116,7 +130,7 @@ void ResearchTab_Draw() {
             dl->AddRect(p, q, n.core ? IM_COL32(230, 210, 140, 255) : LineColour(n.line), 6.0f, 0, n.core ? 2.0f : 1.2f);
             // The text stays inside its box (a long name is cut there; the tooltip has it all); queued shows as the box's colour.
             dl->PushClipRect(ImVec2(p.x + 4, p.y), ImVec2(q.x - 6, q.y), true);
-            dl->AddText(ImGui::GetFont(), fh, ImVec2(p.x + 8, p.y + fh * 0.3f), sight == ResearchSight::NameOnly ? IM_COL32(140, 140, 150, 255) : IM_COL32(235, 235, 235, 255), n.name.c_str());
+            dl->AddText(ImGui::GetFont(), fh, ImVec2(p.x + 8, p.y + fh * 0.3f), sight == ResearchSight::NameOnly ? IM_COL32(140, 140, 150, 255) : IM_COL32(235, 235, 235, 255), Fit(n.name, fh, bw - 16.0f).c_str()); // (cut at a word, #1195 review)
             if (sight == ResearchSight::Full) {
                 const int units = n.units, have = st.progress.count(n.id) ? st.progress.at(n.id) : 0;
                 const char* sub = done ? "done" : have ? TextFormat("%d / %d units, %.0f s each", have, units, n.unitSeconds) : TextFormat("%d units, %.0f s each", units, n.unitSeconds);
@@ -131,7 +145,12 @@ void ResearchTab_Draw() {
                     ImGui::Text("Cost: %d units, each %s and %.0f s in a lab", n.units, packs.c_str(), n.unitSeconds);
                     std::string needs; for (const std::string& d : n.needs) { const ResearchNode* r = Research_Find(d); needs += (needs.empty() ? "" : ", ") + (r ? r->name : d); }
                     ImGui::Text("Needs: %s", needs.empty() ? "-" : needs.c_str());
-                    if (!n.tome.empty()) ImGui::Text("Also needs the tome page: %s", n.tome.c_str());
+                    if (!n.tome.empty()) { // (#1251) the magic cross link: the team's tome page, or a hint before magic is found
+                        const TomePage* page = Tome_Find(n.tome);
+                        if (Tome_Team(ResearchTab_Team()).Has(n.tome)) ImGui::Text("Tome page %s: your team has it", page ? page->name.c_str() : n.tome.c_str());
+                        else if (page && LocalSession().magic.found) ImGui::Text("Also needs the tome page: %s", page->name.c_str());
+                        else ImGui::TextDisabled("Locked: something in the world resonates. Find it first.");
+                    }
                     if (!done && !joined) ImGui::TextDisabled(queued ? "Click: take it out of the queue" : "Click: queue it");
                 } else ImGui::TextDisabled("Its cost shows once your team reaches tier %d", n.tier);
                 ImGui::EndTooltip();
