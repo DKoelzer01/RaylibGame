@@ -583,6 +583,22 @@ bool SceneTarget_HiZ(unsigned& tex, int& w, int& h, int& levels, Matrix& viewPro
     return true;
 }
 
+// (#1164 part 3) The opaque scene so far, resolved for the water's screen-space reflections: the colour (display-encoded,
+// as the world shaders write it) and the depth (reverse-Z), into the single-sample textures the end of the frame fills
+// anyway. Drawing then goes on into the scene target. False when there is no depth resolve target.
+bool SceneTarget_ResolveOpaque(unsigned& colorTex, unsigned& depthTex, int& w, int& h) {
+    if (!S.fbo || !S.resolveFbo || !S.depthFbo || !S.resolveTex || !S.depthTex) return false;
+    rlDrawRenderBatchActive();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
+    glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.depthFbo);
+    glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, S.fbo);
+    colorTex = S.resolveTex; depthTex = S.depthTex; w = S.w; h = S.h;
+    return true;
+}
+
 void SceneTarget_End() {
     if (!S.fbo) return;
     rlDrawRenderBatchActive();

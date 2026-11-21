@@ -127,6 +127,8 @@ class Scene {
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
+        float lightning = 0.0f;          // (#1162) a lightning flash now, 0..1 (set by the game): lights the sky and clouds
+        Vector3 lightningDir = { 0, 1, 0 }; //   toward lightningDir (world, unit) and lifts the open-sky ambient briefly
         Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         std::function<void(Shader&)> frameLighting;  // set during onDraw3D: binds shadow cascades + headlamp to a shader

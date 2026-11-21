@@ -292,7 +292,9 @@ namespace {
             break;
         }
         case SettingsTab::Audio:
-            changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            changed |= Slider({ x, y, w, h }, Audio_V2() ? "Master volume" : "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            if (Audio_V2()) // (#1238) the buses; the old engine has only the master volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) { changed |= Slider({ x, y, w, h }, AudioBus_Name((AudioBus)b), settings.busVolume[b], 0.0f, 1.0f, "%.2f"); next(); }
             break;
         case SettingsTab::Gameplay: {
             // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
@@ -303,6 +305,7 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
             changed |= Toggle({ x, y, w, h }, "Inventory scroll: up sends", settings.invertSlotWheel); next(); // (#862) off: down sends to the other side, up pulls in (Mouse Tweaks)
@@ -331,6 +334,10 @@ void Settings_Load() {
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
             if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
+            if (!strncmp(key, "volume_", 7)) { // (#1238) a bus volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) if (!strcmp(key + 7, AudioBus_Key((AudioBus)b))) settings.busVolume[b] = std::clamp(v, 0.0f, 1.0f);
+                continue;
+            }
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -354,6 +361,7 @@ void Settings_Load() {
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
+            else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
         }
@@ -368,6 +376,7 @@ void Settings_Save() {
     if (!f) return;
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
+    for (int b = 1; b < (int)AudioBus::Count; ++b) fprintf(f, "volume_%s %.3f\n", AudioBus_Key((AudioBus)b), settings.busVolume[b]); // (#1238)
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
@@ -375,6 +384,7 @@ void Settings_Save() {
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
+    fprintf(f, "reduceflashing %d\n", settings.reduceFlashing ? 1 : 0);
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
     for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
@@ -396,6 +406,8 @@ void Settings_Apply() {
     ship.mouseSensitivity = kDefaultShipMouse * settings.mouseSensitivity;
     telescope.baseFov = settings.fov; // the camera's fov is set by the game each frame it is not zoomed
     Audio_SetMasterVolume(settings.volume);
+    static_assert(sizeof(settings.busVolume) / sizeof(settings.busVolume[0]) == (int)AudioBus::Count, "one volume per audio bus");
+    for (int b = 1; b < (int)AudioBus::Count; ++b) Audio_SetBusVolume((AudioBus)b, settings.busVolume[b]); // (#1238)
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)

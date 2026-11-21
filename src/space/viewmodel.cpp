@@ -133,6 +133,9 @@ void Viewmodel_Draw(Scene& world) {
         if (b->field && len > 1.0f) b->field->materialSky(l, 1.0f, 1.0f, Vector3Scale(l, 1.0f / len), sky);
         TerrainHit th;
         if (sunVis > 0.0f && RaycastTerrain(world, Ray{ Vector3Add(eye, Vector3Scale(sunDir, 0.3f)), sunDir }, 120.0f, th)) sunVis = 0.0f;
+        // (#898/#1067) In a pit or shaft open straight up, the sky as the terrain there takes it (the depth term alone made
+        // the hands black a few metres down while the walls around them were lit).
+        if (sky < 0.85f && !RaycastTerrain(world, Ray{ eye, player.up }, 150.0f, th)) sky = 0.85f;
     }
     float target = (0.08f + 0.27f * day) * sky + 0.65f * day * sunVis * sky;
     if (survival.headlamp) target = std::max(target, 0.8f);

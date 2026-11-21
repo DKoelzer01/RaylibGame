@@ -1,9 +1,9 @@
 # id | display name | kind (tool, block, or a number: a resource; placeable parts are blocks) | colour r,g,b | description
-stone           | Stone           | 999 | 130,130,135 | Bulk rock. Used to build terrain back up.
-regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Building filler.
-dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Building filler.
-sand            | Sand            | 999 | 214,190,140 | Fine grains from beaches and shallows. Building filler.
-gravel          | Gravel          | 999 | 130,126,120 | Loose stones from scree and the sea floor. Building filler.
+stone           | Stone           | 999 | 130,130,135 | Bulk rock. Hold it and right-click to place ground; craft stone bricks to build with.
+regolith        | Regolith        | 999 | 170,140,100 | Loose surface dust. Hold it and right-click to place ground.
+dirt            | Dirt            | 999 | 120,90,60   | Soil from the surface. Hold it and right-click to place ground.
+sand            | Sand            | 999 | 214,190,140 | Fine grains from beaches and shallows. Hold it and right-click to place ground.
+gravel          | Gravel          | 999 | 130,126,120 | Loose stones from scree and the sea floor. Hold it and right-click to place ground.
 ice             | Ice             | 999 | 170,210,240 | Frozen volatiles. Melts into water.
 iron_ore        | Iron ore        | 999 | 190,110, 50 | Metal-bearing rock from ore veins.
 iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
@@ -164,12 +164,18 @@ birch_planks       | Birch planks      |   999 | 214,196,152 | Pale planks: buil
 pine_planks        | Pine planks       |   999 | 176,132,82  | Light brown planks: build any shape with them.
 maple_planks       | Maple planks      |   999 | 182,104,78  | Reddish planks: build any shape with them.
 spruce_planks      | Spruce planks     |   999 | 112,82,58   | Dark brown planks: build any shape with them.
-granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. A building material.
-basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. A building material.
-sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. A building material.
-limestone          | Limestone         |   999 | 206,202,186 | Pale stone common inland. A building material.
-marble             | Marble            |   999 | 236,234,230 | White stone in rare deep pockets. A building material.
+granite            | Granite           |   999 | 168,146,140 | Speckled pink-grey stone, from mountain rock. Hold it and right-click to place ground; craft granite bricks to build with.
+basalt             | Basalt            |   999 | 62,62,68    | Dark stone from deep rock, the sea floor and the moon. Hold it and right-click to place ground; craft basalt bricks to build with.
+sandstone          | Sandstone         |   999 | 212,182,132 | Warm yellow stone from low coastal land. Hold it and right-click to place ground; craft sandstone bricks to build with.
+limestone          | Limestone         |   999 | 206,202,186 | Pale stone common inland. Hold it and right-click to place ground; craft limestone bricks to build with.
+marble             | Marble            |   999 | 236,234,230 | White stone in rare deep pockets. Hold it and right-click to place ground; craft marble bricks to build with.
 brick              | Brick             |   999 | 158,74,52   | Fired clay (kiln). A building material.
+stone_brick        | Stone brick       |   999 | 122,122,128 | Dressed stone (2 stone). Build any shape with it.
+granite_brick      | Granite brick     |   999 | 168,146,140 | Dressed granite (2 granite). Build any shape with it.
+basalt_brick       | Basalt brick      |   999 | 62,62,68    | Dressed basalt (2 basalt). Build any shape with it.
+sandstone_brick    | Sandstone brick   |   999 | 212,182,132 | Dressed sandstone (2 sandstone). Build any shape with it.
+limestone_brick    | Limestone brick   |   999 | 206,202,186 | Dressed limestone (2 limestone). Build any shape with it.
+marble_brick       | Marble brick      |   999 | 236,234,230 | Dressed marble (2 marble). Build any shape with it.
 # Decoration (plan 3, M22): gems from rock, dyes from plants and minerals, and what they make.
 quartz             | Quartz             |   999 | 240,236,244 | A clear crystal, now and then in any rock. Glass and lamps; polish into quartz blocks.
 amethyst           | Amethyst           |   999 | 150,100,200 | A violet gem in granite. Polish into amethyst blocks; a purple dye.

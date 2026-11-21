@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "blueprint.h"
 #include "playerinput.h"
 #include "buildtool.h"
@@ -132,8 +133,10 @@ void DrawCellEdges(const Part& q, Color col) {
 }
 
 int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bool charge, std::string& missing, bool leaveGhosts) {
+    PROFILE_SCOPE("blueprint place");
     int placed = 0;
     std::map<std::string, int> short_;
+    BuildTool_BeginFoundationBatch(); // (#1167) the parts' foundations as one terrain edit batch, at the end
     for (const Part& p : bp.parts) {
         const Part q = At(p, o);
         if (!plot.canPlace(q)) continue; // already there (filling in) or blocked
@@ -145,6 +148,7 @@ int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bo
         }
         if (BuildTool_Place(body, plot, q, charge)) ++placed;
     }
+    BuildTool_EndFoundationBatch(body);
     missing.clear();
     for (const auto& kv : short_) missing += TextFormat("%s%d %s", missing.empty() ? "" : ", ", kv.second, kv.first.c_str());
     return placed;

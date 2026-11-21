@@ -551,6 +551,10 @@ namespace {
                 if (a.count > 0) Factory::TakeSlotToCursor(b->id, plot->id, a.part, a.slot, a.which, a.count, session);
                 else Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session);
                 break;
+            case 10: // (#1103) light (count 1) or put out a campfire
+                if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
+                Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
+                break;
             default: return;
         }
         SendChangedItems(conn, inv, before);
