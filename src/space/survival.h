@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <map>
+#include "damage.h" // (#1215) resistances and status effects
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -19,6 +20,8 @@ class Scene;
 // respawns you at the ship.
 struct SurvivalState {
     float oxygen = 100.0f, power = 100.0f, health = 100.0f;   // 0..100
+    Resistances resist;              // (#1215) per damage type and flat armour (armour pieces will set it, #1220)
+    StatusState status;              // (#1215) burn, chill, bleed, poison (shock is an instant interrupt)
     float fallDamageTaken = 0.0f;   // health lost to hard landings so far (not saved; tests tell it from other damage, #439)
     const char* lastHarm = "";      // (#844) what last took health: fall, hit, vacuum, suffocation, starvation, heat (not saved; logs)
     float lastFallSpeed = 0.0f;     // (#844) m/s into the ground at the last harmful landing (logs)

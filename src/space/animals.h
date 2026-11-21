@@ -47,6 +47,9 @@ double Animals_BiteWindUp();            // s from a hostile's warning to its str
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
 bool Animals_Hit(int index, float damage);                     // true if it fell
+// (#1215) A typed hit (damage.h): through the species' resistances, with its status effect; true if it fell. dealtOut: the damage.
+bool Animals_HitEvent(int index, const struct DamageEvent& e, float* dealtOut = nullptr);
+const struct StatusState* Animals_Status(int index);         // (#1215 tests) its status effects (nullptr: no such animal)
 bool Animals_Feed(int index);                                  // with the player's food for it
 int Animals_YoungCount();
 double Animals_LastUpdateMs();
