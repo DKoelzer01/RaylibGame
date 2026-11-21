@@ -1,0 +1,13 @@
+# Composed items (#1449, #1446): one item per class; each copy carries its own parts in its data (itemdata.h):
+#   h=<head material>;g=<handle material>;b=<binding material>;q=<quality %>;s=<sockets>;w=<wear used>
+# Its stats come from the parts (part_materials.txt) through Composed_Stats (composed.h).
+# class id       | role   | tool type | weapon class | head part   | name
+tool_pickaxe      | tool   | pickaxe   | tools        | pick head   | pickaxe
+tool_shovel       | tool   | shovel    | tools        | shovel head | shovel
+tool_axe          | both   | axe       | axe          | axe head    | axe
+tool_hoe          | tool   | hoe       | tools        | hoe head    | hoe
+weapon_knife      | weapon | -         | knife        | blade       | knife
+weapon_sword      | weapon | -         | sword        | blade       | sword
+weapon_mace       | weapon | -         | mace         | mace head   | mace
+weapon_spear      | weapon | -         | spear        | spearhead   | spear
+weapon_greatsword | weapon | -         | twohanded    | blade       | greatsword

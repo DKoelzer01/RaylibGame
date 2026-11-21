@@ -50,6 +50,7 @@
     task | place generator        | Place the LV generator
     task | place electric_furnace | Place the electric furnace and cable it to the generator
     task | place macerator        | Place a macerator: 2 ore crush into 3 (half again as many ingots)
+    task | place lv_assembler     | Place an LV assembler: it makes circuits and the LV packs the research needs
 # (#1271) Tier 4's milestone
     milestone | deliver basic_circuit 40 | Hand in 40 basic circuits at a lab
     milestone | deliver cable 100        | Hand in 100 copper cable at a lab

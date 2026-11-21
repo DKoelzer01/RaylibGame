@@ -68,6 +68,7 @@ const char* PartName(PartType t) {
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam assembler"; // (#1271 L6b-2)
+        case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -143,6 +144,7 @@ const char* PartMachineName(PartType t) {
         case PartType::SteamLab: return "steam_lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam_assembler"; // (#1271 L6b-2)
+        case PartType::LvAssembler: return "lv_assembler"; // (#1271 L6c)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -398,6 +400,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
         case PartType::Bloomery: // (#1271 L2)
         case PartType::SteamAssembler: // (#1271 L6b-2)
+        case PartType::LvAssembler: // (#1271 L6c)
         case PartType::SteamEngine: case PartType::Dynamo: case PartType::Motor: // (#1271 L3)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
