@@ -984,6 +984,7 @@ struct PreloadRing {
 };
 static std::unordered_map<uint64_t, PreloadRing> gPreload;
 static std::unordered_map<uint64_t, int> gCachedCount; // per body, from its last LOD update (#295)
+static std::unordered_map<uint64_t, int> gLodUncovered; // (#1418) per body: desired nodes neither ready nor covered by a kept node (gaps)
 
 // Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
 // overlaps them is ready, so LOD changes never open holes. Returns how many builds it requested.
@@ -1122,6 +1123,22 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
         for (Chunk* c : draw) { const Vector3 lo = c->key.origin(); byDist.push_back({ DistanceToBox(camLocal, lo, Vector3AddValue(lo, c->key.size())), c }); }
         std::sort(byDist.begin(), byDist.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         for (size_t i = 0; i < draw.size(); ++i) draw[i] = byDist[i].second;
+    }
+    {   // (#1418) Gaps: desired nodes not ready that no kept node covers (an ancestor kept, or a kept node inside it). The
+        // finer kept nodes' ancestors in a set, so the test is a walk up each desired node's ancestors, not all pairs.
+        static FlatKeySet keptWithin;
+        keptWithin.reset(retained.size() * 4 + 16);
+        for (const Chunk* r : retained)
+            for (NodeKey k = r->key; k.level <= p.rootLevel; k = parentOf(k)) if (!keptWithin.insert(k)) break;
+        int uncovered = 0;
+        for (const NodeKey& d : desired) {
+            auto n = p.nodes.find(d);
+            if (n != p.nodes.end() && n->second->ready) continue;
+            bool covered = keptWithin.count(d) > 0;
+            for (NodeKey k = parentOf(d); !covered && k.level <= p.rootLevel; k = parentOf(k)) covered = retainedSet.count(k) > 0;
+            if (!covered) ++uncovered;
+        }
+        gLodUncovered[p.id] = uncovered;
     }
     p.drawList = std::move(draw);
 
@@ -1697,6 +1714,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         bool complete = true;
         for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }
         for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
+        stats.lodUncovered = 0;
+        for (auto it = gLodUncovered.begin(); it != gLodUncovered.end();) it = alive.count(it->first) ? std::next(it) : gLodUncovered.erase(it);
+        for (auto& [id, n] : gLodUncovered) stats.lodUncovered += n;
         stats.evicted = gEvicted;
         stats.waterBuilds = gWaterBuilds.load(); stats.waterMs = gWaterUs.load() / 1000.0;
         stats.waterFullBuilds = gWaterFullBuilds.load(); stats.waterCacheBytes = ChunkWaterCacheBytes();
