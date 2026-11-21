@@ -223,6 +223,11 @@ struct Machine {
     // the plot entered Summary (crafts per kCapTicks of each recipe it ran)
     std::map<int, int> crafts;
     std::map<int, int> capPerWindow;
+    long long nearEuCur = 0, nearEuPrev = 0, nearEuCap = 0; // (#1261) a generator's EU in them
+    std::map<int, int> nearCur, nearPrev, nearCap; // (#1261) crafts per recipe while near, in two 30 s buckets; caps from them on leaving
+    int euCarry = 0;                            // (#1266) EU received and not yet a whole tick of its recipe
+    long long euWindow = 0, euCap = 0;          // (#1261) a generator: EU it delivered in the window, and per kCapTicks
+    std::map<int, long long> carry;             // (#1261) part-made crafts per recipe between advances (fixed point)
     PartType type = PartType::Count;
     std::vector<Int3> cells;
     std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
@@ -280,6 +285,8 @@ struct PlotSim {
     // counts each machine's crafts; Summary is advanced by rates (S2) until the plot comes near again.
     enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
     long long modeSince = 0; // the tick the current mode (and the measuring window) began
+    long long lastAdvance = 0; // (Summary) the tick its buffers were last advanced to
+    long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
 };
 
 // (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
@@ -287,27 +294,58 @@ constexpr long long kMeasureTicks = 60 * kTicksPerSecond; // 60 s of measuring (
 constexpr long long kCapTicks = 60 * kTicksPerSecond;     // a cap is crafts per this many ticks
 bool summaryOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SUMMARY"); return !(e && e[0] == '0'); }();
 
+void AdvanceSummary(PlotSim& ps, long long t0, long long t1); // (below)
 void BeginMeasuring(PlotSim& ps, long long t) {
+    if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // (its buffers to now first)
     ps.mode = PlotSim::Mode::Measuring;
     ps.modeSince = t;
-    for (Machine& m : ps.machines) m.crafts.clear();
+    for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; }
 }
-// The player (or a server's players) came near or went away.
+// While near, crafts and EU go into 30 s buckets: the last whole minute is what the plot really did near the player.
+constexpr long long kNearBucketTicks = 30 * kTicksPerSecond;
+void RotateNearBuckets(PlotSim& ps, long long t) {
+    if (t - ps.bucketSince < kNearBucketTicks) return;
+    for (Machine& m : ps.machines) { m.nearPrev.swap(m.nearCur); m.nearCur.clear(); m.nearEuPrev = m.nearEuCur; m.nearEuCur = 0; }
+    ps.bucketSince = t;
+    ps.bucketFull = true;
+}
+// The player (or a server's players) came near or went away. Leaving after a whole minute near, each machine keeps the caps
+// of that minute (what it really did near the player: the 20-tick measuring step loses part of a step at each craft, and a
+// window right after a start-up is low); measuring then may only raise them.
 void SetNear(PlotSim& ps, bool near, long long t) {
     ps.nearPlayer = near;
-    if (near) { ps.mode = PlotSim::Mode::Near; ps.modeSince = t; } // (S2: a Summary plot is advanced to now first)
-    else if (ps.mode == PlotSim::Mode::Near) BeginMeasuring(ps, t);
+    if (near) {
+        if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // its buffers to now, then it ticks
+        ps.mode = PlotSim::Mode::Near; ps.modeSince = t;
+        ps.bucketSince = t; ps.bucketFull = false;
+        for (Machine& m : ps.machines) { m.nearCur.clear(); m.nearPrev.clear(); m.nearEuCur = m.nearEuPrev = 0; }
+        return;
+    }
+    if (ps.mode != PlotSim::Mode::Near) return;
+    const long long window = ps.bucketFull ? kNearBucketTicks + (t - ps.bucketSince) : 0;
+    for (Machine& m : ps.machines) {
+        m.nearCap.clear(); m.nearEuCap = 0;
+        if (window < kMeasureTicks) continue; // (under a minute near: measuring alone)
+        std::map<int, int> sum = m.nearPrev;
+        for (const auto& [r, n] : m.nearCur) sum[r] += n;
+        for (const auto& [r, n] : sum) m.nearCap[r] = (int)((long long)n * kCapTicks / window);
+        m.nearEuCap = (m.nearEuPrev + m.nearEuCur) * kCapTicks / window;
+    }
+    BeginMeasuring(ps, t);
 }
 // After 60 s of measuring, a far plot enters Summary with each machine's caps: its crafts per kCapTicks of each recipe it
-// ran in the window, rounded down (no margin, decided: the oracle test holds the summary at or under the full sim).
+// ran (in the measuring window, or the minute before it left near if that was more), rounded down (no margin, decided:
+// the oracle test holds the summary at or under the full sim).
 void UpdateMode(PlotSim& ps, long long t) {
     if (!summaryOn || ps.mode != PlotSim::Mode::Measuring || t - ps.modeSince < kMeasureTicks) return;
     const long long window = t - ps.modeSince;
     for (Machine& m : ps.machines) {
-        m.capPerWindow.clear();
-        for (const auto& [recipe, n] : m.crafts) m.capPerWindow[recipe] = (int)((long long)n * kCapTicks / window);
+        m.capPerWindow = m.nearCap;
+        for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, (int)((long long)n * kCapTicks / window)); }
+        m.euCap = std::max(m.nearEuCap, m.euWindow * kCapTicks / window);
     }
     ps.mode = PlotSim::Mode::Summary;
+    ps.lastAdvance = t;
     ps.modeSince = t;
 }
 // The step plot i takes at tick t: 1 near, 20 once a second while measuring (staggered by plot), 0 in Summary (S1: a
@@ -696,6 +734,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             const long long eu = GeneratorStep(m, def, dt, std::max(0LL, demand + batteryRoom - supply));
             supply += eu;
             if (eu > 0) ps.stats.euMade[(int)m.type].add(eu); // (#1199)
+            m.euWindow += eu; if (ps.mode == PlotSim::Mode::Near) m.nearEuCur += eu; // (#1261)
         }
         ps.stats.euDemand.add(demand);
         // Share: generation first, then the batteries; a shortfall slows every consumer equally.
@@ -775,7 +814,9 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (def.power == Power::Eu) {
                 if (m.powerNet < 0) { m.status = MachineStatus::NoPower; continue; }
                 if (def.volts < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                ticks = r.eu > 0 ? m.received / r.eu : dt;
+                // (#1266) the EU under one tick's worth waits for the next step (an overloaded net slows its machines, it does not
+                // stall them: a 5-of-8 EU share made 0 ticks every tick near the player)
+                if (r.eu > 0) { const int eu = m.received + m.euCarry; ticks = eu / r.eu; m.euCarry = eu % r.eu; } else ticks = dt;
             } else if (def.power == Power::Fuel) {
                 ticks = BurnFuel(m, def, std::min(dt, r.ticks - m.progress));
             } else {
@@ -797,6 +838,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
             for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
             ++m.crafts[m.recipe]; // (#1261) the measuring window
+            if (ps.mode == PlotSim::Mode::Near) ++m.nearCur[m.recipe]; // (and the near minute)
+            m.euCarry = 0; // (#1266)
             m.recipe = -1; m.progress = 0;
             m.dirty = true; // (#1214) outputs to move, inputs taken
         }
@@ -943,6 +986,265 @@ void TickPlots(std::vector<PlotJob>& jobs, int workers, long long& made, int& ac
         workerPool.run(jobs, begins);
     }
     for (const PlotJob& j : jobs) { made += j.made; active += j.active; }
+}
+
+// ---- (#1261) The summary sim (the factory doc, 2.2-2.5): a far plot advanced by rates, never above the full sim ----
+// Every machine runs the recipes it ran while measuring, at most at its measured cap; a monotone fixpoint (rates only
+// fall) lowers them for power, inputs, output room and the conveyor budget; time advances in segments that end at the
+// next buffer event (a stock empties, a room fills). Buffers: chests, and each machine's own input, fuel and output
+// slots. Integer fixed point, fixed orders, every rounding against the summary.
+constexpr long long kFix = 1000000;                         // rates: millionths per tick
+constexpr int kSolveRounds = 64;                            // (guess)
+constexpr int kMaxSegments = 32;                            // (guess) events per advance; time beyond them makes nothing
+constexpr long long kAdvanceEvery = 10 * kTicksPerSecond;   // (guess) an advance every 10 s per plot (staggered)
+
+struct SumNode { int mi, recipe; long long rate; int fuelItem = -1; }; // crafts per tick x kFix; a fuel machine's fuel
+struct SumGen { int mi; long long eu; long long scale = kFix; int fuelItem = -1; long long drawn = 0; }; // EU/tick x kFix it may give
+
+long long Scaled(long long v, long long num, long long den) { return den <= 0 ? 0 : (long long)((__int128)v * num / den); }
+
+void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
+    if (t1 <= t0) return;
+    const int nm = (int)ps.machines.size(), nets = (int)ps.itemNets.size() + nm; // a machine on no conveyor is a net of its own
+    auto netOf = [&](int mi) { const int n = ps.machines[mi].itemNet; return n >= 0 && n < (int)ps.itemNets.size() ? n : (int)ps.itemNets.size() + mi; };
+    auto fuelOf = [&](int fuel) { auto it = fuelTicks.find(fuel); return it != fuelTicks.end() ? it->second : 200; };
+    long long t = t0;
+    for (int segment = 0; segment < kMaxSegments && t < t1; ++segment) {
+        // Stocks and rooms now: per net and item (chests), per machine and item (own slots).
+        std::map<std::pair<int, int>, long long> chestStock, chestRoom;
+        std::vector<std::map<int, long long>> own(nm), ownRoom(nm);
+        for (int mi = 0; mi < nm; ++mi) {
+            const Machine& m = ps.machines[mi];
+            if (m.type == PartType::Chest) {
+                for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) chestStock[{ netOf(mi), m.in[i].item }] += m.in[i].count;
+                continue;
+            }
+            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) own[mi][m.in[i].item] += m.in[i].count;
+            if (m.fuel.count > 0) own[mi][m.fuel.item] += m.fuel.count;
+        }
+        auto roomFor = [&](const Stack* s, int n, int item) { long long r = 0; for (int i = 0; i < n; ++i) r += s[i].count <= 0 ? tables.cap(item) : s[i].item == item ? std::max(0, tables.cap(item) - s[i].count) : 0; return r; };
+        auto chestRoomFor = [&](int net, int item) {
+            auto key = std::make_pair(net, item);
+            auto it = chestRoom.find(key);
+            if (it != chestRoom.end()) return it->second;
+            long long r = 0;
+            for (int mi = 0; mi < nm; ++mi) if (ps.machines[mi].type == PartType::Chest && netOf(mi) == net) r += roomFor(ps.machines[mi].in.data(), kChestSlots, item);
+            return chestRoom[key] = r;
+        };
+        // The nodes and the generators, at their caps.
+        std::vector<SumNode> nodes;
+        std::vector<SumGen> gens;
+        for (int mi = 0; mi < nm; ++mi) {
+            const Machine& m = ps.machines[mi];
+            const MachineDef& def = Def(m.type);
+            if (def.power == Power::Generator) {
+                if (m.euCap <= 0) continue;
+                SumGen g{ mi, m.euCap * kFix / kCapTicks };
+                g.fuelItem = m.fuel.count > 0 ? m.fuel.item : -1;
+                for (int f : def.fuels) if (g.fuelItem < 0 && chestStock.count({ netOf(mi), f })) g.fuelItem = f;
+                if (g.fuelItem < 0) continue; // nothing to burn (water-only boilers come with the rotation step)
+                gens.push_back(g);
+                continue;
+            }
+            if (m.fire == kFireOut) continue;
+            for (const auto& [recipe, cap] : m.capPerWindow) {
+                if (cap <= 0) continue;
+                const Recipe& r = tables.recipes[recipe];
+                SumNode n{ mi, recipe, std::min<long long>((long long)cap * kFix / kCapTicks, kFix / std::max(1, r.ticks)) };
+                if (def.power == Power::Fuel) {
+                    n.fuelItem = m.fuel.count > 0 ? m.fuel.item : -1;
+                    for (int f : def.fuels) if (n.fuelItem < 0 && chestStock.count({ netOf(mi), f })) n.fuelItem = f;
+                    if (n.fuelItem < 0) continue;
+                }
+                if (def.power == Power::Eu && (m.powerNet < 0 || def.volts < ps.powerNets[m.powerNet].voltage)) continue;
+                nodes.push_back(n);
+            }
+        }
+        // Per tick x kFix: what a node takes and makes of each item; what a generator burns.
+        auto nodeNeeds = [&](const SumNode& n, std::vector<std::pair<int, long long>>& out) {
+            const Recipe& r = tables.recipes[n.recipe];
+            out.clear();
+            for (const Stack& s : r.in) out.push_back({ s.item, n.rate * s.count });
+            if (n.fuelItem >= 0) out.push_back({ n.fuelItem, n.rate * r.ticks / fuelOf(n.fuelItem) + 1 }); // (+1: rounding against the summary)
+        };
+        auto genBurn = [&](const SumGen& g) { const int euOut = std::max(1, Def(ps.machines[g.mi].type).euOut); return g.drawn / ((long long)euOut * fuelOf(g.fuelItem)) + (g.drawn > 0 ? 1 : 0); };
+        std::vector<std::pair<int, long long>> needs;
+        for (int round = 0; round < kSolveRounds; ++round) {
+            bool changed = false;
+            auto scaleNode = [&](SumNode& n, long long num, long long den) { const long long v = Scaled(n.rate, num, den); if (v < n.rate) { n.rate = v; changed = true; } };
+            // Power: a net's consumers share its generators' supply (the TickPlot rule: everyone slows equally).
+            for (size_t pn = 0; pn < ps.powerNets.size(); ++pn) {
+                long long demand = 0, supply = 0;
+                for (const SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) { const Recipe& r = tables.recipes[n.recipe]; demand += n.rate * r.eu * r.ticks; } // (EU a tick while it crafts x the ticks of a craft)
+                for (const SumGen& g : gens) if (ps.machines[g.mi].powerNet == (int)pn) supply += Scaled(g.eu, g.scale, kFix);
+                if (demand > supply) for (SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) scaleNode(n, supply, demand);
+                const long long used = std::min(demand, supply);
+                for (SumGen& g : gens) if (ps.machines[g.mi].powerNet == (int)pn) g.drawn = Scaled(Scaled(g.eu, g.scale, kFix), used, std::max(1LL, supply));
+            }
+            // Items: per net and item, what producers make (P) against what consumers without their own stock want (D').
+            std::map<std::pair<int, int>, long long> made, want;
+            for (const SumNode& n : nodes) {
+                const Recipe& r = tables.recipes[n.recipe];
+                for (const Stack& s : r.out) made[{ netOf(n.mi), s.item }] += n.rate * s.count;
+                nodeNeeds(n, needs);
+                for (const auto& [item, need] : needs) if (!own[n.mi].count(item)) want[{ netOf(n.mi), item }] += need;
+            }
+            for (const SumGen& g : gens) if (!own[g.mi].count(g.fuelItem)) want[{ netOf(g.mi), g.fuelItem }] += genBurn(g);
+            for (const auto& [key, w] : want) {
+                const long long p = made.count(key) ? made[key] : 0;
+                if (w <= p || chestStock.count(key)) continue; // enough made, or a chest covers the rest (until it empties: an event)
+                for (SumNode& n : nodes) {
+                    if (netOf(n.mi) != key.first || own[n.mi].count(key.second)) continue;
+                    nodeNeeds(n, needs);
+                    for (const auto& [item, need] : needs) if (item == key.second && need > 0) { scaleNode(n, p, w); break; }
+                }
+                for (SumGen& g : gens) if (netOf(g.mi) == key.first && g.fuelItem == key.second && !own[g.mi].count(g.fuelItem)) { const long long v = Scaled(g.scale, p, w); if (v < g.scale) { g.scale = v; changed = true; } }
+            }
+            // Outputs: what is made and not taken needs a chest's room, or the maker's own room; else the maker slows to the take.
+            for (const auto& [key, p] : made) {
+                const long long w = want.count(key) ? want[key] : 0;
+                if (p <= w || chestRoomFor(key.first, key.second) > 0) continue;
+                long long fromRoomless = 0;
+                for (const SumNode& n : nodes) {
+                    if (netOf(n.mi) != key.first) continue;
+                    for (const Stack& s : tables.recipes[n.recipe].out) if (s.item == key.second && roomFor(ps.machines[n.mi].out, kSlots, s.item) <= 0) fromRoomless += n.rate * s.count;
+                }
+                if (fromRoomless <= 0) continue;
+                const long long take = std::max(0LL, w - (p - fromRoomless));
+                for (SumNode& n : nodes) {
+                    if (netOf(n.mi) != key.first) continue;
+                    for (const Stack& s : tables.recipes[n.recipe].out) if (s.item == key.second && roomFor(ps.machines[n.mi].out, kSlots, s.item) <= 0) { scaleNode(n, take, fromRoomless); break; }
+                }
+            }
+            // The conveyor budget: 8 items/s a network.
+            const long long budget = (long long)kConveyorItemsPerSecond * kFix / kTicksPerSecond;
+            for (int net = 0; net < (int)ps.itemNets.size(); ++net) {
+                long long flow = 0;
+                for (const auto& [key, p] : made) if (key.first == net) flow += std::max(p, want.count(key) ? want[key] : 0LL);
+                for (const auto& [key, w] : want) if (key.first == net && !made.count(key)) flow += w;
+                if (flow <= budget) continue;
+                for (SumNode& n : nodes) if (netOf(n.mi) == net) scaleNode(n, budget, flow);
+            }
+            if (!changed) break;
+        }
+        // The next event: a stock that empties or a room that fills at these rates (ticks, rounded down; at least 1).
+        long long dt = t1 - t;
+        std::map<std::pair<int, int>, long long> made, want;
+        std::vector<std::map<int, long long>> ownUse(nm), ownMake(nm);
+        for (const SumNode& n : nodes) {
+            const Recipe& r = tables.recipes[n.recipe];
+            for (const Stack& s : r.out) { made[{ netOf(n.mi), s.item }] += n.rate * s.count; ownMake[n.mi][s.item] += n.rate * s.count; }
+            nodeNeeds(n, needs);
+            for (const auto& [item, need] : needs) { if (own[n.mi].count(item)) ownUse[n.mi][item] += need; else want[{ netOf(n.mi), item }] += need; }
+        }
+        for (const SumGen& g : gens) { const long long b = genBurn(g); if (own[g.mi].count(g.fuelItem)) ownUse[g.mi][g.fuelItem] += b; else want[{ netOf(g.mi), g.fuelItem }] += b; }
+        for (int mi = 0; mi < nm; ++mi) for (const auto& [item, use] : ownUse[mi]) if (use > 0) dt = std::min(dt, own[mi][item] * kFix / use);
+        for (const auto& [key, w] : want) { const long long p = made.count(key) ? made[key] : 0; if (w > p && chestStock.count(key)) dt = std::min(dt, chestStock[key] * kFix / (w - p)); }
+        for (const auto& [key, p] : made) {
+            const long long w = want.count(key) ? want[key] : 0;
+            if (p <= w) continue;
+            const long long room = chestRoomFor(key.first, key.second);
+            if (room > 0) { dt = std::min(dt, room * kFix / (p - w)); continue; }
+            for (int mi = 0; mi < nm; ++mi) if (netOf(mi) == key.first && ownMake[mi].count(key.second) && ownMake[mi][key.second] > 0)
+                dt = std::min(dt, roomFor(ps.machines[mi].out, kSlots, key.second) * kFix / ownMake[mi][key.second]);
+        }
+        dt = std::max(1LL, dt);
+        // Apply the segment: crafts (whole ones, the rest carried), their inputs (own slots first, then what the net made,
+        // then chests) and outputs (to what the net used, then chests, then the maker's own slots).
+        std::vector<long long> crafts(nodes.size());
+        for (size_t k = 0; k < nodes.size(); ++k) {
+            long long& carry = ps.machines[nodes[k].mi].carry[nodes[k].recipe];
+            const long long total = nodes[k].rate * dt + carry;
+            crafts[k] = total / kFix;
+            carry = total % kFix;
+        }
+        // Whole items: a shortfall from rounding (an input that is not there) takes crafts away, never adds any.
+        for (int pass = 0; pass < 8; ++pass) {
+            std::map<std::pair<int, int>, long long> makeN, needN;
+            std::vector<std::map<int, long long>> ownNeed(nm);
+            for (size_t k = 0; k < nodes.size(); ++k) {
+                const Recipe& r = tables.recipes[nodes[k].recipe];
+                const int mi = nodes[k].mi;
+                for (const Stack& s : r.out) makeN[{ netOf(mi), s.item }] += crafts[k] * s.count;
+                for (const Stack& s : r.in) ownNeed[mi][s.item] += crafts[k] * s.count;
+                if (nodes[k].fuelItem >= 0) ownNeed[mi][nodes[k].fuelItem] += (crafts[k] * r.ticks + fuelOf(nodes[k].fuelItem) - 1) / fuelOf(nodes[k].fuelItem);
+            }
+            for (int mi = 0; mi < nm; ++mi) for (const auto& [item, need] : ownNeed[mi]) { const long long fromOwn = std::min(need, own[mi].count(item) ? own[mi][item] : 0LL); if (need > fromOwn) needN[{ netOf(mi), item }] += need - fromOwn; }
+            bool short_ = false;
+            for (const auto& [key, need] : needN) {
+                const long long have = (makeN.count(key) ? makeN[key] : 0) + (chestStock.count(key) ? chestStock[key] : 0);
+                if (need <= have) continue;
+                short_ = true;
+                for (size_t k = 0; k < nodes.size(); ++k) {
+                    if (netOf(nodes[k].mi) != key.first || crafts[k] <= 0) continue;
+                    bool uses = nodes[k].fuelItem == key.second;
+                    for (const Stack& s : tables.recipes[nodes[k].recipe].in) uses |= s.item == key.second;
+                    if (uses) crafts[k] = crafts[k] * have / need;
+                }
+            }
+            if (!short_) break;
+        }
+        // Generators: the fuel for the EU their consumers drew in whole crafts (rounded up).
+        std::vector<long long> genFuel(gens.size());
+        for (size_t g = 0; g < gens.size(); ++g) {
+            long long eu = 0, euAll = 0, supply = 0;
+            const int pn = ps.machines[gens[g].mi].powerNet;
+            for (size_t k = 0; k < nodes.size(); ++k) if (Def(ps.machines[nodes[k].mi].type).power == Power::Eu && ps.machines[nodes[k].mi].powerNet == pn) { const Recipe& r = tables.recipes[nodes[k].recipe]; euAll += crafts[k] * r.eu * r.ticks; }
+            for (const SumGen& o : gens) if (ps.machines[o.mi].powerNet == pn) supply += Scaled(o.eu, o.scale, kFix);
+            eu = Scaled(euAll, Scaled(gens[g].eu, gens[g].scale, kFix), std::max(1LL, supply));
+            const long long per = (long long)std::max(1, Def(ps.machines[gens[g].mi].type).euOut) * fuelOf(gens[g].fuelItem);
+            genFuel[g] = (eu + per - 1) / per;
+        }
+        // Take the inputs.
+        std::map<std::pair<int, int>, long long> fromNet, makeN;
+        auto takeFrom = [&](int mi, int item, long long n) { // own slots (inputs, then the fuel slot); returns what is left
+            Machine& m = ps.machines[mi];
+            const long long a = std::min<long long>(n, CountItems(m.in.data(), InSlots(m), item));
+            if (a > 0) TakeItems(m.in.data(), InSlots(m), item, (int)a);
+            n -= a;
+            if (n > 0 && m.fuel.item == item && m.fuel.count > 0) { const long long b = std::min<long long>(n, m.fuel.count); m.fuel.count -= (int)b; if (!m.fuel.count) m.fuel.item = -1; n -= b; }
+            return n;
+        };
+        for (size_t k = 0; k < nodes.size(); ++k) {
+            if (crafts[k] <= 0) continue;
+            const Recipe& r = tables.recipes[nodes[k].recipe];
+            const int mi = nodes[k].mi;
+            for (const Stack& s : r.in) { const long long left = takeFrom(mi, s.item, crafts[k] * s.count); if (left) fromNet[{ netOf(mi), s.item }] += left; ps.stats.items[s.item].used.add(crafts[k] * s.count); }
+            if (nodes[k].fuelItem >= 0) { const long long nf = (crafts[k] * r.ticks + fuelOf(nodes[k].fuelItem) - 1) / fuelOf(nodes[k].fuelItem); const long long left = takeFrom(mi, nodes[k].fuelItem, nf); if (left) fromNet[{ netOf(mi), nodes[k].fuelItem }] += left; ps.stats.items[nodes[k].fuelItem].used.add(nf); }
+            for (const Stack& s : r.out) { makeN[{ netOf(mi), s.item }] += crafts[k] * s.count; ps.stats.items[s.item].made.add(crafts[k] * s.count); }
+        }
+        for (size_t g = 0; g < gens.size(); ++g) if (genFuel[g] > 0) { const long long left = takeFrom(gens[g].mi, gens[g].fuelItem, genFuel[g]); if (left) fromNet[{ netOf(gens[g].mi), gens[g].fuelItem }] += left; ps.stats.items[gens[g].fuelItem].used.add(genFuel[g]); }
+        // What the net made covers what it needed; the rest of the need comes out of its chests; the rest of the making goes
+        // into its chests, then its makers' own output slots.
+        for (const auto& [key, need] : fromNet) {
+            const long long fromMade = std::min(need, makeN.count(key) ? makeN[key] : 0LL);
+            if (fromMade) makeN[key] -= fromMade;
+            long long left = need - fromMade;
+            for (int mi = 0; mi < nm && left > 0; ++mi) {
+                Machine& c = ps.machines[mi];
+                if (c.type != PartType::Chest || netOf(mi) != key.first) continue;
+                const long long a = std::min<long long>(left, CountItems(c.in.data(), kChestSlots, key.second));
+                if (a > 0) { TakeItems(c.in.data(), kChestSlots, key.second, (int)a); left -= a; c.dirty = true; }
+            }
+        }
+        for (auto& [key, extra] : makeN) {
+            long long left = extra;
+            for (int mi = 0; mi < nm && left > 0; ++mi) {
+                Machine& c = ps.machines[mi];
+                if (c.type != PartType::Chest || netOf(mi) != key.first) continue;
+                left = AddItems(c.in.data(), kChestSlots, key.second, (int)left);
+                c.dirty = true;
+            }
+            for (size_t k = 0; k < nodes.size() && left > 0; ++k) {
+                Machine& m = ps.machines[nodes[k].mi];
+                if (netOf(nodes[k].mi) != key.first) continue;
+                for (const Stack& s : tables.recipes[nodes[k].recipe].out) if (s.item == key.second && left > 0) left = AddItems(m.out, kSlots, key.second, (int)left);
+            }
+        }
+        for (Machine& m : ps.machines) { m.dirty = true; m.asleep = false; } // (back near, everything looks again)
+        for (size_t k = 0; k < nodes.size(); ++k) ps.machines[nodes[k].mi].status = crafts[k] > 0 ? MachineStatus::Working : MachineStatus::Idle;
+        t += dt;
+    }
 }
 
 // The watched cable's network (#570), under viewMutex.
@@ -1106,7 +1408,9 @@ void SimLoop() {
             for (size_t i = 0; i < plots.size(); ++i) {
                 PlotSim& ps = plots[i];
                 machines += (int)ps.machines.size(); inets += (int)ps.itemNets.size(); pnets += (int)ps.powerNets.size();
+                if (ps.mode == PlotSim::Mode::Near) RotateNearBuckets(ps, t); // (#1261) the near minute
                 UpdateMode(ps, t); // (#1261) measuring done: Summary
+                if (summaryOn && ps.mode == PlotSim::Mode::Summary && !ps.nearPlayer && (t + (long long)i) % kAdvanceEvery == 0) { AdvanceSummary(ps, ps.lastAdvance, t); ps.lastAdvance = t; } // (#1261) every 10 s, staggered
                 if (const int step = StepOf(ps, i, t)) jobs.push_back({ &ps, step });
             }
             TickPlots(jobs, workerCount, made, active);
@@ -1784,7 +2088,7 @@ TEST(Factory, AFarPlotMeasuresThenEntersSummaryWithItsCaps) {
         EXPECT_GE(cap, 10) << "a fed macerator: 100 ticks a craft, ~12 in a minute";
         EXPECT_LE(cap, 12);
         EXPECT_TRUE(starved.capPerWindow.empty()) << "a starved one made nothing, so it has no cap";
-        // S1: a summary plot stands still (S2 advances it by its rates)
+        // (this loop does not advance it: only the sim loop and the oracle do) - nothing ticks it either
         const uint64_t before = StateHash(ps);
         const int stepsBefore = steps;
         for (long long t = kMeasureTicks + 1; t < kMeasureTicks + 200; ++t) tick(t);
@@ -1798,6 +2102,105 @@ TEST(Factory, AFarPlotMeasuresThenEntersSummaryWithItsCaps) {
         EXPECT_EQ(StepOf(ps, 0, kMeasureTicks + 202), 1);
     }
     summaryOn = was;
+    plots.clear(); plotIndexDirty = true;
+}
+
+// ---- (#1261, S2) The oracle (the factory doc, section 3): the summary never makes more than the full sim ----
+namespace {
+struct OraclePart { PartType type; int x, z; };
+LayoutMsg OracleLayout(uint32_t plotId, const std::vector<OraclePart>& machines, const std::vector<Int3>& conveyors, const std::vector<Int3>& cables) {
+    LayoutMsg L{};
+    L.body = 9; L.plot = plotId; L.version = 1;
+    for (size_t i = 0; i < machines.size(); ++i) {
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ machines[i].x + dx, dy, machines[i].z + dz });
+        L.machines.push_back({ (int)i, machines[i].type }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+    }
+    L.conveyors = conveyors; L.cables = cables;
+    return L;
+}
+std::vector<Int3> Row(int x0, int x1, int z) { std::vector<Int3> r; for (int x = x0; x <= x1; ++x) r.push_back({ x, 0, z }); return r; }
+
+// Four plots: (1) a steady chain, chest of stone -> macerator -> chest; (2) a power-limited line, one generator for six
+// macerators wanting 48 EU/t of its 32, their ore in their own slots (which run dry: an event); (3) a chest with only 20
+// stone (it runs dry: an event); (4) a hand-fed furnace with no conveyor. Totals made per plot and item over `ticks`.
+// far: the plots run near for 2 minutes, then leave "near", measure for 60 s, and advance by the summary every 10 s.
+std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const std::vector<Int3> cable12 = Row(0, 12, -1);
+    ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
+    ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
+                                  { PartType::Macerator, 12, 0 }, { PartType::Macerator, 15, 0 }, { PartType::Macerator, 18, 0 } }, {}, Row(0, 19, -1)));
+    ApplyLayout(OracleLayout(3, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
+    ApplyLayout(OracleLayout(4, { { PartType::Generator, 0, 0 }, { PartType::Furnace, 3, 0 } }, {}, Row(0, 4, -1)));
+    std::vector<PlotSim*> all;
+    for (uint32_t p = 1; p <= 4; ++p) all.push_back(FindPlot(9, p));
+    int b = 0;
+    auto put = [&](PlotSim& ps, int part, const char* item, int n, bool fuel = false) { InsertInto(ps.machines[ps.byPart.at(part)], tables.item(item), n, fuel, b); };
+    put(*all[0], 0, "coal", 64, true); put(*all[0], 1, "stone", 640);
+    put(*all[1], 0, "coal", 64, true); for (int k = 1; k <= 6; ++k) put(*all[1], k, "iron_ore", 64);
+    put(*all[2], 0, "coal", 64, true); put(*all[2], 1, "stone", 20);
+    put(*all[3], 0, "coal", 64, true); put(*all[3], 1, "sand", 64);
+    long long madeAll = 0; int active = 0;
+    constexpr long long kWarm = 2 * 60 * kTicksPerSecond; // B runs near for 2 minutes, then the player leaves (as in play)
+    for (long long t = 0; t < ticks; ++t)
+        for (size_t i = 0; i < all.size(); ++i) {
+            PlotSim& ps = *all[i];
+            if (far && t == kWarm) SetNear(ps, false, t);
+            if (ps.mode == PlotSim::Mode::Near) RotateNearBuckets(ps, t);
+            UpdateMode(ps, t);
+            if (ps.mode == PlotSim::Mode::Summary && (t + (long long)i) % kAdvanceEvery == 0) { AdvanceSummary(ps, ps.lastAdvance, t); ps.lastAdvance = t; }
+            if (const int s = StepOf(ps, i, t)) TickPlot(ps, s, madeAll, active);
+        }
+    std::vector<std::map<std::string, long long>> made(all.size());
+    for (size_t i = 0; i < all.size(); ++i) {
+        PlotSim& ps = *all[i];
+        if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, ticks);
+        for (const auto& [item, s] : ps.stats.items) if (s.made.total + s.made.acc > 0) made[i][tables.name(item)] = s.made.total + s.made.acc;
+    }
+    plots.clear(); plotIndexDirty = true;
+    return made;
+}
+} // namespace
+
+TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimAndNotMuchLess) {
+    const bool was = summaryOn;
+    summaryOn = true;
+    constexpr long long kTicks = 10 * 60 * kTicksPerSecond; // 10 minutes (the doc's oracle)
+    const auto full = OracleRun(false, kTicks), summary = OracleRun(true, kTicks);
+    summaryOn = was;
+    const char* names[] = { "steady chain", "power-limited line", "dry input chest", "hand-fed furnace" };
+    for (size_t p = 0; p < full.size(); ++p) {
+        EXPECT_FALSE(full[p].empty()) << names[p] << ": the full sim makes something";
+        for (const auto& [item, a] : full[p]) {
+            const long long bsum = summary[p].count(item) ? summary[p].at(item) : 0;
+            printf("oracle: %-18s %-14s full %5lld  summary %5lld  (%.1f%%)\n", names[p], item.c_str(), a, bsum, 100.0 * bsum / std::max(1LL, a));
+            EXPECT_LE(bsum, a) << names[p] << ", " << item << ": the summary may never make more than the full sim";
+            EXPECT_GE(bsum * 100, a * 85) << names[p] << ", " << item << ": full " << a << ", summary " << bsum << " (at least 85%)";
+        }
+        for (const auto& [item, bsum] : summary[p]) EXPECT_TRUE(full[p].count(item)) << names[p] << ": the summary made " << item << " the full sim never did";
+    }
+}
+
+// (#1266) Six 8 EU/t macerators on one 32 EU/t generator, near the player (1-tick steps): each gets 5 EU of 8 a tick. It
+// stalled (5 / 8 = 0 ticks, every tick); now the share adds up, and the line runs at about 5/8 of its full speed.
+TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallThem) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
+                                  { PartType::Macerator, 12, 0 }, { PartType::Macerator, 15, 0 }, { PartType::Macerator, 18, 0 } }, {}, Row(0, 19, -1)));
+    PlotSim& ps = *FindPlot(9, 2);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    for (int k = 1; k <= 6; ++k) InsertInto(ps.machines[ps.byPart.at(k)], tables.item("iron_ore"), 64, false, b);
+    long long made = 0; int active = 0;
+    constexpr long long kTicks = 2 * 60 * kTicksPerSecond;
+    for (long long t = 0; t < kTicks; ++t) TickPlot(ps, 1, made, active);
+    const long long full = kTicks / 150 * 6 * 2; // 150 ticks a craft, 2 crushed each, unlimited power
+    // (each gets floor(8 x 32 / 48) = 5 EU of 8: 5/8 of full speed; a craft's last part-tick of EU is not carried over)
+    EXPECT_GE(made * 100, full * 5 / 8 * 85) << "about 5/8 of the full rate (at least 85% of it): made " << made << " of " << full;
+    EXPECT_LE(made, full * 32 / 48) << "and no more than the share allows";
     plots.clear(); plotIndexDirty = true;
 }
 #endif
