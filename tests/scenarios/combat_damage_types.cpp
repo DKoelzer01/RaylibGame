@@ -11,7 +11,7 @@
 #include <string>
 
 namespace {
-struct State { int idx = -1; float hpAfterHits = 0.0f; } S;
+struct State { int idx = -1; uint64_t net = 0; float hpAfterHits = 0.0f; } S; // (net: its stable id; an index shifts when another animal goes)
 
 int Fresh(ScenarioCtx& c) { // a new hornhide 6 m from the start (the last one spawned)
     const Vector3 home = c.spawnDirLocal();
@@ -65,12 +65,16 @@ SCENARIO("combat/damage-types") {
         for (DamageType t : { DamageType::Heat }) { DamageEvent e; e.amount = 1.0f; e.type = t; Animals_HitEvent(S.idx, e); }
         { DamageEvent e; e.amount = 1.0f; e.type = DamageType::Slash; e.heavy = true; Animals_HitEvent(S.idx, e); }
         { DamageEvent e; e.amount = 1.0f; e.type = DamageType::Pierce; e.kind = DamageKind::Bite; Animals_HitEvent(S.idx, e); }
+        S.net = Animals_NetId(S.idx);
         S.hpAfterHits = Animals_HealthOf(S.idx);
         return true;
     });
     s.step("a second of burn, bleed and poison", 5.0, [](ScenarioCtx& c) {
         if (c.t < 1.0) return false;
-        const float lost = S.hpAfterHits - Animals_HealthOf(S.idx);
+        const int i = Animals_FindNet(S.net); // (by its id: the list may have changed under the index)
+        if (!c.check("the burning hornhide is still there", i >= 0, "index then " + std::to_string(S.idx) + ", animals " + std::to_string(Animals_Count()))) return true;
+        c.note("simulated animals " + std::to_string(Animals_SimulatedCount()) + "; its index " + std::to_string(S.idx) + " -> " + std::to_string(i));
+        const float lost = S.hpAfterHits - Animals_HealthOf(i);
         // burn 3/s + bleed 2/s + poison 1.5/s = 6.5 a second (the animal near the start simulates every step)
         c.between("health lost to effects over ~1 s", lost, 5.0, 8.5);
         return true;
