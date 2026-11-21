@@ -3,6 +3,8 @@
 // 32 RPM). Two millstones: 100% stress, full speed. Four: 200%, the whole network at 50% (16 RPM: still working, slowed).
 // Five: 250%, 40% (12.8 RPM): under the millstones' 16 RPM they stall ("Too slow") and make no progress. Let go of the crank:
 // everything stops. The camera looks along the line, so the recording shows the shafts turning slower as the load grows.
+// (#1270) On the first gearbox's top: two small cogs side by side (opposite ways, the same speed) and a large cog diagonal to
+// the first (opposite way, half speed).
 #include "scenario.h"
 #include "buildtool.h"
 #include "factory.h"
@@ -18,6 +20,7 @@ namespace {
 Plot* plot = nullptr;
 uint64_t bodyId = 0;
 int crank = -1, lineShaft = -1;
+int cogA = -1, cogB = -1, cogLarge = -1; // (#1270) on the first gearbox's top: two small cogs side by side, a large one diagonal to the first
 int mills[5] = { -1, -1, -1, -1, -1 };
 int progressA = 0;
 
@@ -57,9 +60,13 @@ SCENARIO("factory/rotation") {
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         plot = c.body->plots->plotFor(ground, 0.0f, true);
         bodyId = c.body->id;
-        const bool ok = Place(c, PartType::HandCrank, { -1, 3, 0 }, OrientFor({ 1, 0, 0 })) && AddMill(c, 0) && AddMill(c, 1);
+        const bool ok = Place(c, PartType::HandCrank, { -1, 3, 0 }, OrientFor({ 1, 0, 0 })) && AddMill(c, 0) && AddMill(c, 1)
+            // (#1270) cogs on the first gearbox's top face (axis y): A over it, B beside A (+x), the large one diagonal to A (+x +z)
+            && Place(c, PartType::Cogwheel, { 0, 4, 0 }, OrientFor({ 0, 1, 0 })) && Place(c, PartType::Cogwheel, { 1, 4, 0 }, OrientFor({ 0, 1, 0 }))
+            && Place(c, PartType::LargeCogwheel, { 1, 4, 1 }, OrientFor({ 0, 1, 0 }));
         if (!c.check("crank, gearboxes, shafts, a stress gauge and two millstones placed", ok)) return true;
         crank = plot->partAt({ -1, 3, 0 }); lineShaft = plot->partAt({ 1, 3, 0 }); // the stress gauge
+        cogA = plot->partAt({ 0, 4, 0 }); cogB = plot->partAt({ 1, 4, 0 }); cogLarge = plot->partAt({ 1, 4, 1 });
         // Looking along the line from the front, a little above: the shafts, the gearboxes and the runner stones in view.
         const Vector3 mid = plot->toBody({ 2.4f, 1.0f, 0.5f }); // the crank (x -0.5 m) to the fifth millstone (x 6.5 m)
         const Vector3 eye = plot->toBody({ 1.2f, 3.0f, -5.2f });
@@ -78,6 +85,11 @@ SCENARIO("factory/rotation") {
         const MachineView m = Mill(0);
         c.check("the millstone works", m.status == MachineStatus::Working, MachineStatusName(m.status));
         c.near("the millstone turns at 32 RPM", m.rpm, 32.0, 0.01);
+        // (#1270) the cogs: B turns against A at its speed; the large one against A at half its speed (cogs add no stress)
+        const RotationView a = Factory::RotationAt(bodyId, plot->id, cogA), b = Factory::RotationAt(bodyId, plot->id, cogB), l = Factory::RotationAt(bodyId, plot->id, cogLarge);
+        c.gt("cog A turns (RPM)", fabsf(a.rpm), 1.0);
+        c.near("cog B turns against A, as fast", b.rpm, -a.rpm, 0.01);
+        c.near("the large cog turns against A at half speed", l.rpm, -a.rpm * 0.5, 0.01);
         return true;
     });
     s.step("two more millstones: 200% stress, everything at half speed", 20.0, [](ScenarioCtx& c) {

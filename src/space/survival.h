@@ -41,7 +41,8 @@ struct SurvivalState {
     float wellFedHealPerSec = 0.25f;
     // The air around you (deg C): latitude, height, day and night, shelter underground; NaN in
     // vacuum (the suit regulates). Below 5 C food drains faster; above 35 C slow damage.
-    float temperature = 20.0f;
+    float temperature = 20.0f;   // felt air temperature, C (#1099: eased toward the air's, so it changes over seconds; NaN: none)
+    int tempBand = 0;            // (#1099) -1 cold, 0 fine, 1 hot: what the readout shows, with 1 C of hysteresis at each edge
     float sickUntil = 0.0f;                                   // raw meat: food drains faster for a while
     bool inLifeSupport = false;
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
@@ -106,6 +107,9 @@ inline std::function<void(const Planetoid& body, const Plot& plot, int part)> gB
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
 const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
+// (#1099) The felt temperature eases toward `air` (C, NaN: none) over a few seconds; the readout's cold/hot band changes only
+// 1 C past each edge (5 C, 35 C).
+void Survival_FeelTemperature(SurvivalState& s, float air, float dt);
 
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);

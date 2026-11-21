@@ -438,7 +438,8 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             };
             std::vector<int> fit;
             for (size_t i = 0; i < species.size(); ++i)
-                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
+                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0) &&
+                    (!body.profile || body.profile->allowsCreature(species[i].id))) // the world file's creatures (#1274)
                     fit.push_back((int)i);
             if (fit.empty()) continue;
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
@@ -706,6 +707,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) { // (#334: around every player out in the dark, as around the local one)
         const PlanetField* tf = dynamic_cast<const PlanetField*>(t.body->field.get());
         if (!tf || !t.vulnerable || hunter < 0) continue;
+        if (t.body->profile && !t.body->profile->allowsCreature(species[hunter].id)) continue; // the world file's creatures (#1274)
         const Vector3 up = Vector3Normalize(t.local);
         const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), t.body->dirToWorld(up)) < -0.1f;
         const bool surface = Vector3Length(t.local) > tf->radius + tf->elevation(up) - 6.0f;

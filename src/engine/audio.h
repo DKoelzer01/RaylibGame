@@ -37,6 +37,10 @@ void Audio_SetMuffle(float cutoffHz);   // > 0: everything low-passed (vacuum th
 // (a long .ogg/.mp3/.flac over 1 MB, or one named music_* / bed_*, is streamed: centred, no low-pass, one at a time).
 // -1 when there is no such sound or audio is off. Sfx s is sound id (int)s.
 int Audio_Sound(const char* name);
+// (#1245) A sound's length at pitch 1 (s), and whether it comes from a file in resources/audio (a recording or a real
+// piece of music) rather than the procedural fallback. 0 / false for no such sound.
+float Audio_SoundSeconds(int sound);
+bool Audio_SoundFromFile(int sound);
 // One-shots at a place (the old engine: a 2D sound with the distance's gain).
 void Audio_PlayAt(Sfx s, const DVec3& posGlobal, float volume = 1.0f, float pitch = 1.0f, const AudioAttenuation& att = {});
 void Audio_PlaySound(int sound, AudioBus bus, AudioPriority priority, float volume = 1.0f, float pitch = 1.0f);

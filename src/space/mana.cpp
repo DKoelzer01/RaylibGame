@@ -163,6 +163,63 @@ int Mana_Combine(int a, int b) {
 
 float Mana_Rate(const std::string& name) { auto it = rates.find(name); return it == rates.end() ? 0.0f : it->second; }
 
+namespace {
+// A step's rate, raised toward 90% by `bonus` (never past 90%, and never lowered by it).
+float Rate(const char* name, float bonus) {
+    const float r = Mana_Rate(name);
+    return r >= 0.9f ? r : r + (0.9f - r) * std::clamp(bonus, 0.0f, 1.0f);
+}
+}
+
+bool Mana_CanShare(int a, int b) { return a == b || !Mana_Cancels(a, b); }
+
+ManaYield Mana_CombineAmounts(int a, float amountA, int b, float amountB, float bonus) {
+    ManaYield y;
+    y.kind = Mana_Combine(a, b);
+    if (y.kind < 0 || amountA <= 0.0f || amountB <= 0.0f) { y.kind = -1; return y; }
+    const float m = std::min(amountA, amountB); // equal parts
+    y.usedA = y.usedB = m;
+    y.out = 2.0f * m * Rate(Mana_Cancels(a, b) ? "cancel" : "combine", bonus);
+    return y;
+}
+
+ManaYield Mana_InvertAmount(int a, float amount, float bonus) {
+    ManaYield y;
+    y.kind = Mana_Inverse(a);
+    if (y.kind < 0 || amount <= 0.0f) { y.kind = -1; return y; }
+    y.usedA = amount;
+    y.out = amount * Rate("invert", bonus);
+    return y;
+}
+
+ManaYield Mana_ToAether(int a, float amount, float bonus) {
+    ManaYield y;
+    y.kind = Mana_Aether();
+    if (y.kind < 0 || a == y.kind || amount <= 0.0f) { y.kind = -1; return y; }
+    y.usedA = amount;
+    y.out = amount * Rate("alone", bonus);
+    return y;
+}
+
+ManaYield Mana_FromAether(int base, float aether, float bonus) {
+    ManaYield y;
+    if (Mana_Kind(base).op != ManaOp::Base || aether <= 0.0f || Mana_Aether() < 0) return y;
+    y.kind = base;
+    y.usedA = aether;
+    y.out = aether * Rate("from_aether", bonus);
+    return y;
+}
+
+std::pair<ManaYield, ManaYield> Mana_Split(int compound, float amount, float bonus) {
+    std::pair<ManaYield, ManaYield> r;
+    const ManaKind& k = Mana_Kind(compound);
+    if (k.op != ManaOp::Combine || amount <= 0.0f) return r;
+    const float each = amount * Rate("split", bonus);
+    r.first.kind = k.a; r.first.out = each; r.first.usedA = amount;
+    r.second.kind = k.b; r.second.out = each; r.second.usedA = amount;
+    return r;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1248): the shipped kinds table and its algebra ----
 #include <gtest/gtest.h>
@@ -232,5 +289,40 @@ TEST(Mana, ValidationCatchesBadTables) {
     EXPECT_FALSE(Mana_LoadText("kind x | X | base | cancel\n", error)) << "one operation";
     EXPECT_FALSE(Mana_LoadText("rate combine 1.5\n", error)) << "a rate is 0..1";
     ASSERT_TRUE(Mana_Load()); // (the shipped table back for the other tests)
+}
+
+// (#1252) The algebra on amounts, with the doc's starting rates (3.1).
+TEST(Mana, ConversionsLoseWhatTheDocSays) {
+    ASSERT_TRUE(Mana_Load());
+    auto K = [](const char* id) { return Mana_Find(id); };
+    ManaYield y = Mana_CombineAmounts(K("fire"), 1.0f, K("air"), 1.0f);
+    EXPECT_EQ(y.kind, K("storm"));
+    EXPECT_NEAR(y.out, 1.6f, 1e-5f) << "1 A + 1 B gives 1.6 of the compound";
+    y = Mana_CombineAmounts(K("fire"), 3.0f, K("air"), 1.0f);
+    EXPECT_FLOAT_EQ(y.usedA, 1.0f) << "equal parts: the larger is left over";
+    EXPECT_FLOAT_EQ(y.usedB, 1.0f);
+    y = Mana_CombineAmounts(K("fire"), 1.0f, K("frost"), 1.0f);
+    EXPECT_EQ(y.kind, K("aether"));
+    EXPECT_NEAR(y.out, 1.8f, 1e-5f) << "opposites are worth collecting: 90%";
+    EXPECT_EQ(Mana_CombineAmounts(K("storm"), 1.0f, K("shard"), 1.0f).kind, -1) << "no compound of compounds";
+    EXPECT_NEAR(Mana_InvertAmount(K("fire"), 1.0f).out, 0.7f, 1e-5f);
+    EXPECT_EQ(Mana_InvertAmount(K("fire"), 1.0f).kind, K("frost"));
+    EXPECT_NEAR(Mana_ToAether(K("earth"), 1.0f).out, 0.6f, 1e-5f);
+    EXPECT_NEAR(Mana_FromAether(K("water"), 1.0f).out, 0.85f, 1e-5f);
+    EXPECT_EQ(Mana_FromAether(K("storm"), 1.0f).kind, -1) << "Aether becomes base kinds only";
+    const auto split = Mana_Split(K("storm"), 1.0f);
+    EXPECT_NEAR(split.first.out, 0.7f, 1e-5f);
+    EXPECT_TRUE((split.first.kind == K("fire") && split.second.kind == K("air")) || (split.first.kind == K("air") && split.second.kind == K("fire")));
+    // Base to base through Aether starts near half (the doc), and research and machines raise each step toward 90%.
+    const float viaAether = Mana_FromAether(K("water"), Mana_ToAether(K("earth"), 1.0f).out).out;
+    EXPECT_NEAR(viaAether, 0.51f, 1e-4f);
+    const float improved = Mana_FromAether(K("water"), Mana_ToAether(K("earth"), 1.0f, 1.0f).out, 1.0f).out;
+    EXPECT_NEAR(improved, 0.81f, 1e-4f) << "0.9 x 0.9 at full bonus";
+    EXPECT_GT(Mana_InvertAmount(K("fire"), 1.0f, 0.5f).out, 0.7f);
+    EXPECT_LE(Mana_InvertAmount(K("fire"), 1.0f, 5.0f).out, 0.9f + 1e-6f) << "never past 90%";
+    // Jars and pipes: a kind and its inverse never share one.
+    EXPECT_FALSE(Mana_CanShare(K("fire"), K("frost")));
+    EXPECT_TRUE(Mana_CanShare(K("fire"), K("storm")));
+    EXPECT_TRUE(Mana_CanShare(K("fire"), K("fire")));
 }
 #endif

@@ -21,6 +21,9 @@ struct MagicPlayerState {
     int sightTier = 0;        // attunement: 0 = 50 m, 1 = 150 m, 2 = 400 m
     bool throughRock = false; // attunement: lines seen through rock
     bool found = false;       // (#1250) has stumbled on magic (the first find: the Arcane line opens)
+    std::map<std::string, float> aspects;  // (#1251) aspect points from studies (per player, decided); tome pages spend them
+    float strain = 0.0f, burden = 0.0f;    // (#1255) 0..100 each (burden.h); dying clears neither
+    bool wardingCharm = false;             // (#1255) worn: burden gains cut by 25%
     float pool = 100.0f, poolMax = 100.0f; // the Aether pool (spells come in step 6, #1253)
     std::map<std::string, int> studied;    // study target type ("node:storm", "creature:deer", "rock:granite") -> times
 };
