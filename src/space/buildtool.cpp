@@ -17,6 +17,7 @@
 #include "worldtypes.h"
 #include "simclock.h"
 #include "factory.h"
+#include "alchemy.h" // (#1254) phials on vessels, the run on their panel
 #include "blueprint.h"
 #include <deque>
 #include "claims.h"
@@ -688,6 +689,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
     // beside the inventory, like the player's.
     if (!buildTool.active && in.hit(Act::Secondary)) {
+        // (#1254) phials in hand on an alchemy vessel: empty ones fill from it, full ones pour in
+        if (Alchemy_UsePhials(machineAim.body, machineAim.plot, machineAim.part, machineAim.type, Hotbar_Slot(Hotbar_Selected()))) { Audio_Play(Sfx::Pickup, 0.4f, 1.4f); return; }
         GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
         Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
         return;
@@ -803,7 +806,8 @@ void Machine_DrawHUD() {
     // counted (#567: a full chest ran off the screen).
     const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
     const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
-    const int lines = (int)(in.size() + out.size());
+    const std::string runLine = Alchemy_IsVessel(machineAim.type) ? Alchemy_PanelLine(machineAim.body, machineAim.plot, machineAim.part) : std::string(); // (#1254)
+    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
@@ -818,6 +822,7 @@ void Machine_DrawHUD() {
     }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }

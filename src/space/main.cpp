@@ -94,6 +94,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "magicsight.h"
 #include "magicdiscovery.h"
 #include "magicmachines.h"
+#include "alchemy.h"
+#include "potions.h"
 #include "tome.h"
 #include "wind.h"
 #include "storage.h"
@@ -657,7 +659,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
-    bool benchOil = false, oilRateOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
+    bool benchOil = false, oilRateOk = false, oilBucketOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
@@ -1355,6 +1357,7 @@ int main(int argc, char** argv)
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
+    if (Magic_Enabled()) Alchemy_Install(); // (#1254) essences, phials and potions as items, the distillery and cauldron recipes (before the factory loads its tables)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
@@ -5514,7 +5517,11 @@ int main(int argc, char** argv)
                             oilPhase = 2; oilT0 = GetTime();
                         } else if (oilPhase == 2 && t > 3.0) {
                             const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
-                            printf("bench: oil: after the bucket %.1f m^3; saved %d, loaded %d\n", oil, (int)saved, (int)loaded);
+                            // (#1414) the bucket really took the oil: the pool stands at least half a bucket under its level
+                            // before it (the seep refills ~0.08 m^3/s meanwhile). It never dropped: 1.6 -> 1.8 m^3.
+                            oilBucketOk = oil <= before - 0.5f;
+                            printf("bench: oil: after the bucket %.1f m^3 (%.1f before it): %s; saved %d, loaded %d\n", oil, before,
+                                   oilBucketOk ? "the bucket took it" : "the pool did NOT drop (#1414)", (int)saved, (int)loaded);
                             oilPhase = 4; oilT0 = GetTime();
                         } else if (oilPhase == 4 && t > 5.0 && oilAfter5 < 0.0f) {
                             oilAfter5 = oil;
@@ -5528,7 +5535,7 @@ int main(int argc, char** argv)
                         } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_oil.png");
-                            const bool ok = oilRateOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
+                            const bool ok = oilRateOk && oilBucketOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
                             printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
                             benchOil = false;
                         } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
@@ -10475,6 +10482,8 @@ int main(int argc, char** argv)
             Factory::Sync(world);                                // machine layouts in, items out
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
             MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
+            Alchemy_Update(world, SimTime());                     // (#1254) alchemy: pipe runs of essence, spills fizzling
+            if (!loading) Potion_Update(simDt);                   // (#1254) potions: their timers
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
@@ -10633,7 +10642,7 @@ int main(int argc, char** argv)
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
-            if (!ship.piloted && !Rocket_Boarded()) { player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165)
+            if (!ship.piloted && !Rocket_Boarded()) { if (!gScenarioCamera) player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165); a scenario's own camera (#1105)
             else if (Rocket_Boarded()) Rocket_View(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), SimAlpha());
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world); // after the camera is placed (#1337)
             Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // after the camera: aims with this frame's view (#285, as #222)
@@ -10804,6 +10813,7 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
+        if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];
