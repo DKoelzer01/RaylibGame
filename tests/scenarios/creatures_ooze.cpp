@@ -8,6 +8,7 @@
 #include "creatures.h"
 #include "damage.h"
 #include "hotbar.h"
+#include "terraintool.h"
 #include "inventory.h"
 #include "player.h"
 #include "playersession.h"
@@ -38,6 +39,7 @@ SCENARIO("creatures/arena-ooze") {
         InvSlot& cell = LocalSession().inventory.grid()[Inventory::kGrid + 0];
         cell.id = "stone_axe"; cell.centi = 100;
         LocalSession().hotbar.selected = 0;
+        terrainTool.heldTool = "stone_axe"; // (the hand follows the hotbar on its own keys; set it here)
         return true;
     });
     s.step("an ooze 4 m off", 5.0, [](ScenarioCtx& c) {
@@ -56,6 +58,7 @@ SCENARIO("creatures/arena-ooze") {
     });
     s.step("it comes to the steps and its touch corrodes the axe", 15.0, [](ScenarioCtx& c) {
         Noise_Emit(c.body->id, FeetLocal(c), NoiseTune::kSprint * 0.4f, Animals_Clock(), kPlayerSource); // footsteps (a walk)
+        terrainTool.heldTool = "stone_axe";
         survival.health = std::max(survival.health, 50.0f);
         if (ToolWear_Used("stone_axe") - S.wear0 < 15) { c.waitingFor("its touch on the axe"); return false; }
         c.eq("15 strokes of wear from one touch", ToolWear_Used("stone_axe") - S.wear0, 15);
