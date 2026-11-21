@@ -284,7 +284,7 @@ bool NetRead(NetReader& r, MsgTerrainEdit& m) {
     m.strength = r.f32();
     const uint64_t s = r.varu();
     m.session = (uint32_t)s; m.seq = r.u32();
-    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F) || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
+    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x1F) /* 16: a till (#1085, #1365) */ || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
     return Done(r);
 }
 
@@ -890,7 +890,7 @@ void NetWrite(NetWriter& w, const MsgMachineAction& m) {
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 9 || m.which > 2) r.ok = false; // (8, 9: #862)
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 10 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103 - widen with each new action, #1365)
     m.part = (int32_t)part;
     return Done(r);
 }
@@ -1119,5 +1119,28 @@ TEST(NetProto, BitFlipsNeverCrash) {
         ParseAny(m);
     }
     SUCCEED();
+}
+
+// (#1365) The largest value each sender writes must read back: a read range left at an older maximum drops the message on
+// the receiving side without a trace (a till's flag 16 on every client; a campfire's machine action 10 on the server).
+// Widen a range here and in its NetRead together when a new flag, kind or action is added.
+TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
+    MsgTerrainEdit till; till.body = 1; till.center = { 10.0, 60000.0, -2.0 }; till.radius = 0.6f; till.flags = 16; till.session = 2; till.seq = 1;
+    MsgTerrainEdit tillBack;
+    EXPECT_TRUE(RoundTrip(till, tillBack)) << "a till (flag 16, #1085) reaches the clients";
+    EXPECT_EQ(tillBack.flags, 16);
+    MsgTerrainEdit all = till; all.flags = 1 | 2 | 4 | 8 | 16; all.hx = all.hy = all.hz = 0.5f; all.ax[0] = 1.0f; all.ay[1] = 1.0f;
+    EXPECT_TRUE(RoundTrip(all, tillBack)) << "every edit flag at once";
+    MsgTerrainEdit beyond = till; beyond.flags = 32;
+    EXPECT_FALSE(RoundTrip(beyond, tillBack)) << "a flag nobody sends is still refused";
+    MsgMachineAction fire; fire.body = 1; fire.plot = 3; fire.part = 0; fire.action = 10; fire.count = 1;
+    MsgMachineAction fireBack;
+    EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
+    EXPECT_EQ(fireBack.action, 10);
+    MsgMachineAction past = fire; past.action = 11;
+    EXPECT_FALSE(RoundTrip(past, fireBack));
+    MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
+    MsgEditRequest qBack;
+    EXPECT_TRUE(RoundTrip(q, qBack)) << "the till request (kind Till) reaches the server";
 }
 #endif

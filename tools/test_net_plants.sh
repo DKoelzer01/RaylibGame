@@ -34,8 +34,8 @@ join() { RAYLIBGAME_PLANTS_SECONDS=${PLANTS_SECONDS:-40} RAYLIBGAME_NET_PLANTS_R
 if [ "${TERRAIN:-}" = default ]; then PLANTS_SECONDS=240 CLIENT_TIMEOUT=600 join watcher & wp=$!; else join watcher & wp=$!; fi
 if [ "${TERRAIN:-}" = default ]; then
     # (#1107) each client bakes the erosion terrain itself: two at once with the host ran out of memory (bad_alloc). The
-    # feller joins once the watcher's world is ready (the watcher listens longer meanwhile: WATCH_SECONDS).
-    until grep -q "world ready" "$tmp/watcher.log" 2>/dev/null || ! kill -0 "$wp" 2>/dev/null || [ $SECONDS -gt 600 ]; do sleep 2; done
+    # feller joins once the watcher is in the world ("world ready" prints only at the end; the watcher listens longer).
+    until grep -q "loading screen after a spawn" "$tmp/watcher.log" 2>/dev/null || ! kill -0 "$wp" 2>/dev/null || [ $SECONDS -gt 600 ]; do sleep 2; done
 else
     sleep 2
 fi
