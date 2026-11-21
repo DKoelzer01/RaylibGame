@@ -311,15 +311,15 @@ TEST(Tome, StudiesGiveAspectsAndPagesSpendThem) {
     Tome_ApplyEffects(team, mate);
     EXPECT_TRUE(mate.sight) << "the team's First Sight teaches its members";
     EXPECT_EQ(mate.sightTier, 1);
-    // A page that needs research: the mana dynamo needs the LV generator.
-    const TomePage* dynamo = Tome_Find("mana_dynamo");
-    ASSERT_TRUE(dynamo);
-    team.pages.insert("research_table"); team.pages.insert("siphon");
-    me.aspects["storm"] = 99; me.aspects["metal"] = 99; me.aspects["order"] = 99;
-    EXPECT_FALSE(Tome_CanUnlock(team, me, research, *dynamo, &why));
+    // A page that needs research: Insight needs the LV generator (and research's mana dynamo needs Insight).
+    const TomePage* insight = Tome_Find("insight");
+    ASSERT_TRUE(insight);
+    team.pages.insert("research_table");
+    for (const auto& [id, n] : insight->cost) me.aspects[id] = 99.0f;
+    EXPECT_FALSE(Tome_CanUnlock(team, me, research, *insight, &why));
     EXPECT_NE(why.find("research"), std::string::npos) << why;
     research.done.insert("lv_power");
-    EXPECT_TRUE(Tome_CanUnlock(team, me, research, *dynamo, &why)) << why;
+    EXPECT_TRUE(Tome_CanUnlock(team, me, research, *insight, &why)) << why;
 }
 
 TEST(Tome, ResearchNeedsItsTomePage) {
