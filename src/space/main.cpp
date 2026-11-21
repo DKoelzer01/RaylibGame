@@ -10572,19 +10572,22 @@ int main(int argc, char** argv)
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
         if (sunOverride) world.sunDirection = sunArg;
-        // Atmosphere: the nearest planet (moons and asteroids have none) colours the sky and haze.
+        // Atmosphere: the nearest world with a sky (its world file, #1274: Terra; Luna and asteroids have none) colours the sky and haze.
         world.atmosphere.enabled = false;
         {
             float best = 1e30f;
             for (auto& obj : world.objects)
                 if (auto* q = dynamic_cast<Planetoid*>(obj.get()))
-                    if (q->kind == BodyKind::Planet) {
+                    if (q->profile && q->profile->hasSky) {
                         const float alt = Vector3Distance(world.camera.position, q->position) - q->radius * q->scale;
                         if (alt < best) {
                             best = alt;
                             world.atmosphere.enabled = true;
                             world.atmosphere.centre = q->position;
                             world.atmosphere.radius = q->radius * q->scale;
+                            world.atmosphere.height = q->profile->skyHeight;
+                            world.atmosphere.hazeHeight = q->profile->hazeHeight;
+                            world.atmosphere.cloudHeight = q->profile->cloudHeight;
                             world.atmosphere.toLocalX = q->dirToLocal({ 1, 0, 0 });
                             world.atmosphere.toLocalY = q->dirToLocal({ 0, 1, 0 });
                             world.atmosphere.toLocalZ = q->dirToLocal({ 0, 0, 1 });
