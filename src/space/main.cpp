@@ -6652,7 +6652,20 @@ int main(int argc, char** argv)
                     } else {
                         const Vector3 up = Vector3Normalize(mouthAt);
                         const float r = kMouthDist[mouthPhase - 1];
-                        const Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        // (#1428) Where the ground rises away from the mouth the eye lands inside a hill: back faces culled, the view saw
+                        // through the rock to the land beyond, and the cave passages in it as black tubes (their far walls, unlit). Lifted
+                        // along up until it and 2 m above it are open air (at most 300 m), once per view.
+                        {
+                            static int liftedFor = -1; static float lift = 0.0f;
+                            if (liftedFor != mouthPhase) {
+                                liftedFor = mouthPhase; lift = 0.0f;
+                                while (lift < 300.0f && (p->densityAt(Vector3Add(eye, Vector3Scale(up, lift))) >= ISO_LEVEL ||
+                                                         p->densityAt(Vector3Add(eye, Vector3Scale(up, lift + 2.0f))) >= ISO_LEVEL)) lift += 2.0f;
+                                if (lift > 0.0f) printf("bench: cave mouth: the %d m view's eye was inside the ground: lifted %.0f m\n", (int)r, lift);
+                            }
+                            eye = Vector3Add(eye, Vector3Scale(up, lift));
+                        }
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(mouthAt, Vector3Scale(up, -3.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         if (t > 4.0 && WorldIdle()) {
