@@ -22,6 +22,7 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <set>
 
 extern const char* kGameVersion;
 int ScenarioProc_Run(const std::string& cmdline, double timeoutSec);
@@ -617,6 +618,21 @@ bool ScenarioCtx::shot(const std::string& name, double tolerancePct) {
     ExportImage(im, path.c_str());
     UnloadImage(im);
     return CompareShot(file, path, tolerancePct);
+}
+void ScenarioCtx::grab(const std::string& name) {
+    const char* dir = getenv("RAYLIBGAME_SLIDE_SHOTS");
+    if (!dir || !*dir) return;
+    static std::set<std::string> taken; // once per name: steps call it every frame
+    if (!taken.insert(name).second) return;
+    std::string base = R.def.name;
+    for (char& ch : base) if (ch == '/' || ch == ':') ch = '_';
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const std::string path = std::string(dir) + "/" + base + "-" + name + ".png";
+    Image im = LoadImageFromScreen();
+    const bool ok = ExportImage(im, path.c_str());
+    UnloadImage(im);
+    note("slide shot " + path + (ok ? "" : " FAILED"));
 }
 void Scenario_LegacySetup() { if (R.active && R.def.legacyDrives) SnapshotPngs(); }
 void Scenario_LegacyFinish() {

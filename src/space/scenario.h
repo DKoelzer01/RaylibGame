@@ -68,6 +68,10 @@ struct ScenarioCtx {
     // RAYLIBGAME_BASELINE_UPDATE=1: the shot becomes the baseline (the check passes, noted). On a failure the shot and a
     // difference image stay in shots/ and the recording is kept.
     bool shot(const std::string& name, double tolerancePct = 3.0);
+    // (#1071) A picture for the menu slideshow, not a check: only when RAYLIBGAME_SLIDE_SHOTS names a folder, the screen
+    // goes there once as <scenario>-<name>.png (the scenario's '/' as '_'); otherwise nothing happens. Scenarios that
+    // already frame their subject well call it at that moment (run them with --no-hud --native-window).
+    void grab(const std::string& name);
 
     // Helpers the fluid and terrain tests share.
     Vector3 spawnDirLocal() const;            // the start's direction, body-local (--spawn-dir override, else the field's)

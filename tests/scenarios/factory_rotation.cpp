@@ -79,6 +79,7 @@ SCENARIO("factory/rotation") {
         const RotationView v = Line();
         c.waitingFor(TextFormat("line %.1f RPM, stress %d%%", v.rpm, v.stressPercent));
         if (c.t < 3.0 || !v.valid) return false;
+        c.grab("turning"); // (#1071) a slideshow picture, when asked for: the line at full speed
         c.near("the line turns at the crank's 32 RPM", fabsf(v.rpm), 32.0, 0.01);
         c.eq("stress 100% (2 x 128 SU on 256)", v.stressPercent, 100);
         c.eq("running at 100%", v.speedPercent, 100);
