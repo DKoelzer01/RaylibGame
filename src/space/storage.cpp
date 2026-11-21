@@ -15,7 +15,7 @@ std::vector<NearChest> Storage_NearbyChests(Scene& world, float radius) {
     std::vector<NearChest> out;
     Planetoid* body = player.nearest;
     if (!body || !body->plots) return out;
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
     for (const auto& pl : body->plots->plots)
         for (int i = 0; i < (int)pl->parts.size(); ++i) {
             const Part& p = pl->parts[i];

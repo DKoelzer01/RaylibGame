@@ -132,7 +132,8 @@ namespace {
 static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
     const Planetoid* body = h.planetoid;
     if (!body || !body->plots) return false;
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, h.distance / std::max(body->scale, 1e-6f), c, f, d)) return true;
@@ -228,7 +229,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     hasPlant = false;
     plantBody = player.nearest;
     if (plantBody && plantBody->trees && !player.flyMode) {
-        const Vector3 lo = plantBody->toLocal(world.camera.position), ld = plantBody->dirToLocal(dir);
+        const Vector3 lo = plantBody->toLocalRenderD(world.camera.position, world.renderOrigin).toFloat(), ld = plantBody->dirToLocal(dir); // (#1277)
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
     }

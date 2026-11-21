@@ -226,7 +226,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     float best = buildTool.active ? buildTool.reach : terrainTool.reach;
     Plot* hitPlot = nullptr;
     Int3 hitCell{};
@@ -327,7 +328,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     Planetoid* body = player.nearest;
     if (!body) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     aim.body = body;
     aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
@@ -345,7 +347,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // A part bigger than a cell is centred on the aimed point across the face it is placed on (#196: a 2x2 machine hung
     // off one corner of the aimed cell). `normal` is the face's axis (a plot axis); the other two axes move the
     // footprint so its middle is nearest the hit point (in cells).
-    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal, bool onGround = false) {
+    auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
         if (fp.size() <= 1) return;
@@ -400,7 +402,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
-        centreOn(*hitPlot, hitFace, Vector3Add(lo, Vector3Scale(ld, bestPart)));
+        centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
         {   // A part bigger than a cell grows from its origin, which could reach back into the block
             // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
             std::vector<std::pair<Int3, CellShape>> fp;
@@ -432,7 +434,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             faceToward(towardViewer(*near));
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
-            centreOn(*near, Int3{ 0, 1, 0 }, ground, true); // on the ground: the bottom face's middle at the aim
+            centreOn(*near, Int3{ 0, 1, 0 }, DVec3(ground), true); // on the ground: the bottom face's middle at the aim
         } else {
             // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
             // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
@@ -613,7 +615,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     Planetoid* body = player.nearest;
     if (!body || player.flyMode) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     float best = 6.0f;
     if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;

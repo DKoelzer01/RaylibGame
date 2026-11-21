@@ -781,7 +781,7 @@ void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage
 void StepProjectiles(Scene& world, float dt) {
     if (projectiles.empty() || dt <= 0.0f) return;
     Planetoid* here = player.nearest;
-    const Vector3 feet = here ? here->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    const Vector3 feet = here ? here->toLocalOf(player.position, world.renderOrigin) : Vector3{};
     for (size_t k = 0; k < projectiles.size();) {
         Projectile& p = projectiles[k];
         Planetoid* body = BodyNamed(world, p.body);
@@ -1073,7 +1073,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
-    if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
+    if (here) playerLocal = here->toLocalOf(player.position, world.renderOrigin);
     // (#1223) Players' noise, for creatures' hearing. Footsteps and landings come from the footsteps module (#1240: each step's
     // loudness by surface, pace and posture - crouched and prone are quiet); 1 there (walking on stone) is 0.4 here (a walk is
     // heard within 0.4 x a creature's hearing). Each dig or swing stroke of the local player is loud (melee hits: MeleeFrame).

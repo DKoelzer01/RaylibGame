@@ -111,7 +111,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     Planetoid* p = StartBody(world);
     WeatherState target;
     if (p && player.nearest == p) {
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         if (Vector3Length(local) > 1.0f) target = Weather_At(world, Vector3Normalize(local), WorldTime());
     }
     { static const int envForce = getenv("RAYLIBGAME_WEATHER_FORCE") ? atoi(getenv("RAYLIBGAME_WEATHER_FORCE")) : -1; if (envForce >= 0) forced = envForce; } // (#1083 captures) 0 clear .. 3 storm (WeatherKind)
@@ -137,7 +137,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // The wind field (#650): this mean wind, storminess (rain a little, storms fully) and the daily cycle at the player.
     if (p && player.nearest == p) {
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         const float len = Vector3Length(local);
         static float stormEased = 0.0f;
         const float stormTarget = here.kind == WeatherKind::Storm ? 1.0f : here.kind == WeatherKind::Rain ? 0.3f : 0.0f;
@@ -204,7 +204,7 @@ void Weather_Draw3D(Scene& world) {
     Planetoid* p = StartBody(world);
     if (!p || player.nearest != p) return;
     const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
-    const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
     const float d = Vector3Length(local);
     if (!pf || d < 1.0f) return;
     const Vector3 up = Vector3Scale(local, 1.0f / d);
