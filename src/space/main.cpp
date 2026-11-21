@@ -1720,7 +1720,7 @@ int main(int argc, char** argv)
             }
             return 0;
         }
-    for (int i = 1; i < argc; ++i)
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is a single braceless if)
         if (std::string(argv[i]) == "--cave-mouths" && i + 1 < argc) {
             // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
             // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
@@ -1739,6 +1739,7 @@ int main(int argc, char** argv)
                    mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
             return 0;
         }
+    for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
             // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
