@@ -12,6 +12,7 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "questtree.h"
+#include "researchtab.h"
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
@@ -174,6 +175,7 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     const std::string t = tab;
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") GameUI_ShowScreen(GameScreen::Quests); // (#890: one view)
+    else if (t == "Research") GameUI_ShowScreen(GameScreen::Research); // (#1192)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
@@ -1725,10 +1727,11 @@ void GameUI_Draw(Scene& world) {
         // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
         static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
-                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
+                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
+                                    { GameScreen::Research, "Research", Act::Count }, { GameScreen::Team, "Team", Act::Count } }; // (#1192: Research beside Skills)
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
         const float smallW = 102.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key)
-        const int nTabs = terrainTool.creative ? 6 : 5;
+        const int nTabs = terrainTool.creative ? 7 : 6;
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
         if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
         for (const Tab& t : tabs) {
@@ -1771,6 +1774,7 @@ void GameUI_Draw(Scene& world) {
                 QuestTree_DrawTab(); // (#890: the tree is the Quests screen; a tier's objectives and pins open in a pop-out)
                 break;
             case GameScreen::Skills: DrawSkills(); break; // (#883)
+            case GameScreen::Research: ResearchTab_Draw(); break; // (#1192)
             case GameScreen::Team: DrawTeam(); break;
             case GameScreen::Count: break;
         }

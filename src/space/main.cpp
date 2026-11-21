@@ -68,6 +68,8 @@
 #include "dungeontraps.h"
 #include "playerrecord.h"
 #include "commandline.h"
+#include "research.h"
+#include "researchtab.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -1329,6 +1331,7 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
@@ -1720,6 +1723,25 @@ int main(int argc, char** argv)
             }
             return 0;
         }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is a single braceless if)
+        if (std::string(argv[i]) == "--cave-mouths" && i + 1 < argc) {
+            // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
+            // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const int mouths = pf->caveMouthsNear(home, R);
+            Vector3 mAt{}, mOut{};
+            const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+            const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
+                   mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
@@ -1772,6 +1794,14 @@ int main(int argc, char** argv)
                    tunnel, cavern, 100.0 * (tunnel + cavern) / std::max(1LL, samples), caveCols, 100.0 * caveCols / std::max(1LL, land));
             printf("bench: cave stats: columns a #549 roof collapse opened %lld; mouth columns (open to the sky through a cave on a 15+ degree slope) %lld; trench columns (the same on flatter ground) %lld = %.0f m^2 (%.2f%% of land)\n",
                    collapsedCols, mouthCols, trenchCols, trenchCols * 4.0, 100.0 * trenchCols / std::max(1LL, land));
+            {   // (#1115) Entrances (hillside mouths, sinks, resurgences; not chamber centres) within R, and the nearest one.
+                const int mouths = pf->caveMouthsNear(home, R);
+                Vector3 mAt{}, mOut{};
+                const bool near = pf->nearestCaveMouth(home, std::max(R, 5000.0f), mAt, mOut, -1);
+                const float nearM = near ? Vector3Distance(Vector3Scale(Vector3Normalize(mAt), pf->radius), Vector3Scale(home, pf->radius)) : -1.0f;
+                printf("bench: cave stats: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m\n",
+                       mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM);
+            }
             printf("bench: cave stats: density hash %016llx\n", (unsigned long long)hash);
             return 0;
         }
@@ -5102,6 +5132,14 @@ int main(int argc, char** argv)
                     } else if (benchShotTabs == 30 && ++frames == 40) {
                         TakeScreenshot("bench_help.png");
                         printf("bench: help manual: %d topics (bench_help.png)\n", HelpManual_TopicCount());
+                        { // (#1192) the Research tab at tier 3: a node done, two queued, one partly researched
+                            ResearchState& rs = Research_Team(ResearchTab_Team());
+                            rs.done = { "steam_power", "wire_drawing" }; rs.queue = { "vacuum_tube", "steelmaking" }; rs.progress["vacuum_tube"] = 12;
+                        }
+                        GameUI_ShowTab("Research");
+                        benchShotTabs = 31; frames = 0;
+                    } else if (benchShotTabs == 31 && ++frames == 40) {
+                        TakeScreenshot("bench_research.png");
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
@@ -13607,6 +13645,7 @@ int main(int argc, char** argv)
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
+    LOG_INFO("Main", "main loop ended: %s\n", WindowShouldClose() ? "the window was closed" : "Exit chosen (or a test or server stop)"); // (#1153) a clean exit says so
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
     Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
     if (Profiler_On() && !Scenario_Active()) { // (#886) the play session's profile
