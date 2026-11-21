@@ -5,6 +5,7 @@
 #include "profiler.h"
 #include "steamaudio.h"
 #include "audioscene.h"
+#include "audiosynth.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -305,6 +306,11 @@ namespace {
             return true;
         }
         if (name.rfind("step_", 0) == 0) return MakeProceduralStep(name.substr(5), out); // (#1240)
+        // (#1241) ambience beds (12 s loops of layered wind, birds, crickets, frogs, insects, surf, rain) and thunder
+        const unsigned seed = (unsigned)(std::hash<std::string>{}(name) & 0xffffffffu);
+        if (AudioBedRecipe r; AudioSynth_BedRecipe(name, r)) { out = AudioSynth_Bed(r, 12.0f, seed); return true; }
+        if (name == "thunder_near") { out = AudioSynth_Thunder(1.0f, seed); return true; }
+        if (name == "thunder_far") { out = AudioSynth_Thunder(0.0f, seed); return true; }
         return false;
     }
 
