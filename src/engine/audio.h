@@ -16,6 +16,10 @@ bool Audio_V2();
 void Audio_Init();       // never opens a device on a dedicated server (--headless) or the headless platform build
 void Audio_Shutdown();
 void Audio_Update();     // once a frame: emitters, ducking, finished voices, gains, panning (v2; nothing in the old engine)
+class Scene;
+// (#1293) Once a frame, before Audio_Update: the world for occlusion (a snapshot of the ground and parts around the
+// listener, taken four times a second; nothing without Steam Audio's simulation).
+void Audio_SetWorld(Scene& world);
 // Plays on the effect's default bus and priority (Audio_SfxBus / Audio_SfxPriority).
 void Audio_Play(Sfx s, float volume = 1.0f, float pitch = 1.0f);
 void Audio_PlayOn(Sfx s, AudioBus bus, AudioPriority priority, float volume = 1.0f, float pitch = 1.0f);

@@ -13818,6 +13818,7 @@ int main(int argc, char** argv)
         GpuTimer_Mark("swap+poll");
         // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
         Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
+        Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
         Audio_Update();
         PROFILE_FRAME();
     }
