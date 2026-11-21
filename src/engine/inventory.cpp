@@ -237,7 +237,7 @@ int64_t Inventory::room(const std::string& id) const {
     for (int i = 0; i < kSlots; ++i) { // the grid and the hotbar: nothing is put into the off hand but by hand (#165)
         const InvSlot& s = slots[i];
         if (s.empty()) r += cap;
-        else if (s.id == id) r += std::max<int64_t>(0, cap - s.centi);
+        else if (s.id == id && !s.hasData()) r += std::max<int64_t>(0, cap - s.centi); // (#1446) never on top of an item with data
     }
     return r;
 }
@@ -302,7 +302,7 @@ double Inventory::addAmount(const std::string& id, double amount, float heat) {
     for (int i = 0; i < kSlots; ++i) { // top up stacks of it first (not the off hand's, #165)
         InvSlot& s = slots[i];
         if (left <= 0) break;
-        if (s.empty() || s.id != id) continue;
+        if (s.empty() || s.id != id || s.hasData()) continue; // (#1446) plain stacks only
         const int64_t put = std::min(left, cap - s.centi);
         if (put > 0) { s.heat = MixHeat(s.centi, s.heat, put, heat); s.centi += put; left -= put; }
     }
@@ -313,7 +313,7 @@ double Inventory::addAmount(const std::string& id, double amount, float heat) {
             InvSlot& s = slots[i];
             if (!s.empty()) continue;
             const int64_t put = std::min(left, cap);
-            s.id = id; s.centi = put; s.heat = heat; left -= put;
+            s.id = id; s.centi = put; s.heat = heat; s.data.clear(); left -= put;
         }
     };
     const bool tool = KindOf(id) == ItemKind::Tool;
@@ -331,12 +331,12 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
     const int64_t want = ToCenti(amount);
     if (want <= 0) return true;
     int64_t have = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) have += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && !s.hasData() && ItemMatches(id, s.id)) have += s.centi;
     if (have < want) return false;
     int64_t left = want;
     auto takeFrom = [&](int i) {
         InvSlot& s = slots[i];
-        if (left <= 0 || s.empty() || !ItemMatches(id, s.id)) return;
+        if (left <= 0 || s.empty() || s.hasData() || !ItemMatches(id, s.id)) return; // (#1446) never an item with data
         const int64_t take = std::min(left, s.centi);
         s.centi -= take; left -= take;
         if (s.centi <= 0) s = InvSlot{};
@@ -352,19 +352,48 @@ bool Inventory::removeAmount(const std::string& id, double amount) {
 
 double Inventory::amount(const std::string& id) const {
     int64_t c = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) c += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && !s.hasData() && ItemMatches(id, s.id)) c += s.centi;
     return c / 100.0;
 }
 
 int Inventory::count(const std::string& id) const {
     int64_t c = 0;
-    for (const InvSlot& s : slots) if (!s.empty() && ItemMatches(id, s.id)) c += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && !s.hasData() && ItemMatches(id, s.id)) c += s.centi;
     return (int)(c / 100);
+}
+
+int Inventory::countInstances(const std::string& id) const {
+    int n = 0;
+    for (const InvSlot& s : slots) if (!s.empty() && s.hasData() && ItemMatches(id, s.id)) ++n;
+    return n;
+}
+
+int Inventory::addInstance(const std::string& id, const std::string& data, float heat) {
+    if (id.empty() || IsWildcardItem(id)) return -1;
+    if (data.empty()) { const bool fit = addAmount(id, 1, heat) <= 0.0; return fit ? 0 : -1; }
+    auto findFree = [&](int from, int to) { for (int i = from; i < to; ++i) if (slots[i].empty()) return i; return -1; };
+    const bool tool = KindOf(id) == ItemKind::Tool;
+    int cell = tool ? findFree(kGrid, kSlots) : -1;
+    if (cell < 0) cell = findFree(0, kGrid);
+    if (cell < 0 && !tool) cell = findFree(kGrid, kSlots);
+    if (cell < 0) { overflowed = true; return -1; }
+    InvSlot& s = slots[cell];
+    s.id = id; s.centi = 100; s.heat = std::clamp(heat, 0.0f, 1.0f); s.data = data;
+    obtained[id] += 1.0;
+    if (onAdded && muted <= 0) onAdded(id, 1.0);
+    return cell;
+}
+
+InvSlot Inventory::takeInstance(int cell) {
+    if (cell < 0 || cell >= kCells || slots[cell].empty()) return InvSlot{};
+    InvSlot out = slots[cell];
+    slots[cell] = InvSlot{};
+    return out;
 }
 
 std::unordered_map<std::string, int> Inventory::all() const {
     std::unordered_map<std::string, int64_t> c;
-    for (const InvSlot& s : slots) if (!s.empty()) c[s.id] += s.centi;
+    for (const InvSlot& s : slots) if (!s.empty() && !s.hasData()) c[s.id] += s.centi; // (#1446) plain items
     std::unordered_map<std::string, int> out;
     for (auto& kv : c) if (kv.second >= 100) out[kv.first] = (int)(kv.second / 100);
     return out;
@@ -389,7 +418,7 @@ void Inventory::swapSlots(int a, int b) {
     if (a == b || a < 0 || b < 0 || a >= kCells || b >= kCells) return;
     InvSlot& from = slots[a];
     InvSlot& to = slots[b];
-    if (!from.empty() && !to.empty() && from.id == to.id) {
+    if (!from.empty() && !to.empty() && from.id == to.id && !from.hasData() && !to.hasData()) { // (#1446) items with data swap
         const int64_t cap = (int64_t)StackLimit(from.id) * 100;
         const int64_t put = std::min(from.centi, cap - to.centi);
         to.heat = MixHeat(to.centi, to.heat, put, from.heat); // #580
@@ -403,7 +432,13 @@ void Inventory::swapSlots(int a, int b) {
 void Inventory::sort() {
     std::unordered_map<std::string, int64_t> total;
     std::unordered_map<std::string, double> heatSum; // #580: each item keeps its average heat
-    for (int k = 0; k < kGrid; ++k) if (!slots[k].empty()) { total[slots[k].id] += slots[k].centi; heatSum[slots[k].id] += (double)slots[k].centi * slots[k].heat; } // the hotbar stays as it is
+    std::vector<InvSlot> own;                          // (#1446) items with data: each keeps its cell's contents, first in id order
+    for (int k = 0; k < kGrid; ++k) {
+        if (slots[k].empty()) continue;
+        if (slots[k].hasData()) { own.push_back(slots[k]); continue; }
+        total[slots[k].id] += slots[k].centi; heatSum[slots[k].id] += (double)slots[k].centi * slots[k].heat; // the hotbar stays as it is
+    }
+    std::stable_sort(own.begin(), own.end(), [](const InvSlot& x, const InvSlot& y) { return x.id < y.id; });
     std::vector<std::pair<std::string, int64_t>> items(total.begin(), total.end());
     std::sort(items.begin(), items.end(), [](const auto& x, const auto& y) {
         const ItemKind kx = KindOf(x.first), ky = KindOf(y.first);
@@ -414,6 +449,7 @@ void Inventory::sort() {
     });
     for (int k = 0; k < kGrid; ++k) slots[k] = InvSlot{};
     size_t i = 0;
+    for (const InvSlot& o : own) if (i < (size_t)kGrid) slots[i++] = o;
     for (auto& it : items) {
         const int64_t cap = (int64_t)StackLimit(it.first) * 100;
         for (int64_t left = it.second; left > 0 && i < (size_t)kGrid; ++i) {
@@ -632,5 +668,54 @@ TEST(ItemDBExtra, MagicItemsAddWithoutReplacing) {
     EXPECT_EQ(db.items().size(), withMagic) << "known ids are kept, not added twice";
     EXPECT_EQ(db.find("stone")->name, stoneName);
     EXPECT_FALSE(db.loadExtra("resources/data/no_such_file.txt"));
+}
+
+// (#1446) Items with their own data: one per cell, never merged, never taken to pay for anything.
+TEST_F(InventoryTest, ItemsWithDataStaySeparateAndAreNeverSpent) {
+    Inventory inv;
+    const int a = inv.addInstance("stone_pickaxe", "h=flint;w=3");
+    const int b = inv.addInstance("stone_pickaxe", "h=granite;w=0");
+    ASSERT_GE(a, 0); ASSERT_GE(b, 0);
+    EXPECT_NE(a, b) << "each in its own cell";
+    EXPECT_EQ(inv.grid()[a].data, "h=flint;w=3");
+    EXPECT_EQ(inv.grid()[a].centi, 100) << "exactly one unit";
+    EXPECT_EQ(inv.countInstances("stone_pickaxe"), 2);
+    // A plain one stacks on neither (pickaxes stack 1 anyway: use a resource for the merge rules).
+    EXPECT_EQ(inv.count("stone_pickaxe"), 0) << "plain counts ignore items with data";
+    EXPECT_FALSE(inv.remove("stone_pickaxe", 1)) << "a recipe can't take one";
+    EXPECT_EQ(inv.countInstances("stone_pickaxe"), 2);
+
+    // Resources: a stack with data keeps its unit, plain stone fills other cells.
+    const int s = inv.addInstance("stone", "mark=1");
+    inv.add("stone", 5);
+    EXPECT_EQ(inv.grid()[s].centi, 100) << "nothing was added on top of it";
+    EXPECT_EQ(inv.count("stone"), 5);
+    ASSERT_TRUE(inv.remove("stone", 5));
+    EXPECT_EQ(inv.grid()[s].data, "mark=1") << "paying 5 stone left it alone";
+    // Two cells of the same id with data swap instead of merging.
+    const int s2 = inv.addInstance("stone", "mark=2");
+    inv.swapSlots(s, s2);
+    EXPECT_EQ(inv.grid()[s].data, "mark=2");
+    EXPECT_EQ(inv.grid()[s2].data, "mark=1");
+    // Sorting keeps each one whole.
+    inv.sort();
+    EXPECT_EQ(inv.countInstances("stone"), 2);
+    // Taking one hands back its record.
+    int cell = -1;
+    for (int i = 0; i < Inventory::kCells; ++i) if (inv.grid()[i].data == "mark=2") cell = i;
+    ASSERT_GE(cell, 0);
+    const InvSlot taken = inv.takeInstance(cell);
+    EXPECT_EQ(taken.data, "mark=2");
+    EXPECT_TRUE(inv.grid()[cell].empty());
+    EXPECT_EQ(inv.countInstances("stone"), 1);
+}
+
+TEST_F(InventoryTest, AddInstanceFailsWhenNoCellIsFree) {
+    Inventory inv;
+    for (int i = 0; i < Inventory::kSlots; ++i) ASSERT_GE(inv.addInstance("stone", "n=" + std::to_string(i)), 0);
+    inv.overflowed = false;
+    EXPECT_EQ(inv.addInstance("stone", "n=extra"), -1);
+    EXPECT_TRUE(inv.overflowed);
+    EXPECT_TRUE(inv.grid()[Inventory::kOffHand].empty()) << "never into the off hand";
 }
 #endif
