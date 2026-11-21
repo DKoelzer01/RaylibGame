@@ -312,7 +312,7 @@ TEST(AudioScene, EnclosureAndReverbOpenGroundVersusAClosedRoom) {
     EXPECT_FLOAT_EQ(er.hitFraction, 1.0f);
     EXPECT_GT(er.meanDistance, 3.0f);
     EXPECT_LT(er.meanDistance, 6.0f);
-    EXPECT_FLOAT_EQ(er.absorption[1], AudioMatPropsOf(AudioMat::Brick).absorption[1]);
+    EXPECT_NEAR(er.absorption[1], AudioMatPropsOf(AudioMat::Brick).absorption[1], 1e-5f); // (a mean of 64 equal values)
     float rtRoom[3], wetRoom = 0.0f;
     AudioReverbFromEnclosure(er, rtRoom, wetRoom);
     EXPECT_FLOAT_EQ(wetRoom, 0.6f);

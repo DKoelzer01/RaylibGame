@@ -87,7 +87,8 @@ class AudioSendRing {
 public:
     static constexpr int kSize = 8192, kLead = 512;
     void add(uint64_t& cursor, const float* x, int n, float gain) {
-        if (cursor < readPos || cursor + (uint64_t)n > readPos + kSize - 256) cursor = readPos + kLead;
+        // 0: a writer's first block (a resynced cursor is never 0 again).
+        if (cursor == 0 || cursor < readPos || cursor + (uint64_t)n > readPos + kSize - 256) cursor = readPos + kLead;
         for (int i = 0; i < n; ++i) buf[(cursor + i) % kSize] += x[i] * gain;
         cursor += n;
     }
