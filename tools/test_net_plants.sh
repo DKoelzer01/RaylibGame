@@ -4,7 +4,8 @@
 # shovel (farmland placed by the server, free), sows grain there and harvests it once the server's fields show it ripe;
 # "watcher" only looks. Checks: the drops reached the feller by deltas; the plant is gone on both clients (one removal,
 # the same id); the watcher saw the crop come and go (FarmFields); the seeds left and the grain arrived by deltas.
-# EXE: a GNS build (default build/gns/bin/game.exe). PORT (27968). Prints "=== test_net_plants: PASS|FAIL". Git Bash.
+# EXE: a GNS build (default build/gns/bin/game.exe). PORT (27968). TERRAIN=default: the default (erosion) terrain (#1107: plants
+# near the spawn of a menu-hosted game). Prints "=== test_net_plants: PASS|FAIL". Git Bash.
 set -u
 here="$(cd "$(dirname "$0")/.." && pwd)"
 exe="${EXE:-$here/build/gns/bin/game.exe}"
@@ -12,7 +13,8 @@ port="${PORT:-27968}"
 tmp="$(mktemp -d)"
 cd "$here"
 SECONDS=0
-printf 'erosion 0\n' > "$tmp/host.sav.worldgen"
+# TERRAIN=default (#1107): the default (erosion) terrain, as a menu-hosted game has; else the quick old terrain
+if [ "${TERRAIN:-}" != default ]; then printf 'erosion 0\n' > "$tmp/host.sav.worldgen"; fi
 . "$here/tools/lib_netmem.sh"
 net_wait_for_memory 12 test_net_plants || exit 0
 RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_shovel 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
@@ -50,5 +52,7 @@ chk "$(echo "$w2" | grep -q "crop seen 1, gone 1" && echo 1)" "the watcher saw t
 f3=$(grep -h "^bench: net skills (feller" "$tmp/feller.log"); w3=$(grep -h "^bench: net skills (watcher" "$tmp/watcher.log"); echo "$f3"; echo "$w3"
 chk "$(echo "$f3" | awk -F'[;,]' '{ split($3, a, " "); split($4, b, " "); split($5, c, " "); exit !((a[2] + b[2]) > 0 && c[2] > 0) }' && echo 1)" "the feller earned felling and farming XP on the server"
 chk "$(echo "$w3" | grep -q "woodcutting 0.0, foraging 0.0, farming 0.0" && echo 1)" "the watcher earned none"
+# (#1107) why the server refused a plant, if it did (the host's own log of each refusal)
+grep -h "refused for session" "$tmp/host.log" | head -5 | sed 's/^/  host: /'
 echo "=== test_net_plants: $([ $ok = 1 ] && echo PASS || echo FAIL) after ${SECONDS} s ($tmp)"
 [ $ok = 1 ]
