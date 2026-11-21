@@ -136,6 +136,18 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "sleeps") c.sleepsByDay = v == "day" || v == "1";
         else if (k == "fire") c.fireScares = v == "scares" || v == "1";
         else if (k == "firesafe") c.fireSafe = !(v == "0" || v == "no");
+        else if (k == "shield") ok = num(c.frontShield);
+        else if (k == "shieldarc") ok = num(c.shieldArcDeg);
+        else if (k == "wake") { c.wakeByLight = v == "light"; ok = v == "light" || v == "none"; }
+        else if (k == "wakerange") ok = num(c.wakeRange);
+        else if (k == "rare") { // item:n:chance,...
+            for (const std::string& p : SplitOn(v, ',')) {
+                const auto f = SplitOn(p, ':');
+                float n = 1.0f, ch = 0.0f;
+                if (f.size() != 3 || f[0].empty() || !ToFloat(f[1], n) || !ToFloat(f[2], ch)) { ok = false; break; }
+                c.rare.push_back({ f[0], (int)n, ch });
+            }
+        }
         else if (k == "ceiling") c.ceiling = v == "1" || v == "yes";
         else if (k == "drop") ok = num(c.dropScale);
         else if (k == "droprange") ok = num(c.dropRange);
@@ -283,6 +295,11 @@ const char* Mood_Name(Mood m) {
 BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, float dt) {
     BrainOut o;
     const FactionTable& ft = Factions();
+    // (#1227) A light sleeper: asleep until a light comes near or it is hit; then awake a minute after the last of either.
+    if (c.wakeByLight) {
+        if (in.lightNear || in.hurt) s.awakeUntil = in.now + 60.0;
+        if (in.now >= s.awakeUntil) { s.mood = Mood::Sleep; s.windUpAt = -1.0; s.target = 0; o.mood = Mood::Sleep; return o; }
+    }
     // Fire: a creature that fears it backs off (3 s away from it).
     if (c.fireScares && in.nearFire) { s.mood = Mood::Flee; s.timer = std::max(s.timer, 3.0f); s.goal = in.fire; }
     // Hurt: the passive run; one badly hurt retreats; the rest turn on whoever hit it for a while.
@@ -573,5 +590,23 @@ TEST(Creatures, ThrowAimLands) {
     CreatureSpec c; std::string err;
     ASSERT_TRUE(Creatures_ParseLine("scav | scavenger | group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8", c, &err)) << err;
     EXPECT_EQ(c.group, 3); EXPECT_TRUE(c.thrower && c.thief && c.torch); EXPECT_FLOAT_EQ(c.throwRange, 14.0f);
+}
+
+// #1227: a light sleeper sleeps through a player near in the dark, wakes at a light (or a hit), and stays awake a minute.
+TEST(Creatures, LightSleeperAndShieldKeys) {
+    if (Faction_Player() < 0 || Factions().find("undead") < 0) GTEST_SKIP() << "factions.txt not found";
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("lost_miner | undead | aggro=territorial range=12 sight=1000 darksight=1 wake=light wakerange=10 shield=0.85 shieldarc=60 rare=map_fragment:1:0.25", c, &err)) << err;
+    c.factionIdx = Factions().find(c.faction);
+    EXPECT_TRUE(c.wakeByLight); EXPECT_FLOAT_EQ(c.frontShield, 0.85f);
+    ASSERT_EQ(c.rare.size(), 1u); EXPECT_EQ(c.rare[0].item, "map_fragment"); EXPECT_FLOAT_EQ(c.rare[0].chance, 0.25f);
+    BrainState s; BrainInput in; in.now = 0.0; in.others = { Player(4.0f) };
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Sleep);  // a player 4 m off in the dark: asleep
+    in.lightNear = true; in.now = 1.0;
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Chase);  // a light: awake and after them
+    in.lightNear = false; in.now = 30.0;
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Chase);  // still awake 29 s on
+    in.now = 62.0; in.others.clear();
+    EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Sleep);  // a minute after the light: asleep again
 }
 #endif

@@ -71,6 +71,8 @@ struct Species {
     bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
     bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
     bool humanoid = false;                            // (#1225) drawn with the avatar rig (cave scavengers)
+    std::string held;                                 // (#1227) a humanoid's item in hand (model held:<item>; default a torch)
+    bool plankShield = false;                         // (#1227) a humanoid with a plank shield on its arm (model plankshield)
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -114,7 +116,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; else if (w.rfind("held:", 0) == 0) s.held = w.substr(5); else if (w == "plankshield") s.plankShield = true; }
         }
         species.push_back(s);
     }
@@ -192,6 +194,7 @@ int AnimalFaction(const Animal& a) {
 }
 struct CreatureHit { uint64_t target, attacker; Vector3 from; DamageEvent e; }; // (#1223) one creature's strike on another
 std::vector<CreatureHit> creatureHits;
+int shieldBlocks = 0; // (#1227) hits a front shield took (tests)
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
@@ -226,6 +229,12 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
     return nullptr;
 }
 uint64_t BodyIdOf(const std::string& name) { for (Planetoid* p : Planetoid::All()) if (p->name == name) return p->id; return 0; } // (#1223) creature events
+// Its facing (body-local, level): heading from east toward north.
+Vector3 AnimalForward(const Animal& a) {
+    Vector3 east, north;
+    TangentFrame(Vector3Normalize(a.pos), east, north);
+    return Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
+}
 
 // Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
 // ground in places (density within ~0.06 of iso); they must not stop a walk.
@@ -498,6 +507,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
     if (!dropsTo && !toGround && s.night) QuestBook_Count("stalker");
     std::vector<std::pair<std::string, int>> all = s.drops;
     if (cs) all.insert(all.end(), cs->loot.begin(), cs->loot.end()); // (#1223) the creature's extra loot
+    if (cs) { uint32_t r = a.rng ^ 0x9e3779b9u; for (const CreatureSpec::Rare& rr : cs->rare) if (Rand01(r) < rr.chance) all.push_back({ rr.item, rr.n }); } // (#1227) sometimes
     std::string got;
     for (const auto& d : all) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
@@ -526,6 +536,11 @@ const Resistances& ResistOf(const Animal& a) {
 // A typed hit's damage on an animal (#1215 types and status, #1217 poise): what to take off its health.
 float TypedAmount(Animal& a, const DamageEvent& e) {
     float amount = e.amount;
+    // (#1227) A front shield (the lost miner's plank shield) takes most of a non-blunt hit that comes at its face.
+    if (const CreatureSpec* sh = Creature_Spec(species[a.species].id); sh && sh->frontShield > 0.0f && e.fromFront && e.type != DamageType::Blunt) {
+        amount *= 1.0f - sh->frontShield;
+        ++shieldBlocks;
+    }
     // (#1217) Poise: the hit wears it (its poise damage; none given: its amount); broken, the creature staggers (its attack
     // cancelled), and the first hit while it staggers does x1.5. Small creatures stagger on any heavy hit.
     if (Combat3_On()) {
@@ -547,7 +562,10 @@ float TypedAmount(Animal& a, const DamageEvent& e) {
 // animal runs); a kill leaves its loot on the ground.
 void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from) {
     Animal& a = animals[i];
-    a.health -= TypedAmount(a, e);
+    DamageEvent ef = e; // (#1227) at its face or not, from where the attacker stood
+    { const CreatureSpec* fs = Creature_Spec(species[a.species].id);
+      ef.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(from, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
+    a.health -= TypedAmount(a, ef);
     if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
         a.hurtPending = true; a.hurtBy = attacker; a.hurtFrom = from;
         Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
@@ -910,6 +928,8 @@ bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && anima
 Vector3 Animals_ClingFloor(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].clingFloor : Vector3{ 0, 0, 0 }; }
 int Animals_LurkerDrops() { return lurkerDrops; }
 int Animals_Thefts() { return thefts; }
+int Animals_ShieldBlocks() { return shieldBlocks; }
+const char* Animals_MoodName(int i) { return i >= 0 && i < (int)animals.size() ? Mood_Name(animals[i].brain.mood) : "-"; }
 bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
 void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
 double Animals_Clock() { return simClock; }
@@ -1190,6 +1210,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             Vector3 fire{};
             bi.nearFire = cs->fireScares && NearFire(a.pos, 14.0f, fire);
             bi.fire = fire;
+            if (cs->wakeByLight) { Vector3 lf; bi.lightNear = NearFire(a.pos, cs->wakeRange, lf) || (sameBody && tg->lit && pdist < cs->wakeRange); } // (#1227)
             if (sameBody) {
                 Percept p;
                 p.id = kPlayerPercept | tg->session; p.pos = tgLocal; p.dist = pdist; p.faction = Faction_Player();
@@ -1608,11 +1629,6 @@ WeaponClass gMeleeClass = WeaponClass::Tools;
 int gMeleeHits = 0;                 // hits landed (tests)
 
 
-Vector3 AnimalForward(const Animal& a) {
-    Vector3 east, north;
-    TangentFrame(Vector3Normalize(a.pos), east, north);
-    return Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
-}
 
 // Its body as a capsule along its length (body-local), its radius half its height or width.
 void AnimalCapsule(const Animal& a, Vector3& q0, Vector3& q1, float& r) {
@@ -1730,6 +1746,8 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         e.heavy = gMelee.heavy;
         e.poise = Melee_Poise(gMelee, w);
         e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
+        { const CreatureSpec* fs = Creature_Spec(species[a.species].id); // (#1227) at its face: within its shield's arc of its facing
+          e.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(eye, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
         survival.lastDealtAt = now;
         ++gMeleeHits;
         Noise_Emit(here->id, eye, NoiseTune::kHit, simClock, kPlayerPercept); // (#1224) combat is loud
@@ -1942,6 +1960,7 @@ void Animals_Draw3D(Scene& world) {
     DrawProjectiles(world); // (#1225) stones and spears in flight
     if (animals.empty()) return;
     static std::vector<AvatarState> humanoids; humanoids.clear(); // (#1225) drawn after the loop, through the avatar rig
+    static std::vector<Matrix> shieldMats; shieldMats.clear(); // (#1227) plank shields, drawn after the avatars
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -1975,12 +1994,13 @@ void Animals_Draw3D(Scene& world) {
             av.position = body->toWorldD(DVec3(at)); // (absolute world, as player.position)
             av.up = u; av.facing = f;
             av.velocity = Vector3Scale(f, a.moveSpeed);
-            av.held = a.thrower ? "stone" : "torch";
+            av.held = a.thrower ? "stone" : !s.held.empty() ? s.held : "torch"; // (#1227: a miner's rusted pick)
             const bool winding = a.windUpAt >= 0.0 || a.throwWindAt >= 0.0;
             av.action = winding ? 1 : 0;
             av.actionPhase = winding ? (float)std::min(1.0, (simClock - std::max(a.windUpAt, a.throwWindAt)) / 0.6) : 0.0f;
             av.suitColor = s.body;
             humanoids.push_back(av);
+            if (s.plankShield) shieldMats.push_back(Matrix{ r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 }); // (#1227)
             continue;
         }
         Matrix m = { r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 };
@@ -1992,6 +2012,13 @@ void Animals_Draw3D(Scene& world) {
         rlPopMatrix();
     }
     if (!humanoids.empty()) Avatar_Draw3D(world, humanoids); // (#1225)
+    for (const Matrix& sm : shieldMats) { // (#1227) the lost miner's plank shield on its arm: three boards and a rusted band, facing out
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(sm));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ -0.3f + (k - 1) * 0.15f, 1.05f, 0.34f }, 0.14f, 0.7f, 0.05f, Color{ (unsigned char)(120 + 10 * k), 88, 56, 255 });
+        DrawCubeB({ -0.3f, 1.2f, 0.37f }, 0.48f, 0.07f, 0.03f, Color{ 105, 70, 48, 255 });
+        rlPopMatrix();
+    }
 }
 
 void Animals_DrawHUD() {

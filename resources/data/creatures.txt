@@ -32,3 +32,8 @@ tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 
 # in with blades; they retreat under 40% health; a dropped pile within 12 m is taken whole and run off with (it comes back
 # when the thief falls). Hostile to players and lurkers; they fear ruin sentinels.
 cave_scavenger | scavenger | aggro=territorial firesafe=0 range=16 chase=30 angry=25 retreat=0.4 threat=1.5 sight=24 darksight=0.6 hearing=16 damage=7 reach=1.6 windup=0.5 cooldown=1.3 knock=4 type=slash habitat=mouth depth=0-25 dark=1 cap=3 respawn=1200 group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8 sound_idle=scav_mutter sound_alert=scav_shout sound_telegraph=creature_telegraph_scavenger_windup sound_hurt=scav_hurt sound_death=scav_death
+# Lost miner (#1227): undead, slow and tough (80, armour 3), deep tunnels and old mine shafts 40 m+ down. It sleeps until a light
+# comes within 10 m (a torch or lantern carried, a lamp, a fire) or it is hit, then hunts a minute past the last; drawn to light
+# (a lit player is no safer). Its plank shield takes 85% of a non-blunt hit at its face: go round it, or use blunt. Its rusted
+# pick strikes slow and hard. Drops its pick, scrap and planks, and a quarter of the time a map fragment to a dungeon.
+lost_miner | undead | aggro=territorial firesafe=0 range=12 chase=24 angry=30 sight=14 darksight=0.3 hearing=8 light=drawn wake=light wakerange=10 shield=0.85 shieldarc=60 armour=3 damage=10 reach=1.7 windup=0.9 cooldown=1.8 knock=5 type=pierce poise=20 habitat=cave depth=40-400 dark=0.1 cap=2 respawn=1500 rare=map_fragment:1:0.25 sound_idle=miner_groan sound_alert=miner_rattle sound_telegraph=creature_telegraph_miner_raise sound_hurt=miner_hurt sound_death=miner_collapse
