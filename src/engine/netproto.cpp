@@ -1202,7 +1202,10 @@ TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
     MsgMachineAction fireBack;
     EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
     EXPECT_EQ(fireBack.action, 10);
-    MsgMachineAction past = fire; past.action = 11;
+    MsgMachineAction pick = fire; pick.action = 12; pick.item = "basic_circuit"; pick.count = 0; // (#1271 L6c) the largest: a recipe pick
+    EXPECT_TRUE(RoundTrip(pick, fireBack)) << "a recipe pick (action 12) reaches the server";
+    EXPECT_EQ(fireBack.action, 12);
+    MsgMachineAction past = fire; past.action = 13;
     EXPECT_FALSE(RoundTrip(past, fireBack));
     MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
     MsgEditRequest qBack;
