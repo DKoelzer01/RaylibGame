@@ -14,6 +14,7 @@
 #include "plots.h"
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 class Scene;
@@ -45,5 +46,10 @@ const std::vector<StepNoise>& Footsteps_RecentNoises();
 
 // Once a frame, after the player's update (and the avatars' interpolation).
 void Footsteps_Update(Scene& world, const Player& self, const std::vector<AvatarState>& others, float dt);
+// The dedicated server (creature hearing, #1223/#1224): every connected player as (session id, its Player). Records their
+// steps and landings as StepNoises (who = the session id) exactly as Footsteps_Update does for the local player (distance
+// in the body's frame, touchdown from landingSpeed), and plays nothing (safe without an audio device). Call once a tick
+// after the players' updates; Footsteps_RecentNoises() reads the noises of the last 2 s.
+void Footsteps_UpdateServer(Scene& world, const std::vector<std::pair<uint32_t, const Player*>>& players, float dt);
 
 #endif
