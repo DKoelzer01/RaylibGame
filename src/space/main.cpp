@@ -13607,6 +13607,7 @@ int main(int argc, char** argv)
         GpuTimer_Mark("swap+poll");
         PROFILE_FRAME();
     }
+    LOG_INFO("Main", "main loop ended: %s\n", WindowShouldClose() ? "the window was closed" : "Exit chosen (or a test or server stop)"); // (#1153) a clean exit says so
     Recorder_Shutdown(); // the frames still queued, the GIF and the contact sheet (#375)
     Scenario_Shutdown(); // (#870) results.json; the capture kept on a failure, deleted on a pass
     if (Profiler_On() && !Scenario_Active()) { // (#886) the play session's profile
