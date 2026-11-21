@@ -12,6 +12,7 @@
 #include "footsteps.h" // (#1240) step noise for creature hearing
 #include "avatar.h" // (#1225) humanoid creatures
 #include "locallights.h"
+#include "toolwear.h" // (#1226) an ooze corrodes tools
 #include "claims.h"
 #include "headless.h"
 #include "net.h"
@@ -71,6 +72,7 @@ struct Species {
     bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
     bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
     bool humanoid = false;                            // (#1225) drawn with the avatar rig (cave scavengers)
+    bool blob = false;                                // (#1226) a mineral ooze: a wobbling heap, the colour of its ore
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -114,7 +116,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; else if (w == "blob") s.blob = true; }
         }
         species.push_back(s);
     }
@@ -164,6 +166,8 @@ struct Animal {
     bool thrower = false;        // (#1225) the group's thrower: keeps its distance and throws
     double throwWindAt = -1.0, lastThrow = -1e9; // (#1225) a throw winding up since (simClock), the last throw
     std::vector<InvSlot> carried; // (#1225) what a thief took (dropped when it falls)
+    std::string ore;             // (#1226) an ooze: the ore it ate (its colour, its drop); set from where it lives
+    int generation = 0;          // (#1226) an ooze: 0 whole, 1-2 split off
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -226,6 +230,15 @@ Planetoid* BodyNamed(Scene& world, const std::string& name) {
     return nullptr;
 }
 uint64_t BodyIdOf(const std::string& name) { for (Planetoid* p : Planetoid::All()) if (p->name == name) return p->id; return 0; } // (#1223) creature events
+// (#1226) An ooze's ore: the deposit where it lives (iron ore where there is none), set the first time it is asked.
+const std::string& OozeOre(Animal& a) {
+    if (a.ore.empty()) {
+        const char* k = nullptr;
+        for (Planetoid* p : Planetoid::All()) if (p->name == a.body) { k = OreKindOf(*p, a.pos); break; }
+        a.ore = k && *k ? k : "iron_ore";
+    }
+    return a.ore;
+}
 
 // Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
 // ground in places (density within ~0.06 of iso); they must not stop a walk.
@@ -498,6 +511,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
     if (!dropsTo && !toGround && s.night) QuestBook_Count("stalker");
     std::vector<std::pair<std::string, int>> all = s.drops;
     if (cs) all.insert(all.end(), cs->loot.begin(), cs->loot.end()); // (#1223) the creature's extra loot
+    if (cs && cs->split) all.push_back({ OozeOre(animals[i]), a.generation == 0 ? 3 : 1 }); // (#1226) the ore an ooze ate
     std::string got;
     for (const auto& d : all) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
@@ -543,6 +557,28 @@ float TypedAmount(Animal& a, const DamageEvent& e) {
     return amount;
 }
 
+
+// (#1226) An ooze cut (a slashing or piercing hit) splits in two: the half it loses becomes a second ooze beside it, of
+// the same ore (two generations at most). Blunt hits don't split it, nor does anything while it burns.
+int oozeSplits = 0;
+void MaybeSplit(int i, DamageType type) {
+    Animal& a = animals[i];
+    const CreatureSpec* cs = Creature_Spec(species[a.species].id);
+    if (!cs || !cs->split || (type != DamageType::Slash && type != DamageType::Pierce) || a.status.burn > 0.0f || a.generation >= 2 || a.health <= 6.0f) return;
+    OozeOre(a);
+    Animal b = a;
+    b.health = a.health * 0.5f;
+    a.health -= b.health;
+    b.generation = ++a.generation;
+    const Vector3 up = Vector3Normalize(a.pos);
+    const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    b.pos = b.prevPos = Vector3Add(a.pos, Vector3Scale(side, 0.9f));
+    b.netId = NetId_Allocate(NetKind::Animal);
+    b.brain = BrainState{}; b.poise = PoiseState{}; b.hurtPending = false; b.carried.clear();
+    animals.push_back(b);
+    ++oozeSplits;
+}
+
 // (#1223) One creature's strike on another: typed damage; the struck one learns who hit it (a creature turns on it, a plain
 // animal runs); a kill leaves its loot on the ground.
 void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from) {
@@ -553,6 +589,7 @@ void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from)
         Creature_Event(*cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
     } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.state = State::Flee; }
     if (a.health <= 0.0f) Kill(i, nullptr, true);
+    else MaybeSplit(i, e.type); // (#1226)
 }
 
 } // namespace
@@ -660,7 +697,9 @@ bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
     if (i < 0 || i >= (int)animals.size()) return false;
     const float amount = TypedAmount(animals[i], e); // (#1215, #1217; #1223: a creature's own resistances)
     if (dealtOut) *dealtOut = amount;
-    return Animals_Hit(i, amount);
+    const bool fell = Animals_Hit(i, amount);
+    if (!fell) MaybeSplit(i, e.type); // (#1226) an ooze cut in two
+    return fell;
 }
 
 const StatusState* Animals_Status(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].status : nullptr; } // (#1215 tests)
@@ -820,7 +859,9 @@ uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
 void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, Vector3 player) {
     std::vector<std::pair<int, const CreatureSpec*>> kinds;
     for (const CreatureSpec& c : Creature_All())
-        if (c.habitat == Habitat::Cave || c.habitat == Habitat::Mouth) { const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c }); }
+        if ((c.habitat == Habitat::Cave || c.habitat == Habitat::Mouth) && (!body.profile || body.profile->allowsCreature(c.id))) { // (#1274) the world file's creatures
+            const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c });
+        }
     if (kinds.empty()) return;
     const float R = SpawnTune::kChunk;
     // Within 64 m sideways of the player, down to 200 m under them (caves run deep under a surface player) and 30 m over.
@@ -859,6 +900,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             s.depth = f.radius + f.elevation(dir) - Vector3Length(floor);
             for (const PlanetField::CaveEntrance& e : ents) if (Vector3Distance(e.at, floor) < 20.0f) { s.nearMouth = true; break; }
             s.light = s.nearMouth ? 0.5f : s.depth < 4.0f ? 0.6f : 0.0f;
+            s.wet = f.caveWetColumn(dir, f.elevation(dir)) > 0.3f; // (#1226) wet karst: by the cave water, the sumps
             sites.push_back(s);
         }
     }
@@ -910,6 +952,9 @@ bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && anima
 Vector3 Animals_ClingFloor(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].clingFloor : Vector3{ 0, 0, 0 }; }
 int Animals_LurkerDrops() { return lurkerDrops; }
 int Animals_Thefts() { return thefts; }
+int Animals_OozeSplits() { return oozeSplits; }
+int Animals_Generation(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].generation : -1; }
+const std::string& Animals_Ore(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].ore : none; }
 bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
 void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
 double Animals_Clock() { return simClock; }
@@ -1177,6 +1222,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // creatures of factions it hunts or fears), whether it was hurt, noise it heard, fire, daylight. A plain animal, or
         // RAYLIBGAME_CREATURES=0: the code below it (the brain's thornback and stalker rows reproduce that code).
         const CreatureSpec* cs = Creature_Spec(s.id);
+        if (cs && cs->split) OozeOre(a); // (#1226) an ooze takes the colour of the ore where it lives
         BrainOut bo;
         int preyIdx = -1;                      // another creature it goes for (infighting)
         Vector3 huntAt = tgLocal; float huntDist = pdist;
@@ -1216,6 +1262,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
             const Mood before = a.brain.mood;
             bo = Brain_Step(a.brain, *cs, bi, step);
+            if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) Creature_Event(*cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
             if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
                 printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
@@ -1386,6 +1433,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e);
                     } else {
                         const DamageResult r = Combat_Damage(LocalSession(), e);
+                        if (cs && cs->corrode > 0 && !r.dodged && !r.parried && ToolOf(terrainTool.heldTool).type != ToolType::Hands) { // (#1226) its touch eats the tool
+                            ToolWear_OnStroke(terrainTool.heldTool, cs->corrode);
+                            GameUI_Toast(TextFormat("The %s corrodes your %s", s.name.c_str(), terrainTool.heldTool.c_str()));
+                        }
                         if (r.parried) { // (#1218) a parry staggers the attacker (2 s, #1217)
                             if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(s.health));
                             Poise_Stagger(a.poise, PoiseTune::kParryStaggerTime);
@@ -1734,7 +1785,11 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         ++gMeleeHits;
         Noise_Emit(here->id, eye, NoiseTune::kHit, simClock, kPlayerPercept); // (#1224) combat is loud
         if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId); } // (#334) a client: the server decides
-        else Animals_HitEvent(h.i, e);
+        else {
+            const CreatureSpec* hs = Creature_Spec(species[animals[h.i].species].id);
+            if (hs && hs->corrode > 0 && ToolOf(terrainTool.heldTool).type != ToolType::Hands) ToolWear_OnStroke(terrainTool.heldTool, std::max(1, hs->corrode / 3)); // (#1226) a tool that strikes an ooze corrodes
+            Animals_HitEvent(h.i, e);
+        }
     }
 }
 } // namespace
@@ -1849,6 +1904,17 @@ static inline void DrawCubeB(Vector3 p, float w, float h, float l, Color c) { IB
 template <typename ShadeFn>
 static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     const Vector3 sz = s.size;                       // length (z), height (y), width (x)
+    if (s.blob) { // (#1226) a mineral ooze: a wobbling heap, half its own green and half the colour of the ore it ate, with lumps of it
+        const ItemDef* od = a.ore.empty() ? nullptr : itemDB.find(a.ore);
+        const Color oc = od ? od->color : s.head;
+        const Color mix = { (unsigned char)((s.body.r + oc.r) / 2), (unsigned char)((s.body.g + oc.g) / 2), (unsigned char)((s.body.b + oc.b) / 2), 255 };
+        const float t = (float)GameClock(), w = 1.0f + 0.07f * sinf(t * 2.3f + (float)(a.rng % 17));
+        const float g = a.generation == 0 ? 1.0f : a.generation == 1 ? 0.8f : 0.62f; // the split-off ones are smaller
+        DrawCubeB({ 0, sz.y * 0.28f * w * g, 0 }, sz.z * g / w, sz.y * 0.56f * w * g, sz.x * g / w, shade(mix, 1.0f));
+        DrawCubeB({ 0, sz.y * 0.6f * w * g, 0 }, sz.z * 0.68f * g, sz.y * 0.4f * g, sz.x * 0.68f * g, shade(mix, 1.12f));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.28f * g, sz.y * (0.55f + 0.1f * (k & 1)) * g, (k == 1 ? 0.25f : -0.15f) * sz.x * g }, sz.z * 0.16f * g, sz.y * 0.16f * g, sz.z * 0.16f * g, shade(oc, 0.95f));
+        return;
+    }
     if (s.nest) { // (#1223) a nest: a low mound of lumps, the egg-like pods on top (no legs, no head, never moves)
         DrawCubeB({ 0, sz.y * 0.3f, 0 }, sz.z, sz.y * 0.6f, sz.x, shade(s.body, 1.0f));
         DrawCubeB({ sz.z * 0.2f, sz.y * 0.55f, -sz.x * 0.15f }, sz.z * 0.55f, sz.y * 0.5f, sz.x * 0.5f, shade(s.body, 0.9f));

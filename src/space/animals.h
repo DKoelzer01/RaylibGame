@@ -52,6 +52,9 @@ void Animals_AddLights(Scene& world);
 int Animals_ProjectilesThrown();
 int Animals_ProjectileHits();
 int Animals_Thefts();
+int Animals_OozeSplits();                 // (#1226 tests) oozes cut in two
+int Animals_Generation(int index);        // (#1226 tests) 0 whole, 1-2 split off
+const std::string& Animals_Ore(int index); // (#1226 tests) an ooze's ore
 bool Animals_Thrower(int index);
 void Animals_TestSetGroup(int index, uint64_t group, bool thrower); // (#1225 tests) make a group by hand
 int Animals_CaveSpawned();

@@ -32,3 +32,7 @@ tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 
 # in with blades; they retreat under 40% health; a dropped pile within 12 m is taken whole and run off with (it comes back
 # when the thief falls). Hostile to players and lurkers; they fear ruin sentinels.
 cave_scavenger | scavenger | aggro=territorial firesafe=0 range=16 chase=30 angry=25 retreat=0.4 threat=1.5 sight=24 darksight=0.6 hearing=16 damage=7 reach=1.6 windup=0.5 cooldown=1.3 knock=4 type=slash habitat=mouth depth=0-25 dark=1 cap=3 respawn=1200 group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8 sound_idle=scav_mutter sound_alert=scav_shout sound_telegraph=creature_telegraph_scavenger_windup sound_hurt=scav_hurt sound_death=scav_death
+# Mineral ooze (#1226): slow, in wet karst by cave water and sumps, 10 m+ down. Its touch corrodes a held tool (15 strokes;
+# a tool that strikes it, 5). Cut (slash, pierce) it splits in two, twice at most; blunt hits and fire don't split it. It takes
+# on the colour of the ore where it lives and drops that ore (3; a split-off one, 1).
+mineral_ooze | ooze | aggro=territorial range=6 chase=12 angry=15 sight=0 darksight=0 hearing=10 damage=4 reach=1.3 windup=0.8 cooldown=1.6 knock=1 type=blunt split=1 corrode=15 wet=1 habitat=cave depth=10-400 dark=0.2 cap=2 respawn=900 sound_idle=ooze_burble sound_alert=ooze_squelch sound_telegraph=creature_telegraph_ooze_gather sound_hurt=ooze_splat sound_death=ooze_collapse
