@@ -78,6 +78,7 @@ struct CreatureSpec {
 bool Creatures_ParseLine(const std::string& line, CreatureSpec& out, std::string* error = nullptr);
 const CreatureSpec* Creature_Spec(const std::string& speciesId); // resources/data/creatures.txt; nullptr: a plain animal
 const std::vector<CreatureSpec>& Creature_All();
+bool Creatures_TestAdd(const std::string& line, std::string* error = nullptr); // tests: add or replace a row
 bool Creatures_On(); // RAYLIBGAME_CREATURES=0: the old hostile/night animal code (A/B)
 
 // Events for sound and effects (#1246 plugs in as data): idle now and then, alert (a noise or a sighting), the attack's
@@ -153,5 +154,16 @@ struct BrainOut {
 };
 
 BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, float dt);
+
+// ---- Spawning (#1223) ----
+// A place a creature could appear: a cave floor (body-local) with what it is (the segment kind: 0 passage, 1 mouth, 3 chamber,
+// 4 slot; its radius), how deep under the surface, the light there (0..1), and whether a cave entrance is near (20 m).
+struct SpawnSite { Vector3 floor{}, up{}; int kind = 0; float radius = 0.0f, depth = 0.0f, light = 0.0f; bool nearMouth = false; };
+bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s);
+// One species in one 64 m chunk: what has spawned there. The first visit fills it to the cap; after that one more every
+// respawn seconds while below the cap, and none once a nest there was destroyed (species with nests=1; decided).
+struct SpawnChunk { double nextAt = 0.0; bool filled = false; bool hasNest = false; bool nestDestroyed = false; uint64_t nest = 0; };
+int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now);
+namespace SpawnTune { constexpr float kChunk = 64.0f, kMinFromPlayer = 24.0f, kNestChamber = 5.0f; constexpr double kPass = 2.0; }
 
 #endif

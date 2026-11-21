@@ -186,7 +186,7 @@ bool Creatures_On() {
     return on;
 }
 
-const std::vector<CreatureSpec>& Creature_All() {
+static std::vector<CreatureSpec>& AllMut() {
     static std::vector<CreatureSpec> all;
     static bool loaded = false;
     if (!loaded) {
@@ -204,6 +204,17 @@ const std::vector<CreatureSpec>& Creature_All() {
         }
     }
     return all;
+}
+
+const std::vector<CreatureSpec>& Creature_All() { return AllMut(); }
+
+bool Creatures_TestAdd(const std::string& line, std::string* error) {
+    CreatureSpec c;
+    if (!Creatures_ParseLine(line, c, error)) return false;
+    c.factionIdx = Factions().find(c.faction);
+    for (CreatureSpec& o : AllMut()) if (o.id == c.id) { o = c; return true; }
+    AllMut().push_back(c);
+    return true;
 }
 
 const CreatureSpec* Creature_Spec(const std::string& id) {
@@ -324,6 +335,27 @@ BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, 
     return o;
 }
 
+
+// ---- Spawning (#1223) ----
+bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s) {
+    if (s.kind == 2) return false;                                 // rubble is solid
+    if (s.depth < c.depthMin || s.depth > c.depthMax) return false;
+    if (s.light > c.darkMax + 1e-4f) return false;
+    switch (c.habitat) {
+        case Habitat::Cave: return !s.nearMouth && (s.kind == 0 || s.kind == 3 || s.kind == 4);
+        case Habitat::Mouth: return s.nearMouth;                    // scavengers: by the entrances (decided)
+        default: return false;                                     // the surface and night ones spawn as herds and hunters do; dungeons later
+    }
+}
+
+int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now) {
+    if (alive >= c.capPerChunk) return 0;
+    if (!ch.filled) { ch.filled = true; ch.nextAt = now + c.respawn; return c.capPerChunk - alive; }
+    if (c.nests && ch.hasNest && ch.nestDestroyed) return 0;      // the nest is gone: the chunk stays clear
+    if (now < ch.nextAt) return 0;
+    ch.nextAt = now + c.respawn;
+    return 1;
+}
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
 namespace {
@@ -447,5 +479,29 @@ TEST(Creatures, InfightingAndAlert) {
     BrainState p;
     BrainInput pin; pin.now = 0.0; pin.peaceful = true; pin.others = { Player(2.0f) };
     EXPECT_EQ(Brain_Step(p, c, pin, 0.1f).mood, Mood::Idle);
+}
+
+TEST(Creatures, SpawnFitsAndDue) {
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("lurker | lurker | habitat=cave depth=8-200 dark=0.1 cap=2 respawn=600 nests=1", c, &err)) << err;
+    SpawnSite s; s.kind = 0; s.depth = 20.0f; s.light = 0.0f;
+    EXPECT_TRUE(Spawn_Fits(c, s));
+    s.depth = 4.0f; EXPECT_FALSE(Spawn_Fits(c, s));       // too shallow
+    s.depth = 20.0f; s.light = 0.5f; EXPECT_FALSE(Spawn_Fits(c, s)); // too light
+    s.light = 0.0f; s.nearMouth = true; EXPECT_FALSE(Spawn_Fits(c, s)); // a cave dweller keeps off the entrances
+    s.nearMouth = false; s.kind = 2; EXPECT_FALSE(Spawn_Fits(c, s));   // rubble
+    CreatureSpec m; ASSERT_TRUE(Creatures_ParseLine("scav | scavenger | habitat=mouth depth=0-30", m, &err)) << err;
+    SpawnSite mouth; mouth.kind = 1; mouth.depth = 3.0f; mouth.nearMouth = true;
+    EXPECT_TRUE(Spawn_Fits(m, mouth));
+    mouth.nearMouth = false; EXPECT_FALSE(Spawn_Fits(m, mouth));
+    // A chunk: filled to the cap at once, then one per 600 s while below it, none once its nest is destroyed.
+    SpawnChunk ch;
+    EXPECT_EQ(Spawn_Due(c, ch, 0, 0.0), 2);
+    EXPECT_EQ(Spawn_Due(c, ch, 2, 10.0), 0);   // full
+    EXPECT_EQ(Spawn_Due(c, ch, 0, 300.0), 0);  // cleared, waiting
+    EXPECT_EQ(Spawn_Due(c, ch, 0, 600.0), 1);
+    EXPECT_EQ(Spawn_Due(c, ch, 1, 700.0), 0);
+    ch.hasNest = true; ch.nestDestroyed = true;
+    EXPECT_EQ(Spawn_Due(c, ch, 0, 5000.0), 0);
 }
 #endif

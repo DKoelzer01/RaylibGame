@@ -9,6 +9,7 @@
 #include "combat.h"
 #include "melee.h"
 #include "creatures.h" // (#1223)
+#include "claims.h"
 #include "headless.h"
 #include "net.h"
 #include "playersession.h"
@@ -34,6 +35,8 @@
 #include <sstream>
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
@@ -62,6 +65,7 @@ struct Species {
     float latMin = 0.0f, latMax = 0.8f;
     std::vector<Biome> biomes;         // Plan 5 B: where herds live (empty: by latitude)
     bool biped = false, wool = false, horns = false, spikes = false, beak = false, tail = false, ears = false, longBody = false; // model (Plan 5 A)
+    bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -105,7 +109,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; }
         }
         species.push_back(s);
     }
@@ -242,6 +246,8 @@ bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& 
     }
     if (!found) return false;
     elevation = Vector3Length(at) - pf.radius;
+    // (#1223) Under the surface (a cave floor, 3 m or more down): no sea or river there, whatever the height.
+    if (pf.elevation(dir) - elevation > 3.0f) return true;
     if (elevation < 0.3f) return false; // the sea
     if (pf.inlandWaterNear(dir, 0.0f)) {
         const float w = pf.waterElevation(dir);
@@ -533,7 +539,7 @@ void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from)
 
 // ---------------------------------------------------------------------------------------------
 
-void Animals_Reset() { animals.clear(); spawnedTiles.clear(); aimed = -1; gSearch.active = false; gSearch.body = nullptr; } // (#902: the search held the old world's body)
+void Animals_Reset() { Animals_ResetCaveSpawns(); animals.clear(); spawnedTiles.clear(); aimed = -1; gSearch.active = false; gSearch.body = nullptr; } // (#902: the search held the old world's body)
 int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }
@@ -651,6 +657,115 @@ bool Animals_Feed(int i) {
     GameUI_Toast(TextFormat("The %s eats %s", s.name.c_str(), want.c_str()));
     return false;
 }
+
+// ---- (#1223) Cave creatures: spawning ----
+// Every 2 s around each interest centre (players) on a planet with graph caves: the cave segments within 64 m give spawn
+// sites (their floors, found down from the axis), each with its depth, light and whether an entrance is near. Each cave
+// species (creatures.txt habitat=cave or mouth) fills each 64 m chunk where it fits up to its cap on the first visit, then
+// adds one every respawn seconds while below it; a species with nests gets a nest in a chunk's large chamber, and once that
+// nest is destroyed the chunk stays clear (decided). None on peaceful, none inside claims, none within 24 m of the player.
+namespace {
+struct ChunkId { int x, y, z, species; bool operator<(const ChunkId& o) const { return std::tie(x, y, z, species) < std::tie(o.x, o.y, o.z, o.species); } };
+std::map<ChunkId, SpawnChunk> spawnChunks;
+double lastCaveSpawn = -1e9;
+int caveSpawned = 0, caveSites = 0;
+
+ChunkId ChunkOf(Vector3 p, int si) {
+    return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
+}
+
+// An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
+uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
+    Animal a;
+    a.species = si;
+    a.body = body.name;
+    a.pos = a.prevPos = at;
+    a.heading = 2.0f * PI * Rand01(seed);
+    a.health = species[si].health;
+    a.age = 1.0f;
+    a.rng = seed ^ (uint32_t)(animals.size() * 7919u);
+    a.timer = 1.0f + 4.0f * Rand01(seed);
+    a.settleIn = 1.0f;
+    a.productReady = WorldTime();
+    a.netId = NetId_Allocate(NetKind::Animal);
+    animals.push_back(a);
+    return a.netId;
+}
+
+void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, Vector3 player) {
+    std::vector<std::pair<int, const CreatureSpec*>> kinds;
+    for (const CreatureSpec& c : Creature_All())
+        if (c.habitat == Habitat::Cave || c.habitat == Habitat::Mouth) { const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c }); }
+    if (kinds.empty()) return;
+    const float R = SpawnTune::kChunk;
+    const Vector3 lo = Vector3SubtractValue(centre, R), hi = Vector3AddValue(centre, R);
+    std::vector<PlanetField::CaveSpan> spans;
+    std::vector<PlanetField::CaveEntrance> ents;
+    f.caveSpansNear(lo, hi, spans);
+    f.caveEntrancesNear(Vector3SubtractValue(lo, 20.0f), Vector3AddValue(hi, 20.0f), ents);
+    std::vector<SpawnSite> sites;
+    for (const PlanetField::CaveSpan& sp : spans) {
+        if (sp.kind == 2) continue; // rubble is solid
+        const float len = Vector3Distance(sp.a, sp.b);
+        const int n = std::max(1, (int)(len / 12.0f));
+        for (int k = 0; k < n; ++k) {
+            const float t = (k + 0.5f) / n;
+            const Vector3 axis = Vector3Lerp(sp.a, sp.b, t);
+            if (Vector3Distance(axis, centre) > R) continue;
+            const float r = sp.ra + (sp.rb - sp.ra) * t;
+            const Vector3 up = Vector3Normalize(sp.up);
+            if (body.densityAt(axis) >= ISO_LEVEL) continue;          // the axis itself in rock (a squeezed span): no room
+            Vector3 floor{}; bool found = false;
+            for (float d = 0.25f; d <= r + 2.0f; d += 0.25f) {
+                const Vector3 q = Vector3Subtract(axis, Vector3Scale(up, d));
+                if (body.densityAt(q) >= ISO_LEVEL) { floor = Vector3Add(q, Vector3Scale(up, 0.25f)); found = true; break; }
+            }
+            if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) continue; // no headroom
+            if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) continue;
+            if (Claims_At(body.name, floor)) continue;                // never inside claimed land
+            SpawnSite s;
+            s.floor = floor; s.up = up; s.kind = sp.kind; s.radius = r;
+            const Vector3 dir = Vector3Normalize(floor);
+            s.depth = f.radius + f.elevation(dir) - Vector3Length(floor);
+            for (const PlanetField::CaveEntrance& e : ents) if (Vector3Distance(e.at, floor) < 20.0f) { s.nearMouth = true; break; }
+            s.light = s.nearMouth ? 0.5f : s.depth < 4.0f ? 0.6f : 0.0f;
+            sites.push_back(s);
+        }
+    }
+    caveSites = (int)sites.size();
+    if (sites.empty()) return;
+    const int nestSi = SpeciesIndex("creature_nest");
+    const double now = SimTime();
+    for (const auto& kv : kinds) {
+        const int si = kv.first; const CreatureSpec& c = *kv.second;
+        std::map<ChunkId, std::vector<const SpawnSite*>> byChunk;
+        for (const SpawnSite& s : sites) if (Spawn_Fits(c, s)) byChunk[ChunkOf(s.floor, si)].push_back(&s);
+        for (auto& ck : byChunk) {
+            SpawnChunk& ch = spawnChunks[ck.first];
+            int alive = 0;
+            for (const Animal& a : animals) if (a.species == si && a.body == body.name) { const ChunkId id = ChunkOf(a.pos, si); alive += !(id < ck.first) && !(ck.first < id); }
+            if (c.nests && nestSi >= 0) {
+                if (!ch.hasNest) // the nest in the chunk's large chamber (none without one)
+                    for (const SpawnSite* s : ck.second)
+                        if (s->kind == 3 && s->radius >= SpawnTune::kNestChamber) { ch.nest = SpawnAt(body, nestSi, s->floor, Hash((uint64_t)ck.first.x * 73856093u ^ (uint64_t)ck.first.z, 3u)); ch.hasNest = true; break; }
+                if (ch.hasNest && IndexOfNet(ch.nest) < 0) ch.nestDestroyed = true;
+            }
+            const int due = Spawn_Due(c, ch, alive, now);
+            uint32_t h = Hash(((uint64_t)(uint32_t)ck.first.x << 32) ^ (uint32_t)ck.first.y ^ ((uint64_t)ck.first.z << 16), (uint32_t)(now * 10.0) + (uint32_t)si);
+            for (int k = 0; k < due; ++k) {
+                const SpawnSite* s = ck.second[std::min((int)ck.second.size() - 1, (int)(Rand01(h) * ck.second.size()))];
+                SpawnAt(body, si, s->floor, h);
+                ++caveSpawned;
+            }
+        }
+    }
+}
+} // namespace
+
+int Animals_CaveSpawned() { return caveSpawned; }
+int Animals_CaveSites() { return caveSites; }
+void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
+void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }
 
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -795,6 +910,15 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 }
             }
         }
+        }
+    }
+    // (#1223) Cave creatures around each interest centre, every 2 s (none on peaceful, or with threats off: benches).
+    if (Creatures_On() && threatsOn && Difficulty_ThreatScale() > 0.0f && SimTime() - lastCaveSpawn > SpawnTune::kPass) {
+        lastCaveSpawn = SimTime();
+        for (const InterestCentre& c : centres) {
+            Planetoid* b = Planetoid::find(c.body);
+            const PlanetField* cf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+            if (cf) SpawnCaveCreatures(*b, *cf, c.local, c.local);
         }
     }
     // Ecology (Plan 5 A), twice a second over the animals near the player: predators (the hostile kinds)
@@ -1452,6 +1576,12 @@ static inline void DrawCubeB(Vector3 p, float w, float h, float l, Color c) { IB
 template <typename ShadeFn>
 static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     const Vector3 sz = s.size;                       // length (z), height (y), width (x)
+    if (s.nest) { // (#1223) a nest: a low mound of lumps, the egg-like pods on top (no legs, no head, never moves)
+        DrawCubeB({ 0, sz.y * 0.3f, 0 }, sz.z, sz.y * 0.6f, sz.x, shade(s.body, 1.0f));
+        DrawCubeB({ sz.z * 0.2f, sz.y * 0.55f, -sz.x * 0.15f }, sz.z * 0.55f, sz.y * 0.5f, sz.x * 0.5f, shade(s.body, 0.9f));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.25f, sz.y * 0.8f, (k % 2 ? 0.15f : -0.1f) * sz.x }, sz.z * 0.18f, sz.y * 0.3f, sz.z * 0.18f, shade(s.head, 1.0f));
+        return;
+    }
     const float t = (float)GameClock();
     const bool resting = a.state == State::Rest, grazing = a.state == State::Graze && a.moveSpeed <= 0.0f;
     const float legH = sz.y * (s.biped ? 0.45f : 0.42f);

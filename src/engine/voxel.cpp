@@ -1821,6 +1821,54 @@ void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out
                 }
 }
 
+
+// (#1223) The cave graph's segments and entrances near a box, for creature spawning (creatures.cpp / animals.cpp): from the
+// cells within kCaveCellReach of the box's corners projected onto the sea-level sphere, as shaftsNear looks them up.
+static void CaveCellsAround(const PlanetField& f, Vector3 lo, Vector3 hi, int clo[3], int chi[3], bool& ok) {
+    ok = true;
+    for (int a = 0; a < 3; ++a) { clo[a] = INT32_MAX; chi[a] = INT32_MIN; }
+    for (int k = 0; k < 8; ++k) {
+        const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
+        const float d = Vector3Length(q);
+        if (d < 1.0f) { ok = false; return; }
+        const Vector3 s = Vector3Scale(q, f.radius / d);
+        const int c[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+        for (int a = 0; a < 3; ++a) { clo[a] = std::min(clo[a], c[a] - kCaveCellReach); chi[a] = std::max(chi[a], c[a] + kCaveCellReach); }
+    }
+}
+
+void PlanetField::caveSpansNear(Vector3 lo, Vector3 hi, std::vector<CaveSpan>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3], chi[3]; bool ok;
+    CaveCellsAround(*this, lo, hi, clo, chi, ok);
+    if (!ok) return;
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveSeg& s : CaveCell(*this, fieldSeed, x, y, z)->segs) {
+                    const float r = std::max(s.ra, s.rb);
+                    const Vector3 blo = Vector3SubtractValue(Vector3Min(s.a, s.b), r), bhi = Vector3AddValue(Vector3Max(s.a, s.b), r);
+                    if (bhi.x < lo.x || blo.x > hi.x || bhi.y < lo.y || blo.y > hi.y || bhi.z < lo.z || blo.z > hi.z) continue;
+                    out.push_back({ s.a, s.b, s.up, s.ra, s.rb, s.kind });
+                }
+}
+
+void PlanetField::caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntrance>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    int clo[3], chi[3]; bool ok;
+    CaveCellsAround(*this, lo, hi, clo, chi, ok);
+    if (!ok) return;
+    for (int z = clo[2]; z <= chi[2]; ++z)
+        for (int y = clo[1]; y <= chi[1]; ++y)
+            for (int x = clo[0]; x <= chi[0]; ++x)
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.at.x < lo.x || m.at.x > hi.x || m.at.y < lo.y || m.at.y > hi.y || m.at.z < lo.z || m.at.z > hi.z) continue;
+                    out.push_back({ m.at, m.out, m.kind });
+                }
+}
+
 int PlanetField::caveMouthsNear(Vector3 dir, float range) const {
     if (!CavesGraph() || moon) return 0;
     const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
