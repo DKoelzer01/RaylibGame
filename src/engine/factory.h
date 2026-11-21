@@ -141,6 +141,8 @@ namespace Factory {
     void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
     // (#1269) A player turns a hand crank: it turns for 0.3 s after the last call (call it each frame RMB is held).
     void Crank(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1270) A water wheel's or windmill's speed from its river or wind (signed RPM about its plot axis): rotationsources.*
+    void SetSourceRpm(uint64_t bodyId, uint32_t plotId, int part, int rpm);
     // (#1269) A rotation part's speed and its network's load (plots near the player; invalid otherwise).
     RotationView RotationAt(uint64_t bodyId, uint32_t plotId, int part);
     // (#1269) Every rotation part of a near plot: (part, signed RPM about its plot axis). Empty if none or far.

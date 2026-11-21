@@ -2,6 +2,7 @@
 #include "inventory.h"
 #include "plots.h"
 #include "rotationplot.h"
+#include "rotationsources.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -1034,6 +1035,7 @@ void SimLoop() {
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
+                if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
                     if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
@@ -1231,6 +1233,7 @@ void Factory::Reset() {
     layoutQueue.clear();
     itemQueue.clear();
     sentVersions.clear();
+    RotationSources_Reset(); // (#1270)
 }
 
 void Factory::Sync(Scene& world) {
@@ -1284,6 +1287,7 @@ void Factory::Sync(Scene& world) {
             }
         }
     }
+    RotationSources_Update(world); // (#1270) water wheels and windmills: their river or wind, twice a second
     // Items back from the simulation.
     std::vector<ItemOut> back;
     {
@@ -1423,6 +1427,10 @@ void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
 void Factory::Crank(uint64_t body, uint32_t plot, int part) { // (#1269)
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 11, body, plot, part, -1, 0 });
+}
+void Factory::SetSourceRpm(uint64_t body, uint32_t plot, int part, int rpm) { // (#1270)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 12, body, plot, part, -1, rpm });
 }
 RotationView Factory::RotationAt(uint64_t body, uint32_t plot, int part) {
     RotationView v;
