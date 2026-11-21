@@ -294,15 +294,19 @@ struct PlotSim {
 constexpr long long kMeasureTicks = 60 * kTicksPerSecond; // 60 s of measuring (decided)
 constexpr long long kCapTicks = 60 * kTicksPerSecond;     // a cap is crafts per this many ticks
 bool summaryOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SUMMARY"); return !(e && e[0] == '0'); }();
+// RAYLIBGAME_FACTORY_SUMMARY_LOG=1: each plot's mode changes (with its caps) and each summary advance, to the log.
+bool summaryLog = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SUMMARY_LOG"); return e && e[0] == '1'; }();
 
 void AdvanceSummary(PlotSim& ps, long long t0, long long t1); // (below)
 void BeginMeasuring(PlotSim& ps, long long t) {
+    if (summaryLog) LOG_INFO("Factory", "summary: plot %u measures from tick %lld (was mode %d)\n", ps.plot, t, (int)ps.mode);
     if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // (its buffers to now first)
     ps.mode = PlotSim::Mode::Measuring;
     ps.modeSince = t;
     for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; }
 }
-// While near, crafts and EU go into 30 s buckets: the last whole minute is what the plot really did near the player.
+// While near, crafts and EU go into 30 s buckets: the last whole bucket and the current one (30-60 s) are what the plot
+// really did near the player.
 constexpr long long kNearBucketTicks = 30 * kTicksPerSecond;
 void RotateNearBuckets(PlotSim& ps, long long t) {
     if (t - ps.bucketSince < kNearBucketTicks) return;
@@ -310,10 +314,11 @@ void RotateNearBuckets(PlotSim& ps, long long t) {
     ps.bucketSince = t;
     ps.bucketFull = true;
 }
-// The player (or a server's players) came near or went away. Leaving after a whole minute near, each machine keeps the caps
-// of that minute (what it really did near the player: the 20-tick measuring step loses part of a step at each craft, and a
+// The player (or a server's players) came near or went away. Leaving after 30 s or more near, each machine keeps the caps
+// of its last 30-60 s (what it really did near the player: the 20-tick measuring step loses part of a step at each craft, and a
 // window right after a start-up is low); measuring then may only raise them.
 void SetNear(PlotSim& ps, bool near, long long t) {
+    if (summaryLog) LOG_INFO("Factory", "summary: plot %u near %d at tick %lld (mode %d)\n", ps.plot, near ? 1 : 0, t, (int)ps.mode);
     ps.nearPlayer = near;
     if (near) {
         if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // its buffers to now, then it ticks
@@ -326,7 +331,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
     const long long window = ps.bucketFull ? kNearBucketTicks + (t - ps.bucketSince) : 0;
     for (Machine& m : ps.machines) {
         m.nearCap.clear(); m.nearEuCap = 0;
-        if (window < kMeasureTicks) continue; // (under a minute near: measuring alone)
+        if (!ps.bucketFull) continue; // (under 30 s near: measuring alone; else the last 30-60 s near)
         std::map<int, int> sum = m.nearPrev;
         for (const auto& [r, n] : m.nearCur) sum[r] += n;
         for (const auto& [r, n] : sum) m.nearCap[r] = (int)((long long)n * kCapTicks / window);
@@ -344,7 +349,13 @@ void UpdateMode(PlotSim& ps, long long t) {
         m.capPerWindow = m.nearCap;
         for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, (int)((long long)n * kCapTicks / window)); }
         m.euCap = std::max(m.nearEuCap, m.euWindow * kCapTicks / window);
+        if (summaryLog && (!m.capPerWindow.empty() || m.euCap > 0)) {
+            std::string caps;
+            for (const auto& [r, c] : m.capPerWindow) caps += TextFormat(" r%d:%d(near %d, measured %d)", r, c, m.nearCap.count(r) ? m.nearCap.at(r) : 0, m.crafts.count(r) ? (int)((long long)m.crafts.at(r) * kCapTicks / window) : 0);
+            LOG_INFO("Factory", "summary: plot %u part %d caps per %lld ticks:%s eu %lld (near %lld)\n", ps.plot, m.part, kCapTicks, caps.c_str(), m.euCap, m.nearEuCap);
+        }
     }
+    if (summaryLog) LOG_INFO("Factory", "summary: plot %u enters Summary at tick %lld after %lld ticks of measuring\n", ps.plot, t, window);
     ps.mode = PlotSim::Mode::Summary;
     ps.lastAdvance = t;
     ps.modeSince = t;
@@ -1009,8 +1020,9 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
     const int nm = (int)ps.machines.size(), nets = (int)ps.itemNets.size() + nm; // a machine on no conveyor is a net of its own
     auto netOf = [&](int mi) { const int n = ps.machines[mi].itemNet; return n >= 0 && n < (int)ps.itemNets.size() ? n : (int)ps.itemNets.size() + mi; };
     auto fuelOf = [&](int fuel) { auto it = fuelTicks.find(fuel); return it != fuelTicks.end() ? it->second : 200; };
-    long long t = t0;
-    for (int segment = 0; segment < kMaxSegments && t < t1; ++segment) {
+    long long t = t0, logCrafts = 0;
+    int segment = 0;
+    for (; segment < kMaxSegments && t < t1; ++segment) {
         // Stocks and rooms now: per net and item (chests), per machine and item (own slots).
         std::map<std::pair<int, int>, long long> chestStock, chestRoom;
         std::vector<std::map<int, long long>> own(nm), ownRoom(nm);
@@ -1245,8 +1257,15 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         for (Machine& m : ps.machines) { m.dirty = true; m.asleep = false; } // (back near, everything looks again)
         for (size_t k = 0; k < nodes.size(); ++k) ps.machines[nodes[k].mi].status = crafts[k] > 0 ? MachineStatus::Working : MachineStatus::Idle;
         for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt; // (#1199 counters: the bottleneck finder sees far plots too)
+        if (summaryLog) {
+            long long c = 0, rates = 0;
+            for (size_t k = 0; k < nodes.size(); ++k) { c += crafts[k]; rates += nodes[k].rate; }
+            logCrafts += c;
+            LOG_INFO("Factory", "summary: plot %u segment %d: %lld ticks, %zu nodes at %lld crafts/Mtick in all, %lld crafts\n", ps.plot, segment, dt, nodes.size(), rates, c);
+        }
         t += dt;
     }
+    if (summaryLog) LOG_INFO("Factory", "summary: plot %u advanced %lld -> %lld (%d segments, %lld crafts)\n", ps.plot, t0, t, segment, logCrafts);
 }
 
 // The watched cable's network (#570), under viewMutex.
@@ -2150,7 +2169,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
     put(*all[2], 0, "coal", 64, true); put(*all[2], 1, "stone", 20);
     put(*all[3], 0, "coal", 64, true); put(*all[3], 1, "sand", 64);
     long long madeAll = 0; int active = 0;
-    constexpr long long kWarm = 2 * 60 * kTicksPerSecond; // B runs near for 2 minutes, then the player leaves (as in play)
+    constexpr long long kWarm = (2 * 60 + 7) * kTicksPerSecond; // B runs near for 2 min 7 s (not on a 30 s bucket boundary), then the player leaves
     for (long long t = 0; t < ticks; ++t)
         for (size_t i = 0; i < all.size(); ++i) {
             PlotSim& ps = *all[i];
@@ -2170,6 +2189,26 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
     return made;
 }
 } // namespace
+
+// (#1261) A plot that leaves "near" at any time after 30 s keeps the caps of its last 30-60 s near (the first version kept
+// them only when leaving exactly on a 30 s boundary: the in-game run used the measuring window alone and made 82.5%).
+TEST(Factory, LeavingNearAtAnyTimeKeepsTheNearCaps) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
+    PlotSim& ps = *FindPlot(9, 1);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    InsertInto(ps.machines[ps.byPart.at(1)], tables.item("stone"), 640, false, b);
+    long long made = 0; int active = 0;
+    for (long long t = 0; t < (60 + 13) * kTicksPerSecond; ++t) { RotateNearBuckets(ps, t); TickPlot(ps, 1, made, active); } // 1 min 13 s near
+    SetNear(ps, false, (60 + 13) * kTicksPerSecond);
+    const Machine& mac = ps.machines[ps.byPart.at(2)];
+    ASSERT_FALSE(mac.nearCap.empty()) << "the macerator's near caps are kept";
+    EXPECT_GE(mac.nearCap.begin()->second, 11) << "12 crafts a minute near (100 ticks a craft), at least 11";
+    EXPECT_GT(ps.machines[ps.byPart.at(0)].nearEuCap, 0) << "and the generator's EU";
+    plots.clear(); plotIndexDirty = true;
+}
 
 TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimAndNotMuchLess) {
     const bool was = summaryOn;
