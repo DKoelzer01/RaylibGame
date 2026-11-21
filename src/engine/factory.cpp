@@ -213,6 +213,7 @@ constexpr int kConveyorItemsPerSecond = 8;
 
 struct Machine {
     int part = -1;
+    int euCarry = 0; // (#1266) EU received and not yet a whole tick of its recipe
     PartType type = PartType::Count;
     std::vector<Int3> cells;
     std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
@@ -718,7 +719,9 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (def.power == Power::Eu) {
                 if (m.powerNet < 0) { m.status = MachineStatus::NoPower; continue; }
                 if (def.volts < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                ticks = r.eu > 0 ? m.received / r.eu : dt;
+                // (#1266) the EU under one tick's worth waits for the next step: an overloaded net slows its machines, it does
+                // not stall them (a 5-of-8 EU share made 0 ticks every tick near the player)
+                if (r.eu > 0) { const int eu = m.received + m.euCarry; ticks = eu / r.eu; m.euCarry = eu % r.eu; } else ticks = dt;
             } else if (def.power == Power::Fuel) {
                 ticks = BurnFuel(m, def, std::min(dt, r.ticks - m.progress));
             } else {
@@ -740,6 +743,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
             for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
             m.recipe = -1; m.progress = 0;
+            m.euCarry = 0; // (#1266)
         }
     }
     // (#1199) Time per status by machine kind: every machine, every tick of this step.
@@ -1458,3 +1462,35 @@ void Factory::SetRemoteWorking(uint64_t body, uint32_t plot, const std::vector<i
     for (int p : parts) remoteWorking.insert(WorkingKey(body, plot, p));
 }
 void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSink; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1266): an overloaded power net slows its machines near the player, it does not stall them ----
+#include "unit_helpers.h"
+
+// Six 8 EU/t macerators on one 32 EU/t generator, near the player (1-tick steps): each gets floor(8 x 32 / 48) = 5 EU of 8
+// a tick. It stalled (5 / 8 = 0 ticks, every tick); now the share adds up and the line runs at about 5/8 of its full speed.
+TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallThem) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 9; L.plot = 2; L.version = 1;
+    for (int i = 0; i < 7; ++i) {
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ i * 3 + dx, dy, dz });
+        L.machines.push_back({ i, i == 0 ? PartType::Generator : PartType::Macerator }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+    }
+    for (int x = 0; x <= 19; ++x) L.cables.push_back({ x, 0, -1 });
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 2);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    for (int k = 1; k <= 6; ++k) InsertInto(ps.machines[ps.byPart.at(k)], tables.item("iron_ore"), 64, false, b);
+    long long made = 0; int active = 0;
+    constexpr long long kTicks = 2 * 60 * kTicksPerSecond;
+    for (long long t = 0; t < kTicks; ++t) TickPlot(ps, 1, made, active);
+    const long long full = kTicks / 150 * 6 * 2; // 150 ticks a craft, 2 crushed each, unlimited power
+    EXPECT_GE(made * 100, full * 5 / 8 * 85) << "about 5/8 of the full rate (at least 85% of it): made " << made << " of " << full;
+    EXPECT_LE(made, full * 32 / 48) << "and no more than the share allows";
+    plots.clear(); plotIndexDirty = true;
+}
+#endif
