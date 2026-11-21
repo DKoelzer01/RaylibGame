@@ -56,6 +56,9 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // #768: the collision cache lives for one update only. Carried across updates it made the physics depend on history:
     // a client replaying from a corrected state skipped differently from the server, and predictions drifted.
     for (bool& v : collideCache.valid) v = false;
+    // (F2b, #1146) Moved from outside since the last update (a spawn, placeAt, a respawn, a load): the velocity was set in
+    // world terms then, so the frame path converts it again instead of restoring the last flight's stored frame velocity.
+    if ((position - lastEndPosition).length() > 1e-6) { fxActive = false; airVelBody = 0; viewBody = 0; }
     if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
@@ -348,6 +351,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         }
     } else {
         airBody = nullptr;
+        airVelBody = 0; // (F2b) on the ground: the next flight starts from the grounded velocity, not the last one stored
     }
     lastEndPosition = position;
     if (Frames_On()) updateFrame(world);

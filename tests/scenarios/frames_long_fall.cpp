@@ -100,7 +100,8 @@ static void BuildLongFall(ScenarioDef& s) {
             st.maxLanding = std::max(st.maxLanding, (double)player.landingSpeed); // into the floor (its normal: less on a slope)
             if (!player.grounded) { // the fall speed against the turning ground, the last airborne frame before touchdown
                 const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-                st.fallSpeed = Vector3Length(Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
+                // (with RAYLIBGAME_FRAMES=1 the airborne velocity is the frame velocity, against the ground already: F2b)
+                st.fallSpeed = Frames_On() ? Vector3Length(player.velocity) : Vector3Length(Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
             }
             if (!player.grounded) return false;
             const double t = c.T - st.t0;
