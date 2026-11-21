@@ -33,6 +33,9 @@ struct Recipe {
 class ItemDB {
 public:
     bool load(const char* itemsPath, const char* recipesPath);
+    // More items in items.txt's format, added after load (#1250: magic_items.txt, only with RAYLIBGAME_MAGIC); ids already
+    // known are kept as they were. False if the file can't be read.
+    bool loadExtra(const char* itemsPath);
     const ItemDef* find(const std::string& id) const;
     const std::vector<ItemDef>& items() const { return itemList; }
     const std::vector<Recipe>& recipes() const { return recipeList; }

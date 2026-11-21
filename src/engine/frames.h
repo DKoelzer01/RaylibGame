@@ -14,6 +14,10 @@
 
 class Planetoid;
 
+// The switch (RAYLIBGAME_FRAMES=1): off by default until F2's gate passes; tests may set it.
+bool Frames_On();
+void Frames_SetOn(bool on);
+
 enum class FrameKind : uint8_t { Fixed = 0, Centred = 1 };
 struct FrameRef {
     uint64_t body = 0;                // the body's NetId
