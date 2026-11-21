@@ -40,7 +40,15 @@ SCENARIO("combat/poise") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 60.0;
 
-    s.step("settle", 30.0, [](ScenarioCtx& c) { c.waitingFor("1 s of play and an idle world"); return c.T >= 1.0 && WorldIdle(); });
+    // The player stands at the start: animals are simulated only near a player (a bench camera in the air is none).
+    s.step("settle", 30.0, [](ScenarioCtx& c) {
+        c.waitingFor("1 s of play and an idle world");
+        if (c.T < 1.0 || !WorldIdle()) return false;
+        player.flyMode = false;
+        player.spawnOn(c.world, *c.body, c.spawnDirWorld());
+        return true;
+    });
+    s.step("stand", 5.0, [](ScenarioCtx& c) { return c.t >= 0.5; });
     s.step("a hornhide's poise breaks on the third hit", 2.0, [](ScenarioCtx& c) {
         S.idx = Fresh(c, "hornhide", 8.0f);
         if (S.idx < 0) { c.fail("no hornhide"); return true; }
