@@ -12190,6 +12190,11 @@ int main(int argc, char** argv)
                 // (#920) the XP the server counted for it (felling: Woodcutting or Foraging; tilling, sowing, harvesting: Farming)
                 printf("bench: net skills (%s, #920): skill states %d; woodcutting %.1f, foraging %.1f, farming %.1f\n", role ? role : "?", gJoin.skillStates,
                        gJoin.skills.xp["woodcutting"], gJoin.skills.xp["foraging"], gJoin.skills.xp["farming"]);
+                // (#1107) where a till goes missing: did the server's edits arrive (ours among them, or refused), and what the
+                // ground at the tilled spot reads as now (Farmland is what sowing needs)
+                printf("bench: net edits (%s, #1107): seen %d, own %d, refused %d (why mask %u); tilled spot %s material %d (farmland %d)\n",
+                       role ? role : "?", gJoin.editsSeen, gJoin.editsOwn, gJoin.editsRefused, gJoin.refusedWhy, tillKnown ? "known" : "unknown",
+                       pb && tillKnown ? (int)pb->materialAt(tillGround) : -1, (int)VoxelMaterial::Farmland);
                 NetClient_Disconnect(gJoin);
                 benchNetPlants = false;
             }
