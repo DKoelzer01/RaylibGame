@@ -37,7 +37,8 @@ bool AddMill(ScenarioCtx& c, int k) {
 void Crank() { Factory::Crank(bodyId, plot->id, crank); }
 RotationView Line() { return Factory::RotationAt(bodyId, plot->id, lineShaft); }
 // View follows one machine at a time: switch, let two ticks pass (the crank keeps turning for 6), read.
-MachineView Mill(int k) { Factory::View(bodyId, plot->id, mills[k]); Factory::WaitTicks(2); return Factory::View(bodyId, plot->id, mills[k]); }
+MachineView Mill(int k, bool cranking = true) { Factory::View(bodyId, plot->id, mills[k]); if (cranking) Crank(); Factory::WaitTicks(2); // (the crank turns 6 ticks after a turn: keep it turning)
+    return Factory::View(bodyId, plot->id, mills[k]); }
 int placed = 2;
 }
 
@@ -60,8 +61,8 @@ SCENARIO("factory/rotation") {
         if (!c.check("crank, gearboxes, shafts, a stress gauge and two millstones placed", ok)) return true;
         crank = plot->partAt({ -1, 3, 0 }); lineShaft = plot->partAt({ 1, 3, 0 }); // the stress gauge
         // Looking along the line from the front, a little above: the shafts, the gearboxes and the runner stones in view.
-        const Vector3 mid = plot->toBody({ 3.0f * kCellSize * 2.0f, 1.0f, 0.5f });
-        const Vector3 eye = plot->toBody({ 3.0f * kCellSize * 2.0f - 1.5f, 3.2f, -4.5f });
+        const Vector3 mid = plot->toBody({ 2.4f, 1.0f, 0.5f }); // the crank (x -0.5 m) to the fifth millstone (x 6.5 m)
+        const Vector3 eye = plot->toBody({ 1.2f, 3.0f, -5.2f });
         c.camera(eye, mid, plot->up);
         Factory::Sync(c.world);
         return true;
@@ -120,7 +121,7 @@ SCENARIO("factory/rotation") {
         if (c.t < 1.0 || !v.valid) return false;
         c.eq("the line stands", fabsf(v.rpm), 0.0);
         c.check("the gauge says stopped", std::string(v.status) == "Stopped", v.status);
-        const std::vector<std::pair<std::string, int>> out = Mill(0).outSlots;
+        const std::vector<std::pair<std::string, int>> out = Mill(0, false).outSlots;
         int gravel = 0;
         for (const auto& [item, n] : out) if (item == "gravel") gravel += n;
         c.gt("the first millstone ground gravel", gravel, 0);

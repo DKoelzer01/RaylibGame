@@ -17,7 +17,7 @@
 
 namespace {
 
-const Color kWood = { 150, 112, 70, 255 }, kDarkWood = { 84, 62, 42, 255 }, kStone = { 150, 148, 142, 255 }, kSteel = { 150, 154, 160, 255 };
+const Color kWood = { 150, 112, 70, 255 }, kDarkWood = { 84, 62, 42, 255 }, kStone = { 178, 175, 168, 255 }, kLight = { 214, 182, 120, 255 }, kSteel = { 150, 154, 160, 255 };
 
 struct Spot {
     int part;
@@ -69,7 +69,7 @@ void DrawPart(PartType t) {
     switch (t) {
     case PartType::Shaft:
         IB_Cylinder({ 0, -0.25f, 0 }, 0.06f, 0.06f, 0.5f, kWood);
-        IB_Cube({ 0.055f, 0, 0 }, { 0.03f, 0.48f, 0.03f }, kDarkWood); // a stripe: the turning shows
+        IB_Cube({ 0.055f, 0, 0 }, { 0.03f, 0.48f, 0.03f }, kLight); // a light stripe: the turning shows
         break;
     case PartType::Cogwheel:
         IB_Cylinder({ 0, -0.25f, 0 }, 0.06f, 0.06f, 0.5f, kWood);
@@ -90,7 +90,7 @@ void DrawPart(PartType t) {
         break;
     case PartType::Millstone: // the runner stone on top, with a notch and the grain hole
         IB_Cylinder({ 0, 0, 0 }, 0.42f, 0.44f, 0.14f, kStone);
-        IB_Cube({ 0.3f, 0.07f, 0 }, { 0.16f, 0.02f, 0.05f }, kDarkWood);
+        IB_Cube({ 0, 0.15f, 0 }, { 0.8f, 0.04f, 0.09f }, kLight); // the crossbar (rynd): the turning shows
         IB_Cylinder({ 0, 0.14f, 0 }, 0.07f, 0.07f, 0.01f, kDarkWood);
         break;
     case PartType::Saw: // the blade standing out of the table
