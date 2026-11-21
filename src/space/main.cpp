@@ -69,6 +69,7 @@
 #include "playerrecord.h"
 #include "commandline.h"
 #include "research.h"
+#include "researchtab.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -5104,6 +5105,14 @@ int main(int argc, char** argv)
                     } else if (benchShotTabs == 30 && ++frames == 40) {
                         TakeScreenshot("bench_help.png");
                         printf("bench: help manual: %d topics (bench_help.png)\n", HelpManual_TopicCount());
+                        { // (#1192) the Research tab at tier 3: a node done, two queued, one partly researched
+                            ResearchState& rs = Research_Team(ResearchTab_Team());
+                            rs.done = { "steam_power", "wire_drawing" }; rs.queue = { "vacuum_tube", "steelmaking" }; rs.progress["vacuum_tube"] = 12;
+                        }
+                        GameUI_ShowTab("Research");
+                        benchShotTabs = 31; frames = 0;
+                    } else if (benchShotTabs == 31 && ++frames == 40) {
+                        TakeScreenshot("bench_research.png");
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
