@@ -14,6 +14,7 @@ Rotation::ConsumerSpec RotationPlot_Consumer(PartType t) {
     case PartType::Millstone: return kMillstone;
     case PartType::Saw: return kSaw;
     case PartType::Press: return kPress;
+    case PartType::Dynamo: return Rotation::kDynamo; // (#1271 L3)
     default: return { 0, 0, 0 };
     }
 }
@@ -41,7 +42,7 @@ bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out
     std::vector<Cell> cells;
     for (const auto& c : fp) cells.push_back({ c.first.x, c.first.y, c.first.z });
     // The local axis, turned by the part's orientation (row-major 3x3).
-    const Int3 local = part.type == PartType::Millstone ? Int3{ 0, 1, 0 } : (part.type == PartType::Saw || part.type == PartType::Press) ? Int3{ 1, 0, 0 } : Int3{ 0, 0, 1 };
+    const Int3 local = part.type == PartType::Millstone ? Int3{ 0, 1, 0 } : (part.type == PartType::Saw || part.type == PartType::Press || part.type == PartType::SteamEngine || part.type == PartType::Dynamo || part.type == PartType::Motor) ? Int3{ 1, 0, 0 } : Int3{ 0, 0, 1 };
     const int* M = Orientation(part.orient);
     const int w[3] = { M[0] * local.x + M[1] * local.y + M[2] * local.z, M[3] * local.x + M[4] * local.y + M[5] * local.z, M[6] * local.x + M[7] * local.y + M[8] * local.z };
     const int axis = w[0] != 0 ? 0 : w[1] != 0 ? 1 : 2;
@@ -71,7 +72,9 @@ bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out
                 const Cell n = Neighbour(c, FaceOf(axis, s));
                 if (!in.count({ n.x, n.y, n.z })) ports.push_back({ c, FaceOf(axis, s) });
             }
-        out.geom = MakeConsumer(cells, axis, ports, RotationPlot_Consumer(part.type), false);
+        if (part.type == PartType::SteamEngine) out.geom = MakeSource(cells, axis, ports, Rotation::kSteamEngine, 0); // (#1271 L3) its speed from its boiler's steam
+        else if (part.type == PartType::Motor) out.geom = MakeSource(cells, axis, ports, Rotation::kMotor, 0); // its speed from the EU it gets
+        else out.geom = MakeConsumer(cells, axis, ports, RotationPlot_Consumer(part.type), false);
         break;
     }
     }
@@ -94,7 +97,7 @@ void RotationPlot::Set(std::vector<RotationPartMsg> msgs) {
     for (size_t i = 0; i < parts.size(); ++i) if (auto it = held.find(parts[i].part); it != held.end() && parts[i].type == PartType::HandCrank) crankTicks[i] = it->second;
     sourceRpm.assign(parts.size(), 0);
     for (size_t i = 0; i < parts.size(); ++i)
-        if (auto it = sampled.find(parts[i].part); it != sampled.end() && (parts[i].type == PartType::WaterWheel || parts[i].type == PartType::Windmill)) sourceRpm[i] = it->second;
+        if (auto it = sampled.find(parts[i].part); it != sampled.end() && RotationPlot_FedSource(parts[i].type)) sourceRpm[i] = it->second;
     res = Result{};
     Rotation::Step(pg.graph, layout, res);
 }
@@ -115,18 +118,30 @@ void RotationPlot::SetRunning(int part, bool running) {
     if (n.kind == NodeKind::Consumer) n.running = running;
 }
 
+bool RotationPlot::NetHasLoad(int part) const {
+    auto it = byPart.find(part);
+    if (it == byPart.end()) return false;
+    const int n = NodeOf(*this, it->second);
+    if (n >= (int)layout.netOf.size()) return false;
+    for (int v : layout.nets[layout.netOf[n]].nodes) {
+        const Node& node = pg.graph.nodes[v];
+        if (node.kind == NodeKind::Consumer && node.running) return true;
+    }
+    return false;
+}
+
 void RotationPlot::SetSourceRpm(int part, int rpm) {
     auto it = byPart.find(part);
     if (it == byPart.end()) return;
     const PartType t = parts[it->second].type;
-    if (t != PartType::WaterWheel && t != PartType::Windmill) return;
-    const int cap = t == PartType::WaterWheel ? Rotation::kWaterWheel.rpm : Rotation::kWindmill.rpm;
+    if (!RotationPlot_FedSource(t)) return;
+    const int cap = t == PartType::WaterWheel ? Rotation::kWaterWheel.rpm : t == PartType::Windmill ? Rotation::kWindmill.rpm : t == PartType::SteamEngine ? Rotation::kSteamEngine.rpm : Rotation::kMotor.rpm;
     sourceRpm[it->second] = std::clamp(rpm, -cap, cap);
 }
 
 void RotationPlot::Step(int dt) {
     for (size_t i = 0; i < parts.size(); ++i) {
-        if (parts[i].type == PartType::WaterWheel || parts[i].type == PartType::Windmill) { // (#1270) as the main thread sampled it
+        if (RotationPlot_FedSource(parts[i].type)) { // (#1270) as the main thread sampled it (#1271 L3: or the factory set it: steam engines, motors)
             pg.graph.nodes[NodeOf(*this, (int)i)].sourceRpm = sourceRpm[i];
             continue;
         }

@@ -235,3 +235,6 @@ mechanical_saw   | Mechanical saw   | 20  | 146,108, 68 | Mechanical power: saws
 mechanical_press | Mechanical press | 20  | 146,108, 68 | Mechanical power: presses one ingot into one plate (2 by hand). Needs 16 RPM.
 water_wheel      | Water wheel      | 20  | 150,112, 70 | Mechanical power from a river: 1.5 m across, set it with its bottom in flowing water (a river, or a stream you dug). Turns up to 16 RPM, 256 SU, with the current; nothing in still water.
 windmill         | Windmill         | 20  | 226,218,196 | Mechanical power from the wind: four sails on a hub, best high and in the open. Turns up to 8 RPM with 1024 SU in a good wind; stands still in a calm.
+steam_engine     | Steam engine     | 20  | 120,100, 80 | Set it against a boiler: the boiler's steam turns its shaft at 64 RPM with 1024 SU while its machines have work.
+dynamo           | Dynamo           | 20  | 184,110, 60 | Rotation into 32 V EU: up to 32 EU a tick at 64 RPM, onto the cables it touches. It loads its shaft like a machine (512 SU at 64 RPM).
+electric_motor   | Electric motor   | 20  | 110,120,140 | 32 V EU into rotation: draws 16 EU a tick from its cables and turns its shaft at 64 RPM with 256 SU while that shaft's machines have work.

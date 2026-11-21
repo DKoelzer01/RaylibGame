@@ -19,9 +19,6 @@ chest 1           = any_planks 8
 copper_wire 2     = copper_ingot 1
 bronze_plate 1    = bronze_ingot 2
 boiler 1          = bronze_plate 6, any_stone 8
-forge_hammer 1    = bronze_plate 4, iron_ingot 4
-alloy_smelter 1   = bronze_plate 4, any_stone 8, copper_wire 4
-steam_macerator 1 = bronze_plate 6, iron_ingot 2
 conveyor 4        = bronze_plate 1, rope 2
 cable 4           = copper_wire 4
 pipe 4            = iron_plate 1
@@ -182,3 +179,7 @@ mechanical_saw 1   = iron_plate 2, shaft 1, any_planks 4
 mechanical_press 1 = iron_ingot 4, shaft 1, any_planks 4
 water_wheel 1      = any_planks 24, shaft 2
 windmill 1         = any_planks 12, rope 8, shaft 1
+# --- (#1271 L3) Steam on rotation, and the bridge to LV ---
+steam_engine 1     = iron_plate 6, bronze_plate 4, cogwheel 2
+dynamo 1           = iron_plate 4, copper_wire 8, shaft 1
+electric_motor 1   = iron_plate 4, copper_wire 8, shaft 1, basic_circuit 1
