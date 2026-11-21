@@ -10168,11 +10168,14 @@ int main(int argc, char** argv)
                             maxDens = std::max(maxDens, dens);
                             if (drop >= 2.0 && firstDropT < 0.0) firstDropT = t;
                             if (dens >= ISO_LEVEL && firstSolidT < 0.0) firstSolidT = t;
-                            if (t - lastPrint >= 1.0) {
+                            if (t < 0.5 || t - lastPrint >= 1.0) { // (every step for the first half second: the release)
                                 lastPrint = t;
                                 const ArenaStats a = TerrainArena_Stats();
-                                printf("bench: load-hold t=%4.1f s: %.2f m under the saved spot, %.2f m beside it, body density %.2f, grounded %d, vel %.1f m/s; arena %.1f of %.1f M vertices\n",
-                                       t, drop, beside, dens, player.grounded ? 1 : 0, Vector3Length(player.velocity), a.vertices / 1e6, a.vertexCapacity / 1e6);
+                                // (#901, the Water session's check) the grounded carry needs groundBody; an outside move (the hold's)
+                                // drops it: (position - lastEndPosition) after this step's update
+                                printf("bench: load-hold t=%4.2f s: %.2f m under the saved spot, %.2f m beside it, body density %.2f, grounded %d, groundBody %d, moved-from-outside %.4f m, vel %.1f m/s; arena %.1f of %.1f M vertices\n",
+                                       t, drop, beside, dens, player.grounded ? 1 : 0, player.anchored() ? 1 : 0, player.movedFromOutside(),
+                                       Vector3Length(player.velocity), a.vertices / 1e6, a.vertexCapacity / 1e6);
                             }
                             if (t > 20.0) {
                                 const bool pass = deepest < 0.5 && widest < 0.5 && maxDens < ISO_LEVEL; // (a step late was 1.5 m: caught)

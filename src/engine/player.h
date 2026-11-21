@@ -111,6 +111,10 @@ struct Player {
     };
     bool netState(const Scene& world, NetState& s) const; // false: no body yet
     bool applyNetState(Scene& world, const NetState& s);  // false: the body isn't loaded
+    // (#901 tests) the grounded carry's state: anchored to a body, and how far the position was moved from outside since the
+    // last update (over 1e-6 m the carry drops its anchor)
+    bool anchored() const { return groundBody != nullptr; }
+    double movedFromOutside() const { return (position - lastEndPosition).length(); }
     void update(Scene& world, const PlayerInput& in, float dt); // one simulation step (SimDt, #315) with that step's input (#312)
     // Mouse look, once per frame (not per simulation step, so the view turns smoothly at any frame rate; #315).
     void look(Vector2 mouseDelta);
