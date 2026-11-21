@@ -9,6 +9,7 @@
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -22,6 +23,13 @@ constexpr double kWarmup = 10.0, kMeasure = 60.0; // s of factory time
 int target = 5000;
 double t0 = 0.0;
 long long made0 = 0;
+// (#1230) frame times over the measured minute (the factory shares the cores with chunk building), and the camera path
+// when RAYLIBGAME_FACTORY_FLY=1: a 300 m circle 60 m up at 40 m/s (streaming terrain meanwhile)
+std::vector<double> frameMs;
+std::chrono::steady_clock::time_point lastFrame{};
+bool fly = false;
+Vector3 dir0{}, east0{}, north0{};
+float ground0 = 0.0f;
 float idleShare = 0.0f; // RAYLIBGAME_FACTORY_IDLE: the share of groups starved (idle machines: the sleeping-machines case)
 uint64_t body0 = 0; uint32_t plot0 = 0; int mac0 = -1, chest0 = -1; // the first group (the views checked at the end)
 }
@@ -69,19 +77,46 @@ SCENARIO("perf/factory-scale") {
         c.metric("plots", plots, "");
         c.check("the machines placed", placed >= target * 9 / 10, TextFormat("%d of %d", placed, target));
         c.camera(Vector3Scale(dir, c.field->radius + c.field->elevation(dir) + 120.0f), Vector3Scale(dir, c.field->radius), north); // the field from above
+        dir0 = dir; east0 = east; north0 = north; ground0 = c.field->radius + c.field->elevation(dir);
+        if (const char* e = getenv("RAYLIBGAME_FACTORY_FLY")) fly = e[0] == '1';
         t0 = c.T;
         return true;
     });
-    s.step("warm up", kWarmup + 5.0, [](ScenarioCtx& c) {
+    // (#1230) with RAYLIBGAME_FACTORY_FLY=1 the camera circles 300 m out, 60 m up, at 40 m/s (terrain streams meanwhile);
+    // the plots stay within 1000 m (near).
+    auto flyCamera = [](ScenarioCtx& c) {
+        if (!fly) return;
+        const float a = (float)(c.T * 40.0 / 300.0);
+        const Vector3 off = Vector3Add(Vector3Scale(east0, 300.0f * cosf(a)), Vector3Scale(north0, 300.0f * sinf(a)));
+        const Vector3 at = Vector3Add(Vector3Scale(dir0, ground0), off);
+        const Vector3 ahead = Vector3Add(Vector3Scale(east0, -sinf(a)), Vector3Scale(north0, cosf(a)));
+        c.camera(Vector3Add(at, Vector3Scale(dir0, 60.0f)), Vector3Add(at, Vector3Scale(ahead, 100.0f)), dir0);
+    };
+    s.step("warm up", kWarmup + 5.0, [flyCamera](ScenarioCtx& c) {
         Factory::Sync(c.world);
+        flyCamera(c);
         if (c.T - t0 < kWarmup) return false;
         made0 = Factory::Stats().itemsMade; t0 = c.T;
+        frameMs.clear(); lastFrame = std::chrono::steady_clock::now();
         return true;
     });
-    s.step("a minute of factory ticks", kMeasure + 10.0, [](ScenarioCtx& c) {
+    s.step("a minute of factory ticks", kMeasure + 10.0, [flyCamera](ScenarioCtx& c) {
         Factory::Sync(c.world);
+        flyCamera(c);
+        const auto now = std::chrono::steady_clock::now();
+        frameMs.push_back(std::chrono::duration<double, std::milli>(now - lastFrame).count());
+        lastFrame = now;
         c.waitingFor(TextFormat("%.0f / %.0f s", c.T - t0, kMeasure));
         if (c.T - t0 < kMeasure + 1.0) return false;
+        if (!frameMs.empty()) { // (#1230) the game's frames meanwhile (the factory shares the cores with chunk building)
+            std::vector<double> f = frameMs;
+            std::sort(f.begin(), f.end());
+            double sum = 0.0; for (double v : f) sum += v;
+            c.metric("frame mean", sum / f.size(), "ms");
+            c.metric("frame p99", f[std::min(f.size() - 1, (size_t)(f.size() * 0.99))], "ms");
+            c.metric("frame max", f.back(), "ms");
+            c.metric("flying", fly ? 1.0 : 0.0, "", false);
+        }
         const FactoryStats st = Factory::Stats();
         c.metric("factory tick mean", st.meanTickMs, "ms");
         c.metric("factory tick p99", st.p99TickMs, "ms");
