@@ -21,6 +21,19 @@ class Scene;
 // Acoustic material classes (Steam Audio's reference values, steamaudio.cpp).
 enum class AudioMat : uint8_t { Generic, Rock, Soil, Gravel, Snow, Wood, Metal, Glass, Brick, Count };
 AudioMat AudioMatOfVoxel(VoxelMaterial m);
+// Fractions of sound energy per band (low, mid, high): absorbed on a reflection, scattered, let through.
+struct AudioMatProps { float absorption[3]; float scattering; float transmission[3]; };
+const AudioMatProps& AudioMatPropsOf(AudioMat m);
+
+// (#1294) How enclosed a place is: rays from it in every direction (up to maxDistance).
+struct AudioEnclosure {
+    float hitFraction = 0.0f;     // rays that hit something (1: a closed cave or room; ~0.5: open ground)
+    float meanDistance = 0.0f;    // their mean length (m)
+    float absorption[3] = { 0, 0, 0 }; // the hit surfaces' mean absorption per band
+};
+// Reverb from it: decay times per band (RT60, s; Eyring's formula with the mean hit distance as the mean free path and
+// escaping rays counted as absorbed) and a wet level 0..1 (little in the open, most in a closed cave).
+void AudioReverbFromEnclosure(const AudioEnclosure& e, float rt60[3], float& wet);
 
 struct AudioScene {
     struct Body {
@@ -41,6 +54,8 @@ struct AudioScene {
     // listenerAt: where the listener is now (audio space), if it moved since the snapshot (default: `listener`).
     float closestHit(Vector3 o, Vector3 dir, float tMin, float tMax, AudioMat* mat = nullptr, const Vector3* listenerAt = nullptr) const;
     bool anyHit(Vector3 o, Vector3 dir, float tMin, float tMax, const Vector3* listenerAt = nullptr) const { return closestHit(o, dir, tMin, tMax, nullptr, listenerAt) >= 0.0f; }
+    // (#1294) `rays` evenly spread directions from `at` (audio space; the listener), up to maxDistance metres.
+    AudioEnclosure enclosure(Vector3 at, int rays = 64, float maxDistance = 60.0f) const;
 
 private:
     float terrainHit(const Body& b, Vector3 o, Vector3 dir, float lo, float hi, AudioMat* mat) const;

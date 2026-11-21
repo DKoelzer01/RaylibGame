@@ -54,7 +54,22 @@ struct MachineView {             // published per machine each tick
     bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
     bool canLight = false;          // a campfire: the screen offers to light it or put it out (#1103)
     uint8_t fire = kFireAuto;
+    bool rotation = false;          // (#1269) a rotation machine: its shaft's speed and its network's load
+    float rpm = 0.0f;
+    int speedPercent = 100, stressPercent = 0;
+    const char* rotStatus = "";     // "Running", "Slowed", "Too slow", "Stopped", "Jammed"
     bool valid = false;
+};
+
+// (#1269) A rotation part (shaft, cog, crank, gauge, rotation machine) on a plot near the player, as of the last tick.
+struct RotationView {
+    bool valid = false;
+    float rpm = 0.0f;               // signed, about the plot axis it lies on
+    const char* status = "";        // Rotation::StatusName
+    const char* jam = "";           // why its network is jammed ("" if not)
+    int stressPercent = 0;          // demand / capacity
+    int speedPercent = 100;         // the network's stress ratio: every part turns at this share of its nominal speed
+    int capacity = 0, demand = 0;   // SU
 };
 
 // A cable's power network, for its look-at panel (#570): what is on it and what flowed in the last step.
@@ -124,6 +139,14 @@ namespace Factory {
     void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
     // (#1103) Light a campfire (lit = true) or put it out; other machines ignore it.
     void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
+    // (#1269) A player turns a hand crank: it turns for 0.3 s after the last call (call it each frame RMB is held).
+    void Crank(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1270) A water wheel's or windmill's speed from its river or wind (signed RPM about its plot axis): rotationsources.*
+    void SetSourceRpm(uint64_t bodyId, uint32_t plotId, int part, int rpm);
+    // (#1269) A rotation part's speed and its network's load (plots near the player; invalid otherwise).
+    RotationView RotationAt(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1269) Every rotation part of a near plot: (part, signed RPM about its plot axis). Empty if none or far.
+    void RotationSpeeds(uint64_t bodyId, uint32_t plotId, std::vector<std::pair<int, float>>& out);
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown

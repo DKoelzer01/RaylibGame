@@ -1,6 +1,8 @@
 #include "factory.h"
 #include "inventory.h"
 #include "plots.h"
+#include "rotationplot.h"
+#include "rotationsources.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -108,7 +110,7 @@ PartType MachineByName(const std::string& n) {
 }
 
 // machines.txt: how each machine is powered.
-enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery };
+enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery, Rotation }; // Rotation (#1269): at its shaft's speed
 struct MachineDef {
     int volts = 0;
     Power power = Power::None;
@@ -148,7 +150,7 @@ void LoadMachineDefs() {
         d.volts = atoi(cols[1].c_str());
         const std::string& p = cols[2];
         d.power = p == "fuel" ? Power::Fuel : p == "eu" ? Power::Eu : p == "generator" ? Power::Generator
-                : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : Power::None;
+                : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : p == "rotation" ? Power::Rotation : Power::None;
         d.euOut = atoi(cols[3].c_str());
         if (cols.size() > 4) { std::stringstream fs(cols[4]); std::string fuel; while (fs >> fuel) d.fuels.push_back(tables.item(fuel)); }
         if (cols.size() > 5) d.waterPerTick = std::max(0, atoi(cols[5].c_str()));
@@ -234,6 +236,7 @@ struct Machine {
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
+    int rotAcc = 0;                         // (#1269) rotation machines: permille of a tick of progress carried over
 };
 
 struct Net {
@@ -270,6 +273,7 @@ struct PlotSim {
     std::vector<Net> itemNets, powerNets;
     std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
     PlotStats stats;                        // (#1199)
+    RotationPlot rot;                       // (#1269) its shaft networks (per plot: ticks on any worker)
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
     struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
 };
@@ -302,6 +306,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<Int3> conveyors, cables;
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
+    std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
 };
 struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; }; // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
@@ -340,7 +345,10 @@ inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
 bool viewsRebuild = false; // (#1207) a moved plot: rebuild the near-plot views from scratch
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
-std::vector<Factory::MachineKey> watchMany;                         // (#332) a server's open machines (viewMutex)
+// (#1269) every rotation part of the plots near the player, as of the last tick (viewMutex): models, gauges, tooltips
+struct RotPub { int part = -1; int64_t milli = 0; Rotation::Status status = Rotation::Status::Stopped; Rotation::NetResult net; };
+std::map<std::pair<uint64_t, uint32_t>, std::vector<RotPub>> rotView;
+std::vector<Factory::MachineKey> watchMany;                        // (#332) a server's open machines (viewMutex)
 std::map<Factory::MachineKey, MachineView> watchManyViews;
 std::vector<Vector3> nearPoints;                                    // (#332) main thread: a server's players
 bool remoteMode = false;                                            // (#332) a client: views from the server
@@ -622,11 +630,20 @@ void ApplyLayout(const LayoutMsg& L) {
     ps->machines = std::move(next);
     ps->byPart = std::move(byPart);
     BuildNets(*ps, L);
+    ps->rot.Set(L.rotation); // (#1269)
+}
+
+// (#1269) Rotation before power: rotation machines with a recipe load their network, then one solve per plot.
+void RotationStep(PlotSim& ps, int dt) {
+    if (ps.rot.empty()) return;
+    for (const Machine& m : ps.machines) if (Def(m.type).power == Power::Rotation) ps.rot.SetRunning(m.part, m.recipe >= 0);
+    ps.rot.Step(dt);
 }
 
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
+    RotationStep(ps, dt); // (#1269)
     // Power: generators burn fuel into EU at their voltage; batteries buffer; consumers on a network
     // above their voltage refuse it.
     for (Net& net : ps.powerNets) {
@@ -733,6 +750,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 ticks = r.eu > 0 ? m.received / r.eu : dt;
             } else if (def.power == Power::Fuel) {
                 ticks = BurnFuel(m, def, std::min(dt, r.ticks - m.progress));
+            } else if (def.power == Power::Rotation) { // (#1269) at the shaft's speed: permille of a tick per tick, carried over
+                const int rate = ps.rot.ProgressPermille(m.part), acc = m.rotAcc + rate * dt;
+                ticks = acc / 1000; m.rotAcc = acc % 1000;
+                if (rate > 0 && ticks == 0) { m.status = MachineStatus::Working; ++active; continue; } // turning, under a tick yet
             } else {
                 ticks = dt; // runs by itself (coke oven)
             }
@@ -949,6 +970,29 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.output = list(m.out, kSlots);
     for (int i = 0; i < InSlots(m); ++i) v.inSlots.push_back({ m.in[i].count > 0 ? tables.name(m.in[i].item) : std::string(), m.in[i].count });
     if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
+    if (Def(m.type).power == Power::Rotation) { // (#1269)
+        v.rotation = true;
+        v.rpm = (float)std::abs(ps.rot.SpeedMilli(part)) / 1000.0f;
+        v.rotStatus = Rotation::StatusName(ps.rot.StatusOf(part));
+        if (const Rotation::NetResult* n = ps.rot.NetOf(part)) { v.speedPercent = n->ratio / 10; v.stressPercent = Rotation::StressPercent(*n); }
+    }
+}
+
+// (#1269) Each near plot's rotation parts as of this tick (viewMutex held); far plots, and plots without any, publish none.
+void PublishRotation(bool reset) {
+    if (reset) rotView.clear();
+    for (const PlotSim& ps : plots) {
+        const std::pair<uint64_t, uint32_t> key{ ps.body, ps.plot };
+        if (!ps.nearPlayer || ps.rot.empty()) { rotView.erase(key); continue; }
+        std::vector<RotPub>& out = rotView[key];
+        out.clear();
+        for (const RotationPartMsg& rp : ps.rot.parts) {
+            RotPub p;
+            p.part = rp.part; p.milli = ps.rot.SpeedMilli(rp.part); p.status = ps.rot.StatusOf(rp.part);
+            if (const Rotation::NetResult* n = ps.rot.NetOf(rp.part)) p.net = *n;
+            out.push_back(p);
+        }
+    }
 }
 
 void SimLoop() {
@@ -990,6 +1034,8 @@ void SimLoop() {
             std::vector<std::pair<std::tuple<uint64_t, uint32_t, int>, int>> filled;  // tank fills applied this tick (tankPending)
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
+                if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
+                if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
                     if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
@@ -1091,6 +1137,7 @@ void SimLoop() {
                         if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
                         else if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
                     }
+                PublishRotation(reset || viewsRebuild); // (#1269)
                 // (#1207) Machines working and chest contents on the plots near the player (models, smoke, chest screens): each
                 // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
                 // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
@@ -1186,6 +1233,7 @@ void Factory::Reset() {
     layoutQueue.clear();
     itemQueue.clear();
     sentVersions.clear();
+    RotationSources_Reset(); // (#1270)
 }
 
 void Factory::Sync(Scene& world) {
@@ -1224,6 +1272,7 @@ void Factory::Sync(Scene& world) {
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
+                    if (RotationPartMsg rm; RotationPlot_Describe(part, (int)i, rm)) L.rotation.push_back(std::move(rm)); // (#1269)
                 }
                 std::lock_guard<std::mutex> q(queueMutex);
                 layoutQueue.push_back(std::move(L));
@@ -1238,6 +1287,7 @@ void Factory::Sync(Scene& world) {
             }
         }
     }
+    RotationSources_Update(world); // (#1270) water wheels and windmills: their river or wind, twice a second
     // Items back from the simulation.
     std::vector<ItemOut> back;
     {
@@ -1373,6 +1423,40 @@ void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::stri
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
+}
+void Factory::Crank(uint64_t body, uint32_t plot, int part) { // (#1269)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 11, body, plot, part, -1, 0 });
+}
+void Factory::SetSourceRpm(uint64_t body, uint32_t plot, int part, int rpm) { // (#1270)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 12, body, plot, part, -1, rpm });
+}
+RotationView Factory::RotationAt(uint64_t body, uint32_t plot, int part) {
+    RotationView v;
+    std::lock_guard<std::mutex> l(viewMutex);
+    auto it = rotView.find({ body, plot });
+    if (it == rotView.end()) return v;
+    for (const RotPub& p : it->second) {
+        if (p.part != part) continue;
+        v.valid = true;
+        v.rpm = (float)p.milli / 1000.0f;
+        v.status = Rotation::StatusName(p.status);
+        v.jam = Rotation::JamName(p.net.jam);
+        v.stressPercent = Rotation::StressPercent(p.net);
+        v.speedPercent = p.net.ratio / 10;
+        v.capacity = (int)p.net.capacity;
+        v.demand = (int)(p.net.demandMilli / 1000);
+        break;
+    }
+    return v;
+}
+void Factory::RotationSpeeds(uint64_t body, uint32_t plot, std::vector<std::pair<int, float>>& out) {
+    out.clear();
+    std::lock_guard<std::mutex> l(viewMutex);
+    auto it = rotView.find({ body, plot });
+    if (it == rotView.end()) return;
+    for (const RotPub& p : it->second) out.push_back({ p.part, (float)p.milli / 1000.0f });
 }
 int Factory::TankRoom(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
@@ -1591,7 +1675,7 @@ void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSin
 
 namespace {
 // `groups` generator + 2 macerators + chest groups on one plot (cables and conveyors as perf/factory-scale lays them).
-LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>>& parts) {
+LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>>& parts, std::array<int, 4>* rot = nullptr) {
     LayoutMsg L{};
     L.body = 7; L.plot = plotId; L.version = 1;
     int part = 0;
@@ -1609,6 +1693,24 @@ LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>
         for (int x = 3; x < 11; ++x) L.conveyors.push_back({ bx + x, 0, bz + 2 });
         parts.push_back({ gen, m1, m2, ch });
     }
+    if (rot) { // (#1269) three millstones stacked under a hand crank on a vertical shaft: 384 SU on 256, slowed to 66%
+        const int up = RotationPlot_OrientFor({ 0, 1, 0 });
+        auto add = [&](PartType t, Int3 at, int orient) {
+            RotationPartMsg rm;
+            const Part pt = RotationPlot_PartAt(t, at, orient);
+            RotationPlot_Describe(pt, part, rm);
+            L.rotation.push_back(rm);
+            if (IsMachine(t)) {
+                std::vector<Int3> cells;
+                for (const Rotation::Cell& c : rm.geom.cells) cells.push_back({ c.x, c.y, c.z });
+                L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+            }
+            return part++;
+        };
+        const int a = add(PartType::Millstone, { 70, 0, 0 }, 0), b = add(PartType::Millstone, { 70, 2, 0 }, 0), c = add(PartType::Millstone, { 70, 4, 0 }, 0);
+        add(PartType::Shaft, { 70, 6, 0 }, up);
+        *rot = { add(PartType::HandCrank, { 70, 7, 0 }, up), a, b, c };
+    }
     return L;
 }
 
@@ -1622,10 +1724,12 @@ uint64_t StateHash(const PlotSim& ps) {
         for (const Stack& s : m.out) { mix(s.item); mix(s.count); }
     }
     for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
+    for (const Machine& m : ps.machines) mix(m.rotAcc);
+    mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
     return h;
 }
 
-struct ChainsRun { uint64_t hash = 0; long long made = 0; int asleepMachines = 0, asleepNets = 0, sandInLateChest = 0; };
+struct ChainsRun { uint64_t hash = 0; long long made = 0; int asleepMachines = 0, asleepNets = 0, sandInLateChest = 0, gravelMilled = 0; };
 
 // 60 groups on six plots for 2400 ticks (2 min): every third group starved (coal, no stone: idle macerators), every
 // seventh without coal (unpowered); at tick 600 a starved group gets stone (it must wake and work). `sleep` on or off;
@@ -1639,7 +1743,8 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     constexpr int kPlots = 6;
     std::vector<std::vector<std::array<int, 4>>> parts(kPlots);
-    for (int p = 0; p < kPlots; ++p) ApplyLayout(TestChains(1 + p, 10, parts[p]));
+    std::vector<std::array<int, 4>> rot(kPlots); // (#1269) crank, 3 millstones per plot
+    for (int p = 0; p < kPlots; ++p) ApplyLayout(TestChains(1 + p, 10, parts[p], &rot[p]));
     std::vector<PlotSim*> all;
     for (int p = 0; p < kPlots; ++p) all.push_back(FindPlot(7, 1 + p));
     PlotSim* a = all[0];
@@ -1655,6 +1760,8 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
         }
     };
     for (int p = 0; p < kPlots; ++p) feed(*all[p], parts[p]);
+    for (int p = 0; p < kPlots; ++p) // (#1269) stone for the millstones (the third only on even plots: two or three loads)
+        for (int k = 1; k <= 3; ++k) { int buckets = 0; if (k < 3 || p % 2 == 0) InsertInto(all[p]->machines[all[p]->byPart.at(rot[p][k])], tables.item("stone"), 24, false, buckets); }
     ChainsRun r;
     long long made = 0; int active = 0;
     std::vector<PlotJob> jobs;
@@ -1665,10 +1772,13 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
             int buckets = 0;
             InsertInto(m, tables.item("stone"), 8, false, buckets);
         }
+        for (int p = 0; p < kPlots; ++p) if ((t / 150 + p) % 3 != 0) all[p]->rot.Hold(rot[p][0]); // (#1269) cranked on and off
         jobs.clear();
         for (PlotSim* ps : all) jobs.push_back({ ps, 1 });
         TickPlots(jobs, workers, made, active);
     }
+    for (int p = 0; p < kPlots; ++p)
+        for (int k = 1; k <= 3; ++k) r.gravelMilled += CountItems(all[p]->machines[all[p]->byPart.at(rot[p][k])].out, kSlots, tables.item("gravel"));
     for (const PlotSim* ps : all) r.hash = r.hash * 31 + StateHash(*ps);
     r.made = made;
     for (const PlotSim* ps : all) {
@@ -1691,6 +1801,8 @@ TEST(Factory, PlotsTickedOnFourWorkersMatchOneWorker) {
     EXPECT_GT(one.made, 0);
     EXPECT_EQ(four.made, one.made);
     EXPECT_EQ(four.hash, one.hash) << "every machine and network the same whatever the worker count";
+    EXPECT_GT(one.gravelMilled, 0) << "(#1269) the cranked millstones ground stone, slowed";
+    EXPECT_EQ(four.gravelMilled, one.gravelMilled) << "rotation is per plot: the same on any worker";
 }
 
 TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
