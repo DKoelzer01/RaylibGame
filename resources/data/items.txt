@@ -46,7 +46,7 @@ steam_macerator | Steam macerator |  20 | 140,120, 90 | Steam: crushes ore into 
 chest           | Chest           |  20 | 150,105, 60 | Storage for 50 stacks of anything (build part).
 generator       | LV generator    |  20 | 180, 60, 45 | Burns fuel for LV power (32 V).
 electric_furnace| Electric furnace|  20 |  95, 92, 88 | LV: smelts quickly on power.
-macerator       | Macerator       |  20 |  70,110,150 | LV: crushes ore into twice the dust.
+macerator       | Macerator       |  20 |  70,110,150 | LV: crushes 2 ore into 3 crushed ore: half again as many ingots. Wash and centrifuge it at MV for twice as many.
 battery         | LV battery      |  20 | 210,180, 60 | Stores LV power.
 rocket_engine   | Rocket engine   |  10 |  70, 72, 80 | 120 kN of thrust. Place it under the rocket's tanks.
 fuel_tank       | Fuel tank       |  10 | 220,222,226 | Holds 1.5 t of rocket fuel.
@@ -55,7 +55,7 @@ guidance_computer | Guidance computer | 4 | 40,140,90 | Steers a rocket (reactio
 landing_leg     | Landing leg     |  20 | 150,150,150 | Softens touchdowns.
 rocket_fuel     | Rocket fuel     | 200 | 200, 80, 40 | 100 kg of fuel. Look at a rocket and press I to load it.
 # Milestone 8: ore processing, MV, HV
-ore_washer      | Ore washer      |  20 |  70,120,170 | LV: washes crushed ore with water into purified ore.
+ore_washer      | Ore washer      |  20 |  70,120,170 | Washes 3 crushed ore with water into 4 purified ore (the MV ore chain: twice the ingots, with a centrifuge).
 centrifuge      | Centrifuge      |  20 | 160,160,170 | LV: splits purified ore into dust and a byproduct.
 water_pump      | Water pump      |  20 |  50, 90,160 | LV: lifts water from under it (a river, a pond, the sea) into pipes; outlets pour it out. Needs power.
 hand_pump       | Hand pump       |  20 | 120, 90, 60 | Early water without power: placed over water (a river, a pond, the sea), hold RMB on it to pump 50 L/s into the pipes it touches (boilers, outlets).

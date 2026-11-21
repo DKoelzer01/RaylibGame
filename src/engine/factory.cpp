@@ -1922,4 +1922,29 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     plots.clear(); plotIndexDirty = true;
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
 }
+
+// (#996, ladder L4) The ore split, from machine_recipes.txt: the LV macerator alone gives half again as many ingots as the ore
+// (crushed ore smelted 1:1); the MV chain (washer, centrifuge, dust smelted 1:1) gives twice as many, plus byproducts.
+TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
+    LoadRecipes();
+    // Ratio out/in of `machine`'s recipe that takes `in` (the first such), counting its first output `out` (or its first).
+    auto ratio = [](PartType machine, const std::string& in, const std::string& out) {
+        const int inId = tables.item(in), outId = out.empty() ? -1 : tables.item(out);
+        for (const Recipe& r : tables.recipes) {
+            if (r.machine != machine || r.in.empty() || r.out.empty() || r.in[0].item != inId) continue;
+            for (const Stack& o : r.out) if (outId < 0 || o.item == outId) return (double)o.count / r.in[0].count;
+        }
+        return 0.0;
+    };
+    for (const char* metal : { "iron", "copper", "tin" }) {
+        const std::string m = metal;
+        const double crushed = ratio(PartType::Macerator, m + "_ore", m + "_crushed");
+        const double basic = crushed * ratio(PartType::Furnace, m + "_crushed", m + "_ingot");
+        const double full = crushed * ratio(PartType::OreWasher, m + "_crushed", m + "_purified") * ratio(PartType::Centrifuge, m + "_purified", m + "_dust")
+                          * ratio(PartType::Furnace, m + "_dust", m + "_ingot");
+        EXPECT_DOUBLE_EQ(basic, 1.5) << m << ": the LV macerator alone";
+        EXPECT_DOUBLE_EQ(full, 2.0) << m << ": the MV chain";
+    }
+    EXPECT_GT(ratio(PartType::Centrifuge, "copper_purified", "gold_dust"), 0.0) << "gold still comes from the MV centrifuge";
+}
 #endif

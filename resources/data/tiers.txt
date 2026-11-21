@@ -46,8 +46,8 @@
     milestone | deliver cable 100        | Hand in 100 copper cable at a lab
     milestone | build throughput basic_circuit 15 10 or throughput lv_pack 9 10 | Make 15 basic circuits or 9 LV packs a minute, for 10 minutes
     milestone | find crystal_sample      | A rare-earth or quartz crystal sample from deep caves
-5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (x2), an ore washer and a water pump purify it, a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
-    task | place macerator        | Place a macerator: crushed ore smelts to twice the ingots
+5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (half again as many ingots), an ore washer and a water pump purify it (twice as many), a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
+    task | place macerator        | Place a macerator: crushed ore smelts to half again as many ingots
     task | place ore_washer       | Place an ore washer (and a water pump) to purify crushed ore
     task | place centrifuge       | Place a centrifuge to split byproducts from purified ore
     task | get gold_ingot 1       | Smelt the gold a centrifuge splits from copper
