@@ -7,7 +7,7 @@ set -u
 OUT="${1:-slides-c}"
 EXE="${2:-build/check/bin/game.exe}"
 mkdir -p "$OUT"
-for sc in slides/river-valley slides/cave-chamber slides/lava-tube slides/space; do
+for sc in ${SLIDES:-slides/river-valley slides/cave-chamber slides/lava-tube slides/space}; do
   t0=$SECONDS
   before=$(ls "$OUT"/*.png 2>/dev/null | wc -l)
   RAYLIBGAME_SLIDE_SHOTS="$OUT" timeout 420 "$EXE" --no-hud --native-window --scenario "$sc" --scenario-no-record \

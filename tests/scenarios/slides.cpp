@@ -77,6 +77,8 @@ SCENARIO("slides/river-valley") {
 
 SCENARIO("slides/cave-chamber") {
     Common(s);
+    // The lamps alone left the hall black (batch C, first pass): a light at the eye as well (60 m).
+    s.env = { { "RAYLIBGAME_CAMERA_LIGHT", "1" } };
     s.step("the nearest chamber, lit", 1.0, [](ScenarioCtx& c) {
         const Vector3 home = c.field->findSpawnDir(c.body->seed);
         Vector3 at{}, out{};
@@ -148,25 +150,21 @@ SCENARIO("slides/lava-tube") {
         up = T.up;
         return true;
     });
-    View(s, "above", [](ScenarioCtx& c, Vector3& eye, Vector3& target, Vector3& up) {
-        if (!T.found) return false;
-        const Vector3 along = Vector3Normalize(Vector3Subtract(T.out, Vector3Scale(T.up, Vector3DotProduct(T.out, T.up))));
-        eye = Vector3Add(T.at, Vector3Add(Vector3Scale(T.up, 12.0f), Vector3Scale(along, -14.0f)));
-        target = Vector3Subtract(T.at, Vector3Scale(T.up, 3.0f));
-        up = T.up;
-        return true;
-    });
 }
 
 SCENARIO("slides/space") {
     Common(s);
-    // The planet's frame: its axis is local y, the ring in its equatorial (xz) plane.
+    // The planet's frame: its axis is local y, the ring in its equatorial (xz) plane. The sun's direction in that frame
+    // decides where the day side is: the first pass, over the start, looked at the night side.
     View(s, "limb", [](ScenarioCtx& c, Vector3& eye, Vector3& target, Vector3& up) {
-        const Vector3 home = c.field->findSpawnDir(c.body->seed), e1 = Tangent(home);
+        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(c.world.sunDirection));
+        const Vector3 side = Tangent(sun);
+        const Vector3 over = Vector3Normalize(Vector3Add(Vector3Scale(sun, 0.6f), Vector3Scale(side, 0.8f))); // afternoon light
+        const Vector3 away = Vector3Normalize(Vector3Subtract(side, Vector3Scale(over, Vector3DotProduct(side, over)))); // the sun behind
         const float R = c.field->radius;
-        eye = Vector3Scale(home, R + 25000.0f); // 25 km up over the start, looking at the horizon
-        target = Vector3Add(Vector3Scale(home, R), Vector3Scale(e1, 120000.0f));
-        up = home;
+        eye = Vector3Scale(over, R + 25000.0f); // 25 km up, looking at the horizon with the sun behind the camera
+        target = Vector3Add(Vector3Scale(over, R), Vector3Scale(away, 120000.0f));
+        up = over;
         return true;
     });
     View(s, "planet-ring", [](ScenarioCtx& c, Vector3& eye, Vector3& target, Vector3& up) {
@@ -179,10 +177,11 @@ SCENARIO("slides/space") {
         const Planetoid* moon = nullptr;
         for (const auto& o : c.world.objects)
             if (const Planetoid* p = dynamic_cast<const Planetoid*>(o.get()); p && p != c.body && p->name == "luna") moon = p;
-        if (!moon) { c.note("no body named luna"); return false; }
+        if (!c.check("a body named luna", moon != nullptr)) return false;
         const Vector3 m = c.body->toLocalD(moon->worldPos).toFloat();
-        const Vector3 away = Vector3Normalize(m); // beyond the moon, looking back at it with the planet behind
-        eye = Vector3Add(m, Vector3Add(Vector3Scale(away, moon->radius * 3.0f), Vector3Scale(Tangent(away), moon->radius * 1.2f)));
+        // From the moon's sunlit side, a little off the sun line (the first pass looked at its night side).
+        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(c.world.sunDirection));
+        eye = Vector3Add(m, Vector3Add(Vector3Scale(sun, moon->radius * 3.0f), Vector3Scale(Tangent(sun), moon->radius * 1.5f)));
         target = m; up = { 0, 1, 0 };
         return true;
     });
