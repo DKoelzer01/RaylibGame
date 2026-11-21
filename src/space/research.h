@@ -39,6 +39,7 @@ struct ResearchState {
     std::vector<std::string> queue;          // in order; labs take the first they have the packs for
     std::map<std::string, int> progress;     // units finished of a node not yet done (kept when it leaves the queue)
     double insight = 0.0;                    // activity XP waiting to be drawn on (up to ~25% of a node, decided)
+    std::set<std::pair<int, int>> milestoneDone; // (#1271) tier milestone lines met: (tier, line index in tiers.txt order)
     std::string Text() const;                // as save lines
     bool FromText(const std::string& text);  // false: nothing parsed
     bool Done(const std::string& node) const { return done.count(node) > 0; }
