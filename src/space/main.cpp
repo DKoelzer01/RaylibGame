@@ -68,6 +68,7 @@
 #include "dungeontraps.h"
 #include "playerrecord.h"
 #include "commandline.h"
+#include "research.h"
 #include "events.h"
 #include "machinemodels.h"
 #include "gpucompute.h"
@@ -1329,6 +1330,7 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
