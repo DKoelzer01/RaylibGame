@@ -264,6 +264,7 @@ RunPlan Alchemy_PlanRun(const std::vector<RunMember>& members, const AlchemySett
 #include "magic.h"
 #include "net.h"
 #include "particles.h"
+#include "audio.h"
 #include "plots.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -276,9 +277,6 @@ namespace {
 double nextAt = 0.0;
 AlchemyStats stats;
 int essenceKind = -1;
-constexpr float kFizzleReach = 5.0f; // m: a spill fizzles wherever it ran within this of its outlet (a puddle runs ~4-5 m)
-struct Spill { uint64_t body; Vector3 local; float m3; double at; int tries = 0; };
-std::vector<Spill> spills;
 std::map<Factory::MachineKey, std::string> panel; // the last pass's run state per vessel
 inline int64_t CellKey(Int3 c) { return ((int64_t)(c.x + 100000) << 40) | ((int64_t)(c.y + 100000) << 20) | (int64_t)(c.z + 100000); }
 // Where a vessel keeps its essence: a distillery in its outputs, a tank and a cauldron in their inputs.
@@ -307,28 +305,11 @@ std::string Alchemy_PanelLine(uint64_t body, uint32_t plot, int part) {
 
 void Alchemy_Update(Scene& world, double now) {
     if (!Magic_Enabled() || gNetRole == NetRole::Client) return;
-    if (nextAt - now > 1.0) { nextAt = now; spills.clear(); } // (the sim clock went back: a new world or a load)
+    if (nextAt - now > 1.0) nextAt = now; // (the sim clock went back: a new world or a load)
     if (now < nextAt) return;
     nextAt = now + 0.5;
-    if (essenceKind < 0) essenceKind = Fluid::KindByName("essence");
     const AlchemySettings& s = Alchemy_Settings();
-    // Spills fizzle: their fluid is taken back out of the world (a few tries while it still runs off).
-    for (size_t i = 0; i < spills.size();) {
-        Spill& sp = spills[i];
-        if (now - sp.at < s.fizzleSeconds) { ++i; continue; }
-        Planetoid* b = Planetoid::find(sp.body);
-        // Look first (the published snapshot: allocates nothing), take only essence that is there: a take allocates the
-        // simulated cells around it, and by the sea or a pond that would pull their water into the simulation (Water's advice).
-        const float there = b && essenceKind >= 0 ? Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind) : 0.0f;
-        if (there > 0.0f) {
-            Fluid::Take(*b, sp.local, there, kFizzleReach, essenceKind); // only that kind (the take skips other fluids' cells)
-            ParticleBurst pb; pb.kind = ParticleKind::Spark; pb.color = { 215, 195, 255, 255 }; pb.count = 10; pb.size = 0.06f; pb.life = 0.6f; pb.speed = 1.2f; pb.spread = 0.9f;
-            Particles_Emit(*b, sp.local, pb);
-        }
-        if (b && essenceKind >= 0 && ++sp.tries < 12 && Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind) > 0.005f) { sp.at = now - s.fizzleSeconds + 0.5; ++i; continue; }
-        ++stats.fizzled;
-        spills.erase(spills.begin() + i);
-    }
+    if (essenceKind < 0) essenceKind = Fluid::KindByName("essence");
     // The runs of every plot: pipe cells joined face to face, and the vessels, outlets and pumps they touch.
     struct Run { Planetoid* body; Plot* plot; std::vector<int> parts; std::vector<RunRole> roles; };
     std::vector<Run> runs;
@@ -431,13 +412,18 @@ void Alchemy_Update(Scene& world, double now) {
     for (int n : done) stats.moved += n;
     for (const SpillAt& sp : spillMoves) {
         const int n = done[sp.move];
-        if (n <= 0 || essenceKind < 0) continue;
+        if (n <= 0) continue;
         stats.spilled += n;
+        ++stats.fizzled;
         Plot::Footprint(sp.plot->parts[sp.part], fp);
         const Int3 c = fp.empty() ? sp.plot->parts[sp.part].origin : fp[0].first;
         const Vector3 at = sp.plot->toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
-        Fluid::Pour(*sp.body, at, n * s.spillM3, essenceKind);
-        spills.push_back({ sp.body->id, at, n * s.spillM3, now });
+        // (Coordinator, 2026-11-21) Spilled essence loses its aspect and fizzles at once: a burst of sparks and a hiss at the outlet.
+        // It doesn't pour into the world yet: Fluid::Take didn't remove the essence kind there (a puddle stayed), so a visible
+        // puddle that fizzles comes back once that works. Nothing reaches the fluid simulation, so water near an outlet is safe.
+        ParticleBurst pb; pb.kind = ParticleKind::Spark; pb.color = { 215, 195, 255, 255 }; pb.count = std::min(40, 8 + 4 * n); pb.size = 0.07f; pb.life = 0.8f; pb.speed = 1.6f; pb.spread = 0.9f;
+        Particles_Emit(*sp.body, at, pb);
+        Audio_PlayAt(Sfx::Dig, sp.body->toWorldD(DVec3{ at.x, at.y, at.z }), 0.25f, 2.2f); // a short high hiss (no fizzle sound of its own yet)
     }
 }
 
