@@ -89,6 +89,9 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "recipebook.h"
 #include "station.h"
 #include "weather.h"
+#include "magic.h"
+#include "magicsight.h"
+#include "magicdiscovery.h"
 #include "wind.h"
 #include "storage.h"
 #include "tools.h"
@@ -109,6 +112,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "waterfield.h"
 #include "waterworks.h"
 #include "avatar.h"
+#include "footsteps.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -1311,6 +1315,7 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
@@ -1613,7 +1618,7 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); BuildTool_Draw3D(world);
+    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
@@ -1720,6 +1725,76 @@ int main(int argc, char** argv)
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
                    mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--cave-islands" && i + 1 < argc) {
+            // (#1116) Floating rock in chambers: for each chamber within R m of the start, the density on a 1 m grid over a
+            // box +-50 m across and +-28 m up around its centre (local frame); solid cells connected (6-neighbour) to the
+            // box's boundary are the surrounding rock, any other solid component floats. Prints each chamber's floating
+            // components, their volume and the largest, and the totals.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            std::vector<Vector3> chambers;
+            pf->caveMouthsList(home, R, 3, chambers);
+            const int NX = 101, NY = 57, NZ = 101;                          // x, z across; y up
+            long long totIslands = 0, totVol = 0;
+            long long gIslandH[8] = {}, gIslandR[8] = {}; // (#1116) floating volume (m^3) by its mean height and distance from the chamber centre
+            const auto t0 = std::chrono::steady_clock::now();
+            for (size_t ci = 0; ci < chambers.size(); ++ci) {
+                const Vector3 c = chambers[ci], up = Vector3Normalize(c);
+                const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(up, e1);
+                std::vector<uint8_t> solid((size_t)NX * NY * NZ), seen((size_t)NX * NY * NZ, 0);
+                auto idx = [&](int x, int y, int z) { return ((size_t)y * NZ + z) * NX + x; };
+                for (int y = 0; y < NY; ++y)
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x) {
+                            const Vector3 q = Vector3Add(c, Vector3Add(Vector3Scale(e1, x - 50.0f), Vector3Add(Vector3Scale(up, y - 28.0f), Vector3Scale(e2, z - 50.0f))));
+                            solid[idx(x, y, z)] = pf->baseDensity(q) >= ISO_LEVEL;
+                        }
+                std::vector<int> stack;
+                double sumY = 0.0, sumR = 0.0; // (#1116) the last flooded component's summed height (m from the centre) and distance across
+                auto flood = [&](int sx, int sy, int sz) {                  // marks one solid component, returns its size
+                    long long n = 0;
+                    stack.clear(); stack.push_back((int)idx(sx, sy, sz)); seen[idx(sx, sy, sz)] = 1;
+                    while (!stack.empty()) {
+                        const int k = stack.back(); stack.pop_back(); ++n;
+                        { const int px = k % NX, pz = (k / NX) % NZ, py = k / (NX * NZ); sumY += py - 28.0; sumR += sqrt((px - 50.0) * (px - 50.0) + (pz - 50.0) * (pz - 50.0)); } // (#1116) where it is
+                        const int x = k % NX, z = (k / NX) % NZ, y = k / (NX * NZ);
+                        const int nb[6][3] = { { x - 1, y, z }, { x + 1, y, z }, { x, y - 1, z }, { x, y + 1, z }, { x, y, z - 1 }, { x, y, z + 1 } };
+                        for (const auto& b : nb) {
+                            if (b[0] < 0 || b[1] < 0 || b[2] < 0 || b[0] >= NX || b[1] >= NY || b[2] >= NZ) continue;
+                            const size_t j = idx(b[0], b[1], b[2]);
+                            if (solid[j] && !seen[j]) { seen[j] = 1; stack.push_back((int)j); }
+                        }
+                    }
+                    return n;
+                };
+                for (int y = 0; y < NY; ++y)                                // the surrounding rock: from every boundary cell
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x)
+                            if ((x == 0 || y == 0 || z == 0 || x == NX - 1 || y == NY - 1 || z == NZ - 1) && solid[idx(x, y, z)] && !seen[idx(x, y, z)]) flood(x, y, z);
+                long long islands = 0, vol = 0, largest = 0;
+                for (int y = 0; y < NY; ++y)
+                    for (int z = 0; z < NZ; ++z)
+                        for (int x = 0; x < NX; ++x)
+                            if (solid[idx(x, y, z)] && !seen[idx(x, y, z)]) {
+                                sumY = sumR = 0.0;
+                                const long long n = flood(x, y, z); ++islands; vol += n; largest = std::max(largest, n);
+                                const double my = sumY / n, mr = sumR / n; // (#1116) bins: height -28..+28 m in 8, distance 0..71 m in 8
+                                gIslandH[std::clamp((int)((my + 28.0) / 7.0), 0, 7)] += n; gIslandR[std::clamp((int)(mr / 9.0), 0, 7)] += n;
+                            }
+                totIslands += islands; totVol += vol;
+                const float depth = pf->radius + pf->elevation(up) - Vector3Length(c);
+                printf("bench: cave islands: chamber %zu (%.0f m down): %lld floating pieces, %lld m^3, largest %lld m^3\n", ci, depth, islands, vol, largest);
+            }
+            const float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: cave islands: %zu chambers within %.0f m: %lld floating pieces, %lld m^3 in all (%.1f s)\n", chambers.size(), R, totIslands, totVol, secs);
+            printf("bench: cave islands: floating m^3 by height from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %+d..%+d:%lld", -28 + 7 * b, -21 + 7 * b, gIslandH[b]); printf("\n");
+            printf("bench: cave islands: floating m^3 by distance across from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %d..%d:%lld", 9 * b, 9 * b + 9, gIslandR[b]); printf("\n");
             return 0;
         }
     for (int i = 1; i < argc; ++i)
@@ -10743,6 +10818,8 @@ int main(int argc, char** argv)
         if (gameState == 1) Hotbar_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), ship.piloted);
         if (gameState == 1) BuildTool_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1 && !loading) Animals_Aim(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // this frame's camera (#222)
+        if (gameState == 1 && !loading) MagicSight_Update(world, std::min(GameFrameTime(), 0.1f), PlayerInput_If(gameInput && alive && !ship.piloted && !GameUI_InventoryOpen(), PlayerInput_Frame())); // (#1249) RAYLIBGAME_MAGIC
+        if (gameState == 1 && !loading && alive) MagicDiscovery_Update(world, std::min(GameFrameTime(), 0.1f)); // (#1250) finds, node motes, the Arcane line
         if (gameState == 1) TerrainTool_Update(world, PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
@@ -13629,6 +13706,8 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
+                Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1
+                MagicSight_DrawHUD(world); // (#1249) RAYLIBGAME_MAGIC=1
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }
                 GameUI_DrawHUD(world);
                 Survival_DrawHUD();
@@ -13743,6 +13822,11 @@ int main(int argc, char** argv)
             lastFrameEnd = GetTime();
         }
         GpuTimer_Mark("swap+poll");
+        // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
+        Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
+        Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
+        if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
+        Audio_Update();
         PROFILE_FRAME();
     }
     LOG_INFO("Main", "main loop ended: %s\n", WindowShouldClose() ? "the window was closed" : "Exit chosen (or a test or server stop)"); // (#1153) a clean exit says so

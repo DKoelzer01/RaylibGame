@@ -33,3 +33,13 @@ node | e2 | explorer | e1         | do nights 1      | Survive a night          
 node | e3 | explorer | e2         | do waypoint 3    | Mark three waypoints           | power_cell 1
 node | e4 | explorer | e2         | do stalker 1     | Fight off a dusk stalker       | hide 2
 node | e5 | explorer | e3         | do explored 100  | Explore 100 map tiles          | ore_scanner 1
+
+# The Arcane line (#1250, magic): hidden until something in the world resonates (a node, a page, a crystal); its steps
+# guide loosely and any find satisfies them. Only fires with RAYLIBGAME_MAGIC=1.
+line | arcane | Arcane | 180,140,255 | hidden
+node | a0 | arcane | -          | do arcane_find 1  | Something in the world resonates | -
+node | a1 | arcane | a0         | do arcane_read 1  | Read the First Sight page (hold it, right-click) | -
+node | a2 | arcane | a1         | do arcane_sight 1 | Open your magic sight (tap Y) | -
+node | a3 | arcane | a2         | do arcane_study 3 | Study three things with your sight (hold Y on them) | -
+node | a4 | arcane | a2         | do arcane_node 1  | Stand where ley lines cross | -
+node | a5 | arcane | a3, a4     | do arcane_kinds 3 | Study nodes of three different kinds: they gather in different country | -
