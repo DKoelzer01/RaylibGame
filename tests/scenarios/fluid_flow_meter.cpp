@@ -1,7 +1,7 @@
 // fluid/flow-meter (#870, moved from --test-flow-meter, #392): a spring of 1 m^3/s at the head of a 20 m trench that ends in a
 // deep pit; once the stream runs, Fluid::FlowAt across the middle of the trench reads ~1 m^3/s along it. Steady flow (#674):
-// on the GPU the trench's bricks turn steady; a pour at 45 s wakes them (fewer steady). PASS as the flag: 0.6-1.4 m^3/s
-// along the trench at 60 s, and (GPU mode) steady bricks before the pour and fewer after.
+// on the GPU the trench's bricks turn steady; a pour into a steady one (found from 30 s on, #1131) wakes it. PASS: 0.6-1.4 m^3/s
+// along the trench at 60 s, and (GPU mode) a steady brick found and woken by the pour.
 #include "scenario.h"
 #include "fluid.h"
 #include "plots.h"
@@ -13,7 +13,9 @@ namespace {
 struct State {
     Plot* plot = nullptr;
     int steadyBefore = 0, steadyAfter = 1 << 30;
-    bool poured = false;
+    bool poured = false, woke = false;
+    Vector3 pourAt{};
+    double pourT = 0.0;
     double lastPrint = -10.0;
     Vector3 at(float x, float y) const { return plot->toBody({ x, y, 0.0f }); }
 } S;
@@ -50,20 +52,32 @@ SCENARIO("fluid/flow-meter") {
         const Vector3 q = Fluid::FlowAt(*c.body, S.at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
         const Fluid::Stats fs = Fluid::GetStats();
         if (c.t - S.lastPrint >= 10.0) { S.lastPrint = c.t; c.note("t=" + std::to_string((int)c.t) + " s: " + std::to_string(Vector3DotProduct(q, S.plot->east)) + " m^3/s along the trench, " + std::to_string(fs.steadyBricks) + " steady bricks"); }
-        if (c.t > 30.0 && c.t < 45.0) S.steadyBefore = std::max(S.steadyBefore, fs.steadyBricks);
-        if (c.t > 45.0 && !S.poured) { S.poured = true; Fluid::Pour(*c.body, S.at(0.0f, -1.5f), 3.0f); }
-        if (c.t > 45.5 && c.t < 48.0) S.steadyAfter = std::min(S.steadyAfter, fs.steadyBricks);
+        if (c.t > 30.0 && !S.poured) S.steadyBefore = std::max(S.steadyBefore, fs.steadyBricks);
+        // (#1131) Pour into a brick that is steady, found along the stream from 30 s on (by 55 s at the latest), and check
+        // that this brick wakes: the global count before and after depended on which bricks happened to be steady (the
+        // pour's fixed spot was not always one of them: "5 before, 5 after").
+        if (c.t > 30.0 && c.t < 55.0 && !S.poured && Fluid::GpuMode())
+            for (float x = -8.0f; x <= 10.0f && !S.poured; x += 1.0f) {
+                const Vector3 p = S.at(x, -1.5f);
+                if (Fluid::SteadyAt(*c.body, p)) { S.poured = true; S.pourAt = p; S.pourT = c.t; Fluid::Pour(*c.body, p, 3.0f); c.note("poured into a steady brick at x = " + std::to_string((int)x) + " m"); }
+            }
+        if (S.poured && c.t > S.pourT + 0.3 && c.t < S.pourT + 3.0) {
+            S.steadyAfter = std::min(S.steadyAfter, fs.steadyBricks);
+            if (!Fluid::SteadyAt(*c.body, S.pourAt)) S.woke = true;
+        }
         c.waitingFor("60 s of stream");
-        if (c.t <= 60.0) return false;
+        if (c.t <= 60.0 || (S.poured && c.t < S.pourT + 3.0)) return false;
         const float along = Vector3DotProduct(q, S.plot->east);
         const bool gpu = Fluid::GpuMode();
         c.metric("flow along the trench", along, "m^3/s", false);
         c.metric("steady bricks before the pour", S.steadyBefore, "", false);
         c.metric("steady bricks after the pour", S.steadyAfter == (1 << 30) ? -1 : S.steadyAfter);
         c.between("flow along the trench (m^3/s) from a 1 m^3/s spring", along, 0.6, 1.4);
-        if (gpu) c.check("steady bricks woken by a pour (#674)", S.steadyBefore > 0 && S.steadyAfter < S.steadyBefore,
-                         std::to_string(S.steadyBefore) + " before, " + std::to_string(S.steadyAfter) + " after");
-        else c.note("CPU mode: no steady bricks to check");
+        if (gpu) {
+            c.check("a steady brick along the stream (#674)", S.poured, "none steady between 30 and 55 s");
+            c.check("the steady brick a pour lands in wakes (#674)", S.woke, std::to_string(S.steadyBefore) + " steady at most before, " +
+                    std::to_string(S.steadyAfter == (1 << 30) ? -1 : S.steadyAfter) + " fewest after");
+        } else c.note("CPU mode: no steady bricks to check");
         return true;
     });
 }

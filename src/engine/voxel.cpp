@@ -1255,16 +1255,17 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         auto onFloor = [&](float dist, float ang, float h) {
             return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
         };
+        static const bool solidsTest = !(getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS") && getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS")[0] == '0'); // (#1116 isolation)
         const int boulders = 3 + (int)(6.0f * u2);
         for (int i = 0; i < boulders; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 2.0f + 4.0f * Ug(g);
             const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
-            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
+            if (solidsTest) add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, 2);
         }
         const int columns = (int)(3.0f * u3);
         for (int i = 0; i < columns; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), cr = 1.5f + 2.5f * Ug(g);
-            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
+            if (solidsTest) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
         }
     };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
@@ -1665,6 +1666,74 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             }
         }
     }
+    // (#1181) Sinkholes: hillside mouths need a real face, so on flat or gently rolling ground (a swamp or meadow start)
+    // there were none for kilometres. A collapse pit: a round shaft 2-4 m across at a gentle spot of the cell's ground,
+    // flaring into a funnel at the top, 8-16 m down to a rubble cone, and a passage from its foot wandering level-ish
+    // under the ground (it ends where its roof would thin under 4 m). ~1 in 16 surface cells at 1x (~1 per km^2), its own
+    // random numbers (the same sinks at any abundance, more with more); none in karst (the dolines are its sinks), the sea
+    // or water. Mouth kind 1 (a shaft), so #1067's light pool falls under it. Built from the same segment kinds as the
+    // others: caveDistance and terrain.glsl are unchanged. RAYLIBGAME_CAVE_SINKHOLES=0: off.
+    static const bool sinkholesOn = !(getenv("RAYLIBGAME_CAVE_SINKHOLES") && getenv("RAYLIBGAME_CAVE_SINKHOLES")[0] == '0');
+    if (sinkholesOn) {
+        std::mt19937 rs((unsigned)(CaveCellHash{}(key) ^ 0x51A4C0DEu));
+        std::uniform_real_distribution<float> US(0.0f, 1.0f);
+        const float sinkOdds = std::min(0.95f, 0.065f * (abundance <= 1.0f ? abundance : 1.0f + 2.0f * (abundance - 1.0f)));
+        const float roll = US(rs);
+        const Vector3 cc = { (cx + 0.5f) * kCaveCell, (cy + 0.5f) * kCaveCell, (cz + 0.5f) * kCaveCell };
+        const float cl = Vector3Length(cc);
+        if (roll < sinkOdds && cl > 1.0f) {
+            const Vector3 d0 = Vector3Scale(cc, 1.0f / cl);
+            const Vector3 a1 = Vector3Normalize(Vector3CrossProduct(d0, fabsf(d0.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            const Vector3 a2 = Vector3CrossProduct(d0, a1);
+            auto at = [&](Vector3 base, Vector3 off) { return Vector3Normalize(Vector3Add(Vector3Scale(base, R), off)); };
+            auto push = [&](Vector3 a, Vector3 b, float ra, float rb, float flat, int kind) {
+                CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(a, b)); sg.kind = kind;
+                segs->push_back(sg);
+            };
+            for (int tries = 0; tries < 8; ++tries) {
+                const float u = (US(rs) - 0.5f) * 1.4f * kCaveCell, v = (US(rs) - 0.5f) * 1.4f * kCaveCell;
+                const Vector3 dir = at(d0, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v)));
+                const Vector3 onR = Vector3Scale(dir, R);
+                if ((int)floorf(onR.x / kCaveCell) != cx || (int)floorf(onR.y / kCaveCell) != cy || (int)floorf(onR.z / kCaveCell) != cz) continue;
+                const float e0 = f.elevation(dir);
+                if (e0 < 3.0f) continue;                                               // the sea, a shore, a flooded hollow
+                if (f.karstWeight(onR) >= 0.3f) continue;                              // karst has its dolines
+                if (f.inlandWaterNear(dir, 20.0f)) continue;                           // not into a river or a lake
+                const float g1 = (f.elevation(at(dir, Vector3Scale(a1, 6.0f))) - f.elevation(at(dir, Vector3Scale(a1, -6.0f)))) / 12.0f;
+                const float g2 = (f.elevation(at(dir, Vector3Scale(a2, 6.0f))) - f.elevation(at(dir, Vector3Scale(a2, -6.0f)))) / 12.0f;
+                if (g1 * g1 + g2 * g2 > 0.18f * 0.18f) continue;                       // gentle ground (~10 degrees): hills have mouths
+                const float sr = 1.0f + 1.0f * US(rs), sdepth = 8.0f + 8.0f * US(rs);
+                const Vector3 top = Vector3Scale(dir, R + e0 + 2.0f), rim = Vector3Scale(dir, R + e0 - 1.5f);
+                const Vector3 bot = Vector3Scale(dir, R + e0 - sdepth);
+                push(top, rim, 2.2f * sr, 1.15f * sr, 1.0f, 0);                       // the funnel: a collapsed lip
+                push(rim, bot, 1.15f * sr, sr, 1.0f, 0);                               // the shaft
+                const Vector3 coneC = Vector3Scale(dir, R + e0 - sdepth - 0.45f * sr);
+                push(Vector3Add(coneC, Vector3Scale(a1, 0.3f)), Vector3Subtract(coneC, Vector3Scale(a1, 0.3f)), 0.8f * sr, 0.8f * sr, 0.35f, 2);
+                data->mouths.push_back({ Vector3Scale(dir, R + e0), dir, 1, sr, sdepth });
+                // The passage from the foot: 6-12 segments, turning gently, falling ~1 m in 15, radius 1.8-3.2 m.
+                const float ang = US(rs) * 2.0f * PI;
+                Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(a1, cosf(ang)), Vector3Scale(a2, sinf(ang))));
+                Vector3 pos = Vector3Scale(dir, R + e0 - sdepth + 0.6f * sr), pdir = dir;
+                float r = 1.6f + 0.6f * US(rs), h = e0 - sdepth + 0.6f * sr;
+                const int n = 6 + (int)(7.0f * US(rs));
+                for (int k = 0; k < n; ++k) {
+                    const float L = 12.0f + 8.0f * US(rs);
+                    const float turn = (US(rs) - 0.5f) * 0.8f;
+                    head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(Vector3CrossProduct(pdir, head), sinf(turn))));
+                    const float r2 = std::clamp(r + (US(rs) - 0.5f) * 1.2f, 1.8f, 3.2f);
+                    const float h2 = h - L / 15.0f;
+                    const Vector3 dir2 = at(pdir, Vector3Scale(head, L));
+                    const float e2 = f.elevation(dir2);
+                    if (e2 - h2 - 1.5f * r2 < 4.0f) break;                             // the roof would thin out: it ends here
+                    const Vector3 pos2 = Vector3Scale(dir2, R + h2);
+                    push(pos, pos2, r, r2, 0.9f, 0);
+                    pos = pos2; pdir = dir2; r = r2; h = h2;
+                    head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(pdir, Vector3DotProduct(head, pdir))));
+                }
+                break;
+            }
+        }
+    }
     std::lock_guard<std::mutex> lock(sh.m);
     if (sh.map.size() > 4096) sh.map.clear();
     return sh.map.emplace(key, data).first->second;
@@ -1724,6 +1793,22 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
                 }
             }
     return found;
+}
+
+void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const {
+    out.clear();
+    if (!CavesGraph() || moon) return;
+    const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
+    const int R = (int)ceilf(range / kCaveCell) + 1;
+    const int c0[3] = { (int)floorf(s.x / kCaveCell), (int)floorf(s.y / kCaveCell), (int)floorf(s.z / kCaveCell) };
+    for (int z = -R; z <= R; ++z)
+        for (int y = -R; y <= R; ++y)
+            for (int x = -R; x <= R; ++x) {
+                const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
+                if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
+                for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
+                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) out.push_back(m.at);
+            }
 }
 
 void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const {
@@ -1839,9 +1924,21 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         }
         const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
         const float rough = 1.0f + bk * big;
-        const float rs = swell * rough;
+        // (#1116) A chamber's swell (+-30% over ~10 m) and outline term at a passage's size: on a 30 m hall they moved the wall
+        // +-9 m within 10 m and folded it back along rays (floating shells on the upper walls; --cave-islands 800 at seed 42:
+        // 3349 m^3 -> 1500). The same operations as terrain.glsl (bit-exact; passages keep swell x rough).
+        // RAYLIBGAME_CAVE_HALL_SWELL=1: as before (CPU only, A/B).
+        static const bool hallSwellOld = getenv("RAYLIBGAME_CAVE_HALL_SWELL") && getenv("RAYLIBGAME_CAVE_HALL_SWELL")[0] == '1';
+        float rs = swell * rough;
+        if (hall && !hallSwellOld) {
+            const float hk = std::min(1.0f, 8.0f / r);
+            const float sw0 = swell - 1.0f, sw1 = sw0 * hk, sw = 1.0f + sw1;
+            const float rg0 = rough - 1.0f, rg1 = rg0 * hk, rg = 1.0f + rg1;
+            rs = sw * rg;
+        }
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
-        const float pk = hv > 0.0f ? pocket : 0.0f;
+        static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
+        const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
         const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
@@ -1852,7 +1949,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
         const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
         const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
-        const float floorCut = (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
+        static const bool floorTest = !(getenv("RAYLIBGAME_CAVE_FLOORCUT") && getenv("RAYLIBGAME_CAVE_FLOORCUT")[0] == '0'); // (#1116 isolation, CPU only)
+        const float floorCut = !floorTest && hall ? -1e9f : (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
         // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
         // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point
@@ -1860,7 +1958,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         // across the wall (jagged faces) but 10x slower outward (solid rock behind them, no shells or floating pieces).
         // Only in the shell where it can matter (inside half the bore it is 0; 40 m out the distance is never used).
         float intrude = 0.0f;
-        if (len > 0.5f * rw && len < rw + 40.0f) {
+        static const int wallNoiseTest = getenv("RAYLIBGAME_CAVE_WALLNOISE") ? atoi(getenv("RAYLIBGAME_CAVE_WALLNOISE")) : 1; // (#1116 isolation, CPU only: 0 none, 2 none in chambers)
+        if (len > 0.5f * rw && len < rw + 40.0f && wallNoiseTest != 0 && !(wallNoiseTest == 2 && hall)) {
             const float hl2 = hx * hx + hy * hy + hz * hz;
             const float hl = sqrtf(hl2);
             if (hl > 1e-3f) {
@@ -1879,7 +1978,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
-                const float ra = hall ? std::min(rw, 8.0f) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
+                static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 4.0f; // (#1116: 8 -> 4 m, floating 1500 -> 722 m^3 with the swell fix; the env is CPU only, tuning)
+                const float ra = hall ? std::min(rw, hallRa) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
                 intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
             }
         }
