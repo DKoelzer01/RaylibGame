@@ -16,6 +16,7 @@ Rotation::ConsumerSpec RotationPlot_Consumer(PartType t) {
     case PartType::Press: return kPress;
     case PartType::Dynamo: return Rotation::kDynamo; // (#1271 L3)
     case PartType::SteamLab: return Rotation::kSteamLab; // (#1271 L6)
+    case PartType::Bellows: return Rotation::kBellows; // (#1271 L2)
     default: return { 0, 0, 0 };
     }
 }

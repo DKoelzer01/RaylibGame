@@ -64,6 +64,7 @@ const char* PartName(PartType t) {
         case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
         case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
+        case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -135,6 +136,7 @@ const char* PartMachineName(PartType t) {
         case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
         case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
         case PartType::SteamLab: return "steam_lab"; // (#1271 L6)
+        case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -335,7 +337,7 @@ static unsigned char PartPatternOf(const Part& p) {
     }
     switch (p.type) {
         case PartType::Chest: case PartType::Fence: case PartType::Gate: return PatPlanks;
-        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: return PatBrick;
+        case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Bloomery: return PatBrick;
         case PartType::Campfire: return PatCoal; // the ash bed under the logs (#552)
         case PartType::Conveyor: return PatConveyor;
         case PartType::Cable: return PatCable;
@@ -362,6 +364,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
         case PartType::Gearbox: case PartType::StressGauge: // (#1269)
+        case PartType::Bellows: case PartType::Anvil: // (#1271 L2) one cell each
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face
@@ -383,6 +386,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: // (#1193; #1271 L6)
         case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
+        case PartType::Bloomery: // (#1271 L2)
         case PartType::SteamEngine: case PartType::Dynamo: case PartType::Motor: // (#1271 L3)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;

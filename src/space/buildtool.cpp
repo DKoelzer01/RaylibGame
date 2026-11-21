@@ -667,6 +667,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
+    if (machineAim.type == PartType::Anvil && !buildTool.active && in.down(Act::Secondary)) { // (#1271 L2) hold RMB on an anvil to hammer
+        static double nextStrike = 0.0;
+        if (GetTime() >= nextStrike) { Factory::Strike(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Build, 0.45f, 1.6f); nextStrike = GetTime() + 0.45; }
+        return;
+    }
     if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it
         if (!buildTool.active && in.down(Act::Secondary)) { Factory::Crank(machineAim.body, machineAim.plot, machineAim.part); crankAt = GetTime(); }
         return;
@@ -829,7 +834,7 @@ void Machine_DrawHUD() {
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
-    else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
+    else DrawText(machineAim.type == PartType::Anvil ? "hold RMB to hammer   I put work in   O take it out" : chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
 
 // The world is going (#902): the aim points into its bodies and plots.

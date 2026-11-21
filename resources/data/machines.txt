@@ -75,3 +75,8 @@ fuel jar_rot 400
 fuel jar_storm 560
 # (#1271 L6) the steam lab: driven by a shaft (rotation), it researches tier 3 with steam packs
 steam_lab        | 0  | rotation | 0  |
+# (#211, #1271 L2) bloomery: ore and charcoal into iron blooms (no power: the charcoal is its fuel); bellows: air for a bloomery
+# or blast furnace, driven by a shaft; anvil: worked by a player's hammer strikes (RMB).
+bloomery         | 0  | none     | 0  |
+bellows          | 0  | rotation | 0  |
+anvil            | 0  | manual   | 0  |
