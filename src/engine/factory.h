@@ -70,6 +70,10 @@ struct FactoryStats {
     double avgTickMs = 0.0, maxTickMs = 0.0;
     long long ticks = 0;
     long long itemsMade = 0;
+    // (#1207) the last minute of ticks (up to 1200), refreshed once a second: whole ticks and their phases (commands in,
+    // the plots, the view block)
+    int recentTicks = 0;
+    double meanTickMs = 0.0, p99TickMs = 0.0, worstRecentMs = 0.0, cmdMs = 0.0, tickOnlyMs = 0.0, viewMs = 0.0;
 };
 
 // (#1199) Production statistics (the Statistics screen, and the oracle the summary sim is checked against). Per item: made and

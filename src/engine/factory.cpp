@@ -154,6 +154,10 @@ void LoadMachineDefs() {
     }
 }
 
+// (#1207) built once by LoadRecipes
+std::array<std::vector<int>, 256> recipesOf;      // by PartType: indices into tables.recipes
+std::array<std::vector<uint8_t>, 256> wantsOf;   // by PartType, by item id: a recipe of it takes the item
+
 void LoadRecipes() {
     if (!tables.recipes.empty()) return;
     LoadMachineDefs();
@@ -186,6 +190,14 @@ void LoadRecipes() {
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
+    }
+    // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
+    // through every recipe of every machine, each tick).
+    for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+        const Recipe& r = tables.recipes[ri];
+        recipesOf[(int)r.machine].push_back((int)ri);
+        std::vector<uint8_t>& w = wantsOf[(int)r.machine];
+        for (const Stack& s : r.in) { if (s.item >= (int)w.size()) w.resize(s.item + 1, 0); w[s.item] = 1; }
     }
     LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
 }
@@ -251,9 +263,16 @@ struct PlotSim {
     std::vector<Net> itemNets, powerNets;
     std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
     PlotStats stats;                        // (#1199)
+    // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
+    struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
 };
 PlotStats* gCount = nullptr;  // the plot ticking now (BurnFuel counts the fuel it takes into it)
 long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
+// (#1207) The last minute of factory ticks' times (sim thread), for the mean, p99 and worst and the phase split.
+struct TickTimes { float total = 0, cmd = 0, tick = 0, view = 0; };
+constexpr size_t kTickRing = 1200;
+std::array<TickTimes, kTickRing> tickRing{};
+size_t tickRingAt = 0;
 
 // Once a second: each count's second into the rings, minutes and 10 minutes as they complete.
 void RollSeries(Series& s) {
@@ -311,6 +330,7 @@ inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
     auto mix = [](uint64_t x) { x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull; return x ^ (x >> 31); };
     return mix(mix(body) ^ (((uint64_t)plot << 32) | (uint32_t)part));
 }
+bool viewsRebuild = false; // (#1207) a moved plot: rebuild the near-plot views from scratch
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
 std::vector<Factory::MachineKey> watchMany;                         // (#332) a server's open machines (viewMutex)
@@ -346,8 +366,20 @@ void GrantTicks(long long n, long long cap) {
 
 std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts already sent
 
+// (#1207) FindPlot through a hash of (body, plot) -> index, rebuilt when the plot list changes (a new plot, a reset, a
+// moved plot: plotIndexDirty); every hit is checked against the plot itself. Sim thread (and callers under simMutex).
+std::unordered_map<uint64_t, size_t> plotIndex;
+bool plotIndexDirty = true;
+uint64_t PlotHash(uint64_t body, uint32_t plot) { return body * 0x9E3779B97F4A7C15ull ^ (uint64_t)plot; }
 PlotSim* FindPlot(uint64_t body, uint32_t plot) {
-    for (auto& p : plots) if (p.body == body && p.plot == plot) return &p;
+    if (plotIndexDirty) {
+        plotIndex.clear();
+        for (size_t i = 0; i < plots.size(); ++i) plotIndex[PlotHash(plots[i].body, plots[i].plot)] = i;
+        plotIndexDirty = false;
+    }
+    auto it = plotIndex.find(PlotHash(body, plot));
+    if (it != plotIndex.end() && it->second < plots.size() && plots[it->second].body == body && plots[it->second].plot == plot) return &plots[it->second];
+    for (auto& p : plots) if (p.body == body && p.plot == plot) return &p; // (a hash collision: never in practice)
     return nullptr;
 }
 
@@ -370,9 +402,8 @@ int InSlots(const Machine& m) { return m.type == PartType::Chest ? kChestSlots :
 
 bool IsFuel(const MachineDef& def, int item) { for (int f : def.fuels) if (f == item) return true; return false; }
 bool RecipeWants(PartType type, int item) {
-    for (const Recipe& r : tables.recipes)
-        if (r.machine == type) for (const Stack& s : r.in) if (s.item == item) return true;
-    return false;
+    const std::vector<uint8_t>& w = wantsOf[(int)type]; // (#1207)
+    return item >= 0 && item < (int)w.size() && w[item];
 }
 bool HasFuelSlot(PartType type) { return !Def(type).fuels.empty(); }
 int WaterBucketItem() { static const int id = tables.item("water_bucket"); return id; }
@@ -521,7 +552,7 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
 
 void ApplyLayout(const LayoutMsg& L) {
     PlotSim* ps = FindPlot(L.body, L.plot);
-    if (!ps) { plots.push_back({}); ps = &plots.back(); ps->body = L.body; ps->plot = L.plot; }
+    if (!ps) { plots.push_back({}); ps = &plots.back(); ps->body = L.body; ps->plot = L.plot; plotIndexDirty = true; }
     ps->version = L.version;
     // Keep the state of machines still there (same part index and type).
     std::vector<Machine> next;
@@ -660,17 +691,19 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
+            // (#1207) only this machine type's recipes (file order kept, so the same one is picked)
+            const std::vector<int>& mine = recipesOf[(int)m.type];
             for (int si = 0; si < InSlots(m) && m.recipe < 0; ++si) {
-                if (m.in[si].count <= 0) continue;
-                for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+                if (m.in[si].count <= 0 || !RecipeWants(m.type, m.in[si].item)) continue;
+                for (int ri : mine) {
                     const Recipe& r = tables.recipes[ri];
                     bool uses = false;
                     for (const Stack& s : r.in) uses |= s.item == m.in[si].item;
-                    if (uses && usable(r)) { m.recipe = (int)ri; m.progress = 0; break; }
+                    if (uses && usable(r)) { m.recipe = ri; m.progress = 0; break; }
                 }
             }
-            for (size_t ri = 0; ri < tables.recipes.size() && m.recipe < 0; ++ri)
-                if (usable(tables.recipes[ri])) { m.recipe = (int)ri; m.progress = 0; }
+            for (size_t k = 0; k < mine.size() && m.recipe < 0; ++k)
+                if (usable(tables.recipes[mine[k]])) { m.recipe = mine[k]; m.progress = 0; }
             if (m.recipe < 0 && m.fire == kFireLit) { // (#1103) lit with nothing to cook: it burns its fuel (light, warmth)
                 const int burnt = BurnFuel(m, def, dt);
                 if (burnt > 0) { m.status = MachineStatus::Working; ++active; }
@@ -823,10 +856,10 @@ void SimLoop() {
                 layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
             }
-            if (reset) { plots.clear(); emaMs = maxMs = 0.0; statSeconds = 0; }
+            if (reset) { plots.clear(); plotIndexDirty = true; emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
             for (const MoveMsg& mv : moves)
-                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
+                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; plotIndexDirty = true; viewsRebuild = true; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<ItemOut> toCursor; // kind 8 (#192)
@@ -894,6 +927,7 @@ void SimLoop() {
                     for (int i = 0; i < n; ++i) if (s[i].count > 0) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
                 }
             }
+            const auto t1 = clk::now(); // (#1207) commands done
             // Tick: near plots every tick; far plots once a second with a 20x step.
             const long long t = tickCount.load();
             long long made = 0;
@@ -906,6 +940,7 @@ void SimLoop() {
             }
             gCount = nullptr;
             if ((t + 1) % kTicksPerSecond == 0) { for (PlotSim& ps : plots) RollStats(ps.stats); ++statSeconds; } // (#1199) a second of factory time
+            const auto t2 = clk::now(); // (#1207) plots done
             const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
             emaMs = emaMs == 0.0 ? ms : emaMs * 0.95 + ms * 0.05;
             maxMs = std::max(maxMs, ms);
@@ -919,30 +954,82 @@ void SimLoop() {
                 FillCableView();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
-                chestView.clear();
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
                 if (reset) pumpPending.clear();
                 tankView.clear();
                 for (const auto& [k, n] : filled) if (auto tit = tankPending.find(k); tit != tankPending.end() && (tit->second -= n) <= 0) tankPending.erase(tit);
                 if (reset) tankPending.clear();
+                // Boilers' tank room and pumps' water (every plot; few machines): one pass.
                 for (const PlotSim& ps : plots)
-                    for (const Machine& m : ps.machines)
-                        if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
-                workingView.clear(); workingByPlot.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
-                for (const PlotSim& ps : plots)
-                    if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) { workingView.insert(WorkingKey(ps.body, ps.plot, m.part)); workingByPlot[{ ps.body, ps.plot }].push_back(m.part); }
-                for (const PlotSim& ps : plots)
-                    for (const Machine& m : ps.machines)
-                        if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
-                for (const PlotSim& ps : plots) {
-                    if (!ps.nearPlayer) continue;
                     for (const Machine& m : ps.machines) {
-                        if (m.type != PartType::Chest) continue;
-                        auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
-                        for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                        if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
+                        else if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
                     }
+                // (#1207) Machines working and chest contents on the plots near the player (models, smoke, chest screens): each
+                // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
+                // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
+                if (reset || viewsRebuild) {
+                    workingView.clear(); workingByPlot.clear(); chestView.clear();
+                    for (PlotSim& ps : plots) ps.pub = PlotSim::Published{};
+                    viewsRebuild = false;
                 }
+                static std::vector<int> working, chests;
+                for (PlotSim& ps : plots) {
+                    PlotSim::Published& pub = ps.pub;
+                    auto unpublishWorking = [&] { for (int part : pub.working) workingView.erase(WorkingKey(ps.body, ps.plot, part)); workingByPlot.erase({ ps.body, ps.plot }); pub.working.clear(); };
+                    auto unpublishChests = [&] { for (int part : pub.chests) chestView.erase(std::make_tuple(ps.body, ps.plot, part)); pub.chests.clear(); };
+                    if (!ps.nearPlayer) {
+                        if (pub.near) { unpublishWorking(); unpublishChests(); pub.near = false; }
+                        continue;
+                    }
+                    working.clear(); chests.clear();
+                    uint64_t h = 1469598103934665603ull; // FNV-1a over the chests' parts and slots
+                    auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+                    for (const Machine& m : ps.machines) {
+                        if (m.status == MachineStatus::Working) working.push_back(m.part);
+                        if (m.type != PartType::Chest) continue;
+                        chests.push_back(m.part);
+                        mix((uint64_t)m.part);
+                        for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) mix(((uint64_t)(uint32_t)m.in[i].item << 32) ^ (uint64_t)(uint32_t)(m.in[i].count * 64 + i));
+                    }
+                    if (!pub.near || working != pub.working) {
+                        unpublishWorking();
+                        for (int part : working) workingView.insert(WorkingKey(ps.body, ps.plot, part));
+                        if (!working.empty()) workingByPlot[{ ps.body, ps.plot }] = working;
+                        pub.working = working;
+                    }
+                    if (!pub.near || h != pub.chestHash || chests != pub.chests) {
+                        unpublishChests();
+                        for (const Machine& m : ps.machines) {
+                            if (m.type != PartType::Chest) continue;
+                            auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
+                            for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                        }
+                        pub.chests = chests;
+                        pub.chestHash = h;
+                    }
+                    pub.near = true;
+                }
+            }
+            // (#1207) The whole tick (commands, plots, views) into the last minute's ring; its percentiles once a second.
+            const auto t3 = clk::now();
+            const float cmdMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+            const float tickMs = std::chrono::duration<float, std::milli>(t2 - t1).count();
+            const float viewMs = std::chrono::duration<float, std::milli>(t3 - t2).count();
+            tickRing[tickRingAt++ % kTickRing] = { cmdMs + tickMs + viewMs, cmdMs, tickMs, viewMs };
+            if ((t + 1) % kTicksPerSecond == 0) {
+                const size_t n = std::min<size_t>(tickRingAt, kTickRing);
+                std::vector<float> all(n);
+                TickTimes sum{};
+                for (size_t i = 0; i < n; ++i) { all[i] = tickRing[i].total; sum.cmd += tickRing[i].cmd; sum.tick += tickRing[i].tick; sum.view += tickRing[i].view; }
+                std::sort(all.begin(), all.end());
+                std::lock_guard<std::mutex> v(viewMutex);
+                stats.recentTicks = (int)n;
+                stats.meanTickMs = n ? (sum.cmd + sum.tick + sum.view) / n : 0.0;
+                stats.p99TickMs = n ? all[std::min(n - 1, (size_t)(n * 0.99))] : 0.0;
+                stats.worstRecentMs = n ? all[n - 1] : 0.0;
+                stats.cmdMs = n ? sum.cmd / n : 0.0; stats.tickOnlyMs = n ? sum.tick / n : 0.0; stats.viewMs = n ? sum.view / n : 0.0;
             }
         }
         tickCount++;
