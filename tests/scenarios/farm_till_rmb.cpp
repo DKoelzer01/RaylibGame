@@ -14,12 +14,22 @@
 
 namespace {
 // The camera at the player's eyes, looking at the ground 2 m ahead (side: metres to the right); the tool's aim from it.
+// (#1178) The feet, up and forward are taken once, in the body's frame: the game turns the player to face the camera this
+// sets (with its sideways offset), so reading the player's forward each time turned every aim further and the stroke and
+// the check landed 10-25 m apart.
+bool aimBase = false;
+Vector3 feetL{}, upL{}, fwdL{};
 bool Aim(ScenarioCtx& c, float side, Vector3& local) {
     Player& p = LocalSession().player;
-    const Vector3 feet = (p.position - c.world.renderOrigin).toFloat();
-    const Vector3 up = Vector3Normalize(p.up);
-    Vector3 fwd = Vector3Subtract(p.forward, Vector3Scale(up, Vector3DotProduct(p.forward, up)));
-    fwd = Vector3Length(fwd) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })) : Vector3Normalize(fwd);
+    if (!aimBase) {
+        const Vector3 feet0 = (p.position - c.world.renderOrigin).toFloat();
+        const Vector3 up0 = Vector3Normalize(p.up);
+        Vector3 fwd0 = Vector3Subtract(p.forward, Vector3Scale(up0, Vector3DotProduct(p.forward, up0)));
+        fwd0 = Vector3Length(fwd0) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(up0, { 0, 0, 1 })) : Vector3Normalize(fwd0);
+        feetL = c.body->toLocal(feet0); upL = c.body->dirToLocal(up0); fwdL = c.body->dirToLocal(fwd0);
+        aimBase = true;
+    }
+    const Vector3 feet = c.body->toWorld(feetL), up = c.body->dirToWorld(upL), fwd = c.body->dirToWorld(fwdL);
     c.world.camera.position = Vector3Add(feet, Vector3Scale(up, 1.6f));
     c.world.camera.target = Vector3Add(Vector3Add(feet, Vector3Scale(fwd, 2.0f)), Vector3Scale(Vector3Normalize(Vector3CrossProduct(fwd, up)), side));
     c.world.camera.up = up;
@@ -31,6 +41,11 @@ bool Aim(ScenarioCtx& c, float side, Vector3& local) {
 // also says yes near a crop field: the wrong probe here.)
 bool Farmland(ScenarioCtx& c, Vector3 spot) {
     return c.body->materialAt(Vector3Subtract(spot, Vector3Scale(Vector3Normalize(spot), 0.12f))) == VoxelMaterial::Farmland;
+}
+// (#1178) What the probe reads there, and how far the spot is from the player (for the notes).
+const char* GroundAt(ScenarioCtx& c, Vector3 spot) {
+    return TextFormat("%s at (%.1f %.1f %.1f), %.1f m from the player's feet", VoxelMaterialName(c.body->materialAt(Vector3Subtract(spot, Vector3Scale(Vector3Normalize(spot), 0.12f)))),
+                      spot.x, spot.y, spot.z, Vector3Distance(spot, feetL));
 }
 // RMB held for one update with `held` in hand (the caller waited out the cooldown): what the player's RMB does there.
 void Rmb(ScenarioCtx& c, const char* held) {
@@ -49,6 +64,7 @@ SCENARIO("farm/till-rmb") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 60.0;
     static int stage = 0;
+    aimBase = false; // (a fresh run takes its aim base again)
     static float side = -12.0f; static double rmbAt = 0.0;
     static int strokes0 = 0;
     static double dirt0 = 0.0;
@@ -65,6 +81,7 @@ SCENARIO("farm/till-rmb") {
         if (TerrainTool_Cooldown() > 0.0f) return false; // one stroke per cooldown: wait it out in sim time
         if (phase == 0) { // a fresh spot (3 m apart); with placedDirt, a patch of dirt laid there first
             if (!Aim(c, side, spot)) { c.fail("no ground ahead"); return true; }
+            c.note(TextFormat("case %d before: %s", i, GroundAt(c, spot)));
             c.check(TextFormat("case %d: not farmland before", i), !Farmland(c, spot));
             if (k.placedDirt) { inventory.add("dirt", 20); Rmb(c, "dirt"); }
             ++stage;
@@ -81,6 +98,7 @@ SCENARIO("farm/till-rmb") {
         if (c.T - rmbAt < 0.5) return false; // (the till's ground edit lands over the next frames)
         Aim(c, side, spot);
         const std::string what = std::string(k.tool) + (k.placedDirt ? " on placed dirt" : " on the natural ground");
+        c.note(TextFormat("case %d after: %s", i, GroundAt(c, spot)));
         if (k.tills) {
             c.check(("RMB tills: " + what).c_str(), Farmland(c, spot), TextFormat("strokes %d -> %d", strokes0, terrainTool.swings));
         } else {
