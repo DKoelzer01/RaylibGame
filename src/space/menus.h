@@ -29,6 +29,7 @@ struct GameSettings {
     float mouseSensitivity = 1.0f;  // multiplier on the default look speed
     float fov = 65.0f;              // degrees (vertical; narrow views are a motion-sickness trigger)
     float volume = 0.35f;
+    float busVolume[7] = { 1, 1, 1, 1, 1, 1, 1 }; // (#1238) per AudioBus (audiomixer.h); [0] Master is `volume`. Audio v2 only
     bool foliage = true;
     int fpsCap = 0;                 // 0: the monitor's refresh rate
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)

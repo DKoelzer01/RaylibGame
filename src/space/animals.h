@@ -40,6 +40,8 @@ uint64_t Animals_LockOn();
 int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
+int Animals_AimedIndex();                 // the animal under the crosshair, -1 none (#1249: studying by looking)
+std::pair<std::string, std::string> Animals_SpeciesOf(int index); // its species (id, display name); empty if none
 void Animals_Reset();
 void Animals_Save(FILE* f);
 bool Animals_LoadLine(const char* tok, FILE* f);

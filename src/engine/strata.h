@@ -30,6 +30,9 @@ float Strata_Erodibility(RockType r);  // the stream-power multiplier (soft ~1.5
 const char* Strata_Item(RockType r);   // its items.txt id ("stone" for soft rock)
 // Fault scarps (#590): metres a few long curved faults raise the land at surface point s (0 off them; the bake input).
 float Strata_FaultUplift(Vector3 s, unsigned int seed);
+// The fault field itself (#1248: Earth ley lines follow the faults): the signed value whose zero crossing is the fault line
+// (> 0 on the raised side; ~4e-5 per metre across it), and the region weight (0 outside the rare fault regions).
+float Strata_FaultValue(Vector3 s, unsigned int seed, float* region);
 // Folded strata (#591): 0..1, the weight of the fold regions (cuestas, hogbacks) at surface point s.
 float Strata_FoldWeight(Vector3 s, unsigned int seed);
 // #591: 0..1 across a resistant sedimentary layer at height h (0 in soft beds): a ridge profile for the bake input.

@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace {
-    struct Line { std::string id, name; Color color = WHITE; };
+    struct Line { std::string id, name; Color color = WHITE; bool hidden = false; }; // hidden (#1250): unseen until one of its nodes is done
     struct Node {
         std::string id, line, kind, target, title;
         double n = 1.0;
@@ -56,6 +56,7 @@ namespace {
                 Line l; l.id = c[1]; l.name = c[2];
                 int r, g, b;
                 if (sscanf(c[3].c_str(), "%d,%d,%d", &r, &g, &b) == 3) l.color = { (unsigned char)r, (unsigned char)g, (unsigned char)b, 255 };
+                l.hidden = c.size() >= 5 && c[4] == "hidden";
                 lines.push_back(l);
             } else if (c[0] == "node" && c.size() >= 7) {
                 Node n; n.id = c[1]; n.line = c[2]; n.title = c[5];
@@ -99,6 +100,14 @@ namespace {
         for (size_t i = 0; i < nodes.size(); ++i) nodes[i].x = start[nodes[i].line] + (float)sibOf[i];
     }
 
+    // (#1250) A hidden line (the Arcane line: magic is found, not announced) shows once one of its nodes is done.
+    bool Shown(const std::string& line) {
+        const Line* l = LineOf(line);
+        if (!l || !l->hidden) return true;
+        for (const Node& n : nodes) if (n.line == line && Done().count(n.id)) return true;
+        return false;
+    }
+
     bool ReqsDone(const Node& n) {
         if (n.reqTier >= 0 && QuestBook_Tier() < n.reqTier) return false;
         for (const std::string& r : n.reqNodes) if (!Done().count(r)) return false;
@@ -126,7 +135,8 @@ void QuestTree_Update() {
         // whose event finished it, through the server's inventory and its deltas
         for (const auto& r : n.reward) if (itemDB.find(r.first)) { if (gQuestReward) gQuestReward(r.first, r.second); else inventory.add(r.first, r.second); }
         const Line* l = LineOf(n.line);
-        const char* news = TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str());
+        const char* news = n.reward.empty() ? TextFormat("%s: %s done", l ? l->name.c_str() : "Quest", n.title.c_str()) // (#1250: no "(+-)" for a node without a reward)
+                                            : TextFormat("%s: %s done  (+%s)", l ? l->name.c_str() : "Quest", n.title.c_str(), RewardText(n).c_str());
         if (gQuestNews) gQuestNews(news);
         else { GameUI_Toast(news); Audio_Play(Sfx::Craft, 0.6f, 1.2f); }
     }
@@ -158,9 +168,10 @@ void QuestTree_DrawTab() {
     const float fh = ImGui::GetFontSize() * zoom;
     const float cw = fh * 17.8f, ch = fh * 5.7f, bw = fh * 16.2f, bh = fh * 3.6f, pad = fh;
     float maxX = 0.0f, maxY = (float)QuestBook_TierCount();
-    for (const Node& n : nodes) { maxX = std::max(maxX, n.x); maxY = std::max(maxY, n.y + 1.0f); }
+    for (const Node& n : nodes) { if (!Shown(n.line)) continue; maxX = std::max(maxX, n.x); maxY = std::max(maxY, n.y + 1.0f); }
     // Legend: the lines' colours.
     for (const Line& l : lines) {
+        if (!Shown(l.id)) continue;
         ImGui::TextColored(ImVec4(l.color.r / 255.0f, l.color.g / 255.0f, l.color.b / 255.0f, 1.0f), "%s", l.name.c_str());
         ImGui::SameLine();
     }
@@ -190,6 +201,7 @@ void QuestTree_DrawTab() {
         dl->AddPolyline(pts.data(), (int)pts.size(), col, ImDrawFlags_None, thick);
     };
     for (const Node& n : nodes) {
+        if (!Shown(n.line)) continue;
         const ImVec2 b = boxAt(n.x, n.y);
         if (n.reqTier >= 0) { // from the tier box's right side into the gap beside it
             const ImVec2 t = boxAt(0.0f, (float)n.reqTier);
@@ -253,6 +265,7 @@ void QuestTree_DrawTab() {
     }
     // Side nodes.
     for (const Node& n : nodes) {
+        if (!Shown(n.line)) continue;
         const ImVec2 b = boxAt(n.x, n.y);
         const bool isDone = Done().count(n.id) > 0, open = !isDone && ReqsDone(n);
         const Line* l = LineOf(n.line);
