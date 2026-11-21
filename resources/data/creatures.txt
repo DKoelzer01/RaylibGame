@@ -3,6 +3,7 @@
 # id | faction (factions.txt) | key=value ...
 #   behaviour: aggro=passive|defensive|territorial|predator  range= (m, a target this near is taken)  chase= (m, given up past)
 #              angry= (s after a hit)  retreat= (health share; 0 never)  threat=  sleeps=day  fire=scares
+#              firesafe=0 (a player by a fire or carrying a light is NOT safe from it; default: safe, as from beasts)
 #   senses:    sight= (m in full light)  darksight= (share of it in the dark)  hearing= (m for a loudness-1 noise)
 #              light=none|avoids|drawn
 #   attack:    damage=  reach= (m from its centre)  windup= (s, the telegraph)  cooldown=  knock= (m/s)  poise=
@@ -26,3 +27,8 @@ dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 si
 # ~9 m; sneaking (crouched, prone) is silent. Clings to ceilings and drops on prey passing under (x1.5, a heavy hit), fast in
 # short bursts, avoids light. Karst caves and chambers, 8 m+ down, dark; nests in large chambers.
 tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death
+# Cave scavenger (#1225): humanoid groups of up to 3 by cave mouths, with torches. The first of a group throws stones from
+# 5-14 m (a 0.6 s wind-up you can see, then a stone on an arc for 6: block it with a shield or dodge) while the others close
+# in with blades; they retreat under 40% health; a dropped pile within 12 m is taken whole and run off with (it comes back
+# when the thief falls). Hostile to players and lurkers; they fear ruin sentinels.
+cave_scavenger | scavenger | aggro=territorial firesafe=0 range=16 chase=30 angry=25 retreat=0.4 threat=1.5 sight=24 darksight=0.6 hearing=16 damage=7 reach=1.6 windup=0.5 cooldown=1.3 knock=4 type=slash habitat=mouth depth=0-25 dark=1 cap=3 respawn=1200 group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8 sound_idle=scav_mutter sound_alert=scav_shout sound_telegraph=creature_telegraph_scavenger_windup sound_hurt=scav_hurt sound_death=scav_death

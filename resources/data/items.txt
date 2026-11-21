@@ -111,6 +111,7 @@ wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks
 hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
 feather          | Feather          |   999 | 230,220,210 | From cluckers.
 chitin           | Chitin           |   999 | 190,185,160 | Plates from a tunnel lurker's shell: light, hard armour (armour step to come).
+scrap            | Scrap            |   999 | 140,130,115 | Bits of old tools and metal a cave scavenger carried. (A smelting use comes with the metallurgy step.)
 shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
 bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
 water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).

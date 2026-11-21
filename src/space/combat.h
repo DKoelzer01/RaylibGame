@@ -76,6 +76,9 @@ bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
 bool Combat_DropFor(const std::string& body, const DVec3& at, const struct InvSlot& stack, const std::string& who); // at: body-local feet
 inline std::function<void(const std::string& item, int64_t centi)> gDropRequest;
 int Combat_DroppedPiles();
+// (#1225) Cave scavengers steal dropped piles: the nearest within radius (body-local), and taking it whole.
+bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt);
+bool Combat_TakePileNear(const std::string& body, Vector3 at, float radius, std::vector<struct InvSlot>& out);
 void Combat_DrawGraves(Scene& world);
 void Combat_Reset();                          // a new world: no graves
 void Combat_Save(FILE* f);

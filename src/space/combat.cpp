@@ -389,6 +389,34 @@ void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string
 
 int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
 
+
+// (#1225) Thieves: the nearest dropped pile (not a grave) within `radius` of `at` on `body`; and taking one (its items into `out`).
+bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt) {
+    double best = radius;
+    bool found = false;
+    for (const Grave& g : graves) {
+        if (!g.dropped || g.body != body) continue;
+        const double d = (g.local - DVec3(at)).length();
+        if (d < best) { best = d; pileAt = g.local.toFloat(); found = true; }
+    }
+    return found;
+}
+
+bool Combat_TakePileNear(const std::string& body, Vector3 at, float radius, std::vector<InvSlot>& out) {
+    int bestI = -1; double best = radius;
+    for (size_t i = 0; i < graves.size(); ++i) {
+        const Grave& g = graves[i];
+        if (!g.dropped || g.body != body) continue;
+        const double d = (g.local - DVec3(at)).length();
+        if (d < best) { best = d; bestI = (int)i; }
+    }
+    if (bestI < 0) return false;
+    out.insert(out.end(), graves[bestI].items.begin(), graves[bestI].items.end());
+    graves.erase(graves.begin() + bestI);
+    ++graveVersion;
+    return true;
+}
+
 bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& stack, const std::string& who) {
     if (stack.empty() || body.empty()) return false;
     ++graveVersion; // (#865: a server's clients see it)
