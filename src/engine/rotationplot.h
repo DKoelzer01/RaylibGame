@@ -27,6 +27,11 @@ struct RotationPartMsg {
 bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out);
 // The machine's load (stress per RPM, minimum and rated speed); {0,0,0} for parts that are not rotation consumers.
 Rotation::ConsumerSpec RotationPlot_Consumer(PartType t);
+// An orientation that turns a part's local z (a shaft's axis) onto `to` (a unit plot axis, either sign); 0 if none.
+int RotationPlot_OrientFor(Int3 to);
+// The part of that type and orientation whose footprint starts at `cell` (Plot::Footprint turns about the origin corner, so
+// a turned one-cell part's origin is not its cell).
+Part RotationPlot_PartAt(PartType t, Int3 cell, int orient);
 constexpr int kCrankHoldTicks = 6; // a crank turns this long (0.3 s) after the last "held" from the player
 
 struct RotationPlot {

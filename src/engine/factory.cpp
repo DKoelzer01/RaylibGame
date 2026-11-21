@@ -1686,11 +1686,10 @@ LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>
         parts.push_back({ gen, m1, m2, ch });
     }
     if (rot) { // (#1269) three millstones stacked under a hand crank on a vertical shaft: 384 SU on 256, slowed to 66%
-        int up = 0;
-        for (int i = 0; i < 24; ++i) { const int* M = Orientation(i); if (M[2] == 0 && M[5] == 1 && M[8] == 0) { up = i; break; } }
+        const int up = RotationPlot_OrientFor({ 0, 1, 0 });
         auto add = [&](PartType t, Int3 at, int orient) {
             RotationPartMsg rm;
-            const Part pt{ t, at, (uint8_t)orient };
+            const Part pt = RotationPlot_PartAt(t, at, orient);
             RotationPlot_Describe(pt, part, rm);
             L.rotation.push_back(rm);
             if (IsMachine(t)) {

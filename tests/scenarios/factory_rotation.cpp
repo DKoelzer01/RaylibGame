@@ -7,6 +7,7 @@
 #include "buildtool.h"
 #include "factory.h"
 #include "plots.h"
+#include "rotationplot.h"
 #include "terraintool.h"
 #include "world.h"
 #include <raymath.h>
@@ -20,11 +21,8 @@ int crank = -1, lineShaft = -1;
 int mills[5] = { -1, -1, -1, -1, -1 };
 int progressA = 0;
 
-int OrientFor(Int3 zTo) { // an orientation that turns a part's local z (its axis) onto zTo
-    for (int i = 0; i < 24; ++i) { const int* M = Orientation(i); if (M[2] == zTo.x && M[5] == zTo.y && M[8] == zTo.z) return i; }
-    return 0;
-}
-bool Place(ScenarioCtx& c, PartType t, Int3 at, int orient = 0) { return BuildTool_Place(*c.body, *plot, { t, at, (uint8_t)orient }, false); }
+int OrientFor(Int3 zTo) { return RotationPlot_OrientFor(zTo); } // a part's local z (its axis) onto zTo
+bool Place(ScenarioCtx& c, PartType t, Int3 at, int orient = 0) { return BuildTool_Place(*c.body, *plot, RotationPlot_PartAt(t, at, orient), false); } // its footprint starting at `at`
 // Millstone k at x = 3k (y 0..1), its vertical shaft at y 2, its gearbox at y 3 (axis z: ports on x and y), and the x shafts
 // joining it to the previous gearbox.
 bool AddMill(ScenarioCtx& c, int k) {

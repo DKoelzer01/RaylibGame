@@ -18,6 +18,21 @@ Rotation::ConsumerSpec RotationPlot_Consumer(PartType t) {
     }
 }
 
+int RotationPlot_OrientFor(Int3 to) {
+    for (int i = 0; i < 24; ++i) { const int* M = Orientation(i); if (M[2] == to.x && M[5] == to.y && M[8] == to.z) return i; }
+    return 0;
+}
+
+Part RotationPlot_PartAt(PartType t, Int3 cell, int orient) {
+    Part p{ t, { 0, 0, 0 }, (uint8_t)orient };
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(p, fp);
+    Int3 lo = fp.empty() ? Int3{ 0, 0, 0 } : fp[0].first;
+    for (const auto& c : fp) lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) };
+    p.origin = { cell.x - lo.x, cell.y - lo.y, cell.z - lo.z };
+    return p;
+}
+
 bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out) {
     if (!IsRotationPart(part.type)) return false;
     std::vector<std::pair<Int3, CellShape>> fp;
@@ -141,15 +156,21 @@ uint64_t RotationPlot::Hash() const {
 #include <gtest/gtest.h>
 
 namespace {
-int OrientFor(Int3 zTo) { // an orientation that turns local z onto zTo
-    for (int i = 0; i < 24; ++i) { const int* M = Orientation(i); if (M[2] == zTo.x && M[5] == zTo.y && M[8] == zTo.z) return i; }
-    return 0;
-}
+int OrientFor(Int3 zTo) { return RotationPlot_OrientFor(zTo); }
+// The part whose footprint starts at `at` (a turned part's origin is elsewhere: Footprint turns about the origin corner).
 RotationPartMsg Describe(PartType t, Int3 at, int orient = 0, int index = 0) {
     RotationPartMsg m;
-    EXPECT_TRUE(RotationPlot_Describe(Part{ t, at, (uint8_t)orient }, index, m));
+    EXPECT_TRUE(RotationPlot_Describe(RotationPlot_PartAt(t, at, orient), index, m));
     return m;
 }
+}
+
+TEST(RotationPlot, ATurnedPartLandsOnTheCellAskedFor) {
+    for (int o = 0; o < 24; ++o) {
+        const RotationPartMsg m = Describe(PartType::Shaft, { 4, 5, 6 }, o);
+        ASSERT_EQ(m.geom.cells.size(), 1u);
+        EXPECT_TRUE(m.geom.cells[0] == (Rotation::Cell{ 4, 5, 6 })) << "orientation " << o;
+    }
 }
 
 TEST(RotationPlot, PartsLieOnTheirTurnedAxis) {
