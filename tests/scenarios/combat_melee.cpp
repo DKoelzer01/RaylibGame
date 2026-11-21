@@ -77,6 +77,7 @@ SCENARIO("combat/melee") {
     s.tags = { "combat" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 90.0;
+    s.args = { "--day" }; // the dummy and the swing readable in the recording
     constexpr double kStep = 1.0 / 60.0;
 
     s.step("settle", 30.0, [](ScenarioCtx& c) {
@@ -94,6 +95,7 @@ SCENARIO("combat/melee") {
         Animals_Spawn(c.world, *c.body, "hornhide", S.at, 1, false, 0.01f);
         if (!c.check("a hornhide for the dummy", Animals_Count() > before)) { c.fail("no dummy"); return true; }
         S.idx = Animals_Count() - 1;
+        gScenarioInput = true; // scripted LMB and middle mouse through the real input path
         Pin(); LookAtDummy(c);
         return true;
     });
@@ -102,7 +104,7 @@ SCENARIO("combat/melee") {
         if (c.t < 0.3) return false; // the view settles on it
         if (S.pressFrame < 0) { ResetTrack(); Tap(c); c.cue(); return false; }
         ReleaseAfterTap(c); Track(c);
-        if (S.tIdle < 0) { c.waitingFor("the light swing to finish"); return false; }
+        if (S.tIdle < 0) { const MeleeState& m = Animals_Melee(); c.waitingFor("the light swing to finish: swings " + std::to_string(m.swings) + " phase " + std::to_string((int)m.phase) + " aiming " + std::to_string(Animals_Aiming()) + " input " + std::to_string(PlayerInput_Frame().enabled) + " held " + std::to_string(PlayerInput_Frame().held) + " fly " + std::to_string(player.flyMode)); return false; }
         c.check("the swing started", S.tStart >= 0);
         c.near("light wind-up (s)", S.tHit - S.tStart, 0.25, 1.5 * kStep);
         c.check("contact in the hit window", S.tContact >= S.tHit - 1e-6 && S.tContact <= S.tHit + 0.10 + 1.5 * kStep,
@@ -115,7 +117,7 @@ SCENARIO("combat/melee") {
     });
     s.step("heavy: held through the wind-up", 5.0, [](ScenarioCtx& c) {
         Pin(); LookAtDummy(c);
-        if (c.t < 1.2) return false; // stamina regen waits; the numbers stay clean
+        if (c.t < 1.2) { S.pressFrame = -1; return false; } // stamina regen waits; the numbers stay clean
         if (S.pressFrame < 0) { ResetTrack(); gFakeHeld |= kLmb; S.pressFrame = c.frame; return false; }
         Track(c);
         if (S.tHit >= 0) gFakeHeld &= ~kLmb;
@@ -128,7 +130,7 @@ SCENARIO("combat/melee") {
     });
     s.step("two lights chain", 5.0, [](ScenarioCtx& c) {
         Pin(); LookAtDummy(c);
-        if (c.t < 1.2) return false;
+        if (c.t < 1.2) { S.pressFrame = -1; return false; }
         if (S.pressFrame < 0) { ResetTrack(); Tap(c); return false; }
         ReleaseAfterTap(c); Track(c);
         if (S.tHit >= 0 && S.presses == 1 && !(gFakeHeld & kLmb)) Tap(c); // the second press, in the hit window
@@ -164,6 +166,7 @@ SCENARIO("combat/melee") {
         }
         if (stage == 3) { gFakeHeld &= ~kMmb; stage = 4; return false; }
         c.check("pressed again, it lets go", Animals_LockOn() == 0);
+        gFakeHeld = 0; gScenarioInput = false;
         return true;
     });
 }

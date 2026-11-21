@@ -120,6 +120,9 @@ void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
 void Scenario_Shutdown();
 bool Scenario_Active();
+// (#1216) A scenario drives gameplay input with scripted holds (gFakeHeld): the bench run takes gameplay input while it is set
+// (and the window need not have focus). Scenarios that set it clear it again.
+inline bool gScenarioInput = false;
 std::string Scenario_BaselineDir(); // RAYLIBGAME_BASELINES, default //DEWEYSERVER/files/claude-media/raylib-baselines
 
 #endif
