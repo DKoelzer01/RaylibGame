@@ -90,12 +90,22 @@ void BuildTool_ApplyPendingFoundations(double budgetMs) {
     if (foundationsPending.empty()) return;
     PROFILE_SCOPE("blueprint foundations (queued)");
     const double t0 = GetTime();
+    // (#1372) the next group only if it fits the budget by the groups' cost so far (checking only before each group overran a
+    // 3 ms budget to 4); at least one group a frame, so the queue always drains
+    static double groupMs = 0.0; // a running average
     std::vector<TerrainEdit> group;
-    while (!foundationsPending.empty() && (budgetMs <= 0.0 || (GetTime() - t0) * 1000.0 < budgetMs)) {
+    int groups = 0;
+    while (!foundationsPending.empty()) {
+        const double spent = (GetTime() - t0) * 1000.0;
+        if (budgetMs > 0.0 && groups > 0 && spent + groupMs > budgetMs) break;
         const uint64_t id = foundationsPending.front().body;
         group.clear();
         while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        const double g0 = GetTime();
         if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+        const double ms = (GetTime() - g0) * 1000.0;
+        groupMs = groupMs > 0.0 ? groupMs * 0.8 + ms * 0.2 : ms;
+        ++groups;
     }
 }
 
