@@ -11,6 +11,7 @@
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "composed.h"
 #include "questtree.h"
 #include "researchtab.h"
 #include "tometab.h" // (#1251)
@@ -637,15 +638,22 @@ static void DrawCell(int i, float cw, float cell) {
     if (!s.empty()) {
         const ItemDef* d = itemDB.find(s.id);
         DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
-        CellName(dl, p, q, d ? d->name : s.id, hover);
+        const std::string own = Composed_DisplayName(s.id, s.data); // (#1449) "Bronze pickaxe" from its head
+        CellName(dl, p, q, !own.empty() ? own : d ? d->name : s.id, hover);
         if (KindOf(s.id) != ItemKind::Tool) {
             const std::string amt = AmountText(s);
             CellCount(dl, p, q, amt.c_str()); // (#891: at the cell's size)
         }
-        if (hover && cursorStack.empty())
-            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
-                              KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
-                              GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        if (hover && cursorStack.empty()) {
+            const std::string parts = Composed_PartsText(s.id, s.data); // (#1449) its own parts, quality, sockets, wear
+            if (!parts.empty())
+                ImGui::SetTooltip("%s  (%s)\n%s\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot)", own.c_str(), KindName(KindOf(s.id)), parts.c_str(),
+                                  d ? d->description.c_str() : "", GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+            else
+                ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
+                                  KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
+                                  GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        }
     }
     DrawDragShare(dl, &playerGrid, i, p, q);
     if (hotbar) CellText(dl, CellFontSize(cell), ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
