@@ -132,6 +132,7 @@ namespace Fluid {
         int gpuSlots = 0, gpuCapacity = 0; // GPU bricks holding a slot now / the pool (#675: ~230 KB a brick)
         int steadyBricks = 0;             // awake in steady flow (#674: running, read back once a second)
         long long slotReleases = 0;       // slots given back by sleeping bricks since the start (#675)
+        long long ticks = 0, dispatches = 0, flowReads = 0; // (#1407 diagnostics) ticks started by Update, GpuTick calls, flux readbacks for watches
     };
     Stats GetStats();
     bool GpuMode(); // the step runs on compute shaders (else the CPU kernel, #654)
