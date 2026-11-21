@@ -38,6 +38,7 @@ struct DamageEvent {
     bool parryable = true;        // a melee hit a parry can turn (#1218)
     bool heavy = false;           // a heavy attack (a slash heavy bleeds)
     bool fromBehind = false;      // landed on the target's back (a slash bleeds)
+    bool fromFront = false;       // (#1227) came at the target's face (a front shield can take it)
 };
 
 struct DamageResult {

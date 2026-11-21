@@ -15,4 +15,5 @@ dusk_stalker  | Dusk stalker  | 1.4 0.8 0.6 | 45,45,55    | 170,30,30   | 1.5 6.
 creature_nest | Nest          | 1.6 0.7 1.6 | 70,62,52    | 150,140,95  | 0 0     | 60 | -                     | stone 3              | -                 | calm | 0 0 | 0.0 0.0 | - | quad nest
 tunnel_lurker | Tunnel lurker | 1.3 0.5 0.9 | 165,160,140 | 120,110,95  | 1.0 7.5 | 35 | raw_meat              | hide 1, chitin 2     | -                 | calm    | 0 0 | 0.0 0.0 | - | quad hexa tail
 cave_scavenger | Cave scavenger | 0.45 1.75 0.5 | 120,95,70   | 150,120,95  | 1.3 4.8 | 40 | cooked_meat, bread    | scrap 2, cooked_meat 1, torch 1 | -        | calm    | 0 0 | 0.0 0.0 | - | biped humanoid
+lost_miner    | Lost miner    | 0.5 1.8 0.5 | 95,100,90   | 150,150,140 | 0.6 1.6 | 80 | -                     | stone_pickaxe 1, scrap 2, oak_planks 2 | -        | calm    | 0 0 | 0.0 0.0 | - | biped humanoid held:stone_pickaxe plankshield
 mineral_ooze  | Mineral ooze  | 1.0 0.55 1.0 | 110,170,120 | 90,140,100  | 0.5 0.9 | 30 | -                     | -                    | -                 | calm    | 0 0 | 0.0 0.0 | - | quad blob
