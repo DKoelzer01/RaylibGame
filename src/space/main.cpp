@@ -1341,6 +1341,11 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
+    // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
+    Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",
+                      "resources/compute/fluid_pack.comp", "resources/compute/fluid_flowpack.comp", "resources/compute/fluid_groups.comp",
+                      "resources/compute/chunk_cull.comp", "resources/compute/tree_cull.comp" });
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
@@ -12662,6 +12667,10 @@ int main(int argc, char** argv)
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    if (b) { // (#901) where we leave, body-local: the server's record should say the same (a hosted save loaded in single player)
+                        const DVec3 at = b->toLocalD(player.position);
+                        printf("join: %s leaves at body %llu local %.3f %.3f %.3f\n", joinName.c_str(), (unsigned long long)b->netId, at.x, at.y, at.z);
+                    }
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
                 }

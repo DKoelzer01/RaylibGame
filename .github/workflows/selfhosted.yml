@@ -28,6 +28,12 @@ on:
         required: false
         default: planet multiplayer
         type: string
+      fluid_pressure:
+        description: "Run the headless scenarios with the fluid pressure pass on (#1168: RAYLIBGAME_FLUID_PRESSURE=1)"
+        required: false
+        default: "0"
+        type: choice
+        options: ["0", "1"]
 
 permissions:
   contents: read
@@ -86,8 +92,18 @@ jobs:
         with:
           ref: ${{ env.REF }}
           persist-credentials: false
+          fetch-depth: 50 # (#1392) the push's base, for the changes gate below
       - name: Paths and version
         run: bash tools/ci/selfhosted_env.sh
+      - name: Which GPU steps this push needs (#1392)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        # The GPU bit-exact check and the fluid parity only for shader, terrain, fluid, render or build changes; the
+        # headless scenarios and the server and join tests always run; a schedule or a manual run runs everything.
+        run: bash tools/ci/gpu_changes.sh
       - name: Build (incremental; another branch's run may have used the build folder in between)
         id: build
         timeout-minutes: 60
@@ -102,7 +118,7 @@ jobs:
           mkdir -p "$RUN/join-logs"
       - name: GPU context (EGL on the NVIDIA runtime)
         id: gpu
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.changes.outputs.gpu != 'false' }}
         timeout-minutes: 15
         working-directory: ${{ env.RUN }}
         run: |
@@ -119,7 +135,7 @@ jobs:
           if [ $rc -ne 0 ] || grep -q "FAIL" terrain-gpu.log; then echo "::error::--test-terrain-gpu failed (exit $rc)"; tail -40 terrain-gpu.log; exit 1; fi
           echo "terrain gpu: PASS" >> "$GITHUB_STEP_SUMMARY"
       - name: Fluid CPU = GPU parity (informational until #968's residual is fixed)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.changes.outputs.gpu != 'false' }}
         continue-on-error: true
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
@@ -132,9 +148,13 @@ jobs:
           # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
           "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
+          # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
+          "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
+          grep -E "^scenario: parity" parity-pressure.log || true
           echo "fluid parity: $(grep -E '^scenario: parity .* -> ' parity.log | tail -1 | sed -E 's/^scenario: parity //')" >> "$GITHUB_STEP_SUMMARY"
+          echo "fluid parity, pressure pass: $(grep -E '^scenario: parity .* -> ' parity-pressure.log | tail -1 | sed -E 's/^scenario: parity //')" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
       - name: Headless scenarios (fluid, craft, skills, world, frames)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -142,6 +162,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0" # #1034: timing gates are reported, not judged, on this shared machine
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }} # #1168: the pressure pass for every fluid scene, when asked
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           set +e

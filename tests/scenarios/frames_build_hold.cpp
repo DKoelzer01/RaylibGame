@@ -22,11 +22,11 @@ struct HoldState {
     bool placed = false, settled = false, aimed = false;
     double t0 = 0.0;
     const Plot* plot = nullptr; Int3 origin{}; Vector3 newOrigin{};
-    int frames = 0, changed = 0, none = 0;
+    int frames = 0, changed = 0, none = 0, cellFlips = 0;
     double maxMove = 0.0; // the new plot origin's largest distance from the first (body-local m)
     // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
-    DVec3 feet0{}, cam0{}; Vector3 fwd0{};
-    double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0; // m, m, deg
+    DVec3 feet0{}, cam0{}, aim0{}; Vector3 fwd0{};
+    double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0, aimWob = 0.0; // m, m, deg, m
 };
 HoldState st;
 
@@ -71,7 +71,9 @@ void Build(ScenarioDef& s) {
         const DVec3 feetL = b.toLocalD(player.position);
         const DVec3 camL = b.toLocalD(c.world.renderOrigin + DVec3(c.world.camera.position));
         const Vector3 fwdL = b.dirToLocal(Vector3Normalize(Vector3Subtract(c.world.camera.target, c.world.camera.position)));
-        if (st.frames == 0) { st.feet0 = feetL; st.cam0 = camL; st.fwd0 = fwdL; }
+        DVec3 aimL; Vector3 aimDirL, aimDirW; player.aimRay(c.world, b, aimL, aimDirL, aimDirW); // (F4 #1412: what the tools aim from)
+        if (st.frames == 0) { st.feet0 = feetL; st.cam0 = camL; st.fwd0 = fwdL; st.aim0 = aimL; }
+        st.aimWob = std::max(st.aimWob, (aimL - st.aim0).length());
         st.feetWob = std::max(st.feetWob, (feetL - st.feet0).length());
         st.camWob = std::max(st.camWob, (camL - st.cam0).length());
         st.fwdWob = std::max(st.fwdWob, (double)Vector3Angle(fwdL, st.fwd0) * RAD2DEG);
@@ -82,6 +84,8 @@ void Build(ScenarioDef& s) {
             const bool same = plot == st.plot && origin.x == st.origin.x && origin.y == st.origin.y && origin.z == st.origin.z &&
                               std::memcmp(&newOrigin, &st.newOrigin, sizeof newOrigin) == 0;
             if (!same) ++st.changed;
+            // A visible flip: another plot, or another cell of the same one (what #551 looked like).
+            if (plot != st.plot || (plot && (origin.x != st.origin.x || origin.y != st.origin.y || origin.z != st.origin.z))) ++st.cellFlips;
             if (!plot) st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
         }
         c.waitingFor("10 s holding still");
@@ -92,10 +96,17 @@ void Build(ScenarioDef& s) {
                           st.feetWob * 1000.0, st.camWob * 1000.0, st.fwdWob));
         c.metric("feet wobble", st.feetWob * 1000.0, "mm");
         c.metric("camera wobble", st.camWob * 1000.0, "mm");
+        c.metric("aim origin wobble", st.aimWob * 1000.0, "mm");
+        c.note(TextFormat("the aim's origin (Player::aimRay) wandered %.4f mm", st.aimWob * 1000.0));
         c.metric("view wobble", st.fwdWob, "deg");
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
+        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving under
+        // 5 mm. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing, interpolation; F4 #1412),
+        // and rounding a wobbling value flips between neighbouring floats (3.9 mm apart at 60 km) now and then, either way.
+        c.lt("plot or cell flips while still", st.cellFlips, 1);
+        c.lt("a new plot's origin moved while still (m)", st.maxMove, 0.005);
         buildTool.active = false;
         return true;
     });

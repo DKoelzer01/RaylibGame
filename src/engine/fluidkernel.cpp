@@ -19,6 +19,7 @@ void Grid::resize(int slots) {
     nbr.assign((size_t)slots * 6, -1); processed.assign(slots, 0); flags.assign(slots, 0u); delta.assign((size_t)slots * 4096, 0); sinkOut.assign(slots, 0u);
     dem.assign((size_t)slots * 4096, 0u); cap.assign((size_t)slots * 4096, 0u);
     pairCode.assign((size_t)slots * 4096 * 4, (uint16_t)0);
+    pr.assign((size_t)slots * 4096, 0); prN.assign((size_t)slots * 4096, 0);
     gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
 }
 
@@ -76,6 +77,101 @@ struct Pass {
         if ((FL(u) & SOURCE) && !(FL(l) & DUG)) return 0u;
         if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;
         return std::min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u);
+    }
+    // ---- The pressure pass (#1168), run in the vertical pass (0) from A and the last substep's heads (g.pr). ----
+    // A neighbour's head: its last substep's if its slot runs this tick; a read-only ring slot (a sleeping brick) holds the
+    // heads it went to sleep with (the host copies every slot's); with none stored, its own surface.
+    int32_t headPrev(int gi, bool proc) const {
+        const uint32_t c = inC[gi];
+        if (proc || g.pr[gi] > 0) return g.pr[gi];
+        return F(c) >= CAP(c) ? 255 : (int32_t)(SH(c) + F(c));
+    }
+    // This cell's head now: a part-filled cell's is its surface; a full one's is the highest of its own surface, the cell
+    // above's head + a row, a side neighbour's - 1 and the cell below's - a row - 1. Every loop of neighbours passes a side
+    // or an upward step, so a head with no surface behind it decays a unit a step instead of circulating; the cost is a
+    // unit (~1 mm) per cell of path.
+    // A cell under solid (a tunnel's or a pipe's top row): where water is confined. Heads cross sideways only into or out of
+    // such a cell (see headNow).
+    bool capped(int gi) const {
+        int s, x, y, z;
+        cellPos(gi, s, x, y, z);
+        bool pa; int fa;
+        const int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+        return ga >= 0 && (FL(inC[ga]) & SOLID);
+    }
+    int32_t headNow(int slot, int x, int y, int z, uint32_t c) const {
+        if ((FL(c) & SOLID) || F(c) == 0u) return 0;
+        if (F(c) < CAP(c)) return (int32_t)(SH(c) + F(c));
+        const uint32_t kind = KIND(c);
+        int32_t h = 255;
+        const bool meCapped = capped(slot * 4096 + x + 16 * y + 256 * z);
+        for (int k = 0; k < 6; ++k) {
+            const int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
+            bool pn; int face;
+            const int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
+            if (gn < 0 || !sameWater(inC[gn], kind)) continue;
+            const int32_t hn = headPrev(gn, pn);
+            if (dz > 0) h = std::max(h, hn + 255);
+            else if (dz < 0) { if (F(inC[gn]) >= CAP(inC[gn])) h = std::max(h, hn - 256); }
+            // Sideways only through confined water: into or out of a capped cell. Between two open cells (a channel, a pond)
+            // the ordinary flow levels the water; a head carried along an open channel at 1 unit a cell, while its bed drops
+            // a row at a time, pushed water up and held falls in moving streams (the leak drained slow, a spring's trench
+            // carried 0.42 of its 1 m^3/s, a flow never slept: runner 44914459334 with the pass on).
+            else if (meCapped || capped(gn)) h = std::max(h, hn - 1);
+        }
+        // A sleeping neighbour (a ring slot) whose stored head this one would raise is asked to wake (a face request, as the
+        // column pairs ask): resting water used to sleep before the pressure crossed it, and a covered tunnel never passed it.
+        for (int k = 0; k < 6; ++k) {
+            const int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
+            bool pn; int face;
+            const int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
+            if (gn < 0 || pn || !sameWater(inC[gn], kind)) continue;
+            if (dz == 0 && !meCapped && !capped(gn)) continue; // (no sideways head between open cells)
+            const bool nFull = F(inC[gn]) >= CAP(inC[gn]);
+            const int32_t want = dz > 0 ? h - 256 : dz < 0 ? h + 255 : h - 1; // what this cell would give it
+            if (nFull && want > headPrev(gn, false) + p.wakeUnits) g.flags[slot] |= 1u << (1 + face);
+        }
+        return h;
+    }
+    // Units a full cell gc pushes up into the cell over it this substep: half the excess of its head over that cell's
+    // surface (from gc's bottom), at most that cell's room after what falls into it from above, and what gc keeps after its
+    // own fall. The giver and the taker both call this with gc, from the same A and heads: the same number, no atomics.
+    int upMove(int gc) const {
+        if (!p.pressure) return 0;
+        const uint32_t c = inC[gc];
+        if ((FL(c) & SOLID) || F(c) == 0u || F(c) < CAP(c)) return 0;
+        int s, x, y, z;
+        cellPos(gc, s, x, y, z);
+        bool pa, pb; int fa, fb;
+        const int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+        if (ga < 0 || !pa) return 0;
+        const uint32_t a = inC[ga];
+        if (FL(a) & SOLID) return 0;
+        if (F(a) > 0u && (KIND(a) != KIND(c) || F(a) >= CAP(a))) return 0;
+        if ((FL(a) & (SOURCE | SINK)) == SOURCE) return 0;
+        if ((FL(c) & SOURCE) && !(FL(a) & DUG)) return 0;
+        const int excess = g.pr[gc] - (255 + (int)(SH(a) + F(a)));
+        if (excess < 4) return 0; // (the settle tolerance: a few mm, as wakeUnits)
+        int as, ax, ay, az;
+        cellPos(ga, as, ax, ay, az);
+        bool paa; int faa;
+        const int gaa = neighbour(as, ax, ay, az, 0, 0, 1, paa, faa);
+        const int fallIn = gaa >= 0 ? (int)(fall(inC[gaa], ga, a, true, true) * (uint32_t)paa) : 0; // as the vertical pass's inF
+        const int room = (int)CAP(a) - (int)F(a) - fallIn;
+        const int gb = neighbour(s, x, y, z, 0, 0, -1, pb, fb);
+        const int keep = (int)F(c) - (int)fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0); // as the vertical pass's outF
+        // At most kPushMax a substep: the giver stays nearly full and is refilled from below the next substep, so the column
+        // rises as a whole (a whole cell lifted at once left a hole under it, and the lifted water fell straight back).
+        return std::max(0, std::min({ excess / 2, room, keep, kPushMax }));
+    }
+    static constexpr int kPushMax = 32; // fill units (1/8 of a row) a substep
+    // The vertical pass's fall (downFlux), except into a cell held up by pressure (#1168): water does not fall into a cell
+    // whose head stands at or above its own surface (measured from that cell's bottom). The push and the fall cancelled
+    // otherwise: what a full cell lifted fell back into it the next substep, and the column never rose.
+    uint32_t fall(uint32_t u, int gl, uint32_t l, bool lProc, bool lExists) const {
+        const uint32_t f = downFlux(u, l, lProc, lExists);
+        if (f == 0u || !p.pressure || gl < 0) return f;
+        return g.pr[gl] >= 255 + (int32_t)(SH(u) + F(u)) ? 0u : f;
     }
     bool rests(int slot, int x, int y, int z, uint32_t c) const {
         bool proc; int face;
@@ -567,6 +663,9 @@ struct Pass {
         if (fl & SOLID) { outC[gi] = c; if (pass == 2) g.faceP[gi] = Vec4{}; return; }
         const int f = (int)F(c);
         uint32_t kind = KIND(c);
+        // (#1168) This substep's head becomes the one the next substep reads. Per cell in the apply pass (only the vertical
+        // pass reads heads), not a buffer swap: a slot keeps its latest heads while it sleeps, as the GPU's persistent slots do.
+        if (pass == 2 && p.pressure) g.pr[gi] = g.prN[gi];
         if (pass == 0) {
             g.delta[gi] = 0; // the column flows planned next (#680), and their limiter's demand
             g.dem[gi] = 0u; g.cap[gi] = 0u;
@@ -574,11 +673,21 @@ struct Pass {
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
             const int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
             const uint32_t below = gb >= 0 ? inC[gb] : 0u, above = ga >= 0 ? inC[ga] : 0u;
-            const uint32_t outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
-            const uint32_t inF = ga >= 0 ? downFlux(above, c, true, true) * (uint32_t)pA : 0u;
+            const uint32_t outF = f > 0 ? fall(c, gb, below, pB, gb >= 0) : 0u;
+            const uint32_t inF = ga >= 0 ? fall(above, gi, c, true, true) * (uint32_t)pA : 0u;
             if (gb < 0 && f > 0 && !(fl & SOURCE)) g.flags[slot] |= 1u << (1 + fB);
-            const int nf = f - (int)outF + (int)inF;
+            // The pressure pass (#1168): this substep's head, and the water a full cell pushes up (out of this one, into
+            // this one from below; the below cell's push only when its slot runs: a ring slot's heads are stale).
+            int upOut = 0, upIn = 0;
+            if (p.pressure) {
+                g.prN[gi] = headNow(slot, x, y, z, c);
+                if (std::abs(g.prN[gi] - g.pr[gi]) > p.wakeUnits) g.flags[slot] |= 1u; // a moving head keeps its brick awake
+                upOut = upMove(gi);
+                upIn = (gb >= 0 && pB) ? upMove(gb) : 0;
+            }
+            const int nf = f - (int)outF + (int)inF - upOut + upIn;
             if (f == 0 && inF > 0u) kind = KIND(above);
+            else if (f == 0 && upIn > 0) kind = KIND(below);
             outC[gi] = Pack((uint32_t)std::clamp(nf, 0, 255), (fl & 31u) | (kind << 5), c);
             return;
         }

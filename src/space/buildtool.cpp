@@ -236,9 +236,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = buildTool.active ? buildTool.reach : terrainTool.reach;
     Plot* hitPlot = nullptr;
     Int3 hitCell{};
@@ -338,9 +337,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     }
     Planetoid* body = player.nearest;
     if (!body) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     aim.body = body;
     aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
@@ -625,9 +623,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     farmAim = FarmAim{};
     Planetoid* body = player.nearest;
     if (!body || player.flyMode) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = 6.0f;
     if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
