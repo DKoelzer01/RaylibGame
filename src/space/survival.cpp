@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "magicdiscovery.h" // (#1250) the First Sight page is read like a consumable is used
 #include "net.h"
 #include "gamerng.h"
 #include "playerinput.h"
@@ -93,6 +94,20 @@ namespace {
 }
 
 const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
+
+// (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
+// the readout flickered between cold and fine at 5 C), and the band the readout shows changes only 1 C past each edge.
+constexpr float kFeelSeconds = 4.0f;            // time constant of the body's temperature
+constexpr float kColdBelow = 5.0f, kHotAbove = 35.0f, kBandHysteresis = 1.0f;
+void Survival_FeelTemperature(SurvivalState& s, float air, float dt) {
+    if (std::isnan(air)) { s.temperature = NAN; s.tempBand = 0; return; }
+    s.temperature = std::isnan(s.temperature) ? air : s.temperature + (air - s.temperature) * (1.0f - expf(-std::max(0.0f, dt) / kFeelSeconds));
+    const float T = s.temperature;
+    if (s.tempBand < 0) { if (T > kColdBelow + kBandHysteresis) s.tempBand = T > kHotAbove + kBandHysteresis ? 1 : 0; }
+    else if (s.tempBand > 0) { if (T < kHotAbove - kBandHysteresis) s.tempBand = T < kColdBelow - kBandHysteresis ? -1 : 0; }
+    else if (T < kColdBelow - kBandHysteresis) s.tempBand = -1;
+    else if (T > kHotAbove + kBandHysteresis) s.tempBand = 1;
+}
 bool Survival_IsFood(const std::string& id) { LoadFoods(); return foods.count(id) > 0; }
 float Survival_FoodValue(const std::string& id) { LoadFoods(); auto it = foods.find(id); return it == foods.end() ? 0.0f : it->second.value; }
 
@@ -265,12 +280,13 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     if (survival.oxygen <= 0.0f) { survival.health -= survival.suffocationDamagePerSec * dt; survival.lastHarm = "suffocation"; }
     // Temperature and hunger. Food drains faster running or on the jetpack, in the cold, and
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
-    survival.temperature = AirTemperature(world, player, survival, local);
-    if (!std::isnan(survival.temperature)) { // rain and snow chill the air
+    float air = AirTemperature(world, player, survival, local);
+    if (!std::isnan(air)) { // rain and snow chill the air
         const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocal((player.position - world.renderOrigin).toFloat())), WorldTime()) : WeatherState{});
-        if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
-        else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
+        if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) air -= 4.0f * w.precipitation;
+        else if (w.kind == WeatherKind::Snow) air -= 3.0f * w.precipitation;
     }
+    Survival_FeelTemperature(survival, air, dt);
     {
         const Vector3 flat = Vector3Subtract(player.velocity, Vector3Scale(player.up, Vector3DotProduct(player.velocity, player.up)));
         const bool active = player.jetpackFiring || (player.grounded && Vector3Length(flat) > player.walkSpeed * 1.1f);
@@ -335,9 +351,10 @@ void Survival_DrawHUD() {
     // The air temperature, coloured when it costs you (cold: hunger; heat: health).
     const float T = survival.temperature;
     if (!std::isnan(T)) {
-        const Color tc = T < 5.0f ? Color{ 130, 190, 255, 255 } : T > 35.0f ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
+        const int band = survival.tempBand; // (#1099: with hysteresis, not the raw 5 C / 35 C edges)
+        const Color tc = band < 0 ? Color{ 130, 190, 255, 255 } : band > 0 ? Color{ 255, 140, 70, 255 } : Fade(RAYWHITE, 0.8f);
         const SuitStats& st = Suit_Stats();
-        const char* note = T < 5.0f ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : T > 35.0f ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
+        const char* note = band < 0 ? (st.cold <= 0.0f ? "  cold: regulated" : st.cold < 1.0f ? "  cold: insulated" : "  cold: hungrier") : band > 0 ? (st.heatProof ? "  heat: regulated" : "  heat") : "";
         DrawText(TextFormat("%.0f C%s", T, note), x + std::max(wO2, wPwr) + (int)(20 * s), y + (int)(68 * s), (int)(16 * s), tc);
     }
     const int tx = x + std::max(wO2, wPwr) + (int)(20 * s), fs = (int)(16 * s);
@@ -665,7 +682,7 @@ void Objectives_DrawHUD() {
     layout(true);
 }
 
-bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id); }
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id) || MagicDiscovery_IsPage(id); }
 
 // #337: using an item - the local player's (a client process asks the server instead: its inventory and vitals are the
 // server's; nothing changes here until the server's deltas come back), or a remote player's on a server (local false: no
@@ -675,6 +692,7 @@ bool Survival_UseItem(const std::string& id) {
     return Survival_UseItemFor(id, survival, inventory, Suit_Stats(), true);
 }
 bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local) {
+    if (MagicDiscovery_IsPage(id)) return local && MagicDiscovery_ReadPage(); // (#1250) the First Sight page: read it (a server's players: with the magic multiplayer step)
     if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
         if (local && inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
         return false;
@@ -729,3 +747,39 @@ int QuestBook_TierReport(const char* path) {
     fclose(f);
     return 0;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1099): the temperature readout does not flicker at the cold edge ----
+#include "unit_helpers.h"
+
+TEST(Survival, TheFeltTemperatureEasesAndItsBandDoesNotFlickerAtTheEdge) {
+    SurvivalState s;
+    s.temperature = NAN;
+    // The air jitters +-0.8 C around the cold edge (5 C) every frame for a minute, as the sun angle, rain and the position
+    // moved it: the band settles once and stays.
+    uint32_t seed = 1099;
+    int changes = 0, band = 99;
+    for (int f = 0; f < 60 * 60; ++f) {
+        seed = seed * 1664525u + 1013904223u;
+        const float jitter = ((seed >> 8) % 1601) / 1000.0f - 0.8f;
+        Survival_FeelTemperature(s, 5.0f + jitter, 1.0f / 60.0f);
+        if (s.tempBand != band) { ++changes; band = s.tempBand; }
+    }
+    EXPECT_LE(changes, 1) << "the band settled once and did not flicker";
+    EXPECT_NEAR(s.temperature, 5.0f, 0.5f) << "the felt temperature follows the air's mean";
+    // A real change still shows within seconds: 2 C of air goes cold after a few seconds, not at once.
+    Survival_FeelTemperature(s, 2.0f, 0.5f);
+    EXPECT_GT(s.temperature, 3.5f) << "eased, not jumped";
+    for (int f = 0; f < 10 * 60; ++f) Survival_FeelTemperature(s, 2.0f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, -1);
+    EXPECT_NEAR(s.temperature, 2.0f, 0.3f);
+    // Back to 5.5 C: still cold (inside the hysteresis), 6.5 C: fine.
+    for (int f = 0; f < 30 * 60; ++f) Survival_FeelTemperature(s, 5.5f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, -1);
+    for (int f = 0; f < 30 * 60; ++f) Survival_FeelTemperature(s, 6.5f, 1.0f / 60.0f);
+    EXPECT_EQ(s.tempBand, 0);
+    // No air (vacuum, above the air): none.
+    Survival_FeelTemperature(s, NAN, 1.0f / 60.0f);
+    EXPECT_TRUE(std::isnan(s.temperature));
+}
+#endif

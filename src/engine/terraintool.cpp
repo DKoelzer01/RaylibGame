@@ -578,6 +578,7 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
         const char* gem = GameRng_Int(0, 29999) < 10 * gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) out.gem = gem;
+        else if (gRockFind) if (const char* find = gRockFind(p, hitLocal); find && itemDB.find(find)) out.gem = find; // (#1250) a resonant crystal on a ley line
     }
     if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };

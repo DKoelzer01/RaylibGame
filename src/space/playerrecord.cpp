@@ -3,6 +3,7 @@
 #include "survival.h"
 #include "world.h"
 #include "research.h"
+#include "tome.h" // (#1251)
 
 #include <algorithm>
 #include <cctype>
@@ -62,7 +63,7 @@ bool Save_WriteAtomic(const std::string& path, const std::function<bool(FILE*)>&
     return true;
 }
 
-void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); } // (#1030: research lives with the teams)
+void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); Tome_Reset(); } // (#1030: research lives with the teams; #1251 the tome too)
 const std::vector<TeamRecord>& Teams_All() { return teams; }
 const std::string& Teams_Owner() { return owner; }
 void Teams_SetOwner(const std::string& uuid) { owner = uuid; }
@@ -147,6 +148,20 @@ bool Teams_LoadLine(const char* tok, FILE* f, const std::string& localId) {
         if (id > 0) Research_SetTeamText(id, text);
         return true;
     }
+    if (strcmp(tok, "team_tome") == 0) { // (#1251) the team's tome pages, its own lines up to team_tome_end
+        int id = 0;
+        fscanf(f, " %d", &id);
+        char line[512];
+        if (!fgets(line, sizeof(line), f)) return true;
+        std::string text;
+        while (fgets(line, sizeof(line), f)) {
+            const char* s = line; while (*s == ' ' || *s == '\t') ++s;
+            if (strncmp(s, "team_tome_end", 13) == 0) break;
+            text += line;
+        }
+        if (id > 0) Tome_SetTeamText(id, text);
+        return true;
+    }
     return false;
 }
 
@@ -162,6 +177,7 @@ void Teams_Save(FILE* f, const std::string& localId, const std::function<void(FI
         if (t.id == mine && writeLocalQuests) { fprintf(f, "team_quests %d\n", t.id); writeLocalQuests(f); fprintf(f, "team_quests_end\n"); }
         else if (!t.quests.empty()) { fprintf(f, "team_quests %d\n%s", t.id, t.quests.c_str()); fprintf(f, "team_quests_end\n"); }
         if (const std::string r = Research_TeamText(t.id); !r.empty()) fprintf(f, "team_research %d\n%steam_research_end\n", t.id, r.c_str()); // (#1030)
+        if (const std::string r = Tome_TeamText(t.id); !r.empty()) fprintf(f, "team_tome %d\n%steam_tome_end\n", t.id, r.c_str()); // (#1251)
     }
 }
 

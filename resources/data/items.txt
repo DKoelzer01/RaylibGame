@@ -224,3 +224,29 @@ cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlan
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
 ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
+# Research (#1193, #1030): packs (labs turn them into research for the team's queue; hand-crafted slowly, the assembler
+# comes later), the labs, and the labs' research units (counted by the game, never carried).
+steam_pack      | Steam research pack | 999 | 190,150,90  | Research for tier 3 (Steam and steel): put it in a lab.
+lv_pack         | LV research pack    | 999 | 90,150,220  | Research for tier 4 (LV): a lab uses it with steam packs.
+mv_pack         | MV research pack    | 999 | 230,150,60  | Research for tier 5 (MV): a lab uses it with the earlier packs.
+hv_pack         | HV research pack    | 999 | 180,90,210  | Research for tier 6 (HV): a lab uses it with the earlier packs.
+rocket_pack     | Rocketry research pack | 999 | 220,80,70 | Research for tier 7 (Rocketry): needs an HV lab.
+lv_lab          | LV lab              | block | 210,210,200 | Researches your team's queued nodes of tiers 3-4 (Research tab) from packs. Needs LV power.
+mv_lab          | MV lab              | block | 210,210,200 | Researches tiers 3-5. Needs MV power.
+hv_lab          | HV lab              | block | 210,210,200 | Researches tiers 3-7. Needs HV power.
+research_t3     | Research (tier 3)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t4     | Research (tier 4)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t5     | Research (tier 5)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t6     | Research (tier 6)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+research_t7     | Research (tier 7)   | 999 | 200,200,220 | A lab's research unit (counted for your team's queue).
+shaft            | Shaft            | 256 | 150,112, 70 | Mechanical power: carries rotation end to end along its axis. Lay a line of them from a crank to the machines.
+cogwheel         | Cogwheel         | 256 | 160,120, 76 | A shaft with a small cog: meshes with a cog beside it (turning the other way) and drives a large cogwheel set diagonally at half speed.
+large_cogwheel   | Large cogwheel   | 256 | 150,108, 66 | A big cog: driven diagonally by a small cogwheel, it turns at half the speed.
+gearbox          | Gearbox          | 64  | 150,112, 70 | Takes rotation round a corner: joins the shafts on its four sides (opposite sides turn opposite ways).
+hand_crank       | Hand crank       | 64  | 120, 90, 60 | Hold RMB on it to turn its shaft at 32 RPM: enough for one or two light machines.
+stress_gauge     | Stress gauge     | 64  | 160,120, 76 | Put it in a shaft line: shows how loaded the network is and how fast it turns. Over 100% the whole network slows down.
+millstone        | Millstone        | 20  | 140,138,132 | Mechanical power: grinds grain to flour, stone to gravel and sand, ore to crushed ore. Needs 16 RPM; faster grinds faster.
+mechanical_saw   | Mechanical saw   | 20  | 146,108, 68 | Mechanical power: saws a log into 6 planks (4 by hand). Needs 16 RPM.
+mechanical_press | Mechanical press | 20  | 146,108, 68 | Mechanical power: presses one ingot into one plate (2 by hand). Needs 16 RPM.
+water_wheel      | Water wheel      | 20  | 150,112, 70 | Mechanical power from a river: 1.5 m across, set it with its bottom in flowing water (a river, or a stream you dug). Turns up to 16 RPM, 256 SU, with the current; nothing in still water.
+windmill         | Windmill         | 20  | 226,218,196 | Mechanical power from the wind: four sails on a hub, best high and in the open. Turns up to 8 RPM with 1024 SU in a good wind; stands still in a calm.

@@ -20,6 +20,7 @@
 #include "toolwear.h"
 #include "recipebook.h"
 #include "skills.h"
+#include "magicsight.h"
 #include "netid.h"
 
 #include <cstdint>
@@ -36,6 +37,7 @@ struct PlayerSession {
     ToolWearState toolWear;
     RecipeBookState recipes;
     SkillState skills;               // (#883) XP and perks (skills.h)
+    MagicPlayerState magic;          // (#1249) magic sight, the Aether pool, studies (magicsight.h; RAYLIBGAME_MAGIC)
     PlayerInput input;               // the last step's input (filled by the server from the network later)
 };
 

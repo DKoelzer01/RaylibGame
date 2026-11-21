@@ -2098,7 +2098,7 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, int count, float heat) {
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };

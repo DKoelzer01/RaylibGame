@@ -1,5 +1,6 @@
 #include "menus.h"
 #include "playerinput.h"
+#include "magic.h" // (#1249) Magic_Enabled: the magic sight key only with magic on
 #include "playerrecord.h"
 #include "scenetarget.h"
 #include "slideshow.h"
@@ -7,6 +8,7 @@
 #include "ship.h"
 #include "telescope.h"
 #include "audio.h"
+#include "subtitles.h"
 #include "foliage.h"
 #include "world.h"
 #include "headless.h"
@@ -251,7 +253,8 @@ namespace {
             static int waiting = -1;   // the action waiting for a key
             static int waitFrames = 0; // frames it has waited (the click that started it is no binding)
             static float scroll = 0.0f;
-            const int n = (int)Act::Count;
+            static_assert((int)Act::MagicSight == (int)Act::Count - 1, "magic sight is the last action (hidden while magic is off)");
+            const int n = (int)Act::Count - (Magic_Enabled() ? 0 : 1); // (#1249) no key for a feature that isn't there
             const float rowH = std::min(40.0f * s, h * 0.8f), colGap = 24 * s, colW = (std::min(sw - 64 * s, 1500.0f * s) - colGap) * 0.5f;
             const float x0 = (sw - (2 * colW + colGap)) * 0.5f, listTop = y, listBottom = backY - 70 * s;
             const int rowsPerCol = (n + 1) / 2;
@@ -292,7 +295,13 @@ namespace {
             break;
         }
         case SettingsTab::Audio:
-            changed |= Slider({ x, y, w, h }, "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            changed |= Slider({ x, y, w, h }, Audio_V2() ? "Master volume" : "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
+            if (Audio_V2()) // (#1238) the buses; the old engine has only the master volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) { changed |= Slider({ x, y, w, h }, AudioBus_Name((AudioBus)b), settings.busVolume[b], 0.0f, 1.0f, "%.2f"); next(); }
+            if (Audio_V2()) { // (#1244) captions for sounds, with their direction
+                static const char* const kSub[] = { "Off", "Important", "All" };
+                changed |= Choice({ x, y, w, h }, "Subtitles", kSub, 3, settings.subtitles); next();
+            }
             break;
         case SettingsTab::Gameplay: {
             // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
@@ -332,6 +341,11 @@ void Settings_Load() {
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
             if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
+            if (!strcmp(key, "subtitles")) { settings.subtitles = std::clamp((int)v, 0, 2); continue; } // (#1244)
+            if (!strncmp(key, "volume_", 7)) { // (#1238) a bus volume
+                for (int b = 1; b < (int)AudioBus::Count; ++b) if (!strcmp(key + 7, AudioBus_Key((AudioBus)b))) settings.busVolume[b] = std::clamp(v, 0.0f, 1.0f);
+                continue;
+            }
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -370,6 +384,8 @@ void Settings_Save() {
     if (!f) return;
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
+    for (int b = 1; b < (int)AudioBus::Count; ++b) fprintf(f, "volume_%s %.3f\n", AudioBus_Key((AudioBus)b), settings.busVolume[b]); // (#1238)
+    fprintf(f, "subtitles %d\n", settings.subtitles); // (#1244)
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
@@ -399,6 +415,9 @@ void Settings_Apply() {
     ship.mouseSensitivity = kDefaultShipMouse * settings.mouseSensitivity;
     telescope.baseFov = settings.fov; // the camera's fov is set by the game each frame it is not zoomed
     Audio_SetMasterVolume(settings.volume);
+    static_assert(sizeof(settings.busVolume) / sizeof(settings.busVolume[0]) == (int)AudioBus::Count, "one volume per audio bus");
+    for (int b = 1; b < (int)AudioBus::Count; ++b) Audio_SetBusVolume((AudioBus)b, settings.busVolume[b]); // (#1238)
+    Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)

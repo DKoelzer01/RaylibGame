@@ -1,4 +1,5 @@
 #include "world.h"
+#include "frames.h"
 #include "netid.h"
 #include "gamerng.h"
 #include "terrainarena.h"
@@ -205,10 +206,10 @@ static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]);
 // 3.05e-5 deg, up to ~3 cm at Terra's surface, and frames/still saw the standing player jump 13-31 mm in single steps.
 // The double angle is used while it is current - advanceBodies wrote `rotation` from it - and the float angles otherwise
 // (a load, a script or a test set `rotation`).
-static bool kFramesPose = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }(); // (unit tests set it)
+// (The switch is Frames_On(), read on first use: frames.cpp.)
 struct BodyAngles { double x, y, z; };
 static BodyAngles AnglesOf(const Planetoid& p) {
-    if (kFramesPose && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
+    if (Frames_On() && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
         return { p.spinAngle[0], p.spinAngle[1], p.spinAngle[2] };
     return { p.rotation.x, p.rotation.y, p.rotation.z };
 }
@@ -354,7 +355,7 @@ namespace {
             : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
               offset(p.worldPos - renderOrigin), s(p.scale) {
             BodyRotationOf(p, r);
-            if (kFramesPose) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
+            if (Frames_On()) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
         }
         Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
         Matrix modelAt(const DVec3& o) const {
@@ -500,7 +501,7 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
 }
 
 Quaternion Planetoid::rotationQuat() const {
-    if (!kFramesPose) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    if (!Frames_On()) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
     double r[3][3];
     BodyRotationOf(*this, r); // (#667) the double pose: a grounded player's view turns with it step by step, unquantised
     return QuaternionFromMatrix(RotationMatrix(r));
@@ -545,7 +546,7 @@ static void SyncGrassBlockers(Planetoid& p) {
 
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
-    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
+    if (plots && field && profile && profile->foliage) SyncGrassBlockers(*this); // (#830) grass only grows on worlds with foliage (#1274)
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -565,8 +566,8 @@ void Planetoid::draw(const RenderContext& ctx) {
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
-    // Planets use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's.
-    const int palette = kind == BodyKind::Planet ? 2 : ctx.scenePalette;
+    // Earthlike worlds use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's (world file `palette`, #1274).
+    const int palette = profile && profile->planetPalette ? 2 : ctx.scenePalette;
     batch.setUniform(ctx.paletteLoc, &palette, SHADER_UNIFORM_INT);
     // Planets and moons shadow their own night side at any distance (the shadow map is local): a
     // sphere 60 m below sea level blocks the sun. Other bodies clear it (the uniform persists).
@@ -1966,6 +1967,7 @@ void worldHandler(Scene& world) {
 }
 
 bool ReloadSystemDef() {
+    WorldProfile_ClearCache(); // the world files are read again with the bodies file (#1274)
     SystemDef sys;
     const bool ok = LoadSystemDef(worldGen.bodiesPath, sys);
     if (!ok) {
@@ -2023,14 +2025,16 @@ void generateWorld(Scene& world) {
     auto add = [&](const BodyDef& d, BodyKind kind, const std::string& name, DVec3 pos, float radius, unsigned int seed, float spin) {
         auto p = std::make_unique<Planetoid>(name, pos, Vector3{ 0, 0, 0 }, 1.0f, seed, radius);
         p->kind = kind;
-        if (kind == BodyKind::Planet || kind == BodyKind::Moon) {
+        p->profile = WorldProfile_For(name, kind); // (#1274) planets and moons: resources/data/worlds/<name>.txt over the kind's default
+        if (p->profile) {
+            const WorldProfile& wp = *p->profile;
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
-            auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            auto field = std::make_shared<PlanetField>(seed, radius, wp.airless);
             const bool sandbox = gSandboxWorld && kind == BodyKind::Planet; // #662: a flat test plane (no bake, no trees)
-            if (kind == BodyKind::Planet) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
+            if (wp.newWorld) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
             if (sandbox) field->setSandbox();
-            if (gErosionPrototype && kind == BodyKind::Planet && field->gen.erosion) {
+            if (gErosionPrototype && wp.erosion && !wp.airless && field->gen.erosion) {
                 // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
                 // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
                 // is only shared (p->field below) once the bake is done.
@@ -2048,7 +2052,7 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
-            if (kind == BodyKind::Planet && !sandbox) {
+            if (wp.foliage && !sandbox) {
                 field->foliage = true;
                 field->foliageSeed = seed ^ 0x7aee5u;
                 p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
@@ -2941,7 +2945,7 @@ TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
 // pose (RAYLIBGAME_FRAMES=1) every 1/60 s step moves it the same arc, to well under a millimetre.
 TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
     auto stepSpread = [](bool doublePose) {
-        kFramesPose = doublePose;
+        Frames_SetOn(doublePose);
         auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
         b->spin = { 0.0f, 0.1f, 0.0f }; // Terra's day: 360 deg an hour
         const DVec3 l{ 1234.5, 31000.0, 51300.0 }; // a surface point ~60 km out, off the axis
@@ -2955,7 +2959,7 @@ TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
             if (k > 0) { const double d = Dist(w, last); lo = std::min(lo, d); hi = std::max(hi, d); }
             last = w;
         }
-        kFramesPose = false;
+        Frames_SetOn(false);
         return hi - lo;
     };
     const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);
