@@ -11,7 +11,8 @@
 #   spawning:  habitat=surface|night|cave|mouth|dungeon  depth=min-max (m)  dark= (most light it spawns in, 0..1)
 #              cap= (per 64 m chunk)  respawn= (s)  nests=1
 #   loot=item:n,...  (on top of animals.txt's drops)
-#   sound_idle= sound_alert= sound_telegraph= sound_hurt= sound_death=  (names the audio side maps, #1246)
+#   sound_idle= sound_alert= sound_telegraph= sound_hurt= sound_death=  (names the audio side maps, #1246; a telegraph named
+#   creature_telegraph_<x> gets a subtitle caption with a direction arrow, #1346)
 #
 # The surface hunters reproduce the behaviour from before the framework (#165): the thornback charges within 12 m by day
 # and night, chases a player who hit it for 20 s up to 30 m, runs when under 35% health; the dusk stalker hunts within
@@ -24,4 +25,4 @@ dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 si
 # Tunnel lurker (#1224): blind (sight 0), hunts by sound: sprinting (22 m), digging (26 m) and combat draw it; walking only within
 # ~9 m; sneaking (crouched, prone) is silent. Clings to ceilings and drops on prey passing under (x1.5, a heavy hit), fast in
 # short bursts, avoids light. Karst caves and chambers, 8 m+ down, dark; nests in large chambers.
-tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death
+tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death
