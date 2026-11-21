@@ -6,6 +6,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "damage.h"
+#include "player.h"
 #include "world.h"
 #include <raymath.h>
 #include <string>
@@ -27,7 +28,15 @@ SCENARIO("combat/damage-types") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 60.0;
 
-    s.step("settle", 30.0, [](ScenarioCtx& c) { c.waitingFor("1 s of play and an idle world"); return c.T >= 1.0 && WorldIdle(); });
+    // The player stands at the start: animals are simulated only near a player (a bench camera in the air is none).
+    s.step("settle", 30.0, [](ScenarioCtx& c) {
+        c.waitingFor("1 s of play and an idle world");
+        if (c.T < 1.0 || !WorldIdle()) return false;
+        player.flyMode = false;
+        player.spawnOn(c.world, *c.body, c.spawnDirWorld());
+        return true;
+    });
+    s.step("stand", 5.0, [](ScenarioCtx& c) { return c.t >= 0.5; });
     s.step("each type on a fresh hornhide", 1.0, [](ScenarioCtx& c) {
         struct Case { DamageType type; bool heavy; DamageKind kind; StatusKind want; const char* name; };
         const Case cases[] = {
