@@ -19,6 +19,7 @@ namespace {
 
 const Color kWood = { 150, 112, 70, 255 }, kDarkWood = { 84, 62, 42, 255 }, kStone = { 178, 175, 168, 255 }, kLight = { 214, 182, 120, 255 }, kSteel = { 150, 154, 160, 255 };
 const Color kSail = { 226, 218, 196, 255 };
+const Color kMark = { 200, 50, 40, 255 }; // one paddle, tooth or sail in red: which way it turns shows in a capture
 constexpr int kWindmillSailsDrawn = Rotation::kWindmillSails;
 
 struct Spot {
@@ -77,6 +78,7 @@ void DrawPart(PartType t) {
         IB_Cylinder({ 0, -0.25f, 0 }, 0.06f, 0.06f, 0.5f, kWood);
         IB_Cylinder({ 0, -0.06f, 0 }, 0.19f, 0.19f, 0.12f, kWood);
         Teeth(8, 0.21f, 0.1f, 0.06f, kDarkWood);
+        IB_Cube({ 0.21f, 0, 0 }, { 0.07f, 0.11f, 0.07f }, kMark); // one red tooth
         break;
     case PartType::LargeCogwheel:
         IB_Cylinder({ 0, -0.25f, 0 }, 0.06f, 0.06f, 0.5f, kWood);
@@ -84,6 +86,7 @@ void DrawPart(PartType t) {
         IB_Cube({ 0, 0, 0 }, { 0.8f, 0.13f, 0.08f }, kDarkWood); // spokes
         IB_Cube({ 0, 0, 0 }, { 0.08f, 0.13f, 0.8f }, kDarkWood);
         Teeth(16, 0.47f, 0.1f, 0.06f, kDarkWood);
+        IB_Cube({ 0.47f, 0, 0 }, { 0.07f, 0.11f, 0.07f }, kMark);
         break;
     case PartType::HandCrank:
         IB_Cylinder({ 0, -0.25f, 0 }, 0.06f, 0.06f, 0.4f, kWood);
@@ -111,7 +114,7 @@ void DrawPart(PartType t) {
             for (int k = 0; k < 4; ++k) { rlPushMatrix(); rlRotatef(45.0f * k, 0, 1, 0); IB_Cube({ 0, side, 0 }, { 1.4f, 0.04f, 0.06f }, kDarkWood); rlPopMatrix(); }
             rlPushMatrix(); rlTranslatef(0, side, 0); Teeth(16, 0.68f, 0.04f, 0.14f, kWood); rlPopMatrix(); // the rim, as short boards round it
         }
-        for (int k = 0; k < 8; ++k) { rlPushMatrix(); rlRotatef(45.0f * k, 0, 1, 0); IB_Cube({ 0.66f, 0, 0 }, { 0.16f, 0.44f, 0.05f }, kLight); rlPopMatrix(); }
+        for (int k = 0; k < 8; ++k) { rlPushMatrix(); rlRotatef(45.0f * k, 0, 1, 0); IB_Cube({ 0.66f, 0, 0 }, { 0.16f, 0.44f, 0.05f }, k == 0 ? kMark : kLight); rlPopMatrix(); } // one red paddle: the direction shows
         break;
     case PartType::Windmill: // (#1270) a hub and four sails, 2.5 m long
         IB_Cylinder({ 0, -0.25f, 0 }, 0.08f, 0.08f, 0.5f, kWood);
@@ -119,7 +122,7 @@ void DrawPart(PartType t) {
         for (int k = 0; k < kWindmillSailsDrawn; ++k) {
             rlPushMatrix(); rlRotatef(90.0f * k, 0, 1, 0);
             IB_Cube({ 1.3f, 0.26f, 0 }, { 2.5f, 0.05f, 0.06f }, kDarkWood);      // the stock
-            IB_Cube({ 1.5f, 0.26f, 0.2f }, { 2.0f, 0.02f, 0.36f }, kSail);       // the cloth
+            IB_Cube({ 1.5f, 0.26f, 0.2f }, { 2.0f, 0.02f, 0.36f }, k == 0 ? kMark : kSail);       // the cloth
             rlPopMatrix();
         }
         break;
