@@ -731,9 +731,11 @@ bool NetProto_Test() {
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
             a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
-            a.members = { { "alice", true, true, true, 87.5f }, { "carol", false, false, false, 0.0f } };
+            a.members = { { "alice", true, true, true, 87.5f, 7, 0 }, { "carol", false, false, false, 0.0f, 0, 172800 } };
+            a.claimBudget = 5; a.allies = { "dave's_team" }; // (#828)
             check(RoundTrip(a, b, &s) && b.team == 3 && b.name == a.name && b.invite == a.invite && b.members.size() == 2 && b.members[0].owner && b.members[0].you &&
-                  b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
+                  b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online &&
+                  b.members[0].session == 7 && b.members[1].lastSeen == 172800 && b.claimBudget == 5 && b.allies.size() == 1 && b.allies[0] == "dave's_team", "team state");
             samples.push_back(s);
         }
         MsgCraftRequest ca{ 12, "oak_planks", 5, true, true }, cb; std::vector<uint8_t> s9;
@@ -1048,7 +1050,12 @@ void NetWrite(NetWriter& w, const MsgTeamState& m) {
     for (size_t i = 0; i < n; ++i) {
         const MsgTeamState::Member& x = m.members[i];
         w.str(x.name.substr(0, 32)); w.u8((uint8_t)((x.online ? 1 : 0) | (x.owner ? 2 : 0) | (x.you ? 4 : 0))); w.f32(x.health);
+        w.varu(x.session); w.varu(x.lastSeen); // (#828)
     }
+    w.u8((uint8_t)std::clamp(m.claimBudget, 0, 255)); // (#828)
+    const size_t a = std::min<size_t>(m.allies.size(), 16);
+    w.u8((uint8_t)a);
+    for (size_t i = 0; i < a; ++i) w.str(m.allies[i].substr(0, 40));
 }
 bool NetRead(NetReader& r, MsgTeamState& m) {
     m.team = (int32_t)r.u32(); m.name = r.str(40); m.invite = r.str(40);
@@ -1058,8 +1065,16 @@ bool NetRead(NetReader& r, MsgTeamState& m) {
     for (int i = 0; i < n && r.ok; ++i) {
         MsgTeamState::Member x; x.name = r.str(32);
         const uint8_t f = r.u8(); x.online = f & 1; x.owner = f & 2; x.you = f & 4; x.health = r.f32();
+        const uint64_t ses = r.varu(), seen = r.varu(); // (#828)
+        if (ses > 0xFFFFFFFFull || seen > 0xFFFFFFFFull) r.ok = false;
+        x.session = (uint32_t)ses; x.lastSeen = (uint32_t)seen;
         m.members.push_back(x);
     }
+    m.claimBudget = r.u8();
+    const int a = r.u8();
+    if (a > 16) return false;
+    m.allies.clear();
+    for (int i = 0; i < a && r.ok; ++i) m.allies.push_back(r.str(40));
     return Done(r);
 }
 

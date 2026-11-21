@@ -239,6 +239,11 @@ static bool gInFrame = false; // between the main loop's BeginDrawing and EndDra
 // --perf-log (#387): once a second, the frames per screen state (menu, newworld, bake, loading, play, paused): count,
 // average and worst frame, to stdout and log.txt. Called once per drawn frame.
 static bool gFpsLog = false;
+// (#1387) The bench save for a seed: seed 42 (and no --seed) keep saves/bench.sav, which tools and scenarios copy by name; any
+// other seed gets its own, so its erosion bake (<save>.erosion, one per save) survives switching seeds (~80 s a re-bake).
+static std::string BenchSavePath(unsigned seed) {
+    return seed == 0 || seed == 42 ? std::string("saves/bench.sav") : "saves/bench-" + std::to_string(seed) + ".sav";
+}
 static void FpsLog_Frame(const char* state) {
     if (!gFpsLog) return;
     static const char* cur = nullptr;
@@ -1218,7 +1223,7 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
-    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
+    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : BenchSavePath(worldGen.seed).c_str()); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
     Scenario_Setup(); // (#870) a scenario saves to its run's scratch dir
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
@@ -1501,7 +1506,7 @@ int main(int argc, char** argv)
             SetWorldSavePath("saves/world.sav");
             generateWorld(world);
         }
-        if (bench) SetWorldSavePath("saves/bench.sav");
+        if (bench) SetWorldSavePath(BenchSavePath(worldGen.seed).c_str());
         if (benchLoadHold) { // --test-load-hold (#901): where the player was saved, body-local, from the record itself
             namespace fs = std::filesystem;
             std::error_code ec;
@@ -5289,6 +5294,37 @@ int main(int argc, char** argv)
                         benchShotTabs = 31; frames = 0;
                     } else if (benchShotTabs == 31 && ++frames == 40) {
                         TakeScreenshot("bench_research.png");
+                        { // (#828) the Team tab with a claim 60 m from the player (single player: a team of one)
+                            Planetoid* p = player.nearest;
+                            int team = Teams_Of(PlayerId_Local());
+                            if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
+                            std::string why;
+                            if (p) {
+                                const Vector3 here = p->toLocalD(player.position).toFloat();
+                                const Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, Vector3Normalize(here)));
+                                Claims_Make(team, Claims_Budget(1), p->name, Vector3Add(here, Vector3Scale(east, 60.0f)), 50.0f, (int64_t)time(nullptr), why);
+                            }
+                            printf("bench: team tab: %d claim(s) of the team%s%s\n", (int)Claims_OfTeam(team).size(), why.empty() ? "" : "; ", why.c_str());
+                        }
+                        GameUI_ShowTab("Team");
+                        benchShotTabs = 32; frames = 0;
+                    } else if (benchShotTabs == 32 && ++frames == 40) {
+                        TakeScreenshot("bench_team.png");
+                        { // (#828) the Skills tab: the first skill at level 7 (tier 1 open, tier 2 not), one perk learned
+                            SkillState& st = LocalSession().skills;
+                            if (!Skills_All().empty()) {
+                                const std::string id = Skills_All()[0].id;
+                                double xp = 0.0; for (int k = 1; k <= 7; ++k) xp += Skills_XpForLevel(k);
+                                st.xp[id] = xp + 1.0;
+                                std::string bought;
+                                for (const PerkDef& p : Skills_Perks()) if (p.skill == id && p.tier == 1 && Skills_Buy(st, p.id)) { bought = p.name; break; }
+                                printf("bench: skills tab: %s at level 7, learned %s\n", Skills_All()[0].name.c_str(), bought.empty() ? "nothing" : bought.c_str());
+                            }
+                        }
+                        GameUI_ShowTab("Skills");
+                        benchShotTabs = 33; frames = 0;
+                    } else if (benchShotTabs == 33 && ++frames == 40) {
+                        TakeScreenshot("bench_skills.png");
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {
@@ -5336,7 +5372,7 @@ int main(int argc, char** argv)
                         const MachineView v = Factory::View(p->id, plot->id, chest);
                         printf("bench: container: took slot 0 of the chest: stone %d -> %d, chest slots %d (slot 0 now %s x%d): %s\n", before, inventory.count("stone"),
                                (int)v.inSlots.size(), v.inSlots.empty() ? "?" : v.inSlots[0].first.c_str(), v.inSlots.empty() ? 0 : v.inSlots[0].second,
-                               inventory.count("stone") == before + 40 && v.inSlots.size() == 16 ? "PASS" : "FAIL");
+                               inventory.count("stone") == before + 40 && v.inSlots.size() == (size_t)Inventory::kGrid && v.inSlots[0].first.empty() ? "PASS" : "FAIL"); // (a chest is the inventory's size since #495; the taken slot reads empty)
                         for (int i = 0; i < (int)plot->parts.size(); ++i) if (plot->parts[i].type == PartType::Furnace) GameUI_OpenContainer(p->id, plot->id, i, (int)PartType::Furnace);
                         benchShotTabs = 7; frames = 0;
                     } else if (benchShotTabs == 7 && ++frames == 40) {
@@ -8932,6 +8968,11 @@ int main(int argc, char** argv)
                         const Vector3 lup = Vector3Normalize(local), lnorth = p->dirToLocal(north);
                         const Vector3 wp = Vector3Normalize(Vector3Add(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 200.0f)));
                         Nav_AddWaypoint(p->name, wp, "test");
+                        { // (#828) a grave of ours 150 m south, as a server lists it: the map draws a headstone and its time to open
+                            GraveInfo g; g.id = 1; g.body = p->name; g.owner = "bench"; g.name = "bench's grave 1"; g.diedAt = (int64_t)time(nullptr) - 120;
+                            g.local = DVec3(Vector3Normalize(Vector3Subtract(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 150.0f)))) * (double)(p->radius * p->scale);
+                            Combat_SetGraveMirror({ g }, "bench");
+                        }
                         mapBearing = Nav_Bearing(world, wp);
                         printf("bench: map: facing east the compass reads %.1f deg; walked %.0f m, %d tiles explored; a waypoint 200 m north bears %.1f deg\n",
                                mapHeading, walked, mapTiles, mapBearing);
@@ -12593,7 +12634,27 @@ int main(int argc, char** argv)
                     }
                     if (++shotFrames == 30) { TakeScreenshot(shotPath); printf("bench: join: %s (the other player %.1f m away)\n", shotPath, best < 1e17 ? best : -1.0); }
                 }
+                // (#828) RAYLIBGAME_JOIN_TEAM=1: alice invites bob into her team and bob accepts; each sees the other member's
+                // distance (the Team tab's "where": their session's position), and bob, staying after alice leaves, sees her offline with
+                // a "last seen" (her record written as she left).
+                const bool wantTeam = getenv("RAYLIBGAME_JOIN_TEAM") && getenv("RAYLIBGAME_JOIN_TEAM")[0] == '1';
+                static double teamInviteAt = -1.0, teamOtherDist = 0.0; static bool teamAccepted = false, teamTogether = false; static uint32_t teamLastSeen = 0;
+                if (wantTeam && gJoin.state == NetClient::State::Joined) {
+                    if (joinName == "alice" && gJoin.team.members.size() < 2 && GetTime() - teamInviteAt > 3.0) { teamInviteAt = GetTime(); NetClient_SendChat(gJoin, "/team invite bob"); }
+                    if (joinName == "bob" && !gJoin.team.invite.empty() && !teamAccepted) { teamAccepted = true; NetClient_SendChat(gJoin, "/team accept"); }
+                    teamTogether = teamTogether || gJoin.team.members.size() >= 2;
+                    for (const auto& m : gJoin.team.members) {
+                        uint64_t mb = 0; DVec3 ml{};
+                        if (!m.you && m.online && b && NetClient_OtherView(gJoin, m.session, mb, ml) && mb == b->netId)
+                            teamOtherDist = std::max(teamOtherDist, (ml - b->toLocalD(player.position)).length() * b->scale);
+                        if (!m.you && !m.online && m.lastSeen > 0) teamLastSeen = m.lastSeen;
+                    }
+                }
                 if (walked >= 0.0 && GetTime() - jt0 > 8.0 + linger && (!shotPath || shotFrames >= 30 || !b)) {
+                    const bool teamOk = !wantTeam || (teamTogether && teamOtherDist > 0.0 && (joinName != "bob" || teamLastSeen > 0));
+                    if (wantTeam)
+                        printf("join: team (%s): together %d, the other member seen %.1f m away, last seen %u s%s -> %s\n", joinName.c_str(), (int)teamTogether,
+                               teamOtherDist, teamLastSeen, joinName == "bob" ? "" : " (not checked: alice leaves first)", teamOk ? "ok" : "FAIL");
                     const int wantOthers = getenv("RAYLIBGAME_JOIN_OTHERS") ? atoi(getenv("RAYLIBGAME_JOIN_OTHERS")) : 0;
                     double othersMoved = 0.0; for (const auto& kv : seen) othersMoved = std::max(othersMoved, kv.second.second);
                     const bool clockOk = gJoin.pongs >= 3 && fabs(gJoin.clockError) < 0.1 && fabs(WorldTime_Pending()) < 0.1;
@@ -12604,7 +12665,7 @@ int main(int argc, char** argv)
                     if (wantCreature)
                         printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f, creature fx messages %d -> %s\n", joinName.c_str(),
                                creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, gJoin.creatureFxMsgs, creatureOk ? "ok" : "FAIL");
-                    const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk;
+                    const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk && teamOk;
                     printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
