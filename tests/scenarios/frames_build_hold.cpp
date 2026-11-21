@@ -24,6 +24,9 @@ struct HoldState {
     const Plot* plot = nullptr; Int3 origin{}; Vector3 newOrigin{};
     int frames = 0, changed = 0, none = 0;
     double maxMove = 0.0; // the new plot origin's largest distance from the first (body-local m)
+    // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
+    DVec3 feet0{}, cam0{}; Vector3 fwd0{};
+    double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0; // m, m, deg
 };
 HoldState st;
 
@@ -65,6 +68,13 @@ void Build(ScenarioDef& s) {
         Vector3 newOrigin{}; Int3 origin{};
         const Plot* plot = BuildTool_AimPlacement(&newOrigin, &origin);
         const bool any = plot || newOrigin.x != 0.0f || newOrigin.y != 0.0f || newOrigin.z != 0.0f;
+        const DVec3 feetL = b.toLocalD(player.position);
+        const DVec3 camL = b.toLocalD(c.world.renderOrigin + DVec3(c.world.camera.position));
+        const Vector3 fwdL = b.dirToLocal(Vector3Normalize(Vector3Subtract(c.world.camera.target, c.world.camera.position)));
+        if (st.frames == 0) { st.feet0 = feetL; st.cam0 = camL; st.fwd0 = fwdL; }
+        st.feetWob = std::max(st.feetWob, (feetL - st.feet0).length());
+        st.camWob = std::max(st.camWob, (camL - st.cam0).length());
+        st.fwdWob = std::max(st.fwdWob, (double)Vector3Angle(fwdL, st.fwd0) * RAD2DEG);
         ++st.frames;
         if (!any) ++st.none;
         else if (!st.aimed) { st.aimed = true; st.plot = plot; st.origin = origin; st.newOrigin = newOrigin; }
@@ -78,6 +88,11 @@ void Build(ScenarioDef& s) {
         if (c.T - st.t0 < kHoldSeconds) return false;
         c.note(TextFormat("%d frames held still: the aim changed in %d (no aim in %d); the new plot origin moved up to %.2f mm (%s)",
                           st.frames, st.changed, st.none, st.maxMove * 1000.0, Frames_On() ? "frames on" : "frames off"));
+        c.note(TextFormat("while still, in the body's frame: feet wandered %.3f mm, the camera %.3f mm, the view %.4f deg",
+                          st.feetWob * 1000.0, st.camWob * 1000.0, st.fwdWob));
+        c.metric("feet wobble", st.feetWob * 1000.0, "mm");
+        c.metric("camera wobble", st.camWob * 1000.0, "mm");
+        c.metric("view wobble", st.fwdWob, "deg");
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
