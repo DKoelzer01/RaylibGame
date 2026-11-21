@@ -156,6 +156,8 @@ private:
     // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
     // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
     bool fxActive = false;
+    double viewR[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }; // F2c: the frame body's rotation at the end of the last update
+    uint64_t viewBody = 0;                                            // its runtime id (0: no view carry yet)
     Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
     Vector3 airVelDir{};
     float airVelLen = 0.0f;

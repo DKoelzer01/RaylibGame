@@ -121,11 +121,13 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         } else {
             position = groundBody->toWorldD(groundLocal);
             // Turn the view by however much the body turned since last frame (a delta, so view
-            // changes made elsewhere between frames are kept).
-            const Quaternion now = groundBody->rotationQuat();
-            const Quaternion delta = QuaternionMultiply(now, QuaternionInvert(groundRotPrev));
-            forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
-            up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
+            // changes made elsewhere between frames are kept). (On the frame path F2c turns it below, grounded or not.)
+            if (!fxActive) {
+                const Quaternion now = groundBody->rotationQuat();
+                const Quaternion delta = QuaternionMultiply(now, QuaternionInvert(groundRotPrev));
+                forward = Vector3Normalize(Vector3RotateByQuaternion(forward, delta));
+                up = Vector3Normalize(Vector3RotateByQuaternion(up, delta));
+            }
         }
     }
     // Airborne: carry along with the body we were near (its spin and orbit since last frame); the
@@ -152,6 +154,22 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
             else velocity = Vector3Subtract(velocity, nearest->surfaceVelocity(feet));                                      // into the frame, once
         } else if (!fx && fxActive && !grounded && nearest) {
             velocity = Vector3Add(velocity, nearest->surfaceVelocity(feet));                                                // back to world-frame
+        }
+        // F2c (#1146, #1143): the view turns with the frame's body, grounded or airborne, by its rotation since the last
+        // update - R_now R_prev^T in double from the same pose as every transform (the float quaternion delta above was
+        // grounded only). A delta, so mouse look between updates is kept.
+        if (fxActive && nearest && viewBody == nearest->id) {
+            double R[3][3]; DVec3 w;
+            BodyRotationAndSpin(*nearest, R, w);
+            double M[3][3]; // R_now * R_prev^T
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) M[i][j] = R[i][0] * viewR[j][0] + R[i][1] * viewR[j][1] + R[i][2] * viewR[j][2];
+            auto turn = [&M](Vector3 v) {
+                return Vector3Normalize({ (float)(M[0][0] * v.x + M[0][1] * v.y + M[0][2] * v.z), (float)(M[1][0] * v.x + M[1][1] * v.y + M[1][2] * v.z),
+                                          (float)(M[2][0] * v.x + M[2][1] * v.y + M[2][2] * v.z) });
+            };
+            forward = turn(forward);
+            up = turn(up);
         }
         fxActive = fx;
     }
@@ -333,6 +351,8 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     }
     lastEndPosition = position;
     if (Frames_On()) updateFrame(world);
+    if (fxActive && nearest) { DVec3 w; BodyRotationAndSpin(*nearest, viewR, w); viewBody = nearest->id; } // (F2c) the pose the view was last turned to
+    else viewBody = 0;
     CacheNetState(world);
     // Render interpolation (#315): the feet after this step and the one before, in the nearest body's frame. A new
     // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
