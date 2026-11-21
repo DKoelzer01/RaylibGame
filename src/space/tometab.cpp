@@ -81,6 +81,7 @@ void TomeTab_Draw() {
         ImGui::TextUnformatted(BranchName(branch));
         for (const TomePage& p : Tome_Pages()) {
             if (p.branch != branch) continue;
+            if (me.burden < p.minBurden && !tome.Has(p.id)) continue; // (#1255) the late pages show only to the burdened
             const bool owned = tome.Has(p.id);
             std::string why;
             const bool ready = !owned && Tome_CanUnlock(tome, me, research, p, &why);
