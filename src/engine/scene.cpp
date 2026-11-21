@@ -669,6 +669,7 @@ void Scene::drawScene(int gamestate) {
     static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
     const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
     SetShaderValue(s, GetShaderLocation(s, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
+    { static const int bounce = (getenv("RAYLIBGAME_BOUNCE") && getenv("RAYLIBGAME_BOUNCE")[0] == '0') ? 0 : 1; SetShaderValue(s, GetShaderLocation(s, "bounceOn"), &bounce, SHADER_UNIFORM_INT); } // (#898) A/B
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
@@ -1064,6 +1065,28 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         KickGpu();
 
+        // (#1164 part 3) Screen-space reflections on the water: the opaque scene so far, resolved, with this view's
+        // matrix; the water shader marches its reflected ray through the depth and falls back to the sky. Reverse-Z only
+        // (the resolve targets exist there). RAYLIBGAME_WATER_SSR=0: off.
+        {
+            static const bool ssrAllowed = !(getenv("RAYLIBGAME_WATER_SSR") && getenv("RAYLIBGAME_WATER_SSR")[0] == '0');
+            Shader& ws = water.shader;
+            unsigned sc = 0, sd = 0; int sw = 0, sh = 0;
+            const bool ssr = ssrAllowed && revZ && SceneTarget_ResolveOpaque(sc, sd, sw, sh);
+            const int on = ssr ? 1 : 0;
+            SetShaderValue(ws, GetShaderLocation(ws, "ssrOn"), &on, SHADER_UNIFORM_INT);
+            if (ssr) {
+                rlActiveTextureSlot(16); rlEnableTexture(sc); // units 16-17: 13-14 are the local lights (locallights.cpp), 15 the haze LUT
+                rlActiveTextureSlot(17); rlEnableTexture(sd);
+                rlActiveTextureSlot(0);
+                const int u13 = 16, u14 = 17;
+                const float size[2] = { (float)sw, (float)sh };
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrColor"), &u13, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrDepth"), &u14, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrSize"), size, SHADER_UNIFORM_VEC2);
+                SetShaderValueMatrix(ws, GetShaderLocation(ws, "ssrViewProj"), MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            }
+        }
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).

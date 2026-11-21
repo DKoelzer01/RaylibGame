@@ -12,6 +12,8 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "questtree.h"
+#include "researchtab.h"
+#include "statstab.h"
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
@@ -174,6 +176,8 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     const std::string t = tab;
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") GameUI_ShowScreen(GameScreen::Quests); // (#890: one view)
+    else if (t == "Research") GameUI_ShowScreen(GameScreen::Research); // (#1192)
+    else if (t == "Statistics") GameUI_ShowScreen(GameScreen::Statistics); // (#1199)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
@@ -637,25 +641,32 @@ static void DrawCell(int i, float cw, float cell) {
 
 // cell: a cell's size (px): 54 beside another screen; the Inventory screen sizes it to fill its area (#887).
 static void DrawGrid(float cell = 54.0f) {
-    const float gap = 4.0f, bin = std::min(cell, 64.0f * GameUI_Scale()); // (the bin stays a modest square)
+    const float gap = 4.0f, bin = cell; // (#1148, #1161: the bin and the off hand at the one slot size, side by side)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     for (int i = 0; i < Inventory::kSlots; ++i) {
-        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them). The
-        // off-hand cell is beside the player now (#822).
+        // The 10 x 5 grid, then the hotbar's 10 cells in a row under it (#209: real slots; drop stacks into them); the off
+        // hand and the bin under them (#1161).
         const bool hotbar = i >= Inventory::kGrid;
         if (i == Inventory::kGrid) { ImGui::Dummy(ImVec2(0.0f, 2.0f)); ImGui::TextDisabled("Hotbar (keys 1-0)"); }
         else if (i < Inventory::kGrid ? i % Inventory::kCols != 0 : true) ImGui::SameLine(0.0f, gap);
         DrawCell(i, hotbar ? (Inventory::kCols * cell - gap) / (float)Inventory::kHotbar : cell, cell); // the hotbar row as wide as the grid
     }
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    // (#1161, the user) The off hand beside the bin, under the hotbar: on every page with the items grid (it was on the
+    // Inventory page's You panel only).
+    DrawCell(Inventory::kOffHand, cell, cell);
+    if (ImGui::IsItemHovered() && inventory.grid()[Inventory::kOffHand].empty())
+        ImGui::SetTooltip("Off hand: a shield blocks (hold RMB); a torch lights;\nfood or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
+    ImGui::SameLine(0.0f, gap);
     { // the bin, under the hotbar (#564)
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + bin, p.y + bin);
         if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
         if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
-        const ImVec2 sz = ImGui::CalcTextSize("Bin");
-        dl->AddText(ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
+        const float fs = CellFontSize(bin); // (#1161: the cells' label size: the window's font ran out of a small cell)
+        const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Bin");
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
         dl->AddRect(p, q, hover ? IM_COL32(230, 150, 140, 255) : IM_COL32(110, 60, 60, 255), 4.0f, 0, 1.0f);
         if (hover) ImGui::SetTooltip(!cursorStack.empty() ? "Click: delete the held stack" : !binned.empty() ? "Click: take the deleted stack back" :
                                      "The bin: put a stack here to delete it\n(or click outside the window to drop it on the ground)");
@@ -696,7 +707,7 @@ static void DrawGrid(float cell = 54.0f) {
 // known and free.
 namespace {
     enum class CraftCat { All, CanMake, Tools, Building, Materials, Food, Suit, Count };
-    const char* kCraftCatNames[] = { "All", "Can make", "Tools", "Building", "Materials", "Food", "Suit" };
+    const char* kCraftCatNames[] = { "All", "Craftable", "Tools", "Building", "Materials", "Food", "Suit" }; // (#1149: "Can make" was "Craftable")
     CraftCat CategoryOf(const std::string& id) {
         if (Suit_IsSuit(id) || Suit_IsModule(id)) return CraftCat::Suit;
         if (Survival_IsFood(id)) return CraftCat::Food;
@@ -762,7 +773,12 @@ static void DrawCrafting() {
     ImGui::SetNextItemWidth(-1.0f); // (#889: the crafting column's width)
     ImGui::InputTextWithHint("##recipesearch", "search recipes", query, sizeof(query));
     const float chipsRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    // (#1149, the user) A category chip only when some known recipe is in it (All and Craftable always).
+    bool catKnown[(int)CraftCat::Count] = { true, true };
+    for (const Recipe& r : recipes) if (RecipeBook_Known(r)) catKnown[(int)CategoryOf(r.output)] = true;
+    if (!catKnown[(int)cat]) cat = CraftCat::All;
     for (int c = 0; c < (int)CraftCat::Count; ++c) { // the category chips, wrapping in the column
+        if (!catKnown[c]) continue;
         const float w = ImGui::CalcTextSize(kCraftCatNames[c]).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         if (c > 0 && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w < chipsRight) ImGui::SameLine();
         const bool on = (int)cat == c;
@@ -799,6 +815,14 @@ static void DrawCrafting() {
                 if (knownNow[k] && !canMake(recipes[k])) planOk[k] = CraftPlan_Make(recipes, known, carried, (int)k, 1, machineMade).ok;
     }
     auto canMakeAt = [&](int k) { return canMake(recipes[k]) || (k >= 0 && k < (int)planOk.size() && planOk[k]); };
+    // (#1149, the user) A click on a recipe opens its page; a click on its icon again (the page open) crafts one, its
+    // intermediates first (#928; joined, the server plans it, #946). It was a double-click.
+    auto craftOne = [&](int k) {
+        if (k < 0 || k >= (int)recipes.size()) return;
+        if (!canMakeAt(k)) { GameUI_Toast("Missing ingredients (the page lists them)"); Audio_Play(Sfx::Error, 0.4f); return; }
+        if (creative || canMake(recipes[k])) craftQueue.push_back({ k, 1 });
+        else if (!Crafting_RequestRecursive(k, 1)) QueuePlan(CraftPlan_Make(recipes, known, carried, k, 1, machineMade));
+    };
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)recipes.size()) {
         const Recipe& r = recipes[pending];
@@ -843,10 +867,6 @@ static void DrawCrafting() {
         if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
         if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
         if (shown == 1) { recipeTest.firstCell = ImVec2((p.x + qd.x) * 0.5f, (p.y + qd.y) * 0.5f); recipeTest.firstRecipe = (int)i; }
-        if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) { // double-click: craft one (#928: its intermediates first)
-            if (creative || canMake(r)) craftQueue.push_back({ (int)i, 1 });
-            else if (!Crafting_RequestRecursive((int)i, 1)) QueuePlan(CraftPlan_Make(recipes, known, carried, (int)i, 1, machineMade)); // (#946: joined, the server plans it)
-        }
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
         if (r.outputCount > 1) {
@@ -864,7 +884,7 @@ static void DrawCrafting() {
         ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
         ImGui::PopTextWrapPos();
     }
-    if (shown > 0) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Click a recipe for its page; double-click crafts one"); ImGui::PopTextWrapPos(); }
+    if (shown > 0) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Click a recipe for its page; click its icon again to craft one"); ImGui::PopTextWrapPos(); }
     ImGui::EndChild();
 
     // (#921) The selected recipe's page: a pop-up beside its cell (to the right while it stays in the crafting column, else
@@ -887,12 +907,12 @@ static void DrawCrafting() {
       if (!recipePageOpen || selectedRecipe < 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) { recipePageOpen = false; ImGui::CloseCurrentPopup(); }
       else {
         // A click outside the page: on another recipe, the page goes there (ImGui closes it this frame; it opens again on
-        // that one next frame); on the same recipe, or anywhere else, it closes.
+        // that one next frame); on the same recipe it crafts one (#1149); anywhere else, it closes.
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;
             for (const CellHit& c : cellsDrawn)
                 if (mp.x >= c.a.x && mp.x < c.b.x && mp.y >= c.a.y && mp.y < c.b.y) {
-                    if (c.recipe == selectedRecipe) recipePageOpen = false;
+                    if (c.recipe == selectedRecipe) { craftOne(c.recipe); recipePageReopen = true; } // (#1149: its icon again crafts one; the page stays: ImGui closed it on the click, it opens again)
                     else { selectedRecipe = c.recipe; recipePageReopen = true; recipeAnchorMin = c.a; recipeAnchorMax = c.b; }
                     break;
                 }
@@ -1086,6 +1106,14 @@ static void DrawContainer() {
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
     }
+    if (v.canLight) { // (#1103) a campfire lights or goes out whether or not it has something to cook
+        const bool burning = v.status == MachineStatus::Working;
+        const bool fuel = v.fuelSlot.second > 0 || v.energy > 0;
+        if (!burning && !fuel) ImGui::BeginDisabled();
+        if (ImGui::Button(burning ? "Put out" : "Light")) MachineAct_SetFire(container.body, container.plot, container.part, !burning);
+        if (!burning && !fuel) { ImGui::EndDisabled(); ImGui::SameLine(); ImGui::TextDisabled("needs fuel"); }
+        else if (!burning && v.fire == kFireOut) { ImGui::SameLine(); ImGui::TextDisabled("put out: lights again with something to cook"); }
+    }
     if (v.waterMax > 0) { // #229: boilers need water and heat up before full steam
         ImGui::ProgressBar((float)v.water / (float)v.waterMax, ImVec2(300.0f, 0.0f), TextFormat("Water %d / %d L", v.water, v.waterMax));
         ImGui::ProgressBar((float)v.heat / (float)std::max(1, v.heatMax), ImVec2(300.0f, 0.0f), TextFormat("Heat %d%%", 100 * v.heat / std::max(1, v.heatMax)));
@@ -1233,7 +1261,15 @@ static void DrawTeamProgress() {
 }
 
 // The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
-static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
+// (#1206) the screen tabs' font: one size for the row, the largest at which every name fits (down to 70%; ScreenTabFont)
+static float screenTabFont = 1.0f;
+static void ScreenTabFont(const char* const* labels, int n, float w) {
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    screenTabFont = 1.0f;
+    for (int i = 0; i < n; ++i) screenTabFont = std::min(screenTabFont, (w - pad) / std::max(1.0f, ImGui::CalcTextSize(labels[i]).x));
+    screenTabFont = std::max(0.7f, screenTabFont);
+}
+static bool ScreenTab(const char* label, const char* key, bool on, float w, float h, bool rowFont = false) {
     const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, bg);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.32f, 0.44f, 1.0f));
@@ -1241,9 +1277,14 @@ static bool ScreenTab(const char* label, const char* key, bool on, float w, floa
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
     // (#891) with its key when both fit the tab, else the name alone (a large font in a narrow tab clipped "Skills [K")
+    // (#1206) the row's font when its names don't all fit (8 tabs in creative): smaller, rather than clipped names
+    const bool shrink = rowFont && screenTabFont < 1.0f;
+    if (shrink) ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * screenTabFont); // (FontSizeBase: GetFontSize is scaled already)
     const char* withKey = key && *key ? TextFormat("%s  [%s]", label, key) : label;
-    const bool fits = ImGui::CalcTextSize(withKey).x + ImGui::GetStyle().FramePadding.x * 2.0f <= w;
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const bool fits = ImGui::CalcTextSize(withKey).x + pad <= w;
     const bool clicked = ImGui::Button(TextFormat("%s##%s", fits ? withKey : label, label), ImVec2(w, h));
+    if (shrink) ImGui::PopFont();
     if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
     ImGui::PopStyleColor(4);
     return clicked;
@@ -1518,15 +1559,8 @@ static void DrawYou() {
     const float big = gGridCell > 0.0f ? gGridCell : 54.0f * GameUI_Scale();
     const float cell = big;
     ImGui::BeginGroup();
-    const float x0 = ImGui::GetCursorPosX();
     ImGui::TextDisabled("Suit");
-    ImGui::SameLine(); ImGui::SetCursorPosX(x0 + big + 4.0f);
-    ImGui::TextDisabled("Off hand");
-    SuitSlot(big);
-    ImGui::SameLine(0.0f, 4.0f);
-    DrawCell(Inventory::kOffHand, big, big);
-    if (ImGui::IsItemHovered() && inventory.grid()[Inventory::kOffHand].empty())
-        ImGui::SetTooltip("Off hand: a shield blocks (hold RMB); a torch lights;\nfood or an oxygen canister: %s uses one", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)));
+    SuitSlot(big); // (#1161: the off hand moved beside the bin, under the hotbar)
     int fitted = 0; for (const std::string& m : Suit_Modules()) fitted += m.empty() ? 0 : 1;
     ImGui::TextDisabled("Modules %d/%d", fitted, slots);
     for (int i = 0; i < slots; ++i) { if (i % modCols) ImGui::SameLine(0.0f, 4.0f); ModuleSlot(i, cell); }
@@ -1628,7 +1662,7 @@ static void DrawItemsPanel() {
     const ImVec2 a = ImGui::GetContentRegionAvail();
     const float gap = 4.0f, pad = ImGui::GetStyle().WindowPadding.x * 2.0f;
     const float cell = gGridCell; // (#1148) the one slot size of every item page (SlotCellFor, set as the screen opens)
-    const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + cell + pad);
+    const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + 2.0f * cell + gap + pad); // (#1161: the off hand, the bin and the buttons)
     ImGui::BeginChild("invgrid", ImVec2(std::min(panelW, a.x * 0.72f), 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted("Items");
     DrawGrid(cell);
@@ -1708,16 +1742,22 @@ void GameUI_Draw(Scene& world) {
         // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
         static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
-                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
+                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
+                                    { GameScreen::Research, "Research", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database)
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
-        const float smallW = 102.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key)
-        const int nTabs = terrainTool.creative ? 6 : 5;
+        const float smallW = 92.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key; #1206: 102 -> 92, room for 8 tabs)
+        const int nTabs = terrainTool.creative ? 8 : 7;
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
         if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
+        {   // (#1206) one font for the row: the largest at which every shown name fits
+            const char* names[16]; int n = 0;
+            for (const Tab& t : tabs) if (n < 16 && (t.s != GameScreen::Catalog || terrainTool.creative)) names[n++] = t.name;
+            ScreenTabFont(names, n, tabW);
+        }
         for (const Tab& t : tabs) {
             if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
-            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
+            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH, true)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
@@ -1754,6 +1794,8 @@ void GameUI_Draw(Scene& world) {
                 QuestTree_DrawTab(); // (#890: the tree is the Quests screen; a tier's objectives and pins open in a pop-out)
                 break;
             case GameScreen::Skills: DrawSkills(); break; // (#883)
+            case GameScreen::Research: ResearchTab_Draw(); break; // (#1192)
+            case GameScreen::Statistics: StatsTab_Draw(); break; // (#1199)
             case GameScreen::Team: DrawTeam(); break;
             case GameScreen::Count: break;
         }
@@ -2215,6 +2257,11 @@ TEST(GameUiRecipePage, AClickOpensItBesideTheRecipeCraftOneQueuesAndEscClosesItF
     click(recipeTest.craft1);
     EXPECT_EQ(GameUI_CraftQueueLength(), queued0 + 1) << "Craft 1 queues one";
     EXPECT_TRUE(recipePageOpen) << "crafting keeps the page open";
+
+    click(recipeTest.firstCell); // (#1149) its icon again, the page open: one more craft
+    EXPECT_EQ(GameUI_CraftQueueLength(), queued0 + 2) << "a click on the open recipe's icon crafts one (it closed the page)";
+    EXPECT_TRUE(recipePageOpen) << "and the page stays";
+    EXPECT_EQ(selectedRecipe, recipeTest.firstRecipe);
 
     EXPECT_TRUE(GameUI_ClosePopout()) << "Esc: the pop-up closes first";
     frame(away, false); frame(away, false);
