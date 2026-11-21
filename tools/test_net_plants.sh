@@ -17,7 +17,7 @@ SECONDS=0
 if [ "${TERRAIN:-}" != default ]; then printf 'erosion 0\n' > "$tmp/host.sav.worldgen"; fi
 . "$here/tools/lib_netmem.sh"
 net_wait_for_memory 12 test_net_plants || exit 0
-RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_shovel 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
+RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_shovel 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench $([ "${TERRAIN:-}" = default ] && echo 1200 || echo 600) --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
     local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
