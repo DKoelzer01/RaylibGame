@@ -85,6 +85,9 @@ struct DigYield {
     bool ore = false;            // some ore came out (a vein may be nearly done)
 };
 DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost); // gemBoost: x the gem odds (tests, perks)
+// (#1250) A rare find in rock other than a gem (magic: a resonant crystal on a ley line), asked after the gem roll when
+// none came up: an item id or nullptr. Unset: nothing.
+inline std::function<const char*(class Planetoid& body, Vector3 hitLocal)> gRockFind;
 float TerrainTool_PlaceCost(const Planetoid& p, const struct TerrainEdit& e); // (#1097) a soft placing blob's filler: 2 a m^3 of ground it adds
 // (#883, #1043) The perks on a stroke, from one player's stats (`stat`: a multiplier by name, 1 = none). The local stroke and
 // the server's check of a joined player's stroke both use these, so a perked stroke is never refused and both credit alike.
