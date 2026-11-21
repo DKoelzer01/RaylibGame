@@ -92,6 +92,16 @@ static void Build(ScenarioDef& s) {
         const float tunnel = Fluid::WaterAt(*c.body, S.pt(0.0f, 0.0f, 0.5f * (kFloor + kTunnelTop)), 0.5f);
         const float lost = Fluid::PourDropped();
         const double vol1 = Fluid::GetStats().volume;
+        // Where the water is (#1168): each leg by 0.25 m row from the floor up, and the tunnel every metre at mid-height, as a
+        // digit per cell (0 dry .. 9 full: the one fluid cell at that point, WaterAt with radius 0). A gap inside a column shows.
+        auto digit = [&](float x, float h) {
+            const float w = Fluid::WaterAt(*c.body, S.pt(x, 0.0f, h), 0.0f);
+            return (char)('0' + std::clamp((int)std::lround(9.0f * w / WaterField::CellVolume()), 0, 9));
+        };
+        std::string nearCol, farCol, tun;
+        for (float h = kFloor + 0.125f; h < 0.0f; h += 0.25f) { nearCol += digit(-10.0f, h); farCol += digit(10.0f, h); }
+        for (float x = -8.0f; x <= 8.0f; x += 1.0f) tun += digit(x, 0.5f * (kFloor + kTunnelTop));
+        c.note("fill by row from the floor up: near " + nearCol + ", far " + farCol + "; tunnel (-8..8 m) " + tun);
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
         c.metric("simulated volume after the pour", S.vol0, "m^3", false);
         c.metric("simulated volume at the end", vol1, "m^3", false);
