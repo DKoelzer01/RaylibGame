@@ -12584,7 +12584,7 @@ int main(int argc, char** argv)
                     const bool wantCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
                     const bool creatureOk = !wantCreature || (creatureNet && creatureGone && creatureMin < creatureFirst && gJoin.creatureFxMsgs > 0); // (#1343, #1364: its calls and telegraphs reached us)
                     if (wantCreature)
-                        printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f -> %s\n", joinName.c_str(),
+                        printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f, creature fx messages %d -> %s\n", joinName.c_str(),
                                creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, gJoin.creatureFxMsgs, creatureOk ? "ok" : "FAIL");
                     const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk;
                     printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
