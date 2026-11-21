@@ -40,6 +40,7 @@ struct ResearchState {
     std::map<std::string, int> progress;     // units finished of a node not yet done (kept when it leaves the queue)
     double insight = 0.0;                    // activity XP waiting to be drawn on (up to ~25% of a node, decided)
     std::set<std::pair<int, int>> milestoneDone; // (#1271) tier milestone lines met: (tier, line index in tiers.txt order)
+    bool ladderMigrated = false;             // (#1272) an old save's tiers and research were mapped to the new ladder (once)
     std::string Text() const;                // as save lines
     bool FromText(const std::string& text);  // false: nothing parsed
     bool Done(const std::string& node) const { return done.count(node) > 0; }

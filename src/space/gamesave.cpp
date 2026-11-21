@@ -1,4 +1,5 @@
 #include "gamesave.h"
+#include "laddermigrate.h"
 #include "blueprint.h"
 #include "fishing.h"
 #include "structures.h"
@@ -58,6 +59,7 @@ static bool bodyFramed = false;  // the record being read gave a player_body lin
 struct PendingFrame { Player* p; unsigned long long body; DVec3 local; };
 static std::vector<PendingFrame> pendingFrames;
 static bool inWorldLoad = false;
+static bool ladderWorld = false; // (#1272) the save was written on the new tier ladder (its "ladder" line); else it is migrated on load
 static bool loadedFrameSet = false; // the local player's frame from the last load, for the loading screen's hold (once)
 static unsigned long long loadedFrameBody = 0;
 static DVec3 loadedFrameLocal{};
@@ -347,6 +349,7 @@ void GameSave_Register() {
         Station_Save(f);
         fprintf(f, "difficulty %d\n", worldDifficulty);
         fprintf(f, "xp_rate %g\n", worldXpRate); // (#883)
+        fputs("ladder 1\n", f); // (#1272) written on the new tier ladder: never migrated again
         // Teams and their quest books (#346: quests and tiers are a team's); this game's player is in one (a team of one to
         // start with), and the world's owner is whoever saved it first.
         // A server that loaded a format 12 save writes its player as the owner (a new id), so nothing is lost: single player
@@ -368,6 +371,8 @@ void GameSave_Register() {
             }
         pendingFrames.clear();
         Farm_LoadDone(); // (#1085) an old save's farmland parts become tilled ground, with their crops
+        if (!ladderWorld) LadderMigrate_World(); // (#1272) an old save: tiers, research and the removed 8 V machines, once
+        ladderWorld = true;
         inWorldLoad = false;
     };
     loadExtrasHook = [](FILE* f) {
@@ -398,6 +403,7 @@ void GameSave_Register() {
         savedCols = 9;  // a save without an inv_cols line: the 9-wide grid (#495)
         worldDifficulty = 1; // a save without the line: normal
         worldXpRate = 1.0f; // (#883) likewise: 1x
+        ladderWorld = false; // (#1272) a save without the line: from before the ladder
         playerLoaded = false;
         bodyFramed = false;
         recordFirstSeen = recordPlayTime = 0.0;
@@ -423,6 +429,7 @@ void GameSave_Register() {
             if (Station_LoadLine(tok, f)) continue;
             if (strcmp(tok, "difficulty") == 0) { int d = 1; if (fscanf(f, " %d", &d) == 1) worldDifficulty = std::clamp(d, 0, 2); continue; }
             if (strcmp(tok, "xp_rate") == 0) { float x = 1.0f; if (fscanf(f, " %f", &x) == 1) worldXpRate = std::clamp(x, 0.5f, 5.0f); continue; } // (#883)
+            if (strcmp(tok, "ladder") == 0) { int v = 0; if (fscanf(f, " %d", &v) == 1) ladderWorld = v > 0; continue; } // (#1272)
             if (ReadPlayerLine(tok, f, LocalTarget())) continue; // format 12: the player's lines were the save's own
             if (strcmp(tok, "ship") == 0) { // old saves: the placeholder ship is gone (its line is read and dropped)
                 char rest[512]; if (!fgets(rest, sizeof(rest), f)) break;

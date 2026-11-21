@@ -144,6 +144,8 @@ public:
     bool canPlace(const Part& p) const;
     int place(const Part& p);           // part index, or -1 if blocked
     bool remove(int partIndex);
+    // (#1272) The part turned into another type with the same footprint (old saves: a removed machine becomes a chest); same index.
+    bool retype(int partIndex, PartType t);
     int partAt(Int3 cell) const;
     int partCount() const { return livePartCount; }
 
