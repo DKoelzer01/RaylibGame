@@ -108,7 +108,9 @@ SCENARIO("creatures/lurker-ceiling") {
         if (!c.check("spawned", Animals_Count() > before)) { c.fail("no lurker"); return true; }
         S.net = Animals_NetId(Animals_Count() - 1);
         Animals_TestPin(Animals_Count() - 1, Vector3Add(S.floor, Vector3Scale(e, 6.0f)), e);
-        player.posture = Player::Posture::Crouch; // silent while it settles
+        // The player waits on the surface 120 m over it while it settles (placing them on the chamber floor makes a landing it
+        // hears, and it hunts them instead of climbing).
+        player.spawnOn(c.world, *c.body, c.body->dirToWorld(S.up));
         return true;
     });
     s.step("it climbs onto the ceiling", 15.0, [](ScenarioCtx& c) {
@@ -145,7 +147,7 @@ SCENARIO("creatures/lurker-ceiling") {
             S.drops0 = Animals_LurkerDrops();
             return false;
         }
-        Noise_Emit(c.body->id, FeetLocal(c), NoiseTune::kWalk, Animals_Clock(), kPlayerSource); // footsteps (a walking player under it)
+        Noise_Emit(c.body->id, FeetLocal(c), NoiseTune::kSprint, Animals_Clock(), kPlayerSource); // running steps under it (a walk only carries ~9 m: it hangs 14 m up)
         if (Animals_LurkerDrops() == S.drops0) { c.waitingFor("the drop"); return false; }
         c.check("it dropped on the player", true);
         c.near("x1.5: 13.5", S.health0 - survival.health, 13.5, 0.8);

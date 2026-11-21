@@ -1104,6 +1104,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             // and gives chase. Hit or staggered: it falls.
             if (cs->ceiling) {
                 const Vector3 aup = Vector3Normalize(a.pos);
+                if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { float r = -1.0f; for (float h = 0.5f; h <= 20.0f; h += 0.25f) if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { r = h; break; }
+                    printf("creature %llu: mood %s, hunting %d, flee %.1f, clinging %d, since bite %.1f, roof %.2f m\n", (unsigned long long)a.netId, Mood_Name(bo.mood), (int)hunting, a.fleeTimer, (int)a.clinging, simClock - a.lastBite, r); }
                 if (a.clinging) {
                     const bool knocked = bi.hurt || (Combat3_On() && Poise_Staggered(a.poise));
                     auto fall = [&]() { a.pos = a.prevPos = a.clingFloor; a.clinging = false; a.dropIn = -1.0f; a.clingWait = 0.0f; };
@@ -1114,9 +1116,15 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                             const Vector3 below = a.clingFloor;
                             fall();
                             if (sameBody && hunting && preyIdx < 0) {
+                                // It drops onto its prey: within its drop range sideways of where it hung (and not far above or
+                                // below that floor), it lands beside them and the drop hits.
                                 const Vector3 d = Vector3Subtract(tgLocal, below);
-                                const float side = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, Vector3DotProduct(d, aup))));
-                                if (side < 1.8f && fabsf(Vector3DotProduct(d, aup)) < 2.5f) {
+                                const float vert = Vector3DotProduct(d, aup);
+                                const Vector3 flat = Vector3Subtract(d, Vector3Scale(aup, vert));
+                                const float side = Vector3Length(flat);
+                                if (getenv("RAYLIBGAME_CREATURE_LOG")) printf("creature %llu: drop, prey %.2f m sideways, %.2f m up from the floor below\n", (unsigned long long)a.netId, side, vert);
+                                if (side < cs->dropRange + 0.5f && fabsf(vert) < 3.0f) {
+                                    if (side > 0.9f) a.pos = a.prevPos = Vector3Add(below, Vector3Scale(flat, (side - 0.9f) / side)); // beside them
                                     DamageEvent e;
                                     e.amount = cs->damage * cs->dropScale * Difficulty_ThreatScale();
                                     e.poise = e.amount * PoiseTune::kAttackPoisePerDamage;
