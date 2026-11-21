@@ -123,6 +123,7 @@ void DebugUI_Draw(Scene& world) {
                 int ec = 0, ev = 0;
                 Audio_EmitterStats(ec, ev);
                 ImGui::Text("Emitters %d (%d with a voice)", ec, ev);
+                ImGui::TextUnformatted(Audio_SpatialBackend()); // (#1292)
                 static int testHum = -1, testWind = -1;
                 ImGui::SameLine();
                 if (ImGui::Button(testHum < 0 ? "Hum 8 m ahead" : "Hum off")) {
