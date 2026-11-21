@@ -36,6 +36,11 @@ constexpr int kTicksPerSecond = 20;
 enum class MachineStatus : uint8_t { Idle, Working, NoPower, Overvoltage, OutputFull, NoFuel, NoLoad, NoWater };
 const char* MachineStatusName(MachineStatus s);
 
+// A campfire's fire (#1103): by itself it lights when it has fuel and something to cook; a player can light it with nothing
+// to cook (it burns its fuel: light and warmth) or put it out (no burn, no cooking) until it is lit again or given
+// something to cook. Lit, it goes back to by itself when its fuel runs out.
+enum FireState : uint8_t { kFireAuto = 0, kFireLit = 1, kFireOut = 2 };
+
 struct MachineView {             // published per machine each tick
     MachineStatus status = MachineStatus::Idle;
     int progress = 0, duration = 0; // recipe ticks done / needed
@@ -47,6 +52,8 @@ struct MachineView {             // published per machine each tick
     int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)
     int heat = 0, heatMax = 0;      // boilers warm up before they make full steam
     bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
+    bool canLight = false;          // a campfire: the screen offers to light it or put it out (#1103)
+    uint8_t fire = kFireAuto;
     bool valid = false;
 };
 
@@ -82,6 +89,8 @@ namespace Factory {
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0); // to (#332): leftovers to that player
     // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).
     void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
+    // (#1103) Light a campfire (lit = true) or put it out; other machines ignore it.
+    void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown

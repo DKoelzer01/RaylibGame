@@ -281,7 +281,9 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. Creative and
     // the terraform tool place freely.
     const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.creative || terrainTool.terraform;
-    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && terrainInHand && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
+    // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
+    const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
+    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
@@ -690,6 +692,9 @@ bool TerrainTool_Stroke(bool dig) {
         if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
+    // (#1098, #1085) Past the till, RMB places ground only with a ground item in hand or in the off hand: a shovel or hoe on
+    // ground that doesn't till (rock) places nothing.
+    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.creative) return false;
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         TerrainEdit e{};

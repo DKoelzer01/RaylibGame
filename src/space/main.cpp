@@ -9545,6 +9545,7 @@ int main(int argc, char** argv)
                     } else {
                         const int fillersBefore = inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete");
                         int built = 0;
+                        terrainTool.heldTool = inventory.count("stone") > 0 ? "stone" : "regolith"; // (#1098: placing takes a ground item in hand)
                         for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
                         std::string inv;
                         for (const ItemDef& d : itemDB.items()) if (inventory.amount(d.id) > 0.0) inv += " " + d.id + "=" + TextFormat("%.2f", inventory.amount(d.id));
@@ -13132,7 +13133,8 @@ int main(int argc, char** argv)
                 if (std::filesystem::exists("saves/bench.sav.regions")) std::filesystem::copy("saves/bench.sav.regions", std::string(hostCopy) + ".regions", std::filesystem::copy_options::recursive, ec);
                 if (!std::filesystem::exists(hostCopy)) { printf("bench: mp menu: needs saves/bench.sav (run any --bench once) -> FAIL\n"); benchMpMenu = false; windowKeepAlive = false; }
                 else {
-                    pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::HostGame; pendingMenu.path = hostCopy; pendingMenu.port = kPort; pendingMenu.maxPlayers = 4;
+                    pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::HostGame; pendingMenu.port = kPort; pendingMenu.maxPlayers = 4;
+                    pendingMenu.path = getenv("RAYLIBGAME_MPMENU_NEW") ? std::string() : std::string(hostCopy); // (#1147: =1 hosts a new world through the New World screen)
                     pendingMenu.name = "tester"; pendingMenu.suitColor = 0x3E86D8;
                     step = 3; t0 = GetTime();
                 }
@@ -13141,6 +13143,11 @@ int main(int argc, char** argv)
                 portTaken = !HostProcess_PortFree(kPort);
                 for (const auto& [session, name] : gJoin.roster) rosterOk = rosterOk || name == "tester";
                 printf("bench: mp menu: hosted and joined after %.0f s: server running %d, port taken %d, on the roster %d\n", GetTime() - t0, (int)hostedOk, (int)portTaken, (int)rosterOk);
+                if (getenv("RAYLIBGAME_MPMENU_NEW")) { // (#1147) the world the New World screen chose: its seed came through the server
+                    const bool seedOk = worldGen.seed == 4242u;
+                    printf("bench: host new world (#1147): the joined world's seed %u (want 4242): %s\n", worldGen.seed, seedOk ? "yes" : "NO");
+                    hostedOk = hostedOk && seedOk;
+                }
                 pendingMenu = MenuResult{}; pendingMenu.action = MenuAction::SaveAndQuit;
                 step = 4; t0 = GetTime();
             } else if (step == 4 && gameState == 0) {
@@ -13298,6 +13305,37 @@ int main(int argc, char** argv)
             }
             const MenuResult m = pendingMenu;
             pendingMenu = MenuResult{};
+            // (#341) Host a save: the world runs in a child process (the --server code) we join over loopback; it is tied to this
+            // game and closes when we leave - not a dedicated server, which runs on its own (#806). A save that doesn't exist yet
+            // is made by that server, from the seed and the <save>.worldgen the New World screen wrote (#1147). False: failed
+            // (the Host page says why).
+            static MenuResult hostNewWorldReq;      // (#1147) the Host page's request while its New World screen is open
+            static bool hostNewWorldPending = false;
+            auto hostSave = [&](const MenuResult& h, const std::string& save, unsigned int seed, bool newWorld) {
+                if (!HostProcess_PortFree(h.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another game, or another program)", h.port)); return false; }
+                ServerConfig cfg;
+                cfg.save = save; cfg.port = h.port; cfg.maxPlayers = h.maxPlayers; cfg.password = h.password; cfg.log = save + ".server.log";
+                cfg.seed = seed; // (#1147) a new world's seed from its New World screen (0: an existing save keeps its own)
+                cfg.ownerId = PlayerId_Local(); // (#1086) we host it: our player is its owner (by id: our client's Hello carries it)
+                const std::string cfgPath = save + ".server.cfg";
+                bool wrote = false;
+                if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }
+                std::string err;
+                if (!wrote) { Menu_MultiplayerFailed(true, "Could not write " + cfgPath); return false; }
+                if (!HostProcess_Start(cfgPath, save + ".console.log", err)) { Menu_MultiplayerFailed(true, "Could not open the world to others: " + err); return false; }
+                hostedHere = true;
+                gHostedServer = TextFormat("on port %d", h.port);
+                printf("host: started a server for %s on port %d (%d players%s); joining it\n", save.c_str(), h.port, h.maxPlayers, h.password.empty() ? "" : ", a password");
+                const std::string why = joinServer(TextFormat("127.0.0.1:%d", h.port), h.name, h.password, h.suitColor, 300.0,
+                                                   newWorld ? "Hosting: a new world is built first (a few minutes) ..." : "Hosting: opening your world ...");
+                if (!why.empty()) {
+                    HostProcess_Stop(10.0); hostedHere = false; gHostedServer.clear();
+                    Menu_MultiplayerFailed(true, "The hosted world didn't open: " + why + " (see " + cfg.log + ")");
+                    return false;
+                }
+                enterGame(true);
+                return true;
+            };
             switch (m.action) {
                 case MenuAction::NewGame:
                     // The New World screen first (#504): seed, terrain parameters, a preview. Its choice is handled below.
@@ -13336,44 +13374,42 @@ int main(int argc, char** argv)
                     enterGame(true);
                     break;
                 }
-                case MenuAction::HostGame: { // (#341) Host game: the world runs in a child process (the --server code) we join over
-                    // loopback; it is tied to this game and closes when we leave - not a dedicated server, which runs on its own (#806)
-                    if (!HostProcess_PortFree(m.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another game, or another program)", m.port)); break; }
-                    const std::string save = m.path.empty() ? Menu_NewSavePath() : m.path; // (the saves folder: it lists and loads like any save)
-                    ServerConfig cfg;
-                    cfg.save = save; cfg.port = m.port; cfg.maxPlayers = m.maxPlayers; cfg.password = m.password; cfg.log = save + ".server.log";
-                    cfg.ownerId = PlayerId_Local(); // (#1086) we host it: our player is its owner (by id: our client's Hello carries it)
-                    const std::string cfgPath = save + ".server.cfg";
-                    bool wrote = false;
-                    if (FILE* cf = fopen(cfgPath.c_str(), "w")) { fputs(ServerConfig_Text(cfg).c_str(), cf); fclose(cf); wrote = true; }
-                    std::string err;
-                    if (!wrote) { Menu_MultiplayerFailed(true, "Could not write " + cfgPath); break; }
-                    if (!HostProcess_Start(cfgPath, save + ".console.log", err)) { Menu_MultiplayerFailed(true, "Could not open the world to others: " + err); break; }
-                    hostedHere = true;
-                    gHostedServer = TextFormat("on port %d", m.port);
-                    printf("host: started a server for %s on port %d (%d players%s); joining it\n", save.c_str(), m.port, m.maxPlayers, m.password.empty() ? "" : ", a password");
-                    const std::string why = joinServer(TextFormat("127.0.0.1:%d", m.port), m.name, m.password, m.suitColor, 300.0,
-                                                       m.path.empty() ? "Hosting: a new world is built first (a few minutes) ..." : "Hosting: opening your world ...");
-                    if (!why.empty()) {
-                        HostProcess_Stop(10.0); hostedHere = false; gHostedServer.clear();
-                        Menu_MultiplayerFailed(true, "The hosted world didn't open: " + why + " (see " + cfg.log + ")");
+                case MenuAction::HostGame:
+                    if (m.path.empty()) { // (#1147) a new world: the New World screen first (seed, terrain, preview), as New Game
+                        if (!HostProcess_PortFree(m.port)) { Menu_MultiplayerFailed(true, TextFormat("Port %d is already in use (another game, or another program)", m.port)); break; }
+                        hostNewWorldReq = m; hostNewWorldPending = true;
+                        NewWorld_Open();
+                        gameState = 3; newWorldFrames = 0;
                         break;
                     }
-                    enterGame(true);
+                    hostSave(m, m.path, 0, false);
                     break;
-                }
                 case MenuAction::ReportBug: BugReport_Open(world); break; // stays paused (#169)
                 case MenuAction::None: break;
             }
             // The New World screen's choice from last frame (#504). --test-menus creates with its own seed after a moment.
             NewWorldChoice nw = pendingNewWorld;
             pendingNewWorld = NewWorldChoice{};
-            if (gameState == 3 && (benchMenus || playNewSeconds > 0.0) && nw.kind == NewWorldChoice::None) { // --play-new (#387) too
+            if (gameState == 3 && (benchMenus || playNewSeconds > 0.0 || (benchMpMenu && hostNewWorldPending)) && nw.kind == NewWorldChoice::None) { // --play-new (#387) too
                 ++newWorldFrames;
                 if (newWorldFrames == 15 && benchMenus) { TakeScreenshot("bench_menu_newworld.png"); printf("bench: menus: New Game -> the New World screen (#504): yes\n"); }
-                if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = worldGen.seed; }
+                if (newWorldFrames == 20) { nw.kind = NewWorldChoice::Create; nw.seed = benchMpMenu ? 4242u : worldGen.seed; } // (--test-mp-menu with RAYLIBGAME_MPMENU_NEW: a chosen seed, #1147)
             }
-            if (gameState == 3 && nw.kind == NewWorldChoice::Create) {
+            if (gameState == 3 && hostNewWorldPending && nw.kind == NewWorldChoice::Create) {
+                // (#1147) Hosting a new world: its save gets the choice (the seed in the server's config, <save>.worldgen beside
+                // it, the difficulty and XP rate in settings.txt, which the server reads), and the server builds it.
+                hostNewWorldPending = false;
+                const std::string save = Menu_NewSavePath();
+                if (bench) printf("bench: host new world (#1147): save %s, seed %u, the screen's parameters in %s.worldgen\n", save.c_str(), nw.seed, save.c_str());
+                SetWorldSavePath(save.c_str());
+                NewWorld_Apply(nw);
+                settings.difficulty = nw.difficulty; settings.xpRate = nw.xpRate; Settings_Save();
+                gameState = 0; // (the menu again if it fails: the Host page says why)
+                hostSave(hostNewWorldReq, save, nw.seed != 0 ? nw.seed : worldGen.seed, true);
+            } else if (gameState == 3 && hostNewWorldPending && nw.kind == NewWorldChoice::Cancel) {
+                hostNewWorldPending = false;
+                gameState = 0; Menu_MultiplayerFailed(true, ""); // back on the Host page; no world was made
+            } else if (gameState == 3 && nw.kind == NewWorldChoice::Create) {
                 SetWorldSavePath(bench ? "saves/bench.sav" : Menu_NewSavePath().c_str()); // bench runs never touch the player's saves
                 if (!worldFresh) {
                     if (bench) worldGen.seed = nw.seed; // benches write no parameters beside the save (default terrain)
