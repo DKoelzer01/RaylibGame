@@ -21,6 +21,7 @@ constexpr double kWarmup = 10.0, kMeasure = 60.0; // s of factory time
 int target = 5000;
 double t0 = 0.0;
 long long made0 = 0;
+uint64_t body0 = 0; uint32_t plot0 = 0; int mac0 = -1, chest0 = -1; // the first group (the views checked at the end)
 }
 
 SCENARIO("perf/factory-scale") {
@@ -52,6 +53,7 @@ SCENARIO("perf/factory-scale") {
                 for (int x = 3; x < 11; ++x) plot->place({ PartType::Conveyor, { bx + x, 0, bz + 2 }, 0 });
                 if (gen < 0 || m1 < 0 || m2 < 0 || ch < 0) continue;
                 placed += 4;
+                if (chest0 < 0) { body0 = c.body->id; plot0 = plot->id; mac0 = m1; chest0 = ch; }
                 Factory::Sync(c.world); // (the layout first, so the seeds find the machines)
                 Factory::Seed(c.body->id, plot->id, gen, "coal", 64);
                 Factory::Seed(c.body->id, plot->id, m1, "stone", 64);
@@ -86,6 +88,11 @@ SCENARIO("perf/factory-scale") {
         c.metric("items made in the minute", (double)(st.itemsMade - made0), "", false);
         c.gt("ticks measured", st.recentTicks, 1000.0);
         c.gt("the chains work (half the machines active)", st.activeMachines, st.machines * 0.4);
+        // (#1207) the near-plot views (republished only on change) still show the chest filling and the macerator working
+        int sand = 0;
+        for (const auto& [item, n] : Factory::ChestContents(body0, plot0, chest0)) if (item == "sand") sand += n;
+        c.gt("the first chest shows the sand its conveyor brought", sand, 0.0);
+        c.check("the first macerator shows working", Factory::Working(body0, plot0, mac0));
         c.note(TextFormat("doc target (scale 2): mean < 5 ms, p99 < 8 ms at 5000 all near; now %.2f / %.2f ms", st.meanTickMs, st.p99TickMs));
         return true;
     });

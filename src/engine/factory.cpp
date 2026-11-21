@@ -263,6 +263,8 @@ struct PlotSim {
     std::vector<Net> itemNets, powerNets;
     std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
     PlotStats stats;                        // (#1199)
+    // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
+    struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
 };
 PlotStats* gCount = nullptr;  // the plot ticking now (BurnFuel counts the fuel it takes into it)
 long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
@@ -328,6 +330,7 @@ inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
     auto mix = [](uint64_t x) { x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull; return x ^ (x >> 31); };
     return mix(mix(body) ^ (((uint64_t)plot << 32) | (uint32_t)part));
 }
+bool viewsRebuild = false; // (#1207) a moved plot: rebuild the near-plot views from scratch
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
 std::vector<Factory::MachineKey> watchMany;                         // (#332) a server's open machines (viewMutex)
@@ -856,7 +859,7 @@ void SimLoop() {
             if (reset) { plots.clear(); plotIndexDirty = true; emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
             for (const MoveMsg& mv : moves)
-                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; plotIndexDirty = true; }
+                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; plotIndexDirty = true; viewsRebuild = true; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<ItemOut> toCursor; // kind 8 (#192)
@@ -951,29 +954,62 @@ void SimLoop() {
                 FillCableView();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
-                chestView.clear();
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
                 if (reset) pumpPending.clear();
                 tankView.clear();
                 for (const auto& [k, n] : filled) if (auto tit = tankPending.find(k); tit != tankPending.end() && (tit->second -= n) <= 0) tankPending.erase(tit);
                 if (reset) tankPending.clear();
+                // Boilers' tank room and pumps' water (every plot; few machines): one pass.
                 for (const PlotSim& ps : plots)
-                    for (const Machine& m : ps.machines)
-                        if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
-                workingView.clear(); workingByPlot.clear(); // machines working on the plots near the player (models, smoke: Factory::Working)
-                for (const PlotSim& ps : plots)
-                    if (ps.nearPlayer) for (const Machine& m : ps.machines) if (m.status == MachineStatus::Working) { workingView.insert(WorkingKey(ps.body, ps.plot, m.part)); workingByPlot[{ ps.body, ps.plot }].push_back(m.part); }
-                for (const PlotSim& ps : plots)
-                    for (const Machine& m : ps.machines)
-                        if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
-                for (const PlotSim& ps : plots) {
-                    if (!ps.nearPlayer) continue;
                     for (const Machine& m : ps.machines) {
-                        if (m.type != PartType::Chest) continue;
-                        auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
-                        for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                        if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
+                        else if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
                     }
+                // (#1207) Machines working and chest contents on the plots near the player (models, smoke, chest screens): each
+                // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
+                // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
+                if (reset || viewsRebuild) {
+                    workingView.clear(); workingByPlot.clear(); chestView.clear();
+                    for (PlotSim& ps : plots) ps.pub = PlotSim::Published{};
+                    viewsRebuild = false;
+                }
+                static std::vector<int> working, chests;
+                for (PlotSim& ps : plots) {
+                    PlotSim::Published& pub = ps.pub;
+                    auto unpublishWorking = [&] { for (int part : pub.working) workingView.erase(WorkingKey(ps.body, ps.plot, part)); workingByPlot.erase({ ps.body, ps.plot }); pub.working.clear(); };
+                    auto unpublishChests = [&] { for (int part : pub.chests) chestView.erase(std::make_tuple(ps.body, ps.plot, part)); pub.chests.clear(); };
+                    if (!ps.nearPlayer) {
+                        if (pub.near) { unpublishWorking(); unpublishChests(); pub.near = false; }
+                        continue;
+                    }
+                    working.clear(); chests.clear();
+                    uint64_t h = 1469598103934665603ull; // FNV-1a over the chests' parts and slots
+                    auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+                    for (const Machine& m : ps.machines) {
+                        if (m.status == MachineStatus::Working) working.push_back(m.part);
+                        if (m.type != PartType::Chest) continue;
+                        chests.push_back(m.part);
+                        mix((uint64_t)m.part);
+                        for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) mix(((uint64_t)(uint32_t)m.in[i].item << 32) ^ (uint64_t)(uint32_t)(m.in[i].count * 64 + i));
+                    }
+                    if (!pub.near || working != pub.working) {
+                        unpublishWorking();
+                        for (int part : working) workingView.insert(WorkingKey(ps.body, ps.plot, part));
+                        if (!working.empty()) workingByPlot[{ ps.body, ps.plot }] = working;
+                        pub.working = working;
+                    }
+                    if (!pub.near || h != pub.chestHash || chests != pub.chests) {
+                        unpublishChests();
+                        for (const Machine& m : ps.machines) {
+                            if (m.type != PartType::Chest) continue;
+                            auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
+                            for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                        }
+                        pub.chests = chests;
+                        pub.chestHash = h;
+                    }
+                    pub.near = true;
                 }
             }
             // (#1207) The whole tick (commands, plots, views) into the last minute's ring; its percentiles once a second.
