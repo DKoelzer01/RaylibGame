@@ -144,6 +144,9 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "thrower") c.thrower = v == "1" || v == "yes";
         else if (k == "thief") c.thief = v == "1" || v == "yes";
         else if (k == "torch") c.torch = v == "1" || v == "yes";
+        else if (k == "split") c.split = v == "1" || v == "yes";
+        else if (k == "wet") c.wet = v == "1" || v == "yes";
+        else if (k == "corrode") { float n = 0.0f; ok = num(n); c.corrode = (int)n; }
         else if (k == "throw") ok = num(c.throwDamage);
         else if (k == "throwmin") ok = num(c.throwMin);
         else if (k == "throwrange") ok = num(c.throwRange);
@@ -355,6 +358,7 @@ bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s) {
     if (s.kind == 2) return false;                                 // rubble is solid
     if (s.depth < c.depthMin || s.depth > c.depthMax) return false;
     if (s.light > c.darkMax + 1e-4f) return false;
+    if (c.wet && !s.wet) return false;                             // (#1226) by the cave water only
     switch (c.habitat) {
         case Habitat::Cave: return !s.nearMouth && (s.kind == 0 || s.kind == 3 || s.kind == 4);
         case Habitat::Mouth: return s.nearMouth;                    // scavengers: by the entrances (decided)
@@ -573,5 +577,16 @@ TEST(Creatures, ThrowAimLands) {
     CreatureSpec c; std::string err;
     ASSERT_TRUE(Creatures_ParseLine("scav | scavenger | group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8", c, &err)) << err;
     EXPECT_EQ(c.group, 3); EXPECT_TRUE(c.thrower && c.thief && c.torch); EXPECT_FLOAT_EQ(c.throwRange, 14.0f);
+}
+
+// #1226: the ooze keys, and a wet-only species keeps to wet sites.
+TEST(Creatures, OozeKeysAndWetSites) {
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("ooze | ooze | split=1 corrode=15 wet=1 habitat=cave depth=10-400 dark=0.2", c, &err)) << err;
+    EXPECT_TRUE(c.split); EXPECT_TRUE(c.wet); EXPECT_EQ(c.corrode, 15);
+    SpawnSite s; s.kind = 0; s.depth = 30.0f; s.light = 0.0f;
+    EXPECT_FALSE(Spawn_Fits(c, s)); // dry
+    s.wet = true;
+    EXPECT_TRUE(Spawn_Fits(c, s));
 }
 #endif
