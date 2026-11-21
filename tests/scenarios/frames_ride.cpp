@@ -68,6 +68,9 @@ static void Build(ScenarioDef& s) {
         const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
         c.note(TextFormat("standing 3 s at %.0f deg/s, surface %.2f m/s, grounded %.0f%%: view drift %.3f deg (largest single step %.4f deg), feet %.4f m",
                           kSpinDeg, Vector3Length(b.surfaceVelocity(feet)), 100.0 * st.grounded / std::max(1, st.frames), st.viewDrift, st.maxStepTurn, st.posDrift));
+        if (Frames_On()) // (F2: is the frame path in use here? the frame must be Fixed on this body)
+            c.note(TextFormat("frame: body %llx (this body %llx), %s; frame speed %.4f m/s", (unsigned long long)player.frame.frame.body,
+                              (unsigned long long)b.netId, player.frame.frame.kind == FrameKind::Fixed ? "Fixed" : "Centred", player.frame.vel.length()));
         c.metric("view drift", st.viewDrift, "deg");
         c.metric("largest single-step view turn", st.maxStepTurn, "deg");
         c.metric("feet drift", st.posDrift, "m");
