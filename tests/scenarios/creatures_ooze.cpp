@@ -4,6 +4,7 @@
 //   while it burns, doesn't split it. Killed, it drops the ore it ate.
 #include "scenario.h"
 #include "animals.h"
+#include "combat.h"
 #include "creatures.h"
 #include "damage.h"
 #include "hotbar.h"
