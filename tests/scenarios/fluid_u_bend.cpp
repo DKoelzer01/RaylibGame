@@ -25,6 +25,7 @@ struct State {
     Vector3 home{}, ax{}, ay{};
     float r0 = 0.0f, poured = 0.0f;
     double vol0 = 0.0; // the simulated volume once the pour is done (m^3)
+    double lastPour = 0.0; // when the pour last added water (s, step time)
     double nextPour = 0.0;
     int k = 0;
     Vector3 pt(float x, float y, float h) const {
@@ -74,11 +75,21 @@ static void Build(ScenarioDef& s) {
         S.camera(c);
         c.waitingFor("80 m^3 poured");
         if (c.t <= 1.0) return false;
+        // Only while the near pit stands 0.75 m or more under the rim (#1168): poured faster than the tunnel takes it (it was
+        // ~2.5 m^3/s into 8 m^2), the pit ran over and water left over the ground, and every level measured a spill. Without
+        // the U-bend levelling (the baseline) the pit never drains enough: after 20 s with no room the pour ends there.
         if (c.t >= S.nextPour) {
             S.nextPour = c.t + 0.1;
-            const float x = -11.5f + 1.0f * (float)(S.k % 4), y = (S.k / 4) % 2 ? 0.5f : -0.5f;
-            ++S.k;
-            S.poured += Fluid::Pour(*c.body, S.pt(x, y, -0.5f), 0.25f);
+            if (S.level(*c.body, -10.0f) < -0.75f) {
+                const float x = -11.5f + 1.0f * (float)(S.k % 4), y = (S.k / 4) % 2 ? 0.5f : -0.5f;
+                ++S.k;
+                S.poured += Fluid::Pour(*c.body, S.pt(x, y, -0.5f), 0.25f);
+                S.lastPour = c.t;
+            } else if (c.t - S.lastPour > 20.0) {
+                c.note("the near pit stayed full for 20 s: the pour ends at " + std::to_string(S.poured) + " m^3");
+                S.vol0 = Fluid::GetStats().volume;
+                return true;
+            }
         }
         if (S.poured < kPour) return false;
         S.vol0 = Fluid::GetStats().volume; // the sandbox has no other water: the simulated volume is what was poured
@@ -136,6 +147,10 @@ static void Build(ScenarioDef& s) {
             const double gap = box(-7.75f, 7.75f, -1.5f, 1.5f, kTunnelTop + 0.5f, 1.0f); // over the tunnel's roof, under the ground
             c.note(TextFormat("elsewhere by place (m^3): from 1 m over the ground up %.2f, beside %.2f, past the ends %.2f, under the floor %.2f, "
                               "over the tunnel's roof %.2f", over, beside, ends, under, gap));
+            // Nothing ran over the rim (the pour waits for room): water on the ground around the site, not over the pits.
+            const double spill = box(-40.0f, 40.0f, -40.0f, 40.0f, -0.25f, 1.5f) - box(-12.5f, -7.75f, -1.5f, 1.5f, -0.25f, 1.5f) -
+                                 box(7.75f, 12.5f, -1.5f, 1.5f, -0.25f, 1.5f);
+            c.lt("no water ran over the rim onto the ground (m^3)", spill, 0.3);
         }
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
         c.metric("simulated volume after the pour", S.vol0, "m^3", false);
