@@ -274,6 +274,7 @@ struct Machine {
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
     uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     uint8_t mode = 0;                       // (#1271 L6c) an assembler: 0 assembles, 1 disassembles (#1427; until then it idles)
+    int pick = -1;                          // (#1271 L6c) the recipe output a player chose for a machine of several recipes (-1: any)
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
@@ -810,6 +811,7 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "h") m.heat = num();
                 else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
                 else if (tag == "mode") m.mode = (uint8_t)std::clamp(num(), 0, 1); // (#1271 L6c)
+                else if (tag == "pick" && k < s.size()) m.pick = tables.item(s[k++]); // (#1271 L6c) a player's recipe choice
                 else if (tag == "sum") ps->loadedSummary = true; // (#1302) it was in the summary sim: its caps follow
                 else if (tag == "cap" && k + 2 < s.size()) { // a cap, kept only if that recipe is still this machine's with that output
                     const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int c = atoi(s[k + 2].c_str()); k += 3;
@@ -1001,7 +1003,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.mode == 1) { m.status = MachineStatus::Idle; continue; } // (#1271 L6c) set to disassemble: #1427 brings it
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
-                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
+                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
@@ -1516,6 +1518,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.canLight = m.type == PartType::Campfire;
     v.fire = m.fire;
     v.mode = m.mode; // (#1271 L6c)
+    v.pick = m.pick >= 0 ? tables.name(m.pick) : std::string(); // (#1271 L6c)
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -1599,7 +1602,7 @@ void SimLoop() {
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
-                if (im.kind == 14) { if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; sm.mode = (uint8_t)std::clamp(im.count, 0, 1); sm.recipe = -1; sm.progress = 0; sm.dirty = true; } continue; } // (#1271 L6c) an assembler's mode
+                if (im.kind == 14) { if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; if (im.count < 0) { sm.pick = im.item; if (sm.recipe >= 0 && sm.pick >= 0 && (tables.recipes[sm.recipe].out.empty() || tables.recipes[sm.recipe].out[0].item != sm.pick)) { sm.recipe = -1; sm.progress = 0; } } else { sm.mode = (uint8_t)std::clamp(im.count, 0, 1); sm.recipe = -1; sm.progress = 0; } sm.dirty = true; } continue; } // (#1271 L6c) an assembler's mode (count 0/1), or a machine's recipe pick (count -1: item, -1 any)
                 if (im.kind == 13) { // (#1271 L2) a strike on an anvil: its work, up to two strikes ahead
                     if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; sm.strike = std::min(sm.strike + kStrikeTicks, 2 * kStrikeTicks); sm.dirty = true; }
                     continue;
@@ -2130,6 +2133,10 @@ void Factory::SetMode(uint64_t body, uint32_t plot, int part, int mode) { // (#1
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 14, body, plot, part, -1, mode });
 }
+void Factory::SetPick(uint64_t body, uint32_t plot, int part, const std::string& item) { // (#1271 L6c)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 14, body, plot, part, item.empty() ? -1 : tables.item(item), -1 });
+}
 void Factory::Strike(uint64_t body, uint32_t plot, int part) { // (#1271 L2)
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 13, body, plot, part, -1, 0 });
@@ -2247,6 +2254,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
             if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
             if (m.mode != 0) fprintf(f, " mode %d", m.mode); // (#1271 L6c)
+            if (m.pick >= 0) fprintf(f, " pick %s", tables.name(m.pick).c_str()); // (#1271 L6c)
             // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
             // far it goes on in the summary at once instead of measuring for a minute
             if (summary) {
@@ -3059,6 +3067,13 @@ TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     for (int t = 0; t < 2 * ticks + 40; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "two circuits in two crafts' time";
     EXPECT_EQ(CountItems(asm1.in.data(), InSlots(asm1), tables.item("vacuum_tube")), 4);
+    // Its recipe picked (the screen's "Makes"): LV packs from the same parts, never a circuit
+    asm1.pick = tables.item("lv_pack"); asm1.recipe = -1; asm1.progress = 0; asm1.dirty = true; // (as SetPick does: the circuit it began is dropped)
+    int packTicks = 200;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == asm1.pick) { packTicks = r.ticks; break; }
+    for (int t = 0; t < packTicks + 40; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "picked LV packs: no more circuits";
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("lv_pack")), 2) << "one craft of 2 LV packs";
     plots.clear(); plotIndexDirty = true;
 }
 #endif

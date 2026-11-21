@@ -588,6 +588,13 @@ namespace {
                 if (type != PartType::LvAssembler) { refuse("Only an assembler switches that way"); return; }
                 Factory::SetMode(b->id, plot->id, a.part, a.count != 0 ? 1 : 0);
                 break;
+            case 12: { // (#1271 L6c) a machine's recipe pick ("" any): only an output one of its recipes makes
+                bool known = a.item.empty();
+                for (const Factory::RecipeInfo& r : Factory::RecipeList()) known = known || (r.machine == type && !r.out.empty() && r.out[0].first == a.item);
+                if (!known) { refuse("That machine makes no such thing"); return; }
+                Factory::SetPick(b->id, plot->id, a.part, a.item);
+                break;
+            }
             default: return;
         }
         SendChangedItems(conn, inv, before);

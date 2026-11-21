@@ -530,7 +530,7 @@ namespace {
             static bool fed = false;
             if (!fed) {
                 Give("generator", "any_log", 4);
-                Factory::SetVariant(body->id, plot->id, parts["lv_assembler"], "basic_circuit"); // (its recipe chosen: an LV pack takes the same parts)
+                Factory::SetPick(body->id, plot->id, parts["lv_assembler"], "basic_circuit"); // (its recipe picked, as on its screen: an LV pack takes the same parts)
                 inventory.add("vacuum_tube", 2); inventory.add("copper_wire", 4); inventory.add("steel_plate", 1); // (a circuit's parts, scripted too)
                 Give("lv_assembler", "vacuum_tube", 2); Give("lv_assembler", "copper_wire", 4); Give("lv_assembler", "steel_plate", 1);
                 fed = true;
