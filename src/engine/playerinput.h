@@ -25,6 +25,7 @@ enum class Act : int {
     DropItem, SwapOffHand,                            // Q, F in the game window: drop from the slot under the mouse (Ctrl: the stack), swap it with the off hand (#862)
     LockOn,                                           // middle mouse: the soft lock-on on a creature, toggled (#1216)
     Dodge,                                            // unbound by default (Alt is free look): dodge toward the held direction (#1218)
+    MagicSight,                                       // Y: magic sight: a tap shows or hides it, a hold studies what you look at (#1249; RAYLIBGAME_MAGIC)
     Count
 };
 

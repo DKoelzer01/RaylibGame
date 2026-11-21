@@ -1,0 +1,5 @@
+# Magic items (#1001; #1250 discovery). items.txt's format; loaded only with RAYLIBGAME_MAGIC=1, so a world without magic
+# never sees them (loot tables leave out unknown items).
+# id | display name | kind | colour r,g,b | description
+first_sight_page | Tome page: First Sight | 20 | 200,170,255 | A faded page that hums when held. Hold it and right-click to read it: it opens your magic sight (Y).
+resonant_crystal | Resonant crystal       | 99 | 170,230,255 | A crystal that rings faintly, found in rock on a ley line. Something to study.

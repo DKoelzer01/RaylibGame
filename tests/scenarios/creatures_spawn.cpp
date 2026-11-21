@@ -56,7 +56,7 @@ SCENARIO("creatures/cave-spawn") {
         int under = 0, open = 0, far = 0, n = 0;
         std::map<std::tuple<int, int, int>, int> perChunk;
         for (int i = S.count0; i < Animals_Count(); ++i) {
-            if (Animals_Body(i) != c.body->name || (Animals_SpeciesOf(i) != "hornhide" && Animals_SpeciesOf(i) != "creature_nest")) continue; // (the cave dwellers and nests only)
+            if (Animals_Body(i) != c.body->name || (Animals_SpeciesOf(i).first != "hornhide" && Animals_SpeciesOf(i).first != "creature_nest")) continue; // (the cave dwellers and nests only)
             const Vector3 p = Animals_Position(i);
             const Vector3 dir = Vector3Normalize(p);
             const float depth = c.field->radius + c.field->elevation(dir) - Vector3Length(p);
