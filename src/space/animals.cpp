@@ -698,12 +698,16 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         if (c.habitat == Habitat::Cave || c.habitat == Habitat::Mouth) { const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c }); }
     if (kinds.empty()) return;
     const float R = SpawnTune::kChunk;
-    const Vector3 lo = Vector3SubtractValue(centre, R), hi = Vector3AddValue(centre, R);
+    // Within 64 m sideways of the player, down to 200 m under them (caves run deep under a surface player) and 30 m over.
+    const float kDown = 200.0f, kUp = 30.0f;
+    const Vector3 cu = Vector3Normalize(centre);
+    const Vector3 lo = Vector3SubtractValue(centre, kDown), hi = Vector3AddValue(centre, kDown);
     std::vector<PlanetField::CaveSpan> spans;
     std::vector<PlanetField::CaveEntrance> ents;
     f.caveSpansNear(lo, hi, spans);
     f.caveEntrancesNear(Vector3SubtractValue(lo, 20.0f), Vector3AddValue(hi, 20.0f), ents);
     std::vector<SpawnSite> sites;
+    int nSolid = 0, nNoFloor = 0, nNear = 0, nClaim = 0, nFar = 0;
     for (const PlanetField::CaveSpan& sp : spans) {
         if (sp.kind == 2) continue; // rubble is solid
         const float len = Vector3Distance(sp.a, sp.b);
@@ -711,18 +715,19 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         for (int k = 0; k < n; ++k) {
             const float t = (k + 0.5f) / n;
             const Vector3 axis = Vector3Lerp(sp.a, sp.b, t);
-            if (Vector3Distance(axis, centre) > R) continue;
+            { const Vector3 rel = Vector3Subtract(axis, centre); const float v = Vector3DotProduct(rel, cu);
+              if (Vector3Length(Vector3Subtract(rel, Vector3Scale(cu, v))) > R || v < -kDown || v > kUp) { ++nFar; continue; } }
             const float r = sp.ra + (sp.rb - sp.ra) * t;
             const Vector3 up = Vector3Normalize(sp.up);
-            if (body.densityAt(axis) >= ISO_LEVEL) continue;          // the axis itself in rock (a squeezed span): no room
+            if (body.densityAt(axis) >= ISO_LEVEL) { ++nSolid; continue; }          // the axis itself in rock (a squeezed span): no room
             Vector3 floor{}; bool found = false;
             for (float d = 0.25f; d <= r + 2.0f; d += 0.25f) {
                 const Vector3 q = Vector3Subtract(axis, Vector3Scale(up, d));
                 if (body.densityAt(q) >= ISO_LEVEL) { floor = Vector3Add(q, Vector3Scale(up, 0.25f)); found = true; break; }
             }
-            if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) continue; // no headroom
-            if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) continue;
-            if (Claims_At(body.name, floor)) continue;                // never inside claimed land
+            if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) { ++nNoFloor; continue; } // no headroom
+            if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) { ++nNear; continue; }
+            if (Claims_At(body.name, floor)) { ++nClaim; continue; } // never inside claimed land
             SpawnSite s;
             s.floor = floor; s.up = up; s.kind = sp.kind; s.radius = r;
             const Vector3 dir = Vector3Normalize(floor);
@@ -733,6 +738,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         }
     }
     caveSites = (int)sites.size();
+    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites);
     if (sites.empty()) return;
     const int nestSi = SpeciesIndex("creature_nest");
     const double now = SimTime();
@@ -763,6 +769,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
 } // namespace
 
 int Animals_CaveSpawned() { return caveSpawned; }
+const std::string& Animals_SpeciesOf(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? species[animals[i].species].id : none; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
 void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }

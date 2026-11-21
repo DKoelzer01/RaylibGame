@@ -41,6 +41,7 @@ int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
 // (#1223) Cave creature spawning: spawned so far, the sites found in the last pass; spawn on the next update; forget the chunks.
+const std::string& Animals_SpeciesOf(int index); // (#1223 tests) its species id ("" none)
 int Animals_CaveSpawned();
 int Animals_CaveSites();
 void Animals_CaveSpawnNow();
