@@ -136,6 +136,14 @@ uint downFlux(uint u, uint l, bool lProc, bool lExists) {
     if (F(l) > 0u && F(u) > 0u && KIND(l) != KIND(u)) return 0u;  // kinds don't mix
     return min(F(u), CAP(l) > F(l) ? CAP(l) - F(l) : 0u); // up to its room (#454)
 }
+// The fall, except into a cell held up by pressure (#1168: FluidKernel::fall): none into a cell whose head stands at or
+// above the falling water's surface (from that cell's bottom).
+const int kPushMax = 32; // the pressure pass's push at most (fill units a substep; FluidKernel::kPushMax)
+uint fall(uint u, int gl, uint l, bool lProc, bool lExists) {
+    uint f = downFlux(u, l, lProc, lExists);
+    if (f == 0u || pressure == 0 || gl < 0) return f;
+    return pr[gl] >= 255 + int(SH(u) + F(u)) ? 0u : f;
+}
 
 // Whether a cell rests (can spread sideways): on solid, a full cell, or another fluid kind.
 bool rests(uint slot, int x, int y, int z, uint c) {
@@ -227,11 +235,11 @@ int upMove(int gc) {
     cellPos(ga, as_, ax, ay, az);
     bool paa; int faa;
     int gaa = neighbour(as_, ax, ay, az, 0, 0, 1, paa, faa);
-    int fallIn = gaa >= 0 ? int(downFlux(inC[gaa], a, true, true) * uint(paa)) : 0;
+    int fallIn = gaa >= 0 ? int(fall(inC[gaa], ga, a, true, true) * uint(paa)) : 0;
     int room = int(CAP(a)) - int(F(a)) - fallIn;
     int gb = neighbour(s, x, y, z, 0, 0, -1, pb, fb);
-    int keep = int(F(c)) - int(downFlux(c, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0));
-    return max(0, min(excess / 2, min(room, keep)));
+    int keep = int(F(c)) - int(fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0));
+    return max(0, min(min(excess / 2, kPushMax), min(room, keep)));
 }
 // The water surface over a cell's floor (fill units, 255 a cell): its own height, plus the cells above while it is full.
 int headOf(int g, uint c) {
@@ -709,8 +717,8 @@ void main() {
         int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
         int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
         uint below = gb >= 0 ? inC[gb] : 0u, above = ga >= 0 ? inC[ga] : 0u;
-        uint outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
-        uint inF = ga >= 0 ? downFlux(above, c, true, true) * uint(pA) : 0u;
+        uint outF = f > 0 ? fall(c, gb, below, pB, gb >= 0) : 0u;
+        uint inF = ga >= 0 ? fall(above, g, c, true, true) * uint(pA) : 0u;
         if (gb < 0 && f > 0 && (fl & SOURCE) == 0u) atomicOr(flagsOut[slot], 1u << uint(1 + fB));
         int upOut = 0, upIn = 0; // the pressure pass (#1168): the head now, and what full cells push up
         if (pressure != 0) {

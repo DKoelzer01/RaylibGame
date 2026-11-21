@@ -141,11 +141,22 @@ struct Pass {
         cellPos(ga, as, ax, ay, az);
         bool paa; int faa;
         const int gaa = neighbour(as, ax, ay, az, 0, 0, 1, paa, faa);
-        const int fallIn = gaa >= 0 ? (int)(downFlux(inC[gaa], a, true, true) * (uint32_t)paa) : 0; // as the vertical pass's inF
+        const int fallIn = gaa >= 0 ? (int)(fall(inC[gaa], ga, a, true, true) * (uint32_t)paa) : 0; // as the vertical pass's inF
         const int room = (int)CAP(a) - (int)F(a) - fallIn;
         const int gb = neighbour(s, x, y, z, 0, 0, -1, pb, fb);
-        const int keep = (int)F(c) - (int)downFlux(c, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0); // as the vertical pass's outF
-        return std::max(0, std::min({ excess / 2, room, keep }));
+        const int keep = (int)F(c) - (int)fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0); // as the vertical pass's outF
+        // At most kPushMax a substep: the giver stays nearly full and is refilled from below the next substep, so the column
+        // rises as a whole (a whole cell lifted at once left a hole under it, and the lifted water fell straight back).
+        return std::max(0, std::min({ excess / 2, room, keep, kPushMax }));
+    }
+    static constexpr int kPushMax = 32; // fill units (1/8 of a row) a substep
+    // The vertical pass's fall (downFlux), except into a cell held up by pressure (#1168): water does not fall into a cell
+    // whose head stands at or above its own surface (measured from that cell's bottom). The push and the fall cancelled
+    // otherwise: what a full cell lifted fell back into it the next substep, and the column never rose.
+    uint32_t fall(uint32_t u, int gl, uint32_t l, bool lProc, bool lExists) const {
+        const uint32_t f = downFlux(u, l, lProc, lExists);
+        if (f == 0u || !p.pressure || gl < 0) return f;
+        return g.pr[gl] >= 255 + (int32_t)(SH(u) + F(u)) ? 0u : f;
     }
     bool rests(int slot, int x, int y, int z, uint32_t c) const {
         bool proc; int face;
@@ -647,8 +658,8 @@ struct Pass {
             const int gb = neighbour(slot, x, y, z, 0, 0, -1, pB, fB);
             const int ga = neighbour(slot, x, y, z, 0, 0, 1, pA, fA);
             const uint32_t below = gb >= 0 ? inC[gb] : 0u, above = ga >= 0 ? inC[ga] : 0u;
-            const uint32_t outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
-            const uint32_t inF = ga >= 0 ? downFlux(above, c, true, true) * (uint32_t)pA : 0u;
+            const uint32_t outF = f > 0 ? fall(c, gb, below, pB, gb >= 0) : 0u;
+            const uint32_t inF = ga >= 0 ? fall(above, gi, c, true, true) * (uint32_t)pA : 0u;
             if (gb < 0 && f > 0 && !(fl & SOURCE)) g.flags[slot] |= 1u << (1 + fB);
             // The pressure pass (#1168): this substep's head, and the water a full cell pushes up (out of this one, into
             // this one from below; the below cell's push only when its slot runs: a ring slot's heads are stale).
