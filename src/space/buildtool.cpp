@@ -67,10 +67,10 @@ namespace {
     // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
     struct PendingFoundation { uint64_t body; TerrainEdit edit; };
     std::deque<PendingFoundation> foundationsPending;
-    // A frame's share for foundations: at 3 ms a 60-part placement lays in ~4 frames, its worst frame 6.7 ms (from ~12 ms
-    // in one frame; perf/blueprint-place, 2026-11-21). An edit costs ~0.16 ms; a 1 ms budget (11 frames) measured no lower
-    // worst frame (8-12 ms either way: the cost after a placement is not the edit). RAYLIBGAME_FOUNDATION_MS overrides (A/B).
-    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 3.0; }();
+    // A frame's share for foundations (#1372, perf/blueprint-place with the world idle, 2026-11-21): a 60-part placement all in
+    // one frame was a ~12 ms frame; queued at 3 ms its worst frame after was +5.4 ms over a ~2.7 ms baseline (5 frames), at
+    // 1 ms +3.9 ms (14 frames, ~0.23 s). An edit costs ~0.16 ms. RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 1.0; }();
     constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
 }
 void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
@@ -90,12 +90,22 @@ void BuildTool_ApplyPendingFoundations(double budgetMs) {
     if (foundationsPending.empty()) return;
     PROFILE_SCOPE("blueprint foundations (queued)");
     const double t0 = GetTime();
+    // (#1372) the next group only if it fits the budget by the groups' cost so far (checking only before each group overran a
+    // 3 ms budget to 4); at least one group a frame, so the queue always drains
+    static double groupMs = 0.0; // a running average
     std::vector<TerrainEdit> group;
-    while (!foundationsPending.empty() && (budgetMs <= 0.0 || (GetTime() - t0) * 1000.0 < budgetMs)) {
+    int groups = 0;
+    while (!foundationsPending.empty()) {
+        const double spent = (GetTime() - t0) * 1000.0;
+        if (budgetMs > 0.0 && groups > 0 && spent + groupMs > budgetMs) break;
         const uint64_t id = foundationsPending.front().body;
         group.clear();
         while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        const double g0 = GetTime();
         if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+        const double ms = (GetTime() - g0) * 1000.0;
+        groupMs = groupMs > 0.0 ? groupMs * 0.8 + ms * 0.2 : ms;
+        ++groups;
     }
 }
 
