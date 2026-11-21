@@ -23,7 +23,7 @@ void AudioMixer::expire(double now) {
         if (v.active && now >= v.end) v.active = false;
 }
 
-int AudioMixer::play(double now, int sound, AudioBus bus, AudioPriority priority, float volume, float pitch, float lengthSeconds, int* stolenSound) {
+int AudioMixer::play(double now, int sound, AudioBus bus, AudioPriority priority, float volume, float pitch, float lengthSeconds, int* stolenSound, bool stealEqual) {
     if (stolenSound) *stolenSound = -1;
     expire(now);
     int pick = -1;
@@ -33,10 +33,10 @@ int AudioMixer::play(double now, int sound, AudioBus bus, AudioPriority priority
         // Steal: the lowest priority that is not above the new sound's, the oldest of those.
         for (int i = 0; i < kVoices; ++i) {
             const Voice& v = voices[i];
-            if (v.priority > priority) continue;
+            if (v.priority > priority || (!stealEqual && v.priority == priority)) continue;
             if (pick < 0 || v.priority < voices[pick].priority || (v.priority == voices[pick].priority && v.seq < voices[pick].seq)) pick = i;
         }
-        if (pick < 0) { ++dropped; return -1; }
+        if (pick < 0) { if (stealEqual) ++dropped; return -1; } // (an emitter waiting for a voice retries: not a drop)
         ++stolen;
         if (stolenSound) *stolenSound = voices[pick].sound;
     }
@@ -57,6 +57,10 @@ int AudioMixer::play(double now, int sound, AudioBus bus, AudioPriority priority
 
 void AudioMixer::release(int voice) {
     if (voice >= 0 && voice < kVoices) voices[voice].active = false;
+}
+
+void AudioMixer::setVolume(int voice, float volume) {
+    if (voice >= 0 && voice < kVoices) voices[voice].volume = std::clamp(volume, 0.0f, 4.0f);
 }
 
 void AudioMixer::duckFor(double now, double seconds) {
