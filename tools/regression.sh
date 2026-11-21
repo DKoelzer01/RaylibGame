@@ -247,6 +247,16 @@ multiplayer() {
             echo "=== tools/test_join_sync.sh" | tee -a "$log"
             EXE="$gexe" bash "$here/tools/test_join_sync.sh" 2>&1 | grep "=== test_join_sync" | sed 's/=== test_join_sync: \([A-Z]*\).*/bench: join sync (#776): fresh join, then a rejoin from the cache -> \1/' | tee -a "$log"
         fi
+        # Plants and farming on the server (#335), on the quick old terrain and on the default terrain (#1107: plants near the
+        # spawn of a menu-hosted game couldn't be felled)
+        if script headless "tools/test_net_plants.sh (#335)"; then
+            echo "=== tools/test_net_plants.sh (#335)" | tee -a "$log"
+            EXE="$gexe" bash "$here/tools/test_net_plants.sh" 2>&1 | grep "=== test_net_plants" | sed 's/=== test_net_plants: \([A-Z]*\).*/bench: plants and farming on the server (#335): -> \1/' | tee -a "$log"
+        fi
+        if script headless "tools/test_net_plants.sh on the default terrain (#1107)"; then
+            echo "=== tools/test_net_plants.sh on the default terrain (#1107)" | tee -a "$log"
+            TERRAIN=default PORT=27969 EXE="$gexe" bash "$here/tools/test_net_plants.sh" 2>&1 | grep "=== test_net_plants" | sed 's/=== test_net_plants: \([A-Z]*\).*/bench: plants near the spawn on the default terrain (#1107): -> \1/' | tee -a "$log"
+        fi
         if script headless "tools/test_animals_net.sh (#334)"; then
             echo "=== tools/test_animals_net.sh (#334)" | tee -a "$log"
             EXE="$gexe" bash "$here/tools/test_animals_net.sh" 2>&1 | grep "=== test_animals_net" | sed 's/=== test_animals_net: \([A-Z]*\).*/bench: animals on the server (#334): same herd, a hit applied for both -> \1/' | tee -a "$log"
