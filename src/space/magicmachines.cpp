@@ -51,7 +51,7 @@ void MagicMachines_Update(Scene& world, double now) {
         Planetoid* body = dynamic_cast<Planetoid*>(o.get());
         if (!body || !body->plots) continue;
         const ManaField* f = Magic_FieldFor(*body);
-        const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
         for (auto& plot : body->plots->plots) {
             for (size_t i = 0; i < plot->parts.size(); ++i) {
                 const Part& part = plot->parts[i];

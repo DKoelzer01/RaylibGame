@@ -1168,7 +1168,7 @@ static void CheckContainer(Scene& world) {
     if (!pl || container.part >= (int)pl->parts.size() || pl->parts[container.part].type != container.type) { container.open = false; return; }
     const Part& part = pl->parts[container.part];
     const Vector3 c = pl->toBody({ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize });
-    const Vector3 me = b->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = b->toLocalOf(player.position, world.renderOrigin);
     if (Vector3Distance(c, me) * b->scale > 9.0f) { container.open = false; GameUI_Toast("Too far from it"); }
 }
 
@@ -2001,7 +2001,7 @@ void GameUI_DrawHUD(Scene& world) {
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
         const float turn = Vector3LengthSqr(lastFwd) > 0.5f ? acosf(std::clamp(Vector3DotProduct(fwd, lastFwd), -1.0f, 1.0f)) * RAD2DEG / dt : 0.0f;
         lastFwd = fwd;
-        const float speed = relSpeed(player.velocity, player.grounded);
+        const float speed = Vector3Length(player.groundVelocity(world));
         const float want = std::clamp(std::clamp((speed - 8.0f) / 20.0f, 0.0f, 1.0f) + std::clamp((turn - 120.0f) / 240.0f, 0.0f, 1.0f), 0.0f, 1.0f);
         strength += (want - strength) * (1.0f - expf(-dt * 4.0f));
         if (strength > 0.01f) {
@@ -2045,7 +2045,7 @@ void GameUI_DrawHUD(Scene& world) {
             line(TextFormat("%.1f  %.1f  %.1f km", p.x / 1000.0, p.y / 1000.0, p.z / 1000.0), RAYWHITE);
         }
         const char* mode = player.flyMode && terrainTool.creative ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE"; // (#932: fly is creative only)
-        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), RAYWHITE);
+        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, Vector3Length(player.groundVelocity(world))), RAYWHITE);
         const char* biome = Survival_BiomeName();
         const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
         if (biome[0]) { line(weather ? TextFormat("%s   %s", biome, Weather_Name(Weather_Here().kind)) : biome, Fade(RAYWHITE, 0.8f)); }

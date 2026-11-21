@@ -57,7 +57,7 @@ DamageResult Combat_DamageFor(SurvivalState& survival, Player& player, const Dam
 
 // One sim step of a player's combat state: the block (RMB with a shield in the off hand), stamina back at rest.
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in);
-void Combat_CurePoison(PlayerSession& s); // (#1215) a herb (the item is still to come)
+void Combat_CurePoison(PlayerSession& s); // (#1215) what bitterroot does (#1374: eating it cures through Survival_UseItemFor)
 inline bool gDoubleTapDodge = true; // (#1218) double-tapping a direction dodges (Settings, on by default)
 
 // Hit feel, the local view only (never the simulation): a short camera shake after applyToCamera, and whether the held
