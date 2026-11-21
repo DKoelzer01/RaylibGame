@@ -800,6 +800,100 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     }
 }
 
+// (#997, user decision 2026-11-21) Parallel plots: plots share no conveyors, cables or machines, so the plots due this tick
+// tick on up to kMaxWorkers threads (the tick thread is one of them), each writing only its own plots; their counts are
+// summed in plot order after the join, so the result is the same as one thread's (unit test: 1 vs 4 workers). Default 1
+// worker; RAYLIBGAME_FACTORY_WORKERS=N (A/B) until a benchmark shows a win. A fork/join costs ~40-60 us (measured), so a
+// tick with little to do stays on the tick thread.
+constexpr int kMaxWorkers = 4;
+constexpr int kParallelMinMachines = 800; // machines due this tick below which one thread is quicker (guess: to tune)
+int parallelMinMachines = kParallelMinMachines; // (the unit test lowers it)
+int workerCount = [] { const char* e = getenv("RAYLIBGAME_FACTORY_WORKERS"); return e ? std::clamp(atoi(e), 1, kMaxWorkers) : 1; }();
+
+struct PlotJob { PlotSim* ps; int dt; long long made = 0; int active = 0; };
+class WorkerPool {
+public:
+    ~WorkerPool() { stopAll(); }
+    // Runs jobs[b] for b in buckets of `parts` (begin index per part, the last part ends at jobs.size()); part 0 here.
+    void run(std::vector<PlotJob>& jobs, const std::vector<size_t>& begins) {
+        const int parts = (int)begins.size();
+        ensure(parts - 1);
+        {
+            std::lock_guard<std::mutex> lk(m);
+            work = &jobs; starts = &begins; left = parts - 1; ++gen;
+        }
+        go.notify_all();
+        runPart(0);
+        std::unique_lock<std::mutex> lk(m);
+        done.wait(lk, [&] { return left == 0; });
+        work = nullptr;
+    }
+    void stopAll() {
+        { std::lock_guard<std::mutex> lk(m); stop = true; }
+        go.notify_all();
+        for (auto& t : threads) if (t.joinable()) t.join();
+        threads.clear();
+        stop = false;
+    }
+private:
+    void ensure(int n) {
+        while ((int)threads.size() < n) {
+            const int index = (int)threads.size() + 1; // part index this thread runs
+            threads.emplace_back([this, index] {
+                Log_SetThreadName("factory-w");
+                long long seen = 0;
+                for (;;) {
+                    {
+                        std::unique_lock<std::mutex> lk(m);
+                        go.wait(lk, [&] { return stop || gen != seen; });
+                        if (stop) return;
+                        seen = gen;
+                        if (!work || index >= (int)starts->size()) continue; // (fewer parts this tick)
+                    }
+                    runPart(index);
+                    std::lock_guard<std::mutex> lk(m);
+                    if (--left == 0) done.notify_one();
+                }
+            });
+        }
+    }
+    void runPart(int p) {
+        const size_t b = (*starts)[p], e = p + 1 < (int)starts->size() ? (*starts)[p + 1] : work->size();
+        for (size_t i = b; i < e; ++i) { PlotJob& j = (*work)[i]; TickPlot(*j.ps, j.dt, j.made, j.active); }
+        gCount = nullptr;
+    }
+    std::vector<std::thread> threads;
+    std::mutex m;
+    std::condition_variable go, done;
+    long long gen = 0;
+    int left = 0;
+    bool stop = false;
+    std::vector<PlotJob>* work = nullptr;
+    const std::vector<size_t>* starts = nullptr;
+};
+WorkerPool workerPool;
+
+// Ticks the jobs (each a plot and its step) on `workers` threads, splitting them into runs of about equal machine counts
+// in their order; then adds their counts up in that order.
+void TickPlots(std::vector<PlotJob>& jobs, int workers, long long& made, int& active) {
+    long long machines = 0;
+    for (const PlotJob& j : jobs) machines += (long long)j.ps->machines.size();
+    const int parts = (int)std::min<long long>({ (long long)workers, (long long)jobs.size(), std::max(1LL, machines / std::max(1, parallelMinMachines / 2)) });
+    if (parts <= 1 || machines < parallelMinMachines) {
+        for (PlotJob& j : jobs) TickPlot(*j.ps, j.dt, j.made, j.active);
+        gCount = nullptr;
+    } else {
+        std::vector<size_t> begins{ 0 };
+        long long acc = 0;
+        for (size_t i = 0; i < jobs.size() && (int)begins.size() < parts; ++i) {
+            acc += (long long)jobs[i].ps->machines.size();
+            if (acc * parts >= machines * (long long)begins.size() && i + 1 < jobs.size()) begins.push_back(i + 1);
+        }
+        workerPool.run(jobs, begins);
+    }
+    for (const PlotJob& j : jobs) { made += j.made; active += j.active; }
+}
+
 // The watched cable's network (#570), under viewMutex.
 void FillCableView() {
     const auto& [b, pl, x, y, z] = cableKey;
@@ -955,12 +1049,15 @@ void SimLoop() {
             const long long t = tickCount.load();
             long long made = 0;
             int active = 0, machines = 0, inets = 0, pnets = 0;
+            static std::vector<PlotJob> jobs; // (#997) the plots due this tick, in plot order (parallel when it pays)
+            jobs.clear();
             for (size_t i = 0; i < plots.size(); ++i) {
                 PlotSim& ps = plots[i];
                 machines += (int)ps.machines.size(); inets += (int)ps.itemNets.size(); pnets += (int)ps.powerNets.size();
-                if (ps.nearPlayer) TickPlot(ps, 1, made, active);
-                else if ((t + (long long)i) % kTicksPerSecond == 0) TickPlot(ps, kTicksPerSecond, made, active);
+                if (ps.nearPlayer) jobs.push_back({ &ps, 1 });
+                else if ((t + (long long)i) % kTicksPerSecond == 0) jobs.push_back({ &ps, kTicksPerSecond });
             }
+            TickPlots(jobs, workerCount, made, active);
             gCount = nullptr;
             if ((t + 1) % kTicksPerSecond == 0) { for (PlotSim& ps : plots) RollStats(ps.stats); ++statSeconds; } // (#1199) a second of factory time
             const auto t2 = clk::now(); // (#1207) plots done
@@ -1075,6 +1172,7 @@ void Factory::Stop() {
     if (!running) return;
     running = false;
     if (simThread.joinable()) simThread.join();
+    workerPool.stopAll(); // (#997)
 }
 
 void Factory::Reset() {
@@ -1524,17 +1622,23 @@ uint64_t StateHash(const PlotSim& ps) {
 
 struct ChainsRun { uint64_t hash = 0; long long made = 0; int asleepMachines = 0, asleepNets = 0, sandInLateChest = 0; };
 
-// 20 groups on two plots for 2400 ticks (2 min): every third group starved (coal, no stone: idle macerators), every
-// seventh without coal (unpowered); at tick 600 a starved group gets stone (it must wake and work). `sleep` on or off.
-ChainsRun RunChains(bool sleep) {
+// 60 groups on six plots for 2400 ticks (2 min): every third group starved (coal, no stone: idle macerators), every
+// seventh without coal (unpowered); at tick 600 a starved group gets stone (it must wake and work). `sleep` on or off;
+// the plots ticked by TickPlots on `workers` threads (#997: the parallel tick must give the same result).
+ChainsRun RunChains(bool sleep, int workers = 1) {
     LoadRecipes();
     const bool was = sleepOn;
+    const int minWas = parallelMinMachines;
     sleepOn = sleep;
+    parallelMinMachines = 0; // (these plots are small: split them anyway)
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
-    std::vector<std::array<int, 4>> partsA, partsB;
-    ApplyLayout(TestChains(1, 10, partsA));
-    ApplyLayout(TestChains(2, 10, partsB));
-    PlotSim* a = FindPlot(7, 1); PlotSim* b = FindPlot(7, 2);
+    constexpr int kPlots = 6;
+    std::vector<std::vector<std::array<int, 4>>> parts(kPlots);
+    for (int p = 0; p < kPlots; ++p) ApplyLayout(TestChains(1 + p, 10, parts[p]));
+    std::vector<PlotSim*> all;
+    for (int p = 0; p < kPlots; ++p) all.push_back(FindPlot(7, 1 + p));
+    PlotSim* a = all[0];
+    const std::vector<std::array<int, 4>>& partsA = parts[0];
     auto feed = [](PlotSim& ps, const std::vector<std::array<int, 4>>& parts) {
         for (size_t g = 0; g < parts.size(); ++g) {
             int buckets = 0;
@@ -1545,9 +1649,10 @@ ChainsRun RunChains(bool sleep) {
             InsertInto(ps.machines[ps.byPart.at(parts[g][2])], tables.item("stone"), 24, false, buckets);
         }
     };
-    feed(*a, partsA); feed(*b, partsB);
+    for (int p = 0; p < kPlots; ++p) feed(*all[p], parts[p]);
     ChainsRun r;
     long long made = 0; int active = 0;
+    std::vector<PlotJob> jobs;
     for (int t = 0; t < 2400; ++t) {
         if (t == 600) { // a player puts stone into a starved group's macerator (Insert: the command wakes it)
             Machine& m = a->machines[a->byPart.at(partsA[2][1])];
@@ -1555,22 +1660,33 @@ ChainsRun RunChains(bool sleep) {
             int buckets = 0;
             InsertInto(m, tables.item("stone"), 8, false, buckets);
         }
-        TickPlot(*a, 1, made, active);
-        TickPlot(*b, 1, made, active);
+        jobs.clear();
+        for (PlotSim* ps : all) jobs.push_back({ ps, 1 });
+        TickPlots(jobs, workers, made, active);
     }
-    r.hash = StateHash(*a) * 31 + StateHash(*b);
+    for (const PlotSim* ps : all) r.hash = r.hash * 31 + StateHash(*ps);
     r.made = made;
-    for (const PlotSim* ps : { a, b }) {
+    for (const PlotSim* ps : all) {
         for (const Machine& m : ps->machines) r.asleepMachines += m.asleep;
         for (const Net& n : ps->itemNets) r.asleepNets += n.asleep;
     }
     const Machine& lateChest = a->machines[a->byPart.at(partsA[2][3])];
     r.sandInLateChest = CountItems(lateChest.in.data(), kChestSlots, tables.item("sand"));
     sleepOn = was;
+    parallelMinMachines = minWas;
+    workerPool.stopAll();
     plots.clear(); plotIndexDirty = true;
     return r;
 }
 } // namespace
+
+// (#997, user decision) the determinism gate for parallel plots: 1 and 4 workers give the same factory, bit for bit.
+TEST(Factory, PlotsTickedOnFourWorkersMatchOneWorker) {
+    const ChainsRun one = RunChains(true, 1), four = RunChains(true, 4);
+    EXPECT_GT(one.made, 0);
+    EXPECT_EQ(four.made, one.made);
+    EXPECT_EQ(four.hash, one.hash) << "every machine and network the same whatever the worker count";
+}
 
 TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
     const ChainsRun awake = RunChains(false), sleeping = RunChains(true);
