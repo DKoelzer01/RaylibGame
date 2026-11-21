@@ -3,7 +3,7 @@
 
 # Controls
 WASD walk, Shift run, Space jump. In the air, Space and Ctrl fire the jetpack up and down (it refills on the ground, which costs suit power).
-LMB mines, digs and chops; hold LMB on a built part to break it. RMB places the loose ground (dirt, sand, gravel) in your hand.
+LMB mines, digs and chops; hold LMB on a built part to break it. RMB places the ground in your hand: dirt, sand, gravel, clay or raw stone (stone, granite, marble...); a tool in hand never places ground.
 1-0 pick hotbar slots: an empty slot is bare hands. Hover an item in the inventory and press a number to put it on that key.
 Tab opens the inventory (crafting, quests, the quest tree, the suit, this manual). G toggles build mode. T looks through the telescope. L switches the headlamp. F5 saves.
 Looking at a machine: RMB opens it, I puts matching items in, O takes the outputs. On farmland: I plants seeds, O harvests.
@@ -27,7 +27,7 @@ Better tools (bronze, iron, steel...) dig harder rock and work faster.
 
 # Building
 G enters build mode. The mouse wheel picks the shape, R and V rotate it, RMB places, holding LMB removes a part.
-Parts are built from the material in your hand (stone, planks, concrete...); machines are placed from the hotbar like blocks.
+Parts are built from the material in your hand (bricks, planks, logs, concrete...): stone buildings need bricks, crafted from 2 of that stone (Tab); machines are placed from the hotbar like blocks.
 Parts snap to a 0.5 m grid on a build plot, which starts where you place the first part. B saves the plot you look at as a blueprint; N cycles your blueprints.
 
 # Machines and power

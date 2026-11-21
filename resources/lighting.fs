@@ -45,6 +45,7 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform int debugSky;        // RAYLIBGAME_SHOW_SKY=1: draw fragSky as grey (red = the #898 cave-mouth floor range, 0.55-0.65)
+uniform int bounceOn;         // (#898) the sunlit ground's bounce onto walls (RAYLIBGAME_BOUNCE=0: off)
 uniform vec4 toolSphere;     // (#1089) the dig / fill sphere: render-space centre, radius (w = 0: none)
 uniform vec4 toolSphereColor;
 uniform vec3 viewPos;
@@ -479,6 +480,18 @@ void main()
             atten = lights[i].color.a * 3.0 * cone / (1.0 + dl * dl * 4.0);
         }
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
+    }
+    // (#898) Bounce: the sunlit ground reflects light onto what faces sideways or down - a pit's or shaft's walls, a cliff's
+    // shaded face (user: "light that behaves like light"; a hand-dug shaft's walls read near black at noon: they faced
+    // no sun and took only the sky's small ambient). The ground's irradiance x ~0.25 albedo x how far the surface faces
+    // down (0 up, 0.5 sideways, 1 down) x the sun's height; only where the sky term says open ground, a pit or a shaft
+    // (fragSky >= ~0.85 there: #1067's open column), so caves and cave mouths (<= ~0.6) stay dark. bounceOn 0: off (A/B).
+    if (bounceOn != 0 && lights[0].enabled != 0 && hemiOn()) {
+        vec3 l0 = normalize(lights[0].position - lights[0].target);
+        float sunUp = max(dot(ambientUp, l0), 0.0);
+        float facingDown = 0.5 - 0.5 * dot(normal, ambientUp);
+        float open = smoothstep(0.55, 0.85, fragSky);
+        direct += albedo * lights[0].color.rgb * (0.25 * sunUp * facingDown * open);
     }
     direct += albedo * localLights(fragPosition, normal); // lamps, campfires, glowing machines (#139)
 

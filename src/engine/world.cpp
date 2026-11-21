@@ -1530,6 +1530,18 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
     GpuTimer_CpuMark("w-before");
     TerrainGpu_SetBackground(kBackgroundPriority, !gPreloadUrgent); // preload-ring blocks: gently, except during the spawn preload
+    {   // (#1122) New GPU density batches by the frame time: both slots while frames are quick, one past 7 ms, one every other
+        // frame past 12 ms. Fast flight high up (300 m, 250 m/s) asked for a batch in every free slot every frame and the
+        // density compute plus its uploads ate the frame (66 FPS, still falling); the terrain's detail now lags a little
+        // instead. Not during the spawn preload or a load. RAYLIBGAME_STREAM_BUDGET=0: as before (A/B).
+        static const bool budgetOn = !(getenv("RAYLIBGAME_STREAM_BUDGET") && getenv("RAYLIBGAME_STREAM_BUDGET")[0] == '0');
+        static long frameNo = 0;
+        ++frameNo;
+        const float frameMs = GetFrameTime() * 1000.0f;
+        int limit = 2;
+        if (budgetOn && !gPreloadUrgent && generationStart < 0.0) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        TerrainGpu_SetLaunchLimit(limit);
+    }
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
     GpuTimer_CpuMark("w-gpu-pump");
     // Ring rocks near the camera and near every interest centre (every player, #318) become voxel bodies (and back)

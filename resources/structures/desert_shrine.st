@@ -6,12 +6,12 @@ weight 1.0
 bury 0.5
 decay 0.2
 dungeon 0.4
-fill slab 2 0 2 13 0 13 sandstone
-walls block 0 0 0 15 1 15 sandstone
+fill slab 2 0 2 13 0 13 sandstone_brick
+walls block 0 0 0 15 1 15 sandstone_brick
 clear 6 0 0 9 1 1
-fill block 0 2 0 1 7 1 sandstone
-fill block 14 2 0 15 7 1 sandstone
-fill block 0 2 14 1 7 15 sandstone
-fill block 14 2 14 15 7 15 sandstone
+fill block 0 2 0 1 7 1 sandstone_brick
+fill block 14 2 0 15 7 1 sandstone_brick
+fill block 0 2 14 1 7 15 sandstone_brick
+fill block 14 2 14 15 7 15 sandstone_brick
 clear 7 0 7 8 0 8
 loot 7 0 7 ruin_rare

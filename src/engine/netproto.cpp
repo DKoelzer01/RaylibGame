@@ -735,10 +735,10 @@ bool NetProto_Test() {
             check(RoundTrip(a, b, &s) && b.action == 8 && b.item == "stone" && b.count == 12 && b.slot == 31, "machine action: into a slot"); samples.push_back(s);
         }
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
-        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.valid = true;
+        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.valid = true;
         std::vector<uint8_t> s11;
         check(RoundTrip(va2, vb2, &s11) && vb2.view.status == MachineStatus::Working && vb2.view.progress == 40 && vb2.view.inSlots.size() == 2 && vb2.view.inSlots[0].first == "iron_ore"
-              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.valid, "machine view"); samples.push_back(s11);
+              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.valid, "machine view"); samples.push_back(s11);
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
         MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 12.25f, 60001.5f, -3.75f, "grain_seeds" }, pb; std::vector<uint8_t> s13;
@@ -915,7 +915,7 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
     w.str(v.input.substr(0, 128)); w.str(v.output.substr(0, 128));
     WriteSlots(w, v.inSlots); WriteSlots(w, v.outSlots);
     w.boolean(v.hasFuelSlot); w.str(v.fuelSlot.first.substr(0, 64)); w.vari(v.fuelSlot.second);
-    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.valid);
+    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.canLight); w.u8(v.fire); w.boolean(v.valid);
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -927,7 +927,7 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
     v.input = r.str(128); v.output = r.str(128);
     ReadSlots(r, v.inSlots); ReadSlots(r, v.outSlots);
     v.hasFuelSlot = r.boolean(); v.fuelSlot.first = r.str(64); v.fuelSlot.second = (int)r.vari();
-    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.valid = r.boolean();
+    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.canLight = r.boolean(); v.fire = r.u8(); v.valid = r.boolean();
     return Done(r);
 }
 void NetWrite(NetWriter& w, const MsgMachineStates& m) {
