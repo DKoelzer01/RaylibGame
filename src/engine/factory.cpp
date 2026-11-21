@@ -232,6 +232,9 @@ struct Machine {
     std::map<int, int> capPerWindow;
     long long nearEuCur = 0, nearEuPrev = 0, nearEuCap = 0; // (#1261) a generator's EU in them
     std::map<int, int> nearCur, nearPrev, nearCap; // (#1261) crafts per recipe while near, in two 30 s buckets; caps from them on leaving
+    // (#1403) the recipe and progress at the start of the measuring window and of each near bucket: a window's work is
+    // its completions less what the first was already done before it, plus what the last unfinished one has done since
+    int winRecipe = -1, winProgress = 0, nearCurRecipe = -1, nearCurProgress = 0, nearPrevRecipe = -1, nearPrevProgress = 0;
     int euCarry = 0;                            // (#1266) EU received and not yet a whole tick of its recipe
     long long euWindow = 0, euCap = 0;          // (#1261) a generator: EU it delivered in the window, and per kCapTicks
     std::map<int, long long> carry;             // (#1261) part-made crafts per recipe between advances (fixed point)
@@ -312,16 +315,30 @@ void BeginMeasuring(PlotSim& ps, long long t) {
     if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // (its buffers to now first)
     ps.mode = PlotSim::Mode::Measuring;
     ps.modeSince = t;
-    for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; }
+    for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; m.winRecipe = m.recipe; m.winProgress = m.progress; } // (#1403: where it stands)
 }
 // While near, crafts and EU go into 30 s buckets: the last whole bucket and the current one (30-60 s) are what the plot
 // really did near the player.
 constexpr long long kNearBucketTicks = 30 * kTicksPerSecond;
 void RotateNearBuckets(PlotSim& ps, long long t) {
     if (t - ps.bucketSince < kNearBucketTicks) return;
-    for (Machine& m : ps.machines) { m.nearPrev.swap(m.nearCur); m.nearCur.clear(); m.nearEuPrev = m.nearEuCur; m.nearEuCur = 0; }
+    for (Machine& m : ps.machines) {
+        m.nearPrev.swap(m.nearCur); m.nearCur.clear(); m.nearEuPrev = m.nearEuCur; m.nearEuCur = 0;
+        m.nearPrevRecipe = m.nearCurRecipe; m.nearPrevProgress = m.nearCurProgress; m.nearCurRecipe = m.recipe; m.nearCurProgress = m.progress; // (#1403)
+    }
     ps.bucketSince = t;
     ps.bucketFull = true;
+}
+// (#1403) A cap from a window: recipe r's work in it, in ticks of the recipe - n completions, less the progress the first
+// already had when the window began (r0, p0), plus the progress of the one still going - per kCapTicks, rounded down.
+// Counting whole completions made one craft more a window when crafts are long (a 15 s craft, 2-4 in a 30-60 s window): a
+// craft nearly done before the window began counted whole, and the summary made more than the full sim.
+int CapOf(const Machine& m, int r, int n, int r0, int p0, long long window) {
+    if (r < 0 || r >= (int)tables.recipes.size() || window <= 0) return 0;
+    const long long R = std::max(1, tables.recipes[r].ticks);
+    long long work = (long long)n * R + (m.recipe == r ? m.progress : 0) - (r0 == r ? p0 : 0);
+    if (work < 0) work = 0;
+    return (int)(work * kCapTicks / (R * window));
 }
 // The player (or a server's players) came near or went away. Leaving after 30 s or more near, each machine keeps the caps
 // of its last 30-60 s (what it really did near the player: the 20-tick measuring step loses part of a step at each craft, and a
@@ -333,7 +350,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
         if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // its buffers to now, then it ticks
         ps.mode = PlotSim::Mode::Near; ps.modeSince = t;
         ps.bucketSince = t; ps.bucketFull = false;
-        for (Machine& m : ps.machines) { m.nearCur.clear(); m.nearPrev.clear(); m.nearEuCur = m.nearEuPrev = 0; }
+        for (Machine& m : ps.machines) { m.nearCur.clear(); m.nearPrev.clear(); m.nearEuCur = m.nearEuPrev = 0; m.nearCurRecipe = m.recipe; m.nearCurProgress = m.progress; m.nearPrevRecipe = -1; m.nearPrevProgress = 0; }
         return;
     }
     if (ps.mode != PlotSim::Mode::Near) return;
@@ -353,7 +370,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
         if (!ps.bucketFull) continue; // (under 30 s near: measuring alone; else the last 30-60 s near)
         std::map<int, int> sum = m.nearPrev;
         for (const auto& [r, n] : m.nearCur) sum[r] += n;
-        for (const auto& [r, n] : sum) m.nearCap[r] = (int)((long long)n * kCapTicks / window);
+        for (const auto& [r, n] : sum) m.nearCap[r] = CapOf(m, r, n, m.nearPrevRecipe, m.nearPrevProgress, window); // (#1403)
         m.nearEuCap = (m.nearEuPrev + m.nearEuCur) * kCapTicks / window;
     }
     BeginMeasuring(ps, t);
@@ -366,7 +383,7 @@ void UpdateMode(PlotSim& ps, long long t) {
     const long long window = t - ps.modeSince;
     for (Machine& m : ps.machines) {
         m.capPerWindow = m.nearCap;
-        for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, (int)((long long)n * kCapTicks / window)); }
+        for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, CapOf(m, recipe, n, m.winRecipe, m.winProgress, window)); } // (#1403)
         m.euCap = std::max(m.nearEuCap, m.euWindow * kCapTicks / window);
         if (summaryLog && (!m.capPerWindow.empty() || m.euCap > 0)) {
             std::string caps;
@@ -2374,8 +2391,10 @@ std::vector<Int3> Row(int x0, int x1, int z) { std::vector<Int3> r; for (int x =
 // macerators wanting 48 EU/t of its 32, their ore in their own slots (which run dry: an event); (3) a chest with only 20
 // stone (it runs dry: an event); (4) a hand-fed furnace with no conveyor. Totals made per plot and item over `ticks`.
 // far: the plots run near for 2 minutes, then leave "near", measure for 60 s, and advance by the summary every 10 s.
-std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks) {
+// maceratorTicks > 0 (#1403): every macerator recipe takes that many ticks (long crafts against the measuring window)
+std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks, int maceratorTicks = 0) {
     LoadRecipes();
+    if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) r.ticks = maceratorTicks;
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     const std::vector<Int3> cable12 = Row(0, 12, -1);
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
@@ -2450,6 +2469,23 @@ TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimAndNotMuchLess) {
         }
         for (const auto& [item, bsum] : summary[p]) EXPECT_TRUE(full[p].count(item)) << names[p] << ": the summary made " << item << " the full sim never did";
     }
+}
+
+// (#1403) The same oracle with 300-tick macerator crafts (15 s: two to four in a 30-60 s window), as Progression's ladder
+// had: the summary made one craft more per machine than the full sim on the power-limited line (450 vs 432). It may never.
+TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimWithLongCrafts) {
+    const bool was = summaryOn;
+    summaryOn = true;
+    constexpr long long kTicks = 10 * 60 * kTicksPerSecond;
+    const auto full = OracleRun(false, kTicks, 300), summary = OracleRun(true, kTicks, 300);
+    summaryOn = was;
+    const char* names[] = { "steady chain", "power-limited line", "dry input chest", "hand-fed furnace" };
+    for (size_t p = 0; p < full.size(); ++p)
+        for (const auto& [item, a] : full[p]) {
+            const long long bsum = summary[p].count(item) ? summary[p].at(item) : 0;
+            printf("oracle (300-tick crafts): %-18s %-14s full %5lld  summary %5lld\n", names[p], item.c_str(), a, bsum);
+            EXPECT_LE(bsum, a) << names[p] << ", " << item << ": the summary may never make more than the full sim";
+        }
 }
 
 // (#1266) Six 8 EU/t macerators on one 32 EU/t generator, near the player (1-tick steps): each gets 5 EU of 8 a tick. It
