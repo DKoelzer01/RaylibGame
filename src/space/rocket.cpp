@@ -16,6 +16,7 @@ static const PlayerInput* gRocketIn = &PlayerInput::None();
 #include "worldtypes.h"
 #include "ring.h"
 #include "factory.h"
+#include "frames.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -53,6 +54,13 @@ namespace {
     Vector3 vel{};               // world, m/s
     Quaternion rot = { 0, 0, 0, 1 }; // plot-local -> world
     Vector3 angVel{};            // world, rad/s
+    // (Plan 11 F5, #1457) With RAYLIBGAME_FRAMES=1 the flight state lives in a body frame (Fixed below the altitude line,
+    // Centred above, switching at SOIs) in doubles; com and vel above are its global image, written after each step.
+    // Anything else that writes com or vel (launch, a bounce, a load, a test) is picked up: the frame state is re-seeded
+    // when they differ from what the step last wrote.
+    FramePos rf;
+    bool rfValid = false;
+    DVec3 rfCom{}; Vector3 rfVel{}; // com and vel as the frame step last wrote them
     Vector3 comLocal{};          // plot space (m), centre of mass
     float throttle = 0.0f;
     // Time warp (coasting above the air only) and heating (re-entry and fast flight in thick air).
@@ -125,6 +133,22 @@ namespace {
         return best;
     }
     double Mu(const Planetoid& b) { const double R = b.gravityRadius > 0.0f ? b.gravityRadius : b.radius * b.scale; return b.surfaceGravity * R * R; }
+
+    // (Plan 11 F5, #1457) Directions between the global axes and a frame's: Centred keeps the global axes, Fixed turns
+    // with its body (the pose's R maps body-local into global).
+    DVec3 DirToFrame(const BodyPose& p, FrameKind k, const DVec3& g) {
+        if (k == FrameKind::Centred) return g;
+        return DVec3(p.R[0][0] * g.x + p.R[1][0] * g.y + p.R[2][0] * g.z,
+                     p.R[0][1] * g.x + p.R[1][1] * g.y + p.R[2][1] * g.z,
+                     p.R[0][2] * g.x + p.R[1][2] * g.y + p.R[2][2] * g.z);
+    }
+    DVec3 DirToGlobal(const BodyPose& p, FrameKind k, const DVec3& d) {
+        if (k == FrameKind::Centred) return d;
+        return DVec3(p.R[0][0] * d.x + p.R[0][1] * d.y + p.R[0][2] * d.z,
+                     p.R[1][0] * d.x + p.R[1][1] * d.y + p.R[1][2] * d.z,
+                     p.R[2][0] * d.x + p.R[2][1] * d.y + p.R[2][2] * d.z);
+    }
+    DVec3 Cross(const DVec3& a, const DVec3& b) { return DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 
     // Orbit about a body: apoapsis / periapsis radii from the state (ap < 0: hyperbolic).
     void Orbit(const Planetoid& b, const DVec3& p, Vector3 v, double& ra, double& rp) {
@@ -490,6 +514,49 @@ namespace {
         if (thrust > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - thrust / (float)(st.isp * kG0) * h);
         if (thrust > 0.0f) Exhaust(world, *plot, h);
         if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
+        bool framed = false;
+        if (Frames_On()) { // (Plan 11 F5, #1457) the flight in its body frame, in doubles
+            const std::vector<Planetoid*>& bodies = Planetoid::All();
+            const bool moved = !rfValid || (com - rfCom).length() > 1e-6 || Vector3Distance(vel, rfVel) > 1e-4f;
+            if (moved) { // launched, bounced, loaded or placed by a test: start from the global state
+                const FrameRef to = Frames_Choose(bodies, com, rfValid ? rf.frame : FrameRef{});
+                rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
+            } else { // the line or an SOI crossed: the same state, re-expressed (no jump in the global path)
+                const FrameRef to = Frames_Choose(bodies, com, rf.frame);
+                FramePos n;
+                if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
+            }
+            if (rfValid) {
+                const Planetoid* fb = Planetoid::findNet(rf.frame.body);
+                const BodyPose pose = Frames_Pose(*fb);
+                DVec3 acc = Frames_Acceleration(bodies, rf);
+                const double m = std::max(mass, 1.0f);
+                acc = acc + DirToFrame(pose, rf.frame.kind, DVec3(Up())) * (thrust / m);
+                // The air turns with its body: the wind is the Fixed velocity itself; in Centred (above the line, inside its
+                // hysteresis band) it is the velocity less the body's spin at this point.
+                const auto* pf = dynamic_cast<const PlanetField*>(fb->field.get());
+                const double alt = rf.pos.length() - fb->radius * fb->scale;
+                if (pf && !pf->moon && alt < kAirTop) {
+                    const double rho = kAirDensity * exp(-std::max(0.0, alt) / kAirScaleHeight);
+                    const DVec3 vrel = rf.frame.kind == FrameKind::Fixed ? rf.vel : rf.vel - Cross(pose.omega, rf.pos);
+                    const double v = vrel.length();
+                    const double area = std::max(1.0, (double)plot->cells.size() * kCellSize * kCellSize * 0.25);
+                    acc = acc - vrel * (0.5 * rho * v * 0.8 * area / m);
+                    temperature += (float)((7e-6 * sqrt(rho) * v * v * v - 0.2 * (temperature - 20.0)) * h);
+                    if (temperature > 20.0f && v > 1.0) Heat(*plot, DirToGlobal(pose, rf.frame.kind, vrel * (1.0 / v)).toFloat(), h);
+                } else {
+                    temperature += (float)(-0.2 * (temperature - 20.0) * h);
+                }
+                maxTemperature = std::max(maxTemperature, temperature);
+                rf.vel = rf.vel + acc * (double)h; // semi-implicit Euler, as the global path
+                rf.pos = rf.pos + rf.vel * (double)h;
+                DVec3 vg;
+                if (Frames_ToGlobal(rf, com, vg)) vel = vg.toFloat();
+                rfCom = com; rfVel = vel;
+                framed = true;
+            }
+        }
+        if (!framed) { // the global path (RAYLIBGAME_FRAMES=0)
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
         if (Planetoid* air = Dominant(world, com)) {
@@ -512,6 +579,7 @@ namespace {
         maxTemperature = std::max(maxTemperature, temperature);
         vel = Vector3Add(vel, Vector3Scale(Vector3Add(g, Vector3Scale(force, 1.0f / std::max(mass, 1.0f))), h));
         com = com + DVec3(Vector3Scale(vel, h));
+        }
         const float w = Vector3Length(angVel);
         if (w > 1e-7f) rot = QuaternionNormalize(QuaternionMultiply(QuaternionFromAxisAngle(Vector3Scale(angVel, 1.0f / w), w * h), rot));
         flightTime += h;
