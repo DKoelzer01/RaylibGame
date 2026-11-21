@@ -71,7 +71,8 @@ namespace {
         snprintf(b, sizeof b, "  %-44s mean %.3f  p50 %.3f  p95 %.3f  p99 %.3f  max %.3f  (min %.3f)\n", name, d.mean, d.p50, d.p95, d.p99, d.max, d.min);
         fputs(b, f); fputs(b, stdout);
     }
-    void Say(FILE* f, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+    // gnu_printf (#1378): on MinGW "printf" means the msvcrt dialect (no %zu), but C++ there uses the ANSI vsnprintf.
+    void Say(FILE* f, const char* fmt, ...) __attribute__((format(gnu_printf, 2, 3)));
     void Say(FILE* f, const char* fmt, ...) {
         char b[1024]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
         fputs(b, f); fputs(b, stdout);

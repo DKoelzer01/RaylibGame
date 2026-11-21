@@ -84,7 +84,7 @@ Here Locate(Scene& world) {
     if (!p || p->flat || !p->field) return h;
     auto pf = std::dynamic_pointer_cast<const PlanetField>(p->field);
     if (!pf) return h;
-    const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
     const float d = Vector3Length(local);
     if (d < 1.0f) return h;
     h.body = p;

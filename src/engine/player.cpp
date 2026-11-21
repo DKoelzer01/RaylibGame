@@ -381,6 +381,13 @@ void Player::look(Vector2 m) {
     if (fabsf(Vector3DotProduct(pitched, up)) < 0.985f) forward = pitched; // clamp ~10 deg from straight up/down
 }
 
+Vector3 Player::groundVelocity(Scene& world) const {
+    if (fxActive || grounded) return velocity;
+    const Vector3 at = (position - world.renderOrigin).toFloat();
+    Planetoid* body = nearest ? nearest : NearestPlanetoid(world, at);
+    return body ? Vector3Subtract(velocity, body->surfaceVelocity(at)) : velocity;
+}
+
 DVec3 Player::renderPosition(float alpha) const {
     if (flyMode || !interpBody || interpSpawns != spawns) return position;
     const Planetoid* b = Planetoid::find(interpBody);

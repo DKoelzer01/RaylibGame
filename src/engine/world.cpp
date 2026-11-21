@@ -341,6 +341,16 @@ DVec3 Planetoid::toLocalD(const DVec3& w) const {
                  (r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) * inv);
 }
 
+Vector3 Planetoid::toLocalOf(const DVec3& worldAbs, const DVec3& renderOrigin) const {
+    if (Frames_On()) return toLocalD(worldAbs).toFloat();
+    return toLocal((worldAbs - renderOrigin).toFloat());
+}
+
+DVec3 Planetoid::toLocalRenderD(Vector3 renderPos, const DVec3& renderOrigin) const {
+    if (Frames_On()) return toLocalD(renderOrigin + DVec3(renderPos));
+    return DVec3(toLocal(renderPos));
+}
+
 // Places a body's chunks in render space. Rotation and scale act on chunk-local vertices (small
 // numbers), so float is fine there; the translation is the chunk origin's render-space position,
 // computed in double so chunks far from the body centre neither jitter nor open seams as the
@@ -2457,6 +2467,7 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
 }
 
 bool SaveWorld(Scene& world) {
+    if (gBeforeSaveWorld) gBeforeSaveWorld(); // (#1183) queued foundations land first (their terrain is saved with them)
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
     const std::string tmpPath = SAVE_PATH_STR + ".tmp";
@@ -2881,6 +2892,38 @@ TEST(Frames, FloatToLocalMatchesTheDoublePathAt60km) {
         EXPECT_LT(Vector3Distance(b->toWorld(l), c), 0.01f);   // and back
     }
     EXPECT_LT(worst, 0.004); // body-local float rounding at 60 km: 0.8 mm measured (the old float matrix: 8.6 mm)
+}
+
+// Plan 11 F3 (#1277): a point that stays put on a turning body (the player standing, the camera of a still player) reads
+// back from the gameplay helpers as the same body-local point at every angle with RAYLIBGAME_FRAMES=1 (one rounding of
+// the exact point; since #1072 the float path holds still too for a fixed render origin). Off: today's path bit for bit.
+TEST(Frames, GameplayReadersHoldStillOnATurningBody) {
+    const bool was = Frames_On();
+    auto b = MakeBody(DVec3(0.0, -60010.0, 0.0), { 0.0f, 200.0f, 0.0f });
+    const DVec3 L(310.25, 60004.75, -122.5);                 // a body-fixed point near the surface, 60 km out
+    const DVec3 ro = b->toWorldD(L);                          // the render origin near it, as the camera keeps it
+    b->position = (b->worldPos - ro).toFloat();
+    double worstOn = 0.0, worstD = 0.0;
+    int movedOn = 0;
+    Vector3 firstOn{};
+    for (int k = 0; k < 400; ++k) {
+        b->rotation = { 0.0f, 200.0f + 0.003f * (float)k, 0.0f }; // ~1 m of surface travel a step
+        const DVec3 w = b->toWorldD(L);
+        Frames_SetOn(false);
+        const Vector3 off = b->toLocalOf(w, ro);
+        const Vector3 old = b->toLocal((w - ro).toFloat());
+        EXPECT_EQ(memcmp(&off, &old, sizeof off), 0) << "switch off: today's float path, bit for bit";
+        Frames_SetOn(true);
+        const Vector3 on = b->toLocalOf(w, ro);
+        worstOn = std::max(worstOn, (DVec3(on) - L).length());
+        worstD = std::max(worstD, (b->toLocalRenderD((w - ro).toFloat(), ro) - L).length());
+        if (k == 0) { firstOn = on; }
+        if (memcmp(&on, &firstOn, sizeof on) != 0) ++movedOn;
+    }
+    Frames_SetOn(was);
+    EXPECT_EQ(movedOn, 0) << "switch on: the still point reads back as the same float at every angle";
+    EXPECT_LT(worstOn, 0.004);  // that float is one rounding of the exact point (at 60 km: <= 3.9 mm ulp)
+    EXPECT_LT(worstD, 1e-4);    // the aim ray's double origin: the render-space float's rounding only (micrometres)
 }
 
 // A body-fixed point's velocity from the spin (surfaceVelocity) is the rate its world position changes: the player rides

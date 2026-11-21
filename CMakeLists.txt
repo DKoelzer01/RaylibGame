@@ -155,7 +155,7 @@ if(WIN32)
     target_link_libraries(engine PUBLIC ws2_32 iphlpapi) # (#341) the menu's Host checks its port is free (hostprocess.cpp), in every build
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
+    target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit
 endif()
 
 function(add_game target dir)
@@ -167,7 +167,7 @@ function(add_game target dir)
     target_include_directories(${target}_objs PUBLIC ${dir})
     target_link_libraries(${target}_objs PUBLIC engine)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces)
+        target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security)
     endif()
     # Tier 2 scenarios (#870): tests/scenarios/*.cpp register themselves with SCENARIO(...), so they are compiled into the
     # exe itself (not the object library's archive, whose unreferenced members game_tests' linker would drop).
@@ -184,7 +184,7 @@ function(add_game target dir)
     target_sources(${target} PRIVATE ${version_src})
     add_dependencies(${target} ${target}_version)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces)
+        target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security)
     endif()
     if(MINGW)
         # Self-contained exe: no libstdc++/libgcc DLLs needed next to it.
@@ -246,7 +246,7 @@ if(RAYLIBGAME_UNIT_TESTS)
     # The game objects and the engine refer to each other: rescan both until every symbol resolves.
     target_link_libraries(game_tests PRIVATE "$<LINK_GROUP:RESCAN,game_space,engine>" GTest::gtest_main)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(game_tests PRIVATE -Wall -Wno-missing-braces -ffp-contract=off)
+        target_compile_options(game_tests PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security -ffp-contract=off)
     endif()
     if(MINGW)
         target_link_options(game_tests PRIVATE -static)

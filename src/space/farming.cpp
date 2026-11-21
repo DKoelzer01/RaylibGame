@@ -149,7 +149,7 @@ void Farm_Update(Scene& world, float dt) {
         // Rain on the field speeds it by half again (the weather where the player is: fields
         // more than 3 km away grow at their own rate).
         const bool rainy = (Weather_Here().kind == WeatherKind::Rain || Weather_Here().kind == WeatherKind::Storm) && body == player.nearest &&
-                           Vector3Distance(pos, body->toLocal((player.position - world.renderOrigin).toFloat())) < 3000.0f;
+                           Vector3Distance(pos, body->toLocalOf(player.position, world.renderOrigin)) < 3000.0f;
         // Irrigation by moving water (a channel dug to the field, water carried in a bucket).
         if (g.rate < 2.0f && SimTime() - g.wetChecked > 2.0) { g.wetChecked = SimTime(); g.flowing = Fluid::StandingWaterNear(*body, pos, 4.0f); }
         const float rate = std::max(g.rate, g.flowing ? 2.0f : 0.0f) * (rainy ? 1.5f : 1.0f);

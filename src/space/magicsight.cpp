@@ -172,7 +172,7 @@ void MagicSight_Update(Scene& world, float dt, const PlayerInput& in) {
     if (const ManaField* f = Magic_Field(world)) {
         float flow = 0.0f;
         if (Planetoid* p = StartPlanet(world); p && player.nearest == p) {
-            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
             if (Vector3Length(local) > 1.0f) for (int k = 0; k < kManaBases; ++k) flow = std::max(flow, f->lineFlow(k, Vector3Normalize(local)));
         }
         MagicSight_Regen(s, dt * Burden_RegenFactor(s.burden), flow); // (#1255) Unsettled and up: 10% slower

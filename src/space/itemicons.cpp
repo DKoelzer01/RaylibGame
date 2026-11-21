@@ -606,6 +606,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (is({ "oxygen_canister", "hydrogen", "oxygen", "helium3", "oxygen_tank_module" })) { Canister(cv, c); return; }
     if (is({ "power_cell", "battery_pack" })) { Cell(cv, c); return; }
     if (id == "berries") { Berries(cv, c); return; }
+    if (id == "bitterroot") { Root(cv, c); return; } // (#1374)
     if (id == "bread") { Bread(cv, c); return; }
     if (ends("_meat")) { Meat(cv, c); return; }
     if (id == "egg") { Egg(cv, c); return; }

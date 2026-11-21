@@ -44,7 +44,7 @@ int RocketTest_Update(Scene& world) {
     switch (phase) {
     case 0: {
         testStart = GetTime();
-        const Vector3 home = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 home = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
         padDir = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 14.0f / pf->radius)));
         if (!p->plots) p->plots = std::make_unique<PlotSet>();
@@ -122,7 +122,7 @@ int RocketTest_Update(Scene& world) {
         if (GetTime() - lastLog > 1.0 && t.groundAltitude < 8000.0) { lastLog = GetTime(); printf("bench: rocket: descent %.0f m above ground, vertical %+.1f m/s, surface %.1f m/s, throttle %.2f, fuel %.0f\n", t.groundAltitude, t.verticalSpeed, t.surfaceSpeed, t.throttle, t.fuel); }
     }
         if (t.state == RocketState::OnPad && t.landings > 0) {
-            const Vector3 landed = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+            const Vector3 landed = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
             const double km = acos(std::clamp(Vector3DotProduct(landed, padDir), -1.0f, 1.0f)) * pf->radius / 1000.0;
             printf("bench: rocket: LANDED on %s after %.0f s: touchdown %.1f m/s, %d parts broken, %.0f km from the pad, fuel %.0f kg left (highest %.1f km, hottest %.0f C)\n",
                    t.body.c_str(), GetTime() - testStart, t.lastTouchdown, t.damage, km, t.fuel, maxAlt / 1000.0, Rocket_MaxTemperature());
@@ -178,7 +178,7 @@ int StationTest_Update(Scene& world) {
     switch (sphase) {
     case 0: {
         sStart = GetTime();
-        const Vector3 home = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 home = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
         const Vector3 pad = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 14.0f / pf->radius)));
         if (!p->plots) p->plots = std::make_unique<PlotSet>();
