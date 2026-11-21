@@ -6345,10 +6345,24 @@ int main(int argc, char** argv)
                         mountainPhase = 1; mountainT0 = GetTime();
                     } else {
                         const Vector3 up = Vector3Normalize(mountainAt);
-                        const Vector3 eye = Vector3Add(mountainAt, Vector3Add(Vector3Scale(mountainOut, 1500.0f), Vector3Scale(up, 250.0f)));
+                        // (#545) RAYLIBGAME_MOUNTAIN_ORBIT=S: after the 5 s settle, circle the peak once in S seconds, the range
+                        // swinging 700-3000 m and the height 120-500 m, so the mid/far LOD boundaries cross its slopes from every
+                        // side (with --crack-check and RAYLIBGAME_CRACK_EVERY, and --record to look). Ends with the shot.
+                        static const float orbitS = getenv("RAYLIBGAME_MOUNTAIN_ORBIT") ? (float)atof(getenv("RAYLIBGAME_MOUNTAIN_ORBIT")) : 0.0f;
+                        float range = 1500.0f, height = 250.0f;
+                        Vector3 out = mountainOut;
+                        const float ot = (float)(GetTime() - mountainT0) - 5.0f;
+                        if (orbitS > 0.0f && ot > 0.0f) {
+                            const float f = std::min(1.0f, ot / orbitS), a = 6.2831853f * f;
+                            const Vector3 side = Vector3CrossProduct(up, mountainOut);
+                            out = Vector3Add(Vector3Scale(mountainOut, cosf(a)), Vector3Scale(side, sinf(a)));
+                            range = 1850.0f - 1150.0f * cosf(3.0f * a);
+                            height = 310.0f - 190.0f * cosf(2.0f * a);
+                        }
+                        const Vector3 eye = Vector3Add(mountainAt, Vector3Add(Vector3Scale(out, range), Vector3Scale(up, height)));
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Subtract(mountainAt, Vector3Scale(up, 150.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
-                        if (GetTime() - mountainT0 > 5.0 && WorldIdle()) {
+                        if (GetTime() - mountainT0 > 5.0 + orbitS && WorldIdle()) {
                             TakeScreenshot("bench_mountain.png");
                             printf("bench: mountain: bench_mountain.png\n");
                             benchMountain = false;
