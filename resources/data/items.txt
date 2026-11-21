@@ -258,3 +258,15 @@ steam_engine     | Steam engine     | 20  | 120,100, 80 | Set it against a boile
 dynamo           | Dynamo           | 20  | 184,110, 60 | Rotation into 32 V EU: up to 32 EU a tick at 64 RPM, onto the cables it touches. It loads its shaft like a machine (512 SU at 64 RPM).
 electric_motor   | Electric motor   | 20  | 110,120,140 | 32 V EU into rotation: draws 16 EU a tick from its cables and turns its shaft at 64 RPM with 256 SU while that shaft's machines have work.
 steam_lab        | Steam lab        | 20  | 190,150, 90 | The first research lab: driven by a shaft (16 RPM and up), it turns steam packs into tier 3 research for your team's queue (Research tab).
+bloomery         | Bloomery         | 20  | 150, 80, 60 | Iron at last: iron ore and charcoal become an iron bloom (400 ticks; bellows on a turning shaft make it up to twice as fast). Hammer the bloom into an ingot at an anvil.
+bellows          | Bellows          | 20  | 140,105, 70 | Set it against a bloomery or blast furnace and turn its shaft (16 RPM is enough): the furnace works up to twice as fast.
+anvil            | Anvil            | 20  |  80, 82, 88 | Hold RMB on it to hammer: blooms into iron ingots, rough cast heads into tool heads. Put the work in with I, take it out with O.
+iron_bloom       | Iron bloom       | 200 | 110, 90, 80 | Spongy iron from the bloomery, full of slag. Hammer it into an ingot at an anvil (or a mechanical press).
+clay_mould       | Clay mould       | 64  | 170,120, 90 | Fire it in a kiln, then cast bronze into it there.
+fired_mould      | Fired mould      | 64  | 160, 90, 70 | A kiln casts 2 bronze ingots into it as a rough tool head (the mould breaks).
+rough_bronze_pick_head | Rough bronze pick head | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+rough_bronze_axe_head  | Rough bronze axe head  | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+bronze_pick_head | Bronze pick head | 64  | 205,150, 75 | Haft it (Tab) into a bronze pickaxe.
+bronze_axe_head  | Bronze axe head  | 64  | 205,150, 75 | Haft it (Tab) into a bronze axe.
+bronze_pickaxe   | Bronze pickaxe   | tool | 205,150, 75 | Cast and hammered: digs as an iron pickaxe.
+bronze_axe       | Bronze axe       | tool | 205,145, 70 | Cast and hammered: fells as an iron axe.

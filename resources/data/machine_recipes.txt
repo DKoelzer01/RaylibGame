@@ -13,13 +13,11 @@ campfire        | cooked_fish 1    | raw_trout 1               | 200 | 0
 campfire        | cooked_fish 1    | raw_catfish 1             | 200 | 0
 kiln            | copper_ingot 1   | copper_ore 1              | 200 | 0
 kiln            | tin_ingot 1      | tin_ore 1                 | 200 | 0
-kiln            | iron_ingot 1     | iron_ore 1                | 300 | 0
 kiln            | brick 2          | clay 1                    | 160 | 0
 kiln            | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 400 | 0
 kiln            | glass 1          | sand 4                    | 200 | 0
 kiln            | copper_ingot 1   | copper_dust 1             | 100 | 0
 kiln            | tin_ingot 1      | tin_dust 1                | 100 | 0
-kiln            | iron_ingot 1     | iron_dust 1               | 150 | 0
 coke_oven       | coke 1           | coal 2                    | 600 | 0
 blast_furnace   | steel_ingot 1    | iron_ingot 1              | 600 | 0
 furnace         | iron_ingot 1     | iron_ore 1                | 200 | 8
@@ -129,3 +127,14 @@ mechanical_press | aluminium_plate 1  | aluminium_ingot 1         | 120 | 0
 mechanical_press | titanium_plate 1   | titanium_ingot 1          | 200 | 0
 # (#1271 L6) the steam lab (a rotation machine: 200 ticks at its rated 32 RPM)
 steam_lab        | research_t3 1      | steam_pack 1              | 200 | 0
+# (#211, #1271 L2) Metallurgy: iron from a bloomery (ore + charcoal -> a bloom; bellows on a shaft make it up to twice as fast),
+# the bloom hammered into an ingot at the anvil (strikes) or in the press; bronze tool heads cast in fired moulds in the kiln
+# and finished at the anvil. The kiln no longer smelts iron.
+bloomery         | iron_bloom 1       | iron_ore 1, charcoal 1    | 400 | 0
+kiln             | fired_mould 1      | clay_mould 1              | 160 | 0
+kiln             | rough_bronze_pick_head 1 | bronze_ingot 2, fired_mould 1 | 300 | 0
+kiln             | rough_bronze_axe_head 1  | bronze_ingot 2, fired_mould 1 | 300 | 0
+anvil            | iron_ingot 1       | iron_bloom 1              | 120 | 0
+anvil            | bronze_pick_head 1 | rough_bronze_pick_head 1  | 80  | 0
+anvil            | bronze_axe_head 1  | rough_bronze_axe_head 1   | 80  | 0
+mechanical_press | iron_ingot 1       | iron_bloom 1              | 100 | 0

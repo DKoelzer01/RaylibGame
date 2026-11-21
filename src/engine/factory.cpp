@@ -115,7 +115,7 @@ PartType MachineByName(const std::string& n) {
 }
 
 // machines.txt: how each machine is powered.
-enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery, Rotation, Steam, Engine, Dynamo, Motor }; // Rotation (#1269): at its shaft's speed; Steam..Motor (#1271 L3): a boiler for engines, a steam engine, a dynamo, an electric motor
+enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery, Rotation, Steam, Engine, Dynamo, Motor, Manual }; // Rotation (#1269): at its shaft's speed; Steam..Motor (#1271 L3): a boiler for engines, a steam engine, a dynamo, an electric motor; Manual (#1271 L2): worked by a player's strikes (the anvil)
 struct MachineDef {
     int volts = 0;
     Power power = Power::None;
@@ -156,7 +156,7 @@ void LoadMachineDefs() {
         const std::string& p = cols[2];
         d.power = p == "fuel" ? Power::Fuel : p == "eu" ? Power::Eu : p == "generator" ? Power::Generator
                 : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : p == "rotation" ? Power::Rotation
-                : p == "steam" ? Power::Steam : p == "engine" ? Power::Engine : p == "dynamo" ? Power::Dynamo : p == "motor" ? Power::Motor : Power::None;
+                : p == "steam" ? Power::Steam : p == "engine" ? Power::Engine : p == "dynamo" ? Power::Dynamo : p == "motor" ? Power::Motor : p == "manual" ? Power::Manual : Power::None;
         d.euOut = atoi(cols[3].c_str());
         if (cols.size() > 4) { std::stringstream fs(cols[4]); std::string fuel; while (fs >> fuel) d.fuels.push_back(tables.item(fuel)); }
         if (cols.size() > 5) d.waterPerTick = std::max(0, atoi(cols[5].c_str()));
@@ -221,6 +221,7 @@ constexpr int kTierLV = 32;                 // volts
 constexpr int kBatteryCapacity = 100000;    // EU
 constexpr int kBatteryRate = 64;            // EU per tick in or out
 constexpr int kConveyorItemsPerSecond = 8;
+constexpr int kStrikeTicks = 40;          // (#1271 L2) one strike on an anvil: 2 s of its recipe's work (a bloom takes 3)
 
 struct Machine {
     int part = -1;
@@ -253,6 +254,8 @@ struct Machine {
     int received = 0;                       // EU this tick (consumers)
     int rotAcc = 0;                         // (#1269) rotation machines: permille of a tick of progress carried over
     int boiler = -1;                        // (#1271 L3) a steam engine: the boiler it draws steam from (one touching it), else -1
+    int bellows = -1;                       // (#1271 L2) a bloomery or blast furnace: the bellows touching it (blowing while its shaft turns), else -1
+    int strike = 0;                         // (#1271 L2) a manual machine (the anvil): ticks of work a player's strikes have put in, not yet used
 };
 
 struct Net {
@@ -706,6 +709,19 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
                 if (it != boilerAt.end() && (m.boiler < 0 || it->second < m.boiler)) m.boiler = it->second;
             }
     }
+    // (#1271 L2) Each bloomery and blast furnace takes air from bellows touching it (the lowest-numbered).
+    std::unordered_map<Int3, int> bellowsAt;
+    for (size_t i = 0; i < ps.machines.size(); ++i)
+        if (ps.machines[i].type == PartType::Bellows) for (const Int3& c : ps.machines[i].cells) bellowsAt[c] = (int)i;
+    for (Machine& m : ps.machines) {
+        m.bellows = -1;
+        if (m.type != PartType::Bloomery && m.type != PartType::BlastFurnace) continue;
+        for (const Int3& c : m.cells)
+            for (const Int3& d : dirs) {
+                auto it = bellowsAt.find({ c.x + d.x, c.y + d.y, c.z + d.z });
+                if (it != bellowsAt.end() && (m.bellows < 0 || it->second < m.bellows)) m.bellows = it->second;
+            }
+    }
 }
 
 void ApplyLayout(const LayoutMsg& L) {
@@ -812,7 +828,20 @@ void RotationStep(PlotSim& ps, int dt) {
         // (#1271 L3) a dynamo loads its shaft while its cable network wanted power last step
         else if (p == Power::Dynamo) ps.rot.SetRunning(m.part, m.powerNet >= 0 && m.powerNet < (int)ps.powerNets.size() && ps.powerNets[m.powerNet].demand > 0);
     }
+    for (const Machine& m : ps.machines) // (#1271 L2) bellows blow (load their shaft) while their furnace has a recipe
+        if (m.bellows >= 0 && m.bellows < (int)ps.machines.size() && m.recipe >= 0) ps.rot.SetRunning(ps.machines[m.bellows].part, true);
     ps.rot.Step(dt);
+}
+
+// (#1271 L2) A furnace's extra ticks of work from its bellows this step: up to one more a tick at the bellows' rated speed
+// (doc: the bellows speed it up, not the yield), the fraction carried over in the bellows' own accumulator.
+int BellowsTicks(PlotSim& ps, Machine& m, int dt) {
+    if (m.bellows < 0 || m.bellows >= (int)ps.machines.size()) return 0;
+    Machine& b = ps.machines[m.bellows];
+    const int perm = std::min(1000, ps.rot.ProgressPermille(b.part)), acc = b.rotAcc + perm * dt;
+    b.rotAcc = acc % 1000;
+    b.status = perm > 0 ? MachineStatus::Working : MachineStatus::NoPower;
+    return acc / 1000;
 }
 
 // One step of dt ticks for a plot.
@@ -953,14 +982,18 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 // (#1266) the EU under one tick's worth waits for the next step (an overloaded net slows its machines, it does not
                 // stall them: a 5-of-8 EU share made 0 ticks every tick near the player)
                 if (r.eu > 0) { const int eu = m.received + m.euCarry; ticks = eu / r.eu; m.euCarry = eu % r.eu; } else ticks = dt;
+            } else if (def.power == Power::Manual) { // (#1271 L2) as far as the player's strikes go
+                ticks = std::min(m.strike, r.ticks - m.progress);
+                m.strike -= ticks;
+                if (ticks == 0) { m.status = MachineStatus::Idle; continue; }
             } else if (def.power == Power::Fuel) {
-                ticks = BurnFuel(m, def, std::min(dt, r.ticks - m.progress));
+                ticks = BurnFuel(m, def, std::min(dt + BellowsTicks(ps, m, dt), r.ticks - m.progress)); // (#1271 L2) bellows: up to twice as fast
             } else if (def.power == Power::Rotation) { // (#1269) at the shaft's speed: permille of a tick per tick, carried over
                 const int rate = ps.rot.ProgressPermille(m.part), acc = m.rotAcc + rate * dt;
                 ticks = acc / 1000; m.rotAcc = acc % 1000;
                 if (rate > 0 && ticks == 0) { m.status = MachineStatus::Working; ++active; continue; } // turning, under a tick yet
             } else {
-                ticks = dt; // runs by itself (coke oven)
+                ticks = dt + BellowsTicks(ps, m, dt); // runs by itself (coke oven, bloomery; #1271 L2: with bellows up to twice as fast)
             }
             m.progress = std::min(r.ticks, m.progress + ticks);
             m.status = ticks > 0 ? MachineStatus::Working : def.power == Power::Fuel ? MachineStatus::NoFuel : MachineStatus::NoPower;
@@ -1511,6 +1544,10 @@ void SimLoop() {
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
+                if (im.kind == 13) { // (#1271 L2) a strike on an anvil: its work, up to two strikes ahead
+                    if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; sm.strike = std::min(sm.strike + kStrikeTicks, 2 * kStrikeTicks); sm.dirty = true; }
+                    continue;
+                }
                 if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
@@ -1961,6 +1998,10 @@ std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, ui
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
+}
+void Factory::Strike(uint64_t body, uint32_t plot, int part) { // (#1271 L2)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 13, body, plot, part, -1, 0 });
 }
 void Factory::Crank(uint64_t body, uint32_t plot, int part) { // (#1269)
     std::lock_guard<std::mutex> q(queueMutex);
@@ -2774,6 +2815,66 @@ TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
     for (int t = 0; t < 450; ++t) { ps.rot.Hold(crank); TickPlot(ps, 1, made, active); }
     EXPECT_EQ(CountItems(m.out, kSlots, tables.item("research_t3")), 2) << "450 ticks at the crank's 32 RPM (its rated speed): two 200-tick units";
     EXPECT_EQ(CountItems(m.in.data(), InSlots(m), tables.item("steam_pack")), 2);
+    plots.clear(); plotIndexDirty = true;
+}
+// (#211, #1271 L2) Metallurgy: a bloomery makes iron blooms from ore and charcoal (400 ticks a bloom); bellows against it, their
+// shaft cranked, make it up to twice as fast; an anvil hammers a bloom into an ingot only as far as a player's strikes go.
+TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    auto run = [](bool cranked) {
+        LayoutMsg L{};
+        L.body = 7; L.plot = cranked ? 93 : 92; L.version = 1;
+        int part = 0;
+        const int up = RotationPlot_OrientFor({ 0, 1, 0 });
+        auto add = [&](PartType t, Int3 at, int orient = 0) {
+            const Part pt = RotationPlot_PartAt(t, at, orient);
+            std::vector<std::pair<Int3, CellShape>> fp;
+            Plot::Footprint(pt, fp);
+            if (IsMachine(t)) {
+                std::vector<Int3> cells;
+                for (const auto& c : fp) cells.push_back(c.first);
+                L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+            }
+            RotationPartMsg rm;
+            if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+            return part++;
+        };
+        const int bloomery = add(PartType::Bloomery, { 0, 0, 0 });
+        add(PartType::Bellows, { 2, 0, 0 }, up);               // against the bloomery's side, its shaft up
+        add(PartType::Shaft, { 2, 1, 0 }, up);
+        const int crank = add(PartType::HandCrank, { 2, 2, 0 }, up);
+        ApplyLayout(L);
+        PlotSim& ps = *FindPlot(7, L.plot);
+        Machine& m = ps.machines[ps.byPart.at(bloomery)];
+        EXPECT_GE(m.bellows, 0) << "the bloomery finds the bellows touching it";
+        int b = 0;
+        InsertInto(m, tables.item("iron_ore"), 8, false, b);
+        InsertInto(m, tables.item("charcoal"), 8, false, b);
+        long long made = 0; int active = 0;
+        for (int t = 0; t < 1210; ++t) { if (cranked) ps.rot.Hold(crank); TickPlot(ps, 1, made, active); }
+        return CountItems(m.out, kSlots, tables.item("iron_bloom"));
+    };
+    EXPECT_EQ(run(false), 3) << "1210 ticks, 400 a bloom, no air";
+    EXPECT_GE(run(true), 5) << "with the bellows blowing (the crank's 32 RPM, over their 16 rated): nearly twice as fast";
+
+    // The anvil: a bloom needs 120 ticks of work, 40 a strike: two strikes leave it unfinished, the third finishes it.
+    LayoutMsg L{};
+    L.body = 7; L.plot = 94; L.version = 1;
+    L.machines.push_back({ 0, PartType::Anvil }); L.machineCells.push_back({ { 0, 0, 0 } }); L.machineVariant.push_back("");
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 94);
+    Machine& anvil = ps.machines[0];
+    int b = 0;
+    InsertInto(anvil, tables.item("iron_bloom"), 1, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 200; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 0) << "nobody hammers: nothing";
+    for (int s = 0; s < 2; ++s) { anvil.strike = std::min(anvil.strike + kStrikeTicks, 2 * kStrikeTicks); for (int t = 0; t < 60; ++t) TickPlot(ps, 1, made, active); }
+    EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 0) << "two strikes: not yet";
+    anvil.strike = std::min(anvil.strike + kStrikeTicks, 2 * kStrikeTicks);
+    for (int t = 0; t < 60; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 1) << "the third strike: an ingot";
     plots.clear(); plotIndexDirty = true;
 }
 #endif

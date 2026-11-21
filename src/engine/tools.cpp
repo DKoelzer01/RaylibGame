@@ -16,6 +16,7 @@ ToolSpec ToolOf(const std::string& id) {
     if (u == std::string::npos) return s;
     const std::string tier = id.substr(0, u), type = id.substr(u + 1);
     for (int t = 1; t <= 4; ++t) if (tier == kTiers[t]) s.tier = t;
+    if (tier == "bronze") s.tier = 2; // (#1271 L2) bronze tools (cast, worked at the anvil) dig as iron ones
     if (s.tier == 0) return ToolSpec{};
     if (type == "pickaxe") s.type = ToolType::Pickaxe;
     else if (type == "shovel") s.type = ToolType::Shovel;

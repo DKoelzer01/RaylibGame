@@ -194,3 +194,10 @@ dynamo 1           = iron_plate 4, copper_wire 8, shaft 1
 electric_motor 1   = iron_plate 4, copper_wire 8, shaft 1, basic_circuit 1
 # (#1271 L6) the first lab, on a shaft: the tier 2 milestone hands over its recipe (once gating is on)
 steam_lab 1        = iron_plate 4, glass 2, cogwheel 2, any_planks 8
+# --- (#211, #1271 L2) Metallurgy: the bloomery, the anvil, moulds and bronze tools ---
+bloomery 1         = any_stone 16, clay 8
+bellows 1          = any_planks 6, rope 2, shaft 1
+anvil 1            = bronze_ingot 6
+clay_mould 1       = clay 2
+bronze_pickaxe 1   = bronze_pick_head 1, any_planks 2
+bronze_axe 1       = bronze_axe_head 1, any_planks 2
