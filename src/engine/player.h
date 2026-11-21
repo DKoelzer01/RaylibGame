@@ -30,6 +30,14 @@ struct Player {
     bool flyAllowed = true;           // F works (#531: creative mode only; the game sets it each frame); off: leaves fly mode
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
+    // (#1105) Ladders: touching one (the capsule overlaps a ladder's cell) turns gravity off; W climbs, S descends, nothing
+    // holds; Space pushes off. climbInput / climbJump are this frame's input, set by update() for the physics steps.
+    bool onLadder = false;
+    float climbInput = 0.0f;          // +1 W, -1 S, 0 holds
+    bool climbJump = false;
+    float ladderCooldown = 0.0f;      // s after pushing off before a ladder catches again
+    static constexpr float kClimbSpeed = 2.0f;     // m/s up or down a ladder
+    static constexpr float kLadderPushOff = 3.0f;  // m/s away from it (and 2 up) on Space
     // Flight pack (#163): H toggles hover - height held, no drift; Space/Ctrl climb/descend, Shift boosts. It runs
     // on suit power (survival drains it, hoverPowered off at zero) and switches itself on in a fast fall.
     bool canHover = false, hovering = false, hoverPowered = true;

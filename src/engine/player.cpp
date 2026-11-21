@@ -258,6 +258,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         const float vUp = Vector3DotProduct((fxActive ? velocity : Vector3Subtract(velocity, nearest->surfaceVelocity(at))), up);
         if (vUp < -12.0f) hovering = true;
     }
+    // (#1105) A ladder's input for the physics steps: W climbs, S descends; Space pushes off (not also a ground jump)
+    climbInput = in.enabled && !flyMode ? (in.down(Act::Forward) ? 1.0f : in.down(Act::Back) ? -1.0f : 0.0f) : 0.0f;
+    climbJump = onLadder && jump;
+    if (climbJump) jump = false;
     // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
     // flickers off over bumpy ground (see coyote time in stepPhysics).
     if (jump) jumpBuffer = 0.15f;
@@ -410,6 +414,17 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     gravity = Vector3Length(gFelt);
     const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
+    // (#1105) A ladder: the capsule's lower or upper sphere over a ladder's cell. Climbing up from the ground starts as a
+    // jump does (the ground branch takes it off, with its frame); in the air the ladder holds the climb speed (below).
+    ladderCooldown = std::max(0.0f, ladderCooldown - dt);
+    onLadder = false;
+    if (!flyMode && ladderCooldown <= 0.0f && nearest && nearest->plots) {
+        const float r = 0.35f / nearest->scale;
+        const Vector3 lo = nearest->toLocal(Vector3Add(feet, Vector3Scale(up, 0.45f))), hi = nearest->toLocal(Vector3Add(feet, Vector3Scale(up, 1.25f)));
+        for (const auto& pl : nearest->plots->plots) if (pl->touchesPart(lo, r, PartType::Ladder) || pl->touchesPart(hi, r, PartType::Ladder)) { onLadder = true; break; }
+    }
+    if (onLadder && grounded && climbInput > 0.0f) jumpBuffer = 0.15f;
+
     const float vUp = Vector3DotProduct(velocity, up);
     bool resting = false; // grounded with no walking input
     if (grounded) {
@@ -524,6 +539,22 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
         if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
         if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));
+    }
+    if (onLadder && !grounded) {
+        // (#1105) On a ladder: no gravity; up and down at the climb speed against the surface (W, S; nothing holds), sideways
+        // at most that fast; Space pushes off, back from where the player faces (the ladder), a little up.
+        const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        const Vector3 rel = Vector3Subtract(velocity, surface);
+        Vector3 side = Vector3Subtract(rel, Vector3Scale(up, Vector3DotProduct(rel, up)));
+        if (const float sl = Vector3Length(side); sl > kClimbSpeed) side = Vector3Scale(side, kClimbSpeed / sl);
+        velocity = Vector3Add(surface, Vector3Add(side, Vector3Scale(up, climbInput * kClimbSpeed)));
+        gAccel = { 0, 0, 0 };
+        if (climbJump) {
+            Vector3 back = Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up)));
+            back = Vector3LengthSqr(back) > 1e-6f ? Vector3Scale(Vector3Normalize(back), -kLadderPushOff) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(velocity, Vector3Add(back, Vector3Scale(up, 2.0f)));
+            climbJump = false; ladderCooldown = 0.4f; onLadder = false;
+        }
     }
     // Static friction: standing on walkable ground, only gravity's push into the ground applies.
     // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)

@@ -85,6 +85,8 @@ fibre 2            = wool 1
 fence 2            = any_planks 3
 gate 1             = any_planks 3, fibre 1
 bed 1              = any_planks 6, fibre 4
+# (#1105) ladders: 4 of them climb 2 m
+ladder 4           = any_planks 2
 # Claim banners (#343): one per quest tier band; placed in multiplayer, they claim 100 / 200 / 400 / 800 m across for the team.
 claim_banner 1          = any_planks 4, fibre 6
 bronze_claim_banner 1   = bronze_plate 4, rope 4

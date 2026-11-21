@@ -63,6 +63,7 @@ const char* PartName(PartType t) {
         case PartType::PrecisionAssembler: return "precision assembler";
         case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
         case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
+        case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -130,6 +131,7 @@ const char* PartMachineName(PartType t) {
         case PartType::PrecisionAssembler: return "precision_assembler";
         case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
         case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
+        case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -274,6 +276,7 @@ static Color PartColor(PartType t) {
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
         case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
+        case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -336,6 +339,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
+        case PartType::Ladder: return PatPlanks; // (#1105)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
@@ -406,6 +410,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         }
         case PartType::Panel: { // half the cell's thickness, against one face
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Ladder: { // (#1105) a frame 15% of the cell deep against one face (as Panel, thinner); its rungs are the pattern
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.15f;
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
@@ -933,6 +942,22 @@ static Vector3 ClosestInCell(Vector3 q, Int3 c, const CellShape& s) {
     return p;
 }
 
+bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#1105) the sphere overlaps a cell of such a part
+    if (cells.empty()) return false;
+    const Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
+    const float rc = r / kCellSize;
+    for (int z = (int)floorf(p.z - rc); z <= (int)floorf(p.z + rc); ++z)
+        for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
+            for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
+                auto it = cells.find({ x, y, z });
+                if (it == cells.end() || parts[it->second.part].type != type) continue;
+                // the whole cell counts (standing in front of a ladder is touching it), not just its frame
+                const Vector3 q = { std::clamp(p.x, (float)x, x + 1.0f), std::clamp(p.y, (float)y, y + 1.0f), std::clamp(p.z, (float)z, z + 1.0f) };
+                if (Vector3Distance(p, q) < rc) return true;
+            }
+    return false;
+}
+
 bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const {
     if (cells.empty()) return false;
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
@@ -948,7 +973,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate) continue; // people pass a gate
+                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate, and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);
