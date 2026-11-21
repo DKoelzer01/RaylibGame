@@ -114,6 +114,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "avatar.h"
 #include "footsteps.h"
 #include "soundscape.h"
+#include "watercaves.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -297,6 +298,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Particles_Clear();
         Ambience_Reset();
         Waterfalls_Reset();
+        WaterCaves_Reset(); // (#1242)
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -13757,6 +13759,7 @@ int main(int argc, char** argv)
                     // Entering the game holds it half a second; a spawn only until the streamer has had a few
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
+                    Soundscape_PreloadStep(); // (#1241) one procedural ambience bed a frame behind the bar, not mid-play
                     const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
                     if (built) barClosing = true; // fill to the end first (a few frames), then close
                     const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
@@ -13831,6 +13834,7 @@ int main(int argc, char** argv)
         Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
         if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
         if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
+        if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
         Audio_Update();
         PROFILE_FRAME();
     }
