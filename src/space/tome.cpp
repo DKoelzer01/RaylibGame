@@ -134,6 +134,7 @@ bool Tome_Load(const char* aspectsPath, const char* tomePath) {
 const std::vector<AspectDef>& Aspects_All() { return aspects; }
 const AspectDef* Aspects_Find(const std::string& id) { for (const AspectDef& a : aspects) if (a.id == id) return &a; return nullptr; }
 const std::map<std::string, int>* Aspects_Of(const std::string& type) { auto it = sources.find(type); return it == sources.end() ? nullptr : &it->second; }
+const std::map<std::string, std::map<std::string, int>>& Aspects_Sources() { return sources; } // (#1254)
 const std::vector<TomePage>& Tome_Pages() { return pages; }
 const TomePage* Tome_Find(const std::string& id) { for (const TomePage& p : pages) if (p.id == id) return &p; return nullptr; }
 

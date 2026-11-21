@@ -102,6 +102,7 @@ float TopReach(PartType type) {
     case PartType::PrecisionAssembler: return 0.95f;
     case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return 0.42f; // (#1193) the dish on its mast
     case PartType::ResearchTable: return 0.25f; case PartType::ManaSiphon: return 0.7f; case PartType::ManaDynamo: return 0.3f; // (#1252)
+    case PartType::Distillery: return 0.55f; case PartType::EssenceTank: return 0.1f; case PartType::Cauldron: return 0.2f; // (#1254)
     case PartType::FusionReactor: return 0.29f;
     case PartType::MassDriver: return 1.3f;
     case PartType::Torch: return 0.25f;
@@ -291,6 +292,27 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         const float pulse = working ? 0.6f + 0.4f * sinf(t * 2.5f) : 0.2f;
         p.cyl({ 0, top, 0 }, 0.12f, 0.06f, 0.55f, kDarkSteel);
         p.glow({ 0, top + 0.62f, 0 }, { 0.1f, 0.16f, 0.1f }, Color{ (unsigned char)(170 * pulse), (unsigned char)(130 * pulse), (unsigned char)(255 * pulse), 255 });
+        break;
+    }
+    case PartType::Distillery: { // (#1254) a copper still: its pot, a swan neck over to a cooling coil, a glow while it boils
+        p.cyl({ -0.15f, top, 0 }, 0.08f, 0.22f, 0.3f, kCopper);                                  // the pot's dome
+        p.cyl({ -0.15f, top + 0.3f, 0 }, 0.03f, 0.04f, 0.15f, kCopper);                          // the neck
+        p.cube({ 0.05f, top + 0.44f, 0 }, { 0.42f, 0.04f, 0.04f }, kCopper);                      // the arm
+        p.cyl({ 0.26f, top, 0 }, 0.1f, 0.1f, 0.42f, kDarkSteel);                                  // the condenser
+        p.glow({ 0.26f, top + 0.15f, 0.101f }, { 0.08f, 0.12f, 0.01f }, working ? Color{ 205, 190, 255, 255 } : Color{ 45, 40, 60, 255 }); // essence dripping
+        break;
+    }
+    case PartType::EssenceTank: { // (#1254) a glass tank on a steel band; its essence shimmers
+        const float pulse = 0.55f + 0.15f * sinf(t * 1.7f);
+        p.cube({ 0, top * 0.5f, 0 }, { f.w * 0.84f, f.h * 0.86f, f.d * 0.84f }, Color{ (unsigned char)(205 * pulse), (unsigned char)(190 * pulse), (unsigned char)(255 * pulse), 255 });
+        p.cube({ 0, top + 0.03f, 0 }, { f.w * 1.01f, 0.06f, f.d * 1.01f }, kSteel);
+        break;
+    }
+    case PartType::Cauldron: { // (#1254) an iron pot on legs; the brew glows and bubbles while it works
+        p.cyl({ 0, top, 0 }, 0.42f, 0.36f, 0.12f, kDarkSteel);                                   // the rim
+        const float bub = working ? 0.8f + 0.2f * sinf(t * 6.0f) : 0.25f;
+        p.glow({ 0, top + 0.1f, 0 }, { 0.6f, 0.02f, 0.6f }, Color{ (unsigned char)(150 * bub), (unsigned char)(230 * bub), (unsigned char)(160 * bub), 255 });
+        if (working) p.glow({ 0, 0.02f, 0 }, { 0.5f, 0.04f, 0.5f }, kGlowOrange);                // its fire under it
         break;
     }
     case PartType::ManaDynamo: { // (#1252) a coil that spins while it turns mana into power

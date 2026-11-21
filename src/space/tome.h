@@ -35,6 +35,7 @@ bool Tome_Load(const char* aspectsPath = "resources/data/aspects.txt", const cha
 const std::vector<AspectDef>& Aspects_All();
 const AspectDef* Aspects_Find(const std::string& id);
 const std::map<std::string, int>* Aspects_Of(const std::string& type); // "item:iron_ingot", "creature:..", "rock:..", "node:.."
+const std::map<std::string, std::map<std::string, int>>& Aspects_Sources(); // (#1254) every "of" line: type -> aspect -> amount
 const std::vector<TomePage>& Tome_Pages();
 const TomePage* Tome_Find(const std::string& id);
 // Checks: known aspects in every source and cost, unique ids, pages' needs exist and have no cycle, research links exist,
