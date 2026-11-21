@@ -189,11 +189,19 @@ int headPrev(int gi, bool proc) {
     if (proc || pr[gi] > 0) return pr[gi];
     return F(c) >= CAP(c) ? 255 : int(SH(c) + F(c));
 }
+bool capped(int gi) { // a cell under solid: where water is confined (FluidKernel::capped)
+    uint s; int x, y, z;
+    cellPos(gi, s, x, y, z);
+    bool pa; int fa;
+    int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+    return ga >= 0 && (FL(inC[ga]) & SOLID) != 0u;
+}
 int headNow(uint slot, int x, int y, int z, uint c) {
     if ((FL(c) & SOLID) != 0u || F(c) == 0u) return 0;
     if (F(c) < CAP(c)) return int(SH(c) + F(c));
     uint kind = KIND(c);
     int h = 255;
+    bool meCapped = capped(int(slot) * 4096 + x + 16 * y + 256 * z);
     for (int k = 0; k < 6; ++k) {
         int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
         bool pn; int face;
@@ -202,13 +210,14 @@ int headNow(uint slot, int x, int y, int z, uint c) {
         int hn = headPrev(gn, pn);
         if (dz > 0) h = max(h, hn + 255);
         else if (dz < 0) { if (F(inC[gn]) >= CAP(inC[gn])) h = max(h, hn - 256); }
-        else h = max(h, hn - 1);
+        else if (meCapped || capped(gn)) h = max(h, hn - 1); // sideways only through confined water
     }
     for (int k = 0; k < 6; ++k) { // a sleeping neighbour whose stored head this one would raise is asked to wake
         int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
         bool pn; int face;
         int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
         if (gn < 0 || pn || !sameWater(inC[gn], kind)) continue;
+        if (dz == 0 && !meCapped && !capped(gn)) continue;
         bool nFull = F(inC[gn]) >= CAP(inC[gn]);
         int want = dz > 0 ? h - 256 : dz < 0 ? h + 255 : h - 1;
         if (nFull && want > headPrev(gn, false) + wakeUnits) atomicOr(flagsOut[slot], 1u << uint(1 + face));

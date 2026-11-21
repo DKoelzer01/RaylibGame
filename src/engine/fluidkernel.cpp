@@ -90,11 +90,21 @@ struct Pass {
     // above's head + a row, a side neighbour's - 1 and the cell below's - a row - 1. Every loop of neighbours passes a side
     // or an upward step, so a head with no surface behind it decays a unit a step instead of circulating; the cost is a
     // unit (~1 mm) per cell of path.
+    // A cell under solid (a tunnel's or a pipe's top row): where water is confined. Heads cross sideways only into or out of
+    // such a cell (see headNow).
+    bool capped(int gi) const {
+        int s, x, y, z;
+        cellPos(gi, s, x, y, z);
+        bool pa; int fa;
+        const int ga = neighbour(s, x, y, z, 0, 0, 1, pa, fa);
+        return ga >= 0 && (FL(inC[ga]) & SOLID);
+    }
     int32_t headNow(int slot, int x, int y, int z, uint32_t c) const {
         if ((FL(c) & SOLID) || F(c) == 0u) return 0;
         if (F(c) < CAP(c)) return (int32_t)(SH(c) + F(c));
         const uint32_t kind = KIND(c);
         int32_t h = 255;
+        const bool meCapped = capped(slot * 4096 + x + 16 * y + 256 * z);
         for (int k = 0; k < 6; ++k) {
             const int dx = k == 0 ? -1 : k == 1 ? 1 : 0, dy = k == 2 ? -1 : k == 3 ? 1 : 0, dz = k == 4 ? -1 : k == 5 ? 1 : 0;
             bool pn; int face;
@@ -103,7 +113,11 @@ struct Pass {
             const int32_t hn = headPrev(gn, pn);
             if (dz > 0) h = std::max(h, hn + 255);
             else if (dz < 0) { if (F(inC[gn]) >= CAP(inC[gn])) h = std::max(h, hn - 256); }
-            else h = std::max(h, hn - 1);
+            // Sideways only through confined water: into or out of a capped cell. Between two open cells (a channel, a pond)
+            // the ordinary flow levels the water; a head carried along an open channel at 1 unit a cell, while its bed drops
+            // a row at a time, pushed water up and held falls in moving streams (the leak drained slow, a spring's trench
+            // carried 0.42 of its 1 m^3/s, a flow never slept: runner 44914459334 with the pass on).
+            else if (meCapped || capped(gn)) h = std::max(h, hn - 1);
         }
         // A sleeping neighbour (a ring slot) whose stored head this one would raise is asked to wake (a face request, as the
         // column pairs ask): resting water used to sleep before the pressure crossed it, and a covered tunnel never passed it.
@@ -112,6 +126,7 @@ struct Pass {
             bool pn; int face;
             const int gn = neighbour(slot, x, y, z, dx, dy, dz, pn, face);
             if (gn < 0 || pn || !sameWater(inC[gn], kind)) continue;
+            if (dz == 0 && !meCapped && !capped(gn)) continue; // (no sideways head between open cells)
             const bool nFull = F(inC[gn]) >= CAP(inC[gn]);
             const int32_t want = dz > 0 ? h - 256 : dz < 0 ? h + 255 : h - 1; // what this cell would give it
             if (nFull && want > headPrev(gn, false) + p.wakeUnits) g.flags[slot] |= 1u << (1 + face);
