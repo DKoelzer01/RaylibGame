@@ -2950,6 +2950,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     Vector3 n = radial; // the sea is a sphere: radial normals
                     Vector3 simFlow{}; float simSpeed = 0.0f; // simulated water's current (#677)
                     float depth = 50.0f;
+                    bool genVert = false; // (#1164) undisturbed generated water (sea, lake): its shores foam (water.fs)
                     if (simKind && sim.covered(bp)) {
                         // Moving fluid: the surface's own normal (falls, steps), the fluid under it for the tint.
                         const float h = 0.5f;
@@ -3019,13 +3020,14 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         // square at the edge of a site otherwise: the column count stops at 8 m, #382 review).
                         if (genKind && pf) depth = std::max(depth, Vector3Length(bp) - sea - groundAt(bp, radial));
                     } else if (pf) {
+                        genVert = true;
                         // Depth to the sea floor from the height map (the shader grades clarity and colour by it).
                         const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
                         depth = std::max(0.0f, surfaceE - groundAt(bp, radial));
                     }
                     out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
-                    out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind });
+                    out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind + (genVert ? 0.25f : 0.0f) }); // +0.25: generated (fragKind rounds it away)
                     // The current (#361): generated river water flows downstream, ~1 m/s mid-channel, slower to the banks.
                     // Lakes and the sea stand still here; simulated water runs down its surface (#677, above).
                     Vector3 flow = simFlow; float speed = simSpeed;
