@@ -40,6 +40,7 @@ struct GameSettings {
     int cameraSmoothing = 2;        // 0 Off, 1 Low, 2 Default, 3 High: eye smoothing strength (#168)
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
+    bool reduceFlashing = false;    // (#1162) lightning: a soft single glow, about a third as bright, no flicker
     float uiScale = 0.0f;            // (#821) the interface size: 0 auto (by the screen's height), else 0.75-1.5
     float tabWin[4] = { 0.15f, 0.15f, 0.7f, 0.7f }; // (#1080) the Tab window: x, y, width, height as fractions of the screen
     int keyHints = 0;                // (#827) the key hints line: 0 auto (fades after the first 2 hours played), 1 always, 2 off

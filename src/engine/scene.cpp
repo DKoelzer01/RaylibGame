@@ -652,6 +652,9 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Lerp(effFog, Vector3Scale(grey, atmDensity), weatherCloud * 0.6f);
         effFogDensity += atmDensity * (weatherCloud * weatherCloud / 9000.0f + weatherFog / 60.0f);
         effAmbient = Vector3Add(effAmbient, Vector3Scale(grey, 0.05f * weatherCloud * atmDensity));
+        // (#1162) A lightning flash lifts the sky's ambient for a moment: a cool white, about twice the day sky's ambient at its
+        // peak. The world shaders scale the ambient by the sky they see (fragSky), so caves and interiors stay dark.
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.06f, 0.075f }, std::clamp(lightning, 0.0f, 1.0f) * atmDensity));
         if (alt < 0.0f && IsUnderwater(*this, camera.position)) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // in the sea (not a dry cave below sea level)
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
@@ -749,6 +752,8 @@ void Scene::drawScene(int gamestate) {
                 SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
                 SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+                const float bolt[4] = { lightningDir.x, lightningDir.y, lightningDir.z, atmosphere.enabled ? std::clamp(lightning, 0.0f, 1.0f) : 0.0f }; // (#1162)
+                SetShaderValue(as, GetShaderLocation(as, "lightning"), bolt, SHADER_UNIFORM_VEC4);
             }
             {   // #142: the physical sky (the LUT in the dome material's emission slot, as the wide shadow map rides in the terrain's)
                 const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;

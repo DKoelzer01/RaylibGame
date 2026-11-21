@@ -204,15 +204,24 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                         // Placed ground is what was air before (#1097: it is what the fill paid for, 2 items a m^3); ground
                         // that was there already keeps its own material and digs as itself.
                         const bool wasAir = base + v * kDeltaStep < ISO_LEVEL;
-                        chunk->set(i, (int16_t)std::clamp((int)ceilf((fillTo - base) / kDeltaStep), -32767, 32767)); // up: never just under iso inside
-                        if (e.paint >= 0 && sd < kVoxelSize && wasAir) chunk->setMat(i, (uint8_t)(e.paint + 1)); // the shell shows it too (placed: #1097)
-                        else if (sd < kVoxelSize) bareGrass(base); // (#1085) grass under it: bare dirt, natural (#1097)
+                        const int q = std::clamp((int)ceilf((fillTo - base) / kDeltaStep), -32767, 32767); // up: never just under iso inside
+                        chunk->set(i, (int16_t)q);
+                        // (#1157) Only the ground the fill made takes its material: a shell point left in the air beside it handed
+                        // that material to the natural surface next to it (a surface vertex takes a marked corner's). Grass the
+                        // fill covers (inside the shape) goes bare; the grass beside it stays.
+                        const bool made = wasAir && base + q * kDeltaStep >= ISO_LEVEL;
+                        if (e.paint >= 0 && made) chunk->setMat(i, (uint8_t)(e.paint + 1)); // placed (#1097)
+                        else if (sd < 0.0f || made) bareGrass(base); // (#1085) grass under it, or ground made with no material: bare dirt
                     }
                 } else {
-                    const bool wasAir = field.baseDensity(p) + v * kDeltaStep < ISO_LEVEL; // (#1097, as a fill)
-                    chunk->set(i, (int16_t)std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767));
-                    if (e.paint >= 0 && wasAir && add > 0.0f) chunk->setMat(i, (uint8_t)(e.paint + 1)); // all it raised: no unmarked placed ground at the rim (#1097)
-                    else if (t > 0.15f) bareGrass(field.baseDensity(p)); // (#1085) grass under the blob: bare dirt, natural (#1097)
+                    const float base = field.baseDensity(p);
+                    const bool wasAir = base + v * kDeltaStep < ISO_LEVEL; // (#1097, as a fill)
+                    const int nv = std::clamp((int)lroundf(v + add / kDeltaStep), -32767, 32767);
+                    chunk->set(i, (int16_t)nv);
+                    // (#1157) As the fill: what the blob made solid is placed ground; a point it raised that is still air isn't
+                    // (marked, it re-textured the natural ground beside the blob). Grass goes bare only under its core.
+                    if (e.paint >= 0 && wasAir && add > 0.0f && base + nv * kDeltaStep >= ISO_LEVEL) chunk->setMat(i, (uint8_t)(e.paint + 1)); // (#1097)
+                    else if (!wasAir && t > 0.5f) bareGrass(base); // (#1085) grass buried under the blob: bare dirt, natural (#1097)
                 }
             }
 }
@@ -391,6 +400,43 @@ TEST(TerrainDeltas, TillingPaintsFarmlandWithoutChangingTheGround) {
         int placed = 0;
         ForSurfacePoints(*d, field, [&](Vector3 p) { placed += d->materialAt(p) >= 0; });
         EXPECT_EQ(placed, 0);
+    }
+}
+
+// #1157 (the playtest: a limestone blob re-textured the grass beside it): only the ground a placement makes takes its
+// material. The natural surface beside it shows its own (grass) beyond the one lattice step the mesh's corner lookup reaches.
+TEST(TerrainDeltas, PlacedGroundDoesNotRetextureTheGroundBesideIt) {
+    const TurfField field;
+    for (int kind = 0; kind < 2; ++kind) { // the soft blob (RMB), then an exact sphere fill (#228)
+        TerrainDeltas empty;
+        TerrainDeltasBuilder b(empty);
+        TerrainEdit e{};
+        e.paint = (int)VoxelMaterial::Limestone;
+        if (kind == 0) { e.center = { 0.05f, 0.3f, -0.05f }; e.radius = 1.3f; e.strength = 0.6f; }
+        else { e.fill = true; e.center = { 0.05f, 0.4f, -0.05f }; e.radius = 0.7f; }
+        b.apply(e, field);
+        const auto d = b.finish();
+        std::vector<Vector3> placed;
+        for (int z = -12; z <= 12; ++z) for (int y = -12; y <= 12; ++y) for (int x = -12; x <= 12; ++x) {
+            const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+            if (d->placedAt(p) >= 0) {
+                placed.push_back(p);
+                ASSERT_GE(LatticeDensity(*d, field, x, y, z), ISO_LEVEL) << "a placed point is solid ground (kind " << kind << ")";
+            }
+        }
+        ASSERT_GT(placed.size(), 10u) << "the placement made ground (kind " << kind << ")";
+        int beside = 0, bleed = 0, grassFar = 0, farPoints = 0;
+        ForSurfacePoints(*d, field, [&](Vector3 p) {
+            if (d->placedAt(p) >= 0) return;
+            float near = 1e9f;
+            for (const Vector3& q : placed) near = std::min(near, Vector3Distance(p, q));
+            if (near <= 1.01f * kVoxelSize * 1.7321f) return; // a corner of a placed point's cell: drawn as the rim
+            ++beside; bleed += Shown(*d, field, p) == VoxelMaterial::Limestone;
+            if (Vector3Distance(p, e.center) > 2.0f && p.y > -1.0f) { ++farPoints; grassFar += Shown(*d, field, p) == VoxelMaterial::Grass; }
+        });
+        EXPECT_GT(beside, 50);
+        EXPECT_EQ(bleed, 0) << "the natural surface beside the placement shows the placed material (kind " << kind << ")";
+        EXPECT_EQ(grassFar, farPoints) << "the grass beside it stays grass (kind " << kind << ")";
     }
 }
 
