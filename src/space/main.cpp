@@ -12592,7 +12592,7 @@ int main(int argc, char** argv)
                     if (++shotFrames == 30) { TakeScreenshot(shotPath); printf("bench: join: %s (the other player %.1f m away)\n", shotPath, best < 1e17 ? best : -1.0); }
                 }
                 // (#828) RAYLIBGAME_JOIN_TEAM=1: alice invites bob into her team and bob accepts; each sees the other member's
-                // distance (the Team tab's "where": their session's position), and bob, staying longer, sees alice offline with
+                // distance (the Team tab's "where": their session's position), and bob, staying after alice leaves, sees her offline with
                 // a "last seen" (her record written as she left).
                 const bool wantTeam = getenv("RAYLIBGAME_JOIN_TEAM") && getenv("RAYLIBGAME_JOIN_TEAM")[0] == '1';
                 static double teamInviteAt = -1.0, teamOtherDist = 0.0; static bool teamAccepted = false, teamTogether = false; static uint32_t teamLastSeen = 0;
