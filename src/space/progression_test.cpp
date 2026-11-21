@@ -286,6 +286,8 @@ namespace {
         steps.clear();
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
+        // (#1271 L6b-3) the fibre for every rope first: once 340 logs are felled the bushes near home ran out
+        add("harvest bushes for 70 fibre", [] { while (inventory.count("fibre") < 70) if (!TerrainTool_HarvestNearest(*body, home, false)) { printf("bench: progression: no bush left near home (fibre %d)\n", inventory.count("fibre")); return false; } return true; });
         add("chop trees for 340 logs", [] { while (inventory.count("any_log") < 340) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
         add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
         add("harvest bushes for fibre, pick up loose stones; craft and hold a stone pickaxe", [] {
@@ -311,7 +313,7 @@ namespace {
             return Survival_UseItem("berries") && QuestBook_CountOf("eat") >= 1.0;
         });
         add("find ore veins", [] { FindOre(); return true; });
-        add("mine 80 copper, 12 tin, 190 iron ore and 130 coal", [] { return MineOre("copper_ore", 80) && MineOre("tin_ore", 12) && MineOre("iron_ore", 190) && MineOre("coal", 130); });
+        add("mine 80 copper, 12 tin, 190 iron ore and 140 coal", [] { return MineOre("copper_ore", 80) && MineOre("tin_ore", 12) && MineOre("iron_ore", 190) && MineOre("coal", 140); });
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
         add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 80); Give("kiln", "any_log", 16); } return Collect("kiln", "copper_ingot", 80); });
         add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 12); Give("kiln", "any_log", 3); } return Collect("kiln", "tin_ingot", 12); });
@@ -341,7 +343,7 @@ namespace {
         // Tier 2 (#1271): charcoal, a bloomery, ingots at the anvil; a windmill turns a press.
         add("burn 188 logs into charcoal in the campfire (coal under them)", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("campfire", "coal", 20); Give("campfire", "any_log", 188); }
+            if (!fed) { fed = true; Give("campfire", "coal", 30); Give("campfire", "any_log", 188); }
             return Collect("campfire", "charcoal", 188);
         });
         add("craft and place a bloomery", [] { return Craft("bloomery", 1) && Place("bloomery", PartType::Bloomery, { 3, 0, 12 }); });
@@ -353,8 +355,8 @@ namespace {
             return Collect("anvil", "iron_ingot", 16);
         });
         add("craft a press, a windmill and shafts; set them up in the wind", [] {
-            while (inventory.count("fibre") < 24) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
-            if (!Craft("rope", 8) || !Craft("shaft", 4) || !Craft("mechanical_press", 1) || !Craft("windmill", 1) || !Craft("gearbox", 1)) return false;
+            while (inventory.count("fibre") < 24) if (!TerrainTool_HarvestNearest(*body, home, false)) { printf("bench: progression: no bush left near home (fibre %d)\n", inventory.count("fibre")); return false; }
+            if (!Craft("rope", 8) || !Craft("mechanical_press", 1) || !Craft("windmill", 1) || !Craft("gearbox", 1) || !Craft("shaft", 2)) return false; // (shafts last: the press, windmill and cogs take theirs)
             RotationSources_SetWindOverride(true, 10.0f); // (a good wind: the weather's own varies)
             return Place("press", PartType::Press, { 6, 0, 12 }) && PlaceO("shaft", PartType::Shaft, { 8, 0, 12 }, { 1, 0, 0 })
                 && Place("gearbox", PartType::Gearbox, { 9, 0, 12 }) && PlaceO("windmill", PartType::Windmill, { 10, 0, 12 }, { 1, 0, 0 });
@@ -484,7 +486,7 @@ namespace {
             return QuestBook_CountOf("pour") >= 1.0;
         });
         add("craft and fit two suit modules (a food pouch and an oxygen tank)", [] {
-            while (inventory.count("fibre") < 40) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            while (inventory.count("fibre") < 40) if (!TerrainTool_HarvestNearest(*body, home, false)) { printf("bench: progression: no bush left near home (fibre %d)\n", inventory.count("fibre")); return false; }
             if (!Craft("food_pouch", 1) || !Craft("oxygen_tank_module", 1)) return false;
             Suit_Reset();
             return Suit_Fit("food_pouch") && Suit_Fit("oxygen_tank_module") && QuestBook_CountOf("modules") >= 2.0;
