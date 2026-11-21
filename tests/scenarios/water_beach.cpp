@@ -62,5 +62,19 @@ SCENARIO("water/beach") {
         if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) { idleAt = c.t; c.cue(); }
         return idleAt >= 0.0 && c.t > idleAt + 3.0;
     });
+    s.step("low along the shore (reflections)", 4.0, [](ScenarioCtx& c) {
+        // (#1164 part 3) The eye 0.6 m over the water at the waterline, looking along the shore: the beach and the land
+        // above it stand over the water, so the screen-space reflections have something to show at a grazing angle.
+        if (!S.found) return true;
+        const float R = c.field->radius;
+        const Vector3 up = Vector3Normalize(S.up);
+        const Vector3 out = Vector3Normalize(Vector3Subtract(S.sea, S.up));
+        const Vector3 along = Vector3Normalize(Vector3CrossProduct(up, out));
+        const Vector3 wl = Vector3Normalize(Vector3Add(Vector3Scale(S.up, R), Vector3Scale(out, 4.0f)));
+        const Vector3 eye = Vector3Scale(wl, R + 0.6f);
+        const Vector3 target = Vector3Scale(Vector3Normalize(Vector3Add(Vector3Scale(wl, R), Vector3Add(Vector3Scale(along, 30.0f), Vector3Scale(out, -3.0f)))), R + 0.3f);
+        c.camera(eye, target, up);
+        return c.t > 3.0;
+    });
     s.step("done", 1.0, [](ScenarioCtx& c) { c.keepCapture("a sea shore's look (#1164): for a person to judge"); return true; });
 }
