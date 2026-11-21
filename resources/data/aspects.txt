@@ -1,0 +1,90 @@
+# Aspects (#1251, magic step 4; the magic doc section 2): what things are made of. Studying a thing (magic sight, hold Y)
+# or spending it at the research table gives its aspects; tome pages cost aspect combinations. Aspects are per player,
+# pages per team (decided).
+#   aspect <id> | <name> | latin <flavour> | colour <RRGGBB>
+#   of <type> | <aspect> <n>, <aspect> <n> ...        type = item:<id>, creature:<species>, rock:<stone item>, node:<mana kind>
+# The first nine share the mana kinds' names; the rest are material aspects. All amounts are first guesses.
+
+aspect earth   | Earth   | latin Terra    | colour 9a7b4f
+aspect water   | Water   | latin Aqua     | colour 3f8fd8
+aspect fire    | Fire    | latin Ignis    | colour e8642c
+aspect air     | Air     | latin Aer      | colour d8e8f0
+aspect life    | Life    | latin Vita     | colour 58c050
+aspect frost   | Frost   | latin Gelum    | colour 9ad8ff
+aspect storm   | Storm   | latin Tempestas| colour a080ff
+aspect rot     | Rot     | latin Putredo  | colour 708030
+aspect void    | Void    | latin Vacuos   | colour 402858
+aspect metal   | Metal   | latin Metallum | colour a8a8b8
+aspect crystal | Crystal | latin Vitreus  | colour 60e0d0
+aspect plant   | Plant   | latin Herba    | colour 70b040
+aspect beast   | Beast   | latin Bestia   | colour b07848
+aspect light   | Light   | latin Lux      | colour fff0a0
+aspect order   | Order   | latin Ordo     | colour e0e0f0
+aspect motion  | Motion  | latin Motus    | colour c0d0ff
+
+# Nodes: their kind, and the lines that cross there.
+of node:earth  | earth 3
+of node:water  | water 3
+of node:fire   | fire 3
+of node:air    | air 3, motion 1
+of node:storm  | storm 3, fire 1, air 1
+of node:shard  | crystal 2, earth 1, air 1
+of node:steam  | fire 1, water 1, motion 2
+of node:magma  | fire 2, earth 2
+of node:life   | life 3, earth 1, water 1
+of node:mist   | water 2, air 2
+of node:aether | order 2, light 2, frost 1, fire 1
+
+# Rock (studied in place).
+of rock:stone     | earth 2
+of rock:granite   | earth 2, crystal 1
+of rock:basalt    | earth 2, fire 1
+of rock:sandstone | earth 2, air 1
+of rock:limestone | earth 2, water 1
+of rock:marble    | earth 2, order 1
+
+# Creatures (studied alive).
+of creature:woolback      | beast 2, life 1
+of creature:plains_runner | beast 2, motion 1
+of creature:clucker       | beast 1, air 1
+of creature:hornhide      | beast 3, earth 1
+of creature:thornback     | beast 2, plant 1
+of creature:dusk_stalker  | beast 2, void 1, rot 1
+
+# Items (spent at the research table).
+of item:stone        | earth 1
+of item:dirt         | earth 1, life 1
+of item:sand         | earth 1, air 1
+of item:clay         | earth 1, water 1
+of item:ice          | water 1, frost 2
+of item:peat         | plant 1, rot 1
+of item:coal         | fire 2, earth 1
+of item:charcoal     | fire 2, plant 1
+of item:quartz       | crystal 3
+of item:amethyst     | crystal 3, void 1
+of item:ruby         | crystal 3, fire 1
+of item:sapphire     | crystal 3, water 1
+of item:emerald      | crystal 3, life 1
+of item:glass        | crystal 1, light 1, order 1
+of item:torch        | fire 1, light 2
+of item:iron_ore     | metal 2, earth 1
+of item:copper_ore   | metal 2, earth 1
+of item:iron_ingot   | metal 3, order 1
+of item:copper_ingot | metal 3, storm 1
+of item:steel_ingot  | metal 4, order 2
+of item:oak_log      | plant 2
+of item:birch_log    | plant 2
+of item:pine_log     | plant 2
+of item:fibre        | plant 1
+of item:berries      | plant 1, life 1
+of item:grain        | plant 1, life 1
+of item:bread        | life 1, order 1
+of item:hide         | beast 2
+of item:raw_meat     | beast 1, life 1
+of item:cooked_meat  | beast 1, fire 1
+of item:feather      | beast 1, air 2
+of item:wool         | beast 1, order 1
+of item:egg          | life 2
+of item:rope         | plant 1, order 1
+of item:cloth        | plant 1, order 2
+of item:resonant_crystal | crystal 4, order 2, light 1

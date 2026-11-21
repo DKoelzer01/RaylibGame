@@ -1,4 +1,5 @@
 #include "bodies.h"
+#include "worldprofile.h"
 #include "utils/logger.h"
 
 #include <algorithm>
@@ -72,7 +73,7 @@ bool ParseBodyDef(const std::string& line, BodyDef& out, std::string& error) {
         if (eq == std::string::npos || eq == 0) { error = "expected key=value, got '" + tok + "'"; return false; }
         const std::string key = tok.substr(0, eq), val = tok.substr(eq + 1);
         bool ok = true;
-        if (key == "radius") ok = ParseFloat(val, d.radius) && d.radius > 0.0f;
+        if (key == "radius") { ok = ParseFloat(val, d.radius) && d.radius > 0.0f; d.hasRadius = ok; }
         else if (key == "position") { ok = ParseFloats(val, &d.position.x, 3); d.hasPosition = ok; }
         else if (key == "orbit") {
             const size_t c = val.find(',');
@@ -88,6 +89,7 @@ bool ParseBodyDef(const std::string& line, BodyDef& out, std::string& error) {
         else if (key == "gravity") {
             if (val == "auto") d.gravity = -1.0f;
             else ok = ParseFloat(val, d.gravity) && d.gravity >= 0.0f;
+            d.hasGravity = ok;
         }
         else if (key == "seed") {
             char* end = nullptr;
@@ -152,6 +154,16 @@ bool LoadSystemDef(const std::string& path, SystemDef& out) {
             LOG_ERROR("Bodies", "%s:%d: %s\n", path.c_str(), lineNo, error.c_str());
             ok = false;
             continue;
+        }
+        if (d.kind == BodyKind::Planet || d.kind == BodyKind::Moon) {
+            // (#1298) the world file is where a planet's or moon's size and gravity live; a line may still override them.
+            const auto wp = WorldProfile_For(d.name, d.kind);
+            if (!d.hasRadius && wp && wp->hasRadius) { d.radius = wp->radius; d.hasRadius = true; }
+            if (!d.hasGravity && wp && wp->hasGravity) { d.gravity = wp->gravity; d.hasGravity = true; }
+            if (!d.hasRadius) {
+                LOG_ERROR("Bodies", "%s:%d: %s needs a radius (radius= here, or `radius` in resources/data/worlds/%s.txt)\n", path.c_str(), lineNo, d.name.c_str(), d.name.c_str());
+                ok = false;
+            }
         }
         for (const BodyDef& prev : sys.bodies)
             if (prev.name == d.name) { LOG_ERROR("Bodies", "%s:%d: duplicate name '%s'\n", path.c_str(), lineNo, d.name.c_str()); ok = false; }
