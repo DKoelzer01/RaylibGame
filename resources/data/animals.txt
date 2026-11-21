@@ -12,3 +12,6 @@ clucker       | Clucker       | 0.4 0.4 0.3 | 200,120,60  | 220,40,30   | 0.8 3.
 hornhide      | Hornhide      | 1.8 1.2 0.9 | 40,40,40    | 240,240,240 | 0.9 4.0 | 40 | grain, roots          | raw_meat 5, hide 3   | milk bucket 600   | calm | 2 5 | 0.0 0.75 | Savanna, Meadow, Forest, Swamp | quad horns ears tail
 thornback     | Thornback     | 1.6 1.0 0.8 | 110,90,70   | 60,50,40    | 1.0 6.0 | 45 | roots, grain          | raw_meat 4, hide 3   | -                 | hostile | 1 2 | 0.1 0.6 | Badlands, Desert, Savanna, Taiga, Jungle | quad spikes horns tail
 dusk_stalker  | Dusk stalker  | 1.4 0.8 0.6 | 45,45,55    | 170,30,30   | 1.5 6.5 | 30 | raw_meat              | raw_meat 2, hide 2   | -                 | night   | 0 0 | 0.0 1.0 | - | quad long ears tail
+creature_nest | Nest          | 1.6 0.7 1.6 | 70,62,52    | 150,140,95  | 0 0     | 60 | -                     | stone 3              | -                 | calm | 0 0 | 0.0 0.0 | - | quad nest
+tunnel_lurker | Tunnel lurker | 1.3 0.5 0.9 | 165,160,140 | 120,110,95  | 1.0 7.5 | 35 | raw_meat              | hide 1, chitin 2     | -                 | calm    | 0 0 | 0.0 0.0 | - | quad hexa tail
+cave_scavenger | Cave scavenger | 0.45 1.75 0.5 | 120,95,70   | 150,120,95  | 1.3 4.8 | 40 | cooked_meat, bread    | scrap 2, cooked_meat 1, torch 1 | -        | calm    | 0 0 | 0.0 0.0 | - | biped humanoid

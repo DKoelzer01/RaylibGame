@@ -120,6 +120,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "watercaves.h"
 #include "machinesounds.h"
 #include "music.h"
+#include "creaturesounds.h"
 #include "subtitles.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
@@ -1338,6 +1339,7 @@ int main(int argc, char** argv)
     
     DebugUI_Init();
     if (!bench) Audio_Init();
+    CreatureSounds_Init(); // (#1246) creature calls through the creature framework's hook (nothing without audio v2)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
@@ -10232,7 +10234,7 @@ int main(int argc, char** argv)
             }
             rlSetClipPlanes(nearPlane, 60000.0);
         }
-        const bool gameInput = !bench && focused && !uiOpen && gameState == 1 && !loading;
+        const bool gameInput = (!bench || gScenarioInput) && (focused || gScenarioInput) && !uiOpen && gameState == 1 && !loading; // (#1216) scripted input in a scenario
         world.cameraInputEnabled = player.flyMode && !uiOpen && !ship.piloted && focused;  // free-fly camera only in fly mode; not behind another window (#539)
         const bool alive = !survival.dead;
         // One clamped frame time for everything that moves (bodies, ship, player): clamping only the
@@ -10255,6 +10257,7 @@ int main(int argc, char** argv)
         PlayerInput_BeginFrame();
         const int simSteps = SimClock_BeginFrame(paused ? 0.0f : frameDt); // unfocused too (#525): the world keeps running behind another window
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
+        if (gameState == 1 && !paused && alive && !loading && !ship.piloted && !Rocket_Boarded()) Animals_LockOnView(world, frameDt); // (#1216) the soft lock-on eases the view
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
         PlayerSession& session = LocalSession(); // single-player: one session (#313); a server steps each one
@@ -10749,7 +10752,7 @@ int main(int argc, char** argv)
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
-        if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
+        if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
@@ -12546,6 +12549,13 @@ int main(int argc, char** argv)
                     if (it == seen.end()) seen[kv.first] = { v, 0.0 };
                     else it->second.second = std::max(it->second.second, (v - it->second.first).length());
                 }
+                // (#1223/#1224) RAYLIBGAME_JOIN_CREATURE=1: the creature the server spawns (tools/test_join.sh): its health as the
+                // server replicates it, and its death (gone from the replicated animals while near).
+                static uint64_t creatureNet = 0; static float creatureFirst = -1.0f, creatureMin = 1e9f; static bool creatureGone = false;
+                if (getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1') {
+                    if (!creatureNet) for (int i = 0; i < Animals_Count(); ++i) if (Animals_SpeciesOf(i).first == "thornback") { creatureNet = Animals_NetId(i); creatureFirst = Animals_HealthOf(i); break; }
+                    if (creatureNet && !creatureGone) { const int i = Animals_FindNet(creatureNet); if (i < 0) creatureGone = true; else creatureMin = std::min(creatureMin, Animals_HealthOf(i)); }
+                }
                 // RAYLIBGAME_JOIN_LINGER=S: stay connected S more seconds after the walk, watching (another client may walk later).
                 static double walked = -1.0;
                 if (walked < 0.0 && GetTime() - jt0 > 8.0) { player.autoWalk = false; walked = b ? (b->toLocalD(player.position) - start).length() * b->scale : 0.0; }
@@ -12571,7 +12581,12 @@ int main(int argc, char** argv)
                     const bool clockOk = gJoin.pongs >= 3 && fabs(gJoin.clockError) < 0.1 && fabs(WorldTime_Pending()) < 0.1;
                     const bool moveOk = walked > 15.0 && gJoin.states > 80 && gJoin.worstError < 0.5 && gJoin.corrections * 10 <= gJoin.states;
                     const bool othersOk = (int)seen.size() >= wantOthers && (wantOthers == 0 || othersMoved > 5.0);
-                    const bool ok = fpOk && clockOk && moveOk && othersOk;
+                    const bool wantCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
+                    const bool creatureOk = !wantCreature || (creatureNet && creatureGone && creatureMin < creatureFirst);
+                    if (wantCreature)
+                        printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f -> %s\n", joinName.c_str(),
+                               creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, creatureOk ? "ok" : "FAIL");
+                    const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk;
                     printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
@@ -13884,6 +13899,7 @@ int main(int argc, char** argv)
         if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
         if (!gHeadless) MachineSounds_Update(world, GetFrameTime()); // (#1243) hums, stall and done cues, the factory bed
         if (!gHeadless) Music_Update(world, GetFrameTime()); // (#1245) rare calm pieces, the danger layer, stings
+        if (!gHeadless) CreatureSounds_Update(GetFrameTime()); // (#1246) the danger a nearby fight raises (the calls play from the hook)
         Audio_Update();
         PROFILE_FRAME();
     }

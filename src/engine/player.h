@@ -82,6 +82,10 @@ struct Player {
     float postureEye(Posture p) const { return p == Posture::Prone ? kProneEye : p == Posture::Crouch ? kCrouchEye : standEye; }
     bool roomAbove(Scene& world, float toHeight) const; // nothing solid between the capsule's top now and toHeight
     float walkSpeed = 6.0f;
+    float statusSpeed = 1.0f;         // (#1215) status effects on the walk: chilled 0.7, frozen 0 (Combat_Step sets it)
+    // (#1218) A dodge under way (Combat_Step starts it): a fixed step along dodgeDir (world, level) for dodgeLeft s.
+    Vector3 dodgeDir = { 0, 0, 0 };
+    float dodgeLeft = 0.0f, dodgeSpeed = 0.0f;
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
     // you off it like a jump does (grounded velocity is overwritten by walking each step); in the air it adds.

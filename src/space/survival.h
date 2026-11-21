@@ -6,6 +6,8 @@
 #include <functional>
 #include <string>
 #include <map>
+#include "damage.h" // (#1215) resistances and status effects
+#include "defense.h" // (#1218)
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -19,6 +21,8 @@ class Scene;
 // respawns you at the ship.
 struct SurvivalState {
     float oxygen = 100.0f, power = 100.0f, health = 100.0f;   // 0..100
+    Resistances resist;              // (#1215) per damage type and flat armour (armour pieces will set it, #1220)
+    StatusState status;              // (#1215) burn, chill, bleed, poison (shock is an instant interrupt)
     float fallDamageTaken = 0.0f;   // health lost to hard landings so far (not saved; tests tell it from other damage, #439)
     const char* lastHarm = "";      // (#844) what last took health: fall, hit, vacuum, suffocation, starvation, heat (not saved; logs)
     float lastFallSpeed = 0.0f;     // (#844) m/s into the ground at the last harmful landing (logs)
@@ -56,6 +60,19 @@ struct SurvivalState {
     float hitDamageTaken = 0.0f;                              // health lost to hits so far (not saved; tests)
     double lastHitAt = -1e9;                                  // sim time of the last hit taken (the camera shake, hit-stop)
     float lastHitStrength = 0.0f;                             // 0..1 (20 damage = 1)
+    double lastDealtAt = -1e9;                                // (#1216) sim time of the last melee hit landed (the hit-stop)
+    int shocks = 0;                                           // (#1216) shocks taken (a melee wind-up sees each one)
+    PoiseState poise;                                         // (#1217) from armour (combat.cpp sets its size)
+    int staggers = 0;                                         // (#1217) times staggered (a melee wind-up sees each one)
+    bool hyperArmour = false;                                 // (#1217) in a heavy or two-handed wind-up now: hits don't stagger
+    // (#1218) Parry, dodge and the winded state (defense.h).
+    double blockStartedAt = -1e9;                             // sim time the block was raised (the parry window counts from it)
+    float windedLeft = 0.0f;                                  // s winded left (ran out of stamina: no heavies, no dodge, slow walk)
+    bool staminaEmpty = false;                                // at 0 last step (the winded state starts once per emptying)
+    float dodgeInvuln = 0.0f;                                 // s of a dodge's invulnerability left
+    int dodges = 0, parries = 0;                              // counters (a melee swing sees dodges; tests)
+    float shieldStops = 0.75f, shieldArcDeg = 60.0f, shieldParryWindow = 0.15f; // the off hand's shield (Combat_Step sets it)
+    DoubleTap taps;                                           // the double-tap dodge's last presses
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;

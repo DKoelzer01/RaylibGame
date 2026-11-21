@@ -17,6 +17,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
+#include <filesystem>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -294,6 +295,7 @@ struct PlotSim {
     enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
     long long modeSince = 0; // the tick the current mode (and the measuring window) began
     long long lastAdvance = 0; // (Summary) the tick its buffers were last advanced to
+    bool loadedSummary = false; // (#1302) loaded from a save while in the summary sim: far, it goes on there with its saved caps
     long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
 };
 
@@ -335,6 +337,16 @@ void SetNear(PlotSim& ps, bool near, long long t) {
         return;
     }
     if (ps.mode != PlotSim::Mode::Near) return;
+    // (#1302) Loaded from a save in the summary sim and far before 30 s near: it goes on in the summary with its saved caps.
+    const bool loaded = ps.loadedSummary;
+    ps.loadedSummary = false;
+    if (loaded && !ps.bucketFull && summaryOn) {
+        for (Machine& m : ps.machines) { m.capPerWindow = m.nearCap; m.euCap = m.nearEuCap; }
+        ps.mode = PlotSim::Mode::Summary;
+        ps.lastAdvance = ps.modeSince = t;
+        if (summaryLog) LOG_INFO("Factory", "summary: plot %u goes on in Summary from the save at tick %lld\n", ps.plot, t);
+        return;
+    }
     const long long window = ps.bucketFull ? kNearBucketTicks + (t - ps.bucketSince) : 0;
     for (Machine& m : ps.machines) {
         m.nearCap.clear(); m.nearEuCap = 0;
@@ -449,6 +461,7 @@ std::map<std::pair<uint64_t, uint32_t>, std::vector<RotPub>> rotView;
 std::vector<Factory::MachineKey> watchMany;                        // (#332) a server's open machines (viewMutex)
 std::map<Factory::MachineKey, MachineView> watchManyViews;
 std::vector<Vector3> nearPoints;                                    // (#332) main thread: a server's players
+bool cameraNear = true;                                              // (#1302) main thread: the camera makes plots near (not on a dedicated server)
 bool remoteMode = false;                                            // (#332) a client: views from the server
 std::map<Factory::MachineKey, MachineView> remoteViews;
 std::unordered_set<uint64_t> remoteWorking;
@@ -714,6 +727,12 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
                 else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
+                else if (tag == "sum") ps->loadedSummary = true; // (#1302) it was in the summary sim: its caps follow
+                else if (tag == "cap" && k + 2 < s.size()) { // a cap, kept only if that recipe is still this machine's with that output
+                    const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int c = atoi(s[k + 2].c_str()); k += 3;
+                    if (r >= 0 && r < (int)tables.recipes.size() && tables.recipes[r].machine == type && !tables.recipes[r].out.empty() && tables.name(tables.recipes[r].out[0].item) == out) m.nearCap[r] = c;
+                }
+                else if (tag == "ecap" && k < s.size()) m.nearEuCap = atoll(s[k++].c_str());
             }
             // Saves from before the fuel slot (#194) kept fuel in the inputs: move fuel no recipe of this machine wants
             // into the fuel slot (#229 review), so an old boiler or furnace still burns it.
@@ -1691,7 +1710,7 @@ void Factory::Sync(Scene& world) {
             }
             if (nearCheck) {
                 const Vector3 o = body->toWorld({ (float)pl->origin.x, (float)pl->origin.y, (float)pl->origin.z });
-                bool near = Vector3Distance(o, world.camera.position) < 1000.0f;
+                bool near = cameraNear && Vector3Distance(o, world.camera.position) < 1000.0f; // (#1302: not on a dedicated server)
                 for (const Vector3& np : nearPoints) near = near || Vector3Distance(o, np) < 1000.0f; // (#332) a server: its players
                 std::lock_guard<std::mutex> q(queueMutex);
                 nearQueue.push_back({ body->id, { pl->id, near } });
@@ -1847,6 +1866,9 @@ bool Factory::SetVariant(uint64_t body, uint32_t plot, int part, const std::stri
     if (m.variant == v) return true;
     m.variant = v;
     m.dirty = true; // (#1214) a sleeping lab wakes: its new node's recipe may start now
+    // (#1302) a far lab's caps (or a measuring window) were for its old node's recipe: its plot measures again, as after
+    // a layout change (the summary can't run a recipe it never measured)
+    if (!p->nearPlayer) BeginMeasuring(*p, tickCount.load());
     // A recipe of another output stops (its inputs are only taken when it finishes, #193: nothing is lost).
     if (m.recipe >= 0 && (v < 0 || tables.recipes[m.recipe].out.empty() || tables.recipes[m.recipe].out[0].item != v)) { m.recipe = -1; m.progress = 0; }
     return true;
@@ -1962,11 +1984,15 @@ void Factory::WaitTicks(int n) {
 
 void Factory::Save(FILE* f, uint64_t bodyId) {
     std::lock_guard<std::mutex> lock(simMutex);
+    // (#1302) Far plots in the summary sim first come up to now, so the save holds their chests as they are.
+    const long long now = tickCount.load();
+    for (PlotSim& ps : plots) if (ps.body == bodyId && ps.mode == PlotSim::Mode::Summary && !ps.nearPlayer) { AdvanceSummary(ps, ps.lastAdvance, now); ps.lastAdvance = now; }
     int n = 0;
     for (const PlotSim& ps : plots) if (ps.body == bodyId) n += (int)ps.machines.size();
     fprintf(f, "machines %d\n", n);
     for (const PlotSim& ps : plots) {
         if (ps.body != bodyId) continue;
+        const bool summary = ps.mode == PlotSim::Mode::Summary;
         for (const Machine& m : ps.machines) {
             fprintf(f, "m %u %d %d %d %d %d", ps.plot, m.part, m.recipe, m.progress, m.energy, m.fuelEU);
             int nin = 0; for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) ++nin;
@@ -1979,6 +2005,14 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
             if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
+            // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
+            // far it goes on in the summary at once instead of measuring for a minute
+            if (summary) {
+                fprintf(f, " sum");
+                for (const auto& [r, c] : m.capPerWindow)
+                    if (c > 0 && r >= 0 && r < (int)tables.recipes.size() && !tables.recipes[r].out.empty()) fprintf(f, " cap %d %s %d", r, tables.name(tables.recipes[r].out[0].item).c_str(), c);
+                if (m.euCap > 0) fprintf(f, " ecap %lld", m.euCap);
+            }
             fprintf(f, "\n");
         }
     }
@@ -2092,6 +2126,7 @@ MachineView Factory::Watched(const MachineKey& key) {
     return it == watchManyViews.end() ? MachineView{} : it->second;
 }
 void Factory::SetNearPoints(const std::vector<Vector3>& points) { nearPoints = points; }
+void Factory::SetCameraNear(bool counts) { cameraNear = counts; } // (#1302)
 std::vector<int> Factory::WorkingParts(uint64_t body, uint32_t plot) {
     std::lock_guard<std::mutex> v(viewMutex);
     auto it = workingByPlot.find({ body, plot });
@@ -2435,6 +2470,70 @@ TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallTh
     // (each gets floor(8 x 32 / 48) = 5 EU of 8: 5/8 of full speed; a craft's last part-tick of EU is not carried over)
     EXPECT_GE(made * 100, full * 5 / 8 * 85) << "about 5/8 of the full rate (at least 85% of it): made " << made << " of " << full;
     EXPECT_LE(made, full * 32 / 48) << "and no more than the share allows";
+    plots.clear(); plotIndexDirty = true;
+}
+
+// (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the
+// summary at once with the caps it had (no minute of measuring).
+TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
+    LoadRecipes();
+    const bool was = summaryOn;
+    summaryOn = true;
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const LayoutMsg layout = OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1));
+    ApplyLayout(layout);
+    PlotSim* ps = FindPlot(9, 1);
+    int b = 0;
+    InsertInto(ps->machines[ps->byPart.at(0)], tables.item("coal"), 64, true, b);
+    InsertInto(ps->machines[ps->byPart.at(1)], tables.item("stone"), 640, false, b);
+    long long made = 0; int active = 0;
+    const long long leave = 70 * kTicksPerSecond, summaryAt = leave + kMeasureTicks;
+    for (long long t = 0; t < summaryAt + 400; ++t) {
+        if (t == leave) SetNear(*ps, false, t);
+        if (ps->mode == PlotSim::Mode::Near) RotateNearBuckets(*ps, t);
+        UpdateMode(*ps, t);
+        if (const int s = StepOf(*ps, 0, t)) TickPlot(*ps, s, made, active);
+    }
+    ASSERT_EQ(ps->mode, PlotSim::Mode::Summary);
+    const std::map<int, int> caps = ps->machines[ps->byPart.at(2)].capPerWindow;
+    const long long euCap = ps->machines[ps->byPart.at(0)].euCap;
+    ASSERT_FALSE(caps.empty());
+    auto chestSand = [&](PlotSim& p) { long long n = 0; for (int part : { 1, 3 }) { const Machine& c = p.machines[p.byPart.at(part)]; n += CountItems(c.in.data(), kChestSlots, tables.item("sand")); } return n; }; // (both chests: a conveyor puts sand in either)
+    const long long sandBefore = chestSand(*ps);
+    tickCount = summaryAt + 400 + 1200; // a minute later, the game saves
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_save_test.txt").string(); // (tmpfile() needs the drive root on Windows)
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    const long long sandSaved = chestSand(*ps);
+    EXPECT_GT(sandSaved, sandBefore) << "the save brought the far chain up to now first";
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    ASSERT_EQ(lines.size(), ps->machines.size());
+    // Load into a fresh factory: the layout arrives, the plot is far from the start.
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(layout);
+    ps = FindPlot(9, 1);
+    ASSERT_TRUE(ps);
+    EXPECT_EQ(chestSand(*ps), sandSaved) << "the chest as saved";
+    SetNear(*ps, false, 5);
+    EXPECT_EQ(ps->mode, PlotSim::Mode::Summary) << "it goes on in the summary at once";
+    EXPECT_EQ(ps->machines[ps->byPart.at(2)].capPerWindow, caps) << "with the caps it had";
+    EXPECT_EQ(ps->machines[ps->byPart.at(0)].euCap, euCap);
+    // An old save (no caps) measures first, as before.
+    std::vector<std::string> old = lines;
+    for (std::string& l : old) { const size_t at = l.find(" sum"); if (at != std::string::npos) l.erase(at); }
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    Factory::LoadSaved(9, old);
+    ApplyLayout(layout);
+    ps = FindPlot(9, 1);
+    SetNear(*ps, false, 5);
+    EXPECT_EQ(ps->mode, PlotSim::Mode::Measuring) << "a save without caps measures first";
+    summaryOn = was;
+    tickCount = 0;
     plots.clear(); plotIndexDirty = true;
 }
 

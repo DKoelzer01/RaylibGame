@@ -19,6 +19,9 @@ if [ -n "${WORLDGEN:-}" ]; then
     echo "test_join: host world-gen settings: $(tr '\n' ' ' < "$tmp/host.sav.worldgen")"
 fi
 sandbox=""; [ "${SANDBOX:-0}" = "1" ] && sandbox="--sandbox"
+# (#1223/#1224) A creature on the brain: the host spawns a thornback by the first player, it bites, the host wears it down;
+# both clients must see its health fall and its death (CREATURE=0: off).
+export RAYLIBGAME_JOIN_CREATURE="${CREATURE:-1}"
 "$exe" --host "$tmp/host.sav" --seed 42 $sandbox --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
@@ -46,6 +49,9 @@ sleep 1
 kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 grep -h "^join:\|^bench: join" "$tmp/alice.log" "$tmp/bob.log"
 grep -h "joined as session\|left" "$tmp/host.log" | sed 's/^/host: /'
+grep -h "^host: creature" "$tmp/host.log"
+grep -h "^join: creature" "$tmp/alice.log" "$tmp/bob.log"
+if [ "${CREATURE:-1}" = "1" ] && ! grep -q "^host: creature: fell (bites on players [1-9]" "$tmp/host.log"; then echo "test_join: the creature bit nobody (the host counts its bites) -> FAIL"; fail_bite=1; fi
 pass=$(cat "$tmp/alice.log" "$tmp/bob.log" | grep "^bench: join" | grep -c "PASS"); fail=$((2 - pass))
 echo "=== test_join: $pass PASS, $fail FAIL (logs in $tmp)"
-[ "$fail" -eq 0 ]
+[ "$fail" -eq 0 ] && [ -z "${fail_bite:-}" ]

@@ -28,5 +28,9 @@ bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<floa
 // ("music_pad_day", "music_pad_night", "music_pad_cave", "music_pad_space"), the danger layer ("music_danger", a 12 s
 // loop) and two stings ("music_discovery", "music_achievement"). False: not one of them.
 bool AudioSynth_Music(const std::string& name, unsigned seed, std::vector<float>& out);
+// (#1246) A creature's voice for one event: event idle | alert | telegraph | hurt | death, voice beast (a growl) | lurker (a
+// rattle) | scavenger (a chittering screech) | ooze (a gurgle) | undead (a moan) | construct (tones). The telegraph is a
+// rising wind-up of 0.5 s. False: an unknown event or voice. (Sounds named "creature_<event>_<voice>", audio.cpp.)
+bool AudioSynth_Creature(const std::string& event, const std::string& voice, unsigned seed, std::vector<float>& out);
 
 #endif

@@ -1,4 +1,5 @@
 #include "hostserver.h"
+#include "headless.h"
 #include "netinterest.h"
 #include "netguard.h"
 #include "gputimer.h"
@@ -20,6 +21,7 @@
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
+#include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
@@ -422,6 +424,7 @@ namespace {
         std::vector<Vector3> near;
         for (auto& [sid, r] : remotes) near.push_back((r.player.position - world.renderOrigin).toFloat());
         Factory::SetNearPoints(near);
+        Factory::SetCameraNear(!Headless()); // (#1302) a dedicated server's camera is nobody: only its players make plots near
         std::vector<Factory::MachineKey> keys;
         for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
         for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(sid, r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
@@ -800,7 +803,7 @@ namespace {
     int animalBites = 0;
     // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
     // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
-    void SetAnimalTargets(Scene&) {
+    void SetAnimalTargets(Scene& world) {
         gAnimalTargets.clear();
         for (const Session& s : sessions) {
             if (!s.online) continue;
@@ -808,6 +811,31 @@ namespace {
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
             gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
+        }
+        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been online for
+        // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
+        // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
+        static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
+        if (joinCreature) {
+            static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
+            const double now = GetTime();
+            if (gAnimalTargets.size() >= 2 && bothAt < 0.0) { bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false); }
+            if (bothAt >= 0.0 && spawnedAt < 0.0 && now - bothAt > 3.0 && !gAnimalTargets.empty()) {
+                const AnimalTarget& t = gAnimalTargets[0];
+                Planetoid* b = Planetoid::findNet(t.body);
+                const Vector3 up = Vector3Normalize(t.local);
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const int before = Animals_Count();
+                if (b) Animals_Spawn(world, *b, "thornback", Vector3Add(t.local, Vector3Scale(side, 5.0f)), 1, false, 0.01f);
+                if (Animals_Count() > before) { net = Animals_NetId(Animals_Count() - 1); printf("host: creature: a thornback (%llu) by session %u\n", (unsigned long long)net, t.session); }
+                spawnedAt = now; lastHit = now;
+            }
+            if (net && !fell && spawnedAt >= 0.0 && now - spawnedAt > 6.0 && now - lastHit >= 1.0) {
+                lastHit = now;
+                const int i = Animals_FindNet(net);
+                if (i < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); }
+                else { DamageEvent e; e.amount = 10.0f; Animals_HitEvent(i, e); if (Animals_FindNet(net) < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); } else printf("host: creature: health %.0f\n", Animals_HealthOf(i)); }
+            }
         }
         if (!gAnimalDamageRemote) gAnimalDamageRemote = [](uint32_t session, const DamageEvent& e) {
             auto rit = remotes.find(session);
@@ -2176,6 +2204,16 @@ void Host_Update(Scene& world) {
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     StepClaims();         // (#343) claim decay, enter/leave lines
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
+    {   // (#1224) every connected player's footsteps (no sound on the server): what creatures hear (Footsteps_RecentNoises)
+        static std::vector<std::pair<uint32_t, const Player*>> walkers;
+        walkers.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit != remotes.end() && rit->second.player.nearest) walkers.push_back({ s.id, &rit->second.player });
+        }
+        Footsteps_UpdateServer(world, walkers, GetFrameTime());
+    }
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
 }

@@ -8,6 +8,7 @@
 #include "ship.h"
 #include "telescope.h"
 #include "audio.h"
+#include "combat.h" // (#1218) gDoubleTapDodge
 #include "subtitles.h"
 #include "foliage.h"
 #include "world.h"
@@ -312,6 +313,7 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            changed |= Toggle({ x, y, w, h }, "Double-tap to dodge", settings.doubleTapDodge); next(); // (#1218)
             changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
@@ -372,6 +374,7 @@ void Settings_Load() {
             else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
+            else if (!strcmp(key, "doubletapdodge")) settings.doubleTapDodge = v != 0; // (#1218)
         }
         fclose(f);
     }
@@ -398,6 +401,7 @@ void Settings_Save() {
     for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
+    fprintf(f, "doubletapdodge %d\n", settings.doubleTapDodge ? 1 : 0); // (#1218)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
         if (PlayerInput_Binding((Act)a) != PlayerInput_DefaultBinding((Act)a)) fprintf(f, "bind_%s %d\n", PlayerInput_ActId((Act)a), PlayerInput_Binding((Act)a));
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
@@ -428,6 +432,7 @@ void Settings_Apply() {
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     player.smoothMotion = settings.reduceMotion;
+    gDoubleTapDodge = settings.doubleTapDodge; // (#1218)
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;
 }
