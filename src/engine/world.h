@@ -80,6 +80,7 @@ struct WorldStats {
     int cachedNodes = 0;                    // built nodes kept only by the cache (#295)
     long long evicted = 0;                  // cache evictions since start
     long long lodFades = 0;                 // nodes cross-faded into their replacements since start (#243)
+    int lodUncovered = 0;                   // (#1418) desired LOD nodes neither ready nor covered by a kept node: gaps on screen
     long long waterBuilds = 0; double waterMs = 0.0; // water-only chunk redraws (#360) since start, their worker time
     long long waterFullBuilds = 0; long long waterCacheBytes = 0; // full builds asked for by water; chunk water caches now
 };
@@ -157,6 +158,12 @@ void WorldTime_Follow(double serverNow);
 double WorldTime_Lag();
 double WorldTime_Pending();
 void worldUpdate(Scene& world, float uploadBudgetMs = 3.0f); // LOD, streaming, uploads
+// (#545) The last frame's busy time (ms): from the frame's start to just before EndDrawing, without the frame-rate cap's or vsync's
+// wait; the main loop sets it (0: not measured, GetFrameTime is used). The streaming budget reads it.
+inline float gFrameBusyMs = 0.0f;
+// (#545) The frame time the frame-rate cap or vsync holds frames to (ms; 0: uncapped). Set beside SetTargetFPS.
+inline float gTargetFrameMs = 0.0f;
+inline void SetFrameTarget(int fps, int vsyncHz = 0) { const int hz = fps > 0 ? fps : vsyncHz; gTargetFrameMs = hz > 0 ? 1000.0f / (float)hz : 0.0f; }
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
 void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
 inline bool gJobLog = false;           // --perf-log: the job queue and mix every second (#387)

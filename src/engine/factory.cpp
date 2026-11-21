@@ -82,9 +82,18 @@ struct Tables {
         if (it != itemIds.end()) return it->second;
         const int id = (int)itemNames.size();
         if (id < kMaxCapItems) caps[id] = StackLimit(n); // written before the id is handed out (under the lock)
+        if (id < kMaxCapItems) fluids[id] = FluidName(n); // (#1254)
         itemIds[n] = id;
         itemNames.push_back(n);
         return id;
+    }
+    // (#1254) Fluid items (alchemy's essences): names with a registered prefix. Lock-free reads like cap().
+    bool fluid(int id) const { return id >= 0 && id < kMaxCapItems && fluids[id]; }
+    void addFluidPrefix(const std::string& prefix) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (prefix.empty() || std::find(fluidPrefixes.begin(), fluidPrefixes.end(), prefix) != fluidPrefixes.end()) return;
+        fluidPrefixes.push_back(prefix);
+        for (int id = 0; id < (int)itemNames.size() && id < kMaxCapItems; ++id) fluids[id] = FluidName(itemNames[id]);
     }
     // Whole units of the item a slot holds (#566: the player inventory's StackLimit). Lock-free: the sim thread asks
     // per stack move, and an id's cap never changes once it is interned.
@@ -101,6 +110,9 @@ struct Tables {
 private:
     static constexpr int kMaxCapItems = 4096;
     int caps[kMaxCapItems] = {};
+    bool fluids[kMaxCapItems] = {};
+    std::vector<std::string> fluidPrefixes;
+    bool FluidName(const std::string& n) const { for (const std::string& p : fluidPrefixes) if (n.compare(0, p.size(), p) == 0) return true; return false; }
     std::mutex mutex;
     std::vector<std::string> itemNames;
     std::unordered_map<std::string, int> itemIds;
@@ -202,6 +214,20 @@ void LoadRecipes() {
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
     }
+    if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
+        std::vector<Factory::RecipeInfo> extra;
+        gFactoryExtraRecipes(extra);
+        for (const Factory::RecipeInfo& e : extra) {
+            if (e.machine >= PartType::Count || e.in.empty() || e.out.empty()) continue;
+            Recipe r;
+            r.machine = e.machine;
+            for (const auto& [name, n] : e.in) if (n > 0) r.in.push_back({ tables.item(name), n });
+            for (const auto& [name, n] : e.out) if (n > 0) r.out.push_back({ tables.item(name), n });
+            r.ticks = std::max(1, e.ticks);
+            r.eu = std::max(0, e.eu);
+            tables.recipes.push_back(r);
+        }
+    }
     // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
     // through every recipe of every machine, each tick).
     for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
@@ -234,6 +260,9 @@ struct Machine {
     std::map<int, int> capPerWindow;
     long long nearEuCur = 0, nearEuPrev = 0, nearEuCap = 0; // (#1261) a generator's EU in them
     std::map<int, int> nearCur, nearPrev, nearCap; // (#1261) crafts per recipe while near, in two 30 s buckets; caps from them on leaving
+    // (#1403) the recipe and progress at the start of the measuring window and of each near bucket: a window's work is
+    // its completions less what the first was already done before it, plus what the last unfinished one has done since
+    int winRecipe = -1, winProgress = 0, nearCurRecipe = -1, nearCurProgress = 0, nearPrevRecipe = -1, nearPrevProgress = 0;
     int euCarry = 0;                            // (#1266) EU received and not yet a whole tick of its recipe
     long long euWindow = 0, euCap = 0;          // (#1261) a generator: EU it delivered in the window, and per kCapTicks
     std::map<int, long long> carry;             // (#1261) part-made crafts per recipe between advances (fixed point)
@@ -317,16 +346,30 @@ void BeginMeasuring(PlotSim& ps, long long t) {
     if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // (its buffers to now first)
     ps.mode = PlotSim::Mode::Measuring;
     ps.modeSince = t;
-    for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; }
+    for (Machine& m : ps.machines) { m.crafts.clear(); m.euWindow = 0; m.winRecipe = m.recipe; m.winProgress = m.progress; } // (#1403: where it stands)
 }
 // While near, crafts and EU go into 30 s buckets: the last whole bucket and the current one (30-60 s) are what the plot
 // really did near the player.
 constexpr long long kNearBucketTicks = 30 * kTicksPerSecond;
 void RotateNearBuckets(PlotSim& ps, long long t) {
     if (t - ps.bucketSince < kNearBucketTicks) return;
-    for (Machine& m : ps.machines) { m.nearPrev.swap(m.nearCur); m.nearCur.clear(); m.nearEuPrev = m.nearEuCur; m.nearEuCur = 0; }
+    for (Machine& m : ps.machines) {
+        m.nearPrev.swap(m.nearCur); m.nearCur.clear(); m.nearEuPrev = m.nearEuCur; m.nearEuCur = 0;
+        m.nearPrevRecipe = m.nearCurRecipe; m.nearPrevProgress = m.nearCurProgress; m.nearCurRecipe = m.recipe; m.nearCurProgress = m.progress; // (#1403)
+    }
     ps.bucketSince = t;
     ps.bucketFull = true;
+}
+// (#1403) A cap from a window: recipe r's work in it, in ticks of the recipe - n completions, less the progress the first
+// already had when the window began (r0, p0), plus the progress of the one still going - per kCapTicks, rounded down.
+// Counting whole completions made one craft more a window when crafts are long (a 15 s craft, 2-4 in a 30-60 s window): a
+// craft nearly done before the window began counted whole, and the summary made more than the full sim.
+int CapOf(const Machine& m, int r, int n, int r0, int p0, long long window) {
+    if (r < 0 || r >= (int)tables.recipes.size() || window <= 0) return 0;
+    const long long R = std::max(1, tables.recipes[r].ticks);
+    long long work = (long long)n * R + (m.recipe == r ? m.progress : 0) - (r0 == r ? p0 : 0);
+    if (work < 0) work = 0;
+    return (int)(work * kCapTicks / (R * window));
 }
 // The player (or a server's players) came near or went away. Leaving after 30 s or more near, each machine keeps the caps
 // of its last 30-60 s (what it really did near the player: the 20-tick measuring step loses part of a step at each craft, and a
@@ -338,7 +381,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
         if (ps.mode == PlotSim::Mode::Summary) AdvanceSummary(ps, ps.lastAdvance, t); // its buffers to now, then it ticks
         ps.mode = PlotSim::Mode::Near; ps.modeSince = t;
         ps.bucketSince = t; ps.bucketFull = false;
-        for (Machine& m : ps.machines) { m.nearCur.clear(); m.nearPrev.clear(); m.nearEuCur = m.nearEuPrev = 0; }
+        for (Machine& m : ps.machines) { m.nearCur.clear(); m.nearPrev.clear(); m.nearEuCur = m.nearEuPrev = 0; m.nearCurRecipe = m.recipe; m.nearCurProgress = m.progress; m.nearPrevRecipe = -1; m.nearPrevProgress = 0; }
         return;
     }
     if (ps.mode != PlotSim::Mode::Near) return;
@@ -358,7 +401,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
         if (!ps.bucketFull) continue; // (under 30 s near: measuring alone; else the last 30-60 s near)
         std::map<int, int> sum = m.nearPrev;
         for (const auto& [r, n] : m.nearCur) sum[r] += n;
-        for (const auto& [r, n] : sum) m.nearCap[r] = (int)((long long)n * kCapTicks / window);
+        for (const auto& [r, n] : sum) m.nearCap[r] = CapOf(m, r, n, m.nearPrevRecipe, m.nearPrevProgress, window); // (#1403)
         m.nearEuCap = (m.nearEuPrev + m.nearEuCur) * kCapTicks / window;
     }
     BeginMeasuring(ps, t);
@@ -371,7 +414,7 @@ void UpdateMode(PlotSim& ps, long long t) {
     const long long window = t - ps.modeSince;
     for (Machine& m : ps.machines) {
         m.capPerWindow = m.nearCap;
-        for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, (int)((long long)n * kCapTicks / window)); }
+        for (const auto& [recipe, n] : m.crafts) { int& c = m.capPerWindow[recipe]; c = std::max(c, CapOf(m, recipe, n, m.winRecipe, m.winProgress, window)); } // (#1403)
         m.euCap = std::max(m.nearEuCap, m.euWindow * kCapTicks / window);
         if (summaryLog && (!m.capPerWindow.empty() || m.euCap > 0)) {
             std::string caps;
@@ -561,6 +604,7 @@ int WaterBucketItem() { static const int id = tables.item("water_bucket"); retur
 int BucketItem() { static const int id = tables.item("bucket"); return id; }
 
 bool Accepts(PartType type, int item) {
+    if (tables.fluid(item)) return false; // (#1254) fluid moves only through pipes and phials (MoveFluids), never as items
     if (Def(type).power == Power::Storage) return true;
     if (Def(type).waterPerTick > 0 && item == WaterBucketItem()) return true;
     return IsFuel(Def(type), item) || RecipeWants(type, item);
@@ -792,8 +836,9 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
+        // (#1254) fluid (essence) is not an item: it is lost with its vessel
+        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0 && !tables.fluid(old.in[i].item)) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
+        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0 && !tables.fluid(old.out[i].item)) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
         if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
     }
     ps->machines = std::move(next);
@@ -1606,12 +1651,12 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
-                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; }
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; } // (#1254) never fluid
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
-                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) {
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { // (#1254) never fluid
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
                         if (k > 0) toCursor.push_back({ s[im.item].item | hot, k, im.to });
                         p->stats.items[s[im.item].item].handOut.add(k); // (#1199)
@@ -1624,7 +1669,7 @@ void SimLoop() {
                     Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
-                    for (int i = 0; i < n; ++i) if (!Empty(s[i])) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
+                    for (int i = 0; i < n; ++i) if (!Empty(s[i]) && !tables.fluid(s[i].item)) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
                 }
             }
             const auto t1 = clk::now(); // (#1207) commands done
@@ -2001,6 +2046,70 @@ std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, ui
     }
     return out;
 }
+// (#1254) Fluid items in machine slots (alchemy's essences).
+void Factory::AddFluidPrefix(const std::string& prefix) { tables.addFluidPrefix(prefix); }
+bool Factory::IsFluidItem(const std::string& item) { return tables.fluid(tables.item(item)); }
+std::vector<Factory::FluidSlots> Factory::ReadFluids(const std::vector<MachineKey>& keys) {
+    std::vector<FluidSlots> out(keys.size());
+    std::lock_guard<std::mutex> lock(simMutex);
+    for (size_t k = 0; k < keys.size(); ++k) {
+        const auto& [body, plot, part] = keys[k];
+        PlotSim* p = FindPlot(body, plot);
+        auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+        if (!p || it == p->byPart.end()) continue;
+        const Machine& m = p->machines[it->second];
+        FluidSlots& f = out[k];
+        f.valid = true;
+        auto read = [&](const Stack* s, int n, std::vector<std::pair<std::string, int>>& list, int& freeSlots) {
+            for (int i = 0; i < n; ++i) {
+                if (Empty(s[i])) { ++freeSlots; continue; }
+                if (!tables.fluid(s[i].item)) continue;
+                const std::string name = tables.name(s[i].item);
+                bool merged = false;
+                for (auto& e : list) if (e.first == name) { e.second += s[i].count; merged = true; }
+                if (!merged) list.push_back({ name, s[i].count });
+            }
+        };
+        read(m.in.data(), InSlots(m), f.in, f.freeIn);
+        read(m.out, kSlots, f.out, f.freeOut);
+    }
+    return out;
+}
+std::vector<int> Factory::MoveFluids(const std::vector<FluidMove>& moves) {
+    std::vector<int> done(moves.size(), 0);
+    std::lock_guard<std::mutex> lock(simMutex);
+    auto machineOf = [&](const MachineKey& key) -> Machine* {
+        const auto& [body, plot, part] = key;
+        PlotSim* p = FindPlot(body, plot);
+        auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+        return !p || it == p->byPart.end() ? nullptr : &p->machines[it->second];
+    };
+    for (size_t k = 0; k < moves.size(); ++k) {
+        const FluidMove& mv = moves[k];
+        if (mv.count <= 0 || mv.item.empty()) continue;
+        const int item = tables.item(mv.item);
+        if (!tables.fluid(item)) continue; // only fluid moves this way
+        Machine* from = mv.hasFrom ? machineOf(mv.from) : nullptr;
+        Machine* to = mv.hasTo ? machineOf(mv.to) : nullptr;
+        if ((mv.hasFrom && !from) || (mv.hasTo && !to)) continue;
+        int n = mv.count;
+        Stack* fs = nullptr; int fn = 0;
+        if (from) { fs = mv.fromWhich ? from->out : from->in.data(); fn = mv.fromWhich ? kSlots : InSlots(*from); n = std::min(n, CountItems(fs, fn, item)); }
+        Stack* ts = nullptr; int tn = 0;
+        if (to) {
+            ts = mv.toWhich ? to->out : to->in.data(); tn = mv.toWhich ? kSlots : InSlots(*to);
+            if (mv.cap > 0) n = std::min(n, std::max(0, mv.cap - CountItems(ts, tn, item)));
+            Stack trial[kChestSlots];
+            std::copy(ts, ts + tn, trial);
+            n -= AddItems(trial, tn, item, n); // what fits
+        }
+        if (n <= 0) continue;
+        if (from) { TakeItems(fs, fn, item, n); from->dirty = true; } // (#1214) room in its outputs: it goes on
+        if (to) { AddItems(ts, tn, item, n); to->dirty = true; }       // new input: it looks again next tick
+        done[k] = n;
+    }
+    return done;
+}
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
@@ -2179,6 +2288,7 @@ void Factory::MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, ui
 
 bool Factory::Accepts(PartType type, const std::string& item) {
     LoadRecipes();
+    if (!item.empty() && tables.fluid(tables.item(item))) return false; // (#1254) fluid (essence) never goes in as an item, not even into a chest
     // Storage takes anything (#283): looked up first, items no recipe or fuel list had interned (food, tools, gems,
     // dyes...) were refused before the storage rule was reached. Insert interns the name.
     if (Def(type).power == Power::Storage) return !item.empty();
@@ -2558,8 +2668,11 @@ std::vector<Int3> Row(int x0, int x1, int z) { std::vector<Int3> r; for (int x =
 // macerators wanting 48 EU/t of its 32, their ore in their own slots (which run dry: an event); (3) a chest with only 20
 // stone (it runs dry: an event); (4) a hand-fed furnace with no conveyor. Totals made per plot and item over `ticks`.
 // far: the plots run near for 2 minutes, then leave "near", measure for 60 s, and advance by the summary every 10 s.
-std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks) {
+// maceratorTicks > 0 (#1403): every macerator recipe takes that many ticks (long crafts against the measuring window)
+std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks, int maceratorTicks = 0) {
     LoadRecipes();
+    std::vector<std::pair<Recipe*, int>> restore; // (the tables outlive the test: LoadRecipes doesn't reload them)
+    if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) { restore.push_back({ &r, r.ticks }); r.ticks = maceratorTicks; }
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     const std::vector<Int3> cable12 = Row(0, 12, -1);
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
@@ -2593,6 +2706,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
         for (const auto& [item, s] : ps.stats.items) if (s.made.total + s.made.acc > 0) made[i][tables.name(item)] = s.made.total + s.made.acc;
     }
     plots.clear(); plotIndexDirty = true;
+    for (const auto& [r, t] : restore) r->ticks = t;
     return made;
 }
 } // namespace
@@ -2634,6 +2748,23 @@ TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimAndNotMuchLess) {
         }
         for (const auto& [item, bsum] : summary[p]) EXPECT_TRUE(full[p].count(item)) << names[p] << ": the summary made " << item << " the full sim never did";
     }
+}
+
+// (#1403) The same oracle with 300-tick macerator crafts (15 s: two to four in a 30-60 s window), as Progression's ladder
+// had: the summary made one craft more per machine than the full sim on the power-limited line (450 vs 432). It may never.
+TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimWithLongCrafts) {
+    const bool was = summaryOn;
+    summaryOn = true;
+    constexpr long long kTicks = 10 * 60 * kTicksPerSecond;
+    const auto full = OracleRun(false, kTicks, 300), summary = OracleRun(true, kTicks, 300);
+    summaryOn = was;
+    const char* names[] = { "steady chain", "power-limited line", "dry input chest", "hand-fed furnace" };
+    for (size_t p = 0; p < full.size(); ++p)
+        for (const auto& [item, a] : full[p]) {
+            const long long bsum = summary[p].count(item) ? summary[p].at(item) : 0;
+            printf("oracle (300-tick crafts): %-18s %-14s full %5lld  summary %5lld\n", names[p], item.c_str(), a, bsum);
+            EXPECT_LE(bsum, a) << names[p] << ", " << item << ": the summary may never make more than the full sim";
+        }
 }
 
 // (#1266) Six 8 EU/t macerators on one 32 EU/t generator, near the player (1-tick steps): each gets 5 EU of 8 a tick. It

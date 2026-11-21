@@ -119,11 +119,15 @@ struct ScenarioRegistrar { ScenarioRegistrar(const char* name, const char* file,
 void Scenario_PrepareArgs(int& argc, char**& argv);
 void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
+void Scenario_Loading(); // (#1422) each frame of a loading screen: heartbeats and the wall backstop for a run held there
 void Scenario_Shutdown();
 bool Scenario_Active();
 // (#1216) A scenario drives gameplay input with scripted holds (gFakeHeld): the bench run takes gameplay input while it is set
 // (and the window need not have focus). Scenarios that set it clear it again.
 inline bool gScenarioInput = false;
+// (#1105) A scenario places the camera itself (world.camera, e.g. a view of the player from outside, for its recording):
+// while set, the player's first-person view does not overwrite it each frame. Scenarios that set it clear it again.
+inline bool gScenarioCamera = false;
 std::string Scenario_BaselineDir(); // RAYLIBGAME_BASELINES, default //DEWEYSERVER/files/claude-media/raylib-baselines
 
 #endif

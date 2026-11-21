@@ -43,6 +43,7 @@ inline float gHudScale = 1.0f; // (#891) the interface scale for the crosshair's
 inline std::function<void(const char* event, double n, Vector3 local)> gSkillEvent;
 inline std::function<float(const char* stat)> gSkillStat;
 inline float SkillStat(const char* stat) { return gSkillStat ? gSkillStat(stat) : 1.0f; }
+inline std::function<float()> gTerrainStrokeScale; // (#1254) a potion of mining haste: strokes a second times this (unset: 1)
 // (#919) n items times a yield stat: the whole part, and the fraction left by chance (the gameplay RNG): x1.1 on 3 logs
 // gives 3 most times and 4 one time in three.
 // by: whose stats (#920: a server's remote player); empty = the local player's (SkillStat).
