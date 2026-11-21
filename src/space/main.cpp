@@ -95,6 +95,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "magicdiscovery.h"
 #include "magicmachines.h"
 #include "alchemy.h"
+#include "potions.h"
 #include "tome.h"
 #include "wind.h"
 #include "storage.h"
@@ -10473,6 +10474,7 @@ int main(int argc, char** argv)
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
             MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
             Alchemy_Update(world, SimTime());                     // (#1254) alchemy: pipe runs of essence, spills fizzling
+            if (!loading) Potion_Update(simDt);                   // (#1254) potions: their timers
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
@@ -10802,6 +10804,7 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
+        if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];

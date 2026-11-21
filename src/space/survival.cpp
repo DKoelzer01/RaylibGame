@@ -1,5 +1,6 @@
 #include "survival.h"
 #include "magicdiscovery.h" // (#1250) the First Sight page is read like a consumable is used
+#include "potions.h" // (#1254) drunk like a consumable; their effects on the suit's figures
 #include "net.h"
 #include "gamerng.h"
 #include "playerinput.h"
@@ -207,7 +208,7 @@ bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vecto
 
 // #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
 // UI, sounds, quests, rocket or ship; the weather and temperature at that player). Single player runs exactly as before.
-void Survival_Update(Scene& world, float dt, const PlayerInput& in) { Survival_StepFor(world, dt, in, survival, player, inventory, Suit_Stats(), true); }
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) { Survival_StepFor(world, dt, in, survival, player, inventory, Potion_Suit(Potion_Local(), Suit_Stats()), true); } // (#1254) potions: water breathing, cold resistance
 void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local) {
     (void)inventory;
     if (survival.dead) {
@@ -683,7 +684,7 @@ void Objectives_DrawHUD() {
     layout(true);
 }
 
-bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id) || MagicDiscovery_IsPage(id); }
+bool Survival_IsUsable(const std::string& id) { return id == "oxygen_canister" || id == "power_cell" || id == "repair_kit" || Survival_IsFood(id) || MagicDiscovery_IsPage(id) || Potion_IsPotion(id); } // (#1254) potions
 
 // #337: using an item - the local player's (a client process asks the server instead: its inventory and vitals are the
 // server's; nothing changes here until the server's deltas come back), or a remote player's on a server (local false: no
@@ -694,6 +695,7 @@ bool Survival_UseItem(const std::string& id) {
 }
 bool Survival_UseItemFor(const std::string& id, SurvivalState& survival, Inventory& inventory, const SuitStats& stats, bool local) {
     if (MagicDiscovery_IsPage(id)) return local && MagicDiscovery_ReadPage(); // (#1250) the First Sight page: read it (a server's players: with the magic multiplayer step)
+    if (Potion_IsPotion(id)) return local && Potion_UseLocal(id); // (#1254) drink it (a server's players: with the magic multiplayer step)
     if (id == "repair_kit") { // mends the most damaged part of the rocket in reach (rocket.h)
         if (local && inventory.count(id) > 0 && Rocket_UseRepairKit()) { inventory.remove(id, 1); return true; }
         return false;

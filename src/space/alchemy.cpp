@@ -168,7 +168,7 @@ std::string Alchemy_ItemsText() {
     }
     for (const PotionDef& p : potions) {
         const int r = (p.colour >> 16) & 255, g = (p.colour >> 8) & 255, b = p.colour & 255;
-        snprintf(buf, sizeof buf, "%s | %s | 16 | %d,%d,%d | %s Drink it from the hotbar (right-click).\n", Alchemy_PotionItem(p).c_str(), p.name.c_str(), r, g, b, p.text.c_str());
+        snprintf(buf, sizeof buf, "%s | %s | 16 | %d,%d,%d | %s Drink it: bind it to the hotbar and press its key.\n", Alchemy_PotionItem(p).c_str(), p.name.c_str(), r, g, b, p.text.c_str());
         out += buf;
     }
     return out;
