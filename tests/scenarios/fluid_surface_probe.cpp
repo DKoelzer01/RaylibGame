@@ -1,9 +1,10 @@
 // fluid/surface-probe: Fluid::SurfaceAbove (what swimming, pumps and buckets read) finds the water's real surface while the
 // water moves. It used to stop at the first cell short of full going up from the point, and moving water - a pour landing
 // in a pool, a column the pressure pass (#1168) is lifting - has such cells under the surface, so the probe read a false
-// surface metres down. A 2 x 2 m pit 3 m deep is filled by a steady pour; every frame, SurfaceAbove from just over the
+// surface metres down. A 2 x 2 m pit 3 m deep is filled by a steady pour; every frame, SurfaceAbove from 0.3 m over the
 // floor is compared with the top of the highest wet cell above that point (scanned down from over the rim). Counted: the
-// frames where the probe reads more than 0.2 m under that top.
+// frames where the probe reads more than 0.2 m under that top. (A guard for a still pool filling: with the pressure pass
+// off this never showed the bug, before or after the fix. The test that fails without it is fluid/u-bend-pressure.)
 #include "scenario.h"
 #include "fluid.h"
 #include "waterfield.h"
