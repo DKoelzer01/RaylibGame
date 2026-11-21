@@ -272,6 +272,47 @@ bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<floa
             if (clankT < 0.25f) { c = clank * expf(-clankT * 18.0f) * (sinf(kTau * clankF * clankT) + 0.5f * sinf(kTau * clankF * 2.71f * clankT)); clankT += 1.0f / kRate; }
             return 0.25f * Hum(t, 50.0f, 5, 0.5f) + 0.1f * Hum(t, 100.0f, 3, 0.6f) + lp * 0.9f + grain * n(rng) * 0.2f + c * 0.5f;
         });
+    // (#1269, #1270) Mechanical power, made at 64 RPM (machinesounds.cpp plays them faster or slower by the shaft's speed).
+    } else if (name == "mech_gears") { // wooden cogs: teeth clacking 8 times a second over a low rumble
+        out = Loop(2.0f, 0.25f, [&](float t) {
+            const float ph = fmodf(t * 8.0f, 1.0f);
+            lp += (n(rng) - lp) * 0.05f;
+            lp2 += (n(rng) - lp2) * 0.4f;
+            return lp2 * 0.9f * expf(-ph * 40.0f) + 0.15f * sinf(kTau * 180.0f * t) * expf(-ph * 30.0f) + lp * 0.6f;
+        });
+    } else if (name == "mech_millstone") { // stone grinding on stone, a rumble swelling once a turn
+        out = Loop(3.75f, 0.5f, [&](float t) {
+            lp += (n(rng) - lp) * 0.04f;
+            lp2 += (n(rng) - lp2) * 0.25f;
+            const float turn = 0.7f + 0.3f * sinf(kTau * t * (64.0f / 60.0f));
+            return (lp * 3.0f + lp2 * 0.3f) * turn;
+        });
+    } else if (name == "mech_saw") { // a blade cutting: a buzzing saw tooth with chips of noise
+        out = Loop(2.0f, 0.25f, [&](float t) {
+            const float saw = 2.0f * fmodf(t * 110.0f, 1.0f) - 1.0f;
+            lp += (n(rng) - lp) * 0.5f;
+            return saw * 0.35f * (0.8f + 0.2f * sinf(kTau * 4.0f * t)) + lp * 0.25f;
+        });
+    } else if (name == "mech_press") { // a press stamping about once a second: a heavy thump and a clank
+        out = Loop(1.875f, 0.0f, [&](float t) {
+            const float ph = fmodf(t * (64.0f / 60.0f), 1.0f) / (64.0f / 60.0f); // seconds into this stroke
+            lp += (n(rng) - lp) * 0.1f;
+            return sinf(kTau * 55.0f * ph) * expf(-ph * 14.0f) * 0.9f + sinf(kTau * 700.0f * ph) * expf(-ph * 30.0f) * 0.2f + lp * 0.2f * expf(-ph * 10.0f);
+        });
+    } else if (name == "mech_waterwheel") { // paddles slapping the water and a slow creak
+        out = Loop(3.75f, 0.5f, [&](float t) {
+            const float paddle = fmodf(t * 8.0f * (64.0f / 60.0f) / 4.0f, 1.0f); // a paddle every ~0.47 s
+            lp += (n(rng) - lp) * 0.3f;
+            const float creak = sinf(kTau * (220.0f + 40.0f * sinf(kTau * 3.0f * t)) * t) * 0.08f * (0.5f + 0.5f * sinf(kTau * t * (64.0f / 60.0f)));
+            return lp * 1.2f * expf(-paddle * 6.0f) + lp * 0.25f + creak;
+        });
+    } else if (name == "mech_windmill") { // sails sweeping past (four a turn) and the frame's creak
+        out = Loop(3.75f, 0.5f, [&](float t) {
+            const float sail = 0.5f + 0.5f * cosf(kTau * t * 4.0f * (64.0f / 60.0f) / 4.0f);
+            lp += (n(rng) - lp) * 0.06f;
+            const float creak = sinf(kTau * 160.0f * t) * 0.06f * (0.5f + 0.5f * sinf(kTau * t * (64.0f / 60.0f)));
+            return lp * 2.5f * sail * sail + creak;
+        });
     } else if (name == "machine_stall") { // winding down: a falling tone and a click
         const int len = (int)(0.6f * kRate);
         out.resize(len);

@@ -17,6 +17,10 @@ constexpr int kMachineIndividual = 8;    // machines heard one by one (the neare
 
 // The hum a machine type makes ("hum_lv", ...), or nullptr (chests, parts that make no sound of their own).
 const char* MachineSound_Hum(PartType t);
+// (#1269) Mechanical power: shafts, cogs, gearboxes and cranks (a plot's sound as one clatter at their middle), and the
+// loops' pitch from the network's speed (made at 64 RPM; 0.5x..2x).
+bool MachineSound_IsTransmission(PartType t);
+float MachineSound_RpmPitch(float rpm);
 // Whether it hums softly when idle (powered electric machines do; fires and steam engines are silent).
 bool MachineSound_IdleHums(PartType t);
 
