@@ -38,6 +38,8 @@ int MagicDiscovery_NodeKindsStudied(const MagicPlayerState& s) {
 
 // ---- The game ----
 #include "magic.h"
+#include "tome.h"
+#include "researchtab.h"
 #include "envflag.h"
 #include <cstdio>
 #include "gamerng.h"
@@ -87,6 +89,7 @@ bool MagicDiscovery_ReadPage() {
     inventory.remove(kPage, 1);
     s.found = true;
     QuestBook_Count("arcane_read");
+    Tome_Team(ResearchTab_Team()).pages.insert("first_sight"); // (#1251) the team's first tome page (research's resonance tuning needs it)
     GameUI_Toast("First Sight. The world is threaded with faint currents: tap Y to see them, hold Y on something to study it.");
     return true;
 }

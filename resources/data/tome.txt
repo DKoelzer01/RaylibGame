@@ -1,0 +1,17 @@
+# Tome pages (#1251, magic step 4; the magic doc sections 2 and 7). Pages are per team, bought with the reader's aspects
+# (aspects.txt). Four branches: alchemy, artifice, wards, attunement. Cross links with the research tree (research.txt):
+# a research node may need a page ("tome <page>"), and a page may need a research node ("research <node>"); no core
+# research node ever needs a page. Optional pages give content (methods, machines), never % numbers (decided).
+#   page <id> | <name> | latin <flavour> | branch <b> | cost <aspect> <n> ... | needs <page> ... | research <node> ...
+#        | unlocks <kind>:<id> ... | effect <sight_tier N | through_rock> | text <one line for the tome>
+# Unlocks name things built in later steps (recipes, machines); nothing is gated by them yet. Costs are first guesses.
+
+page first_sight     | First Sight          | latin Visus Arcanus   | branch attunement | cost -                          | needs -            | effect sight_tier 0 | text The world is threaded with currents; now you can see them (tap Y).
+page wider_sight     | Wider Sight          | latin Visus Latior    | branch attunement | cost air 6 light 4 order 2       | needs first_sight  | effect sight_tier 1 | text Magic sight reaches 150 m.
+page far_sight       | Far Sight            | latin Visus Longinquus| branch attunement | cost air 10 light 8 motion 6     | needs wider_sight  | effect sight_tier 2 | text Magic sight reaches 400 m.
+page stone_sight     | Sight through Stone  | latin Visus per Saxum | branch attunement | cost earth 10 void 4 crystal 4   | needs wider_sight  | effect through_rock | text Ley lines show through rock and earth.
+page research_table  | The Research Table   | latin Mensa Studii    | branch alchemy    | cost order 4 crystal 2           | needs first_sight  | unlocks machine:research_table | text A table to spend things for their aspects.
+page siphon          | The Siphon           | latin Sipho           | branch artifice   | cost crystal 6 order 4 earth 2   | needs research_table | unlocks machine:mana_siphon recipe:mana_jar | text Draw a node's mana into jars.
+page transmutation   | The Transmutation Circle | latin Circulus Mutationis | branch alchemy | cost order 8 crystal 6 earth 4 | needs research_table | unlocks machine:transmutation_circle | text One material into another sharing its aspects, paid in Aether.
+page shrine          | The Shrine           | latin Sacellum        | branch wards      | cost earth 6 life 6 order 4      | needs research_table | unlocks machine:shrine | text A place to rest that wards off burden.
+page mana_dynamo     | The Mana Dynamo      | latin Dynamo Arcana   | branch artifice   | cost storm 6 metal 6 order 4     | needs siphon       | research lv_power | unlocks machine:mana_dynamo | text Mana into power, through a tech generator.

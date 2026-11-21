@@ -5,6 +5,8 @@
 #include "playerrecord.h"
 #include "research.h"
 #include "survival.h"
+#include "tome.h"          // (#1251) tome pages per team
+#include "playersession.h" // the local player's magic state (found)
 #include "imgui.h"
 
 #include <algorithm>
@@ -131,7 +133,12 @@ void ResearchTab_Draw() {
                     ImGui::Text("Cost: %d units, each %s and %.0f s in a lab", n.units, packs.c_str(), n.unitSeconds);
                     std::string needs; for (const std::string& d : n.needs) { const ResearchNode* r = Research_Find(d); needs += (needs.empty() ? "" : ", ") + (r ? r->name : d); }
                     ImGui::Text("Needs: %s", needs.empty() ? "-" : needs.c_str());
-                    if (!n.tome.empty()) ImGui::Text("Also needs the tome page: %s", n.tome.c_str());
+                    if (!n.tome.empty()) { // (#1251) the magic cross link: the team's tome page, or a hint before magic is found
+                        const TomePage* page = Tome_Find(n.tome);
+                        if (Tome_Team(ResearchTab_Team()).Has(n.tome)) ImGui::Text("Tome page %s: your team has it", page ? page->name.c_str() : n.tome.c_str());
+                        else if (page && LocalSession().magic.found) ImGui::Text("Also needs the tome page: %s", page->name.c_str());
+                        else ImGui::TextDisabled("Locked: something in the world resonates. Find it first.");
+                    }
                     if (!done && !joined) ImGui::TextDisabled(queued ? "Click: take it out of the queue" : "Click: queue it");
                 } else ImGui::TextDisabled("Its cost shows once your team reaches tier %d", n.tier);
                 ImGui::EndTooltip();
