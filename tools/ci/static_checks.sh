@@ -10,6 +10,8 @@
 #   2. The erosion bake (src/engine/erosion*.cpp/h) changed in code (not only comments) while kErosionBakeVersion did not:
 #      a warning annotation (stale <save>.erosion caches would load; CLAUDE.md "bump the version on ANY bake code change").
 #   3. A new `gh project` command in tools/ (forbidden by CLAUDE.md: it burns the shared GraphQL budget): an error.
+#   4. renderOrigin (the drawing-only floating origin, Plan 11 #1412) used more in a file than tools/ci/render_origin_baseline.txt
+#      records, or in a new file: a warning (simulation reads body-local doubles). --render-origin-baseline rewrites it.
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
@@ -153,6 +155,24 @@ if [ -n "$BASE" ]; then
         done <<< "$hits"
         sum ""; sum "**New \`gh project\` usage in tools/** (error): $(echo $hits)"
         errors=$((errors + 1))
+    fi
+fi
+
+# ---- 4. renderOrigin doesn't creep into more code (Plan 11 F4, #1412) ----
+# The render origin is for drawing; simulation reads body-local doubles. tools/ci/render_origin_baseline.txt holds each
+# file's count of `renderOrigin` (word); a file whose count rises, or a new file using it, is a warning (an error once F8
+# has moved simulation code off it). Counts may only fall: after removing uses, refresh the baseline with
+#   bash tools/ci/static_checks.sh --render-origin-baseline
+RO_BASE=tools/ci/render_origin_baseline.txt
+ro_counts() { grep -rcw renderOrigin src --include=*.cpp --include=*.h | awk -F: '$2 > 0 { print $2 " " $1 }' | sort -k2; }
+if [ "${1:-}" = "--render-origin-baseline" ]; then ro_counts > "$RO_BASE"; echo "static_checks: wrote $RO_BASE"; exit 0; fi
+if [ -f "$RO_BASE" ]; then
+    rose="$(ro_counts | tr -d '\r' | awk 'NR == FNR { base[$2] = $1; next } ($2 in base) ? $1 > base[$2] : 1 { print $2 " " (($2 in base) ? base[$2] : 0) " " $1 }' <(tr -d '\r' < "$RO_BASE") -)"
+    if [ -n "$rose" ]; then
+        while read -r f was now; do
+            annot warning "$f" 1 "renderOrigin uses rose $was -> $now (Plan 11 #1412): simulation code reads body-local doubles; drawing may, then refresh $RO_BASE"
+        done <<< "$rose"
+        sum ""; sum "**renderOrigin uses rose** (warning; Plan 11 #1412): $(echo "$rose" | awk '{ printf "%s %s->%s; ", $1, $2, $3 }')"
     fi
 fi
 

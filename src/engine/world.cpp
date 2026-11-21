@@ -1547,9 +1547,28 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         static const bool budgetOn = !(getenv("RAYLIBGAME_STREAM_BUDGET") && getenv("RAYLIBGAME_STREAM_BUDGET")[0] == '0');
         static long frameNo = 0;
         ++frameNo;
-        const float frameMs = GetFrameTime() * 1000.0f;
+        // (#545) The frame's busy time, not GetFrameTime: that includes the frame-rate cap's or vsync's wait, so a capped game
+        // (60 Hz vsync: 16.7 ms) was throttled as if overloaded while the GPU idled, to ~16 blocks a frame, and the view's
+        // terrain fell behind in flight (gaps for a few frames: ~3500 nodes waiting at 60 m/s and 30 FPS).
+        // RAYLIBGAME_STREAM_BUDGET_BUSY=0: GetFrameTime as before (A/B).
+        static const bool busyOn = !(getenv("RAYLIBGAME_STREAM_BUDGET_BUSY") && getenv("RAYLIBGAME_STREAM_BUDGET_BUSY")[0] == '0');
+        // A frame no longer than the cap's (or vsync's) target was held by it, not by work: its CPU busy time says how loaded it
+        // was. A frame past the target was really late (CPU, or the GPU at the swap: #1122's flight): its full time, as before.
+        const float wallMs = GetFrameTime() * 1000.0f;
+        const bool heldByCap = gTargetFrameMs > 0.0f && wallMs <= gTargetFrameMs * 1.1f + 1.0f;
+        const float frameMs = busyOn && heldByCap && gFrameBusyMs > 0.0f ? gFrameBusyMs : wallMs;
+        // The cap's wait is time the frame had to spare: 7 ms or more of it, both slots (a per-frame limit scales the terrain's
+        // throughput with the frame rate: at 30-60 FPS one batch a frame was too few for flight whatever the busy time).
+        const bool slack = busyOn && heldByCap && gFrameBusyMs > 0.0f && gTargetFrameMs - gFrameBusyMs >= 7.0f;
         int limit = 2;
-        if (budgetOn && !gPreloadUrgent && generationStart < 0.0) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        if (budgetOn && !gPreloadUrgent && generationStart < 0.0 && !slack) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        static const bool budgetLog = getenv("RAYLIBGAME_BUDGET_LOG") && getenv("RAYLIBGAME_BUDGET_LOG")[0] == '1';
+        static double lastBudgetLog = 0.0;
+        if (budgetLog && GetTime() - lastBudgetLog > 2.0) {
+            lastBudgetLog = GetTime();
+            printf("budget: wall %.1f ms, busy %.1f ms, target %.1f ms, held by the cap %d, slack %d -> launch limit %d; gpu density queue %d\n",
+                   wallMs, gFrameBusyMs, gTargetFrameMs, heldByCap ? 1 : 0, slack ? 1 : 0, limit, TerrainGpu_Pending());
+        }
         TerrainGpu_SetLaunchLimit(limit);
     }
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
