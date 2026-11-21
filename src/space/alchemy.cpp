@@ -276,6 +276,7 @@ namespace {
 double nextAt = 0.0;
 AlchemyStats stats;
 int essenceKind = -1;
+constexpr float kFizzleReach = 8.0f; // m: a spill fizzles wherever it ran within this of its outlet
 struct Spill { uint64_t body; Vector3 local; float m3; double at; int tries = 0; };
 std::vector<Spill> spills;
 std::map<Factory::MachineKey, std::string> panel; // the last pass's run state per vessel
@@ -317,11 +318,11 @@ void Alchemy_Update(Scene& world, double now) {
         if (now - sp.at < s.fizzleSeconds) { ++i; continue; }
         Planetoid* b = Planetoid::find(sp.body);
         if (b && essenceKind >= 0) {
-            Fluid::Take(*b, sp.local, sp.m3 * 1.5f, 3.0f, essenceKind);
+            Fluid::Take(*b, sp.local, std::max(sp.m3 * 1.5f, Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind)), kFizzleReach, essenceKind); // (the spill runs out several metres)
             ParticleBurst pb; pb.kind = ParticleKind::Spark; pb.color = { 215, 195, 255, 255 }; pb.count = 10; pb.size = 0.06f; pb.life = 0.6f; pb.speed = 1.2f; pb.spread = 0.9f;
             Particles_Emit(*b, sp.local, pb);
         }
-        if (b && essenceKind >= 0 && ++sp.tries < 4 && Fluid::FluidAt(*b, sp.local, 3.0f, essenceKind) > 0.005f) { sp.at = now - s.fizzleSeconds + 0.5; ++i; continue; }
+        if (b && essenceKind >= 0 && ++sp.tries < 12 && Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind) > 0.005f) { sp.at = now - s.fizzleSeconds + 0.5; ++i; continue; }
         ++stats.fizzled;
         spills.erase(spills.begin() + i);
     }
@@ -405,7 +406,11 @@ void Alchemy_Update(Scene& world, double now) {
         const RunPlan plan = Alchemy_PlanRun(members, s);
         if (plan.refused) ++stats.refused;
         const std::string line = plan.refused ? "Pipe run refused: " + plan.why : plan.aspect.empty() ? std::string("Pipe run: empty") : "Pipe run: " + AspectName(plan.aspect) + " essence";
-        for (size_t m = 0; m < run.parts.size(); ++m) if (keyOf[r][m] >= 0) panel[keys[keyOf[r][m]]] = line;
+        for (size_t m = 0; m < run.parts.size(); ++m) { // a vessel on several runs (a tank between two) shows a refused one first
+            if (keyOf[r][m] < 0) continue;
+            std::string& shown = panel[keys[keyOf[r][m]]];
+            if (shown.find("refused") == std::string::npos) shown = line;
+        }
         for (const RunMove& mv : plan.moves) {
             Factory::FluidMove fm;
             fm.item = mv.item; fm.count = mv.count;
