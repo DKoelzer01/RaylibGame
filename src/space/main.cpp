@@ -8223,11 +8223,23 @@ int main(int argc, char** argv)
                                 sscanf(Fluid::DebugCell(*p, q).c_str(), "fill %d sh %d flags %7s", &fill, &sh, fl);
                                 return fill < 0 ? std::string("        .") : std::string(TextFormat(" %3d/%3d%-2s", fill, sh, fl));
                             };
-                            std::string row, below;
-                            for (float x = -1.5f; x <= 1.51f; x += 0.25f) { row += cellAt(x, -0.5f); below += cellAt(x, -0.75f); }
+                            // The same cells in the simulation's own bricks (Fluid::SimCell): fill/share and a(wake) or s(leeping).
+                            auto simAt = [&](float x, float h) {
+                                const Vector3 q = Vector3Add(Vector3Add(Vector3Add(flowEnd, Vector3Scale(flowOut, -4.0f)), Vector3Scale(side, x)), Vector3Scale(up, h + 0.6f));
+                                int fill = -1, sh = 0; char st[4] = "";
+                                sscanf(Fluid::SimCell(*p, q).c_str(), "fill %d sh %d %3s", &fill, &sh, st);
+                                return fill < 0 ? std::string("        .") : std::string(TextFormat(" %3d/%3d%-2s", fill, sh, st));
+                            };
+                            std::string row, below, simRow, simBelow;
+                            for (float x = -1.5f; x <= 1.51f; x += 0.25f) {
+                                row += cellAt(x, -0.5f); below += cellAt(x, -0.75f);
+                                simRow += simAt(x, -0.5f); simBelow += simAt(x, -0.75f);
+                            }
                             if (row != lastRow) {
-                                printf("bench: flow dbg3 t=%.3f s, thin:  %s\n", t, row.c_str());
-                                printf("bench: flow dbg3 t=%.3f s, below: %s\n", t, below.c_str());
+                                printf("bench: flow dbg3 t=%.3f s, thin  (drawn):%s\n", t, row.c_str());
+                                printf("bench: flow dbg3 t=%.3f s, thin  (sim):  %s\n", t, simRow.c_str());
+                                printf("bench: flow dbg3 t=%.3f s, below (drawn):%s\n", t, below.c_str());
+                                printf("bench: flow dbg3 t=%.3f s, below (sim):  %s\n", t, simBelow.c_str());
                                 lastRow = row;
                             }
                         }

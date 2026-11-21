@@ -2864,6 +2864,18 @@ std::string Fluid::DebugAwake() {
                       noSlot, settled, steady, upload, first.c_str());
 }
 
+std::string Fluid::SimCell(const Planetoid& body, Vector3 local) {
+    if (running.load()) WaitIdle();
+    std::lock_guard<std::mutex> lock(simMx);
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        int ci, cj, ck; s->cellOf(local, ci, cj, ck);
+        Brick* b; int i;
+        if (s->cell(ci, cj, ck, b, i)) return TextFormat("fill %d sh %d %s", b->fill[i], b->shut[i], b->active ? "a" : "s");
+    }
+    return "none";
+}
+
 std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
