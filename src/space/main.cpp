@@ -10642,7 +10642,7 @@ int main(int argc, char** argv)
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
-            if (!ship.piloted && !Rocket_Boarded()) { player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165)
+            if (!ship.piloted && !Rocket_Boarded()) { if (!gScenarioCamera) player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165); a scenario's own camera (#1105)
             else if (Rocket_Boarded()) Rocket_View(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), SimAlpha());
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world); // after the camera is placed (#1337)
             Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // after the camera: aims with this frame's view (#285, as #222)

@@ -60,6 +60,7 @@ enum class PartType : uint8_t {
     LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
     ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
     Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
+    Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
@@ -157,6 +158,7 @@ public:
     // Collision: push a sphere (body-local centre, radius in m) out of parts; returns true and the
     // body-local push and normal if it touched any.
     bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut) const;
+    bool touchesPart(Vector3 bodyLocalCentre, float radius, PartType type) const; // (#1105) a sphere overlapping a cell of that part type (ladders)
     // Ray (body-local) against part cells: the nearest hit cell, its face normal (plot space), distance.
     bool raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const;
     bool raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const; // (#1277) aim rays
