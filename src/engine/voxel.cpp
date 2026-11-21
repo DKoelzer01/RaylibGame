@@ -1777,7 +1777,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float rough = 1.0f + bk * big;
         const float rs = swell * rough;
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
-        const float pk = hv > 0.0f ? pocket : 0.0f;
+        static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
+        const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
         const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
@@ -1788,7 +1789,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
         const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
         const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
-        const float floorCut = (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
+        static const bool floorTest = !(getenv("RAYLIBGAME_CAVE_FLOORCUT") && getenv("RAYLIBGAME_CAVE_FLOORCUT")[0] == '0'); // (#1116 isolation, CPU only)
+        const float floorCut = !floorTest && hall ? -1e9f : (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
         // stays the floor), up to ~0.6 of it near the wall. Voids behind the faces come from the field falling again
         // further out along a ray from the axis, i.e. from the noise's radial change: the noise is looked up at a point

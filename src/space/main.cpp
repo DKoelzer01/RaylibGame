@@ -1735,6 +1735,7 @@ int main(int argc, char** argv)
             pf->caveMouthsList(home, R, 3, chambers);
             const int NX = 101, NY = 57, NZ = 101;                          // x, z across; y up
             long long totIslands = 0, totVol = 0;
+            long long gIslandH[8] = {}, gIslandR[8] = {}; // (#1116) floating volume (m^3) by its mean height and distance from the chamber centre
             const auto t0 = std::chrono::steady_clock::now();
             for (size_t ci = 0; ci < chambers.size(); ++ci) {
                 const Vector3 c = chambers[ci], up = Vector3Normalize(c);
@@ -1748,11 +1749,13 @@ int main(int argc, char** argv)
                             solid[idx(x, y, z)] = pf->baseDensity(q) >= ISO_LEVEL;
                         }
                 std::vector<int> stack;
+                double sumY = 0.0, sumR = 0.0; // (#1116) the last flooded component's summed height (m from the centre) and distance across
                 auto flood = [&](int sx, int sy, int sz) {                  // marks one solid component, returns its size
                     long long n = 0;
                     stack.clear(); stack.push_back((int)idx(sx, sy, sz)); seen[idx(sx, sy, sz)] = 1;
                     while (!stack.empty()) {
                         const int k = stack.back(); stack.pop_back(); ++n;
+                        { const int px = k % NX, pz = (k / NX) % NZ, py = k / (NX * NZ); sumY += py - 28.0; sumR += sqrt((px - 50.0) * (px - 50.0) + (pz - 50.0) * (pz - 50.0)); } // (#1116) where it is
                         const int x = k % NX, z = (k / NX) % NZ, y = k / (NX * NZ);
                         const int nb[6][3] = { { x - 1, y, z }, { x + 1, y, z }, { x, y - 1, z }, { x, y + 1, z }, { x, y, z - 1 }, { x, y, z + 1 } };
                         for (const auto& b : nb) {
@@ -1771,13 +1774,20 @@ int main(int argc, char** argv)
                 for (int y = 0; y < NY; ++y)
                     for (int z = 0; z < NZ; ++z)
                         for (int x = 0; x < NX; ++x)
-                            if (solid[idx(x, y, z)] && !seen[idx(x, y, z)]) { const long long n = flood(x, y, z); ++islands; vol += n; largest = std::max(largest, n); }
+                            if (solid[idx(x, y, z)] && !seen[idx(x, y, z)]) {
+                                sumY = sumR = 0.0;
+                                const long long n = flood(x, y, z); ++islands; vol += n; largest = std::max(largest, n);
+                                const double my = sumY / n, mr = sumR / n; // (#1116) bins: height -28..+28 m in 8, distance 0..71 m in 8
+                                gIslandH[std::clamp((int)((my + 28.0) / 7.0), 0, 7)] += n; gIslandR[std::clamp((int)(mr / 9.0), 0, 7)] += n;
+                            }
                 totIslands += islands; totVol += vol;
                 const float depth = pf->radius + pf->elevation(up) - Vector3Length(c);
                 printf("bench: cave islands: chamber %zu (%.0f m down): %lld floating pieces, %lld m^3, largest %lld m^3\n", ci, depth, islands, vol, largest);
             }
             const float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
             printf("bench: cave islands: %zu chambers within %.0f m: %lld floating pieces, %lld m^3 in all (%.1f s)\n", chambers.size(), R, totIslands, totVol, secs);
+            printf("bench: cave islands: floating m^3 by height from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %+d..%+d:%lld", -28 + 7 * b, -21 + 7 * b, gIslandH[b]); printf("\n");
+            printf("bench: cave islands: floating m^3 by distance across from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %d..%d:%lld", 9 * b, 9 * b + 9, gIslandR[b]); printf("\n");
             return 0;
         }
     for (int i = 1; i < argc; ++i)
