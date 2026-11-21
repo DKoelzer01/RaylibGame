@@ -972,7 +972,10 @@ void ApplyCommand(const Command& c) {
                 if (!s->cell(ci + di, cj + dj, ck + dk, b, i) || b->fill[i] == 0) continue;
                 if (CellKind(b->flags[i]) != c.fluid) continue; // only the asked-for fluid
                 const int t = (int)std::min(want, (float)b->fill[i]);
-                if (!(b->flags[i] & kSource)) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                // Infinite water gives without running out (Plan 4: sea, rivers and large lakes are infinite): a source, or a
+                // released river reach (#1414: with takes really removing water, a pump at a river's edge drained the reach's
+                // cells there faster than the river refilled them and ran dry after 0.6 m^3; finite ponds drain as they should).
+                if (!(b->flags[i] & kSource) && !b->reach) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
                 want -= t;
                 Touch(b);
             }
