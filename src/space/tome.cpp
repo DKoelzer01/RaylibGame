@@ -2,6 +2,7 @@
 
 #include "magicsight.h"
 #include "research.h"
+#include "inventory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -231,6 +232,13 @@ void Tome_ApplyEffects(const TomeState& team, MagicPlayerState& me) {
 
 bool Tome_ResearchAllowed(const ResearchNode& n, const TomeState& team) { return n.tome.empty() || team.Has(n.tome); }
 
+bool Tome_SpendItem(const TomeState& team, MagicPlayerState& me, Inventory& inv, const std::string& item) {
+    if (!team.Has("research_table") || !Aspects_Of("item:" + item) || inv.count(item) <= 0) return false;
+    if (!inv.remove(item, 1)) return false;
+    Tome_GrantStudy(me, "item:" + item, 1.0f);
+    return true;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1251): the shipped tables, studies give aspects, pages cost them, the research cross link ----
 #include <gtest/gtest.h>
@@ -334,6 +342,25 @@ TEST(Tome, ResearchNeedsItsTomePage) {
     const ResearchNode* steam = Research_Find("steam_power");
     ASSERT_TRUE(steam);
     EXPECT_TRUE(Tome_ResearchAllowed(*steam, TomeState{})) << "no page needed elsewhere";
+}
+
+TEST(Tome, SpendingAnItemNeedsTheResearchTablePage) {
+    UnitTest::EnsureItemDB();
+    ASSERT_TRUE(Tome_Load());
+    TomeState team;
+    MagicPlayerState me;
+    Inventory inv;
+    inv.add("iron_ingot", 2);
+    EXPECT_FALSE(Tome_SpendItem(team, me, inv, "iron_ingot")) << "no research table page";
+    EXPECT_EQ(inv.count("iron_ingot"), 2);
+    team.pages.insert("research_table");
+    EXPECT_TRUE(Tome_SpendItem(team, me, inv, "iron_ingot"));
+    EXPECT_EQ(inv.count("iron_ingot"), 1) << "one unit spent";
+    EXPECT_FLOAT_EQ(me.aspects["metal"], 3.0f) << "its aspects in full";
+    EXPECT_FLOAT_EQ(me.aspects["order"], 1.0f);
+    EXPECT_FALSE(Tome_SpendItem(team, me, inv, "copper_ingot")) << "none carried";
+    inv.add("rocket_pack", 1);
+    if (itemDB.find("rocket_pack")) { EXPECT_FALSE(Tome_SpendItem(team, me, inv, "rocket_pack")) << "made of nothing known"; }
 }
 
 TEST(Tome, ATeamsPagesRoundTrip) {
