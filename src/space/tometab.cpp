@@ -24,6 +24,17 @@ const char* BranchName(const std::string& b) {
     if (b == "attunement") return "Attunement";
     return b.c_str();
 }
+// A name that is wider than `room` breaks at the last space that fits (the user's rule from #1192: whole names at a
+// readable size, never a smaller font or "..."). A single word wider than the box stays whole.
+std::string WrapName(const std::string& name, float room) {
+    if (ImGui::CalcTextSize(name.c_str()).x <= room) return name;
+    size_t cut = std::string::npos;
+    for (size_t sp = name.find(' '); sp != std::string::npos; sp = name.find(' ', sp + 1)) {
+        if (ImGui::CalcTextSize(name.substr(0, sp).c_str()).x > room) break;
+        cut = sp;
+    }
+    return cut == std::string::npos ? name : name.substr(0, cut) + "\n" + name.substr(cut + 1);
+}
 std::string CostText(const TomePage& p) {
     std::string s;
     for (const auto& [id, n] : p.cost) { const AspectDef* a = Aspects_Find(id); s += (s.empty() ? "" : ", ") + std::to_string(n) + " " + (a ? a->name : id); }
@@ -63,7 +74,7 @@ void TomeTab_Draw() {
     // The pages in four branches.
     static const char* kBranches[] = { "attunement", "alchemy", "artifice", "wards" };
     const float colW = ImGui::GetContentRegionAvail().x / 4.0f;
-    const float boxH = ImGui::GetTextLineHeightWithSpacing() * 2.6f;
+    const float boxH = ImGui::GetTextLineHeightWithSpacing() * 3.4f; // room for a name on two lines and the state
     ImGui::Columns(4, "tome", false);
     for (const char* branch : kBranches) {
         ImGui::TextUnformatted(BranchName(branch));
@@ -74,7 +85,8 @@ void TomeTab_Draw() {
             const bool ready = !owned && Tome_CanUnlock(tome, me, research, p, &why);
             ImGui::PushStyleColor(ImGuiCol_Button, owned ? ImVec4(0.16f, 0.36f, 0.16f, 1.0f) : ready ? ImVec4(0.30f, 0.22f, 0.45f, 1.0f) : ImVec4(0.12f, 0.12f, 0.14f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, owned ? ImVec4(0.7f, 0.95f, 0.7f, 1.0f) : ready ? ImVec4(1, 1, 1, 1) : ImVec4(0.55f, 0.55f, 0.58f, 1.0f));
-            const std::string label = p.name + "\n" + (owned ? "written" : ready ? "ready: click to write" : "locked") + "##" + p.id;
+            // (capture 2026-11-21: "The Transmutation Circ...") a long name wraps to a second line at a word, never shrinks
+            const std::string label = WrapName(p.name, colW - 12.0f - 2.0f * ImGui::GetStyle().FramePadding.x) + "\n" + (owned ? "written" : ready ? "ready: click to write" : "locked") + "##" + p.id;
             const bool clicked = ImGui::Button(label.c_str(), ImVec2(colW - 12.0f, boxH));
             const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
             drawnCenters[p.id] = ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
