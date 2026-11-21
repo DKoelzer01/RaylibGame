@@ -29,7 +29,9 @@ bool Aim(ScenarioCtx& c, float side, Vector3& local) {
 }
 // RMB held for one update with `held` in hand (the caller waited out the cooldown): what the player's RMB does there.
 void Rmb(ScenarioCtx& c, const char* held) {
+    if (inventory.count(held) <= 0) inventory.add(held, 1); // (the tool in hand must be carried: HeldTool reads the inventory)
     terrainTool.heldTool = held;
+    c.note(TextFormat("RMB with %s: holdingItem %d rmbBlocks %d cooldown %.2f", held, terrainTool.holdingItem ? 1 : 0, terrainTool.rmbBlocks ? 1 : 0, TerrainTool_Cooldown()));
     PlayerInput in; in.hold(Act::Secondary);
     TerrainTool_Update(c.world, in, true);
 }
