@@ -15,6 +15,11 @@
 
 namespace {
 Vector3 Tangent(Vector3 up) { return Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })); }
+// The direction toward the sun in the planet's frame, through the same toLocal as everything else (two points' difference:
+// dirToLocal with either sign framed the night side in the first reshoots).
+Vector3 SunLocal(ScenarioCtx& c) {
+    return Vector3Normalize(Vector3Subtract(c.body->toLocal(Vector3Scale(c.world.sunDirection, 1000.0f)), c.body->toLocal({ 0, 0, 0 })));
+}
 
 // One view per step: the camera is set every frame; the picture is taken once the world there is built (or at 30 s).
 void View(ScenarioDef& s, const std::string& name, std::function<bool(ScenarioCtx&, Vector3&, Vector3&, Vector3&)> place) {
@@ -157,13 +162,14 @@ SCENARIO("slides/space") {
     // The planet's frame: its axis is local y, the ring in its equatorial (xz) plane. The sun's direction in that frame
     // decides where the day side is: the first pass, over the start, looked at the night side.
     View(s, "limb", [](ScenarioCtx& c, Vector3& eye, Vector3& target, Vector3& up) {
-        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(Vector3Negate(c.world.sunDirection))); // (the first reshoot looked into the sun with the plain sign)
+        const Vector3 sun = SunLocal(c);
         const Vector3 side = Tangent(sun);
         const Vector3 over = Vector3Normalize(Vector3Add(Vector3Scale(sun, 0.6f), Vector3Scale(side, 0.8f))); // afternoon light
         const Vector3 away = Vector3Normalize(Vector3Subtract(side, Vector3Scale(over, Vector3DotProduct(side, over)))); // the sun behind
         const float R = c.field->radius;
-        eye = Vector3Scale(over, R + 25000.0f); // 25 km up, looking at the horizon with the sun behind the camera
-        target = Vector3Add(Vector3Scale(over, R), Vector3Scale(away, 120000.0f));
+        eye = Vector3Scale(over, R + 25000.0f); // 25 km up, the sun behind the camera
+        // From 25 km over a 60 km planet the horizon dips ~45 degrees: aim 35 degrees down, the limb in the upper frame.
+        target = Vector3Add(eye, Vector3Scale(Vector3Subtract(Vector3Scale(away, 0.819f), Vector3Scale(over, 0.574f)), 100000.0f));
         up = over;
         return true;
     });
@@ -180,7 +186,7 @@ SCENARIO("slides/space") {
         if (!c.check("a body named luna", moon != nullptr)) return false;
         const Vector3 m = c.body->toLocalD(moon->worldPos).toFloat();
         // From the moon's sunlit side, a little off the sun line (the first pass looked at its night side).
-        const Vector3 sun = Vector3Normalize(c.body->dirToLocal(Vector3Negate(c.world.sunDirection))); // (the first reshoot looked into the sun with the plain sign)
+        const Vector3 sun = SunLocal(c);
         eye = Vector3Add(m, Vector3Add(Vector3Scale(sun, moon->radius * 3.0f), Vector3Scale(Tangent(sun), moon->radius * 1.5f)));
         target = m; up = { 0, 1, 0 };
         return true;
