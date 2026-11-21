@@ -67,10 +67,10 @@ namespace {
     // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
     struct PendingFoundation { uint64_t body; TerrainEdit edit; };
     std::deque<PendingFoundation> foundationsPending;
-    // A frame's share for foundations: at 3 ms a 60-part placement lays in ~4 frames, its worst frame 6.7 ms (from ~12 ms
-    // in one frame; perf/blueprint-place, 2026-11-21). An edit costs ~0.16 ms. (Those worst frames were mostly the world still
-    // streaming in after load, #1372: the budget is re-measured with the world idle.) RAYLIBGAME_FOUNDATION_MS overrides (A/B).
-    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 3.0; }();
+    // A frame's share for foundations (#1372, perf/blueprint-place with the world idle, 2026-11-21): a 60-part placement all in
+    // one frame was a ~12 ms frame; queued at 3 ms its worst frame after was +5.4 ms over a ~2.7 ms baseline (5 frames), at
+    // 1 ms +3.9 ms (14 frames, ~0.23 s). An edit costs ~0.16 ms. RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 1.0; }();
     constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
 }
 void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
