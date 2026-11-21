@@ -52,6 +52,8 @@ void Animals_AddLights(Scene& world);
 int Animals_ProjectilesThrown();
 int Animals_ProjectileHits();
 int Animals_Thefts();
+int Animals_ShieldBlocks();               // (#1227 tests) hits a front shield took
+const char* Animals_MoodName(int index);  // (#1227 tests) its brain's mood ("sleep", "chase", ...)
 int Animals_OozeSplits();                 // (#1226 tests) oozes cut in two
 int Animals_Generation(int index);        // (#1226 tests) 0 whole, 1-2 split off
 const std::string& Animals_Ore(int index); // (#1226 tests) an ooze's ore

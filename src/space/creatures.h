@@ -92,6 +92,14 @@ struct CreatureSpec {
     float respawn = 600.0f;    // s for a chunk to refill one, after it was cleared
     bool nests = false;        // larger caves hold a nest: destroyed, the chunk stops respawning
     std::vector<std::pair<std::string, int>> loot; // extra drops on top of animals.txt's
+    // (#1227) A front shield: shield= of a non-blunt hit from in front (within shieldArc degrees of its facing) is stopped; blunt
+    // and hits from the side or back land whole. wake=light: it sleeps until a light comes within wakeRange m (or it is hit),
+    // then stays awake a minute after the last. rare=item:n:chance,...: drops that come only sometimes.
+    float frontShield = 0.0f, shieldArcDeg = 60.0f;
+    bool wakeByLight = false;
+    float wakeRange = 10.0f;
+    struct Rare { std::string item; int n; float chance; };
+    std::vector<Rare> rare;
     // Sound names per event (sound_idle= ... sound_death=; empty: none). The audio side (#1246) maps names to sounds; this
     // framework only names them and raises Creature_Event.
     std::string sounds[5];
@@ -154,6 +162,7 @@ struct BrainInput {
     std::vector<Percept> others;
     bool hurt = false; uint64_t hurtBy = 0; Vector3 hurtFrom{}; // hit this step, and by whom
     bool heardNoise = false; Vector3 noiseAt{};
+    bool lightNear = false;    // (#1227) a light within its wake range (a carried one, a lamp, a fire)
 };
 
 struct BrainState {
@@ -165,6 +174,7 @@ struct BrainState {
     double windUpAt = -1.0;    // an attack winding up since (-1 none)
     double lastStrike = -1e9;
     Vector3 goal{};            // alert: where the noise was; flee / retreat: what it runs from
+    double awakeUntil = -1.0;  // (#1227) a light sleeper: awake until (a minute after the last light near, or a hit)
 };
 
 struct BrainOut {
