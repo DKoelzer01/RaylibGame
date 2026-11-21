@@ -26,7 +26,9 @@ if (-not (Test-Path "$BuildDir/CMakeCache.txt")) {
     cmake -S . -B $BuildDir -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release "-DGAME_OUTPUT_DIR=$repo/$BuildDir/bin" | Out-Host
     if ($LASTEXITCODE -ne 0) { Write-Error "capture: configure failed (rerun once: the first configure can fail on an AV scan)"; exit 1 }
 }
-cmake --build $BuildDir -j 8 2>&1 | Select-Object -Last 15 | Out-Host
+# Merge stderr inside cmd, not PowerShell: PS 5.1 turns each stderr line (any compiler warning) into a
+# NativeCommandError, which $ErrorActionPreference = 'Stop' makes fatal (#492). Success = the exit code only.
+cmd /c "cmake --build `"$BuildDir`" -j 8 2>&1" | Select-Object -Last 15 | Out-Host
 if ($LASTEXITCODE -ne 0) { Write-Error "capture: build failed - fix it before capturing"; exit 1 }
 $exe = Join-Path $repo "$BuildDir/bin/game.exe"
 if (-not (Test-Path $exe)) { Write-Error "capture: $exe not found"; exit 1 }
