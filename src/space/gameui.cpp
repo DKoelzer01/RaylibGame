@@ -16,6 +16,7 @@
 #include "tometab.h" // (#1251)
 #include "statstab.h"
 #include "navigation.h"
+#include "claims.h"
 #include "recipebook.h"
 #include "craftplan.h"
 #include "net.h"
@@ -180,6 +181,8 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     else if (t == "Research") GameUI_ShowScreen(GameScreen::Research); // (#1192)
     else if (t == "Tome") GameUI_ShowScreen(TomeTab_Shown() ? GameScreen::Tome : GameScreen::Inventory); // (#1251)
     else if (t == "Statistics") GameUI_ShowScreen(GameScreen::Statistics); // (#1199)
+    else if (t == "Team") GameUI_ShowScreen(GameScreen::Team);     // (#828)
+    else if (t == "Skills") GameUI_ShowScreen(GameScreen::Skills); // (#828)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
@@ -1398,22 +1401,100 @@ static void DrawSkills() {
     ImGui::EndChild();
 }
 
-// The Team screen (#604). Joined to a server: the team as the server says (members, who's online, their health, the owner),
-// with Invite / Leave / Kick / Rename / team chat as /team commands (the server decides), and an invite waiting to accept.
-// Single player: a team of one.
+// (#828) The Team screen's helpers: how long ago, a compass word, where a teammate is from here.
+namespace {
+    std::string AgoText(uint32_t sec) {
+        if (sec == 0) return "";
+        if (sec < 120) return "just now";
+        if (sec < 2 * 3600) return TextFormat("%u min ago", sec / 60);
+        if (sec < 2 * 86400) return TextFormat("%u h ago", sec / 3600);
+        return TextFormat("%u days ago", sec / 86400);
+    }
+    const char* CompassWord(float deg) {
+        static const char* const w[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+        return deg < 0.0f ? "" : w[(int)std::floor(fmodf(deg + 22.5f, 360.0f) / 45.0f) % 8];
+    }
+    // "420 m NE", "on luna", "here"; "" when their position hasn't arrived
+    std::string WhereText(const NetClient& c, uint32_t session) {
+        uint64_t body = 0; DVec3 local{};
+        if (!session || !NetClient_OtherView(c, session, body, local)) return "";
+        const Planetoid* theirs = Planetoid::findNet(body);
+        Planetoid* mine = player.nearest;
+        if (!theirs) return "";
+        if (theirs != mine || !mine) return "on " + theirs->name;
+        const double d = (local - mine->toLocalD(player.position)).length() * mine->scale;
+        if (d < 8.0) return "here";
+        const float bearing = uiWorld ? Nav_Bearing(*uiWorld, local.toFloat()) : -1.0f;
+        return d < 1000.0 ? TextFormat("%.0f m %s", d, CompassWord(bearing)) : TextFormat("%.1f km %s", d / 1000.0, CompassWord(bearing));
+    }
+    // The right pane: what the team shares - its tier, the recipes you know, its claims (of its budget) and who may enter them.
+    void DrawTeamShared(int claimBudget, const std::vector<std::string>& allies) {
+        const float fh = ImGui::GetFontSize();
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Shared");
+        ImGui::Separator();
+        const int cur = QuestBook_Tier(), tiersN = QuestBook_TierCount();
+        if (cur < tiersN) ImGui::Text("Quests: tier %d of %d (%s)", cur, tiersN - 1, QuestBook_TierName(cur));
+        else ImGui::Text("Quests: every tier done");
+        ImGui::Text("Recipes you know: %d", (int)LocalSession().recipes.known.size());
+        ImGui::Dummy(ImVec2(0, fh * 0.4f));
+        // Claims: a joined game's from the server's list, single player's from the claims here
+        struct Row { std::string body; Vector3 centre; float radius; };
+        std::vector<Row> rows;
+        if (gNetClient && gNetClient->state == NetClient::State::Joined) { for (const ClaimView& cv : Claims_Mirror()) if (cv.ours) rows.push_back({ cv.body, cv.centre, cv.radius }); }
+        else for (const Claim& cl : Claims_OfTeam(Teams_Of(PlayerId_Local()))) rows.push_back({ cl.body, cl.centre, cl.radius });
+        ImGui::Text("Claims: %d of %d", (int)rows.size(), claimBudget);
+        if (rows.empty()) ImGui::TextDisabled("  none yet: place a claim banner to claim land");
+        for (const Row& r : rows) {
+            std::string where;
+            if (player.nearest && player.nearest->name == r.body) {
+                const double d = (DVec3(r.centre) - player.nearest->toLocalD(player.position)).length() * player.nearest->scale;
+                where = d < r.radius ? "you are in it" : (d < 1000.0 ? TextFormat("%.0f m %s", d, CompassWord(uiWorld ? Nav_Bearing(*uiWorld, r.centre) : -1.0f))
+                                                                     : TextFormat("%.1f km %s", d / 1000.0, CompassWord(uiWorld ? Nav_Bearing(*uiWorld, r.centre) : -1.0f)));
+            } else where = "on " + r.body;
+            ImGui::BulletText("%.0f m across, %s", r.radius * 2.0f, where.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, fh * 0.4f));
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "In our claims");
+        ImGui::Separator();
+        ImGui::TextWrapped("Our team%s may build, dig, open chests and machines, farm and use beds; anyone else is refused.", allies.empty() ? "" : " and our allies");
+        if (!allies.empty()) {
+            std::string a;
+            for (const std::string& n : allies) a += (a.empty() ? "" : ", ") + n;
+            ImGui::TextWrapped("Allies: %s", a.c_str());
+        } else ImGui::TextDisabled("No allies.");
+    }
+}
+
+// The Team screen (#604; the two panes of #828). Joined to a server: the team as the server says (members, who's online,
+// where they are, their health, the owner; when the others were last seen), with Invite / Leave / Kick / Rename / team chat
+// as /team commands (the server decides), and an invite waiting to accept. Single player: a team of one, with its claims.
 static void DrawTeam() {
     const float s = GameUI_Scale();
     ImGui::Dummy(ImVec2(0, 12 * s));
     NetClient* c = gNetClient && gNetClient->state == NetClient::State::Joined ? gNetClient : nullptr;
+    const float sharedW = std::max(ImGui::GetContentRegionAvail().x * 0.38f, 320.0f * s);
     if (!c) {
         const int id = Teams_Of(PlayerId_Local());
         const TeamRecord* team = nullptr;
         for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
+        ImGui::BeginChild("teamleft", ImVec2(ImGui::GetContentRegionAvail().x - sharedW - 8.0f * s, 0.0f), true);
         ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team ? team->name.c_str() : "Your team");
-        ImGui::TextWrapped("You are a team of one. Quests and tiers belong to the team. In multiplayer, invite others to share them: Multiplayer on the main menu.");
+        ImGui::SameLine(); ImGui::TextDisabled("1 member");
+        ImGui::Separator();
+        ImGui::Text("%s (you)  - owner", settings.mpName.empty() ? "You" : settings.mpName.c_str());
+        ImGui::Dummy(ImVec2(0, 8 * s));
+        ImGui::TextWrapped("You are a team of one. Quests, tiers and claims belong to the team. In multiplayer, invite others to share them: Multiplayer on the main menu.");
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("teamshared", ImVec2(0.0f, 0.0f), true);
+        std::vector<std::string> allies;
+        for (const int a : Claims_AlliesOf(id)) if (const TeamRecord* at = Teams_Find(a)) allies.push_back(at->name);
+        DrawTeamShared(Claims_Budget(std::max(1, (int)QuestBook_LocalState().visitedBodies.size())), allies);
+        ImGui::EndChild();
         return;
     }
     const MsgTeamState& t = c->team;
+    ImGui::BeginChild("teamleft", ImVec2(ImGui::GetContentRegionAvail().x - sharedW - 8.0f * s, 0.0f), true);
     auto say = [&](const std::string& line) { NetClient_SendChat(*c, line); };
     bool youOwn = false;
     for (const auto& m : t.members) youOwn = youOwn || (m.you && m.owner);
@@ -1437,7 +1518,9 @@ static void DrawTeam() {
             ImGui::TableNextColumn();
             if (m.online) ImGui::ProgressBar(std::clamp(m.health / 100.0f, 0.0f, 1.0f), ImVec2(160 * s, 0), TextFormat("HP %.0f", m.health));
             else ImGui::TextDisabled("offline");
-            ImGui::TableNextColumn();
+            ImGui::TableNextColumn(); // (#828) where they are from here, or when they were last seen
+            if (m.online && !m.you) { const std::string w = WhereText(*c, m.session); if (!w.empty()) ImGui::TextUnformatted(w.c_str()); }
+            else if (!m.online && m.lastSeen) ImGui::TextDisabled("last seen %s", AgoText(m.lastSeen).c_str());
             ImGui::TableNextColumn();
             if (youOwn && !m.you) { ImGui::PushID(m.name.c_str()); if (ImGui::SmallButton("Kick")) say("/team kick " + m.name); ImGui::PopID(); }
         }
@@ -1462,6 +1545,11 @@ static void DrawTeam() {
         say(std::string("/t ") + teamSay); teamSay[0] = 0;
     }
     ImGui::TextDisabled("Also from the command line: /team, /team invite NAME, /team accept, /team leave, /t TEXT");
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("teamshared", ImVec2(0.0f, 0.0f), true);
+    DrawTeamShared(t.claimBudget, t.allies);
+    ImGui::EndChild();
 }
 
 // ---- The inventory screen's player (#822): a turning preview, the suit, its module slots and the off hand ----
