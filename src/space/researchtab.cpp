@@ -95,8 +95,12 @@ void ResearchTab_Draw() {
             for (const std::string& d : n.needs) {
                 const ResearchNode* p = Research_Find(d);
                 if (!p || Research_Sight(st, *p, tier) == ResearchSight::Hidden || !at.count(d)) continue;
-                const ImVec2 a(at[d].x + bw, at[d].y + bh * 0.5f), b(at[n.id].x, at[n.id].y + bh * 0.5f);
-                dl->AddLine(a, b, st.Done(d) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 110), 1.5f);
+                const ImU32 col = st.Done(d) ? IM_COL32(120, 210, 120, 200) : IM_COL32(150, 150, 150, 110);
+                if (at[d].x == at[n.id].x) { // the same column (the spine): along its left side, never across a box
+                    const float x = at[d].x - gapX * 0.45f, ya = at[d].y + bh * 0.5f, yb = at[n.id].y + bh * 0.5f;
+                    const ImVec2 pts[4] = { ImVec2(at[d].x, ya), ImVec2(x, ya), ImVec2(x, yb), ImVec2(at[n.id].x, yb) };
+                    dl->AddPolyline(pts, 4, col, ImDrawFlags_None, 1.5f);
+                } else dl->AddLine(ImVec2(at[d].x + bw, at[d].y + bh * 0.5f), ImVec2(at[n.id].x, at[n.id].y + bh * 0.5f), col, 1.5f);
             }
         }
         // The nodes.
@@ -110,13 +114,15 @@ void ResearchTab_Draw() {
             const ImU32 fill = done ? IM_COL32(40, 90, 40, 255) : sight == ResearchSight::NameOnly ? IM_COL32(26, 26, 30, 255) : queued ? IM_COL32(70, 64, 30, 255) : IM_COL32(40, 42, 52, 255);
             dl->AddRectFilled(p, q, hover ? IM_COL32(80, 80, 70, 255) : fill, 6.0f);
             dl->AddRect(p, q, n.core ? IM_COL32(230, 210, 140, 255) : LineColour(n.line), 6.0f, 0, n.core ? 2.0f : 1.2f);
+            // The text stays inside its box (a long name is cut there; the tooltip has it all); queued shows as the box's colour.
+            dl->PushClipRect(ImVec2(p.x + 4, p.y), ImVec2(q.x - 6, q.y), true);
             dl->AddText(ImGui::GetFont(), fh, ImVec2(p.x + 8, p.y + fh * 0.3f), sight == ResearchSight::NameOnly ? IM_COL32(140, 140, 150, 255) : IM_COL32(235, 235, 235, 255), n.name.c_str());
             if (sight == ResearchSight::Full) {
                 const int units = n.units, have = st.progress.count(n.id) ? st.progress.at(n.id) : 0;
-                const char* sub = done ? "done" : TextFormat("%s%d x %.0f s, %d pack%s a unit%s", have ? TextFormat("%d/", have) : "", units, n.unitSeconds,
-                                                              (int)n.packs.size(), n.packs.size() == 1 ? "" : "s", queued ? "  (queued)" : "");
+                const char* sub = done ? "done" : have ? TextFormat("%d / %d units, %.0f s each", have, units, n.unitSeconds) : TextFormat("%d units, %.0f s each", units, n.unitSeconds);
                 dl->AddText(ImGui::GetFont(), fh * 0.8f, ImVec2(p.x + 8, p.y + fh * 1.7f), IM_COL32(170, 170, 170, 255), sub);
             } else dl->AddText(ImGui::GetFont(), fh * 0.8f, ImVec2(p.x + 8, p.y + fh * 1.7f), IM_COL32(110, 110, 120, 255), "next tier");
+            dl->PopClipRect();
             if (hover) {
                 ImGui::BeginTooltip();
                 ImGui::Text("%s  (tier %d, %s)", n.name.c_str(), n.tier, n.core ? "core: part of the milestone" : n.line.c_str());
@@ -156,6 +162,7 @@ void ResearchTab_Draw() {
     ImGui::SameLine();
     // ---- The queue and the milestone checklist ----
     ImGui::BeginChild("researchside", ImVec2(0, 0), true);
+    ImGui::PushTextWrapPos(0.0f); // (the panel is narrow: every line wraps in it)
     ImGui::TextUnformatted("Queue");
     ImGui::Separator();
     if (st.queue.empty()) ImGui::TextDisabled("Empty: click nodes to queue them (labs take the first they have packs for)");
@@ -163,10 +170,8 @@ void ResearchTab_Draw() {
         ImGui::PushID((int)i);
         const ResearchNode* n = Research_Find(st.queue[i]);
         ImGui::Text("%zu. %s", i + 1, n ? n->name.c_str() : st.queue[i].c_str());
-        if (!joined) {
-            ImGui::SameLine();
-            if (i > 0 && ImGui::SmallButton("Up")) std::swap(st.queue[i], st.queue[i - 1]);
-            ImGui::SameLine();
+        if (!joined) { // (on their own line: beside a long name they were pushed out of the panel)
+            if (i > 0) { if (ImGui::SmallButton("Up")) std::swap(st.queue[i], st.queue[i - 1]); ImGui::SameLine(); }
             if (ImGui::SmallButton("Remove")) { st.queue.erase(st.queue.begin() + (long)i); ImGui::PopID(); break; }
         }
         ImGui::PopID();
@@ -178,9 +183,8 @@ void ResearchTab_Draw() {
     int core = 0, coreDone = 0;
     for (const ResearchNode& n : Research_Nodes()) if (n.tier == mt && n.core) { ++core; coreDone += st.Done(n.id); }
     ImGui::Text("Core research: %d / %d", coreDone, core);
-    ImGui::TextDisabled("An item delivery: comes with the milestones");
-    ImGui::TextDisabled("A working build: comes with the milestones");
-    ImGui::TextDisabled("An exploration find: comes with the milestones");
+    ImGui::TextDisabled("Still to come with the milestones: an item delivery, a working build and an exploration find.");
+    ImGui::PopTextWrapPos();
     ImGui::EndChild();
 }
 
