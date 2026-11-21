@@ -5285,6 +5285,22 @@ int main(int argc, char** argv)
                         benchShotTabs = 31; frames = 0;
                     } else if (benchShotTabs == 31 && ++frames == 40) {
                         TakeScreenshot("bench_research.png");
+                        { // (#828) the Team tab with a claim 60 m from the player (single player: a team of one)
+                            Planetoid* p = player.nearest;
+                            int team = Teams_Of(PlayerId_Local());
+                            if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
+                            std::string why;
+                            if (p) {
+                                const Vector3 here = p->toLocalD(player.position).toFloat();
+                                const Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, Vector3Normalize(here)));
+                                Claims_Make(team, Claims_Budget(1), p->name, Vector3Add(here, Vector3Scale(east, 60.0f)), 50.0f, (int64_t)time(nullptr), why);
+                            }
+                            printf("bench: team tab: %d claim(s) of the team%s%s\n", (int)Claims_OfTeam(team).size(), why.empty() ? "" : "; ", why.c_str());
+                        }
+                        GameUI_ShowTab("Team");
+                        benchShotTabs = 32; frames = 0;
+                    } else if (benchShotTabs == 32 && ++frames == 40) {
+                        TakeScreenshot("bench_team.png");
                         GameUI_ShowTab("Crafting");
                         benchShotTabs = 4; frames = 0;
                     } else if (benchShotTabs == 4 && ++frames == 40) {

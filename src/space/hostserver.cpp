@@ -40,6 +40,7 @@
 #include <ctime>
 #include <future>
 #include <chrono>
+#include <filesystem>
 #include "playerinput.h"
 #include "worldtypes.h"
 #include "voxel.h"
@@ -1110,6 +1111,15 @@ namespace {
     void TellTeam(int team, const std::string& text) {
         if (const TeamRecord* t = Teams_Find(team)) for (const std::string& u : t->members) if (const Session* s = SessionOfUuid(u)) Tell(*s, text);
     }
+    // (#828) An offline player's "last seen": seconds since their record file was last written (on leaving, and by autosaves
+    // while they played); 0 when there is none.
+    uint32_t SecondsSinceRecord(const std::string& uuid) {
+        std::error_code ec;
+        const auto when = std::filesystem::last_write_time(PlayerRecord_Path(uuid), ec);
+        if (ec) return 0;
+        const long long s = std::chrono::duration_cast<std::chrono::seconds>(std::filesystem::file_time_type::clock::now() - when).count();
+        return s > 0 ? (uint32_t)std::min<long long>(s, 0xFFFFFFFFll) : 1;
+    }
     void SendTeamState(const Session& s) {
         MsgTeamState m;
         m.team = Teams_Of(s.uuid);
@@ -1119,9 +1129,12 @@ namespace {
             for (const std::string& u : t->members) {
                 MsgTeamState::Member x;
                 x.name = NameOfUuid(u); x.owner = u == owner; x.you = u == s.uuid;
-                if (const Session* o = SessionOfUuid(u)) { x.online = true; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                if (const Session* o = SessionOfUuid(u)) { x.online = true; x.session = o->id; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                else x.lastSeen = SecondsSinceRecord(u); // (#828) their record is written when they leave
                 m.members.push_back(x);
             }
+            m.claimBudget = Claims_Budget(TeamQuests_BodiesReached(m.team)); // (#828)
+            for (const int a : Claims_AlliesOf(m.team)) if (const TeamRecord* at = Teams_Find(a)) m.allies.push_back(at->name);
         }
         for (const TeamInvite& i : teamInvites) if (i.to == s.uuid && GetTime() < i.until) if (const TeamRecord* t = Teams_Find(i.team)) m.invite = t->name;
         SendMsg(s.conn, m);
