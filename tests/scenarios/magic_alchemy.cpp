@@ -70,7 +70,6 @@ SCENARIO("magic/alchemy") {
     s.step("the distillery's Life essence runs down the pipe into the tank", 40.0, [](ScenarioCtx& c) {
         Watch(c);
         Factory::Sync(c.world);
-        Alchemy_Update(c.world, c.T);
         const int life = TankLife(c);
         c.waitingFor(TextFormat("tank: %d Life", life));
         if (life < 8) return false;
@@ -89,7 +88,6 @@ SCENARIO("magic/alchemy") {
     s.step("two aspects on one run: refused", 10.0, [](ScenarioCtx& c) {
         Watch(c);
         Factory::Sync(c.world);
-        Alchemy_Update(c.world, c.T);
         const std::string line = Alchemy_PanelLine(c.body->id, plot->id, tank);
         c.waitingFor(line);
         if (line.find("refused") == std::string::npos) return false;
@@ -110,7 +108,6 @@ SCENARIO("magic/alchemy") {
     s.step("the cauldron brews the cleansing draught", 40.0, [](ScenarioCtx& c) {
         Watch(c);
         Factory::Sync(c.world);
-        Alchemy_Update(c.world, c.T);
         const MachineView v = Factory::View(c.body->id, plot->id, cauldron);
         const int made = Count(v.outSlots, "potion_cleansing");
         c.waitingFor(TextFormat("cauldron: %s -> %s", v.input.c_str(), v.output.c_str()));
@@ -137,7 +134,6 @@ SCENARIO("magic/alchemy") {
     s.step("spilled essence fizzles away", 25.0, [](ScenarioCtx& c) {
         Watch(c);
         Factory::Sync(c.world);
-        Alchemy_Update(c.world, c.T);
         const AlchemyStats st = Alchemy_Stats();
         c.waitingFor(TextFormat("spilled %d, fizzled %d", st.spilled, st.fizzled - fizzledBefore));
         static double fizzledAt = -1.0;
