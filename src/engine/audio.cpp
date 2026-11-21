@@ -311,6 +311,7 @@ namespace {
         if (AudioBedRecipe r; AudioSynth_BedRecipe(name, r)) { out = AudioSynth_Bed(r, 12.0f, seed); return true; }
         if (name == "thunder_near") { out = AudioSynth_Thunder(1.0f, seed); return true; }
         if (name == "thunder_far") { out = AudioSynth_Thunder(0.0f, seed); return true; }
+        if (name == "drip") { out = AudioSynth_Drip(seed); return true; } // (#1242) cave drips
         return false;
     }
 
