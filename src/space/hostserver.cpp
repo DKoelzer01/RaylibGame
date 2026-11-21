@@ -1820,6 +1820,8 @@ namespace {
             std::string why;
             const GuardVerdict v = NetGuard_Admit(it->second.guard, NetPeek(m.data), m.data.size(), NetWellFormed(m.data), GetTime(), why);
             if (v != GuardVerdict::Accept) {
+                // (#1107) the first drops are logged: a player's request lost here was silent ("can't interact")
+                if (guardDropped < 20) printf("host: dropped a %s from session %u (%zu bytes): %s\n", NetMsgName(NetPeek(m.data)), it->second.session, m.data.size(), why.c_str());
                 ++guardDropped;
                 if (v == GuardVerdict::Kick) GuardKick(m.conn, why);
                 return;
@@ -2070,7 +2072,8 @@ namespace {
             }
             case NetMsg::EditRequest: {
                 MsgEditRequest q;
-                if (!it->second.joined || !NetRead(r, q)) return;
+                if (!it->second.joined) return;
+                if (!NetRead(r, q)) { printf("host: an edit request from session %u didn't read (%zu bytes)\n", it->second.session, m.data.size()); return; } // (#1107)
                 OnEditRequest(world, m.conn, it->second.session, q);
                 return;
             }
