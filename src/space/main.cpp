@@ -113,6 +113,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "waterworks.h"
 #include "avatar.h"
 #include "footsteps.h"
+#include "soundscape.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -13829,6 +13830,7 @@ int main(int argc, char** argv)
         Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
         Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
         if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
+        if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
         Audio_Update();
         PROFILE_FRAME();
     }
