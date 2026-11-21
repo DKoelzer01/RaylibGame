@@ -519,7 +519,7 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float fc = clamp(fa, 0.0, 1.0);
                 precise float fade = fc * fc * (3.0 - 2.0 * fc);
                 precise float akk = mouth ? 0.65 : 0.55;
-                precise float ra = hall ? min(rw, 8.0) : rw;
+                precise float ra = hall ? min(rw, 4.0) : rw;                  // (#1116: 8 -> 4 m, as voxel.cpp)
                 intrude = akk * ra * fade * wn;
             }
         }
