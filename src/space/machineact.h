@@ -14,6 +14,7 @@
 void MachineAct_Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, bool fuel = false, int centi = 0); // centi (#1102): a fraction more (a local chest keeps it)
 void MachineAct_Extract(uint64_t bodyId, uint32_t plotId, int part);
 void MachineAct_SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit); // (#1103) light or put out a campfire. Joined: action 10.
+void MachineAct_SetMode(uint64_t bodyId, uint32_t plotId, int part, int mode); // (#1271 L6c) an assembler: 0 assembles, 1 disassembles. Joined: action 11.
 // (#862) As Insert, into one storage slot of a chest (a machine routes it as Insert does). Joined: action 8.
 void MachineAct_InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, int centi = 0);
 // (#862) `count` of item out of a chest into the inventory (the scroll wheel's pull). Joined: action 9.

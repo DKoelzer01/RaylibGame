@@ -44,6 +44,10 @@ void MachineAct_SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     if (gMachineRequest) { gMachineRequest(body, plot, part, 10, std::string(), lit ? 1 : 0, 0, 0); return; }
     Factory::SetFire(body, plot, part, lit);
 }
+void MachineAct_SetMode(uint64_t body, uint32_t plot, int part, int mode) { // (#1271 L6c)
+    if (gMachineRequest) { gMachineRequest(body, plot, part, 11, std::string(), mode, 0, 0); return; }
+    Factory::SetMode(body, plot, part, mode);
+}
 
 // (#854) a joined client's take onto the cursor: the server puts it in the inventory it keeps; when its delta has brought
 // it here, it moves from the inventory onto the cursor (the cursor is this screen's: the server never knew it).

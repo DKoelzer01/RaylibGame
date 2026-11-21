@@ -584,6 +584,10 @@ namespace {
                 if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
                 Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
                 break;
+            case 11: // (#1271 L6c) an assembler's mode: 0 assembles, 1 disassembles
+                if (type != PartType::LvAssembler) { refuse("Only an assembler switches that way"); return; }
+                Factory::SetMode(b->id, plot->id, a.part, a.count != 0 ? 1 : 0);
+                break;
             default: return;
         }
         SendChangedItems(conn, inv, before);

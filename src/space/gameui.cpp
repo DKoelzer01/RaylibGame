@@ -1133,6 +1133,12 @@ static void DrawContainer() {
         if (!burning && !fuel) { ImGui::EndDisabled(); ImGui::SameLine(); ImGui::TextDisabled("needs fuel"); }
         else if (!burning && v.fire == kFireOut) { ImGui::SameLine(); ImGui::TextDisabled("put out: lights again with something to cook"); }
     }
+    if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch; disassembly comes with #1427
+        if (ImGui::RadioButton("Assemble", v.mode == 0) && v.mode != 0) MachineAct_SetMode(container.body, container.plot, container.part, 0);
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Disassemble", v.mode == 1) && v.mode != 1) MachineAct_SetMode(container.body, container.plot, container.part, 1);
+        if (v.mode == 1) ImGui::TextDisabled("Disassembly is not built yet: the assembler waits (#1427)");
+    }
     if (v.waterMax > 0) { // #229: boilers need water and heat up before full steam
         ImGui::ProgressBar((float)v.water / (float)v.waterMax, ImVec2(300.0f, 0.0f), TextFormat("Water %d / %d L", v.water, v.waterMax));
         ImGui::ProgressBar((float)v.heat / (float)std::max(1, v.heatMax), ImVec2(300.0f, 0.0f), TextFormat("Heat %d%%", 100 * v.heat / std::max(1, v.heatMax)));
