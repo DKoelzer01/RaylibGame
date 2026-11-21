@@ -20,6 +20,8 @@ constexpr int kDefault[(int)Act::Count] = {
     KEY_Q,
     KEY_ENTER,
     KEY_Q, KEY_F,
+    kMouse + MOUSE_BUTTON_MIDDLE,
+    0, // (#1218) the dodge key: unbound
     KEY_Y,
 };
 int binding[(int)Act::Count] = {}; // the live bindings (filled from kDefault on first use)
@@ -43,6 +45,8 @@ constexpr ActInfo kActs[(int)Act::Count] = {
     { "offhand_use", "Use the off hand (food, oxygen)" },
     { "chat", "Command line / chat" },
     { "drop_item", "Inventory: drop from the slot (Ctrl: all)" }, { "swap_offhand", "Inventory: swap the slot with the off hand" },
+    { "lock_on", "Lock on to a creature (toggle)" },
+    { "dodge", "Dodge (also: double-tap a direction)" },
     { "magic_sight", "Magic sight: tap to show or hide, hold to study" },
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
@@ -51,9 +55,9 @@ static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");
 PlayerInput frameIn, stepIn;
 bool textFocus = false; // (#1081) a text field has the keyboard
 
-bool Down(int b) { return b >= kMouse ? IsMouseButtonDown(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyDown(b); }
-bool Pressed(int b) { return b >= kMouse ? IsMouseButtonPressed(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyPressed(b); }
-bool Released(int b) { return b >= kMouse ? IsMouseButtonReleased(b - kMouse) : IsKeyReleased(b); }
+bool Down(int b) { return b <= 0 ? false : b >= kMouse ? IsMouseButtonDown(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyDown(b); }
+bool Pressed(int b) { return b <= 0 ? false : b >= kMouse ? IsMouseButtonPressed(b - kMouse) : !PlayerInput_KeyBlocked(b) && IsKeyPressed(b); }
+bool Released(int b) { return b <= 0 ? false : b >= kMouse ? IsMouseButtonReleased(b - kMouse) : IsKeyReleased(b); }
 }
 
 const PlayerInput& PlayerInput::None() { static const PlayerInput none; return none; }
@@ -66,12 +70,16 @@ void PlayerInput_BeginFrame() {
     EnsureBindings();
     PlayerInput f;
     f.enabled = true;
+    static uint64_t fakeBefore = 0; // (#1216) scripted presses: a fake hold's first frame is a press, its end a release
     for (int a = 0; a < (int)Act::Count; ++a) {
         const uint64_t bit = 1ull << a;
         if (Down(binding[a]) || (gFakeHeld & bit)) f.held |= bit;
         if (Pressed(binding[a])) f.pressed |= bit;
         if (Released(binding[a])) f.released |= bit;
+        if ((gFakeHeld & bit) && !(fakeBefore & bit)) f.pressed |= bit;
+        if (!(gFakeHeld & bit) && (fakeBefore & bit)) f.released |= bit;
     }
+    fakeBefore = gFakeHeld;
     f.look = GetMouseDelta();
     f.look.x += gFakeLook.x; f.look.y += gFakeLook.y; // --play-load turning (#509)
     f.wheel = GetMouseWheelMove();
@@ -112,6 +120,7 @@ bool PlayerInput_BindingPressed(Act a) { const int b = PlayerInput_Binding(a); r
 
 const char* PlayerInput_KeyName(int code) {
     static char buf[24];
+    if (code <= 0) return "Unbound"; // (#1218) the dodge key starts unbound
     if (code >= kMouse) {
         const int m = code - kMouse;
         return m == MOUSE_BUTTON_LEFT ? "Left mouse" : m == MOUSE_BUTTON_RIGHT ? "Right mouse" : m == MOUSE_BUTTON_MIDDLE ? "Middle mouse" : (snprintf(buf, sizeof(buf), "Mouse %d", m + 1), buf);

@@ -20,5 +20,17 @@ bool AudioSynth_BedRecipe(const std::string& name, AudioBedRecipe& r);
 std::vector<float> AudioSynth_Bed(const AudioBedRecipe& r, float seconds, unsigned seed);
 // A thunderclap: a crack (near strikes) and a long rumble. near: 0 (far, rumble only) .. 1 (overhead).
 std::vector<float> AudioSynth_Thunder(float near, unsigned seed);
+// (#1243) Machines: hums by class ("hum_fire", "hum_steam", "hum_lv", "hum_mv", "hum_hv", "hum_ev": seamless loops), the
+// factory bed ("factory_bed": many machines at once) and the state cues ("machine_stall" a falling tone, "machine_click",
+// "machine_done" a soft chime). False: not a machine sound.
+bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<float>& out);
+// (#1245) Generative music, the fallback until real pieces are in resources/audio: calm pads as 20 s seamless loops
+// ("music_pad_day", "music_pad_night", "music_pad_cave", "music_pad_space"), the danger layer ("music_danger", a 12 s
+// loop) and two stings ("music_discovery", "music_achievement"). False: not one of them.
+bool AudioSynth_Music(const std::string& name, unsigned seed, std::vector<float>& out);
+// (#1246) A creature's voice for one event: event idle | alert | telegraph | hurt | death, voice beast (a growl) | lurker (a
+// rattle) | scavenger (a chittering screech) | ooze (a gurgle) | undead (a moan) | construct (tones). The telegraph is a
+// rising wind-up of 0.5 s. False: an unknown event or voice. (Sounds named "creature_<event>_<voice>", audio.cpp.)
+bool AudioSynth_Creature(const std::string& event, const std::string& voice, unsigned seed, std::vector<float>& out);
 
 #endif

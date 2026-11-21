@@ -25,6 +25,7 @@ struct TomePage {
     std::vector<std::string> unlocks;    // "machine:<id>", "recipe:<id>" (later steps)
     int sightTier = -1;                  // effect: magic sight's range tier (-1 none)
     bool throughRock = false;            // effect: lines seen through rock
+    float minBurden = 0.0f;              // (#1255) shown and writable only at this burden or more (the late Void and Rot pages: 20)
 };
 
 // The tables. Load replaces a table only on success.

@@ -24,7 +24,7 @@ namespace {
         Planetoid* p = StartBody(world);
         if (body) *body = p;
         const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
-        return pf && !pf->moon && !pf->sandbox ? pf : nullptr;
+        return pf && !pf->moon ? pf : nullptr; // (the sandbox too: the field needs only the seed and the radius; scenarios build magic machines there)
     }
     Color KindColour(int kind, unsigned char alpha) {
         const uint32_t c = Mana_Kind(kind).colour;

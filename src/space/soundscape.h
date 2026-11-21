@@ -41,6 +41,7 @@ void Soundscape_Update(Scene& world, float dt);   // once a frame (v2)
 // As of the last update (other sound systems, #1242): the air (0 vacuum .. 1) and the listener's height over the ground
 // (m, negative underground; large off a planet).
 float Soundscape_Air();
+const AmbienceInputs& Soundscape_Inputs(); // (#1245) everything it knew of the listener's place at the last update
 float Soundscape_HeightAboveGround();
 // One bed a call, made ahead (a procedural bed takes a moment to synthesise): call it each loading-screen frame.
 void Soundscape_PreloadStep();
