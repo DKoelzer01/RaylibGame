@@ -2220,6 +2220,17 @@ bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& loc
     body = s.body; local = s.local;
     return true;
 }
+// (#1171) An op's /tp: the remote player to a body-local spot, at rest (hovering when flying). Their game follows: its next
+// state from us is far from its prediction, so it goes back to ours (NetClient_Step's reconcile).
+bool Host_TeleportPlayer(Scene& world, uint32_t session, uint64_t body, const DVec3& local, bool hover) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    Player::NetState s;
+    if (!it->second.player.netState(world, s)) return false;
+    s.body = body; s.local = local; s.vel = {}; s.grounded = false; s.hovering = hover;
+    if (hover && it->second.creative) it->second.player.flyMode = true;
+    return it->second.player.applyNetState(world, s);
+}
 int Host_EditsApplied() { return editsApplied; }
 double Host_InventoryAmount(uint32_t session, const std::string& item) {
     auto it = remotes.find(session);
