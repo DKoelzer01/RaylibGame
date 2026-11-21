@@ -1,0 +1,18 @@
+# Terra, the home world (Plan 13 step 2, #1274). What it is and what it is like there; bodies.txt holds where it is and
+# how it spins. Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (planet =
+# these values, except radius and gravity, which a bodies.txt line then has to give).
+
+radius    60000               # sea level (m)
+gravity   auto                # 9.81 * 60 / 100 = 5.9 m/s^2
+terrain   earthlike           # sea, rivers, erosion, caves, the 3D band, ten biomes
+newworld  yes                 # the New World screen's choices shape it
+erosion   yes                 # the Plan 7 bake (~80 s on a new seed, cached with the save)
+foliage   yes                 # trees, bushes, grass
+palette   planet              # the terrain layer palette (dirt, sand, grass, snow...)
+air       35000 4000 1.2      # top 35 km (orbit is above it), 4 km scale height, 1.2 kg/m^3 at sea level
+sky       25000 8000 1500     # the sky shell fades out by 25 km; haze in the lowest 8 km; clouds 1.5 km up
+biomes    all
+# resources: everything in tiers 0-7 (no list: the factory ladder is built on it)
+hazards   none
+creatures all
+about     The home world: seas, rivers, forests and mountains, 60 km in radius, a day of one hour.

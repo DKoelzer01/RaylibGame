@@ -3,3 +3,23 @@
 # id | display name | kind | colour r,g,b | description
 first_sight_page | Tome page: First Sight | 20 | 200,170,255 | A faded page that hums when held. Hold it and right-click to read it: it opens your magic sight (Y).
 resonant_crystal | Resonant crystal       | 99 | 170,230,255 | A crystal that rings faintly, found in rock on a ley line. Something to study.
+
+# Magic machines and jars (#1252, #1327). Machines are blocks (placeable parts); jars of mana are one item per kind, so a
+# kind and its inverse never share one (the doc). Recipes: 'out n = in n, ...' lines.
+research_table   | Research table         | block | 150,110,70  | Stand by it to spend items for their aspects (the Tome tab).
+mana_siphon      | Mana siphon            | block | 120,100,190 | Set on a ley node, it fills empty mana jars with the node's mana.
+mana_dynamo      | Mana dynamo            | block | 90,90,140   | Burns jars of mana into LV power (Storm lasts longest).
+mana_jar         | Mana jar               | 64 | 200,220,235 | An empty jar for a siphon to fill.
+jar_earth        | Jar of Earth mana      | 64 | 154,123,79  | Telluric mana, from an Earth node.
+jar_water        | Jar of Water mana      | 64 | 63,143,216  | Aquatic mana, from a Water node.
+jar_fire         | Jar of Fire mana       | 64 | 232,100,44  | Igneous mana, from a Fire node.
+jar_air          | Jar of Air mana        | 64 | 216,232,240 | Mana of the wind, from an Air node.
+jar_aether       | Jar of Aether          | 64 | 240,232,255 | Neutral mana, where opposites cancel.
+jar_frost        | Jar of Frost mana      | 64 | 154,216,255 | Cold mana (the inverse of Fire).
+jar_storm        | Jar of Storm mana      | 64 | 160,128,255 | Fire and Air together: the best for power.
+jar_shard        | Jar of Shard mana      | 64 | 96,224,208  | Earth and Air together: cutting mana.
+jar_rot          | Jar of Rot mana        | 64 | 112,128,48  | Decay (the inverse of Life).
+research_table 1 = oak_planks 4, glass 2, bronze_ingot 2
+mana_jar 2 = glass 2
+mana_siphon 1 = iron_plate 2, glass 2, quartz 1
+mana_dynamo 1 = iron_plate 4, basic_circuit 1, quartz 2

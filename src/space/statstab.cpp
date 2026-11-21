@@ -41,7 +41,7 @@ void StatsTab_Draw() {
     }
     ImGui::SameLine(0.0f, 20.0f * s);
     if (view.window != window) ImGui::TextDisabled("(not filled yet: showing the %s)", WindowName(view.window));
-    else ImGui::TextDisabled("(%d plots, %.1f min of data)", view.plots, view.coveredMinutes);
+    else ImGui::TextDisabled("(%d plots, %.1f min of data%s)", view.plots, view.coveredMinutes, view.estimatedPlots ? TextFormat("; %d far plots estimated: *", view.estimatedPlots) : "");
     ImGui::Separator();
 
     ImGui::Columns(2, "stats", true);
@@ -60,7 +60,8 @@ void StatsTab_Draw() {
         std::stable_sort(rows.begin(), rows.end(), [](const StatLine* a, const StatLine* b) { return a->madePerMin + a->usedPerMin > b->madePerMin + b->usedPerMin; });
         for (const StatLine* l : rows) {
             ImGui::TableNextRow();
-            ImGui::TableNextColumn(); ImGui::TextUnformatted(ItemName(l->item).c_str());
+            ImGui::TableNextColumn();
+            if (l->estimated) ImGui::TextDisabled("%s*", ItemName(l->item).c_str()); else ImGui::TextUnformatted(ItemName(l->item).c_str()); // (#1261) dimmed: partly estimated
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nmade %lld, used %lld since the load\nput in %lld, taken out %lld by hand", ItemName(l->item).c_str(), l->made, l->used, l->handIn, l->handOut);
             ImGui::TableNextColumn(); ImGui::Text("%.1f", l->madePerMin);
             ImGui::TableNextColumn(); ImGui::Text("%.1f", l->usedPerMin);
