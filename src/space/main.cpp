@@ -659,7 +659,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
-    bool benchOil = false, oilRateOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
+    bool benchOil = false, oilRateOk = false, oilBucketOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
@@ -5517,7 +5517,11 @@ int main(int argc, char** argv)
                             oilPhase = 2; oilT0 = GetTime();
                         } else if (oilPhase == 2 && t > 3.0) {
                             const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
-                            printf("bench: oil: after the bucket %.1f m^3; saved %d, loaded %d\n", oil, (int)saved, (int)loaded);
+                            // (#1414) the bucket really took the oil: the pool stands at least half a bucket under its level
+                            // before it (the seep refills ~0.08 m^3/s meanwhile). It never dropped: 1.6 -> 1.8 m^3.
+                            oilBucketOk = oil <= before - 0.5f;
+                            printf("bench: oil: after the bucket %.1f m^3 (%.1f before it): %s; saved %d, loaded %d\n", oil, before,
+                                   oilBucketOk ? "the bucket took it" : "the pool did NOT drop (#1414)", (int)saved, (int)loaded);
                             oilPhase = 4; oilT0 = GetTime();
                         } else if (oilPhase == 4 && t > 5.0 && oilAfter5 < 0.0f) {
                             oilAfter5 = oil;
@@ -5531,7 +5535,7 @@ int main(int argc, char** argv)
                         } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_oil.png");
-                            const bool ok = oilRateOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
+                            const bool ok = oilRateOk && oilBucketOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
                             printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
                             benchOil = false;
                         } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
