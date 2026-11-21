@@ -118,6 +118,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "soundscape.h"
 #include "watercaves.h"
 #include "machinesounds.h"
+#include "subtitles.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -13721,6 +13722,7 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
+                if (Audio_V2()) Subtitles_Draw(GameUI_Scale()); // (#1244) sound captions and edge arcs
                 Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1
                 MagicSight_DrawHUD(world); // (#1249) RAYLIBGAME_MAGIC=1
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }
