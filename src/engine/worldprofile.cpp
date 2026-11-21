@@ -74,6 +74,25 @@ bool WorldProfile_ParseLine(const std::string& line, WorldProfile& p, std::strin
         else { error = "terrain is earthlike or airless, not '" + s + "'"; return false; }
         return true;
     }
+    if (key == "radius") {
+        std::string s;
+        if (!one(s)) return false;
+        if (!ParsePositive(s, p.radius)) { error = "radius is a length in metres > 0, not '" + s + "'"; return false; }
+        p.hasRadius = true;
+        return true;
+    }
+    if (key == "gravity") {
+        std::string s;
+        if (!one(s)) return false;
+        if (s == "auto") p.gravity = -1.0f;
+        else {
+            char* end = nullptr;
+            p.gravity = strtof(s.c_str(), &end);
+            if (!end || end == s.c_str() || *end != '\0' || p.gravity < 0.0f) { error = "gravity is auto or m/s^2 >= 0, not '" + s + "'"; return false; }
+        }
+        p.hasGravity = true;
+        return true;
+    }
     if (key == "newworld") return flag(p.newWorld);
     if (key == "erosion") return flag(p.erosion);
     if (key == "foliage") return flag(p.foliage);
@@ -179,6 +198,7 @@ void WorldProfile_ClearCache() {
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1274): the world files parse, and Terra's and Luna's say what the game did before them ----
 #include "unit_helpers.h"
+#include <cstdio>
 
 TEST(WorldProfile, DefaultsAreTodaysPlanetAndMoon) {
     const WorldProfile t = WorldProfile_Default(BodyKind::Planet, "x");
@@ -243,6 +263,38 @@ TEST(WorldProfile, ParseLineAcceptsAndRejects) {
     EXPECT_FALSE(WorldProfile_ParseLine("sky 1 2", p, e));
     EXPECT_FALSE(WorldProfile_ParseLine("foliage maybe", p, e));
     EXPECT_FALSE(WorldProfile_ParseLine("colour red", p, e));
+}
+
+// (#1298) radius and gravity moved from bodies.txt into the world files: the loaded system, and so the lines saves
+// and joining players get, must be exactly what bodies.txt said before the move.
+TEST(WorldProfile, BodiesFileResolvesToTheOldDefinitions) {
+    WorldProfile_ClearCache();
+    SystemDef sys;
+    ASSERT_TRUE(LoadSystemDef("resources/data/bodies.txt", sys));
+    ASSERT_GE(sys.bodies.size(), 2u);
+    EXPECT_EQ(FormatBodyDef(sys.bodies[0]), "planet terra radius=60000 position=0,0,0 day=3600");
+    EXPECT_EQ(FormatBodyDef(sys.bodies[1]), "moon luna radius=10000 orbit=terra,500000,30 day=86400");
+    EXPECT_EQ(sys.bodies[0].gravity, -1.0f); // auto, as before
+    EXPECT_EQ(sys.bodies[1].gravity, -1.0f);
+}
+
+TEST(WorldProfile, BodiesLineOverridesTheWorldFile) {
+    const char* path = "worldprofile_test_bodies.tmp";
+    {
+        std::ofstream f(path);
+        f << "planet terra radius=500 gravity=2 position=0,0,0 spin=0\n";
+        f << "moon luna orbit=terra,1000,0 spin=0\n";
+        f << "moon nowhere_moon orbit=terra,2000,0 spin=0\n"; // no world file and no radius: an error
+    }
+    WorldProfile_ClearCache();
+    SystemDef sys;
+    EXPECT_FALSE(LoadSystemDef(path, sys)); // the moon without a radius
+    std::ofstream(path, std::ios::trunc) << "planet terra radius=500 gravity=2 position=0,0,0 spin=0\nmoon luna orbit=terra,1000,0 spin=0\n";
+    ASSERT_TRUE(LoadSystemDef(path, sys));
+    std::remove(path);
+    EXPECT_EQ(sys.bodies[0].radius, 500.0f);
+    EXPECT_EQ(sys.bodies[0].gravity, 2.0f);
+    EXPECT_EQ(sys.bodies[1].radius, 10000.0f); // from worlds/luna.txt
 }
 
 TEST(WorldProfile, AsteroidsHaveNone) {

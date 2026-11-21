@@ -1,6 +1,9 @@
-# Terra, the home world (Plan 13 step 2, #1274). What it is like there; bodies.txt holds its radius, spin and gravity.
-# Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (planet = these values).
+# Terra, the home world (Plan 13 step 2, #1274). What it is and what it is like there; bodies.txt holds where it is and
+# how it spins. Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (planet =
+# these values, except radius and gravity, which a bodies.txt line then has to give).
 
+radius    60000               # sea level (m)
+gravity   auto                # 9.81 * 60 / 100 = 5.9 m/s^2
 terrain   earthlike           # sea, rivers, erosion, caves, the 3D band, ten biomes
 newworld  yes                 # the New World screen's choices shape it
 erosion   yes                 # the Plan 7 bake (~80 s on a new seed, cached with the save)
