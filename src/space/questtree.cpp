@@ -16,7 +16,7 @@
 #include <vector>
 
 namespace {
-    struct Line { std::string id, name; Color color = WHITE; };
+    struct Line { std::string id, name; Color color = WHITE; bool hidden = false; }; // hidden (#1250): unseen until one of its nodes is done
     struct Node {
         std::string id, line, kind, target, title;
         double n = 1.0;
@@ -56,6 +56,7 @@ namespace {
                 Line l; l.id = c[1]; l.name = c[2];
                 int r, g, b;
                 if (sscanf(c[3].c_str(), "%d,%d,%d", &r, &g, &b) == 3) l.color = { (unsigned char)r, (unsigned char)g, (unsigned char)b, 255 };
+                l.hidden = c.size() >= 5 && c[4] == "hidden";
                 lines.push_back(l);
             } else if (c[0] == "node" && c.size() >= 7) {
                 Node n; n.id = c[1]; n.line = c[2]; n.title = c[5];
@@ -97,6 +98,14 @@ namespace {
         float x = 1.0f;
         for (const Line& l : lines) { start[l.id] = x; x += (float)std::max(1, width[l.id]) + 0.15f; }
         for (size_t i = 0; i < nodes.size(); ++i) nodes[i].x = start[nodes[i].line] + (float)sibOf[i];
+    }
+
+    // (#1250) A hidden line (the Arcane line: magic is found, not announced) shows once one of its nodes is done.
+    bool Shown(const std::string& line) {
+        const Line* l = LineOf(line);
+        if (!l || !l->hidden) return true;
+        for (const Node& n : nodes) if (n.line == line && Done().count(n.id)) return true;
+        return false;
     }
 
     bool ReqsDone(const Node& n) {
@@ -158,9 +167,10 @@ void QuestTree_DrawTab() {
     const float fh = ImGui::GetFontSize() * zoom;
     const float cw = fh * 17.8f, ch = fh * 5.7f, bw = fh * 16.2f, bh = fh * 3.6f, pad = fh;
     float maxX = 0.0f, maxY = (float)QuestBook_TierCount();
-    for (const Node& n : nodes) { maxX = std::max(maxX, n.x); maxY = std::max(maxY, n.y + 1.0f); }
+    for (const Node& n : nodes) { if (!Shown(n.line)) continue; maxX = std::max(maxX, n.x); maxY = std::max(maxY, n.y + 1.0f); }
     // Legend: the lines' colours.
     for (const Line& l : lines) {
+        if (!Shown(l.id)) continue;
         ImGui::TextColored(ImVec4(l.color.r / 255.0f, l.color.g / 255.0f, l.color.b / 255.0f, 1.0f), "%s", l.name.c_str());
         ImGui::SameLine();
     }
@@ -190,6 +200,7 @@ void QuestTree_DrawTab() {
         dl->AddPolyline(pts.data(), (int)pts.size(), col, ImDrawFlags_None, thick);
     };
     for (const Node& n : nodes) {
+        if (!Shown(n.line)) continue;
         const ImVec2 b = boxAt(n.x, n.y);
         if (n.reqTier >= 0) { // from the tier box's right side into the gap beside it
             const ImVec2 t = boxAt(0.0f, (float)n.reqTier);
@@ -253,6 +264,7 @@ void QuestTree_DrawTab() {
     }
     // Side nodes.
     for (const Node& n : nodes) {
+        if (!Shown(n.line)) continue;
         const ImVec2 b = boxAt(n.x, n.y);
         const bool isDone = Done().count(n.id) > 0, open = !isDone && ReqsDone(n);
         const Line* l = LineOf(n.line);

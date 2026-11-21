@@ -54,6 +54,7 @@ std::string MagicSight_SaveText(const MagicPlayerState& s) {
     }
     snprintf(buf, sizeof buf, "magic_pool %.3f %.3f\n", s.pool, s.poolMax);
     out += buf;
+    if (s.found) out += "magic_found 1\n"; // (#1250)
     for (const auto& [type, n] : s.studied) {
         if (n <= 0 || type.empty() || type.find_first_of(" \t\r\n") != std::string::npos) continue;
         snprintf(buf, sizeof buf, "magic_studied %s %d\n", type.c_str(), n);
@@ -76,6 +77,7 @@ bool MagicSight_LoadLine(MagicPlayerState& s, const char* line) {
         return true;
     }
     if (sscanf(line, "magic_studied %159s %d", type, &n) == 2) { if (n > 0) s.studied[type] = n; return true; }
+    if (sscanf(line, "magic_found %d", &n) == 1) { s.found = n != 0; return true; } // (#1250)
     return false;
 }
 
@@ -90,6 +92,8 @@ bool MagicSight_LoadLine(MagicPlayerState& s, const char* line) {
 #include "terraintool.h"
 #include "voxel.h"
 #include "world.h"
+#include "magicdiscovery.h" // (#1250) the Arcane line's study steps
+#include "survival.h"       // QuestBook_Count
 #include "worldtypes.h"
 
 #include <raylib.h>
@@ -166,6 +170,8 @@ void MagicSight_Update(Scene& world, float dt, const PlayerInput& in) {
                 progress += dt;
                 if (progress >= kStudySeconds) {
                     const float v = MagicSight_Study(s, target);
+                    QuestBook_Count("arcane_study"); // (#1250) the Arcane line
+                    QuestBook_AtLeast("arcane_kinds", MagicDiscovery_NodeKindsStudied(s));
                     GameUI_Toast(TextFormat(v >= 1.0f ? "Studied: %s. Something of it stays with you." : "Studied: %s again (you learn less each time)", targetName.c_str()));
                     studiedThisHold = true;
                     progress = 0.0f;
@@ -175,7 +181,7 @@ void MagicSight_Update(Scene& world, float dt, const PlayerInput& in) {
     } else if (wasDown) {
         if (held < kSightTapSeconds) {
             if (!s.sight) GameUI_Toast("Nothing answers. (Magic sight is learned from the First Sight page.)");
-            else MagicSight_SetShown(s, !s.shown);
+            else if (MagicSight_SetShown(s, !s.shown) && s.shown) QuestBook_Count("arcane_sight"); // (#1250)
         }
         held = 0.0f; target.clear(); progress = 0.0f; studiedThisHold = false;
     }

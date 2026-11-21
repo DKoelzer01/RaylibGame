@@ -17,6 +17,7 @@ namespace {
     std::unique_ptr<ManaField> field;
     unsigned int fieldSeed = 0;
     float fieldRadius = 0.0f;
+    const void* fieldOwner = nullptr; // the PlanetField it was built from (its climate callback points into it)
 
     Planetoid* StartBody(Scene& world) { return world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); }
     const PlanetField* StartField(Scene& world, Planetoid** body = nullptr) {
@@ -75,7 +76,7 @@ const ManaField* Magic_Field(Scene& world) {
     if (!Magic_Enabled()) return nullptr;
     const PlanetField* pf = StartField(world);
     if (!pf) return nullptr;
-    if (!field || fieldSeed != pf->terrainSeed() || fieldRadius != pf->radius) {
+    if (!field || fieldSeed != pf->terrainSeed() || fieldRadius != pf->radius || fieldOwner != pf) { // (a reload makes a new field: never keep a pointer into the old one)
         ManaFieldParams p;
         p.seed = pf->terrainSeed();
         p.radius = pf->radius;
@@ -85,9 +86,16 @@ const ManaField* Magic_Field(Scene& world) {
         field = std::make_unique<ManaField>(p);
         fieldSeed = pf->terrainSeed();
         fieldRadius = pf->radius;
+        fieldOwner = pf;
         overlay = Overlay{};
+        sight = Overlay{};
     }
     return field.get();
+}
+
+const ManaField* Magic_FieldFor(const Planetoid& body) {
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    return field && pf && pf == fieldOwner ? field.get() : nullptr;
 }
 
 ManaEnv Magic_EnvAt(Scene& world, Vector3 dir, float depth) {

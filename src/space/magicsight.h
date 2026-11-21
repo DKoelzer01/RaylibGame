@@ -20,6 +20,7 @@ struct MagicPlayerState {
     bool shown = false;       // its overlay is on
     int sightTier = 0;        // attunement: 0 = 50 m, 1 = 150 m, 2 = 400 m
     bool throughRock = false; // attunement: lines seen through rock
+    bool found = false;       // (#1250) has stumbled on magic (the first find: the Arcane line opens)
     float pool = 100.0f, poolMax = 100.0f; // the Aether pool (spells come in step 6, #1253)
     std::map<std::string, int> studied;    // study target type ("node:storm", "creature:deer", "rock:granite") -> times
 };
