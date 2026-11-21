@@ -31,6 +31,8 @@
 #include "toolwear.h"
 #include "playersession.h"
 #include "skills.h"
+#include "magic.h"      // (#1249) Magic_Enabled
+#include "magicsight.h"
 #include "recipebook.h"
 #include "station.h"
 
@@ -101,6 +103,7 @@ void WritePlayerLines(FILE* f, RecordTarget t) {
         ToolWear_Save(f);
         QuestBook_SavePins(f); // (#825) the player's pinned quests
         fputs(Skills_SaveText(LocalSession().skills).c_str(), f); // (#883) XP and perks
+        if (Magic_Enabled() || LocalSession().magic.sight) fputs(MagicSight_SaveText(LocalSession().magic).c_str(), f); // (#1249)
     } else {
         fputs(t.kept.c_str(), f);
         if (t.skills) fputs(Skills_SaveText(*t.skills).c_str(), f); // (#920) a server's remote player's XP and perks
@@ -134,6 +137,11 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         if (strcmp(tok, "skill_xp") == 0 || strcmp(tok, "perk") == 0) { // (#883) the rest of the line is the skill's or perk's
             char rest[256] = {};
             if (fgets(rest, sizeof(rest), f)) Skills_LoadLine(LocalSession().skills, (std::string(tok) + rest).c_str());
+            return true;
+        }
+        if (strncmp(tok, "magic_", 6) == 0) { // (#1249) magic sight, the pool, studies
+            char rest[256] = {};
+            if (fgets(rest, sizeof(rest), f)) MagicSight_LoadLine(LocalSession().magic, (std::string(tok) + rest).c_str());
             return true;
         }
     }
@@ -378,6 +386,7 @@ void GameSave_Register() {
         Suit_Reset();
         ToolWear_Reset();
         LocalSession().skills = SkillState{}; // (#883)
+        LocalSession().magic = MagicPlayerState{}; // (#1249)
         RecipeBook_Reset();
         Combat_Reset(); // graves: the save holds them all (#165)
         Blueprint_ResetGhosts(); // (#1018) and the ghosts
