@@ -10,6 +10,7 @@
 #include <raylib.h>
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -157,6 +158,8 @@ void LoadMachineDefs() {
 // (#1207) built once by LoadRecipes
 std::array<std::vector<int>, 256> recipesOf;      // by PartType: indices into tables.recipes
 std::array<std::vector<uint8_t>, 256> wantsOf;   // by PartType, by item id: a recipe of it takes the item
+// (#1214) sleeping machines and networks: on unless RAYLIBGAME_FACTORY_SLEEP=0 (A/B; the unit test runs both)
+bool sleepOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SLEEP"); return !(e && e[0] == '0'); }();
 
 void LoadRecipes() {
     if (!tables.recipes.empty()) return;
@@ -213,6 +216,9 @@ constexpr int kConveyorItemsPerSecond = 8;
 
 struct Machine {
     int part = -1;
+    // (#1214) asleep: its recipe search found nothing and its contents have not changed since; dirty: they changed (an insert,
+    // a take, fuel taken, a craft, a variant, fire or layout change) - it wakes, and its conveyor network wakes
+    bool asleep = false, dirty = true;
     PartType type = PartType::Count;
     std::vector<Int3> cells;
     std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
@@ -232,6 +238,7 @@ struct Machine {
 
 struct Net {
     std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
+    bool asleep = false; // (#1214) its last pass moved nothing and none of its machines changed since
     long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
 };
 
@@ -452,6 +459,7 @@ int BurnFuel(Machine& m, const MachineDef& def, int maxTicks) {
             if (m.fuel.count <= 0 || !IsFuel(def, m.fuel.item)) break;
             const int f = m.fuel.item;
             if (--m.fuel.count == 0) m.fuel.item = -1;
+            m.dirty = true; // (#1214) room in its fuel slot: its conveyor network may move more
             if (gCount) gCount->items[f].used.add(1); // (#1199) fuel burnt is used
             auto it = fuelTicks.find(f);
             m.energy = it != fuelTicks.end() ? it->second : 200;
@@ -564,6 +572,7 @@ void ApplyLayout(const LayoutMsg& L) {
         auto it = ps->byPart.find(part);
         if (it != ps->byPart.end() && ps->machines[it->second].type == type) m = ps->machines[it->second];
         m.part = part; m.type = type; m.cells = L.machineCells[i];
+        m.dirty = true; m.asleep = false; // (#1214) a new layout: everything looks again
         m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
         // A loaded save's contents arrive before the layout: apply them once.
@@ -677,6 +686,9 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (def.power == Power::Generator && m.status == MachineStatus::Working) ++active;
             continue;
         }
+        // (#1214) asleep (nothing could start, nothing changed since): the same answer as a search, without one
+        if (m.dirty) m.asleep = false;
+        if (m.asleep && sleepOn) { m.status = MachineStatus::Idle; continue; }
         // Inputs are only checked when a craft starts and taken when it finishes (#193): take an input out
         // meanwhile and the craft is cancelled, its progress lost. Fuel has its own slot (#194).
         auto inputsHere = [&](const Recipe& r) {
@@ -710,7 +722,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 else { m.status = MachineStatus::NoFuel; m.fire = kFireAuto; } // burnt out: it lights again by itself
                 continue;
             }
-            if (m.recipe < 0) { m.status = MachineStatus::Idle; continue; } // asleep until items arrive
+            if (m.recipe < 0) { m.status = MachineStatus::Idle; m.asleep = true; continue; } // asleep until items arrive (#1214: really now)
         }
         const Recipe& r = tables.recipes[m.recipe];
         if (m.progress < r.ticks) {
@@ -740,14 +752,24 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
             for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
             m.recipe = -1; m.progress = 0;
+            m.dirty = true; // (#1214) outputs to move, inputs taken
         }
     }
     // (#1199) Time per status by machine kind: every machine, every tick of this step.
     for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt;
+    // (#1214) A machine whose contents changed wakes its conveyor network (the change is seen; the flag is spent).
+    for (Machine& m : ps.machines) {
+        if (!m.dirty) continue;
+        if (m.itemNet >= 0 && m.itemNet < (int)ps.itemNets.size()) ps.itemNets[m.itemNet].asleep = false;
+        m.dirty = false;
+    }
     // Items: each conveyor network moves items from outputs (and chests) to machines that take them.
     for (Net& net : ps.itemNets) {
         net.credit = std::min(net.credit + kConveyorItemsPerSecond * dt, kConveyorItemsPerSecond * kTicksPerSecond * 2);
         const int n = (int)net.machines.size();
+        // (#1214) asleep: its last pass moved nothing and nothing changed since, so a pass would move nothing again; it banks
+        // its credit and steps its round-robin start as that pass did (the order of later moves stays the same).
+        if (net.asleep && sleepOn) { if (net.credit >= kTicksPerSecond && n > 1) net.rr = (net.rr + 1) % n; continue; }
         while (net.credit >= kTicksPerSecond && n > 1) {
             bool moved = false;
             for (int s = 0; s < n && !moved; ++s) {
@@ -767,12 +789,12 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                             int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
                             if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
                         }
-                        if (moved) { TakeItems(from, fromN, item, 1); }
+                        if (moved) { TakeItems(from, fromN, item, 1); dst.dirty = true; } // (#1214) new input: it looks again next tick
                     }
                 }
             }
             net.rr = (net.rr + 1) % std::max(1, n);
-            if (!moved) break;
+            if (!moved) { net.asleep = true; break; } // (#1214) until one of its machines changes
             net.credit -= kTicksPerSecond;
         }
     }
@@ -877,6 +899,7 @@ void SimLoop() {
                     continue;
                 }
                 Machine& m = p->machines[it->second];
+                m.dirty = true; // (#1214) any command on a machine wakes it and its network
                 if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
                     int left = im.count;
                     if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
@@ -1458,3 +1481,104 @@ void Factory::SetRemoteWorking(uint64_t body, uint32_t plot, const std::vector<i
     for (int p : parts) remoteWorking.insert(WorkingKey(body, plot, p));
 }
 void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSink; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1214): sleeping machines and conveyor networks change nothing but the time ----
+#include "unit_helpers.h"
+
+namespace {
+// `groups` generator + 2 macerators + chest groups on one plot (cables and conveyors as perf/factory-scale lays them).
+LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>>& parts) {
+    LayoutMsg L{};
+    L.body = 7; L.plot = plotId; L.version = 1;
+    int part = 0;
+    auto machine = [&](PartType t, int x, int z) {
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ x + dx, dy, z + dz });
+        L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        return part++;
+    };
+    for (int g = 0; g < groups; ++g) {
+        const int bx = (g % 5) * 12, bz = (g / 5) * 5;
+        const int gen = machine(PartType::Generator, bx, bz), m1 = machine(PartType::Macerator, bx + 3, bz);
+        const int m2 = machine(PartType::Macerator, bx + 6, bz), ch = machine(PartType::Chest, bx + 9, bz);
+        for (int x = 0; x < 8; ++x) L.cables.push_back({ bx + x, 0, bz - 1 });
+        for (int x = 3; x < 11; ++x) L.conveyors.push_back({ bx + x, 0, bz + 2 });
+        parts.push_back({ gen, m1, m2, ch });
+    }
+    return L;
+}
+
+uint64_t StateHash(const PlotSim& ps) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](long long v) { h = (h ^ (uint64_t)v) * 1099511628211ull; };
+    for (const Machine& m : ps.machines) {
+        mix(m.part); mix((int)m.type); mix(m.recipe); mix(m.progress); mix(m.energy); mix(m.fuelEU); mix((int)m.status);
+        mix(m.water); mix(m.heat); mix(m.fuel.item); mix(m.fuel.count);
+        for (const Stack& s : m.in) { mix(s.item); mix(s.count); }
+        for (const Stack& s : m.out) { mix(s.item); mix(s.count); }
+    }
+    for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
+    return h;
+}
+
+struct ChainsRun { uint64_t hash = 0; long long made = 0; int asleepMachines = 0, asleepNets = 0, sandInLateChest = 0; };
+
+// 20 groups on two plots for 2400 ticks (2 min): every third group starved (coal, no stone: idle macerators), every
+// seventh without coal (unpowered); at tick 600 a starved group gets stone (it must wake and work). `sleep` on or off.
+ChainsRun RunChains(bool sleep) {
+    LoadRecipes();
+    const bool was = sleepOn;
+    sleepOn = sleep;
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    std::vector<std::array<int, 4>> partsA, partsB;
+    ApplyLayout(TestChains(1, 10, partsA));
+    ApplyLayout(TestChains(2, 10, partsB));
+    PlotSim* a = FindPlot(7, 1); PlotSim* b = FindPlot(7, 2);
+    auto feed = [](PlotSim& ps, const std::vector<std::array<int, 4>>& parts) {
+        for (size_t g = 0; g < parts.size(); ++g) {
+            int buckets = 0;
+            Machine& gen = ps.machines[ps.byPart.at(parts[g][0])];
+            if (g % 7 != 6) InsertInto(gen, tables.item("coal"), 16, false, buckets);
+            if (g % 3 == 2) continue; // starved
+            InsertInto(ps.machines[ps.byPart.at(parts[g][1])], tables.item("stone"), 24, false, buckets);
+            InsertInto(ps.machines[ps.byPart.at(parts[g][2])], tables.item("stone"), 24, false, buckets);
+        }
+    };
+    feed(*a, partsA); feed(*b, partsB);
+    ChainsRun r;
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 2400; ++t) {
+        if (t == 600) { // a player puts stone into a starved group's macerator (Insert: the command wakes it)
+            Machine& m = a->machines[a->byPart.at(partsA[2][1])];
+            m.dirty = true;
+            int buckets = 0;
+            InsertInto(m, tables.item("stone"), 8, false, buckets);
+        }
+        TickPlot(*a, 1, made, active);
+        TickPlot(*b, 1, made, active);
+    }
+    r.hash = StateHash(*a) * 31 + StateHash(*b);
+    r.made = made;
+    for (const PlotSim* ps : { a, b }) {
+        for (const Machine& m : ps->machines) r.asleepMachines += m.asleep;
+        for (const Net& n : ps->itemNets) r.asleepNets += n.asleep;
+    }
+    const Machine& lateChest = a->machines[a->byPart.at(partsA[2][3])];
+    r.sandInLateChest = CountItems(lateChest.in.data(), kChestSlots, tables.item("sand"));
+    sleepOn = was;
+    plots.clear(); plotIndexDirty = true;
+    return r;
+}
+} // namespace
+
+TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
+    const ChainsRun awake = RunChains(false), sleeping = RunChains(true);
+    EXPECT_GT(awake.made, 0) << "the chains work";
+    EXPECT_EQ(sleeping.made, awake.made);
+    EXPECT_EQ(sleeping.hash, awake.hash) << "every machine's slots, recipe, progress, fuel and status, and every network's credit and round-robin, are the same";
+    EXPECT_GT(sleeping.asleepMachines, 0) << "the starved macerators sleep";
+    EXPECT_GT(sleeping.asleepNets, 0) << "their conveyor networks sleep";
+    EXPECT_GT(sleeping.sandInLateChest, 0) << "the starved group woke when stone came and its sand reached its chest";
+}
+#endif
