@@ -51,7 +51,7 @@ grep -h "^join:\|^bench: join" "$tmp/alice.log" "$tmp/bob.log"
 grep -h "joined as session\|left" "$tmp/host.log" | sed 's/^/host: /'
 grep -h "^host: creature" "$tmp/host.log"
 grep -h "^join: creature" "$tmp/alice.log" "$tmp/bob.log"
-if [ "${CREATURE:-1}" = "1" ] && ! cat "$tmp/alice.log" "$tmp/bob.log" | grep "^join: creature" | grep -qv "hits taken 0.0 "; then echo "test_join: the creature bit nobody -> FAIL"; fail_bite=1; fi
+if [ "${CREATURE:-1}" = "1" ] && ! grep -q "^host: creature: fell (bites on players [1-9]" "$tmp/host.log"; then echo "test_join: the creature bit nobody (the host counts its bites) -> FAIL"; fail_bite=1; fi
 pass=$(cat "$tmp/alice.log" "$tmp/bob.log" | grep "^bench: join" | grep -c "PASS"); fail=$((2 - pass))
 echo "=== test_join: $pass PASS, $fail FAIL (logs in $tmp)"
 [ "$fail" -eq 0 ] && [ -z "${fail_bite:-}" ]
