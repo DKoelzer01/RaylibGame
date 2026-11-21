@@ -80,3 +80,5 @@ steam_lab        | 0  | rotation | 0  |
 bloomery         | 0  | none     | 0  |
 bellows          | 0  | rotation | 0  |
 anvil            | 0  | manual   | 0  |
+# (#1271 L6b-2) the steam assembler: steam packs on a shaft (research: the steam assembler, a tier 3 branch node)
+steam_assembler  | 0  | rotation | 0  |

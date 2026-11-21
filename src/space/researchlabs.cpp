@@ -5,6 +5,7 @@
 #include "plots.h"
 #include "research.h"
 #include "researchtab.h"
+#include "researchgate.h"
 #include "world.h"
 
 #include <raylib.h>
@@ -39,7 +40,13 @@ int ResearchLabs_Update(Scene& world, double now, bool force) {
                 for (const auto& [item, count] : Factory::DrainOutputs(body->id, plot->id, (int)i, "research_t")) {
                     const int tier = atoi(item.c_str() + 10);
                     added += count;
-                    for (const std::string& name : Research_AddUnits(*st, tier, count)) GameUI_Toast(TextFormat("Research done: %s", name.c_str()));
+                    for (const std::string& name : Research_AddUnits(*st, tier, count)) {
+                        GameUI_Toast(TextFormat("Research done: %s", name.c_str()));
+                        // (#1271 L6b-2) tier 3's working build: a steam lab, on a plot whose steam engine turns, completed a node
+                        if (plot->parts[i].type == PartType::SteamLab)
+                            for (int e = 0; e < (int)plot->parts.size(); ++e)
+                                if (plot->parts[e].type == PartType::SteamEngine && Factory::RotationAt(body->id, plot->id, e).rpm != 0.0f) { ResearchGate_MarkBuild("lab_node"); break; }
+                    }
                 }
             }
         }

@@ -138,3 +138,5 @@ anvil            | iron_ingot 1       | iron_bloom 1              | 120 | 0
 anvil            | bronze_pick_head 1 | rough_bronze_pick_head 1  | 80  | 0
 anvil            | bronze_axe_head 1  | rough_bronze_axe_head 1   | 80  | 0
 mechanical_press | iron_ingot 1       | iron_bloom 1              | 100 | 0
+# (#1271 L6b-2) the steam assembler makes steam packs (twice as fast as by hand, and without you)
+steam_assembler  | steam_pack 1       | iron_plate 1, bronze_gear 1, coal 1 | 100 | 0

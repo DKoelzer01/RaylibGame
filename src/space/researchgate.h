@@ -58,9 +58,20 @@ struct TierMilestone { int tier = 0; std::vector<MilestoneLine> lines; };
 
 bool ResearchGate_LoadMilestonesText(const std::string& text, std::string& error);
 bool ResearchGate_LoadMilestones(const char* path = "resources/data/tiers.txt");
+void ResearchGate_InstallTierGate(); // (#1271 L6b-2) the game: tiers 3-7 close on their milestone too (gQuestTierGate)
 const TierMilestone* ResearchGate_Milestone(int tier); // nullptr: none (tiers 0-2 end on tasks)
 // Checks: tiers 3-7 each have a milestone with at least one delivery, one build and one find; known build kinds and find
 // ids; counts, rates and windows over zero; no milestone outside tiers 3-7. The problems, one a line ("" none).
 std::string ResearchGate_ValidateMilestones();
+std::string ResearchGate_LineLabel(const MilestoneLine& l);   // (#1271 L6b-2) "deliver 50 steel_plate" when a line has no text
+// (#1271 L6b-2) At a lab: hand in what the team's current milestone (its tier, 3-7) still wants and the inventory holds -
+// every delivery in full, and a find (its sample, or a ruin's schematic standing in) - consumed. How many lines it completed.
+int ResearchGate_HandIn();
+// (#1271 L6b-2) A working build happened (lab_node: a lab on a steam engine's shaft completed a node; rocket_on_pad): every
+// milestone line of tiers 3-7 with that build is marked done.
+void ResearchGate_MarkBuild(const std::string& what);
+// (#1271 L6b-2) A throughput target: over the last `minutes` per-minute buckets of what machines made, the mean at least
+// perMinute and no minute under 80% of it (decided).
+bool ResearchGate_ThroughputMet(const std::vector<float>& perMinuteOldestFirst, int perMinute, int minutes);
 bool ResearchGate_CoreDone(const ResearchState& s, int tier);     // every core node of the tier done
 bool ResearchGate_MilestoneMet(const ResearchState& s, int tier); // core done and every milestone line done
