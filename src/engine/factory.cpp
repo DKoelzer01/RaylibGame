@@ -949,6 +949,7 @@ void Factory::Sync(Scene& world) {
                             const int dep = pf ? pf->depositNear(at, 40.0f) : -1;
                             variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
                         }
+                        if (part.type >= PartType::LvLab && part.type <= PartType::HvLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
@@ -1034,6 +1035,35 @@ void Factory::TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int whi
 void Factory::InsertFuel(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 6, body, plot, part, tables.item(item), count }; m.to = to; itemQueue.push_back(m);
+}
+// (#1193) Between ticks (the sim holds simMutex for a whole tick): a machine's one output, and its outputs taken by name.
+bool Factory::SetVariant(uint64_t body, uint32_t plot, int part, const std::string& item) {
+    std::lock_guard<std::mutex> lock(simMutex);
+    PlotSim* p = FindPlot(body, plot);
+    auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+    if (!p || it == p->byPart.end()) return false;
+    Machine& m = p->machines[it->second];
+    const int v = item.empty() ? -1 : tables.item(item);
+    if (m.variant == v) return true;
+    m.variant = v;
+    // A recipe of another output stops (its inputs are only taken when it finishes, #193: nothing is lost).
+    if (m.recipe >= 0 && (v < 0 || tables.recipes[m.recipe].out.empty() || tables.recipes[m.recipe].out[0].item != v)) { m.recipe = -1; m.progress = 0; }
+    return true;
+}
+std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, uint32_t plot, int part, const std::string& prefix) {
+    std::vector<std::pair<std::string, int>> out;
+    std::lock_guard<std::mutex> lock(simMutex);
+    PlotSim* p = FindPlot(body, plot);
+    auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+    if (!p || it == p->byPart.end()) return out;
+    for (Stack& s : p->machines[it->second].out) {
+        if (s.count <= 0) continue;
+        const std::string name = tables.name(s.item);
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        out.push_back({ name, s.count });
+        s = Stack{};
+    }
+    return out;
 }
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);

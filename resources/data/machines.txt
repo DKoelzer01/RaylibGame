@@ -26,6 +26,10 @@ hv_generator    | 512 | generator | 512 | coke
 arc_furnace     | 512 | eu        | 0  |
 refinery        | 512 | eu        | 0  |
 precision_assembler | 512 | eu    | 0  |
+# Research labs (#1193): each runs its team's queued node of a tier up to its own (machine_recipes: research_t3..t7)
+lv_lab          | 32 | eu        | 0  |
+mv_lab          | 128 | eu       | 0  |
+hv_lab          | 512 | eu       | 0  |
 fusion_reactor  | 2048 | generator | 2048 | helium3
 mass_driver     | 2048 | eu       | 0  |
 # fuel | burn ticks (20 a second)

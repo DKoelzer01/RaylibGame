@@ -61,6 +61,7 @@ const char* PartName(PartType t) {
         case PartType::ArcFurnace: return "arc furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
+        case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -115,6 +116,7 @@ const char* PartMachineName(PartType t) {
         case PartType::ArcFurnace: return "arc_furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision_assembler";
+        case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         default: return nullptr;
@@ -246,6 +248,7 @@ static Color PartColor(PartType t) {
         case PartType::ArcFurnace: return { 90, 90, 110, 255 };
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -327,6 +330,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: // (#1193)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs

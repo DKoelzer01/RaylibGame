@@ -89,6 +89,10 @@ namespace Factory {
     void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0); // to (#332): leftovers to that player
     // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).
     void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
+    // (#1193) Research labs, between ticks: a machine's one output (as a miner's ore; "" any), and its output stacks whose
+    // item names start with `prefix` taken out (the game counts them). False / empty: not simulated (yet).
+    bool SetVariant(uint64_t bodyId, uint32_t plotId, int part, const std::string& item);
+    std::vector<std::pair<std::string, int>> DrainOutputs(uint64_t bodyId, uint32_t plotId, int part, const std::string& prefix);
     // (#1103) Light a campfire (lit = true) or put it out; other machines ignore it.
     void SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit);
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
