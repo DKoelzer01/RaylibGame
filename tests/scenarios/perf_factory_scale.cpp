@@ -8,6 +8,7 @@
 #include "plots.h"
 #include "world.h"
 #include <raymath.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -21,6 +22,7 @@ constexpr double kWarmup = 10.0, kMeasure = 60.0; // s of factory time
 int target = 5000;
 double t0 = 0.0;
 long long made0 = 0;
+float idleShare = 0.0f; // RAYLIBGAME_FACTORY_IDLE: the share of groups starved (idle machines: the sleeping-machines case)
 uint64_t body0 = 0; uint32_t plot0 = 0; int mac0 = -1, chest0 = -1; // the first group (the views checked at the end)
 }
 
@@ -32,6 +34,7 @@ SCENARIO("perf/factory-scale") {
     s.step("N machines in working chains on plots of 400", 20.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;
         if (const char* n = getenv("RAYLIBGAME_FACTORY_N")) target = std::max(kGroupMachines, atoi(n));
+        if (const char* f = getenv("RAYLIBGAME_FACTORY_IDLE")) idleShare = std::clamp((float)atof(f), 0.0f, 1.0f); // (starved groups: coal, no stone)
         const int groups = target / kGroupMachines, perPlot = kMachinesPerPlot / kGroupMachines;
         const int plots = (groups + perPlot - 1) / perPlot, side = (int)ceilf(sqrtf((float)plots));
         const Vector3 dir = c.spawnDirLocal();
@@ -56,6 +59,8 @@ SCENARIO("perf/factory-scale") {
                 if (chest0 < 0) { body0 = c.body->id; plot0 = plot->id; mac0 = m1; chest0 = ch; }
                 Factory::Sync(c.world); // (the layout first, so the seeds find the machines)
                 Factory::Seed(c.body->id, plot->id, gen, "coal", 64);
+                const int gi = pi * perPlot + g; // (#1207) a share of the groups starved: their macerators idle, their generator unloaded
+                if (std::floor((gi + 1) * idleShare) > std::floor(gi * idleShare)) continue;
                 Factory::Seed(c.body->id, plot->id, m1, "stone", 64);
                 Factory::Seed(c.body->id, plot->id, m2, "stone", 64);
             }
@@ -87,7 +92,8 @@ SCENARIO("perf/factory-scale") {
         c.metric("machines working", st.activeMachines, "", false);
         c.metric("items made in the minute", (double)(st.itemsMade - made0), "", false);
         c.gt("ticks measured", st.recentTicks, 1000.0);
-        c.gt("the chains work (half the machines active)", st.activeMachines, st.machines * 0.4);
+        c.gt("the fed chains work", st.activeMachines, st.machines * 0.4 * (1.0 - idleShare));
+        c.metric("idle share (starved groups)", idleShare, "", false);
         // (#1207) the near-plot views (republished only on change) still show the chest filling and the macerator working
         int sand = 0;
         for (const auto& [item, n] : Factory::ChestContents(body0, plot0, chest0)) if (item == "sand") sand += n;

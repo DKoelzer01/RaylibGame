@@ -266,7 +266,7 @@ struct PlotSim {
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
     struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
 };
-PlotStats* gCount = nullptr;  // the plot ticking now (BurnFuel counts the fuel it takes into it)
+thread_local PlotStats* gCount = nullptr;  // the plot ticking now on this thread (BurnFuel counts the fuel it takes into it; thread_local: plots may tick on several threads later, #997)
 long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
 // (#1207) The last minute of factory ticks' times (sim thread), for the mean, p99 and worst and the phase split.
 struct TickTimes { float total = 0, cmd = 0, tick = 0, view = 0; };
