@@ -12418,6 +12418,13 @@ int main(int argc, char** argv)
                     if (it == seen.end()) seen[kv.first] = { v, 0.0 };
                     else it->second.second = std::max(it->second.second, (v - it->second.first).length());
                 }
+                // (#1223/#1224) RAYLIBGAME_JOIN_CREATURE=1: the creature the server spawns (tools/test_join.sh): its health as the
+                // server replicates it, and its death (gone from the replicated animals while near).
+                static uint64_t creatureNet = 0; static float creatureFirst = -1.0f, creatureMin = 1e9f; static bool creatureGone = false;
+                if (getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1') {
+                    if (!creatureNet) for (int i = 0; i < Animals_Count(); ++i) if (Animals_SpeciesOf(i) == "thornback") { creatureNet = Animals_NetId(i); creatureFirst = Animals_HealthOf(i); break; }
+                    if (creatureNet && !creatureGone) { const int i = Animals_FindNet(creatureNet); if (i < 0) creatureGone = true; else creatureMin = std::min(creatureMin, Animals_HealthOf(i)); }
+                }
                 // RAYLIBGAME_JOIN_LINGER=S: stay connected S more seconds after the walk, watching (another client may walk later).
                 static double walked = -1.0;
                 if (walked < 0.0 && GetTime() - jt0 > 8.0) { player.autoWalk = false; walked = b ? (b->toLocalD(player.position) - start).length() * b->scale : 0.0; }
@@ -12443,7 +12450,12 @@ int main(int argc, char** argv)
                     const bool clockOk = gJoin.pongs >= 3 && fabs(gJoin.clockError) < 0.1 && fabs(WorldTime_Pending()) < 0.1;
                     const bool moveOk = walked > 15.0 && gJoin.states > 80 && gJoin.worstError < 0.5 && gJoin.corrections * 10 <= gJoin.states;
                     const bool othersOk = (int)seen.size() >= wantOthers && (wantOthers == 0 || othersMoved > 5.0);
-                    const bool ok = fpOk && clockOk && moveOk && othersOk;
+                    const bool wantCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
+                    const bool creatureOk = !wantCreature || (creatureNet && creatureGone && creatureMin < creatureFirst);
+                    if (wantCreature)
+                        printf("join: creature (%s): saw %d, health %.0f -> %.0f before it fell, fell %d, hits taken %.1f -> %s\n", joinName.c_str(),
+                               creatureNet ? 1 : 0, creatureFirst, creatureMin < 1e8f ? creatureMin : -1.0f, (int)creatureGone, survival.hitDamageTaken, creatureOk ? "ok" : "FAIL");
+                    const bool ok = fpOk && clockOk && moveOk && othersOk && creatureOk;
                     printf("bench: join (%s, session %u): world fingerprint matches %d; walked %.1f m, %d own states, prediction off by %.3f m at worst, %d corrections; "
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
