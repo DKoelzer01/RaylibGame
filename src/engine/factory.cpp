@@ -1307,6 +1307,7 @@ void Factory::Sync(Scene& world) {
                             variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
                         }
                         if (part.type >= PartType::LvLab && part.type <= PartType::HvLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
+                        if (part.type == PartType::ManaSiphon) variant = "jar_none"; // (#1252) idle until the game finds the ley node it stands on
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);

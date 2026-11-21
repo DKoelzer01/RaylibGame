@@ -7,6 +7,7 @@
 #include "research.h"
 #include "researchtab.h"
 #include "tome.h"
+#include "magicmachines.h" // (#1327) the research table's reach
 #include "imgui.h"
 
 #include <algorithm>
@@ -110,6 +111,7 @@ void TomeTab_Draw() {
     ImGui::Separator();
     // Spending items (the research table's job).
     if (!tome.Has("research_table")) { ImGui::TextDisabled("Write The Research Table to spend things for their aspects."); return; }
+    if (!MagicMachines_NearResearchTable()) { ImGui::TextDisabled("Stand by a research table (build one: Crafting) to spend things for their aspects."); return; } // (#1327)
     ImGui::TextUnformatted("Spend a carried item for its aspects:");
     int shown = 0;
     for (const ItemDef& d : itemDB.items()) {
