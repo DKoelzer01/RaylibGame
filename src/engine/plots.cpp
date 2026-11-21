@@ -63,6 +63,7 @@ const char* PartName(PartType t) {
         case PartType::PrecisionAssembler: return "precision assembler";
         case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
         case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -130,6 +131,7 @@ const char* PartMachineName(PartType t) {
         case PartType::PrecisionAssembler: return "precision_assembler";
         case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
         case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence_tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -274,6 +276,7 @@ static Color PartColor(PartType t) {
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
         case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
+        case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -374,6 +377,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: // (#1193)
         case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
+        case PartType::Distillery: case PartType::EssenceTank: case PartType::Cauldron: // (#1254)
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;

@@ -4,3 +4,6 @@
 #   min spread (films thinner than this /255 m stay put) | bucket item and count (- 0: the water bucket)
 water     | Water     | 40,90,160   | 0.6  | 0.0 | 5  | 10 | - 0
 crude_oil | Crude oil | 26,20,15    | 0.97 | 0.0 | 9  | 16 | crude_oil 4
+# (#1254) Alchemy's essence spilled into the world: one kind for every aspect (the aspect lives on its tank, phial or pipe
+# run, and a spill loses it); it fizzles away within seconds (alchemy.cpp takes it back). Nothing to scoop.
+essence   | Essence   | 205,190,255 | 0.5  | 0.6 | 4  | 8  | - 0

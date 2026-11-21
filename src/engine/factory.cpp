@@ -82,9 +82,18 @@ struct Tables {
         if (it != itemIds.end()) return it->second;
         const int id = (int)itemNames.size();
         if (id < kMaxCapItems) caps[id] = StackLimit(n); // written before the id is handed out (under the lock)
+        if (id < kMaxCapItems) fluids[id] = FluidName(n); // (#1254)
         itemIds[n] = id;
         itemNames.push_back(n);
         return id;
+    }
+    // (#1254) Fluid items (alchemy's essences): names with a registered prefix. Lock-free reads like cap().
+    bool fluid(int id) const { return id >= 0 && id < kMaxCapItems && fluids[id]; }
+    void addFluidPrefix(const std::string& prefix) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (prefix.empty() || std::find(fluidPrefixes.begin(), fluidPrefixes.end(), prefix) != fluidPrefixes.end()) return;
+        fluidPrefixes.push_back(prefix);
+        for (int id = 0; id < (int)itemNames.size() && id < kMaxCapItems; ++id) fluids[id] = FluidName(itemNames[id]);
     }
     // Whole units of the item a slot holds (#566: the player inventory's StackLimit). Lock-free: the sim thread asks
     // per stack move, and an id's cap never changes once it is interned.
@@ -101,6 +110,9 @@ struct Tables {
 private:
     static constexpr int kMaxCapItems = 4096;
     int caps[kMaxCapItems] = {};
+    bool fluids[kMaxCapItems] = {};
+    std::vector<std::string> fluidPrefixes;
+    bool FluidName(const std::string& n) const { for (const std::string& p : fluidPrefixes) if (n.compare(0, p.size(), p) == 0) return true; return false; }
     std::mutex mutex;
     std::vector<std::string> itemNames;
     std::unordered_map<std::string, int> itemIds;
@@ -200,6 +212,20 @@ void LoadRecipes() {
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
+    }
+    if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
+        std::vector<Factory::RecipeInfo> extra;
+        gFactoryExtraRecipes(extra);
+        for (const Factory::RecipeInfo& e : extra) {
+            if (e.machine >= PartType::Count || e.in.empty() || e.out.empty()) continue;
+            Recipe r;
+            r.machine = e.machine;
+            for (const auto& [name, n] : e.in) if (n > 0) r.in.push_back({ tables.item(name), n });
+            for (const auto& [name, n] : e.out) if (n > 0) r.out.push_back({ tables.item(name), n });
+            r.ticks = std::max(1, e.ticks);
+            r.eu = std::max(0, e.eu);
+            tables.recipes.push_back(r);
+        }
     }
     // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
     // through every recipe of every machine, each tick).
@@ -551,6 +577,7 @@ int WaterBucketItem() { static const int id = tables.item("water_bucket"); retur
 int BucketItem() { static const int id = tables.item("bucket"); return id; }
 
 bool Accepts(PartType type, int item) {
+    if (tables.fluid(item)) return false; // (#1254) fluid moves only through pipes and phials (MoveFluids), never as items
     if (Def(type).power == Power::Storage) return true;
     if (Def(type).waterPerTick > 0 && item == WaterBucketItem()) return true;
     return IsFuel(Def(type), item) || RecipeWants(type, item);
@@ -755,8 +782,9 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
+        // (#1254) fluid (essence) is not an item: it is lost with its vessel
+        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0 && !tables.fluid(old.in[i].item)) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
+        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0 && !tables.fluid(old.out[i].item)) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
         if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
     }
     ps->machines = std::move(next);
@@ -1494,12 +1522,12 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
-                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; }
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; } // (#1254) never fluid
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
-                    if (im.item >= 0 && im.item < n && !Empty(s[im.item])) {
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { // (#1254) never fluid
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
                         if (k > 0) toCursor.push_back({ s[im.item].item | hot, k, im.to });
                         p->stats.items[s[im.item].item].handOut.add(k); // (#1199)
@@ -1512,7 +1540,7 @@ void SimLoop() {
                     Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
-                    for (int i = 0; i < n; ++i) if (!Empty(s[i])) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
+                    for (int i = 0; i < n; ++i) if (!Empty(s[i]) && !tables.fluid(s[i].item)) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
                 }
             }
             const auto t1 = clk::now(); // (#1207) commands done
@@ -1888,6 +1916,70 @@ std::vector<std::pair<std::string, int>> Factory::DrainOutputs(uint64_t body, ui
         p->machines[it->second].dirty = true; // (#1214) room in its outputs: a lab that waited on them goes on
     }
     return out;
+}
+// (#1254) Fluid items in machine slots (alchemy's essences).
+void Factory::AddFluidPrefix(const std::string& prefix) { tables.addFluidPrefix(prefix); }
+bool Factory::IsFluidItem(const std::string& item) { return tables.fluid(tables.item(item)); }
+std::vector<Factory::FluidSlots> Factory::ReadFluids(const std::vector<MachineKey>& keys) {
+    std::vector<FluidSlots> out(keys.size());
+    std::lock_guard<std::mutex> lock(simMutex);
+    for (size_t k = 0; k < keys.size(); ++k) {
+        const auto& [body, plot, part] = keys[k];
+        PlotSim* p = FindPlot(body, plot);
+        auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+        if (!p || it == p->byPart.end()) continue;
+        const Machine& m = p->machines[it->second];
+        FluidSlots& f = out[k];
+        f.valid = true;
+        auto read = [&](const Stack* s, int n, std::vector<std::pair<std::string, int>>& list, int& freeSlots) {
+            for (int i = 0; i < n; ++i) {
+                if (Empty(s[i])) { ++freeSlots; continue; }
+                if (!tables.fluid(s[i].item)) continue;
+                const std::string name = tables.name(s[i].item);
+                bool merged = false;
+                for (auto& e : list) if (e.first == name) { e.second += s[i].count; merged = true; }
+                if (!merged) list.push_back({ name, s[i].count });
+            }
+        };
+        read(m.in.data(), InSlots(m), f.in, f.freeIn);
+        read(m.out, kSlots, f.out, f.freeOut);
+    }
+    return out;
+}
+std::vector<int> Factory::MoveFluids(const std::vector<FluidMove>& moves) {
+    std::vector<int> done(moves.size(), 0);
+    std::lock_guard<std::mutex> lock(simMutex);
+    auto machineOf = [&](const MachineKey& key) -> Machine* {
+        const auto& [body, plot, part] = key;
+        PlotSim* p = FindPlot(body, plot);
+        auto it = p ? p->byPart.find(part) : decltype(p->byPart.end()){};
+        return !p || it == p->byPart.end() ? nullptr : &p->machines[it->second];
+    };
+    for (size_t k = 0; k < moves.size(); ++k) {
+        const FluidMove& mv = moves[k];
+        if (mv.count <= 0 || mv.item.empty()) continue;
+        const int item = tables.item(mv.item);
+        if (!tables.fluid(item)) continue; // only fluid moves this way
+        Machine* from = mv.hasFrom ? machineOf(mv.from) : nullptr;
+        Machine* to = mv.hasTo ? machineOf(mv.to) : nullptr;
+        if ((mv.hasFrom && !from) || (mv.hasTo && !to)) continue;
+        int n = mv.count;
+        Stack* fs = nullptr; int fn = 0;
+        if (from) { fs = mv.fromWhich ? from->out : from->in.data(); fn = mv.fromWhich ? kSlots : InSlots(*from); n = std::min(n, CountItems(fs, fn, item)); }
+        Stack* ts = nullptr; int tn = 0;
+        if (to) {
+            ts = mv.toWhich ? to->out : to->in.data(); tn = mv.toWhich ? kSlots : InSlots(*to);
+            if (mv.cap > 0) n = std::min(n, std::max(0, mv.cap - CountItems(ts, tn, item)));
+            Stack trial[kChestSlots];
+            std::copy(ts, ts + tn, trial);
+            n -= AddItems(trial, tn, item, n); // what fits
+        }
+        if (n <= 0) continue;
+        if (from) { TakeItems(fs, fn, item, n); from->dirty = true; } // (#1214) room in its outputs: it goes on
+        if (to) { AddItems(ts, tn, item, n); to->dirty = true; }       // new input: it looks again next tick
+        done[k] = n;
+    }
+    return done;
 }
 void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     std::lock_guard<std::mutex> q(queueMutex);
