@@ -60,7 +60,13 @@ SCENARIO("slides/river-valley") {
             for (int a = 0; a < 64 && !R.found; ++a) {
                 const float th = 6.2831853f * a / 64.0f;
                 const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, c.field->radius), Vector3Add(Vector3Scale(k1, r * cosf(th)), Vector3Scale(k2, r * sinf(th)))));
-                if (c.field->waterSourceAt(d).kind == 1) { R.found = true; R.up = d; R.at = Vector3Scale(d, c.field->radius + c.field->elevation(d)); c.metric("river from the start (m)", r, "m"); }
+                if (c.field->waterSourceAt(d).kind == 1) {
+                    R.found = true; R.up = d; R.at = Vector3Scale(d, c.field->radius + c.field->elevation(d));
+                    c.metric("river from the start (m)", r, "m");
+                    // (#1438) where, for whoever looks at the river there: the body-local direction, lat/lon (y up) and height
+                    c.note(TextFormat("river cell: dir (%.6f, %.6f, %.6f), lat %.5f lon %.5f, ground %.1f m over the radius, %.0f m from the start at %.0f deg",
+                                      d.x, d.y, d.z, asinf(d.y) * RAD2DEG, atan2f(d.z, d.x) * RAD2DEG, c.field->elevation(d), r, th * RAD2DEG));
+                }
             }
         c.check("a river within 8 km of the start", R.found);
         return true;
