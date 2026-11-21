@@ -206,6 +206,8 @@ namespace Factory {
     MachineView Watched(const MachineKey& key);       // the last tick's view of a WatchMany machine (invalid until then)
     // Server: more places whose plots count as near (ticked every tick, their working machines published): its players.
     void SetNearPoints(const std::vector<Vector3>& renderPoints);
+    void SetCameraNear(bool counts);                 // (#1302) false on a dedicated server: only its players make plots near
+                                                    // (with nobody about, every plot runs in the summary sim)
     // The machines working on one plot now (near plots only): what clients get for animations (MachineStates).
     std::vector<int> WorkingParts(uint64_t bodyId, uint32_t plotId);
     // (#1243) The machines on a near plot stopped for a reason now (no power, overvoltage, output full, no fuel, no water;
