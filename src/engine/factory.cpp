@@ -254,6 +254,11 @@ struct PlotSim {
 };
 PlotStats* gCount = nullptr;  // the plot ticking now (BurnFuel counts the fuel it takes into it)
 long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
+// (#1207) The last minute of factory ticks' times (sim thread), for the mean, p99 and worst and the phase split.
+struct TickTimes { float total = 0, cmd = 0, tick = 0, view = 0; };
+constexpr size_t kTickRing = 1200;
+std::array<TickTimes, kTickRing> tickRing{};
+size_t tickRingAt = 0;
 
 // Once a second: each count's second into the rings, minutes and 10 minutes as they complete.
 void RollSeries(Series& s) {
@@ -823,7 +828,7 @@ void SimLoop() {
                 layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
             }
-            if (reset) { plots.clear(); emaMs = maxMs = 0.0; statSeconds = 0; }
+            if (reset) { plots.clear(); emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
             for (const MoveMsg& mv : moves)
                 if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
@@ -894,6 +899,7 @@ void SimLoop() {
                     for (int i = 0; i < n; ++i) if (s[i].count > 0) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to }); s[i] = Stack{}; }
                 }
             }
+            const auto t1 = clk::now(); // (#1207) commands done
             // Tick: near plots every tick; far plots once a second with a 20x step.
             const long long t = tickCount.load();
             long long made = 0;
@@ -906,6 +912,7 @@ void SimLoop() {
             }
             gCount = nullptr;
             if ((t + 1) % kTicksPerSecond == 0) { for (PlotSim& ps : plots) RollStats(ps.stats); ++statSeconds; } // (#1199) a second of factory time
+            const auto t2 = clk::now(); // (#1207) plots done
             const double ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
             emaMs = emaMs == 0.0 ? ms : emaMs * 0.95 + ms * 0.05;
             maxMs = std::max(maxMs, ms);
@@ -943,6 +950,25 @@ void SimLoop() {
                         for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
                     }
                 }
+            }
+            // (#1207) The whole tick (commands, plots, views) into the last minute's ring; its percentiles once a second.
+            const auto t3 = clk::now();
+            const float cmdMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+            const float tickMs = std::chrono::duration<float, std::milli>(t2 - t1).count();
+            const float viewMs = std::chrono::duration<float, std::milli>(t3 - t2).count();
+            tickRing[tickRingAt++ % kTickRing] = { cmdMs + tickMs + viewMs, cmdMs, tickMs, viewMs };
+            if ((t + 1) % kTicksPerSecond == 0) {
+                const size_t n = std::min<size_t>(tickRingAt, kTickRing);
+                std::vector<float> all(n);
+                TickTimes sum{};
+                for (size_t i = 0; i < n; ++i) { all[i] = tickRing[i].total; sum.cmd += tickRing[i].cmd; sum.tick += tickRing[i].tick; sum.view += tickRing[i].view; }
+                std::sort(all.begin(), all.end());
+                std::lock_guard<std::mutex> v(viewMutex);
+                stats.recentTicks = (int)n;
+                stats.meanTickMs = n ? (sum.cmd + sum.tick + sum.view) / n : 0.0;
+                stats.p99TickMs = n ? all[std::min(n - 1, (size_t)(n * 0.99))] : 0.0;
+                stats.worstRecentMs = n ? all[n - 1] : 0.0;
+                stats.cmdMs = n ? sum.cmd / n : 0.0; stats.tickOnlyMs = n ? sum.tick / n : 0.0; stats.viewMs = n ? sum.view / n : 0.0;
             }
         }
         tickCount++;
