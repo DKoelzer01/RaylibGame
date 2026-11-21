@@ -78,6 +78,30 @@ private:
     int pos = 0, count = 0;
 };
 
+// (#1294) The reverb's send bus: voices add their blocks at their own write cursor, the reverb reads (and clears) at its
+// read cursor. Everything runs on the audio thread (raylib calls every stream's callback from miniaudio's one mixing
+// callback), so there are no locks. A writer that falls behind the reader or runs too far ahead (a voice at another
+// pitch consumes frames at another rate) is put back kLead frames ahead of it: a dropped or doubled block in a reverb
+// tail is inaudible.
+class AudioSendRing {
+public:
+    static constexpr int kSize = 8192, kLead = 512;
+    void add(uint64_t& cursor, const float* x, int n, float gain) {
+        if (cursor < readPos || cursor + (uint64_t)n > readPos + kSize - 256) cursor = readPos + kLead;
+        for (int i = 0; i < n; ++i) buf[(cursor + i) % kSize] += x[i] * gain;
+        cursor += n;
+    }
+    void read(float* out, int n) {
+        for (int i = 0; i < n; ++i) { float& s = buf[(readPos + i) % kSize]; out[i] = s; s = 0.0f; }
+        readPos += n;
+    }
+    uint64_t readPosition() const { return readPos; }
+
+private:
+    float buf[kSize] = {};
+    uint64_t readPos = 0;
+};
+
 // Looping (or long) sounds in the world: machine hums, wind, rain, water. Emitters are virtual: one holds a voice only
 // while it is audible and a voice is free (or a lower priority one can be taken); out of range it fades out and gives
 // the voice back. With more audible emitters than voices, a louder emitter takes the voice of one at the same priority

@@ -363,4 +363,28 @@ TEST(AudioSteam, BlockFifoHandsOutAnyCounts) {
     EXPECT_EQ(f.available(), 0);
     EXPECT_EQ(f.pop(out, 10), 0);
 }
+
+TEST(AudioSendRing, WritersSumAtTheirCursorsAndResync) {
+    static AudioSendRing r; // (32 KB: not on the test's stack)
+    float one[256], two[256], out[1024];
+    for (int i = 0; i < 256; ++i) { one[i] = 1.0f; two[i] = 2.0f; }
+    uint64_t a = 0, b = 0;                       // fresh writers start kLead ahead of the reader
+    r.add(a, one, 256, 0.5f);
+    r.add(b, two, 256, 1.0f);
+    EXPECT_EQ(a, (uint64_t)AudioSendRing::kLead + 256);
+    EXPECT_EQ(b, a);
+    r.read(out, AudioSendRing::kLead);           // the lead: silence
+    for (int i = 0; i < AudioSendRing::kLead; ++i) ASSERT_FLOAT_EQ(out[i], 0.0f);
+    r.read(out, 256);                            // both writers' blocks, summed with their gains
+    for (int i = 0; i < 256; ++i) ASSERT_FLOAT_EQ(out[i], 2.5f);
+    r.read(out, 256);                            // read samples were cleared: nothing comes round again
+    for (int i = 0; i < 256; ++i) ASSERT_FLOAT_EQ(out[i], 0.0f);
+    // A writer the reader has passed is put back ahead of it.
+    r.add(a, one, 256, 1.0f);
+    EXPECT_EQ(a, r.readPosition() + AudioSendRing::kLead + 256);
+    // One that ran too far ahead too.
+    uint64_t far = r.readPosition() + AudioSendRing::kSize;
+    r.add(far, one, 256, 1.0f);
+    EXPECT_EQ(far, r.readPosition() + AudioSendRing::kLead + 256);
+}
 #endif

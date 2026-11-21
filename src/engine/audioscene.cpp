@@ -132,6 +132,55 @@ float AudioScene::closestHit(Vector3 o, Vector3 dir, float tMin, float tMax, Aud
     return best;
 }
 
+const AudioMatProps& AudioMatPropsOf(AudioMat m) {
+    // Steam Audio's reference materials (absorption L/M/H, scattering, transmission L/M/H); soil and snow are guesses.
+    static const AudioMatProps kProps[(int)AudioMat::Count] = {
+        { { 0.10f, 0.20f, 0.30f }, 0.05f, { 0.100f, 0.050f, 0.030f } }, // generic
+        { { 0.13f, 0.20f, 0.24f }, 0.05f, { 0.015f, 0.002f, 0.001f } }, // rock
+        { { 0.30f, 0.40f, 0.50f }, 0.10f, { 0.020f, 0.005f, 0.002f } }, // soil (between rock and gravel)
+        { { 0.60f, 0.70f, 0.80f }, 0.05f, { 0.031f, 0.012f, 0.008f } }, // gravel
+        { { 0.45f, 0.75f, 0.90f }, 0.10f, { 0.050f, 0.020f, 0.010f } }, // snow (soft: absorbs the highs)
+        { { 0.11f, 0.07f, 0.06f }, 0.05f, { 0.070f, 0.014f, 0.005f } }, // wood
+        { { 0.20f, 0.07f, 0.06f }, 0.05f, { 0.200f, 0.025f, 0.010f } }, // metal
+        { { 0.06f, 0.03f, 0.02f }, 0.05f, { 0.060f, 0.044f, 0.011f } }, // glass
+        { { 0.03f, 0.04f, 0.07f }, 0.05f, { 0.015f, 0.015f, 0.015f } }, // brick
+    };
+    return kProps[(int)m < (int)AudioMat::Count ? (int)m : 0];
+}
+
+AudioEnclosure AudioScene::enclosure(Vector3 at, int rays, float maxDistance) const {
+    AudioEnclosure e;
+    int hits = 0;
+    float sum = 0.0f, abs[3] = { 0, 0, 0 };
+    const float golden = 2.39996323f; // a Fibonacci sphere: evenly spread directions
+    for (int i = 0; i < rays; ++i) {
+        const float y = 1.0f - 2.0f * (i + 0.5f) / rays, r = sqrtf(std::max(0.0f, 1.0f - y * y)), phi = golden * i;
+        const Vector3 d = { r * cosf(phi), y, r * sinf(phi) };
+        AudioMat m = AudioMat::Generic;
+        const float t = closestHit(at, d, 0.0f, maxDistance, &m, &at);
+        if (t < 0.0f) continue;
+        ++hits;
+        sum += t;
+        const AudioMatProps& p = AudioMatPropsOf(m);
+        for (int b = 0; b < 3; ++b) abs[b] += p.absorption[b];
+    }
+    e.hitFraction = rays > 0 ? (float)hits / rays : 0.0f;
+    e.meanDistance = hits ? sum / hits : maxDistance;
+    for (int b = 0; b < 3; ++b) e.absorption[b] = hits ? abs[b] / hits : 1.0f;
+    return e;
+}
+
+void AudioReverbFromEnclosure(const AudioEnclosure& e, float rt60[3], float& wet) {
+    const float l = std::max(1.0f, e.meanDistance); // mean free path ~ 4 V / S
+    for (int b = 0; b < 3; ++b) {
+        // Rays that escape never come back: count them as absorbed.
+        const float aEff = std::clamp(1.0f - e.hitFraction * (1.0f - e.absorption[b]), 0.01f, 0.999f);
+        rt60[b] = std::clamp(0.161f * l / (4.0f * -logf(1.0f - aEff)), 0.1f, 6.0f); // Eyring
+    }
+    const float closed = std::clamp((e.hitFraction - 0.4f) / 0.6f, 0.0f, 1.0f);
+    wet = 0.6f * closed * sqrtf(closed); // open ground (~half the rays hit) stays nearly dry
+}
+
 std::shared_ptr<const AudioScene> AudioScene_Snapshot(Scene& world, const DVec3& listenerGlobal, float range) {
     auto s = std::make_shared<AudioScene>();
     s->origin = listenerGlobal;
@@ -159,6 +208,7 @@ std::shared_ptr<const AudioScene> AudioScene_Snapshot(Scene& world, const DVec3&
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1293): rays against a ground plane, a wall of part cells, the margins at a sound's end ----
 #include "unit_helpers.h"
+#include <cstdlib>
 
 namespace {
 // Solid below y = 0 (body-local), density changing DENSITY_GRADIENT per unit across it.
@@ -231,6 +281,48 @@ TEST(AudioScene, PartCellsBlockAndKnowGlass) {
     EXPECT_EQ(m, AudioMat::Glass);
     EXPECT_FALSE(s.anyHit({ 0, 0, 0 }, { 0, 0, 1 }, 0.0f, 20.0f));    // along the walls
     EXPECT_FALSE(s.anyHit({ 0, 0, 0 }, { 1, 0, 0 }, 0.0f, 5.6f));     // a sound against the wall: its margin
+}
+
+TEST(AudioScene, EnclosureAndReverbOpenGroundVersusAClosedRoom) {
+    // Open ground: about half the rays hit (the lower half), little reverb.
+    const AudioScene open = PlaneScene(1.7f);
+    const AudioEnclosure eo = open.enclosure({ 0, 0, 0 });
+    EXPECT_NEAR(eo.hitFraction, 0.5f, 0.05f);
+    float rtOpen[3], wetOpen = 0.0f;
+    AudioReverbFromEnclosure(eo, rtOpen, wetOpen);
+    EXPECT_LT(wetOpen, 0.1f);
+    // A closed 7 x 7 x 7 m room of part cells around the listener (brick walls, high over the ground).
+    AudioScene room;
+    AudioScene::Body b;
+    b.field = std::make_shared<PlaneField>();
+    b.b = { 0, 100, 0 };
+    auto plots = std::make_shared<GrassBlockers>();
+    GrassBlockPlot p;
+    p.origin = { 0, 100, 0 };
+    p.east = { 1, 0, 0 }; p.up = { 0, 1, 0 }; p.north = { 0, 0, 1 };
+    for (int x = -7; x <= 7; ++x)
+        for (int y = -7; y <= 7; ++y)
+            for (int z = -7; z <= 7; ++z)
+                if (abs(x) == 7 || abs(y) == 7 || abs(z) == 7) { p.cells.insert({ x, y, z }); p.solid.insert({ x, y, z }); }
+    p.radius = 7.0f;
+    plots->push_back(p);
+    b.plots = plots;
+    room.bodies.push_back(b);
+    const AudioEnclosure er = room.enclosure({ 0.25f, 0.25f, 0.25f }, 64);
+    EXPECT_FLOAT_EQ(er.hitFraction, 1.0f);
+    EXPECT_GT(er.meanDistance, 3.0f);
+    EXPECT_LT(er.meanDistance, 6.0f);
+    EXPECT_FLOAT_EQ(er.absorption[1], AudioMatPropsOf(AudioMat::Brick).absorption[1]);
+    float rtRoom[3], wetRoom = 0.0f;
+    AudioReverbFromEnclosure(er, rtRoom, wetRoom);
+    EXPECT_FLOAT_EQ(wetRoom, 0.6f);
+    for (int k = 0; k < 3; ++k) { EXPECT_GT(rtRoom[k], rtOpen[k]); EXPECT_GT(rtRoom[k], 1.0f); EXPECT_LE(rtRoom[k], 6.0f); }
+    // Nothing anywhere (space): dry, shortest decay.
+    AudioEnclosure none;
+    float rtNone[3], wetNone = 1.0f;
+    AudioReverbFromEnclosure(none, rtNone, wetNone);
+    EXPECT_FLOAT_EQ(wetNone, 0.0f);
+    EXPECT_FLOAT_EQ(rtNone[0], 0.1f);
 }
 
 TEST(AudioScene, MaterialsByClass) {
