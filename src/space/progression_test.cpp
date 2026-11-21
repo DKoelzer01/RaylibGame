@@ -515,6 +515,28 @@ namespace {
         add("craft and place a macerator (#996: a tier 4 core node now, the user's decision)", [] {
             return Craft("lv_hull", 1) && Craft("copper_wire", 8) && Craft("basic_circuit", 2) && Craft("macerator", 1) && Place("macerator", PartType::Macerator, { 6, 0, 8 });
         });
+        add("craft and place an LV assembler, cabled to the generator", [] {
+            static bool fed = false;
+            if (!fed) {
+                // (scripted: its parts, more than the base run makes: 12 steel plates, 4 vacuum tubes, 16 copper wire)
+                inventory.add("steel_plate", 12); inventory.add("vacuum_tube", 4); inventory.add("copper_wire", 16);
+                if (!Craft("lv_assembler", 1) || !Place("lv_assembler", PartType::LvAssembler, { 9, 0, 8 })) return false;
+                for (int x = 4; x < 11; ++x) BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, 7 }, 0 }, false); // (the cable is scripted too)
+                fed = true;
+            }
+            return true;
+        });
+        add("the LV assembler assembles a basic circuit on the generator's power", [] {
+            static bool fed = false;
+            if (!fed) {
+                Give("generator", "any_log", 4);
+                Factory::SetPick(body->id, plot->id, parts["lv_assembler"], "basic_circuit"); // (its recipe picked, as on its screen: an LV pack takes the same parts)
+                inventory.add("vacuum_tube", 2); inventory.add("copper_wire", 4); inventory.add("steel_plate", 1); // (a circuit's parts, scripted too)
+                Give("lv_assembler", "vacuum_tube", 2); Give("lv_assembler", "copper_wire", 4); Give("lv_assembler", "steel_plate", 1);
+                fed = true;
+            }
+            return Collect("lv_assembler", "basic_circuit", 1);
+        });
         add("tier 4's tasks all done (its research milestone waits for the LV assembler)", [] {
             static double told = 0.0;
             bool all = true;

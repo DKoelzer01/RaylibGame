@@ -55,6 +55,8 @@ struct MachineView {             // published per machine each tick
     bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
     bool canLight = false;          // a campfire: the screen offers to light it or put it out (#1103)
     uint8_t fire = kFireAuto;
+    uint8_t mode = 0;               // (#1271 L6c) an assembler: 0 assembles, 1 disassembles
+    std::string pick;               // (#1271 L6c) the recipe output a player chose ("": any)
     bool rotation = false;          // (#1269) a rotation machine: its shaft's speed and its network's load
     float rpm = 0.0f;
     int speedPercent = 100, stressPercent = 0;
@@ -149,6 +151,10 @@ namespace Factory {
     void Crank(uint64_t bodyId, uint32_t plotId, int part);
     // (#1271 L2) A player strikes an anvil with a hammer: its recipe moves on by kStrikeTicks (two strikes can wait).
     void Strike(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1271 L6c) An assembler's mode: 0 assembles, 1 disassembles (#1427; until then a disassembling assembler idles).
+    void SetMode(uint64_t bodyId, uint32_t plotId, int part, int mode);
+    // (#1271 L6c) A machine of several recipes makes only `item`'s (its first output); "" any (the first its inputs allow).
+    void SetPick(uint64_t bodyId, uint32_t plotId, int part, const std::string& item);
     // (#1271 L6b) Machine recipes making these items never start (the team's research has not unlocked them); replaces the last list.
     void SetLockedOutputs(const std::vector<std::string>& outputs);
     // (#1270) A water wheel's or windmill's speed from its river or wind (signed RPM about its plot axis): rotationsources.*
