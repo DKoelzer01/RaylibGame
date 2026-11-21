@@ -2803,6 +2803,20 @@ bool Fluid::Asleep() {
     return true;
 }
 
+// Tests (#1131): whether the brick holding a body-local point is in steady flow (#674), so a check can wake that brick
+// with a pour and see it, instead of comparing global counts (whichever bricks happened to be steady).
+bool Fluid::SteadyAt(const Planetoid& body, Vector3 local) {
+    std::lock_guard<std::mutex> lock(simMx);
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        int ci, cj, ck;
+        s->cellOf(local, ci, cj, ck);
+        Brick* b; int i;
+        if (s->cell(ci, cj, ck, b, i)) return b->steady;
+    }
+    return false;
+}
+
 std::string Fluid::DebugAwake() {
     // Tests (#935): why Asleep() stays false - pending bricks, and the awake ones by state (the first few in full).
     std::lock_guard<std::mutex> lock(simMx);
