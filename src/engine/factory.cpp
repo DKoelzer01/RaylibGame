@@ -2394,7 +2394,8 @@ std::vector<Int3> Row(int x0, int x1, int z) { std::vector<Int3> r; for (int x =
 // maceratorTicks > 0 (#1403): every macerator recipe takes that many ticks (long crafts against the measuring window)
 std::vector<std::map<std::string, long long>> OracleRun(bool far, long long ticks, int maceratorTicks = 0) {
     LoadRecipes();
-    if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) r.ticks = maceratorTicks;
+    std::vector<std::pair<Recipe*, int>> restore; // (the tables outlive the test: LoadRecipes doesn't reload them)
+    if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) { restore.push_back({ &r, r.ticks }); r.ticks = maceratorTicks; }
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     const std::vector<Int3> cable12 = Row(0, 12, -1);
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
@@ -2428,6 +2429,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
         for (const auto& [item, s] : ps.stats.items) if (s.made.total + s.made.acc > 0) made[i][tables.name(item)] = s.made.total + s.made.acc;
     }
     plots.clear(); plotIndexDirty = true;
+    for (const auto& [r, t] : restore) r->ticks = t;
     return made;
 }
 } // namespace
