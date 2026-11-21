@@ -18,3 +18,4 @@ drip               all         Water dripping
 creature_telegraph* important  Creature about to attack
 creature_*         all         Creature
 alarm_*            important   Alarm
+mech_*             all         Machinery turning

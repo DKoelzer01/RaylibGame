@@ -24,5 +24,9 @@ std::vector<float> AudioSynth_Thunder(float near, unsigned seed);
 // factory bed ("factory_bed": many machines at once) and the state cues ("machine_stall" a falling tone, "machine_click",
 // "machine_done" a soft chime). False: not a machine sound.
 bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<float>& out);
+// (#1245) Generative music, the fallback until real pieces are in resources/audio: calm pads as 20 s seamless loops
+// ("music_pad_day", "music_pad_night", "music_pad_cave", "music_pad_space"), the danger layer ("music_danger", a 12 s
+// loop) and two stings ("music_discovery", "music_achievement"). False: not one of them.
+bool AudioSynth_Music(const std::string& name, unsigned seed, std::vector<float>& out);
 
 #endif
