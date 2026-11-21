@@ -304,7 +304,7 @@ static Color PartColor(PartType t) {
 // Surface pattern of a part (parts.fs draws it procedurally; the id rides in the vertex colour's alpha).
 enum PartPattern : unsigned char {
     PatConcrete = 0, PatStone, PatMetal, PatGlass, PatDirt, PatTiles, PatPlanks, PatPolished, PatBrick, PatPlaster,
-    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble,
+    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble, PatLadder, // PatLadder (#1105): rails and rungs, the rest cut away (parts.fs)
     PatMachine = 20, PatConveyor, PatCable, PatFarmland, PatHull
 };
 static unsigned char PartPatternOf(const Part& p) {
@@ -339,7 +339,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
-        case PartType::Ladder: return PatPlanks; // (#1105)
+        case PartType::Ladder: return PatLadder; // (#1105)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
