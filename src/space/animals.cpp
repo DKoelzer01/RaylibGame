@@ -10,6 +10,8 @@
 #include "melee.h"
 #include "creatures.h" // (#1223)
 #include "footsteps.h" // (#1240) step noise for creature hearing
+#include "avatar.h" // (#1225) humanoid creatures
+#include "locallights.h"
 #include "claims.h"
 #include "headless.h"
 #include "net.h"
@@ -68,6 +70,7 @@ struct Species {
     bool biped = false, wool = false, horns = false, spikes = false, beak = false, tail = false, ears = false, longBody = false; // model (Plan 5 A)
     bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
     bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
+    bool humanoid = false;                            // (#1225) drawn with the avatar rig (cave scavengers)
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -111,7 +114,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; }
         }
         species.push_back(s);
     }
@@ -157,6 +160,10 @@ struct Animal {
     bool clinging = false;       // (#1224) on a cave ceiling (pos), waiting over clingFloor
     float dropIn = -1.0f, clingWait = 0.0f; // the drop's telegraph left (s, -1 none); s it has heard prey not under it
     Vector3 clingFloor{};
+    uint64_t group = 0;          // (#1225) its group (the first member's net id; 0: alone)
+    bool thrower = false;        // (#1225) the group's thrower: keeps its distance and throws
+    double throwWindAt = -1.0, lastThrow = -1e9; // (#1225) a throw winding up since (simClock), the last throw
+    std::vector<InvSlot> carried; // (#1225) what a thief took (dropped when it falls)
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -498,6 +505,12 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
         if (dropsTo) { dropsTo->push_back({ d.first, n }); continue; }
         inventory.add(d.first, n); got += TextFormat("  +%d %s", n, d.first.c_str());
     }
+    for (const InvSlot& st : a.carried) { // (#1225) what a thief took comes back
+        const int n = std::max(1, (int)((st.centi + 50) / 100));
+        if (toGround) { Combat_DropFor(a.body, DVec3(a.pos), st, ""); continue; }
+        if (dropsTo) { dropsTo->push_back({ st.id, n }); continue; }
+        inventory.add(st.id, n); got += TextFormat("  +%d %s", n, st.id.c_str());
+    }
     if (!dropsTo && !toGround) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
     animals.erase(animals.begin() + i);
     if (aimed == i) aimed = -1;
@@ -671,6 +684,102 @@ bool Animals_Feed(int i) {
     return false;
 }
 
+// ---- (#1225) Thrown projectiles and humanoid creatures ----
+// A creature's throw (a rock or spear) flies on a ballistic arc under the planet's pull (~9.8 m/s^2 along the local down),
+// hits the first player whose body it passes within 0.45 m of (through Combat_Damage: a raised shield facing it blocks; a
+// dodge passes through; never parried), and stops in rock. Gone after 6 s.
+namespace {
+struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; };
+std::vector<Projectile> projectiles;
+int projectileHits = 0, projectilesThrown = 0;
+
+void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear) {
+    Vector3 vel;
+    Throw_Aim(from, target, Vector3Normalize(from), 16.0f, 9.81f, vel);
+    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear });
+    ++projectilesThrown;
+}
+
+void StepProjectiles(Scene& world, float dt) {
+    if (projectiles.empty() || dt <= 0.0f) return;
+    Planetoid* here = player.nearest;
+    const Vector3 feet = here ? here->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    for (size_t k = 0; k < projectiles.size();) {
+        Projectile& p = projectiles[k];
+        Planetoid* body = BodyNamed(world, p.body);
+        bool gone = !body || simClock - p.born > 6.0;
+        if (!gone) {
+            const Vector3 up = Vector3Normalize(p.pos);
+            const Vector3 before = p.pos;
+            p.vel = Vector3Add(p.vel, Vector3Scale(up, -9.81f * dt));
+            p.pos = Vector3Add(p.pos, Vector3Scale(p.vel, dt));
+            if (body->densityAt(p.pos) >= ISO_LEVEL) gone = true; // into rock or the ground
+            // The local player: their body from the feet up 1.7 m.
+            if (!gone && here == body && !survival.dead && !player.flyMode) {
+                const Vector3 pu = Vector3Normalize(feet);
+                if (Melee_SegmentDistance(before, p.pos, feet, Vector3Add(feet, Vector3Scale(pu, 1.7f))) < 0.45f) {
+                    DamageEvent e;
+                    e.amount = p.damage * Difficulty_ThreatScale();
+                    e.kind = DamageKind::Projectile; e.type = p.spear ? DamageType::Pierce : DamageType::Blunt;
+                    e.parryable = false; e.hasSource = true;
+                    e.source = body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f)))); // where it came from
+                    e.knockback = 2.0f; e.sourceId = p.owner;
+                    const DamageResult r = Combat_Damage(LocalSession(), e);
+                    GameUI_Toast(r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
+                    ++projectileHits;
+                    gone = true;
+                }
+            }
+            // Remote players (a server): their feet as the animals see them.
+            if (!gone)
+                for (const AnimalTarget& t : gAnimalTargets) {
+                    if (Planetoid::findNet(t.body) != body || !t.vulnerable) continue;
+                    const Vector3 tu = Vector3Normalize(t.local);
+                    if (Melee_SegmentDistance(before, p.pos, t.local, Vector3Add(t.local, Vector3Scale(tu, 1.7f))) >= 0.45f) continue;
+                    DamageEvent e; e.amount = p.damage * Difficulty_ThreatScale(); e.kind = DamageKind::Projectile; e.parryable = false;
+                    e.hasSource = true; e.source = body->toWorldD(DVec3(before)); e.knockback = 2.0f; e.sourceId = p.owner;
+                    if (gAnimalDamageRemote) gAnimalDamageRemote(t.session, e);
+                    ++projectileHits;
+                    gone = true;
+                    break;
+                }
+        }
+        if (gone) { projectiles[k] = projectiles.back(); projectiles.pop_back(); }
+        else ++k;
+    }
+}
+
+void DrawProjectiles(Scene& world) {
+    for (const Projectile& p : projectiles) {
+        Planetoid* body = BodyNamed(world, p.body);
+        if (!body) continue;
+        const Vector3 w = body->toWorld(p.pos);
+        if (Vector3Distance(w, world.camera.position) > 120.0f) continue;
+        if (!p.spear) { IB_Cube(w, { 0.16f, 0.14f, 0.16f }, Color{ 120, 115, 105, 255 }); continue; }
+        const Vector3 d = Vector3Normalize(body->dirToWorld(p.vel));
+        for (int s = -2; s <= 2; ++s) IB_Cube(Vector3Add(w, Vector3Scale(d, 0.3f * s)), { 0.05f, 0.05f, 0.05f }, s == 2 ? Color{ 90, 90, 95, 255 } : Color{ 120, 90, 60, 255 });
+    }
+}
+} // namespace
+
+int Animals_ProjectilesThrown() { return projectilesThrown; }
+int Animals_ProjectileHits() { return projectileHits; }
+
+// (#1225) Torches carried by creatures (torch=1): a warm light each, for the frame's local lights (render space).
+void Animals_AddLights(Scene& world) {
+    for (const Animal& a : animals) {
+        const CreatureSpec* cs = Creature_Spec(species[a.species].id);
+        if (!cs || !cs->torch || a.thrower) continue; // (the thrower's hands hold stones)
+        Planetoid* body = BodyNamed(world, a.body);
+        if (!body) continue;
+        const Vector3 w = body->toWorld(Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 1.5f)));
+        if (Vector3Distance(w, world.camera.position) > 70.0f) continue;
+        LocalLight L;
+        L.position = w; L.range = 9.0f; L.color = { 1.0f, 0.62f, 0.32f }; L.intensity = 1.3f;
+        world.localLights.push_back(L);
+    }
+}
+
 // ---- (#1223) Cave creatures: spawning ----
 // Every 2 s around each interest centre (players) on a planet with graph caves: the cave segments within 64 m give spawn
 // sites (their floors, found down from the axis), each with its depth, light and whether an entrance is near. Each cave
@@ -683,6 +792,7 @@ std::map<ChunkId, SpawnChunk> spawnChunks;
 double lastCaveSpawn = -1e9;
 int caveSpawned = 0, caveSites = 0;
 int lurkerDrops = 0; // (#1224) drops that landed on a player (tests)
+int thefts = 0;      // (#1225) piles taken by thieves (tests)
 
 ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
@@ -772,10 +882,22 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             }
             const int due = Spawn_Due(c, ch, alive, now);
             uint32_t h = Hash(((uint64_t)(uint32_t)ck.first.x << 32) ^ (uint32_t)ck.first.y ^ ((uint64_t)ck.first.z << 16), (uint32_t)(now * 10.0) + (uint32_t)si);
-            for (int k = 0; k < due; ++k) {
+            for (int k = 0; k < due;) {
                 const SpawnSite* s = ck.second[std::min((int)ck.second.size() - 1, (int)(Rand01(h) * ck.second.size()))];
-                SpawnAt(body, si, s->floor, h);
-                ++caveSpawned;
+                // (#1225) A group species comes as a group at one site: up to `group` together (within what is due), the first
+                // its thrower when the species has one.
+                const int n = std::max(1, std::min(c.group, due - k));
+                uint64_t first = 0;
+                for (int m = 0; m < n; ++m) {
+                    const uint64_t id = SpawnAt(body, si, s->floor, h);
+                    if (const int j = IndexOfNet(id); j >= 0 && c.group > 1) {
+                        if (!first) first = id;
+                        animals[j].group = first;
+                        animals[j].thrower = c.thrower && m == 0;
+                    }
+                    ++caveSpawned;
+                }
+                k += n;
             }
         }
     }
@@ -786,6 +908,9 @@ int Animals_CaveSpawned() { return caveSpawned; }
 bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && animals[i].clinging; }
 Vector3 Animals_ClingFloor(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].clingFloor : Vector3{ 0, 0, 0 }; }
 int Animals_LurkerDrops() { return lurkerDrops; }
+int Animals_Thefts() { return thefts; }
+bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
+void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
@@ -1045,6 +1170,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
         // stalkers will not come within 14 m of one.
         bool hunting = false;
+        bool goingTo = false, ranged = false; // (#1225) going for a pile (a thief); throwing from a distance (a thrower)
         // (#1223) A creature (a creatures.txt row) is driven by the brain (creatures.h): what it perceives (the nearest player,
         // creatures of factions it hunts or fears), whether it was hurt, noise it heard, fire, daylight. A plain animal, or
         // RAYLIBGAME_CREATURES=0: the code below it (the brain's thornback and stalker rows reproduce that code).
@@ -1167,6 +1293,23 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     }
                 }
             }
+            // (#1225) Thieves: a dropped pile within 12 m (and nothing carried yet): it goes for it, takes it whole and runs
+            // (12 s away from the player). It carries it until it falls (then it drops with its loot).
+            if (cs->thief && a.carried.empty() && a.fleeTimer <= 0.0f) {
+                Vector3 pile{};
+                if (Combat_PileNear(a.body, a.pos, 12.0f, pile)) {
+                    if (Vector3Distance(pile, a.pos) < 1.4f) {
+                        if (Combat_TakePileNear(a.body, a.pos, 1.6f, a.carried) && !a.carried.empty()) {
+                            a.fleeTimer = 12.0f; a.fleeFrom = sameBody ? tgLocal : a.pos; hunting = false;
+                            ++thefts;
+                            if (sameBody && tg->session == 0 && pdist < 40.0f)
+                                GameUI_Toast(TextFormat("A %s grabs your %s and runs!", s.name.c_str(), a.carried[0].id.c_str()));
+                        }
+                    } else { hunting = true; goingTo = true; preyIdx = -1; huntAt = pile; huntDist = Vector3Distance(pile, a.pos); }
+                }
+            }
+            // (#1225) The group's thrower keeps its distance from the player it hunts and throws instead of closing in.
+            ranged = hunting && !goingTo && preyIdx < 0 && a.thrower && cs->thrower;
         } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(tgLocal, 10.0f, fire);
@@ -1192,6 +1335,27 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             } else {
                 if (pdist < reach) { speed = 0.0f; windUp = a.windUpAt < 0.0 && simClock - a.lastBite > 1.2; } // (on simClock: tests step animals many times in a frame)
                 strike = a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp;
+            }
+            // (#1225) A thief going for a pile walks to it (no attack). A thrower: too close (under throwMin), it backs off; in
+            // range, it stands and throws (a telegraphed wind-up, then a stone on an arc at the player's chest); further, it
+            // closes in. Neither melees.
+            if (goingTo) { a.state = State::Walk; windUp = strike = false; }
+            else if (ranged) {
+                windUp = strike = false;
+                if (pdist < cs->throwMin) { toward = Vector3Subtract(a.pos, tgLocal); speed = s.walk * 1.5f; a.throwWindAt = -1.0; }
+                else if (pdist <= cs->throwRange) {
+                    speed = 0.0f;
+                    if (a.throwWindAt < 0.0 && simClock - a.lastThrow > cs->throwCooldown) {
+                        a.throwWindAt = simClock;
+                        Creature_Event(*cs, CreatureEvent::Telegraph, body->id, a.pos);
+                        if (tg->session == 0) GameUI_Toast(TextFormat("The %s winds up a throw!", s.name.c_str()));
+                    }
+                    if (a.throwWindAt >= 0.0 && simClock - a.throwWindAt >= cs->throwWindUp) {
+                        const Vector3 aup = Vector3Normalize(a.pos), tup = Vector3Normalize(tgLocal);
+                        ThrowAt(a.body, Vector3Add(a.pos, Vector3Scale(aup, 1.6f)), Vector3Add(tgLocal, Vector3Scale(tup, 1.1f)), cs->throwDamage, a.netId, false);
+                        a.throwWindAt = -1.0; a.lastThrow = simClock;
+                    }
+                } else a.throwWindAt = -1.0;
             }
             if (windUp) {
                 a.windUpAt = simClock;
@@ -1395,6 +1559,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // (#1223) Creatures' strikes on each other, gathered in the loop (a kill shifts the list), found again by id.
     for (const CreatureHit& h : creatureHits) { const int t = IndexOfNet(h.target); if (t >= 0) HitByCreature(t, h.e, h.attacker, h.from); }
     creatureHits.clear();
+    StepProjectiles(world, dt); // (#1225) thrown stones and spears in flight
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -1770,7 +1935,9 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
 }
 
 void Animals_Draw3D(Scene& world) {
+    DrawProjectiles(world); // (#1225) stones and spears in flight
     if (animals.empty()) return;
+    static std::vector<AvatarState> humanoids; humanoids.clear(); // (#1225) drawn after the loop, through the avatar rig
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -1798,6 +1965,20 @@ void Animals_Draw3D(Scene& world) {
         const float k = 0.6f + 0.4f * a.age;
         const float light = 1.0f; // lit by the instance batch shader (sun, shadows, headlamp)
         auto shade = [&](Color c, float m) { return Color{ (unsigned char)(c.r * light * m), (unsigned char)(c.g * light * m), (unsigned char)(c.b * light * m), 255 }; };
+        if (s.humanoid) { // (#1225) a cave scavenger: the avatar rig in ragged colours, a torch in hand (the thrower: a stone)
+            AvatarState av;
+            av.session = 0x40000000u | (uint32_t)(a.netId & 0x3FFFFFFFu);
+            av.position = body->toWorldD(DVec3(at)); // (absolute world, as player.position)
+            av.up = u; av.facing = f;
+            av.velocity = Vector3Scale(f, a.moveSpeed);
+            av.held = a.thrower ? "stone" : "torch";
+            const bool winding = a.windUpAt >= 0.0 || a.throwWindAt >= 0.0;
+            av.action = winding ? 1 : 0;
+            av.actionPhase = winding ? (float)std::min(1.0, (simClock - std::max(a.windUpAt, a.throwWindAt)) / 0.6) : 0.0f;
+            av.suitColor = s.body;
+            humanoids.push_back(av);
+            continue;
+        }
         Matrix m = { r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 };
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
@@ -1806,6 +1987,7 @@ void Animals_Draw3D(Scene& world) {
         if ((int)i == aimed) DrawCubeWires({ 0, s.size.y * 0.5f, 0 }, s.size.z * 1.15f, s.size.y * 1.1f, s.size.x * 1.15f, YELLOW);
         rlPopMatrix();
     }
+    if (!humanoids.empty()) Avatar_Draw3D(world, humanoids); // (#1225)
 }
 
 void Animals_DrawHUD() {

@@ -10719,7 +10719,7 @@ int main(int argc, char** argv)
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
-        if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
+        if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.

@@ -62,6 +62,12 @@ struct CreatureSpec {
     float dropScale = 1.5f, dropRange = 3.0f;
     bool burst = false;
     float burstOn = 1.2f, burstOff = 0.8f;
+    // (#1225) Groups and roles: spawns in groups of up to `group`; with thrower=1 the first of a group keeps its distance and
+    // throws (a rock or spear on a ballistic arc: throwDamage, from throwMin to throwRange m, a throwWindUp telegraph, then
+    // throwCooldown); thief=1 takes dropped piles within 12 m and runs with them; torch=1 carries a lit torch (a light).
+    int group = 1;
+    bool thrower = false, thief = false, torch = false;
+    float throwDamage = 6.0f, throwMin = 5.0f, throwRange = 14.0f, throwWindUp = 0.6f, throwCooldown = 2.8f;
     // Its attack (the combat steps' timing: telegraphed wind-up, the strike, a cooldown).
     float damage = 8.0f, reach = 1.0f, windUp = 0.5f, cooldown = 1.2f, knockback = 6.0f, poise = 0.0f;
     DamageType type = DamageType::Blunt;
@@ -162,6 +168,10 @@ struct BrainOut {
 };
 
 BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, float dt);
+
+// (#1225) A creature's throw: the launch velocity (body-local) from `from` to land on `to`, at `speed` m/s under gravity `g` along
+// -up (the flatter of the two arcs). False when out of reach at that speed (vel is then the 45-degree lob toward it).
+bool Throw_Aim(Vector3 from, Vector3 to, Vector3 up, float speed, float g, Vector3& vel);
 
 // ---- Spawning (#1223) ----
 // A place a creature could appear: a cave floor (body-local) with what it is (the segment kind: 0 passage, 1 mouth, 3 chamber,

@@ -47,6 +47,13 @@ bool Animals_Clinging(int index);  // (#1224 tests) on a cave ceiling
 Vector3 Animals_ClingFloor(int index); // (#1224 tests) the floor under where it hangs (where it climbed from)
 int Animals_LurkerDrops();         // (#1224 tests) ceiling drops that landed on a player
 double Animals_Clock();            // (#1224 tests) the animals' sim clock (noise events are stamped with it)
+// (#1225) Torches creatures carry (lights for the frame, after Events_AddLights); thrown projectiles and thefts (tests).
+void Animals_AddLights(Scene& world);
+int Animals_ProjectilesThrown();
+int Animals_ProjectileHits();
+int Animals_Thefts();
+bool Animals_Thrower(int index);
+void Animals_TestSetGroup(int index, uint64_t group, bool thrower); // (#1225 tests) make a group by hand
 int Animals_CaveSpawned();
 int Animals_CaveSites();
 void Animals_CaveSpawnNow();

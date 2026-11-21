@@ -139,6 +139,15 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "drop") ok = num(c.dropScale);
         else if (k == "droprange") ok = num(c.dropRange);
         else if (k == "burst") c.burst = v == "1" || v == "yes";
+        else if (k == "group") { float n = 1.0f; ok = num(n); c.group = std::max(1, (int)n); }
+        else if (k == "thrower") c.thrower = v == "1" || v == "yes";
+        else if (k == "thief") c.thief = v == "1" || v == "yes";
+        else if (k == "torch") c.torch = v == "1" || v == "yes";
+        else if (k == "throw") ok = num(c.throwDamage);
+        else if (k == "throwmin") ok = num(c.throwMin);
+        else if (k == "throwrange") ok = num(c.throwRange);
+        else if (k == "throwwindup") ok = num(c.throwWindUp);
+        else if (k == "throwcooldown") ok = num(c.throwCooldown);
         else if (k == "damage") ok = num(c.damage);
         else if (k == "reach") ok = num(c.reach);
         else if (k == "windup") ok = num(c.windUp);
@@ -360,6 +369,26 @@ int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now) {
     ch.nextAt = now + c.respawn;
     return 1;
 }
+
+// ---- Throws (#1225) ----
+bool Throw_Aim(Vector3 from, Vector3 to, Vector3 up, float speed, float g, Vector3& vel) {
+    const Vector3 d = Vector3Subtract(to, from);
+    const float h = Vector3DotProduct(d, up);
+    Vector3 flat = Vector3Subtract(d, Vector3Scale(up, h));
+    const float x = Vector3Length(flat);
+    flat = x > 1e-4f ? Vector3Scale(flat, 1.0f / x) : Vector3{ 0, 0, 0 };
+    const float v2 = speed * speed;
+    const float disc = v2 * v2 - g * (g * x * x + 2.0f * h * v2);
+    if (x < 1e-4f) { vel = Vector3Scale(up, h >= 0.0f ? speed : 0.0f); return true; }
+    if (disc < 0.0f || g <= 0.0f) {
+        const float c = 0.70710678f;
+        vel = Vector3Add(Vector3Scale(flat, speed * c), Vector3Scale(up, speed * c));
+        return false;
+    }
+    const float ang = atanf((v2 - sqrtf(disc)) / (g * x)); // the flatter arc
+    vel = Vector3Add(Vector3Scale(flat, speed * cosf(ang)), Vector3Scale(up, speed * sinf(ang)));
+    return true;
+}
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
 namespace {
@@ -524,5 +553,24 @@ TEST(Creatures, BlindHunterBySound) {
     EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Idle);      // silent: nothing
     in.others[0].heard = true;
     EXPECT_EQ(Brain_Step(s, c, in, 0.1f).mood, Mood::Chase);     // heard: it comes
+}
+
+// #1225: a throw's arc lands where it was aimed (12 m off, 1 m up), and out of reach it says so.
+TEST(Creatures, ThrowAimLands) {
+    const Vector3 up{ 0, 1, 0 }, from{ 0, 1.5f, 0 }, to{ 12.0f, 2.5f, 0 };
+    Vector3 v;
+    ASSERT_TRUE(Throw_Aim(from, to, up, 16.0f, 9.81f, v));
+    Vector3 p = from, vel = v;
+    float best = 1e9f;
+    for (int i = 0; i < 600; ++i) {
+        vel = Vector3Add(vel, Vector3Scale(up, -9.81f / 600.0f * 2.0f));
+        p = Vector3Add(p, Vector3Scale(vel, 2.0f / 600.0f));
+        best = std::min(best, Vector3Distance(p, to));
+    }
+    EXPECT_LT(best, 0.3f);
+    EXPECT_FALSE(Throw_Aim(from, { 200.0f, 0, 0 }, up, 16.0f, 9.81f, v)); // 200 m: out of reach at 16 m/s
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("scav | scavenger | group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8", c, &err)) << err;
+    EXPECT_EQ(c.group, 3); EXPECT_TRUE(c.thrower && c.thief && c.torch); EXPECT_FLOAT_EQ(c.throwRange, 14.0f);
 }
 #endif
