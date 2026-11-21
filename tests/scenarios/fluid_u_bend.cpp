@@ -10,6 +10,8 @@
 #include "fluid.h"
 #include "waterfield.h"
 #include "world.h"
+#include "worldtypes.h"
+#include "voxel.h"
 #include <raymath.h>
 #include <cmath>
 #include <string>
@@ -102,6 +104,22 @@ static void Build(ScenarioDef& s) {
         c.gt("the tunnel is full of water (m^3 in its middle)", tunnel, 0.5);
         c.lt("the two pits stand level (m apart)", std::fabs(nearL - farL), 0.15);
         c.metric("far pit level against the box arithmetic's -1 m", farL - kExpected, "m", false);
+        // The absolute guard (a uniform loss would leave the legs level but low): the level the poured volume reaches in the
+        // space as carved, from the density sampled every 0.125 m over both pits and the tunnel, layer by layer from the floor.
+        const float step = 0.125f, cellV = step * step * step;
+        double filled = 0.0;
+        float common = 1.0f;
+        for (float h = kFloor - 0.5f + 0.5f * step; h < 1.0f && common > 0.5f; h += step) {
+            int open = 0;
+            for (float x = -13.0f + 0.5f * step; x < 13.0f; x += step)
+                for (float y = -2.0f + 0.5f * step; y < 2.0f; y += step)
+                    if (c.body->densityAt(S.pt(x, y, h)) < ISO_LEVEL) ++open;
+            const double layer = open * (double)cellV;
+            if (layer > 0.0 && filled + layer >= S.poured) common = h - 0.5f * step + (float)((S.poured - filled) / layer) * step;
+            filled += layer;
+        }
+        c.note("the poured " + std::to_string(S.poured) + " m^3 stands at " + std::to_string(common) + " m in the carved space (sampled)");
+        c.near("the legs' mean stands where the poured volume fills the carve (m)", 0.5f * (nearL + farL), common, 0.05);
         return true;
     });
 }
