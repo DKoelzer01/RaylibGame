@@ -60,6 +60,9 @@ struct SurvivalState {
     float lastHitStrength = 0.0f;                             // 0..1 (20 damage = 1)
     double lastDealtAt = -1e9;                                // (#1216) sim time of the last melee hit landed (the hit-stop)
     int shocks = 0;                                           // (#1216) shocks taken (a melee wind-up sees each one)
+    PoiseState poise;                                         // (#1217) from armour (combat.cpp sets its size)
+    int staggers = 0;                                         // (#1217) times staggered (a melee wind-up sees each one)
+    bool hyperArmour = false;                                 // (#1217) in a heavy or two-handed wind-up now: hits don't stagger
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;

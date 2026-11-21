@@ -63,6 +63,11 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
         }
         s.player.statusSpeed = Status_SpeedFactor(sv.status);
     } else s.player.statusSpeed = 1.0f;
+    // (#1217) Poise comes back after a rest; a stagger slows the walk.
+    if (Combat3_On()) {
+        Poise_Step(sv.poise, dt);
+        if (Poise_Staggered(sv.poise)) s.player.statusSpeed *= PoiseTune::kPlayerStaggerSlow;
+    }
     PickUpGraves(s);
 }
 
@@ -105,6 +110,15 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
         if (e.type == DamageType::Energy && p.inWater) amount *= StatusTune::kShockWaterFactor; // shock: x2 in water
         amount = Damage_Apply(amount, e.type, sv.resist);
         Status_Apply(sv.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+    }
+    // (#1217) Poise from armour: the hit wears it (a block takes its share off), and broken the player staggers (a short slow,
+    // a melee wind-up broken) unless a heavy or two-handed wind-up holds it (hyper-armour).
+    if (Combat3_On()) {
+        const float pmax = Poise_PlayerMax(sv.resist.armour);
+        if (sv.poise.max != pmax) { const float f = sv.poise.max > 0.0f ? sv.poise.value / sv.poise.max : 1.0f; sv.poise.max = pmax; sv.poise.value = pmax * f; }
+        float pd = e.poise > 0.0f ? e.poise : e.amount * PoiseTune::kAttackPoisePerDamage;
+        if (r.blocked) pd *= 1.0f - kShieldBlockFraction;
+        if (Poise_Hit(sv.poise, pd, e.heavy, false, sv.hyperArmour, PoiseTune::kPlayerStaggerTime).staggered) { ++sv.staggers; r.staggered = true; }
     }
     sv.health -= amount;
     sv.hitDamageTaken += amount;
