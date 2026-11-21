@@ -16,16 +16,17 @@ cd "$here"
 SECONDS=0
 # The host's world: seed 42's erosion bake from the benches when there is one (keyed on its parameters: else it bakes)
 [ -f saves/bench.sav.erosion ] && cp saves/bench.sav.erosion "$tmp/host.sav.erosion"
-( until grep -q "^join: alice leaves" "$tmp/alice.log" 2>/dev/null || [ $SECONDS -gt 600 ]; do sleep 1; done
-  sleep 3; echo stop ) | timeout 700 "$exe" --host "$tmp/host.sav" --seed 42 --bench 900 --port "$port" > "$tmp/host.log" 2>&1 &
+# (the record and the world file are written as she leaves: the host is then stopped)
+timeout 700 "$exe" --host "$tmp/host.sav" --seed 42 --bench 900 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
 mkdir -p saves/mp_cache
 [ -f "$tmp/host.sav.erosion" ] && cp "$tmp/host.sav.erosion" saves/mp_cache/client_alice.sav.erosion
-RAYLIBGAME_PLAYER_UUID="$uuid" RAYLIBGAME_JOIN_LINGER=0 timeout 400 "$exe" --join "127.0.0.1:$port" --name alice --bench 3 --test-join > "$tmp/alice.log" 2>&1
-wait "$hp"
+RAYLIBGAME_JOIN_LINGER=0 timeout 400 "$exe" --join "127.0.0.1:$port" --name alice --bench 3 --test-join > "$tmp/alice.log" 2>&1
+sleep 3; kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 left=$(grep "^join: alice leaves" "$tmp/alice.log" | head -1)
-rec="$tmp/host.sav.players/$uuid.player"
+rec=$(ls "$tmp"/host.sav.players/*.player 2>/dev/null | head -1) # (a bench client's id is made from its name)
+uuid=$(basename "$rec" .player)
 recLine=$(grep "^player_body" "$rec" 2>/dev/null | head -1)
 echo "client: ${left:-none}"
 echo "record: ${recLine:-none}"
@@ -34,7 +35,7 @@ grep -h "host: saved on shutdown\|server: stopped" "$tmp/host.log" | head -2
 aside=""
 if [ -e saves/world.sav ]; then aside="$tmp/aside"; mkdir -p "$aside"; for f in saves/world.sav*; do mv "$f" "$aside/"; done; fi
 for f in "$tmp"/host.sav*; do cp -r "$f" "saves/world.sav${f#$tmp/host.sav}"; done
-RAYLIBGAME_PLAYER_UUID="$uuid" timeout 300 "$exe" --seed 42 --bench 20 --test-load-hold > "$tmp/sp.log" 2>&1
+RAYLIBGAME_PLAYER_UUID="$uuid" timeout 300 "$exe" --seed 42 --bench 60 --test-load-hold > "$tmp/sp.log" 2>&1
 grep -h "^bench: load-hold" "$tmp/sp.log" | head -6
 rm -rf saves/world.sav*
 [ -n "$aside" ] && for f in "$aside"/*; do mv "$f" saves/; done
