@@ -50,6 +50,11 @@ free) need: the packages of `tools/linux/Dockerfile.build` (build-essential, cma
 curl, libssl-dev, libegl1) plus ccache, the NVIDIA container runtime with `NVIDIA_VISIBLE_DEVICES=all` and
 `NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility` (the GPU step fails loudly on the null GL), and the labels
 `raylibgame-linux` and `gpu`. Builds, the erosion bake cache and ccache persist in `<runner work>/RaylibGame/ci-persist`.
+**Slots (#1410):** jobs run at once on several runners, which may share that volume, so each job claims a slot,
+`ci-persist/slotN` with its own `out/` (the build and binary) and `run/` (saves, the bake, test scratch), held by a
+`flock` for the whole job (`tools/ci/selfhosted_env.sh`); ccache is shared. A job's log starts with its runner, the
+volume's device and inode, and its slot. (Before, concurrent jobs shared one `out/` and `run/` and overwrote each
+other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
