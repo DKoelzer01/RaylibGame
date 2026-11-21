@@ -50,8 +50,20 @@ struct SimVoice { bool active = false; DVec3 pos{}; };  // a positional voice an
 // Main thread, once a frame: the world snapshot, the listener (global, its axes) and every voice.
 void SetSimInputs(std::shared_ptr<const AudioScene> scene, const DVec3& listener, const float ahead[3], const float up[3],
                   const SimVoice (&voices)[kMaxVoices]);
-struct SimStats { long long ticks = 0; float lastMs = 0.0f, maxMs = 0.0f; int sources = 0; float occlusion[kMaxVoices] = {}; };
+struct SimStats {
+    long long ticks = 0; float lastMs = 0.0f, maxMs = 0.0f; int sources = 0; float occlusion[kMaxVoices] = {};
+    float enclosure = 0.0f, meanDistance = 0.0f, rt60[3] = { 0, 0, 0 }, wet = 0.0f; // (#1294) the reverb's room
+};
 SimStats GetSimStats();
+
+// ---- Reverb (#1294) ----
+// One listener-centric parametric reverb (Steam Audio's feedback delay network), its decay times and wet level from how
+// enclosed the listener is (AudioScene::enclosure, on the simulation thread). The voices send into it; audio.cpp runs
+// it on a stream of its own. Off with the simulation, or RAYLIBGAME_AUDIO_REVERB=0.
+bool ReverbOn();
+float ReverbWet();                  // 0..1: how much of a sound's send reaches the reverb (main thread, for the sends)
+// Audio thread: the summed sends of one block (mono, kBlock) -> the reverb (left, right).
+void ReverbProcess(const float* mono, float* left, float* right);
 
 } // namespace SteamAudio
 

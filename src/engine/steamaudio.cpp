@@ -26,7 +26,8 @@
     X(iplSceneCreate) X(iplSceneRelease) X(iplSceneCommit) \
     X(iplSimulatorCreate) X(iplSimulatorRelease) X(iplSimulatorSetScene) X(iplSimulatorCommit) \
     X(iplSimulatorSetSharedInputs) X(iplSimulatorRunDirect) \
-    X(iplSourceCreate) X(iplSourceRelease) X(iplSourceAdd) X(iplSourceRemove) X(iplSourceSetInputs) X(iplSourceGetOutputs)
+    X(iplSourceCreate) X(iplSourceRelease) X(iplSourceAdd) X(iplSourceRemove) X(iplSourceSetInputs) X(iplSourceGetOutputs) \
+    X(iplReflectionEffectCreate) X(iplReflectionEffectRelease) X(iplReflectionEffectApply)
 
 namespace SteamAudio {
 namespace {
@@ -72,18 +73,24 @@ namespace {
     // What the ray callbacks trace against during one RunDirect (set by the simulation thread before it).
     struct RayContext { std::shared_ptr<const AudioScene> scene; Vector3 listener{}; } rays;
 
-    // Steam Audio's reference materials (absorption L/M/H, scattering, transmission L/M/H), by AudioMat.
-    IPLMaterial kMaterials[(int)AudioMat::Count] = {
-        { { 0.10f, 0.20f, 0.30f }, 0.05f, { 0.100f, 0.050f, 0.030f } }, // generic
-        { { 0.13f, 0.20f, 0.24f }, 0.05f, { 0.015f, 0.002f, 0.001f } }, // rock
-        { { 0.30f, 0.40f, 0.50f }, 0.10f, { 0.020f, 0.005f, 0.002f } }, // soil (guess: between rock and gravel)
-        { { 0.60f, 0.70f, 0.80f }, 0.05f, { 0.031f, 0.012f, 0.008f } }, // gravel
-        { { 0.45f, 0.75f, 0.90f }, 0.10f, { 0.050f, 0.020f, 0.010f } }, // snow (guess: soft, absorbs the highs)
-        { { 0.11f, 0.07f, 0.06f }, 0.05f, { 0.070f, 0.014f, 0.005f } }, // wood
-        { { 0.20f, 0.07f, 0.06f }, 0.05f, { 0.200f, 0.025f, 0.010f } }, // metal
-        { { 0.06f, 0.03f, 0.02f }, 0.05f, { 0.060f, 0.044f, 0.011f } }, // glass
-        { { 0.03f, 0.04f, 0.07f }, 0.05f, { 0.015f, 0.015f, 0.015f } }, // brick
-    };
+    // The acoustic materials by AudioMat (their values: AudioMatPropsOf, audioscene.cpp).
+    IPLMaterial kMaterials[(int)AudioMat::Count];
+    void InitMaterials() {
+        for (int m = 0; m < (int)AudioMat::Count; ++m) {
+            const AudioMatProps& p = AudioMatPropsOf((AudioMat)m);
+            for (int b = 0; b < 3; ++b) { kMaterials[m].absorption[b] = p.absorption[b]; kMaterials[m].transmission[b] = p.transmission[b]; }
+            kMaterials[m].scattering = p.scattering;
+        }
+    }
+
+    // ---- Reverb (#1294): one listener-centric parametric reverb on a send bus ----
+    // How enclosed the listener is (AudioScene::enclosure, 64 rays about 3 times a second on the simulation thread)
+    // sets its decay times and wet level; the audio thread runs the effect on the voices' summed sends.
+    IPLReflectionEffect reverbFx = nullptr;
+    std::atomic<float> reverbRt[3] = { 0.1f, 0.1f, 0.1f };
+    std::atomic<float> reverbWet{ 0.0f };
+    std::atomic<bool> reverbOn{ false };
+    float reverbIn[kBlock], reverbL[kBlock], reverbR[kBlock];
 
     void IPLCALL ClosestHit(const IPLRay* ray, IPLfloat32 minD, IPLfloat32 maxD, IPLHit* hit, void*) {
         hit->distance = INFINITY;
@@ -107,6 +114,7 @@ namespace {
     void SimLoop() {
         bool added[kMaxVoices] = {};
         int periodMs = 100;
+        long long iteration = 0;
         for (;;) {
             Inputs in;
             {
@@ -131,6 +139,19 @@ namespace {
                 commit = true;
             }
             if (commit) fn.iplSimulatorCommit(simulator);
+            // (#1294) The room around the listener, every third run (~3 times a second), whether or not anything plays.
+            if (reverbFx && iteration++ % 3 == 0) {
+                const AudioEnclosure enc = in.scene->enclosure(rays.listener, 64);
+                float rt[3], wet = 0.0f;
+                AudioReverbFromEnclosure(enc, rt, wet);
+                for (int b = 0; b < 3; ++b) reverbRt[b].store(rt[b], std::memory_order_relaxed);
+                reverbWet.store(wet, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(statsMutex);
+                stats.enclosure = enc.hitFraction;
+                stats.meanDistance = enc.meanDistance;
+                for (int b = 0; b < 3; ++b) stats.rt60[b] = rt[b];
+                stats.wet = wet;
+            }
             if (n == 0) { rays.scene.reset(); continue; }
             IPLSimulationSharedInputs sh{};
             const IPLVector3 ahead = { in.ahead[0], in.ahead[1], in.ahead[2] }, up = { in.up[0], in.up[1], in.up[2] };
@@ -343,6 +364,7 @@ bool StartSimulation() {
     if (!active) return false;
     if (simulator) return true;
     if (const char* e = getenv("RAYLIBGAME_AUDIO_OCCLUSION"); e && e[0] == '0') return false;
+    InitMaterials();
     IPLSceneSettings ss{};
     ss.type = IPL_SCENETYPE_CUSTOM;
     ss.closestHitCallback = ClosestHit;
@@ -384,12 +406,48 @@ bool StartSimulation() {
         occTarget[v].store(1.0f);
         for (int b = 0; b < 3; ++b) transTarget[v][b].store(1.0f);
     }
+    // (#1294) The reverb: parametric (a feedback delay network driven by three decay times), cheap at any size.
+    if (const char* e = getenv("RAYLIBGAME_AUDIO_REVERB"); !(e && e[0] == '0')) {
+        IPLAudioSettings as = AudioSettings();
+        IPLReflectionEffectSettings rs{};
+        rs.type = IPL_REFLECTIONEFFECTTYPE_PARAMETRIC;
+        rs.irSize = kSampleRate; // (unused by the parametric type)
+        rs.numChannels = 1;
+        if (fn.iplReflectionEffectCreate(context, &as, &rs, &reverbFx) == IPL_STATUS_SUCCESS) reverbOn.store(true);
+        else { reverbFx = nullptr; LOG_WARN("Audio", "steam audio: reverb effect failed: dry\n"); }
+    }
     stopSim = false;
     simThread = std::thread(SimLoop);
     simOn.store(true);
-    status += ", occlusion";
-    LOG_INFO("Audio", "steam audio: occlusion and transmission on (custom scene: the density field and part cells)\n");
+    status += reverbFx ? ", occlusion, reverb" : ", occlusion";
+    LOG_INFO("Audio", "steam audio: occlusion and transmission on (custom scene: the density field and part cells)%s\n", reverbFx ? ", reverb" : "");
     return true;
+}
+
+bool ReverbOn() { return reverbOn.load(std::memory_order_relaxed); }
+float ReverbWet() { return reverbOn.load(std::memory_order_relaxed) ? reverbWet.load(std::memory_order_relaxed) : 0.0f; }
+
+void ReverbProcess(const float* mono, float* left, float* right) {
+    if (!reverbFx || !reverbOn.load(std::memory_order_relaxed)) {
+        memset(left, 0, sizeof(float) * kBlock);
+        memset(right, 0, sizeof(float) * kBlock);
+        return;
+    }
+    memcpy(reverbIn, mono, sizeof reverbIn);
+    float* inCh[1] = { reverbIn };
+    float* outCh[2] = { reverbL, reverbR };
+    IPLAudioBuffer in{ 1, kBlock, inCh }, out{ 2, kBlock, outCh };
+    IPLReflectionEffectParams rp{};
+    rp.type = IPL_REFLECTIONEFFECTTYPE_PARAMETRIC;
+    for (int b = 0; b < 3; ++b) { rp.reverbTimes[b] = reverbRt[b].load(std::memory_order_relaxed); rp.eq[b] = 1.0f; }
+    rp.numChannels = 1;
+    rp.irSize = kSampleRate;
+    fn.iplReflectionEffectApply(reverbFx, &rp, &in, &out, nullptr);
+    // (If the parametric reverb fills only its first channel, both ears get it.)
+    float eR = 0.0f;
+    for (int i = 0; i < kBlock; ++i) eR += reverbR[i] * reverbR[i];
+    memcpy(left, reverbL, sizeof reverbL);
+    memcpy(right, eR > 0.0f ? reverbR : reverbL, sizeof reverbR);
 }
 
 void StopSimulation() {
@@ -399,6 +457,9 @@ void StopSimulation() {
     inCv.notify_all();
     if (simThread.joinable()) simThread.join();
     for (IPLSource& s : sources) if (s) fn.iplSourceRelease(&s);
+    reverbOn.store(false); // (the reverb stream is gone by now: audio.cpp unloads its streams first)
+    if (reverbFx) fn.iplReflectionEffectRelease(&reverbFx);
+    reverbFx = nullptr;
     fn.iplSimulatorRelease(&simulator);
     fn.iplSceneRelease(&simScene);
     simulator = nullptr;
