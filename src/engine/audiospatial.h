@@ -26,6 +26,7 @@ struct AudioListener {
     DVec3 pos{};                   // global
     Vector3 forward{ 0, 0, -1 }, up{ 0, 1, 0 };
     float muffleHz = 0.0f;         // > 0: every sound low-passed to this (vacuum through the suit, underwater; step 5)
+    bool hrtf = false;             // Steam Audio places the sounds (#1292): no pan, no behind model, only dir and blend
 };
 
 struct AudioSpatial {
@@ -33,6 +34,8 @@ struct AudioSpatial {
     float pan = 0.5f;              // raylib's convention: 1 = left, 0 = right, 0.5 = centre (raudio's MixAudioFrames)
     float cutoffHz = kAudioNoFilterHz;
     float distance = 0.0f;
+    Vector3 dir{ 0, 0, -1 };       // hrtf: Steam Audio's listener space (AudioSteamDirection)
+    float blend = 0.0f;            // hrtf: spatial blend (0 for a centred, non-positional sound)
 };
 
 float AudioDistanceGain(float d, const AudioAttenuation& a);
@@ -40,6 +43,40 @@ AudioSpatial Audio_Spatialize(const AudioListener& l, const DVec3& src, const Au
 AudioSpatial Audio_Spatialize2D(const AudioListener& l); // non-positional: centred, only the listener's muffle
 // One-pole low-pass coefficient (y += a (x - y)) for a cutoff at a sample rate; 1 = no filtering.
 float AudioOnePoleAlpha(float cutoffHz, float sampleRate);
+
+// ---- Steam Audio (#1292) helpers that need no DLL ----
+// The direction to a source in Steam Audio's listener space (x right, y up, -z ahead), unit length; straight ahead when
+// the source is at the listener. Computed from the double difference (iplCalculateRelativeDirection takes floats).
+Vector3 AudioSteamDirection(const AudioListener& l, const DVec3& src);
+// Air absorption per band (low, mid, high) over d metres: Steam Audio's default exponential model, its coefficients
+// times `scale` (> 1: game-scale dulling, so 40 m sounds farther than real air would make it).
+void AudioAirAbsorption(float d, float scale, float out[3]);
+
+// Stereo frames rendered in fixed blocks (Steam Audio's frame size) and handed out in whatever counts raylib's stream
+// callback asks for.
+class AudioBlockFifo {
+public:
+    static constexpr int kBlock = 256;
+    int available() const { return count - pos; }
+    // Takes a rendered block (left and right, kBlock frames each); only when empty.
+    void fill(const float* left, const float* right) {
+        for (int i = 0; i < kBlock; ++i) { buf[2 * i] = left[i]; buf[2 * i + 1] = right[i]; }
+        pos = 0;
+        count = kBlock;
+    }
+    // Copies up to `frames` interleaved stereo frames to out; returns how many.
+    int pop(float* out, int frames) {
+        const int n = frames < available() ? frames : available();
+        for (int i = 0; i < 2 * n; ++i) out[i] = buf[2 * pos + i];
+        pos += n;
+        return n;
+    }
+    void clear() { pos = count = 0; }
+
+private:
+    float buf[2 * kBlock] = {};
+    int pos = 0, count = 0;
+};
 
 // Looping (or long) sounds in the world: machine hums, wind, rain, water. Emitters are virtual: one holds a voice only
 // while it is audible and a voice is free (or a lower priority one can be taken); out of range it fades out and gives

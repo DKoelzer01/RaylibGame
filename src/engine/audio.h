@@ -50,6 +50,8 @@ void Audio_EmitterSetPlaying(int e, bool playing);
 void Audio_EmitterSetVolume(int e, float volume);
 void Audio_EmitterSetPitch(int e, float pitch);
 void Audio_EmitterStats(int& count, int& voiced);
+// (#1292) How sounds are placed: "steam audio 4.8.1, HRTF", or our own panning and why (not found, off, ...).
+const char* Audio_SpatialBackend();
 
 // Master volume 0..1 (applies to every sound). Default 0.35: the procedural effects are loud at full.
 void Audio_SetMasterVolume(float v);

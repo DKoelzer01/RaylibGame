@@ -25,6 +25,11 @@ AudioSpatial Audio_Spatialize(const AudioListener& l, const DVec3& src, const Au
     const float d = sqrtf(rx * rx + ry * ry + rz * rz);
     s.distance = d;
     s.gain = AudioDistanceGain(d, a);
+    if (l.hrtf) { // Steam Audio places it (#1292): only the direction and how much of it is spatialised
+        s.dir = AudioSteamDirection(l, src);
+        s.blend = std::clamp(d / std::max(0.01f, a.refDistance), 0.0f, 1.0f); // close sounds surround
+        return s;
+    }
     if (d < 1e-3f) return s;
     const Vector3 dir = { rx / d, ry / d, rz / d };
     auto norm = [](Vector3 v) { const float n = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); return n > 1e-6f ? Vector3{ v.x / n, v.y / n, v.z / n } : Vector3{ 0, 0, 0 }; };
@@ -47,6 +52,24 @@ AudioSpatial Audio_Spatialize(const AudioListener& l, const DVec3& src, const Au
 float AudioOnePoleAlpha(float cutoffHz, float sampleRate) {
     if (cutoffHz >= kAudioNoFilterHz || sampleRate <= 0.0f) return 1.0f;
     return 1.0f - expf(-6.2831853f * std::max(10.0f, cutoffHz) / sampleRate);
+}
+
+Vector3 AudioSteamDirection(const AudioListener& l, const DVec3& src) {
+    const DVec3 relD = src - l.pos;
+    const float rx = (float)relD.x, ry = (float)relD.y, rz = (float)relD.z;
+    const float d = sqrtf(rx * rx + ry * ry + rz * rz);
+    if (d < 1e-4f) return { 0, 0, -1 };
+    auto norm = [](Vector3 v) { const float n = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); return n > 1e-6f ? Vector3{ v.x / n, v.y / n, v.z / n } : Vector3{ 0, 0, 0 }; };
+    const Vector3 f = norm(l.forward);
+    const Vector3 r = norm({ f.y * l.up.z - f.z * l.up.y, f.z * l.up.x - f.x * l.up.z, f.x * l.up.y - f.y * l.up.x });
+    const Vector3 u = { r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x }; // right x forward: the true up
+    const Vector3 dir = { rx / d, ry / d, rz / d };
+    return { dir.x * r.x + dir.y * r.y + dir.z * r.z, dir.x * u.x + dir.y * u.y + dir.z * u.z, -(dir.x * f.x + dir.y * f.y + dir.z * f.z) };
+}
+
+void AudioAirAbsorption(float d, float scale, float out[3]) {
+    static const float kCoef[3] = { 0.0002f, 0.0017f, 0.0182f }; // Steam Audio's default model (1/m)
+    for (int b = 0; b < 3; ++b) out[b] = expf(-kCoef[b] * scale * std::max(0.0f, d));
 }
 
 // ---- Emitters ----
@@ -278,5 +301,66 @@ TEST(AudioEmitters, LouderTakesQuieterSamePriorityVoiceAndStolenVoicesAreNoticed
     int holders = 0;
     for (int i = 0; i < AudioEmitters::kMax; ++i) if (const auto* e = em.get(i); e && e->voice == alarmV) ++holders;
     EXPECT_EQ(holders, 0);
+}
+
+TEST(AudioSteam, DirectionInListenerSpace) {
+    // Listener looking down -z, y up (Steam Audio's own convention, so directions come out unchanged) and at planet scale.
+    for (const DVec3 o : { DVec3{ 0, 0, 0 }, DVec3{ 6.4e6, 1.0e5, -2.0e7 } }) {
+        const AudioListener l = ListenerAt(o);
+        const Vector3 r = AudioSteamDirection(l, o + DVec3{ 5, 0, 0 });
+        EXPECT_NEAR(r.x, 1.0f, 1e-4f); EXPECT_NEAR(r.y, 0.0f, 1e-4f); EXPECT_NEAR(r.z, 0.0f, 1e-4f);
+        const Vector3 a = AudioSteamDirection(l, o + DVec3{ 0, 0, -5 });
+        EXPECT_NEAR(a.z, -1.0f, 1e-4f);
+        const Vector3 up = AudioSteamDirection(l, o + DVec3{ 0, 5, 0 });
+        EXPECT_NEAR(up.y, 1.0f, 1e-4f);
+    }
+    // A listener turned to look along +x with +z up: a source along +x is ahead, along -y is to its right.
+    AudioListener t = ListenerAt({ 0, 0, 0 });
+    t.forward = { 1, 0, 0 };
+    t.up = { 0, 0, 1 };
+    EXPECT_NEAR(AudioSteamDirection(t, { 3, 0, 0 }).z, -1.0f, 1e-4f);
+    EXPECT_NEAR(AudioSteamDirection(t, { 0, -3, 0 }).x, 1.0f, 1e-4f);
+    EXPECT_NEAR(AudioSteamDirection(t, { 0, 0, 3 }).y, 1.0f, 1e-4f);
+    const Vector3 same = AudioSteamDirection(t, { 0, 0, 0 });
+    EXPECT_FLOAT_EQ(same.z, -1.0f);
+}
+
+TEST(AudioSteam, HrtfListenerLeavesPanningToSteamAudio) {
+    AudioListener l = ListenerAt({ 0, 0, 0 });
+    l.hrtf = true;
+    const AudioSpatial behind = Audio_Spatialize(l, { 0, 0, 10 }, {});
+    EXPECT_FLOAT_EQ(behind.pan, 0.5f);
+    EXPECT_FLOAT_EQ(behind.gain, AudioDistanceGain(10.0f, {}));   // no behind model
+    EXPECT_FLOAT_EQ(behind.cutoffHz, kAudioNoFilterHz);
+    EXPECT_NEAR(behind.dir.z, 1.0f, 1e-4f);
+    EXPECT_FLOAT_EQ(behind.blend, 1.0f);
+    EXPECT_FLOAT_EQ(Audio_Spatialize(l, { 0, 0, -1 }, {}).blend, 0.5f); // inside the reference distance: partly dry
+    EXPECT_FLOAT_EQ(Audio_Spatialize2D(l).blend, 0.0f);
+}
+
+TEST(AudioSteam, AirAbsorptionFallsFasterForHighBands) {
+    float a[3];
+    AudioAirAbsorption(0.0f, 8.0f, a);
+    for (float v : a) EXPECT_FLOAT_EQ(v, 1.0f);
+    AudioAirAbsorption(40.0f, 8.0f, a);
+    EXPECT_GT(a[0], a[1]);
+    EXPECT_GT(a[1], a[2]);
+    EXPECT_NEAR(a[2], expf(-0.0182f * 8.0f * 40.0f), 1e-6f);
+}
+
+TEST(AudioSteam, BlockFifoHandsOutAnyCounts) {
+    AudioBlockFifo f;
+    float l[AudioBlockFifo::kBlock], r[AudioBlockFifo::kBlock];
+    for (int i = 0; i < AudioBlockFifo::kBlock; ++i) { l[i] = (float)i; r[i] = -(float)i; }
+    EXPECT_EQ(f.available(), 0);
+    f.fill(l, r);
+    float out[2 * 300];
+    EXPECT_EQ(f.pop(out, 100), 100);
+    EXPECT_FLOAT_EQ(out[0], 0.0f); EXPECT_FLOAT_EQ(out[1], -0.0f);
+    EXPECT_FLOAT_EQ(out[2 * 99], 99.0f); EXPECT_FLOAT_EQ(out[2 * 99 + 1], -99.0f);
+    EXPECT_EQ(f.pop(out, 300), AudioBlockFifo::kBlock - 100);
+    EXPECT_FLOAT_EQ(out[0], 100.0f);
+    EXPECT_EQ(f.available(), 0);
+    EXPECT_EQ(f.pop(out, 10), 0);
 }
 #endif

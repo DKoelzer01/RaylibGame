@@ -3,6 +3,7 @@
 #include "headless.h"
 #include "utils/logger.h"
 #include "profiler.h"
+#include "steamaudio.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -46,12 +47,21 @@ namespace {
         uint32_t len = 0;
         bool loop = false;
         uint32_t cursor = 0;            // audio thread
-        float lp = 0.0f;                // audio thread
+        float lp = 0.0f, lpR = 0.0f;    // audio thread
         std::atomic<float> alpha{ 1.0f };
         std::atomic<bool> done{ false };
+        // Steam Audio (#1292): stereo streams; effects on 256-frame blocks, handed out through the FIFO.
+        SteamAudio::VoiceFx* fx = nullptr;
+        AudioBlockFifo fifo;
+        float block[AudioBlockFifo::kBlock], left[AudioBlockFifo::kBlock], right[AudioBlockFifo::kBlock];
+        std::atomic<float> dir[3] = { 0.0f, 0.0f, -1.0f };
+        std::atomic<float> blend{ 0.0f };
+        std::atomic<float> air[3] = { 1.0f, 1.0f, 1.0f };
     };
     VoiceDsp dsp[AudioMixer::kVoices];
     AudioStream voiceStream[AudioMixer::kVoices] = {};
+    bool steam = false;                 // Steam Audio loaded: every voice is stereo and goes through its effects
+    constexpr float kAirScale = 8.0f;   // air absorption x8: game-scale dulling with distance (guess, tune by ear)
 
     enum class VKind : uint8_t { None, Pcm, Stream };
     struct VoiceState {
@@ -83,8 +93,44 @@ namespace {
             out[i] = d.lp;
         }
     }
+    // Steam Audio: one block of the sound, through the voice's effects (HRTF and air absorption; bypassed for a
+    // non-positional sound), then the listener's muffle, into the FIFO.
+    void RenderBlock(VoiceDsp& d) {
+        constexpr int n = AudioBlockFifo::kBlock;
+        for (int i = 0; i < n; ++i) {
+            float x = 0.0f;
+            if (d.cursor >= d.len && d.loop && d.len) d.cursor = 0;
+            if (d.cursor < d.len) x = d.data[d.cursor++];
+            else d.done.store(true, std::memory_order_relaxed);
+            d.block[i] = x;
+        }
+        const float blend = d.blend.load(std::memory_order_relaxed);
+        if (d.fx && blend > 0.0f) {
+            SteamAudio::Params p;
+            for (int k = 0; k < 3; ++k) { p.dir[k] = d.dir[k].load(std::memory_order_relaxed); p.air[k] = d.air[k].load(std::memory_order_relaxed); }
+            p.spatialBlend = blend;
+            SteamAudio::Process(d.fx, d.block, d.left, d.right, p);
+        } else {
+            memcpy(d.left, d.block, sizeof d.left);
+            memcpy(d.right, d.block, sizeof d.right);
+        }
+        const float a = d.alpha.load(std::memory_order_relaxed);
+        if (a < 1.0f)
+            for (int i = 0; i < n; ++i) { d.lp += a * (d.left[i] - d.lp); d.left[i] = d.lp; d.lpR += a * (d.right[i] - d.lpR); d.right[i] = d.lpR; }
+        d.fifo.fill(d.left, d.right);
+    }
+    void FillVoiceStereo(VoiceDsp& d, float* out, unsigned int frames) {
+        unsigned int done = 0;
+        while (done < frames) {
+            if (d.fifo.available() == 0) RenderBlock(d);
+            done += (unsigned int)d.fifo.pop(out + 2 * done, (int)(frames - done));
+        }
+    }
     // raylib's stream callbacks carry no user pointer: one function per voice.
-    template <int V> void VoiceCallback(void* out, unsigned int frames) { FillVoice(dsp[V], (float*)out, frames); }
+    template <int V> void VoiceCallback(void* out, unsigned int frames) {
+        if (steam) FillVoiceStereo(dsp[V], (float*)out, frames);
+        else FillVoice(dsp[V], (float*)out, frames);
+    }
     template <int... I> constexpr std::array<AudioCallback, sizeof...(I)> MakeCallbacks(std::integer_sequence<int, I...>) { return { &VoiceCallback<I>... }; }
     constexpr auto kCallbacks = MakeCallbacks(std::make_integer_sequence<int, AudioMixer::kVoices>{});
 
@@ -255,9 +301,12 @@ namespace {
         q.len = (uint32_t)d.pcm.size();
         q.loop = loop;
         q.cursor = 0;
-        q.lp = 0.0f;
+        q.lp = q.lpR = 0.0f;
         q.done.store(false);
         q.alpha.store(1.0f);
+        q.blend.store(0.0f);
+        q.fifo.clear();
+        SteamAudio::ResetVoice(q.fx); // no HRTF tail from the last sound
         SetAudioStreamVolume(voiceStream[v], 0.0f); // set properly right after (ApplyVoice)
         SetAudioStreamPitch(voiceStream[v], pitch);
         PlayAudioStream(voiceStream[v]);
@@ -272,6 +321,17 @@ namespace {
             if (fabsf(sp.pan - s.pan) > 1e-3f) SetAudioStreamPan(voiceStream[v], sp.pan);
             if (fabsf(pitch - s.pitch) > 1e-4f) SetAudioStreamPitch(voiceStream[v], pitch);
             if (fabsf(alpha - s.alpha) > 1e-4f) dsp[v].alpha.store(alpha, std::memory_order_relaxed);
+            if (steam) { // (#1292) the direction, how much is spatialised, air absorption by distance
+                VoiceDsp& q = dsp[v];
+                const bool placed = s.positional || (s.emitter >= 0 && emitters.get(s.emitter) && emitters.get(s.emitter)->positional);
+                q.dir[0].store(sp.dir.x, std::memory_order_relaxed);
+                q.dir[1].store(sp.dir.y, std::memory_order_relaxed);
+                q.dir[2].store(sp.dir.z, std::memory_order_relaxed);
+                q.blend.store(placed ? sp.blend : 0.0f, std::memory_order_relaxed);
+                float air[3];
+                AudioAirAbsorption(placed ? sp.distance : 0.0f, kAirScale, air);
+                for (int k = 0; k < 3; ++k) q.air[k].store(air[k], std::memory_order_relaxed);
+            }
         } else if (s.kind == VKind::Stream) {
             Music& m = table[s.sound].music;
             if (fabsf(gain - s.gain) > 1e-4f) SetMusicVolume(m, gain);
@@ -346,12 +406,23 @@ void Audio_Init() {
             d.seconds = (float)d.pcm.size() / kRate;
             table.push_back(std::move(d));
         }
+        // (#1292) Steam Audio when its library is there: every voice stereo, through HRTF; else our own panning.
+        steam = SteamAudio::Load();
+        for (int v = 0; v < AudioMixer::kVoices && steam; ++v)
+            if (!(dsp[v].fx = SteamAudio::CreateVoice())) {
+                LOG_WARN("Audio", "steam audio: a voice's effects could not be made: using the fallback panning\n");
+                for (int k = 0; k < v; ++k) { SteamAudio::DestroyVoice(dsp[k].fx); dsp[k].fx = nullptr; }
+                SteamAudio::Shutdown();
+                steam = false;
+            }
+        listener.hrtf = steam;
         for (int v = 0; v < AudioMixer::kVoices; ++v) {
-            voiceStream[v] = LoadAudioStream(kRate, 32, 1);
+            voiceStream[v] = LoadAudioStream(kRate, 32, steam ? 2 : 1);
             SetAudioStreamCallback(voiceStream[v], kCallbacks[v]);
         }
         SetMasterVolume(1.0f); // the master volume is a bus gain in v2 (the mixer applies it per voice)
-        LOG_INFO("Audio", "audio v2: %d voices, buses, positional sound, emitters and the asset slot (RAYLIBGAME_AUDIO_V2)\n", AudioMixer::kVoices);
+        LOG_INFO("Audio", "audio v2: %d voices, buses, positional sound, emitters and the asset slot (RAYLIBGAME_AUDIO_V2); steam audio: %s\n",
+                 AudioMixer::kVoices, SteamAudio::Status());
     } else {
         for (int i = 0; i < (int)Sfx::Count; ++i) sounds[i] = SoundFromPcm(pcm[i]);
         SetMasterVolume(masterVolume);
@@ -366,6 +437,9 @@ void Audio_Shutdown() {
         for (int v = 0; v < AudioMixer::kVoices; ++v) { StopVoiceRaw(v); UnloadAudioStream(voiceStream[v]); }
         for (SoundDef& d : table) if (d.stream) UnloadMusicStream(d.music);
         table.clear();
+        for (VoiceDsp& q : dsp) { SteamAudio::DestroyVoice(q.fx); q.fx = nullptr; } // the streams are gone: no callback runs
+        SteamAudio::Shutdown();
+        steam = false;
     } else {
         for (Sound& s : sounds) UnloadSound(s);
     }
@@ -545,3 +619,10 @@ void Audio_DuckFor(double seconds) {
 
 AudioMixer::Stats Audio_Stats() { return mixer.stats(); }
 const AudioMixer& Audio_Mixer() { return mixer; }
+
+const char* Audio_SpatialBackend() {
+    static std::string s;
+    if (!V2Ready()) return "off (the old engine)";
+    s = (steam ? std::string("steam audio ") : std::string("own panning; steam audio ")) + SteamAudio::Status();
+    return s.c_str();
+}
