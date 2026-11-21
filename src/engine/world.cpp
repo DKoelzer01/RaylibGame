@@ -546,7 +546,7 @@ static void SyncGrassBlockers(Planetoid& p) {
 
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
-    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
+    if (plots && field && profile && profile->foliage) SyncGrassBlockers(*this); // (#830) grass only grows on worlds with foliage (#1274)
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -566,8 +566,8 @@ void Planetoid::draw(const RenderContext& ctx) {
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
-    // Planets use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's.
-    const int palette = kind == BodyKind::Planet ? 2 : ctx.scenePalette;
+    // Earthlike worlds use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's (world file `palette`, #1274).
+    const int palette = profile && profile->planetPalette ? 2 : ctx.scenePalette;
     batch.setUniform(ctx.paletteLoc, &palette, SHADER_UNIFORM_INT);
     // Planets and moons shadow their own night side at any distance (the shadow map is local): a
     // sphere 60 m below sea level blocks the sun. Other bodies clear it (the uniform persists).
@@ -1967,6 +1967,7 @@ void worldHandler(Scene& world) {
 }
 
 bool ReloadSystemDef() {
+    WorldProfile_ClearCache(); // the world files are read again with the bodies file (#1274)
     SystemDef sys;
     const bool ok = LoadSystemDef(worldGen.bodiesPath, sys);
     if (!ok) {
@@ -2024,14 +2025,16 @@ void generateWorld(Scene& world) {
     auto add = [&](const BodyDef& d, BodyKind kind, const std::string& name, DVec3 pos, float radius, unsigned int seed, float spin) {
         auto p = std::make_unique<Planetoid>(name, pos, Vector3{ 0, 0, 0 }, 1.0f, seed, radius);
         p->kind = kind;
-        if (kind == BodyKind::Planet || kind == BodyKind::Moon) {
+        p->profile = WorldProfile_For(name, kind); // (#1274) planets and moons: resources/data/worlds/<name>.txt over the kind's default
+        if (p->profile) {
+            const WorldProfile& wp = *p->profile;
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
-            auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            auto field = std::make_shared<PlanetField>(seed, radius, wp.airless);
             const bool sandbox = gSandboxWorld && kind == BodyKind::Planet; // #662: a flat test plane (no bake, no trees)
-            if (kind == BodyKind::Planet) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
+            if (wp.newWorld) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
             if (sandbox) field->setSandbox();
-            if (gErosionPrototype && kind == BodyKind::Planet && field->gen.erosion) {
+            if (gErosionPrototype && wp.erosion && !wp.airless && field->gen.erosion) {
                 // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
                 // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
                 // is only shared (p->field below) once the bake is done.
@@ -2049,7 +2052,7 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
-            if (kind == BodyKind::Planet && !sandbox) {
+            if (wp.foliage && !sandbox) {
                 field->foliage = true;
                 field->foliageSeed = seed ^ 0x7aee5u;
                 p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);

@@ -107,3 +107,19 @@ hv_lab          | research_t4 1      | steam_pack 1, lv_pack 1   | 300 | 96
 hv_lab          | research_t5 1      | steam_pack 1, lv_pack 1, mv_pack 1 | 400 | 96
 hv_lab          | research_t6 1      | steam_pack 1, lv_pack 1, mv_pack 1, hv_pack 1 | 500 | 96
 hv_lab          | research_t7 1      | steam_pack 1, lv_pack 1, mv_pack 1, hv_pack 1, rocket_pack 1 | 600 | 96
+# (#1269) Rotation machines: ticks at their rated 32 RPM; faster or slower with the shaft, nothing under 16 RPM.
+millstone        | flour 1            | grain 2                   | 100 | 0
+millstone        | gravel 1           | stone 1                   | 100 | 0
+millstone        | sand 1             | gravel 1                  | 100 | 0
+millstone        | iron_crushed 1     | iron_ore 1                | 200 | 0
+millstone        | copper_crushed 1   | copper_ore 1              | 200 | 0
+millstone        | tin_crushed 1      | tin_ore 1                 | 200 | 0
+mechanical_saw   | oak_planks 6       | oak_log 1                 | 100 | 0
+mechanical_saw   | birch_planks 6     | birch_log 1               | 100 | 0
+mechanical_saw   | pine_planks 6      | pine_log 1                | 100 | 0
+mechanical_saw   | maple_planks 6     | maple_log 1               | 100 | 0
+mechanical_saw   | spruce_planks 6    | spruce_log 1              | 100 | 0
+mechanical_press | iron_plate 1       | iron_ingot 1              | 100 | 0
+mechanical_press | bronze_plate 1     | bronze_ingot 1            | 100 | 0
+mechanical_press | copper_plate 1     | copper_ingot 1            | 100 | 0
+mechanical_press | tin_plate 1        | tin_ingot 1               | 100 | 0

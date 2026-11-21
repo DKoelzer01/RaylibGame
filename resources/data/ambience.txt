@@ -1,0 +1,22 @@
+# Ambience beds (#1241, audio plan #1003 step 5): per biome, the bed by day, the bed by night, and its volume.
+# The beds crossfade with the sun's height, and with the biomes around the listener.
+# Sounds are found by name: resources/audio/<name>.ogg (or .wav/.flac/.mp3) when there is one (CC0 recordings: bed_* files
+# are streamed), else the procedural bed of that name (src/engine/audiosynth.cpp).
+# biome      day                night               volume
+ocean        bed_shore          bed_shore           0.7
+jungle       bed_jungle_day     bed_jungle_night    0.8
+savanna      bed_savanna_day    bed_savanna_night   0.6
+desert       bed_desert         bed_desert_night    0.5
+badlands     bed_desert         bed_desert_night    0.5
+forest       bed_forest_day     bed_forest_night    0.7
+meadow       bed_meadow_day     bed_forest_night    0.6
+swamp        bed_swamp_day      bed_swamp_night     0.7
+taiga        bed_taiga          bed_taiga_night     0.5
+tundra       bed_cold           bed_cold            0.45
+alpine       bed_cold           bed_cold            0.45
+polar        bed_cold           bed_cold            0.45
+# Layers over the beds: rain on open ground, rain on leaves (forest, jungle, taiga, swamp), wind (stronger with the
+# weather's wind and with height). Their volume is the weather's.
+@rain        bed_rain
+@leaves      bed_rain_leaves
+@wind        wind

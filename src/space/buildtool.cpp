@@ -577,6 +577,7 @@ namespace {
     struct FarmAim { uint64_t body = 0; Vector3 local{}; bool on = false; } farmAim; // (#1085) farmland ground or a crop, aimed
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
+    double crankAt = -10.0; // (#1269) the last frame a hand crank was turned (GetTime)
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
@@ -592,7 +593,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -619,6 +620,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
+    if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it
+        if (!buildTool.active && in.down(Act::Secondary)) { Factory::Crank(machineAim.body, machineAim.plot, machineAim.part); crankAt = GetTime(); }
+        return;
+    }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) return; // shafts, cogs, gearboxes, gauges: looked at only
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
@@ -722,6 +728,22 @@ void Machine_DrawHUD() {
         }
         return;
     }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) { // (#1269) a shaft line: its speed and its network's load
+        const RotationView rv = Factory::RotationAt(machineAim.body, machineAim.plot, machineAim.part);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        const bool crank = machineAim.type == PartType::HandCrank;
+        DrawRectangle(x - 8, y - 6, 420, crank ? 100 : 76, Fade(BLACK, 0.55f));
+        DrawText(PartName(machineAim.type), x, y, 20, SKYBLUE);
+        if (!rv.valid) { DrawText("...", x, y + 24, 16, RAYWHITE); return; }
+        const Color amber = { 255, 190, 70, 255 };
+        if (rv.jam[0]) DrawText(TextFormat("jammed: %s", rv.jam), x, y + 24, 16, Color{ 255, 110, 90, 255 });
+        else DrawText(TextFormat("%.1f RPM  (%s)", fabsf(rv.rpm), rv.status), x, y + 24, 16, RAYWHITE);
+        if (rv.demand > 0 || rv.capacity > 0)
+            DrawText(TextFormat("stress %d%% - running at %d%%  (%d / %d SU)", rv.stressPercent, rv.speedPercent, rv.demand, rv.capacity), x, y + 44, 16, rv.stressPercent > 100 ? amber : RAYWHITE);
+        else DrawText("no load", x, y + 44, 16, RAYWHITE);
+        if (crank) DrawText(GetTime() - crankAt < 0.2 ? "turning" : "hold RMB to turn it", x, y + 68, 16, GetTime() - crankAt < 0.2 ? Color{ 120, 200, 255, 255 } : RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::Cable) { // its power network (#570): what feeds it and what flowed in the last tick
         const CableView cv = Factory::Cable(machineAim.body, machineAim.plot, machineAim.cell);
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
@@ -752,6 +774,11 @@ void Machine_DrawHUD() {
         DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
     }
     int ty = y + 40;
+    if (v.rotation) { // (#1269) the shaft it runs on
+        DrawRectangle(x - 8, y + 66 + 20 * lines, w, 22, Fade(BLACK, 0.55f));
+        DrawText(TextFormat("%.1f RPM (%s), stress %d%% - running at %d%%", v.rpm, v.rotStatus, v.stressPercent, v.speedPercent), x, y + 68 + 20 * lines, 16,
+                 v.stressPercent > 100 ? Color{ 255, 190, 70, 255 } : RAYWHITE);
+    }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);

@@ -32,6 +32,10 @@ mv_lab          | 128 | eu       | 0  |
 hv_lab          | 512 | eu       | 0  |
 fusion_reactor  | 2048 | generator | 2048 | helium3
 mass_driver     | 2048 | eu       | 0  |
+# (#1269) power "rotation": driven by a shaft network, working at its speed (rotationplot.*)
+millstone        | 0 | rotation | 0 |
+mechanical_saw   | 0 | rotation | 0 |
+mechanical_press | 0 | rotation | 0 |
 # fuel | burn ticks (20 a second)
 fuel oak_log 1200
 fuel birch_log 1200

@@ -92,6 +92,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "weather.h"
 #include "magic.h"
 #include "magicsight.h"
+#include "magicdiscovery.h"
+#include "tome.h"
 #include "wind.h"
 #include "storage.h"
 #include "tools.h"
@@ -112,6 +114,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "waterfield.h"
 #include "waterworks.h"
 #include "avatar.h"
+#include "footsteps.h"
+#include "soundscape.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -1314,7 +1318,9 @@ int main(int argc, char** argv)
     DebugUI_Init();
     if (!bench) Audio_Init();
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
+    if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
@@ -10571,19 +10577,22 @@ int main(int argc, char** argv)
         // Slot 1: headlamp (suit lamp from the eye, or the ship's nose light while piloting).
         // Slot 2: soft glow around the player while the inventory is open.
         if (sunOverride) world.sunDirection = sunArg;
-        // Atmosphere: the nearest planet (moons and asteroids have none) colours the sky and haze.
+        // Atmosphere: the nearest world with a sky (its world file, #1274: Terra; Luna and asteroids have none) colours the sky and haze.
         world.atmosphere.enabled = false;
         {
             float best = 1e30f;
             for (auto& obj : world.objects)
                 if (auto* q = dynamic_cast<Planetoid*>(obj.get()))
-                    if (q->kind == BodyKind::Planet) {
+                    if (q->profile && q->profile->hasSky) {
                         const float alt = Vector3Distance(world.camera.position, q->position) - q->radius * q->scale;
                         if (alt < best) {
                             best = alt;
                             world.atmosphere.enabled = true;
                             world.atmosphere.centre = q->position;
                             world.atmosphere.radius = q->radius * q->scale;
+                            world.atmosphere.height = q->profile->skyHeight;
+                            world.atmosphere.hazeHeight = q->profile->hazeHeight;
+                            world.atmosphere.cloudHeight = q->profile->cloudHeight;
                             world.atmosphere.toLocalX = q->dirToLocal({ 1, 0, 0 });
                             world.atmosphere.toLocalY = q->dirToLocal({ 0, 1, 0 });
                             world.atmosphere.toLocalZ = q->dirToLocal({ 0, 0, 1 });
@@ -10818,6 +10827,7 @@ int main(int argc, char** argv)
         if (gameState == 1) BuildTool_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1 && !loading) Animals_Aim(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // this frame's camera (#222)
         if (gameState == 1 && !loading) MagicSight_Update(world, std::min(GameFrameTime(), 0.1f), PlayerInput_If(gameInput && alive && !ship.piloted && !GameUI_InventoryOpen(), PlayerInput_Frame())); // (#1249) RAYLIBGAME_MAGIC
+        if (gameState == 1 && !loading && alive) MagicDiscovery_Update(world, std::min(GameFrameTime(), 0.1f)); // (#1250) finds, node motes, the Arcane line
         if (gameState == 1) TerrainTool_Update(world, PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
@@ -13823,6 +13833,8 @@ int main(int argc, char** argv)
         // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
         Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
         Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
+        if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
+        if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
         Audio_Update();
         PROFILE_FRAME();
     }
