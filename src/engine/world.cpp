@@ -1,4 +1,5 @@
 #include "world.h"
+#include "frames.h"
 #include "netid.h"
 #include "gamerng.h"
 #include "terrainarena.h"
@@ -205,10 +206,10 @@ static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]);
 // 3.05e-5 deg, up to ~3 cm at Terra's surface, and frames/still saw the standing player jump 13-31 mm in single steps.
 // The double angle is used while it is current - advanceBodies wrote `rotation` from it - and the float angles otherwise
 // (a load, a script or a test set `rotation`).
-static bool kFramesPose = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }(); // (unit tests set it)
+// (The switch is Frames_On(), read on first use: frames.cpp.)
 struct BodyAngles { double x, y, z; };
 static BodyAngles AnglesOf(const Planetoid& p) {
-    if (kFramesPose && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
+    if (Frames_On() && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
         return { p.spinAngle[0], p.spinAngle[1], p.spinAngle[2] };
     return { p.rotation.x, p.rotation.y, p.rotation.z };
 }
@@ -354,7 +355,7 @@ namespace {
             : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
               offset(p.worldPos - renderOrigin), s(p.scale) {
             BodyRotationOf(p, r);
-            if (kFramesPose) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
+            if (Frames_On()) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
         }
         Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
         Matrix modelAt(const DVec3& o) const {
@@ -500,7 +501,7 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
 }
 
 Quaternion Planetoid::rotationQuat() const {
-    if (!kFramesPose) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    if (!Frames_On()) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
     double r[3][3];
     BodyRotationOf(*this, r); // (#667) the double pose: a grounded player's view turns with it step by step, unquantised
     return QuaternionFromMatrix(RotationMatrix(r));
@@ -2941,7 +2942,7 @@ TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
 // pose (RAYLIBGAME_FRAMES=1) every 1/60 s step moves it the same arc, to well under a millimetre.
 TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
     auto stepSpread = [](bool doublePose) {
-        kFramesPose = doublePose;
+        Frames_SetOn(doublePose);
         auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
         b->spin = { 0.0f, 0.1f, 0.0f }; // Terra's day: 360 deg an hour
         const DVec3 l{ 1234.5, 31000.0, 51300.0 }; // a surface point ~60 km out, off the axis
@@ -2955,7 +2956,7 @@ TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
             if (k > 0) { const double d = Dist(w, last); lo = std::min(lo, d); hi = std::max(hi, d); }
             last = w;
         }
-        kFramesPose = false;
+        Frames_SetOn(false);
         return hi - lo;
     };
     const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);

@@ -486,6 +486,13 @@ const std::string& Animals_Body(int i) { static const std::string none; return i
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
 bool Animals_Aiming() { return aimed >= 0 || hitLatch || Animals_MeleeBusy(); }
+int Animals_AimedIndex() { return aimed >= 0 && aimed < (int)animals.size() ? aimed : -1; }
+std::pair<std::string, std::string> Animals_SpeciesOf(int i) {
+    LoadSpecies();
+    if (i < 0 || i >= (int)animals.size() || animals[i].species < 0 || animals[i].species >= (int)species.size()) return {};
+    const Species& s = species[animals[i].species];
+    return { s.id, s.name };
+}
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 double Animals_BiteWindUp() { return kBiteWindUp; }

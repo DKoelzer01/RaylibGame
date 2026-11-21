@@ -224,3 +224,12 @@ cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlan
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
 ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
+shaft            | Shaft            | 256 | 150,112, 70 | Mechanical power: carries rotation end to end along its axis. Lay a line of them from a crank to the machines.
+cogwheel         | Cogwheel         | 256 | 160,120, 76 | A shaft with a small cog: meshes with a cog beside it (turning the other way) and drives a large cogwheel set diagonally at half speed.
+large_cogwheel   | Large cogwheel   | 256 | 150,108, 66 | A big cog: driven diagonally by a small cogwheel, it turns at half the speed.
+gearbox          | Gearbox          | 64  | 150,112, 70 | Takes rotation round a corner: joins the shafts on its four sides (opposite sides turn opposite ways).
+hand_crank       | Hand crank       | 64  | 120, 90, 60 | Hold RMB on it to turn its shaft at 32 RPM: enough for one or two light machines.
+stress_gauge     | Stress gauge     | 64  | 160,120, 76 | Put it in a shaft line: shows how loaded the network is and how fast it turns. Over 100% the whole network slows down.
+millstone        | Millstone        | 20  | 140,138,132 | Mechanical power: grinds grain to flour, stone to gravel and sand, ore to crushed ore. Needs 16 RPM; faster grinds faster.
+mechanical_saw   | Mechanical saw   | 20  | 146,108, 68 | Mechanical power: saws a log into 6 planks (4 by hand). Needs 16 RPM.
+mechanical_press | Mechanical press | 20  | 146,108, 68 | Mechanical power: presses one ingot into one plate (2 by hand). Needs 16 RPM.
