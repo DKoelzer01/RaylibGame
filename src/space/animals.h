@@ -30,6 +30,16 @@ void Animals_DrawHUD();
 struct PlayerInput;
 void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
+// (#1216) Melee in phases (melee.h): a swing under way (the terrain tool holds off too), its pose for the held tool (phase:
+// 1 wind-up, 2 hit window, 3 recovery; f its progress; charge 0..1 the heavy's extra pull; back: the chained light), the soft
+// lock-on (the view eases toward it; 0 none), hits landed (tests).
+bool Animals_MeleeBusy();
+bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back);
+void Animals_LockOnView(Scene& world, float dt);
+uint64_t Animals_LockOn();
+int Animals_MeleeHits();
+const struct MeleeState& Animals_Melee();
+void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
 void Animals_Reset();
 void Animals_Save(FILE* f);
 bool Animals_LoadLine(const char* tok, FILE* f);

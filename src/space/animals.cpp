@@ -7,6 +7,7 @@
 #include "instancebatch.h"
 #include "audio.h"
 #include "combat.h"
+#include "melee.h"
 #include "headless.h"
 #include "net.h"
 #include "playersession.h"
@@ -484,7 +485,7 @@ bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& 
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
-bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
+bool Animals_Aiming() { return aimed >= 0 || hitLatch || Animals_MeleeBusy(); }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 double Animals_BiteWindUp() { return kBiteWindUp; }
@@ -1044,6 +1045,180 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// ---- (#1216) Melee in phases (combat step 2, melee.h) ----
+// LMB at a creature (aimed at, locked on, or inside the light swing's arc and reach) starts a swing; the rest of LMB stays
+// the terrain tool's. The swing runs on sim time with this frame's view: each step of its hit window sweeps the blade
+// across the arc against every creature's body capsule, once per creature per swing; terrain and parts in front of a
+// creature shield it. Middle mouse toggles a soft lock-on (the view eases toward the creature). RAYLIBGAME_COMBAT2=0: the
+// old one-click hit.
+namespace {
+MeleeState gMelee;
+double gMeleeClock = -1.0;
+int gMeleeShocks = 0;
+uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
+Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
+WeaponClass gMeleeClass = WeaponClass::Tools;
+int gMeleeHits = 0;                 // hits landed (tests)
+
+int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
+
+Vector3 AnimalForward(const Animal& a) {
+    Vector3 east, north;
+    TangentFrame(Vector3Normalize(a.pos), east, north);
+    return Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
+}
+
+// Its body as a capsule along its length (body-local), its radius half its height or width.
+void AnimalCapsule(const Animal& a, Vector3& q0, Vector3& q1, float& r) {
+    const Species& s = species[a.species];
+    const float scale = 0.6f + 0.4f * a.age;
+    const Vector3 up = Vector3Normalize(a.pos), fwd = AnimalForward(a);
+    r = 0.5f * std::max(s.size.x, s.size.y) * scale;
+    const Vector3 c = Vector3Add(a.pos, Vector3Scale(up, 0.5f * s.size.y * scale));
+    const float hl = std::max(0.0f, 0.5f * s.size.z * scale - r);
+    q0 = Vector3Subtract(c, Vector3Scale(fwd, hl)); q1 = Vector3Add(c, Vector3Scale(fwd, hl));
+}
+
+Vector3 AnimalCentre(const Animal& a) {
+    const Species& s = species[a.species];
+    return Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 0.5f * s.size.y * (0.6f + 0.4f * a.age)));
+}
+
+// Terrain or a part between the eye and a point (body-local) on `here`.
+bool Shielded(Scene& world, Planetoid& here, Vector3 eye, Vector3 at) {
+    const Vector3 d = Vector3Subtract(at, eye);
+    const float len = Vector3Length(d);
+    if (len < 0.2f) return false;
+    const Vector3 dir = Vector3Scale(d, 1.0f / len);
+    TerrainHit th;
+    if (RaycastTerrain(world, Ray{ here.toWorld(eye), here.dirToWorld(dir) }, len, th) && th.distance < len - 0.15f) return true;
+    if (here.plots)
+        for (auto& pl : here.plots->plots) { Int3 c, f; float dd; if (pl->raycast(eye, dir, len - 0.15f, c, f, dd)) return true; }
+    return false;
+}
+
+void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 dirW) {
+    const double now = SimTime();
+    const float dt = gMeleeClock < 0.0 ? 0.0f : (float)std::clamp(now - gMeleeClock, 0.0, 0.1);
+    gMeleeClock = now;
+    if (gMelee.phase == MeleePhase::Idle) gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
+    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    const bool live = here && !player.flyMode && in.enabled && !buildTool.active && !survival.dead;
+    if (!here || survival.dead || player.flyMode) { gMelee = MeleeState{}; gLockNet = 0; gLockScreen = { -1.0f, -1.0f }; return; }
+    const Vector3 eye = here->toLocal(world.camera.position);
+    const Vector3 fwd = here->dirToLocal(dirW);
+    const Vector3 up = Vector3Length(eye) > 1.0f ? Vector3Normalize(eye) : Vector3{ 0, 1, 0 };
+
+    // The soft lock-on: middle mouse takes the creature nearest the view's centre (within 35 degrees and 12 m), again lets go.
+    if (live && in.hit(Act::LockOn)) {
+        if (gLockNet) gLockNet = 0;
+        else {
+            float best = cosf(MeleeTune::kLockConeDeg * DEG2RAD);
+            for (const Animal& a : animals) {
+                if (a.body != here->name) continue;
+                const Vector3 to = Vector3Subtract(AnimalCentre(a), eye);
+                const float d = Vector3Length(to);
+                if (d > MeleeTune::kLockRange || d < 0.1f) continue;
+                const float c = Vector3DotProduct(Vector3Scale(to, 1.0f / d), fwd);
+                if (c > best && !Shielded(world, *here, eye, AnimalCentre(a))) { best = c; gLockNet = a.netId; }
+            }
+            if (!gLockNet) GameUI_Toast("Nothing to lock on to");
+        }
+    }
+    int lockIdx = gLockNet ? IndexOfNet(gLockNet) : -1;
+    if (gLockNet && (lockIdx < 0 || animals[lockIdx].body != here->name ||
+                     Vector3Distance(AnimalCentre(animals[lockIdx]), eye) > MeleeTune::kLockKeep)) { gLockNet = 0; lockIdx = -1; }
+    gLockScreen = lockIdx >= 0 ? GetWorldToScreen(here->toWorld(AnimalCentre(animals[lockIdx])), world.camera) : Vector2{ -1.0f, -1.0f };
+
+    // A creature the light swing would reach (from the view as it is now).
+    auto inArc = [&]() {
+        const float half = 0.5f * w.arcDeg * DEG2RAD;
+        for (const Animal& a : animals) {
+            if (a.body != here->name || Vector3Distance(a.pos, eye) > w.reach + 4.0f) continue;
+            Vector3 q0, q1, hit; float r;
+            AnimalCapsule(a, q0, q1, r);
+            if (Melee_SweepCapsule(eye, fwd, up, w.reach, half, -half, q0, q1, r, &hit) && !Shielded(world, *here, eye, hit)) return true;
+        }
+        return false;
+    };
+    MeleeInput mi;
+    mi.pressed = live && in.hit(Act::Primary) && !gPrimaryLatch.latched &&
+                 (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
+    mi.held = live && in.down(Act::Primary);
+    mi.block = survival.blocking;
+    mi.interrupted = survival.shocks != gMeleeShocks;
+    gMeleeShocks = survival.shocks;
+    mi.stamina = survival.stamina;
+    const MeleeStep o = Melee_Step(gMelee, w, mi, dt);
+    if (o.cost > 0.0f) { survival.stamina = std::max(0.0f, survival.stamina - o.cost); survival.staminaUsedAt = now; }
+    if (o.tired) GameUI_Toast("Too tired to swing");
+    if (o.started) { hitLatch = true; ++terrainTool.swings; Audio_Play(Sfx::Dig, 0.25f, 1.9f); }
+    if (!o.sweeping) return;
+
+    // The hit window: the blade from this step's start angle to its end, against every creature on this body.
+    const float a0 = Melee_SweepAngle(gMelee, w, o.sweepFrom), a1 = Melee_SweepAngle(gMelee, w, o.sweepTo);
+    struct Hit { int i; Vector3 at; };
+    std::vector<Hit> hits;
+    for (size_t i = 0; i < animals.size(); ++i) {
+        const Animal& a = animals[i];
+        if (a.body != here->name || Vector3Distance(a.pos, eye) > w.reach + 4.0f || Melee_Struck(gMelee, a.netId)) continue;
+        Vector3 q0, q1, at; float r;
+        AnimalCapsule(a, q0, q1, r);
+        if (!Melee_SweepCapsule(eye, fwd, up, w.reach, a0, a1, q0, q1, r, &at)) continue;
+        if (Shielded(world, *here, eye, at)) continue; // terrain or a part takes the blow
+        hits.push_back({ (int)i, at });
+    }
+    const ToolSpec t = ToolOf(terrainTool.heldTool);
+    const float base = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier; // today's damage by tool (weapons: #1219)
+    std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.i > y.i; }); // a kill removes it: high first
+    for (const Hit& h : hits) {
+        const Animal& a = animals[h.i];
+        gMelee.struck.push_back(a.netId);
+        DamageEvent e;
+        e.amount = Melee_Damage(base, gMelee);
+        e.kind = DamageKind::Melee;
+        e.type = Weapon_TypeOf(terrainTool.heldTool);
+        e.heavy = gMelee.heavy;
+        e.poise = Melee_Poise(gMelee, w);
+        e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
+        survival.lastDealtAt = now;
+        ++gMeleeHits;
+        if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId); } // (#334) a client: the server decides
+        else Animals_HitEvent(h.i, e);
+    }
+}
+} // namespace
+
+bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
+    if (!Combat2_On() || gMelee.phase == MeleePhase::Idle) return false;
+    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    phase = (int)gMelee.phase;
+    back = gMelee.chain == 1;
+    charge = gMelee.heavy ? 1.0f : 0.0f;
+    switch (gMelee.phase) {
+        case MeleePhase::WindUp:
+            f = std::min(1.0f, gMelee.t / w.windUp);
+            if (gMelee.heavy) charge = std::clamp((gMelee.t - w.windUp) / (w.windUp * (MeleeTune::kHeavyWindUp - 1.0f)), 0.0f, 1.0f);
+            break;
+        case MeleePhase::Hit: f = gMelee.sweep; break;
+        default: f = std::min(1.0f, gMelee.t / w.recovery); break;
+    }
+    return true;
+}
+
+void Animals_LockOnView(Scene& world, float dt) {
+    const int i = gLockNet ? IndexOfNet(gLockNet) : -1;
+    Planetoid* here = player.nearest;
+    if (i < 0 || !here || player.flyMode) return;
+    const Vector3 to = Vector3Subtract(here->toWorld(AnimalCentre(animals[i])), world.camera.position);
+    player.forward = Melee_SoftTurn(player.forward, player.up, to, dt);
+}
+
+uint64_t Animals_LockOn() { return gLockNet; }
+int Animals_MeleeHits() { return gMeleeHits; }
+const MeleeState& Animals_Melee() { return gMelee; }
+bool Animals_MeleeBusy() { return Combat2_On() && gMelee.phase != MeleePhase::Idle; }
+
 // Aim along the crosshair and the player's actions on the aimed animal (#222). Called after the camera is placed
 // for this frame (Animals_Update ran on last frame's), right before the terrain tool, which holds off while
 // Animals_Aiming(). The nearer of an animal and the ground wins: an animal behind a slope or a rock is not aimed.
@@ -1077,10 +1252,12 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
         TerrainHit th;
         if (aimed >= 0 && RaycastTerrain(world, Ray{ world.camera.position, dirW }, best, th) && th.distance < best - 0.3f) aimed = -1;
     }
+    // (#1216) Melee in phases: LMB at a creature goes to the swing (the old one-click hit below with RAYLIBGAME_COMBAT2=0).
+    if (Combat2_On()) MeleeFrame(world, in, here, Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
     if (aimed >= 0 && in.enabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
-        if (in.hit(Act::Primary) && !gPrimaryLatch.latched && SimTime() - lastHit > 0.35) { // (#896: not while eating; #895: not on a used-up hold)
+        if (!Combat2_On() && in.hit(Act::Primary) && !gPrimaryLatch.latched && SimTime() - lastHit > 0.35) { // (#896: not while eating; #895: not on a used-up hold)
             lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
@@ -1241,6 +1418,11 @@ void Animals_Draw3D(Scene& world) {
 }
 
 void Animals_DrawHUD() {
+    if (gLockNet && gLockScreen.x >= 0.0f) { // (#1216) the soft lock-on's marker: a diamond around the creature's centre
+        const Vector2 p = gLockScreen; const float r = 14.0f; const Color c = Color{ 255, 200, 90, 230 };
+        DrawLineEx({ p.x, p.y - r }, { p.x + r, p.y }, 2.0f, c); DrawLineEx({ p.x + r, p.y }, { p.x, p.y + r }, 2.0f, c);
+        DrawLineEx({ p.x, p.y + r }, { p.x - r, p.y }, 2.0f, c); DrawLineEx({ p.x - r, p.y }, { p.x, p.y - r }, 2.0f, c);
+    }
     if (aimed < 0 || aimed >= (int)animals.size()) return;
     const Animal& a = animals[aimed];
     const Species& s = species[a.species];
@@ -1252,7 +1434,7 @@ void Animals_DrawHUD() {
     DrawRectangle(x, y + 26, (int)(200 * std::max(0.0f, a.health) / s.health), 6, RED);
     std::string diet;
     for (const auto& d : s.diet) diet += (diet.empty() ? "" : "/") + d;
-    DrawText(TextFormat("I feed (%s)   O %s   LMB attack", diet.c_str(), s.product.empty() || s.product == "-" ? "-" : s.product.c_str()), x, y + 40, 15, Fade(RAYWHITE, 0.75f));
+    DrawText(TextFormat("I feed (%s)   O %s   LMB attack%s", diet.c_str(), s.product.empty() || s.product == "-" ? "-" : s.product.c_str(), Combat2_On() ? " (hold: heavy)   MMB lock on" : ""), x, y + 40, 15, Fade(RAYWHITE, 0.75f));
 }
 
 void Animals_Save(FILE* f) {
@@ -1404,4 +1586,15 @@ bool Animals_UseNet(uint64_t netId, int action, Inventory& inv, std::string& why
         return true;
     }
     why = "unknown action"; return false;
+}
+
+// (#1216 tests) A training dummy: the animal held at `pos` (body-local, on the ground) facing `face` (body-local), at rest.
+void Animals_TestPin(int i, Vector3 pos, Vector3 face) {
+    if (i < 0 || i >= (int)animals.size()) return;
+    Animal& a = animals[i];
+    Vector3 east, north;
+    TangentFrame(Vector3Normalize(pos), east, north);
+    a.pos = a.prevPos = pos;
+    a.heading = a.prevHeading = atan2f(Vector3DotProduct(face, north), Vector3DotProduct(face, east));
+    a.state = State::Rest; a.fleeTimer = 0.0f; a.path.clear();
 }

@@ -55,6 +55,7 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     if (SimTime() - sv.staminaUsedAt >= kRegenDelay) sv.stamina = std::min(100.0f, sv.stamina + kStaminaRegenPerSec * dt);
     // (#1215) Status effects: their damage over time, and chill's slow (frozen: no moving) on the walk speed.
     if (Combat1_On() && !sv.dead) {
+        if (sv.status.interrupted) ++sv.shocks; // (#1216) seen by the melee wind-up before Status_Step clears it
         const float dot = Status_Step(sv.status, dt, s.player.inWater, sv.resist);
         if (dot > 0.0f) {
             sv.health -= dot;
@@ -388,8 +389,8 @@ void Combat_ShakeCamera(Scene& world, const PlayerSession& s, bool reduceMotion)
 }
 
 bool Combat_HitStop(const PlayerSession& s, bool reduceMotion) {
-    const double t = SimTime() - s.survival.lastHitAt;
-    return !reduceMotion && t >= 0.0 && t < kHitStopTime && s.survival.lastHitStrength > 0.0f;
+    const double t = SimTime() - s.survival.lastHitAt, dealt = SimTime() - s.survival.lastDealtAt; // (#1216) and hits landed
+    return !reduceMotion && ((t >= 0.0 && t < kHitStopTime && s.survival.lastHitStrength > 0.0f) || (dealt >= 0.0 && dealt < kHitStopTime));
 }
 
 void Combat_DrawGraves(Scene& world) {

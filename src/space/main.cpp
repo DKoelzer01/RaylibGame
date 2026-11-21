@@ -10154,6 +10154,7 @@ int main(int argc, char** argv)
         PlayerInput_BeginFrame();
         const int simSteps = SimClock_BeginFrame(paused ? 0.0f : frameDt); // unfocused too (#525): the world keeps running behind another window
         if (gameState == 1 && gameInput && alive && !loading && !ship.piloted && !Rocket_Boarded() && !player.flyMode) player.look(PlayerInput_Frame().look);
+        if (gameState == 1 && !paused && alive && !loading && !ship.piloted && !Rocket_Boarded()) Animals_LockOnView(world, frameDt); // (#1216) the soft lock-on eases the view
         for (int simStep = 0; simStep < simSteps; ++simStep) {
         const float simDt = SimDt();
         PlayerSession& session = LocalSession(); // single-player: one session (#313); a server steps each one

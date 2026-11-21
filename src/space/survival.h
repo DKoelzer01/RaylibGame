@@ -58,6 +58,8 @@ struct SurvivalState {
     float hitDamageTaken = 0.0f;                              // health lost to hits so far (not saved; tests)
     double lastHitAt = -1e9;                                  // sim time of the last hit taken (the camera shake, hit-stop)
     float lastHitStrength = 0.0f;                             // 0..1 (20 damage = 1)
+    double lastDealtAt = -1e9;                                // (#1216) sim time of the last melee hit landed (the hit-stop)
+    int shocks = 0;                                           // (#1216) shocks taken (a melee wind-up sees each one)
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
