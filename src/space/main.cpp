@@ -8949,6 +8949,11 @@ int main(int argc, char** argv)
                         const Vector3 lup = Vector3Normalize(local), lnorth = p->dirToLocal(north);
                         const Vector3 wp = Vector3Normalize(Vector3Add(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 200.0f)));
                         Nav_AddWaypoint(p->name, wp, "test");
+                        { // (#828) a grave of ours 150 m south, as a server lists it: the map draws a headstone and its time to open
+                            GraveInfo g; g.id = 1; g.body = p->name; g.owner = "bench"; g.name = "bench's grave 1"; g.diedAt = (int64_t)time(nullptr) - 120;
+                            g.local = DVec3(Vector3Normalize(Vector3Subtract(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 150.0f)))) * (double)(p->radius * p->scale);
+                            Combat_SetGraveMirror({ g }, "bench");
+                        }
                         mapBearing = Nav_Bearing(world, wp);
                         printf("bench: map: facing east the compass reads %.1f deg; walked %.0f m, %d tiles explored; a waypoint 200 m north bears %.1f deg\n",
                                mapHeading, walked, mapTiles, mapBearing);
