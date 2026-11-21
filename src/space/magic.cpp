@@ -188,7 +188,8 @@ void Magic_DrawSight3D(Scene& world, float range, bool throughRock) {
     Planetoid* body = nullptr; const PlanetField* pf = nullptr; Vector3 local, dir;
     if (!f || !CameraLocal(world, body, pf, local, dir)) return;
     const float step = std::clamp(range / 25.0f, 2.0f, 16.0f);
-    Refresh(sight, *f, *pf, dir, range, step, 0.2f * range, 0.25f, range * 1.5f, true);
+    // 0.8 m over the height field: the meshed ground and the grass stand above it in places, and a flat ribbon under them is lost.
+    Refresh(sight, *f, *pf, dir, range, step, 0.2f * range, 0.8f, range * 1.5f, true);
     const float t = (float)GetTime();
     const Vector3 anchor = Vector3Scale(dir, pf->radius);
     const Vector3 eye = Vector3Subtract(local, anchor);

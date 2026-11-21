@@ -1,5 +1,6 @@
 #include "menus.h"
 #include "playerinput.h"
+#include "magic.h" // (#1249) Magic_Enabled: the magic sight key only with magic on
 #include "playerrecord.h"
 #include "scenetarget.h"
 #include "slideshow.h"
@@ -251,7 +252,8 @@ namespace {
             static int waiting = -1;   // the action waiting for a key
             static int waitFrames = 0; // frames it has waited (the click that started it is no binding)
             static float scroll = 0.0f;
-            const int n = (int)Act::Count;
+            static_assert((int)Act::MagicSight == (int)Act::Count - 1, "magic sight is the last action (hidden while magic is off)");
+            const int n = (int)Act::Count - (Magic_Enabled() ? 0 : 1); // (#1249) no key for a feature that isn't there
             const float rowH = std::min(40.0f * s, h * 0.8f), colGap = 24 * s, colW = (std::min(sw - 64 * s, 1500.0f * s) - colGap) * 0.5f;
             const float x0 = (sw - (2 * colW + colGap)) * 0.5f, listTop = y, listBottom = backY - 70 * s;
             const int rowsPerCol = (n + 1) / 2;

@@ -144,6 +144,7 @@ void MagicSight_Update(Scene& world, float dt, const PlayerInput& in) {
     if (grant && MagicSight_Learn(s)) { // =show: and shown (captures)
         const char* e = getenv("RAYLIBGAME_MAGIC_SIGHT");
         if (e && strcmp(e, "show") == 0) MagicSight_SetShown(s, true);
+        if (const char* t = getenv("RAYLIBGAME_MAGIC_SIGHT_TIER")) s.sightTier = std::clamp(atoi(t), 0, 2); // captures: 0-2 (50/150/400 m) before the attunement pages
     }
     // The pool refills, faster on a ley line.
     if (const ManaField* f = Magic_Field(world)) {
