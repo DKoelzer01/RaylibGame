@@ -7,9 +7,14 @@
 
 // Plan 11 (#667). See frames.h.
 
-static bool gFramesOn = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }();
-bool Frames_On() { return gFramesOn; }
-void Frames_SetOn(bool on) { gFramesOn = on; }
+// Read on first use, not in a static initialiser: a scenario's s.env is set inside main() (Scenario_PrepareArgs), after
+// static initialisers ran - read there, every "-pose" scenario ran with the switch off.
+static int gFramesOn = -1; // -1: not read yet
+bool Frames_On() {
+    if (gFramesOn < 0) { const char* e = getenv("RAYLIBGAME_FRAMES"); gFramesOn = (e && e[0] == '1') ? 1 : 0; }
+    return gFramesOn == 1;
+}
+void Frames_SetOn(bool on) { gFramesOn = on ? 1 : 0; }
 
 namespace {
 constexpr double kInf = 1e300;
