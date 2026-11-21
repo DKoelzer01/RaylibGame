@@ -5,7 +5,7 @@ biomes Meadow Forest Savanna
 weight 0.9
 bury 0.25
 decay 0.3
-walls block 0 0 0 9 3 7 stone
+walls block 0 0 0 9 3 7 stone_brick
 clear 4 0 0 5 3 1
 walls block 12 0 0 21 5 9 oak_planks
 clear 15 0 0 18 5 1

@@ -585,7 +585,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (ends("_seeds")) { Seeds(cv, c); return; }
     if (is({ "quartz", "amethyst", "ruby", "sapphire", "emerald" })) { Gem(cv, c); return; }
     if (is({ "granite", "basalt", "sandstone", "limestone", "marble" })) { Cube(cv, c, Pat::Stone); return; }
-    if (id == "brick") { Cube(cv, c, Pat::Brick); return; }
+    if (id == "brick" || ends("_brick")) { Cube(cv, c, Pat::Brick); return; } // fired and dressed stone (#1098)
     if (is({ "concrete" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "heat_shield_tile") { Cube(cv, c, Pat::Tiles); return; }
     if (id == "farmland") { Cube(cv, { 0.4f, 0.27f, 0.16f }, Pat::Soil); return; }

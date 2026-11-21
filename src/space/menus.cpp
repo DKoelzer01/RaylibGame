@@ -303,6 +303,7 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
             changed |= Toggle({ x, y, w, h }, "Inventory scroll: up sends", settings.invertSlotWheel); next(); // (#862) off: down sends to the other side, up pulls in (Mouse Tweaks)
@@ -330,6 +331,7 @@ void Settings_Load() {
             if (!strcmp(key, "player_uuid")) { settings.playerUuid = val; continue; } // (#346)
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
+            if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
             if (!strcmp(key, "mp_name")) { settings.mpName = val; continue; }
             if (!strcmp(key, "mp_address")) { settings.mpAddress = val; continue; }
             if (!strcmp(key, "mp_recent")) { if (settings.mpRecent.size() < 5) settings.mpRecent.push_back(val); continue; }
@@ -353,6 +355,7 @@ void Settings_Load() {
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
+            else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
         }
@@ -374,7 +377,9 @@ void Settings_Save() {
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
+    fprintf(f, "reduceflashing %d\n", settings.reduceFlashing ? 1 : 0);
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
+    for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults

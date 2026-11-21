@@ -28,9 +28,22 @@ ToolSpec ToolOf(const std::string& id) {
 bool IsSoft(VoxelMaterial m) {
     switch (m) {
         case VoxelMaterial::Regolith: case VoxelMaterial::Sand: case VoxelMaterial::Gravel:
-        case VoxelMaterial::Grass: case VoxelMaterial::Snow: case VoxelMaterial::Clay: case VoxelMaterial::Pebbles: case VoxelMaterial::Silt: case VoxelMaterial::Mud: return true;
+        case VoxelMaterial::Grass: case VoxelMaterial::Snow: case VoxelMaterial::Clay: case VoxelMaterial::Pebbles: case VoxelMaterial::Silt: case VoxelMaterial::Mud: case VoxelMaterial::Farmland: return true;
         default: return false;
     }
+}
+
+bool IsTillable(VoxelMaterial m) {
+    return m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith || m == VoxelMaterial::Clay || m == VoxelMaterial::Silt ||
+           m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland;
+}
+
+// A shovel turns a small patch, a hoe a wider one, and an iron or better hoe a patch about as wide as the 3x3 metres it
+// tilled when farmland was 1 m squares.
+float TillRadius(ToolSpec tool) {
+    if (tool.type == ToolType::Shovel) return 0.6f;
+    if (tool.type == ToolType::Hoe) return tool.tier >= 2 ? 1.6f : 0.8f;
+    return 0.0f;
 }
 
 int PickTierFor(VoxelMaterial m, const char* item) {

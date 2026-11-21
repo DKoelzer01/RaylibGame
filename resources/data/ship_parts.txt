@@ -9,7 +9,7 @@ cabin               | 900     | 0         | 0     | 0       | crew room: 4 seats
 station_core        | 700     | 0         | 0     | 1500    | deployed in orbit (K) it founds a station; holds 1500 kg of fuel for docked rockets
 # Structure: kg per 0.5 m cell of each building material.
 material concrete 300
-material stone 330
+material stone_brick 330
 material oak_planks 60
 material birch_planks 60
 material maple_planks 60
@@ -17,7 +17,6 @@ material pine_planks 60
 material spruce_planks 60
 material iron_plate 90
 material glass 80
-material dirt 200
 material heat_shield_tile 150
 # Rocket fuel: kg per item.
 fuel rocket_fuel 100
@@ -31,7 +30,7 @@ heat cabin 1200
 heat station_core 1200
 heat heat_shield_tile 3000
 heat concrete 1100
-heat stone 1200
+heat stone_brick 1200
 heat oak_planks 250
 heat birch_planks 250
 heat maple_planks 250
@@ -39,4 +38,3 @@ heat pine_planks 250
 heat spruce_planks 250
 heat iron_plate 1000
 heat glass 900
-heat dirt 600

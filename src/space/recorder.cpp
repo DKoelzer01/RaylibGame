@@ -1,14 +1,17 @@
 #include "recorder.h"
 #include "world.h"
+#include "gameui.h" // (#1119) the start and stop toasts
 
 #include <raylib.h>
 #include "external/msf_gif.h" // raylib bundles msf_gif (its own GIF recording) and exports it
 
 #include <algorithm>
+#include <climits>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -34,7 +37,20 @@ namespace {
     double waitStart = 0.0;
     uint64_t firstHash = 0, lastHash = 0;
     struct Thumb { Image img; int frame; float t; };
-    std::vector<Thumb> thumbs;     // for the contact sheet: every frame, 240 px wide
+    std::vector<Thumb> thumbs;     // for the contact sheet: every thumbStride-th frame, 240 px wide
+    // (#1119) F10 records until F10 again: the sheet's thumbnails thin out to every 2nd, 4th... frame at kMaxThumbs (still
+    // evenly spaced, first included), and the GIF covers the first gifMaxFrames frames (0: all, --record).
+    constexpr int kMaxThumbs = 256;
+    int thumbStride = 1, gifMaxFrames = 0;
+    constexpr double kF10MaxSeconds = 30.0 * 60.0;  // a safety cap on one F10 recording
+    constexpr double kF10MinFreeBytes = 2.0e9;     // stop before the disk fills
+    double FreeBytes(const std::string& path) {    // free space on the drive or share of path (its nearest existing folder)
+        std::error_code ec;
+        std::filesystem::path p(path);
+        while (!p.empty() && !std::filesystem::exists(p, ec)) p = p.parent_path();
+        const auto s = std::filesystem::space(p.empty() ? std::filesystem::path(".") : p, ec);
+        return ec ? 1e18 : (double)s.available; // unknown: don't stop a recording over it
+    }
 
     // The writer thread takes captured frames in order (hash, compare, contact-sheet thumb, GIF) and hands their PNGs to
     // a small pool (ExportImage is the slow part). The main thread only reads the screen back (#537: hashing, two resizes
@@ -125,8 +141,16 @@ namespace {
         }
         if (j.index == 0) firstHash = h;
         lastHash = h;
-        if (wantSheet) { Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, j.index, j.t }); }
-        if (wantGif) {
+        if (wantSheet && j.index % thumbStride == 0) {
+            Image s = ImageCopy(img); ImageResize(&s, 240, std::max(1, img.height * 240 / std::max(1, img.width))); thumbs.push_back({ s, j.index, j.t });
+            if ((int)thumbs.size() >= kMaxThumbs) { // keep every other one: half as many, twice as far apart (#1119)
+                size_t w = 0;
+                for (size_t k = 0; k < thumbs.size(); ++k) { if (k % 2 == 0) thumbs[w++] = thumbs[k]; else UnloadImage(thumbs[k].img); }
+                thumbs.resize(w);
+                thumbStride *= 2;
+            }
+        }
+        if (wantGif && (gifMaxFrames <= 0 || j.index < gifMaxFrames)) {
             const double nowCs = 100.0 * (double)j.t;          // this capture's time in the recording
             if (!gifPending.data) { gifEmittedCs = nowCs; }
             else if (nowCs - gifEmittedCs >= 2.0) {            // the held frame lasts until now
@@ -250,6 +274,11 @@ namespace {
         if (removed > 0) printf("record: removed the %d oldest captures to stay under %.1f GB\n", removed, maxBytes / (1024.0 * 1024.0 * 1024.0));
     }
 
+    // (#1119) a capture folder as the player knows it: "<date>/<HHMMSS>" (the last two parts of the path)
+    std::string FolderName(const std::string& d) {
+        const std::filesystem::path p(d);
+        return (p.parent_path().filename() / p.filename()).generic_string();
+    }
     void Begin(const std::string& d) {
         if (finisher.joinable()) finisher.join(); // the last F10 recording is still being written (shares the writer queue)
         dir = d;
@@ -259,7 +288,7 @@ namespace {
         active = true; finished = false; captured = 0; rendered = 0; dropped = 0;
         waiting = startDelay > 0.0f || cli; waitStart = GetTime();
         firstHash = lastHash = 0;
-        thumbs.clear();
+        thumbs.clear(); thumbStride = 1;
         const float dt = fixedDt > 0.0f ? fixedDt : 1.0f / 60.0f;
         gifCentis = std::max(2, (int)lroundf(100.0f * dt * (float)every));
         gifPath = dir + "/capture.gif";
@@ -273,6 +302,7 @@ namespace {
     void End(bool background = false) {
         if (!active) return;
         active = false; // (the writer emits the last GIF frame when it reaches the end job)
+        if (!cli) GameUI_Toast(TextFormat("Recording saved: %s", FolderName(dir).c_str())); // (#1119) F10's, by the key or when full
         if (background) { finisher = std::thread(Finish); return; }
         Finish();
     }
@@ -339,13 +369,16 @@ namespace {
     // thread so the frame doesn't wait for the share.
     std::atomic<bool> shotWanted{ false };
     bool RecordingFrame(bool hud) { return active && !waiting && hud == hudFrames && rendered % every == 0; }
+    std::function<std::string(const Image&)> shotExtra; // (#910) the LOD dump written beside the screenshot
     void TakeShot() {
         Image img = LoadImageFromScreen();
         ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         const std::string d = Resolve("shot-" + Today("%H%M%S"));
-        std::thread([img, d]() {
+        std::string extra = shotExtra ? shotExtra(img) : std::string();
+        std::thread([img, d, extra]() {
             std::error_code ec;
             std::filesystem::create_directories(d, ec);
+            if (!extra.empty()) if (FILE* f = fopen((d + "/lod.txt").c_str(), "wb")) { fwrite(extra.data(), 1, extra.size(), f); fclose(f); }
             const bool ok = ExportImage(img, (d + "/screenshot.png").c_str()) && ExportImage(img, (d + "/sheet.png").c_str());
             UnloadImage(img);
             printf("screenshot: %s %s\n", d.c_str(), ok ? "saved" : "FAILED");
@@ -355,6 +388,20 @@ namespace {
 }
 
 void Recorder_Screenshot() { shotWanted = true; }
+
+// (#1119) While an F10 recording runs: a blinking red dot, REC, the time so far and what is left, top right. Drawn after the
+// frame was captured (main.cpp calls it after Recorder_Capture), so it never shows in the recording itself.
+void Recorder_DrawIndicator() {
+    if (!active || cli) return;
+    const int t = std::max(0, (int)(GetTime() - clockStart)); // (#1119) the time so far only: it records until F10 again
+    const char* text = TextFormat("REC %d:%02d", t / 60, t % 60);
+    const int fs = 20, w = MeasureText(text, fs), x = GetScreenWidth() - w - 46, y = 14;
+    DrawRectangle(x - 34, y - 6, w + 46, fs + 12, Fade(BLACK, 0.55f));
+    if (fmod(GetTime(), 1.0) < 0.6) DrawCircle(x - 17, y + fs / 2, 7.0f, RED);
+    DrawText(text, x, y, fs, RAYWHITE);
+}
+
+void Recorder_SetShotExtra(std::function<std::string(const Image&)> f) { shotExtra = std::move(f); }
 void Recorder_Cue() { cued = true; }
 
 void Recorder_Update(bool worldReady) {
@@ -365,9 +412,13 @@ void Recorder_Update(bool worldReady) {
             char stamp[32];
             const std::time_t now = std::time(nullptr);
             std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", std::localtime(&now));
-            framesWanted = 600; every = 2; startDelay = 0.0f; hudFrames = true; wantGif = true; wantSheet = true;
-            Begin(Resolve(Today("%H%M%S")));
+            // (#1119) until F10 again (or the safety cap, or a nearly full disk): every 2nd frame; the GIF is its first 30 s
+            framesWanted = INT_MAX; every = 2; startDelay = 0.0f; hudFrames = true; wantGif = true; wantSheet = true; gifMaxFrames = 900;
+            const std::string where = Resolve(Today("%H%M%S"));
+            if (FreeBytes(where) < kF10MinFreeBytes) { GameUI_Toast("Not recording: the disk is nearly full"); return; }
+            Begin(where);
             waiting = false;
+            GameUI_Toast(TextFormat("Recording to %s (F10 stops)", FolderName(dir).c_str())); // (#1119)
         }
     }
     if (active && waiting && GetTime() - waitStart >= startDelay && worldReady && (!onCue || cued)) { waiting = false; gGameClock = 0.0; clockStart = GetTime(); } // animation clocks start with the capture
@@ -390,6 +441,11 @@ void Recorder_Capture() {
     j.frame = true; j.index = captured; j.t = t;
     if (!Push(j)) { UnloadImage(img); ++dropped; return; }
     ++captured;
+    if (!cli) { // (#1119) F10: the safety cap, and a disk check every 300 frames
+        const bool tooLong = GetTime() - clockStart >= kF10MaxSeconds;
+        const bool diskFull = captured % 300 == 0 && FreeBytes(dir) < kF10MinFreeBytes;
+        if (tooLong || diskFull) { GameUI_Toast(tooLong ? "Recording stopped at 30 minutes" : "Recording stopped: the disk is nearly full"); End(true); return; }
+    }
     if (captured >= framesWanted) End(!cli);
 }
 

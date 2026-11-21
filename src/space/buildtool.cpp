@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "machinemodels.h"
 #include "machineact.h"
 #include "buildtool.h"
@@ -57,6 +58,21 @@ bool IsMachineItem(const std::string& id) {
 
 // Foundation (#210): the terrain inside the part's cells is subtracted, exactly those boxes (a carve, as mining, but with
 // no yield), and nothing else changes: no fill under it, no brush reaching past it (the plot carries parts above ground).
+namespace {
+    bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
+    std::vector<TerrainEdit> foundationBatch;
+}
+void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
+    static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
+    foundationBatching = on; foundationBatch.clear();
+}
+void BuildTool_EndFoundationBatch(Planetoid& body) {
+    PROFILE_SCOPE("blueprint foundations");
+    foundationBatching = false;
+    if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    foundationBatch.clear();
+}
+
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(part, fp);
@@ -86,6 +102,7 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
         e.radius = h * 1.7320508f; // its bounding reach (dirty chunks, trees, fluid)
         edits.push_back(e);
     }
+    if (foundationBatching) { foundationBatch.insert(foundationBatch.end(), edits.begin(), edits.end()); return; } // (#1167)
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }
 
@@ -130,6 +147,7 @@ static void RefreshLocalClaims() {
 }
 
 bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
+    if (part.type == PartType::Farmland) { GameUI_Toast("Farmland is tilled ground now: till soil with a shovel or hoe (RMB)"); return false; } // (#1085)
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
     const char* item = PartItem(part);
@@ -432,8 +450,17 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             target = body->plots->plotFor(aim.newOrigin, 0.0f, true);
         }
         std::string missing;
-        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing);
-        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str()) : TextFormat("Placed %d parts; still need %s", n, missing.c_str()));
+        // (#1018) What can't be paid for stays as ghosts, built from the inventory when you come by; placing the same
+        // blueprint on its own ghosts again (nothing new to build) cancels them.
+        const int ghostsBefore = Blueprint_GhostsOn(*target, *bp, aim.part.origin);
+        const int n = Blueprint_Place(*body, *target, *bp, aim.part.origin, true, missing, true);
+        if (n == 0 && ghostsBefore > 0) {
+            const int gone = Blueprint_RemoveGhosts(*target, *bp, aim.part.origin);
+            GameUI_Toast(TextFormat("Cancelled %d ghost part%s of %s", gone, gone == 1 ? "" : "s", bp->name.c_str()));
+            return;
+        }
+        GameUI_Toast(missing.empty() ? TextFormat("Placed %d parts of %s", n, bp->name.c_str())
+                                     : TextFormat("Placed %d parts; the rest are ghosts, built when you come by with %s (place again to cancel)", n, missing.c_str()));
         if (n > 0) Audio_Play(Sfx::Build, 0.5f, 1.0f);
         return;
     }
@@ -547,23 +574,25 @@ void BuildTool_DrawHUD() {
 
 namespace {
     struct MachineAim { uint64_t body = 0; uint32_t plot = 0; int part = -1; PartType type = PartType::Count; Int3 cell{ 0, 0, 0 }; } machineAim;
+    struct FarmAim { uint64_t body = 0; Vector3 local{}; bool on = false; } farmAim; // (#1085) farmland ground or a crop, aimed
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
 }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
+    farmAim = FarmAim{};
     Planetoid* body = player.nearest;
-    if (!body || !body->plots || player.flyMode) return;
+    if (!body || player.flyMode) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
     const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
     float best = 6.0f;
-    for (auto& pl : body->plots->plots) {
+    if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::Farmland || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
+            if (part >= 0 && (IsMachine(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -576,6 +605,17 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
             best = dd;
             machineAim = { body->id, pl->id, dp, pl->parts[dp].type };
         }
+    }
+    // Farmland (#1085): tilled ground, or a crop on it, nearer than any machine. I plants seeds you carry there, O harvests
+    // the crop there.
+    TerrainHit th;
+    if (RaycastTerrain(world, Ray{ world.camera.position, dir }, best * body->scale, th) && th.planetoid == body && Farm_Aims(*body, th.local)) {
+        machineAim = MachineAim{};
+        farmAim = { body->id, th.local, true };
+        if (!in.enabled) return;
+        if (in.hit(Act::Insert)) Farm_Plant(*body, th.local);
+        if (in.hit(Act::Extract)) Farm_Harvest(*body, th.local);
+        return;
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
@@ -600,14 +640,6 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
                 else Survival_SetBedFor(survival, *bb, *bp, machineAim.part, true);
             }
         }
-        return;
-    }
-    if (machineAim.type == PartType::Farmland) {
-        // Farmland: I plants seeds you carry, O harvests a ripe crop.
-        Planetoid* fb = Planetoid::find(machineAim.body);
-        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
-        if (fb && fp && in.hit(Act::Insert)) Farm_Plant(*fb, *fp, machineAim.part);
-        if (fb && fp && in.hit(Act::Extract)) Farm_Harvest(*fb, *fp, machineAim.part);
         return;
     }
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
@@ -670,13 +702,12 @@ std::vector<std::string> WrapItemList(const char* prefix, const std::string& lis
 }
 
 void Machine_DrawHUD() {
-    if (machineAim.part < 0 || GameUI_ContainerOpen()) return; // the open screen watches its own machine
-    if (machineAim.type == PartType::Farmland) {
-        Planetoid* fb = Planetoid::find(machineAim.body);
-        Plot* fp = fb && fb->plots ? fb->plots->byId(machineAim.plot) : nullptr;
-        if (fb && fp) Farm_DrawAimHUD(*fb, *fp, machineAim.part);
+    if (GameUI_ContainerOpen()) return; // the open screen watches its own machine
+    if (farmAim.on) { // (#1085) farmland ground or a crop
+        if (Planetoid* fb = Planetoid::find(farmAim.body)) Farm_DrawAimHUD(*fb, farmAim.local);
         return;
     }
+    if (machineAim.part < 0) return;
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)

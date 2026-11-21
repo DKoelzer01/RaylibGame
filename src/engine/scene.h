@@ -22,6 +22,13 @@
 #include <random>
 #include <array>
 #include <unordered_map>
+
+// (#1089) The terrain tool's dig / fill sphere for this frame: the terrain shader draws where it cuts the ground (a line on
+// the real surface, a faint tint inside). Body-local, so a render-origin shift between the tool's update and the draw is
+// harmless; body = nullptr: none. Set by TerrainTool_Update, read by Scene when it binds the lighting shader.
+class Planetoid;
+struct ToolSphereHint { const Planetoid* body = nullptr; Vector3 local{ 0, 0, 0 }; float radius = 0.0f; Color color{ 0, 0, 0, 0 }; double time = 0.0; }; // time: when set (stale after 0.1 s: modes without the tool)
+inline ToolSphereHint gToolSphere;
 #include <functional>
 
 // A shader loaded from a vs/fs pair that reloads itself when either file changes on disk.
@@ -120,6 +127,8 @@ class Scene {
         float fogDensity = 0.0f;         // 0 = no fog
         float weatherCloud = 0.0f;       // weather (set by the game each frame): cloud cover 0..1 greys the sky, dims the sun
         float weatherFog = 0.0f;         // ground fog 0..1 (thick at 1: ~60 m visibility)
+        float lightning = 0.0f;          // (#1162) a lightning flash now, 0..1 (set by the game): lights the sky and clouds
+        Vector3 lightningDir = { 0, 1, 0 }; //   toward lightningDir (world, unit) and lifts the open-sky ambient briefly
         Vector3 cloudDrift = { 0, 0, 0 }; // weather: how far the wind has carried the clouds (planet-local m)
         std::function<void()> onDraw3D;  // extra world-space drawing at the end of the main pass
         std::function<void(Shader&)> frameLighting;  // set during onDraw3D: binds shadow cascades + headlamp to a shader

@@ -451,10 +451,17 @@ void Scene::drawScene(int gamestate) {
             anchor = { std::floor(cw.x / 256.0) * 256.0, std::floor(cw.y / 256.0) * 256.0, std::floor(cw.z / 256.0) * 256.0 };
             cw = cw - anchor;
         }
+        // (#1120) Snapped in absolute body-local coordinates (the anchor's own projection added back in double): about the
+        // anchor alone, the grid moved by a fraction of a texel each time the camera crossed into the next 256 m cell (the
+        // anchor's jump projected onto the light's axes), a pop of every shadow edge every ~3 s when flying at 88 m/s. The
+        // light's direction is held fixed between its 0.12 deg steps, so absolute snapping keeps the texels put on the
+        // ground. RAYLIBGAME_SHADOW_ANCHOR_SNAP=1: as before.
+        static const bool anchorSnap = getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP") && getenv("RAYLIBGAME_SHADOW_ANCHOR_SNAP")[0] == '1';
         auto snapAxis = [&](Vector3 worldAxis) {
             const Vector3 a = ground ? ground->dirToLocal(worldAxis) : worldAxis;
+            const double base = anchorSnap ? 0.0 : anchor.x * a.x + anchor.y * a.y + anchor.z * a.z;
             const double d = cw.x * a.x + cw.y * a.y + cw.z * a.z;
-            const double s = std::floor(d / texel + 0.5) * texel;
+            const double s = std::floor((d + base) / texel + 0.5) * texel - base;
             return DVec3{ a.x * s, a.y * s, a.z * s };
         };
         const DVec3 snapped = snapAxis(r) + snapAxis(u) + snapAxis(f) + anchor;
@@ -637,7 +644,7 @@ void Scene::drawScene(int gamestate) {
         // come from above; fragSky keeps it out of buried ground). User 2026-11-14: the first strength (1.0) read almost as
         // daylight; the old nights (0) were a little too dark: open ground dim, unlit interiors near black. RAYLIBGAME_MOONLIGHT
         // scales it (1 = the first strength, 0 = the old nights).
-        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.12f; // (#897: 0.25 read too bright, user 2026-11-18)
+        static const float moonScale = getenv("RAYLIBGAME_MOONLIGHT") ? (float)atof(getenv("RAYLIBGAME_MOONLIGHT")) : 0.09f; // (#897: 0.25 read too bright, user 2026-11-18; #1117: 0.12 -> 0.09, nights a little darker, user 2026-11-20)
         effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.07f, 0.105f }, (1.0f - day) * atmDensity * moonScale * (1.0f - 0.5f * moonLight))); // half of it while the moon lights directly (#224)
         // Weather: cloud cover greys the haze and lifts the (diffuse) ambient a little; ground fog
         // thickens the haze near the ground.
@@ -645,6 +652,9 @@ void Scene::drawScene(int gamestate) {
         effFog = Vector3Lerp(effFog, Vector3Scale(grey, atmDensity), weatherCloud * 0.6f);
         effFogDensity += atmDensity * (weatherCloud * weatherCloud / 9000.0f + weatherFog / 60.0f);
         effAmbient = Vector3Add(effAmbient, Vector3Scale(grey, 0.05f * weatherCloud * atmDensity));
+        // (#1162) A lightning flash lifts the sky's ambient for a moment: a cool white, about twice the day sky's ambient at its
+        // peak. The world shaders scale the ambient by the sky they see (fragSky), so caves and interiors stay dark.
+        effAmbient = Vector3Add(effAmbient, Vector3Scale({ 0.055f, 0.06f, 0.075f }, std::clamp(lightning, 0.0f, 1.0f) * atmDensity));
         if (alt < 0.0f && IsUnderwater(*this, camera.position)) { effFog = { 0.004f, 0.02f, 0.035f }; effFogDensity = 0.06f; } // in the sea (not a dry cave below sea level)
     }
     SetShaderValue(s, locFogColor, &effFog, SHADER_UNIFORM_VEC3);
@@ -659,9 +669,20 @@ void Scene::drawScene(int gamestate) {
     static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
     const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
     SetShaderValue(s, GetShaderLocation(s, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
+    { static const int bounce = (getenv("RAYLIBGAME_BOUNCE") && getenv("RAYLIBGAME_BOUNCE")[0] == '0') ? 0 : 1; SetShaderValue(s, GetShaderLocation(s, "bounceOn"), &bounce, SHADER_UNIFORM_INT); } // (#898) A/B
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
+    { // (#1089) the terrain tool's dig / fill sphere (render space), or none
+        float ts[4] = { 0, 0, 0, 0 }, tc[4] = { 0, 0, 0, 0 };
+        if (gToolSphere.body && GetTime() - gToolSphere.time < 0.1) {
+            const Vector3 c = gToolSphere.body->toWorld(gToolSphere.local);
+            ts[0] = c.x; ts[1] = c.y; ts[2] = c.z; ts[3] = gToolSphere.radius;
+            tc[0] = gToolSphere.color.r / 255.0f; tc[1] = gToolSphere.color.g / 255.0f; tc[2] = gToolSphere.color.b / 255.0f; tc[3] = gToolSphere.color.a / 255.0f;
+        }
+        SetShaderValue(s, GetShaderLocation(s, "toolSphere"), ts, SHADER_UNIFORM_VEC4);
+        SetShaderValue(s, GetShaderLocation(s, "toolSphereColor"), tc, SHADER_UNIFORM_VEC4);
+    }
     { static const float floorAo = getenv("RAYLIBGAME_FOLIAGE_AO") && getenv("RAYLIBGAME_FOLIAGE_AO")[0] == '0' ? 0.0f : (getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH") ? (float)atof(getenv("RAYLIBGAME_FOLIAGE_AO_STRENGTH")) : 2.0f); SetShaderValue(s, GetShaderLocation(s, "forestFloorAo"), &floorAo, SHADER_UNIFORM_FLOAT); } // (#933 layer 2)
     SetShaderValue(s, locViewPos, &camera.position, SHADER_UNIFORM_VEC3);
     // Upload every slot the shader has, so unused slots are explicitly disabled.
@@ -732,6 +753,8 @@ void Scene::drawScene(int gamestate) {
                 SetShaderValue(as, GetShaderLocation(as, "cloudShell"), &shell, SHADER_UNIFORM_FLOAT);
                 SetShaderValue(as, GetShaderLocation(as, "cloudDrift"), &cloudDrift, SHADER_UNIFORM_VEC3);
                 SetShaderValue(as, GetShaderLocation(as, "cloudCover"), &cover, SHADER_UNIFORM_FLOAT);
+                const float bolt[4] = { lightningDir.x, lightningDir.y, lightningDir.z, atmosphere.enabled ? std::clamp(lightning, 0.0f, 1.0f) : 0.0f }; // (#1162)
+                SetShaderValue(as, GetShaderLocation(as, "lightning"), bolt, SHADER_UNIFORM_VEC4);
             }
             {   // #142: the physical sky (the LUT in the dome material's emission slot, as the wide shadow map rides in the terrain's)
                 const unsigned lut = atmosphere.enabled ? SkyPhys_SkyViewTexture() : 0;
@@ -1042,6 +1065,28 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         KickGpu();
 
+        // (#1164 part 3) Screen-space reflections on the water: the opaque scene so far, resolved, with this view's
+        // matrix; the water shader marches its reflected ray through the depth and falls back to the sky. Reverse-Z only
+        // (the resolve targets exist there). RAYLIBGAME_WATER_SSR=0: off.
+        {
+            static const bool ssrAllowed = !(getenv("RAYLIBGAME_WATER_SSR") && getenv("RAYLIBGAME_WATER_SSR")[0] == '0');
+            Shader& ws = water.shader;
+            unsigned sc = 0, sd = 0; int sw = 0, sh = 0;
+            const bool ssr = ssrAllowed && revZ && SceneTarget_ResolveOpaque(sc, sd, sw, sh);
+            const int on = ssr ? 1 : 0;
+            SetShaderValue(ws, GetShaderLocation(ws, "ssrOn"), &on, SHADER_UNIFORM_INT);
+            if (ssr) {
+                rlActiveTextureSlot(16); rlEnableTexture(sc); // units 16-17: 13-14 are the local lights (locallights.cpp), 15 the haze LUT
+                rlActiveTextureSlot(17); rlEnableTexture(sd);
+                rlActiveTextureSlot(0);
+                const int u13 = 16, u14 = 17;
+                const float size[2] = { (float)sw, (float)sh };
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrColor"), &u13, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrDepth"), &u14, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrSize"), size, SHADER_UNIFORM_VEC2);
+                SetShaderValueMatrix(ws, GetShaderLocation(ws, "ssrViewProj"), MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            }
+        }
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).
