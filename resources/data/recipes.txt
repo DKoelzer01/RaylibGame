@@ -170,3 +170,13 @@ fusion_reactor 1     = ev_hull 1, superconductor 8, advanced_circuit 2, platinum
 mass_driver 1        = ev_hull 1, superconductor 12, steel_plate 8, advanced_circuit 1
 cargo_capsule 1      = aluminium_plate 4, iron_plate 2
 fibre 2           = cactus 1
+# --- (#1269) Mechanical power: shafts, cogs and the machines they turn ---
+shaft 4            = any_planks 2
+cogwheel 1         = shaft 1, any_planks 1
+large_cogwheel 1   = shaft 1, any_planks 2
+gearbox 1          = cogwheel 2, any_planks 4
+hand_crank 1       = shaft 1, any_planks 3
+stress_gauge 1     = shaft 1, any_planks 2, copper_ingot 1
+millstone 1        = any_stone 8, cogwheel 1, any_planks 4
+mechanical_saw 1   = iron_plate 2, shaft 1, any_planks 4
+mechanical_press 1 = iron_ingot 4, shaft 1, any_planks 4
