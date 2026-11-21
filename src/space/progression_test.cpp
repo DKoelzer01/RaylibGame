@@ -19,6 +19,8 @@
 #include "tools.h"
 #include "navigation.h"
 #include "suit.h"
+#include "rotationplot.h"
+#include "rotationsources.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -199,6 +201,13 @@ namespace {
         placedFrame = frameNo; // gives wait a few frames: the layout goes to the factory with the next Sync (#372)
         return plot->partCount() == before + 1;
     }
+    // (#1271 L5) A turned part (a shaft, a windmill, a press about x) whose footprint starts at `cell`.
+    bool PlaceO(const std::string& name, PartType t, Int3 cell, Int3 axis) {
+        if (!BuildTool_Place(*body, *plot, RotationPlot_PartAt(t, cell, RotationPlot_OrientFor(axis)), true)) { printf("bench: progression: could not place a %s\n", name.c_str()); failed = 1; return false; }
+        parts[name] = (int)plot->parts.size() - 1;
+        placedFrame = frameNo;
+        return true;
+    }
     void Give(const std::string& machine, const std::string& item, int count) {
         if (item.rfind("any_", 0) == 0) { // a wildcard: the real items carried, the most plentiful first
             std::vector<std::pair<int, std::string>> have;  // (fuel slots hold one kind: the biggest pile fuels best)
@@ -274,7 +283,7 @@ namespace {
         steps.clear();
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
         // Tier 0: wood, dirt, stone; clay, a crucible, a campfire to fire it.
-        add("chop trees for 70 logs", [] { while (inventory.count("any_log") < 70) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
+        add("chop trees for 220 logs", [] { while (inventory.count("any_log") < 220) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
         add("dig 84 dirt", [] { return DigFor("dirt", 84, 1.0f); });
         add("harvest bushes for fibre, pick up loose stones; craft and hold a stone pickaxe", [] {
             while (inventory.count("fibre") < 2) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
@@ -284,7 +293,7 @@ namespace {
             return true;
         });
         add("dig 72 stone (any rock, #587)", [] { return DigFor("any_stone", 72, 5.0f); });
-        add("dig 28 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(28) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
+        add("dig 44 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(44) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
         add("place the campfire and fire the crucible", [] {
             static bool started = false;
             if (!started) { started = true; if (!Place("campfire", PartType::Campfire, { 0, 0, 0 })) return false; return false; }
@@ -299,33 +308,75 @@ namespace {
             return Survival_UseItem("berries") && QuestBook_CountOf("eat") >= 1.0;
         });
         add("find ore veins", [] { FindOre(); return true; });
-        add("mine 38 copper, 8 tin, 52 iron ore and 16 coal", [] { return MineOre("copper_ore", 38) && MineOre("tin_ore", 8) && MineOre("iron_ore", 52) && MineOre("coal", 16); });
+        add("mine 60 copper, 12 tin, 90 iron ore and 40 coal", [] { return MineOre("copper_ore", 60) && MineOre("tin_ore", 12) && MineOre("iron_ore", 90) && MineOre("coal", 40); });
         add("craft and place a kiln", [] { return Craft("kiln", 1) && Place("kiln", PartType::Kiln, { 3, 0, 0 }); });
-        add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 38); Give("kiln", "any_log", 8); } return Collect("kiln", "copper_ingot", 38); });
-        add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 8); Give("kiln", "any_log", 2); } return Collect("kiln", "tin_ingot", 8); });
-        add("smelt iron", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "iron_ore", 50); Give("kiln", "any_log", 12); } return Collect("kiln", "iron_ingot", 50); }); // plates come from ingots now (#212); 2 ore stay for the electric furnace
-        add("alloy 28 bronze", [] {
+        add("smelt copper", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "copper_ore", 60); Give("kiln", "any_log", 12); } return Collect("kiln", "copper_ingot", 60); });
+        add("smelt tin", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "tin_ore", 12); Give("kiln", "any_log", 3); } return Collect("kiln", "tin_ingot", 12); });
+        add("alloy 44 bronze", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("kiln", "copper_ingot", 21); Give("kiln", "tin_ingot", 7); Give("kiln", "any_log", 3); }
-            return Collect("kiln", "bronze_ingot", 28);
+            if (!fed) { fed = true; Give("kiln", "copper_ingot", 33); Give("kiln", "tin_ingot", 11); Give("kiln", "any_log", 4); }
+            return Collect("kiln", "bronze_ingot", 44);
         });
-        // Tier 2: steam (boiler + cables + forge hammer), coke, steel.
-        add("craft a boiler, a forge hammer and cables", [] {
-            return Craft("bronze_plate", 10) && Craft("boiler", 1) && Craft("forge_hammer", 1) && Craft("copper_wire", 4) && Craft("cable", 4);
+        // Tier 1 (#1271): a fired mould, a cast head, the anvil, a bronze pickaxe.
+        add("mould clay and fire it in the kiln", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; if (!Craft("clay_mould", 1)) return false; Give("kiln", "clay_mould", 1); Give("kiln", "any_log", 1); }
+            return Collect("kiln", "fired_mould", 1);
         });
-        add("place and wire the steam machines", [] {
-            if (!Place("boiler", PartType::Boiler, { 0, 0, 4 }) || !Place("forge_hammer", PartType::ForgeHammer, { 3, 0, 4 })) return false;
-            for (int x = 0; x < 4; ++x) if (!BuildTool_Place(*body, *plot, { PartType::Cable, { x, 0, 3 }, 0 }, true)) { failed = 1; return false; }
+        add("cast a rough pick head in the kiln", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("kiln", "fired_mould", 1); Give("kiln", "bronze_ingot", 2); Give("kiln", "any_log", 1); }
+            return Collect("kiln", "rough_bronze_pick_head", 1);
+        });
+        add("craft and place an anvil", [] { return Craft("anvil", 1) && Place("anvil", PartType::Anvil, { 0, 0, 12 }); });
+        add("hammer the head at the anvil; haft a bronze pickaxe", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("anvil", "rough_bronze_pick_head", 1); }
+            Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
+            return Collect("anvil", "bronze_pick_head", 1) && Craft("bronze_pickaxe", 1);
+        });
+        // Tier 2 (#1271): charcoal, a bloomery, ingots at the anvil; a windmill turns a press.
+        add("burn 88 logs into charcoal in the campfire (coal under them)", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("campfire", "coal", 12); Give("campfire", "any_log", 88); }
+            return Collect("campfire", "charcoal", 88);
+        });
+        add("craft and place a bloomery", [] { return Craft("bloomery", 1) && Place("bloomery", PartType::Bloomery, { 3, 0, 12 }); });
+        add("smelt 88 iron blooms", [] { static bool fed = false; if (!fed) { fed = true; Give("bloomery", "iron_ore", 88); Give("bloomery", "charcoal", 88); } return Collect("bloomery", "iron_bloom", 88); }); // 2 ore stay for the electric furnace
+        add("hammer 16 blooms into iron at the anvil", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("anvil", "iron_bloom", 16); }
+            Factory::Strike(body->id, plot->id, parts["anvil"]);
+            return Collect("anvil", "iron_ingot", 16);
+        });
+        add("craft a press, a windmill and shafts; set them up in the wind", [] {
+            while (inventory.count("fibre") < 24) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
+            if (!Craft("rope", 8) || !Craft("shaft", 4) || !Craft("mechanical_press", 1) || !Craft("windmill", 1)) return false;
+            RotationSources_SetWindOverride(true, 10.0f); // (a good wind: the weather's own varies)
+            return Place("press", PartType::Press, { 6, 0, 12 }) && PlaceO("shaft", PartType::Shaft, { 8, 0, 12 }, { 1, 0, 0 })
+                && PlaceO("shaft2", PartType::Shaft, { 9, 0, 12 }, { 1, 0, 0 }) && PlaceO("windmill", PartType::Windmill, { 10, 0, 12 }, { 1, 0, 0 });
+        });
+        add("press 72 blooms into iron with the windmill (its 5 minutes of tier 2)", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("press", "iron_bloom", 72); }
+            return Collect("press", "iron_ingot", 72 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
+        });
+        add("press 16 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 16); } return Collect("press", "bronze_plate", 16); });
+        // Tier 3: a boiler and a steam engine, coke, steel.
+        add("craft a boiler, a steam engine and cogwheels", [] {
+            return Craft("bronze_plate", 10) && Craft("boiler", 1) && Craft("iron_plate", 6) && Craft("cogwheel", 2) && Craft("steam_engine", 1);
+        });
+        add("place the boiler and the steam engine against it", [] {
+            if (!Place("boiler", PartType::Boiler, { 0, 0, 4 }) || !Place("steam_engine", PartType::SteamEngine, { 2, 0, 4 })) return false;
             Give("boiler", "any_log", 7);
             return true;
         });
-        add("hammer 8 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "bronze_ingot", 8); } return Collect("forge_hammer", "bronze_plate", 8); });
         add("craft and place a coke oven and a blast furnace", [] {
             return Craft("coke_oven", 1) && Craft("blast_furnace", 1) && Place("coke_oven", PartType::CokeOven, { 9, 0, 0 }) && Place("blast_furnace", PartType::BlastFurnace, { 12, 0, 0 });
         });
-        add("bake 8 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 16); } return Collect("coke_oven", "coke", 8); });
-        add("make 34 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 34); Give("blast_furnace", "coke", 8); } return Collect("blast_furnace", "steel_ingot", 34); });
-        add("hammer 34 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("forge_hammer", "steel_ingot", 34); Give("boiler", "any_log", 17); } return Collect("forge_hammer", "steel_plate", 34); });
+        add("bake 12 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 24); } return Collect("coke_oven", "coke", 12); });
+        add("make 50 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 50); Give("blast_furnace", "coke", 12); } return Collect("blast_furnace", "steel_ingot", 50); });
+        add("press 50 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "steel_ingot", 50); } return Collect("press", "steel_plate", 50); });
         add("pen two hornhides in a ring of fences (then take their hide)", [] {
             static int phase = 0;
             if (phase == 0) {
@@ -355,9 +406,10 @@ namespace {
             return inventory.count("hide") >= 4;
         });
         // Tier 3: glass, vacuum tubes; a field; two suit modules.
-        add("dig 24 sand", [] { return DigSand(24); });
-        add("make 6 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 24); Give("kiln", "any_log", 2); } return Collect("kiln", "glass", 6); });
-        add("craft 4 vacuum tubes", [] { return Craft("copper_wire", 8) && Craft("vacuum_tube", 4); });
+        add("dig 48 sand", [] { return DigSand(48); });
+        add("make 12 glass", [] { static bool fed = false; if (!fed) { fed = true; Give("kiln", "sand", 48); Give("kiln", "any_log", 4); } return Collect("kiln", "glass", 12); });
+        add("craft 8 vacuum tubes", [] { return Craft("copper_wire", 16) && Craft("vacuum_tube", 8); });
+        add("craft and place a steam lab (#1271: research begins; it waits for its shaft)", [] { return Craft("iron_plate", 4) && Craft("cogwheel", 2) && Craft("steam_lab", 1) && Place("steam_lab", PartType::SteamLab, { 15, 0, 12 }); });
         add("till a field and plant seeds from the bushes", [] {
             while (inventory.count("grain_seeds") + inventory.count("root_seeds") + inventory.count("flax_seeds") < 1)
                 if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
@@ -412,6 +464,9 @@ namespace {
             Nav_AddWaypoint(body->name, Vector3Normalize(home), "Workshop");
             if (!Craft("field_suit", 1) || !Suit_Wear("field_suit")) return false;
             return Suit_Modules().size() == 4 && QuestBook_CountOf("waypoint") >= 1.0;
+        });
+        add("craft and place a macerator (#996: an LV machine now)", [] {
+            return Craft("lv_hull", 1) && Craft("copper_wire", 8) && Craft("basic_circuit", 2) && Craft("macerator", 1) && Place("macerator", PartType::Macerator, { 6, 0, 8 });
         });
         add("the quest book opens the MV tier", [] { return QuestBook_Tier() >= 5; });
         if (full) BuildFull();
@@ -504,7 +559,11 @@ namespace {
                             terrainTool.heldTool.empty() ? "nothing" : terrainTool.heldTool.c_str(), terrainTool.heldTool.empty() ? 0 : inventory.count(terrainTool.heldTool));
             return ok;
         });
-        add("smelt 170 iron in the kiln", Run("kiln", { { "iron_ore", 170 }, { "coal", 34 } }, "iron_ingot", 170));
+        // (#1271 L2, L5) iron from blooms: charcoal from logs, the bloomery, the windmill-driven press
+        add("chop 180 more logs for charcoal", [] { while (inventory.count("any_log") < 180) if (!TerrainTool_HarvestNearest(*body, home, true)) return false; return true; });
+        add("burn 170 charcoal", Run("campfire", { { "coal", 22 }, { "any_log", 170 } }, "charcoal", 170));
+        add("smelt 170 iron blooms", Run("bloomery", { { "iron_ore", 170 }, { "charcoal", 170 } }, "iron_bloom", 170));
+        add("press 170 blooms into iron", Run("press", { { "iron_bloom", 170 } }, "iron_ingot", 170));
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
         add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
         add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
@@ -518,7 +577,7 @@ namespace {
             return MineOre("ilmenite_ore", 4);
         });
         add("fuel the boiler again", [] { Give("boiler", "coal", 20); return true; });
-        add("hammer 160 steel plates", Run("forge_hammer", { { "steel_ingot", 160 } }, "steel_plate", 160));
+        add("press 160 steel plates", Run("press", { { "steel_ingot", 160 } }, "steel_plate", 160));
         add("dig 184 sand", [] { return DigSand(184); });
         add("make 46 glass", Run("kiln", { { "sand", 184 }, { "coal", 12 } }, "glass", 46));
         add("craft 40 vacuum tubes and 12 basic circuits", [] { return Craft("vacuum_tube", 40) && Craft("basic_circuit", 12); });
@@ -568,7 +627,7 @@ namespace {
         add("make 5 polyethylene", Run("chemical_reactor", { { "coal", 5 }, { "hydrogen", 10 } }, "polyethylene", 5));
         add("electrolyse bauxite dust into 12 aluminium (MV gate)", Run("electrolyzer", { { "bauxite_dust", 24 } }, "aluminium_ingot", 12));
         add("refuel the boiler", [] { Give("boiler", "coal", 6); return true; });
-        add("hammer 11 aluminium plates", Run("forge_hammer", { { "aluminium_ingot", 11 } }, "aluminium_plate", 11));
+        add("press 11 aluminium plates", Run("press", { { "aluminium_ingot", 11 } }, "aluminium_plate", 11));
         add("a miner on the MV row works its deposit", [] {
             static bool placed = false;
             if (!placed) {

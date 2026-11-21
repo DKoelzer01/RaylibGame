@@ -9,25 +9,33 @@
     task | get any_stone 8        | Dig stone with the pickaxe (any rock counts: granite, basalt, sandstone, limestone, marble)
     task | place campfire         | Place a campfire (G) and feed it logs or planks (I)
     task | get fired_crucible 1   | Mould a crucible from clay and fire it in the campfire
-1 | Stone age        | bronze_ingot     | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze.
+1 | Copper and bronze | bronze_pickaxe  | Build a kiln. Dig deep for copper and tin ore (veins below 8 m), smelt them in the kiln (fuel: logs, planks, charcoal, coal) and alloy 3 copper + 1 tin into bronze. Fire a clay mould in the kiln and cast bronze into it; finish the rough head at an anvil (hold RMB to hammer) and haft it into a bronze pickaxe.
     task | place kiln             | Build and place a kiln
     task | get copper_ore 4       | Find copper ore (deposits and pockets below 8 m)
     task | get tin_ore 2          | Find tin ore
-    task | get copper_ingot 3     | Smelt copper ingots in the kiln
-    task | get bronze_ingot 1     | Alloy bronze: 3 copper and 1 tin in the kiln
-2 | Bronze and steam | steel_ingot      | A boiler drives a steam engine, and shafts carry its power to the machines. Press plates, mill ore, bake coal into coke in a coke oven, and burn coke in a blast furnace to turn iron into steel.
+    task | get bronze_ingot 2     | Alloy bronze: 3 copper and 1 tin in the kiln
+    task | get fired_mould 1      | Mould clay (Tab) and fire it in the kiln
+    task | get rough_bronze_pick_head 1 | Cast a pick head: 2 bronze ingots into the fired mould, in the kiln
+    task | place anvil            | Make an anvil (6 bronze ingots) and place it
+    task | get bronze_pick_head 1 | Hammer the rough head at the anvil (hold RMB on it)
+    task | get bronze_pickaxe 1   | Haft the head into a bronze pickaxe (Tab)
+2 | Iron and rotation | iron_ingot      | Iron comes from a bloomery: iron ore and charcoal (logs in a campfire) make a bloom; hammer it into an ingot at the anvil. A water wheel in a stream or a windmill in the wind turns shafts; set a mechanical press on one to press blooms, ingots into plates, faster than any hammer.
+    task | place bloomery         | Build a bloomery (stone and clay) and place it
+    task | get iron_bloom 4       | Smelt iron blooms: iron ore and charcoal in the bloomery
+    task | get iron_ingot 4       | Hammer blooms into iron ingots at the anvil
+    task | place mechanical_press | Make a mechanical press and place it on a shaft
+    task | do wheel_press 300     | Turn the press with a water wheel or a windmill: 5 minutes of it pressing
+3 | Steam and steel  | vacuum_tube      | A boiler drives a steam engine set against it, and shafts carry its power to the machines. Bake coal into coke, burn coke in a blast furnace to turn iron into steel; glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit. The steam lab begins research.
     task | place boiler           | Place a steam boiler and feed it fuel and water
     task | place steam_engine     | Set a steam engine against the boiler: its steam turns a shaft
-    task | get bronze_plate 4     | Make 4 bronze plates (by hand, or in a mechanical press)
     task | place coke_oven        | Build a coke oven
     task | get coke 2             | Bake coal into coke
     task | place blast_furnace    | Build a blast furnace
     task | get steel_ingot 1      | Make steel from iron and coke
-3 | Steel            | vacuum_tube      | Glass (sand in a kiln), copper wire and a steel plate make a vacuum tube: the first circuit.
-    task | get sand 8             | Dig sand on a beach or riverbank
     task | get glass 2            | Melt sand into glass in the kiln
     task | get copper_wire 4      | Draw copper wire (Tab)
     task | get vacuum_tube 1      | Craft a vacuum tube
+    task | place steam_lab        | Build a steam lab and turn it with a shaft
 # (#1271) Tier 3's milestone (research; inert until the ladder's step L6): the tier's core research and every line below
     milestone | deliver steel_plate 50   | Hand in 50 steel plates at a lab
     milestone | deliver cogwheel 20      | Hand in 20 cogwheels at a lab
@@ -41,13 +49,13 @@
     task | get electric_furnace 1 | Craft an electric furnace
     task | place generator        | Place the LV generator
     task | place electric_furnace | Place the electric furnace and cable it to the generator
+    task | place macerator        | Place a macerator: 2 ore crush into 3 (half again as many ingots)
 # (#1271) Tier 4's milestone
     milestone | deliver basic_circuit 40 | Hand in 40 basic circuits at a lab
     milestone | deliver cable 100        | Hand in 100 copper cable at a lab
     milestone | build throughput basic_circuit 15 10 or throughput lv_pack 9 10 | Make 15 basic circuits or 9 LV packs a minute, for 10 minutes
     milestone | find crystal_sample      | A rare-earth or quartz crystal sample from deep caves
 5 | MV electric      | aluminium_ingot  | Process ore for more: a macerator crushes it (half again as many ingots), an ore washer and a water pump purify it (twice as many), a centrifuge splits off byproducts (iron: nickel, copper: gold). MV (128 V): an MV generator powers an electrolyzer (water: hydrogen and oxygen) and a chemical reactor (polyethylene for good circuits). Electrolyse bauxite dust into aluminium. A miner works the deposit under it.
-    task | place macerator        | Place a macerator: crushed ore smelts to half again as many ingots
     task | place ore_washer       | Place an ore washer (and a water pump) to purify crushed ore
     task | place centrifuge       | Place a centrifuge to split byproducts from purified ore
     task | get gold_ingot 1       | Smelt the gold a centrifuge splits from copper

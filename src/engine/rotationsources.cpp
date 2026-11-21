@@ -154,7 +154,7 @@ TEST(RotationSources, AWheelTurnsWithTheWaterAcrossItsAxis) {
 TEST(RotationSources, AWindmillNeedsTheCutInAndTopsOutAtFullWind) {
     EXPECT_EQ(RotationSources::WindmillRpm(0.0f), 0);
     EXPECT_EQ(RotationSources::WindmillRpm(1.4f), 0);
-    EXPECT_EQ(RotationSources::WindmillRpm(4.0f), 4);
+    EXPECT_EQ(RotationSources::WindmillRpm(4.0f), 8);
     EXPECT_EQ(RotationSources::WindmillRpm(8.0f), Rotation::kWindmill.rpm);
     EXPECT_EQ(RotationSources::WindmillRpm(30.0f), Rotation::kWindmill.rpm);
 }

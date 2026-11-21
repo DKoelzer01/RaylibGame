@@ -42,6 +42,8 @@ LadderMigratePlan LadderMigrate_Plan(const LadderMigrateInput& in) {
 
 bool LadderMigrate_Apply(QuestBookState& book, ResearchState& research, const LadderMigratePlan& plan, const std::function<int(int)>& taskCount) {
     if (research.ladderMigrated) return false;
+    // (#1271 L5) the new tiers' task lists differ from the old ones: from the new tier up, tasks done are judged again
+    for (auto it = book.tasksDone.begin(); it != book.tasksDone.end();) it = it->first >= plan.newTier ? book.tasksDone.erase(it) : std::next(it);
     if (plan.newTier > book.tier) {
         for (int t = 0; t < plan.newTier; ++t) {
             const int n = taskCount ? taskCount(t) : 0;
@@ -147,7 +149,7 @@ TEST(LadderMigrate, ItRunsOnceAndMovesTheBookUp) {
     ASSERT_TRUE(Research_Load());
     QuestBookState book;
     book.tier = 2;
-    book.tasksDone = { { 2, 0 } };
+    book.tasksDone = { { 2, 0 }, { 3, 1 } }; // (3, 1): an old tier 3 task index, meaningless in the new tier 3
     ResearchState rs;
     LadderMigrateInput in;
     in.oldTier = 2;
@@ -158,6 +160,7 @@ TEST(LadderMigrate, ItRunsOnceAndMovesTheBookUp) {
     EXPECT_TRUE(LadderMigrate_Apply(book, rs, p, tasks));
     EXPECT_EQ(book.tier, 3);
     for (int t = 0; t < 3; ++t) for (int k = 0; k < t + 2; ++k) EXPECT_TRUE(book.tasksDone.count({ t, k })) << t << "/" << k;
+    EXPECT_FALSE(book.tasksDone.count({ 3, 1 })) << "the new tier's tasks are judged again";
     EXPECT_TRUE(rs.ladderMigrated);
     // A second time (a second load) changes nothing.
     const QuestBookState before = book;

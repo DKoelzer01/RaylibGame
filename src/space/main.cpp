@@ -72,6 +72,7 @@
 #include "research.h"
 #include "researchtab.h"
 #include "researchgate.h"
+#include "laddertasks.h"
 #include "researchlabs.h"
 #include "events.h"
 #include "machinemodels.h"
@@ -10483,6 +10484,7 @@ int main(int argc, char** argv)
             Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
             GpuTimer_CpuMark("step: fluids, waterworks");
             Objectives_Update(world);
+            LadderTasks_Update(world); // (#1271 L5) tier 2's wheel-driven press
         }
         PlayerInput_EndStep();
         SimClock_EndStep();
