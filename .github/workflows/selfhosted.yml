@@ -86,8 +86,18 @@ jobs:
         with:
           ref: ${{ env.REF }}
           persist-credentials: false
+          fetch-depth: 50 # (#1392) the push's base, for the changes gate below
       - name: Paths and version
         run: bash tools/ci/selfhosted_env.sh
+      - name: Which GPU steps this push needs (#1392)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        # The GPU bit-exact check and the fluid parity only for shader, terrain, fluid, render or build changes; the
+        # headless scenarios and the server and join tests always run; a schedule or a manual run runs everything.
+        run: bash tools/ci/gpu_changes.sh
       - name: Build (incremental; another branch's run may have used the build folder in between)
         id: build
         timeout-minutes: 60
@@ -102,7 +112,7 @@ jobs:
           mkdir -p "$RUN/join-logs"
       - name: GPU context (EGL on the NVIDIA runtime)
         id: gpu
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.changes.outputs.gpu != 'false' }}
         timeout-minutes: 15
         working-directory: ${{ env.RUN }}
         run: |
@@ -119,7 +129,7 @@ jobs:
           if [ $rc -ne 0 ] || grep -q "FAIL" terrain-gpu.log; then echo "::error::--test-terrain-gpu failed (exit $rc)"; tail -40 terrain-gpu.log; exit 1; fi
           echo "terrain gpu: PASS" >> "$GITHUB_STEP_SUMMARY"
       - name: Fluid CPU = GPU parity (informational until #968's residual is fixed)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.changes.outputs.gpu != 'false' }}
         continue-on-error: true
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
