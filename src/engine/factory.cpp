@@ -113,7 +113,7 @@ PartType MachineByName(const std::string& n) {
 }
 
 // machines.txt: how each machine is powered.
-enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery, Rotation }; // Rotation (#1269): at its shaft's speed
+enum class Power : uint8_t { None, Fuel, Eu, Generator, Storage, Battery, Rotation, Steam, Engine, Dynamo, Motor }; // Rotation (#1269): at its shaft's speed; Steam..Motor (#1271 L3): a boiler for engines, a steam engine, a dynamo, an electric motor
 struct MachineDef {
     int volts = 0;
     Power power = Power::None;
@@ -153,7 +153,8 @@ void LoadMachineDefs() {
         d.volts = atoi(cols[1].c_str());
         const std::string& p = cols[2];
         d.power = p == "fuel" ? Power::Fuel : p == "eu" ? Power::Eu : p == "generator" ? Power::Generator
-                : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : p == "rotation" ? Power::Rotation : Power::None;
+                : p == "storage" ? Power::Storage : p == "battery" ? Power::Battery : p == "rotation" ? Power::Rotation
+                : p == "steam" ? Power::Steam : p == "engine" ? Power::Engine : p == "dynamo" ? Power::Dynamo : p == "motor" ? Power::Motor : Power::None;
         d.euOut = atoi(cols[3].c_str());
         if (cols.size() > 4) { std::stringstream fs(cols[4]); std::string fuel; while (fs >> fuel) d.fuels.push_back(tables.item(fuel)); }
         if (cols.size() > 5) d.waterPerTick = std::max(0, atoi(cols[5].c_str()));
@@ -240,6 +241,7 @@ struct Machine {
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
     int rotAcc = 0;                         // (#1269) rotation machines: permille of a tick of progress carried over
+    int boiler = -1;                        // (#1271 L3) a steam engine: the boiler it draws steam from (one touching it), else -1
 };
 
 struct Net {
@@ -579,8 +581,22 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
         net.voltage = 0;
         for (int m : net.machines) {
             const MachineDef& d = Def(ps.machines[m].type);
-            if (d.power == Power::Generator || d.power == Power::Battery) net.voltage = std::max(net.voltage, d.volts);
+            if (d.power == Power::Generator || d.power == Power::Battery || d.power == Power::Dynamo) net.voltage = std::max(net.voltage, d.volts);
         }
+    }
+    // (#1271 L3) Each steam engine draws from a boiler touching it (the lowest-numbered one).
+    std::unordered_map<Int3, int> boilerAt;
+    for (size_t i = 0; i < ps.machines.size(); ++i)
+        if (Def(ps.machines[i].type).power == Power::Steam) for (const Int3& c : ps.machines[i].cells) boilerAt[c] = (int)i;
+    const Int3 dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (Machine& m : ps.machines) {
+        m.boiler = -1;
+        if (Def(m.type).power != Power::Engine) continue;
+        for (const Int3& c : m.cells)
+            for (const Int3& d : dirs) {
+                auto it = boilerAt.find({ c.x + d.x, c.y + d.y, c.z + d.z });
+                if (it != boilerAt.end() && (m.boiler < 0 || it->second < m.boiler)) m.boiler = it->second;
+            }
     }
 }
 
@@ -653,8 +669,34 @@ void ApplyLayout(const LayoutMsg& L) {
 
 // (#1269) Rotation before power: rotation machines with a recipe load their network, then one solve per plot.
 void RotationStep(PlotSim& ps, int dt) {
+    // (#1271 L3) Boilers: one with steam engines burns for the engines whose networks have work (shared equally), the rest
+    // warm up and bank their fire; each engine turns at the share of a full boiler's steam it gets.
+    std::vector<int> wanting(ps.machines.size(), 0);
+    for (const Machine& m : ps.machines)
+        if (Def(m.type).power == Power::Engine && m.boiler >= 0 && ps.rot.NetHasLoad(m.part)) ++wanting[m.boiler];
+    std::vector<long long> steamOf(ps.machines.size(), 0);
+    for (size_t i = 0; i < ps.machines.size(); ++i) {
+        Machine& b = ps.machines[i];
+        const MachineDef& def = Def(b.type);
+        if (def.power != Power::Steam) continue;
+        steamOf[i] = GeneratorStep(b, def, dt, (long long)wanting[i] * Rotation::kEngineSteamPerTick * dt);
+    }
+    for (Machine& m : ps.machines) {
+        if (Def(m.type).power != Power::Engine) continue;
+        const bool wants = m.boiler >= 0 && ps.rot.NetHasLoad(m.part);
+        const long long steam = wants ? steamOf[m.boiler] / std::max(1, wanting[m.boiler]) : 0;
+        const int rpm = (int)(steam * Rotation::kSteamEngine.rpm / std::max(1, Rotation::kEngineSteamPerTick * dt));
+        ps.rot.SetSourceRpm(m.part, rpm);
+        m.status = rpm > 0 ? MachineStatus::Working : m.boiler < 0 ? MachineStatus::NoFuel : !wants ? MachineStatus::NoLoad
+                 : ps.machines[m.boiler].status == MachineStatus::NoWater ? MachineStatus::NoWater : MachineStatus::NoFuel;
+    }
     if (ps.rot.empty()) return;
-    for (const Machine& m : ps.machines) if (Def(m.type).power == Power::Rotation) ps.rot.SetRunning(m.part, m.recipe >= 0);
+    for (const Machine& m : ps.machines) {
+        const Power p = Def(m.type).power;
+        if (p == Power::Rotation) ps.rot.SetRunning(m.part, m.recipe >= 0);
+        // (#1271 L3) a dynamo loads its shaft while its cable network wanted power last step
+        else if (p == Power::Dynamo) ps.rot.SetRunning(m.part, m.powerNet >= 0 && m.powerNet < (int)ps.powerNets.size() && ps.powerNets[m.powerNet].demand > 0);
+    }
     ps.rot.Step(dt);
 }
 
@@ -676,12 +718,23 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             } else if (def.power == Power::Eu) {
                 if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (m.recipe >= 0) demand += (long long)tables.recipes[m.recipe].eu * dt;
+            } else if (def.power == Power::Motor) { // (#1271 L3) a motor draws while its shaft network has work
+                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (ps.rot.NetHasLoad(m.part)) demand += (long long)Rotation::kMotorEuPerTick * dt;
             }
         }
         // Generators burn for the consumers and the batteries' room, in a fixed order (#229: not whatever the load).
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
+            if (def.power == Power::Dynamo) { // (#1271 L3) EU from its shaft's speed (full at its rated speed), as much as is wanted
+                const long long can = (long long)Rotation::kDynamoEuPerTick * dt * std::min(1000, ps.rot.ProgressPermille(m.part)) / 1000;
+                const long long eu = std::min(can, std::max(0LL, demand + batteryRoom - supply));
+                supply += eu;
+                if (eu > 0) ps.stats.euMade[(int)m.type].add(eu);
+                m.status = eu > 0 ? MachineStatus::Working : can > 0 ? MachineStatus::NoLoad : MachineStatus::NoPower;
+                continue;
+            }
             if (def.power != Power::Generator) continue;
             const long long eu = GeneratorStep(m, def, dt, std::max(0LL, demand + batteryRoom - supply));
             supply += eu;
@@ -698,6 +751,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 const long long need = (long long)tables.recipes[m.recipe].eu * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
+            } else if (def.power == Power::Motor && def.volts >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
+                const long long need = (long long)Rotation::kMotorEuPerTick * dt;
+                m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
+                if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received);
             }
         }
         net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
@@ -719,6 +776,18 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             // A generator on no network still lights: a boiler warms up and banks its fire (#229).
             if (def.power == Power::Generator && m.powerNet < 0) GeneratorStep(m, def, dt, 0);
             if (def.power == Power::Generator && m.status == MachineStatus::Working) ++active;
+            continue;
+        }
+        if (def.power == Power::Steam || def.power == Power::Engine || def.power == Power::Dynamo) { // (#1271 L3) stepped above
+            if (m.status == MachineStatus::Working) ++active;
+            continue;
+        }
+        if (def.power == Power::Motor) { // (#1271 L3) its shaft turns at the share of full power it got (next tick's solve)
+            const int rpm = (int)((long long)m.received * Rotation::kMotor.rpm / std::max(1, Rotation::kMotorEuPerTick * dt));
+            ps.rot.SetSourceRpm(m.part, rpm);
+            m.status = rpm > 0 ? MachineStatus::Working : m.powerNet < 0 ? MachineStatus::NoPower : ps.rot.NetHasLoad(m.part) ? MachineStatus::NoPower : MachineStatus::NoLoad;
+            if (rpm > 0) ++active;
+            if (m.powerNet < 0) m.received = 0;
             continue;
         }
         // (#1214) asleep (nothing could start, nothing changed since): the same answer as a search, without one
@@ -951,7 +1020,7 @@ void FillCableView() {
     cableView.voltage = net.voltage;
     for (int mi : net.machines) {
         const Power pw = Def(p->machines[mi].type).power;
-        cableView.generators += pw == Power::Generator; cableView.batteries += pw == Power::Battery; cableView.consumers += pw == Power::Eu;
+        cableView.generators += pw == Power::Generator || pw == Power::Dynamo; cableView.batteries += pw == Power::Battery; cableView.consumers += pw == Power::Eu || pw == Power::Motor;
     }
     cableView.supply = (float)net.supply / (float)net.ticks;
     cableView.demand = (float)net.demand / (float)net.ticks;
@@ -1875,6 +1944,68 @@ TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
     EXPECT_GT(sleeping.asleepMachines, 0) << "the starved macerators sleep";
     EXPECT_GT(sleeping.asleepNets, 0) << "their conveyor networks sleep";
     EXPECT_GT(sleeping.sandInLateChest, 0) << "the starved group woke when stone came and its sand reached its chest";
+}
+
+// (#1271 L3) Steam on rotation and the bridge to LV, on one plot:
+//  - a boiler, a steam engine against it, a shaft to a mechanical press (iron ingots) and on to a dynamo cabled to an electric
+//    furnace (iron ore): the boiler warms up, the engine turns the press and the dynamo, the dynamo powers the furnace;
+//  - an LV generator cabled to an electric motor turning a shaft into a second press: EU back into rotation.
+TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 90; L.version = 1;
+    int part = 0;
+    const int xAxis = RotationPlot_OrientFor({ 1, 0, 0 });
+    auto add = [&](PartType t, Int3 at, int orient = 0) {
+        const Part pt = RotationPlot_PartAt(t, at, orient);
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(pt, fp);
+        if (IsMachine(t)) {
+            std::vector<Int3> cells;
+            for (const auto& c : fp) cells.push_back(c.first);
+            L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        }
+        RotationPartMsg rm;
+        if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+        return part++;
+    };
+    const int boiler = add(PartType::Boiler, { 0, 0, 0 }), engine = add(PartType::SteamEngine, { 2, 0, 0 });
+    add(PartType::Shaft, { 4, 0, 0 }, xAxis);
+    const int press = add(PartType::Press, { 5, 0, 0 }), dynamo = add(PartType::Dynamo, { 7, 0, 0 });
+    L.cables = { { 9, 0, 0 }, { 10, 0, 0 } };
+    const int furnace = add(PartType::Furnace, { 11, 0, 0 });
+    const int gen = add(PartType::Generator, { 0, 0, 10 });
+    L.cables.push_back({ 2, 0, 10 });
+    const int motor = add(PartType::Motor, { 3, 0, 10 });
+    add(PartType::Shaft, { 5, 0, 10 }, xAxis);
+    const int press2 = add(PartType::Press, { 6, 0, 10 });
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 90);
+    auto M = [&](int p) -> Machine& { return ps.machines[ps.byPart.at(p)]; };
+    int buckets = 0;
+    InsertInto(M(boiler), tables.item("coal"), 64, true, buckets);
+    M(boiler).water = kWaterTank;
+    InsertInto(M(press), tables.item("iron_ingot"), 8, false, buckets);
+    InsertInto(M(furnace), tables.item("iron_ore"), 8, false, buckets);
+    InsertInto(M(gen), tables.item("coal"), 16, true, buckets);
+    InsertInto(M(press2), tables.item("iron_ingot"), 8, false, buckets);
+    EXPECT_EQ(M(engine).boiler, ps.byPart.at(boiler)) << "the engine finds the boiler it touches";
+    long long made = 0; int active = 0;
+    bool engineTurned = false, dynamoWorked = false, motorTurned = false;
+    for (int t = 0; t < 3000; ++t) {
+        TickPlot(ps, 1, made, active);
+        engineTurned |= ps.rot.SpeedMilli(engine) != 0;
+        dynamoWorked |= M(dynamo).status == MachineStatus::Working;
+        motorTurned |= ps.rot.SpeedMilli(motor) != 0;
+    }
+    EXPECT_TRUE(engineTurned) << "the boiler's steam turned the engine";
+    EXPECT_TRUE(dynamoWorked) << "the dynamo made EU for the furnace";
+    EXPECT_TRUE(motorTurned) << "the generator's EU turned the motor";
+    EXPECT_GT(CountItems(M(press).out, kSlots, tables.item("iron_plate")), 0) << "the steam-driven press pressed plates";
+    EXPECT_GT(CountItems(M(furnace).out, kSlots, tables.item("iron_ingot")), 0) << "the dynamo-powered furnace smelted";
+    EXPECT_GT(CountItems(M(press2).out, kSlots, tables.item("iron_plate")), 0) << "the motor-driven press pressed plates";
+    plots.clear(); plotIndexDirty = true;
 }
 
 // (#1102) A chest keeps fractions as the player inventory does: 2.5 + 0.4 dirt is 2.9 in its slot; a slot holding only a

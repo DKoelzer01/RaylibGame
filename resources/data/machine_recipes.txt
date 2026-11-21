@@ -22,14 +22,6 @@ kiln            | tin_ingot 1      | tin_dust 1                | 100 | 0
 kiln            | iron_ingot 1     | iron_dust 1               | 150 | 0
 coke_oven       | coke 1           | coal 2                    | 600 | 0
 blast_furnace   | steel_ingot 1    | iron_ingot 1              | 600 | 0
-forge_hammer    | bronze_plate 1   | bronze_ingot 1            | 100 | 4
-forge_hammer    | iron_plate 1     | iron_ingot 1              | 100 | 4
-forge_hammer    | steel_plate 1    | steel_ingot 1             | 160 | 6
-alloy_smelter   | bronze_ingot 4   | copper_ingot 3, tin_ingot 1 | 200 | 6
-steam_macerator | copper_dust 1    | copper_ore 1              | 200 | 4
-steam_macerator | tin_dust 1       | tin_ore 1                 | 200 | 4
-steam_macerator | iron_dust 1      | iron_ore 1                | 200 | 4
-steam_macerator | sand 1           | stone 1                   | 100 | 2
 furnace         | iron_ingot 1     | iron_ore 1                | 200 | 8
 furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
 furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
@@ -59,11 +51,7 @@ furnace         | tin_ingot 1        | tin_crushed 1             | 150 | 8
 furnace         | tin_ingot 1        | tin_dust 1                | 100 | 8
 furnace         | nickel_ingot 1     | nickel_dust 1             | 100 | 8
 furnace         | gold_ingot 1       | gold_dust 1               | 100 | 8
-forge_hammer    | aluminium_plate 1  | aluminium_ingot 1         | 120 | 6
 # Plates and dusts that had no recipe (--test-recipes).
-forge_hammer    | copper_plate 1     | copper_ingot 1            | 100 | 4
-forge_hammer    | tin_plate 1        | tin_ingot 1               | 100 | 4
-forge_hammer    | titanium_plate 1   | titanium_ingot 1          | 200 | 8
 macerator       | bronze_dust 1      | bronze_ingot 1            | 100 | 4
 macerator       | aluminium_dust 1   | aluminium_ingot 1         | 100 | 6
 macerator       | titanium_dust 1    | titanium_ingot 1          | 160 | 8
@@ -123,3 +111,7 @@ mechanical_press | iron_plate 1       | iron_ingot 1              | 100 | 0
 mechanical_press | bronze_plate 1     | bronze_ingot 1            | 100 | 0
 mechanical_press | copper_plate 1     | copper_ingot 1            | 100 | 0
 mechanical_press | tin_plate 1        | tin_ingot 1               | 100 | 0
+# (#1271 L3) the press takes over the forge hammer's plates (the 8 V steam machines are gone)
+mechanical_press | steel_plate 1      | steel_ingot 1             | 160 | 0
+mechanical_press | aluminium_plate 1  | aluminium_ingot 1         | 120 | 0
+mechanical_press | titanium_plate 1   | titanium_ingot 1          | 200 | 0

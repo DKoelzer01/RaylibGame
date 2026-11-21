@@ -32,6 +32,9 @@ int RotationPlot_OrientFor(Int3 to);
 // The part of that type and orientation whose footprint starts at `cell` (Plot::Footprint turns about the origin corner, so
 // a turned one-cell part's origin is not its cell).
 Part RotationPlot_PartAt(PartType t, Int3 cell, int orient);
+// A source whose speed is set from outside the solver: water wheels and windmills (rotationsources.*), steam engines and motors
+// (#1271 L3: the factory, from their boiler's steam and the EU they get).
+inline bool RotationPlot_FedSource(PartType t) { return t == PartType::WaterWheel || t == PartType::Windmill || t == PartType::SteamEngine || t == PartType::Motor; }
 constexpr int kCrankHoldTicks = 6; // a crank turns this long (0.3 s) after the last "held" from the player
 
 struct RotationPlot {
@@ -48,6 +51,7 @@ struct RotationPlot {
     void Hold(int part);                         // a player turns this crank (for kCrankHoldTicks)
     void SetSourceRpm(int part, int rpm);        // (#1270) a water wheel's or windmill's speed now (from rotationsources.*)
     void SetRunning(int part, bool running);     // a consumer has a recipe this tick (only running ones load the net)
+    bool NetHasLoad(int part) const;             // (#1271 L3) a running consumer on this part's network (whatever it turns at now)
     void Step(int dt);                           // dt ticks: cranks count down, then one solve
     bool Has(int part) const { return byPart.count(part) > 0; }
     int64_t SpeedMilli(int part) const;          // signed milli-RPM now (0 if unknown)

@@ -89,6 +89,9 @@ const char* PartName(PartType t) {
         case PartType::Press: return "mechanical press";
         case PartType::WaterWheel: return "water wheel"; // (#1270)
         case PartType::Windmill: return "windmill";
+        case PartType::SteamEngine: return "steam engine"; // (#1271 L3)
+        case PartType::Dynamo: return "dynamo";
+        case PartType::Motor: return "electric motor";
         default: return "?";
     }
 }
@@ -133,6 +136,9 @@ const char* PartMachineName(PartType t) {
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
         case PartType::Saw: return "mechanical_saw";
         case PartType::Press: return "mechanical_press";
+        case PartType::SteamEngine: return "steam_engine"; // (#1271 L3)
+        case PartType::Dynamo: return "dynamo";
+        case PartType::Motor: return "electric_motor";
         default: return nullptr;
     }
 }
@@ -371,6 +377,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: // (#1193)
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
+        case PartType::SteamEngine: case PartType::Dynamo: case PartType::Motor: // (#1271 L3)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs

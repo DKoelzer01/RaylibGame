@@ -42,6 +42,13 @@ constexpr ConsumerSpec kPress     { 8, 16, 32 };
 constexpr ConsumerSpec kBellows   { 2, 8, 16 };
 constexpr ConsumerSpec kMixer     { 4, 32, 64 };
 constexpr ConsumerSpec kMechPump  { 4, 8, 32 };
+// (#1271 L3) between rotation and LV: the dynamo loads its shaft like a machine and makes up to kDynamoEuPerTick at its rated speed;
+// the motor draws kMotorEuPerTick and turns its shaft as a source (at full power: its rated speed and capacity).
+constexpr ConsumerSpec kDynamo    { 8, 16, 64 };  // 512 SU at 64 RPM
+constexpr SourceSpec kMotor       { 64, 4 };      // 256 SU
+constexpr int kDynamoEuPerTick = 32;             // an LV generator's worth
+constexpr int kMotorEuPerTick = 16;
+constexpr int kEngineSteamPerTick = 8;           // a boiler's full output (machines.txt): a steam engine at full speed
 
 // ---- The graph (the factory rebuilds it when a plot's layout changes; per tick it updates the sources and `running`) ----
 enum class NodeKind : uint8_t { Transmission, Source, Consumer };

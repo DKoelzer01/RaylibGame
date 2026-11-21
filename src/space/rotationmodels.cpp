@@ -103,6 +103,11 @@ void DrawPart(PartType t) {
         Teeth(18, 0.31f, 0.02f, 0.035f, kSteel);
         IB_Cylinder({ 0, -0.04f, 0 }, 0.05f, 0.05f, 0.08f, kDarkWood);
         break;
+    case PartType::Dynamo: case PartType::Motor: // (#1271 L3) a drum along its axis, a copper band on the dynamo, a red mark
+        IB_Cylinder({ 0, -0.22f, 0 }, 0.2f, 0.2f, 0.44f, t == PartType::Dynamo ? Color{ 184, 110, 60, 255 } : kSteel);
+        IB_Cube({ 0.2f, 0, 0 }, { 0.04f, 0.4f, 0.06f }, kMark);
+        break;
+    case PartType::SteamEngine: // (#1271 L3) a flywheel, as over the press
     case PartType::Press: // the flywheel over the press
         IB_Cylinder({ 0, -0.04f, 0 }, 0.28f, 0.28f, 0.08f, kSteel);
         IB_Cube({ 0, 0, 0 }, { 0.5f, 0.1f, 0.06f }, kDarkWood);
