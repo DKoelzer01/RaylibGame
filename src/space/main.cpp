@@ -8212,6 +8212,19 @@ int main(int argc, char** argv)
                         // drew diamonds): rows of cells 0.25 m apart sideways, one line per height from the bed up to the sea level.
                         // (#1091) FLOWDBG=3: the thin layer's row (-0.50 m, 4 m from the end) every frame from 14 to 14.5 s, printed
                         // when it changes: a layer that flips each tick (momentum sloshing) alternates; a frozen film repeats.
+                        { // (#1091) with FLUID_FACESTAT=1 (CPU mode): the stopping rules counted over 14.0-14.5 s
+                            static int statPhase = 0;
+                            long long st[16];
+                            if (statPhase == 0 && t >= 14.0) { FluidKernel::FaceStats(st, true); statPhase = 1; }
+                            else if (statPhase == 1 && t >= 14.5) {
+                                FluidKernel::FaceStats(st, true); statPhase = 2;
+                                printf("bench: flow dbg3 facestat 14.0-14.5 s, wet/dry faces: flowed %lld; stopped by solid %lld, equal head %lld, "
+                                       "static taker %lld, source %lld, under minSpread %lld, kind %lld, kindFor %lld, giver not resting %lld, taker full %lld\n",
+                                       st[0], st[1], st[3], st[4], st[5], st[6], st[7], st[8], st[9], st[10]);
+                                printf("bench: flow dbg3 facestat thin water over room: fell %lld, held (below unprocessed) %lld, held (other) %lld\n",
+                                       st[13], st[11], st[12]);
+                            }
+                        }
                         if (EnvFlag("FLOWDBG") && atoi(getenv("FLOWDBG")) >= 3 && t >= 14.0 && t < 14.5) {
                             static std::string lastRow;
                             const Vector3 up = Vector3Normalize(flowEnd);

@@ -83,6 +83,10 @@ void Substep(Grid& g, const Params& p, const std::vector<int>& list);
 // other bricks (face records of the processed slots, every slot's column deltas) and seeds the dry-cell skip's masks
 // from the cells, so the first substep skips dry groups like the rest. Runs the slots on the job system.
 void BeginTick(Grid& g, const std::vector<int>& list, int slots);
+// (#1091 diagnosis, FLUID_FACESTAT=1, CPU mode) the counts since the last reset: [0] wet/dry faces that flowed, [1-10] the
+// faceFlow return that stopped one, [11] thin water over room not falling for an unprocessed cell below, [12] another rule,
+// [13] it fell.
+void FaceStats(long long out[16], bool reset);
 
 } // namespace FluidKernel
 

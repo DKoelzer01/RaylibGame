@@ -22,6 +22,14 @@ void Grid::resize(int slots) {
     gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
 }
 
+// (#1091 diagnosis) FLUID_FACESTAT=1: why wet/dry faces don't flow (1-10 the early return that stopped one, 0 it flowed), and
+// thin water over a cell with room that didn't fall (11 the cell below not processed, 12 another rule, 13 it fell).
+std::atomic<long long> gFaceStat[16];
+const bool gFaceStatOn = EnvFlag("FLUID_FACESTAT");
+void FaceStats(long long out[16], bool reset) {
+    for (int i = 0; i < 16; ++i) out[i] = reset ? gFaceStat[i].exchange(0) : gFaceStat[i].load();
+}
+
 namespace {
 
 constexpr uint32_t SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u;
@@ -147,25 +155,29 @@ struct Pass {
     }
     void faceFlow(int ga, uint32_t a, int gb, uint32_t b, float qp, float& qTot, float& qMom) const {
         qTot = 0.0f; qMom = 0.0f;
-        if ((FL(a) & SOLID) || (FL(b) & SOLID)) return;
+        // (#1091 diagnosis, FLUID_FACESTAT=1) which rule stops a face between a wet and a dry cell; reason 0 = it flowed.
+        const bool stat = gFaceStatOn && ((F(a) > 0u) != (F(b) > 0u));
+        auto stop = [&](int reason) { if (stat) gFaceStat[reason].fetch_add(1, std::memory_order_relaxed); };
+        if ((FL(a) & SOLID) || (FL(b) & SOLID)) { stop(1); return; }
         if (F(a) >= CAP(a) && F(b) >= CAP(b)) return; // both full: the taker has no room either way (before the head walks)
         const int ha = headOf(ga, a), hb = headOf(gb, b);
-        if (ha == hb) return;
+        if (ha == hb) { stop(3); return; }
         const bool aGives = ha > hb;
         const uint32_t d = aGives ? a : b, r = aGives ? b : a;
         const int gd = aGives ? ga : gb, gr = aGives ? gb : ga;
-        if ((FL(r) & (SOURCE | SINK)) == SOURCE) return;
-        if ((FL(d) & SOURCE) && !(FL(r) & DUG)) return;
+        if ((FL(r) & (SOURCE | SINK)) == SOURCE) { stop(4); return; }
+        if ((FL(d) & SOURCE) && !(FL(r) & DUG)) { stop(5); return; }
         const uint32_t kd = KIND(d);
         const bool under = submerged(gd, d);
         const float colDepth = under ? (float)F(d) / p.hu : columnDepth(gd, d);
-        if (colDepth * p.hu < (float)p.minSpread[kd]) return;
+        if (colDepth * p.hu < (float)p.minSpread[kd]) { stop(6); return; }
         int ds, dx, dy, dz, rs, rx, ry, rz;
         cellPos(gd, ds, dx, dy, dz); cellPos(gr, rs, rx, ry, rz);
-        if (F(r) > 0u) { if (KIND(r) != kd) return; }
-        else if (kindFor(rs, rx, ry, rz) != kd) return;
-        if (!rests(ds, dx, dy, dz, d)) return;
-        if (F(r) >= CAP(r)) return;
+        if (F(r) > 0u) { if (KIND(r) != kd) { stop(7); return; } }
+        else if (kindFor(rs, rx, ry, rz) != kd) { stop(8); return; }
+        if (!rests(ds, dx, dy, dz, d)) { stop(9); return; }
+        if (F(r) >= CAP(r)) { stop(10); return; }
+        stop(0);
         const float sgn = aGives ? 1.0f : -1.0f;
         const int localDiff = (int)(SH(d) + F(d)) - (int)(SH(r) + F(r));
         float share = 0.0f;
@@ -577,6 +589,8 @@ struct Pass {
             const uint32_t outF = f > 0 ? downFlux(c, below, pB, gb >= 0) : 0u;
             const uint32_t inF = ga >= 0 ? downFlux(above, c, true, true) * (uint32_t)pA : 0u;
             if (gb < 0 && f > 0 && !(fl & SOURCE)) g.flags[slot] |= 1u << (1 + fB);
+            if (gFaceStatOn && f > 0 && f < (int)CAP(c) && gb >= 0 && !(FL(below) & SOLID) && F(below) < CAP(below))
+                gFaceStat[outF > 0u ? 13 : !pB ? 11 : 12].fetch_add(1, std::memory_order_relaxed);
             const int nf = f - (int)outF + (int)inF;
             if (f == 0 && inF > 0u) kind = KIND(above);
             outC[gi] = Pack((uint32_t)std::clamp(nf, 0, 255), (fl & 31u) | (kind << 5), c);
