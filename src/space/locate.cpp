@@ -175,6 +175,53 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
     return true;
 }
 
+std::string Locate_LocateCommand(const Planetoid& body, Vector3 from, const std::vector<std::string>& args, LocateHit* nearest) {
+    if (args.empty()) return "/locate <feature> [n]: " + Locate_FeatureList();
+    const int n = args.size() > 1 ? std::max(1, atoi(args[1].c_str())) : 1;
+    std::vector<LocateHit> hits;
+    std::string why;
+    if (!Locate_Find(body, from, args[0], n, hits, why)) return why;
+    std::string reply;
+    for (size_t i = 0; i < hits.size(); ++i) {
+        float la, lo; Locate_LatLonOf(hits[i].at, la, lo);
+        char dist[32];
+        if (hits[i].distance < 1000.0f) snprintf(dist, sizeof dist, "%.0f m", hits[i].distance); else snprintf(dist, sizeof dist, "%.1f km", hits[i].distance / 1000.0f);
+        char line[256];
+        snprintf(line, sizeof line, "%s%s: %s %s (%.0f deg), lat %.4f lon %.4f", i ? "\n" : "", hits[i].what.c_str(), dist, Locate_CompassPoint(hits[i].bearing), hits[i].bearing, la, lo);
+        reply += line;
+    }
+    if (nearest) *nearest = hits[0];
+    if (!why.empty()) reply += "\n" + why;
+    return reply;
+}
+
+bool Locate_TpTarget(const Planetoid& body, Vector3 from, const std::vector<std::string>& args, Vector3& feet, bool& hover, std::string& reply) {
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    if (!pf) { reply = "Nowhere to go here (not a planet)"; return false; }
+    Vector3 to{}; float height = 0.0f; std::string where;
+    char* end = nullptr;
+    const float lat = args.empty() ? 0.0f : strtof(args[0].c_str(), &end);
+    if (args.size() >= 2 && end && *end == 0) { // lat lon [height]
+        if (fabsf(lat) > 90.0f) { reply = "Latitude is -90 to 90"; return false; }
+        const float lon = (float)atof(args[1].c_str());
+        height = args.size() > 2 ? std::max(0.0f, (float)atof(args[2].c_str())) : 0.0f;
+        const Vector3 d = Locate_DirFromLatLon(lat, lon);
+        to = Vector3Scale(d, pf->radius + pf->elevation(d));
+        char w[64]; snprintf(w, sizeof w, "lat %.4f lon %.4f", lat, lon); where = w;
+    } else if (!args.empty()) { // a feature: its nearest
+        std::vector<LocateHit> hits; std::string why;
+        if (!Locate_Find(body, from, args[0], 1, hits, why)) { reply = why; return false; }
+        to = hits[0].at; where = hits[0].what;
+        height = args.size() > 1 ? std::max(0.0f, (float)atof(args[1].c_str())) : 0.0f;
+    } else { reply = "/tp <lat> <lon> [height] or /tp <feature> [height] (" + Locate_FeatureList() + ")"; return false; }
+    // On the ground (a cave feature: at it, underground) 0.3 m up so the feet don't start in the soil, or height m over it.
+    feet = Vector3Add(to, Vector3Scale(Vector3Normalize(to), 0.3f + height));
+    hover = height > 2.0f; // (creative: hover there rather than fall)
+    char h[32]; snprintf(h, sizeof h, ", %.0f m up", height);
+    reply = "Teleported to " + where + (height > 0.0f ? std::string(h) : std::string());
+    return true;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1171): latitude and longitude round-trip; compass points ----
 #include <gtest/gtest.h>

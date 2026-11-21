@@ -46,46 +46,18 @@ std::string LocateCommand(const std::string& cmd, const std::string& line) {
     Planetoid& body = *p.nearest;
     const Vector3 from = body.toLocalD(p.position).toFloat();
     if (cmd == "locate") {
-        if (args.empty()) return "/locate <feature> [n]: " + Locate_FeatureList();
-        const int n = args.size() > 1 ? std::max(1, atoi(args[1].c_str())) : 1;
-        std::vector<LocateHit> hits;
-        std::string why;
-        if (!Locate_Find(body, from, args[0], n, hits, why)) return why;
-        std::string reply;
-        for (size_t i = 0; i < hits.size(); ++i) {
-            float la, lo; Locate_LatLonOf(hits[i].at, la, lo);
-            const std::string dist = hits[i].distance < 1000.0f ? TextFormat("%.0f m", hits[i].distance) : TextFormat("%.1f km", hits[i].distance / 1000.0f);
-            reply += TextFormat("%s%s: %s %s (%.0f deg), lat %.4f lon %.4f", i ? "\n" : "", hits[i].what.c_str(), dist.c_str(),
-                                Locate_CompassPoint(hits[i].bearing), hits[i].bearing, la, lo);
-        }
-        Nav_AddWaypoint(body.name, Vector3Normalize(hits[0].at), "/locate " + Lower(args[0]), false); // (the compass and the map show it)
-        if (!why.empty()) reply += "\n" + why;
+        LocateHit nearest;
+        nearest.distance = -1.0f;
+        const std::string reply = Locate_LocateCommand(body, from, args, &nearest);
+        if (nearest.distance < 0.0f) return reply;
+        Nav_AddWaypoint(body.name, Vector3Normalize(nearest.at), "/locate " + Lower(args[0]), false); // (the compass and the map show it)
         return reply + "\n(a waypoint on the nearest; /tp " + Lower(args[0]) + " goes there)";
     }
-    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
-    if (!pf) return "Nowhere to go here (not a planet)";
-    Vector3 to{}; float height = 0.0f; std::string where;
-    char* end = nullptr;
-    const float lat = args.empty() ? 0.0f : strtof(args[0].c_str(), &end);
-    if (args.size() >= 2 && end && *end == 0) { // lat lon [height]
-        if (fabsf(lat) > 90.0f) return "Latitude is -90 to 90";
-        const float lon = (float)atof(args[1].c_str());
-        height = args.size() > 2 ? std::max(0.0f, (float)atof(args[2].c_str())) : 0.0f;
-        const Vector3 d = Locate_DirFromLatLon(lat, lon);
-        to = Vector3Scale(d, pf->radius + pf->elevation(d));
-        where = TextFormat("lat %.4f lon %.4f", lat, lon);
-    } else if (!args.empty()) { // a feature: its nearest
-        std::vector<LocateHit> hits; std::string why;
-        if (!Locate_Find(body, from, args[0], 1, hits, why)) return why;
-        to = hits[0].at; where = hits[0].what;
-        height = args.size() > 1 ? std::max(0.0f, (float)atof(args[1].c_str())) : 0.0f;
-    } else return "/tp <lat> <lon> [height] or /tp <feature> [height] (" + Locate_FeatureList() + ")";
-    // On the ground (a cave feature: at it, underground) 0.3 m up so the feet don't start in the soil, or height m over it.
-    const Vector3 up = Vector3Normalize(to);
-    const Vector3 feet = Vector3Add(to, Vector3Scale(up, 0.3f + height));
-    p.flyMode = height > 2.0f; // (creative: hover there rather than fall)
-    p.placeAt(*gCmdWorld, body, (body.toWorldD(DVec3(feet)) - gCmdWorld->renderOrigin).toFloat());
-    return "Teleported to " + where + (height > 0.0f ? std::string(TextFormat(", %.0f m up", height)) : std::string());
+    Vector3 feet{}; bool hover = false; std::string reply;
+    if (!Locate_TpTarget(body, from, args, feet, hover, reply)) return reply;
+    p.flyMode = hover;
+    p.placeAt(*gCmdWorld, body, (body.toWorldD(DVec3(feet)) - gCmdWorld->renderOrigin).toFloat()); // (its loading screen holds the player)
+    return reply;
 }
 }
 

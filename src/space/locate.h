@@ -29,4 +29,11 @@ const char* Locate_CompassPoint(float bearing); // "N", "NE", ...
 Vector3 Locate_DirFromLatLon(float latDeg, float lonDeg);
 void Locate_LatLonOf(Vector3 local, float& latDeg, float& lonDeg);
 
+// The commands' work, shared by single player (commandline.cpp) and a server's ops (main.cpp's chat handler). args: the
+// words after the command.
+// /locate <feature> [n]: the reply lines; `nearest` (when found) the first hit, for a waypoint.
+std::string Locate_LocateCommand(const Planetoid& body, Vector3 from, const std::vector<std::string>& args, LocateHit* nearest = nullptr);
+// /tp <lat> <lon> [height] | /tp <feature> [height]: the feet's body-local spot and whether to hover there; false: reply says why.
+bool Locate_TpTarget(const Planetoid& body, Vector3 from, const std::vector<std::string>& args, Vector3& feet, bool& hover, std::string& reply);
+
 #endif
