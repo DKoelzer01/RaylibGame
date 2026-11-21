@@ -696,7 +696,7 @@ static void DrawGrid(float cell = 54.0f) {
 // known and free.
 namespace {
     enum class CraftCat { All, CanMake, Tools, Building, Materials, Food, Suit, Count };
-    const char* kCraftCatNames[] = { "All", "Can make", "Tools", "Building", "Materials", "Food", "Suit" };
+    const char* kCraftCatNames[] = { "All", "Craftable", "Tools", "Building", "Materials", "Food", "Suit" }; // (#1149: "Can make" was "Craftable")
     CraftCat CategoryOf(const std::string& id) {
         if (Suit_IsSuit(id) || Suit_IsModule(id)) return CraftCat::Suit;
         if (Survival_IsFood(id)) return CraftCat::Food;
@@ -762,7 +762,12 @@ static void DrawCrafting() {
     ImGui::SetNextItemWidth(-1.0f); // (#889: the crafting column's width)
     ImGui::InputTextWithHint("##recipesearch", "search recipes", query, sizeof(query));
     const float chipsRight = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    // (#1149, the user) A category chip only when some known recipe is in it (All and Craftable always).
+    bool catKnown[(int)CraftCat::Count] = { true, true };
+    for (const Recipe& r : recipes) if (RecipeBook_Known(r)) catKnown[(int)CategoryOf(r.output)] = true;
+    if (!catKnown[(int)cat]) cat = CraftCat::All;
     for (int c = 0; c < (int)CraftCat::Count; ++c) { // the category chips, wrapping in the column
+        if (!catKnown[c]) continue;
         const float w = ImGui::CalcTextSize(kCraftCatNames[c]).x + ImGui::GetStyle().FramePadding.x * 2.0f;
         if (c > 0 && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w < chipsRight) ImGui::SameLine();
         const bool on = (int)cat == c;
@@ -799,6 +804,14 @@ static void DrawCrafting() {
                 if (knownNow[k] && !canMake(recipes[k])) planOk[k] = CraftPlan_Make(recipes, known, carried, (int)k, 1, machineMade).ok;
     }
     auto canMakeAt = [&](int k) { return canMake(recipes[k]) || (k >= 0 && k < (int)planOk.size() && planOk[k]); };
+    // (#1149, the user) A click on a recipe opens its page; a click on its icon again (the page open) crafts one, its
+    // intermediates first (#928; joined, the server plans it, #946). It was a double-click.
+    auto craftOne = [&](int k) {
+        if (k < 0 || k >= (int)recipes.size()) return;
+        if (!canMakeAt(k)) { GameUI_Toast("Missing ingredients (the page lists them)"); Audio_Play(Sfx::Error, 0.4f); return; }
+        if (creative || canMake(recipes[k])) craftQueue.push_back({ k, 1 });
+        else if (!Crafting_RequestRecursive(k, 1)) QueuePlan(CraftPlan_Make(recipes, known, carried, k, 1, machineMade));
+    };
     // A pending craft completes once the pulled items have arrived.
     if (pending >= 0 && pending < (int)recipes.size()) {
         const Recipe& r = recipes[pending];
@@ -843,10 +856,6 @@ static void DrawCrafting() {
         if (ImGui::IsItemVisible()) cellsDrawn.push_back({ p, qd, (int)i });
         if (sel) { recipeAnchorMin = p; recipeAnchorMax = qd; } // (follows the cell as the grid scrolls)
         if (shown == 1) { recipeTest.firstCell = ImVec2((p.x + qd.x) * 0.5f, (p.y + qd.y) * 0.5f); recipeTest.firstRecipe = (int)i; }
-        if (hover && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && can) { // double-click: craft one (#928: its intermediates first)
-            if (creative || canMake(r)) craftQueue.push_back({ (int)i, 1 });
-            else if (!Crafting_RequestRecursive((int)i, 1)) QueuePlan(CraftPlan_Make(recipes, known, carried, (int)i, 1, machineMade)); // (#946: joined, the server plans it)
-        }
         dl->AddRectFilled(p, qd, can ? IM_COL32(34, 40, 36, 230) : IM_COL32(30, 31, 34, 200), 4.0f);
         DrawItemIcon(dl, ImVec2(p.x + 4, p.y + 2), cell - 8, r.output, !can);
         if (r.outputCount > 1) {
@@ -864,7 +873,7 @@ static void DrawCrafting() {
         ImGui::TextDisabled("%d recipes still to discover: find new materials (and some need more)", hidden);
         ImGui::PopTextWrapPos();
     }
-    if (shown > 0) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Click a recipe for its page; double-click crafts one"); ImGui::PopTextWrapPos(); }
+    if (shown > 0) { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("Click a recipe for its page; click its icon again to craft one"); ImGui::PopTextWrapPos(); }
     ImGui::EndChild();
 
     // (#921) The selected recipe's page: a pop-up beside its cell (to the right while it stays in the crafting column, else
@@ -887,12 +896,12 @@ static void DrawCrafting() {
       if (!recipePageOpen || selectedRecipe < 0 || ImGui::IsKeyPressed(ImGuiKey_Escape)) { recipePageOpen = false; ImGui::CloseCurrentPopup(); }
       else {
         // A click outside the page: on another recipe, the page goes there (ImGui closes it this frame; it opens again on
-        // that one next frame); on the same recipe, or anywhere else, it closes.
+        // that one next frame); on the same recipe it crafts one (#1149); anywhere else, it closes.
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;
             for (const CellHit& c : cellsDrawn)
                 if (mp.x >= c.a.x && mp.x < c.b.x && mp.y >= c.a.y && mp.y < c.b.y) {
-                    if (c.recipe == selectedRecipe) recipePageOpen = false;
+                    if (c.recipe == selectedRecipe) { craftOne(c.recipe); recipePageReopen = true; } // (#1149: its icon again crafts one; the page stays: ImGui closed it on the click, it opens again)
                     else { selectedRecipe = c.recipe; recipePageReopen = true; recipeAnchorMin = c.a; recipeAnchorMax = c.b; }
                     break;
                 }
@@ -2215,6 +2224,11 @@ TEST(GameUiRecipePage, AClickOpensItBesideTheRecipeCraftOneQueuesAndEscClosesItF
     click(recipeTest.craft1);
     EXPECT_EQ(GameUI_CraftQueueLength(), queued0 + 1) << "Craft 1 queues one";
     EXPECT_TRUE(recipePageOpen) << "crafting keeps the page open";
+
+    click(recipeTest.firstCell); // (#1149) its icon again, the page open: one more craft
+    EXPECT_EQ(GameUI_CraftQueueLength(), queued0 + 2) << "a click on the open recipe's icon crafts one (it closed the page)";
+    EXPECT_TRUE(recipePageOpen) << "and the page stays";
+    EXPECT_EQ(selectedRecipe, recipeTest.firstRecipe);
 
     EXPECT_TRUE(GameUI_ClosePopout()) << "Esc: the pop-up closes first";
     frame(away, false); frame(away, false);
