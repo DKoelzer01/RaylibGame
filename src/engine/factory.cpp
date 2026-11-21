@@ -2148,6 +2148,7 @@ void Factory::MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, ui
 
 bool Factory::Accepts(PartType type, const std::string& item) {
     LoadRecipes();
+    if (!item.empty() && tables.fluid(tables.item(item))) return false; // (#1254) fluid (essence) never goes in as an item, not even into a chest
     // Storage takes anything (#283): looked up first, items no recipe or fuel list had interned (food, tools, gems,
     // dyes...) were refused before the storage rule was reached. Insert interns the name.
     if (Def(type).power == Power::Storage) return !item.empty();

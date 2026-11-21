@@ -609,9 +609,10 @@ TEST(Alchemy, MixingIsRefused) {
     s.tankMeasures = 5; s.pipeMeasures = 8;
     p = Alchemy_PlanRun({ Member(RunRole::Distillery, { { "essence_fire", 6 } }), Member(RunRole::Tank, { { "essence_fire", 5 } }), Member(RunRole::Outlet) }, s);
     ASSERT_FALSE(p.refused);
-    int spilled = 0;
-    for (const RunMove& m : p.moves) { EXPECT_EQ(m.to, 2) << "the full tank takes none"; spilled += m.count; }
-    EXPECT_EQ(spilled, 6);
+    int fromDistillery = 0, fromTank = 0;
+    for (const RunMove& m : p.moves) { EXPECT_EQ(m.to, 2) << "the full tank takes none"; (m.from == 0 ? fromDistillery : fromTank) += m.count; }
+    EXPECT_EQ(fromDistillery, 6) << "the distillery's essence spills";
+    EXPECT_EQ(fromTank, 2) << "the tank drains through the outlet with the rest of the pass's 8";
     // The budget caps a pass: a tank emptying through an outlet.
     s.pipeMeasures = 3;
     p = Alchemy_PlanRun({ Member(RunRole::Tank, { { "essence_fire", 50 } }), Member(RunRole::Outlet) }, s);
