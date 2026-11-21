@@ -51,6 +51,7 @@
 #include "buildtool.h"
 #include "recorder.h"
 #include "scenario.h"
+#include "cliptelemetry.h"
 #include "slideshow.h"
 #include "bugreport.h"
 #include "progression_test.h"
@@ -13842,6 +13843,8 @@ int main(int argc, char** argv)
                     gAvatars.push_back(a);
                 }
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
+                ClipTelemetry_Frame(world, SimTime(), GetFrameTime()); // (#1442) the camera that drew this frame, in solid?
+                if (Recorder_Active()) ClipTelemetry_DrawTag();       // a recorded frame says so ("CLIPPED")
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI
