@@ -144,6 +144,7 @@ struct Brick {
     int statSolid = 0; // solid cells (all solid: nothing to run, #669)
     int slot = -1;                  // GPU mode: its place in the GPU brick pool (-1: none yet)
     std::vector<FluidKernel::Vec4> faces; // CPU mode: the face flows as applied (#654: momentum between ticks; empty: at rest)
+    std::vector<int32_t> press;           // CPU mode, the pressure pass (#1168): each cell's head between ticks (empty: none yet)
     std::vector<int16_t> colFlow;         // the drawn current (#677): per column (x + 16 y) its flow along east, north (cm/s); empty: none yet
     std::vector<int16_t> drawnFlow; int flowStep = -100000; // the current the chunks last drew, and when (#677: a steady stream's levels never change, so it redraws on its flow)
     int cpuSlot = -1;               // CPU mode: its place in this tick's grid
@@ -502,6 +503,7 @@ int G_Capacity();                     // the GPU brick pool (below)
 constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
 void Touch(Brick* b) { if (b->settled) ++wakeTouch; b->active = true; b->idle = 0; b->changed = true; b->settled = false; b->steady = false; }
 void CpuTick(int n); // CPU mode: the GPU's step on the CPU (#654), below
+static const bool kPressure = FluidKernel::Params{}.pressure; // the pressure pass (#1168, CPU-only opt-in for now)
 // Whether a neighbour (on face fc of a brick whose water moved) needs waking and running (#669): not a brick of solid rock
 // (water never enters it) nor a dry brick above (water rises into it only through sources, pours or levelling, which wake
 // it). Under and over a big pool they were most of every dispatch.
@@ -1972,6 +1974,10 @@ void CpuTick(int n) {
         std::copy(c, c + B3, &g.b[(size_t)i * B3]);
         if (b->faces.size() == (size_t)B3) std::copy(b->faces.begin(), b->faces.end(), &g.faceP[(size_t)i * B3]);
         else std::fill(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3, FluidKernel::Vec4{});
+        if (kPressure) { // (#1168) the heads, as the faces; a brick new to the sim starts at none (the first substep fills them)
+            if (b->press.size() == (size_t)B3) std::copy(b->press.begin(), b->press.end(), &g.pr[(size_t)i * B3]);
+            else std::fill(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3, 0);
+        }
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
         // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
@@ -2004,6 +2010,7 @@ void CpuTick(int n) {
     ParallelSlots(processedCount, [&](int i) {
         Brick* br = slots[i];
         br->faces.assign(&g.faceP[(size_t)i * B3], &g.faceP[(size_t)i * B3] + B3);
+        if (kPressure) br->press.assign(&g.pr[(size_t)i * B3], &g.pr[(size_t)i * B3] + B3); // (#1168)
         { // the skip's history for the next tick (#747): this tick's last two substeps' wet groups
             const uint32_t* m = &g.gmask[(size_t)i * 6];
             const int c0 = g.gcur, c1 = (g.gcur + 2) % 3;
