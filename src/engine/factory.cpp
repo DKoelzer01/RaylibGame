@@ -154,6 +154,10 @@ void LoadMachineDefs() {
     }
 }
 
+// (#1207) built once by LoadRecipes
+std::array<std::vector<int>, 256> recipesOf;      // by PartType: indices into tables.recipes
+std::array<std::vector<uint8_t>, 256> wantsOf;   // by PartType, by item id: a recipe of it takes the item
+
 void LoadRecipes() {
     if (!tables.recipes.empty()) return;
     LoadMachineDefs();
@@ -186,6 +190,14 @@ void LoadRecipes() {
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
         tables.recipes.push_back(r);
+    }
+    // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
+    // through every recipe of every machine, each tick).
+    for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+        const Recipe& r = tables.recipes[ri];
+        recipesOf[(int)r.machine].push_back((int)ri);
+        std::vector<uint8_t>& w = wantsOf[(int)r.machine];
+        for (const Stack& s : r.in) { if (s.item >= (int)w.size()) w.resize(s.item + 1, 0); w[s.item] = 1; }
     }
     LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
 }
@@ -351,8 +363,20 @@ void GrantTicks(long long n, long long cap) {
 
 std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts already sent
 
+// (#1207) FindPlot through a hash of (body, plot) -> index, rebuilt when the plot list changes (a new plot, a reset, a
+// moved plot: plotIndexDirty); every hit is checked against the plot itself. Sim thread (and callers under simMutex).
+std::unordered_map<uint64_t, size_t> plotIndex;
+bool plotIndexDirty = true;
+uint64_t PlotHash(uint64_t body, uint32_t plot) { return body * 0x9E3779B97F4A7C15ull ^ (uint64_t)plot; }
 PlotSim* FindPlot(uint64_t body, uint32_t plot) {
-    for (auto& p : plots) if (p.body == body && p.plot == plot) return &p;
+    if (plotIndexDirty) {
+        plotIndex.clear();
+        for (size_t i = 0; i < plots.size(); ++i) plotIndex[PlotHash(plots[i].body, plots[i].plot)] = i;
+        plotIndexDirty = false;
+    }
+    auto it = plotIndex.find(PlotHash(body, plot));
+    if (it != plotIndex.end() && it->second < plots.size() && plots[it->second].body == body && plots[it->second].plot == plot) return &plots[it->second];
+    for (auto& p : plots) if (p.body == body && p.plot == plot) return &p; // (a hash collision: never in practice)
     return nullptr;
 }
 
@@ -375,9 +399,8 @@ int InSlots(const Machine& m) { return m.type == PartType::Chest ? kChestSlots :
 
 bool IsFuel(const MachineDef& def, int item) { for (int f : def.fuels) if (f == item) return true; return false; }
 bool RecipeWants(PartType type, int item) {
-    for (const Recipe& r : tables.recipes)
-        if (r.machine == type) for (const Stack& s : r.in) if (s.item == item) return true;
-    return false;
+    const std::vector<uint8_t>& w = wantsOf[(int)type]; // (#1207)
+    return item >= 0 && item < (int)w.size() && w[item];
 }
 bool HasFuelSlot(PartType type) { return !Def(type).fuels.empty(); }
 int WaterBucketItem() { static const int id = tables.item("water_bucket"); return id; }
@@ -526,7 +549,7 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
 
 void ApplyLayout(const LayoutMsg& L) {
     PlotSim* ps = FindPlot(L.body, L.plot);
-    if (!ps) { plots.push_back({}); ps = &plots.back(); ps->body = L.body; ps->plot = L.plot; }
+    if (!ps) { plots.push_back({}); ps = &plots.back(); ps->body = L.body; ps->plot = L.plot; plotIndexDirty = true; }
     ps->version = L.version;
     // Keep the state of machines still there (same part index and type).
     std::vector<Machine> next;
@@ -665,17 +688,19 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
+            // (#1207) only this machine type's recipes (file order kept, so the same one is picked)
+            const std::vector<int>& mine = recipesOf[(int)m.type];
             for (int si = 0; si < InSlots(m) && m.recipe < 0; ++si) {
-                if (m.in[si].count <= 0) continue;
-                for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
+                if (m.in[si].count <= 0 || !RecipeWants(m.type, m.in[si].item)) continue;
+                for (int ri : mine) {
                     const Recipe& r = tables.recipes[ri];
                     bool uses = false;
                     for (const Stack& s : r.in) uses |= s.item == m.in[si].item;
-                    if (uses && usable(r)) { m.recipe = (int)ri; m.progress = 0; break; }
+                    if (uses && usable(r)) { m.recipe = ri; m.progress = 0; break; }
                 }
             }
-            for (size_t ri = 0; ri < tables.recipes.size() && m.recipe < 0; ++ri)
-                if (usable(tables.recipes[ri])) { m.recipe = (int)ri; m.progress = 0; }
+            for (size_t k = 0; k < mine.size() && m.recipe < 0; ++k)
+                if (usable(tables.recipes[mine[k]])) { m.recipe = mine[k]; m.progress = 0; }
             if (m.recipe < 0 && m.fire == kFireLit) { // (#1103) lit with nothing to cook: it burns its fuel (light, warmth)
                 const int burnt = BurnFuel(m, def, dt);
                 if (burnt > 0) { m.status = MachineStatus::Working; ++active; }
@@ -828,10 +853,10 @@ void SimLoop() {
                 layouts.swap(layoutQueue); items.swap(itemQueue); nears.swap(nearQueue); moves.swap(moveQueue);
                 reset = resetRequested; resetRequested = false;
             }
-            if (reset) { plots.clear(); emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
+            if (reset) { plots.clear(); plotIndexDirty = true; emaMs = maxMs = 0.0; statSeconds = 0; tickRingAt = 0; }
             // Moved plots first, so the new plot's first layout finds its machines (same part indices).
             for (const MoveMsg& mv : moves)
-                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; }
+                if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; plotIndexDirty = true; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
             for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
             std::vector<ItemOut> toCursor; // kind 8 (#192)
