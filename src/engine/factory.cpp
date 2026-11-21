@@ -219,6 +219,10 @@ struct Machine {
     // (#1214) asleep: its recipe search found nothing and its contents have not changed since; dirty: they changed (an insert,
     // a take, fuel taken, a craft, a variant, fire or layout change) - it wakes, and its conveyor network wakes
     bool asleep = false, dirty = true;
+    // (#1261) the summary sim's measurement: crafts per recipe since the plot's window began, and the caps they gave when
+    // the plot entered Summary (crafts per kCapTicks of each recipe it ran)
+    std::map<int, int> crafts;
+    std::map<int, int> capPerWindow;
     PartType type = PartType::Count;
     std::vector<Int3> cells;
     std::vector<Stack> in;                  // InSlots(): kSlots inputs, or a chest's kChestSlots of storage (#495: only chests pay for 50)
@@ -272,7 +276,47 @@ struct PlotSim {
     PlotStats stats;                        // (#1199)
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
     struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
+    // (#1261) the summary sim's state (doc 2.1): Near ticks every tick; Measuring takes today's 20-tick step for 60 s and
+    // counts each machine's crafts; Summary is advanced by rates (S2) until the plot comes near again.
+    enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
+    long long modeSince = 0; // the tick the current mode (and the measuring window) began
 };
+
+// (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
+constexpr long long kMeasureTicks = 60 * kTicksPerSecond; // 60 s of measuring (decided)
+constexpr long long kCapTicks = 60 * kTicksPerSecond;     // a cap is crafts per this many ticks
+bool summaryOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SUMMARY"); return !(e && e[0] == '0'); }();
+
+void BeginMeasuring(PlotSim& ps, long long t) {
+    ps.mode = PlotSim::Mode::Measuring;
+    ps.modeSince = t;
+    for (Machine& m : ps.machines) m.crafts.clear();
+}
+// The player (or a server's players) came near or went away.
+void SetNear(PlotSim& ps, bool near, long long t) {
+    ps.nearPlayer = near;
+    if (near) { ps.mode = PlotSim::Mode::Near; ps.modeSince = t; } // (S2: a Summary plot is advanced to now first)
+    else if (ps.mode == PlotSim::Mode::Near) BeginMeasuring(ps, t);
+}
+// After 60 s of measuring, a far plot enters Summary with each machine's caps: its crafts per kCapTicks of each recipe it
+// ran in the window, rounded down (no margin, decided: the oracle test holds the summary at or under the full sim).
+void UpdateMode(PlotSim& ps, long long t) {
+    if (!summaryOn || ps.mode != PlotSim::Mode::Measuring || t - ps.modeSince < kMeasureTicks) return;
+    const long long window = t - ps.modeSince;
+    for (Machine& m : ps.machines) {
+        m.capPerWindow.clear();
+        for (const auto& [recipe, n] : m.crafts) m.capPerWindow[recipe] = (int)((long long)n * kCapTicks / window);
+    }
+    ps.mode = PlotSim::Mode::Summary;
+    ps.modeSince = t;
+}
+// The step plot i takes at tick t: 1 near, 20 once a second while measuring (staggered by plot), 0 in Summary (S1: a
+// summary plot stands still; S2 advances it by rates).
+int StepOf(const PlotSim& ps, size_t i, long long t) {
+    if (ps.nearPlayer) return 1;
+    if (summaryOn && ps.mode == PlotSim::Mode::Summary) return 0;
+    return (t + (long long)i) % kTicksPerSecond == 0 ? kTicksPerSecond : 0;
+}
 thread_local PlotStats* gCount = nullptr;  // the plot ticking now on this thread (BurnFuel counts the fuel it takes into it; thread_local: plots may tick on several threads later, #997)
 long long statSeconds = 0;    // seconds rolled since the reset (how much of each window is filled)
 // (#1207) The last minute of factory ticks' times (sim thread), for the mean, p99 and worst and the phase split.
@@ -620,6 +664,7 @@ void ApplyLayout(const LayoutMsg& L) {
         if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
     }
     ps->machines = std::move(next);
+    if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
     ps->byPart = std::move(byPart);
     BuildNets(*ps, L);
 }
@@ -751,6 +796,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             std::copy(trial, trial + kSlots, m.out);
             for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
             for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
+            ++m.crafts[m.recipe]; // (#1261) the measuring window
             m.recipe = -1; m.progress = 0;
             m.dirty = true; // (#1214) outputs to move, inputs taken
         }
@@ -982,7 +1028,7 @@ void SimLoop() {
             for (const MoveMsg& mv : moves)
                 if (PlotSim* p = FindPlot(mv.fromBody, mv.fromPlot); p && !FindPlot(mv.toBody, mv.toPlot)) { p->body = mv.toBody; p->plot = mv.toPlot; plotIndexDirty = true; viewsRebuild = true; }
             for (const LayoutMsg& L : layouts) ApplyLayout(L);
-            for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first)) p->nearPlayer = n.second.second;
+            for (const auto& n : nears) if (PlotSim* p = FindPlot(n.first, n.second.first); p && p->nearPlayer != n.second.second) SetNear(*p, n.second.second, tickCount.load()); // (#1261) leaving near starts measuring
             std::vector<ItemOut> toCursor; // kind 8 (#192)
             std::vector<ItemOut> back;
             back.swap(refunds); // removed machines' contents (from this tick's layouts)
@@ -999,6 +1045,7 @@ void SimLoop() {
                 }
                 Machine& m = p->machines[it->second];
                 m.dirty = true; // (#1214) any command on a machine wakes it and its network
+                if (!p->nearPlayer && im.kind != 5 && im.kind != 7) BeginMeasuring(*p, tickCount.load()); // (#1261) a player's insert or take while far (not pipe flows: pumps, tanks)
                 if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
                     int left = im.count;
                     if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
@@ -1059,8 +1106,8 @@ void SimLoop() {
             for (size_t i = 0; i < plots.size(); ++i) {
                 PlotSim& ps = plots[i];
                 machines += (int)ps.machines.size(); inets += (int)ps.itemNets.size(); pnets += (int)ps.powerNets.size();
-                if (ps.nearPlayer) jobs.push_back({ &ps, 1 });
-                else if ((t + (long long)i) % kTicksPerSecond == 0) jobs.push_back({ &ps, kTicksPerSecond });
+                UpdateMode(ps, t); // (#1261) measuring done: Summary
+                if (const int step = StepOf(ps, i, t)) jobs.push_back({ &ps, step });
             }
             TickPlots(jobs, workerCount, made, active);
             gCount = nullptr;
@@ -1701,5 +1748,56 @@ TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
     EXPECT_GT(sleeping.asleepMachines, 0) << "the starved macerators sleep";
     EXPECT_GT(sleeping.asleepNets, 0) << "their conveyor networks sleep";
     EXPECT_GT(sleeping.sandInLateChest, 0) << "the starved group woke when stone came and its sand reached its chest";
+}
+
+// (#1261, S1) A plot that leaves "near" measures for 60 s on the 20-tick step, then enters Summary with caps from what each
+// machine crafted; a player's insert while far measures again; coming near ticks every tick; SUMMARY=0 never leaves the
+// 20-tick step.
+TEST(Factory, AFarPlotMeasuresThenEntersSummaryWithItsCaps) {
+    LoadRecipes();
+    const bool was = summaryOn;
+    for (const bool on : { true, false }) {
+        summaryOn = on;
+        plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+        std::vector<std::array<int, 4>> parts;
+        ApplyLayout(TestChains(1, 10, parts));
+        PlotSim& ps = *FindPlot(7, 1);
+        for (size_t g = 0; g < parts.size(); ++g) { // fed groups, every third starved (as RunChains)
+            int buckets = 0;
+            InsertInto(ps.machines[ps.byPart.at(parts[g][0])], tables.item("coal"), 16, false, buckets);
+            if (g % 3 == 2) continue;
+            InsertInto(ps.machines[ps.byPart.at(parts[g][1])], tables.item("stone"), 32, false, buckets);
+        }
+        long long made = 0; int active = 0, steps = 0;
+        auto tick = [&](long long t) { UpdateMode(ps, t); if (const int s = StepOf(ps, 0, t)) { TickPlot(ps, s, made, active); ++steps; } };
+        SetNear(ps, false, 0);
+        EXPECT_EQ(ps.mode, PlotSim::Mode::Measuring);
+        for (long long t = 0; t < kMeasureTicks; ++t) tick(t);
+        EXPECT_EQ(steps, (int)(kMeasureTicks / kTicksPerSecond)) << "measuring: one 20-tick step a second";
+        tick(kMeasureTicks);
+        if (!on) { EXPECT_EQ(ps.mode, PlotSim::Mode::Measuring) << "SUMMARY=0: today's far step forever"; continue; }
+        ASSERT_EQ(ps.mode, PlotSim::Mode::Summary);
+        const Machine& fed = ps.machines[ps.byPart.at(parts[0][1])];
+        const Machine& starved = ps.machines[ps.byPart.at(parts[2][1])];
+        ASSERT_EQ(fed.capPerWindow.size(), 1u);
+        const int cap = fed.capPerWindow.begin()->second;
+        EXPECT_GE(cap, 10) << "a fed macerator: 100 ticks a craft, ~12 in a minute";
+        EXPECT_LE(cap, 12);
+        EXPECT_TRUE(starved.capPerWindow.empty()) << "a starved one made nothing, so it has no cap";
+        // S1: a summary plot stands still (S2 advances it by its rates)
+        const uint64_t before = StateHash(ps);
+        const int stepsBefore = steps;
+        for (long long t = kMeasureTicks + 1; t < kMeasureTicks + 200; ++t) tick(t);
+        EXPECT_EQ(steps, stepsBefore);
+        EXPECT_EQ(StateHash(ps), before);
+        BeginMeasuring(ps, kMeasureTicks + 200); // what a player's insert while far does
+        EXPECT_EQ(ps.mode, PlotSim::Mode::Measuring);
+        EXPECT_TRUE(ps.machines[ps.byPart.at(parts[0][1])].crafts.empty()) << "a new window";
+        SetNear(ps, true, kMeasureTicks + 201);
+        EXPECT_EQ(ps.mode, PlotSim::Mode::Near);
+        EXPECT_EQ(StepOf(ps, 0, kMeasureTicks + 202), 1);
+    }
+    summaryOn = was;
+    plots.clear(); plotIndexDirty = true;
 }
 #endif
