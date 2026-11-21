@@ -100,6 +100,8 @@ float TopReach(PartType type) {
     case PartType::Refinery: return 1.85f;
     case PartType::Miner: return 0.93f;
     case PartType::PrecisionAssembler: return 0.95f;
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return 0.42f; // (#1193) the dish on its mast
+    case PartType::ResearchTable: return 0.25f; case PartType::ManaSiphon: return 0.7f; case PartType::ManaDynamo: return 0.3f; // (#1252)
     case PartType::FusionReactor: return 0.29f;
     case PartType::MassDriver: return 1.3f;
     case PartType::Torch: return 0.25f;
@@ -264,6 +266,38 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
         p.glow({ 0, top * 0.6f, (fabsf(f.front.x) > 0.5f ? f.w : f.d) * 0.5f + 0.01f }, { f.w * 0.4f, f.h * 0.25f, 0.02f }, working ? Color{ 80, 230, 140, 255 } : Color{ 20, 50, 40, 255 }); // screen
         rlPopMatrix();
+        break;
+    }
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: { // (#1193) a research lab: a white bench, flasks, a dish on a mast
+        const Color band = type == PartType::LvLab ? Color{ 90, 150, 220, 255 } : type == PartType::MvLab ? Color{ 230, 150, 60, 255 } : Color{ 180, 90, 210, 255 }; // its tier's colour
+        p.cube({ 0, top * 0.55f, 0 }, { f.w * 1.01f, 0.06f, f.d * 1.01f }, band);
+        for (int k = -1; k <= 1; ++k) p.cyl({ k * 0.18f, top, 0.12f }, 0.05f, 0.03f, 0.16f, kGlass);  // flasks
+        rlPushMatrix(); rlTranslatef(-0.25f, top, -0.2f); rlRotatef(working ? t * 45.0f : 0.0f, 0, 1, 0);
+        p.cyl({ 0, 0, 0 }, 0.025f, 0.025f, 0.3f, kDarkSteel);                                  // the mast
+        p.cyl({ 0, 0.3f, 0 }, 0.02f, 0.14f, 0.1f, kSteel);                                      // the dish
+        rlPopMatrix();
+        rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
+        p.glow({ 0, top * 0.3f, (fabsf(f.front.x) > 0.5f ? f.w : f.d) * 0.5f + 0.01f }, { f.w * 0.5f, f.h * 0.18f, 0.02f }, working ? Color{ 120, 200, 255, 255 } : Color{ 20, 40, 60, 255 }); // its screen
+        rlPopMatrix();
+        break;
+    }
+    case PartType::ResearchTable: { // (#1252, #1327) a wooden table: an open tome and a crystal on it
+        p.cube({ 0.1f, top + 0.02f, 0.0f }, { 0.36f, 0.04f, 0.26f }, Color{ 225, 215, 190, 255 });                 // the open tome
+        p.cube({ 0.1f, top + 0.045f, 0.0f }, { 0.02f, 0.01f, 0.26f }, Color{ 120, 70, 50, 255 });                 // its spine
+        p.glow({ -0.28f, top + 0.08f, 0.15f }, { 0.07f, 0.14f, 0.07f }, Color{ 170, 230, 255, 255 });             // a resonant crystal
+        break;
+    }
+    case PartType::ManaSiphon: { // (#1252) a stone base and a violet crystal column that pulses while it draws
+        const float pulse = working ? 0.6f + 0.4f * sinf(t * 2.5f) : 0.2f;
+        p.cyl({ 0, top, 0 }, 0.12f, 0.06f, 0.55f, kDarkSteel);
+        p.glow({ 0, top + 0.62f, 0 }, { 0.1f, 0.16f, 0.1f }, Color{ (unsigned char)(170 * pulse), (unsigned char)(130 * pulse), (unsigned char)(255 * pulse), 255 });
+        break;
+    }
+    case PartType::ManaDynamo: { // (#1252) a coil that spins while it turns mana into power
+        rlPushMatrix(); rlTranslatef(0, top + 0.12f, 0); rlRotatef(working ? t * 120.0f : 0.0f, 0, 1, 0);
+        for (int k = 0; k < 4; ++k) p.cube({ 0.16f * cosf(k * 1.5708f), 0, 0.16f * sinf(k * 1.5708f) }, { 0.08f, 0.2f, 0.08f }, kCopper);
+        rlPopMatrix();
+        p.glow({ 0, top + 0.26f, 0 }, { 0.08f, 0.04f, 0.08f }, working ? Color{ 160, 140, 255, 255 } : Color{ 40, 30, 70, 255 });
         break;
     }
     case PartType::FusionReactor: {
