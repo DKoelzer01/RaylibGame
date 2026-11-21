@@ -13,7 +13,8 @@
 // - pipe runs: the existing Pipe and Outlet parts. A run's aspect is worked out each pass from what is on it (its tanks,
 //   else its distilleries' first essence), so it has nothing to save. Two aspects in its tanks, or a water pump, and the run
 //   is refused.
-// - spills: an outlet on a run pours "essence" fluid (fluids.txt), with no aspect; the pass takes it back after a few seconds.
+// - spills: an outlet on a run loses the essence with its aspect at once: sparks and a hiss (coordinator, 2026-11-21). A
+//   visible puddle of "essence" fluid (fluids.txt, reserved for it) comes once Fluid::Take removes that kind there.
 
 #include "factory.h"
 
