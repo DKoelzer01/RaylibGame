@@ -47,6 +47,7 @@ struct GameSettings {
     float xpRate = 1.0f;              // (#883) the last New World screen's skill XP rate (the next one's default)
     bool invertSlotWheel = false;     // (#862) the inventory's scroll wheel: false = down sends one to the other side, up pulls one in
     int tonemap = 1;                // #131: the HDR curve, as the Graphics tab lists them: 0 Clip, 1 Knee (the default: today's look), 2 ACES
+    float brightness = 0.0f;        // (#1166) an exposure offset in stops, -1..+1 (0: as tuned): nights darker or brighter
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
     std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default
     // Multiplayer (#341): what the Host and Join pages last used (passwords are never kept).
