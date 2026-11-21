@@ -49,6 +49,10 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // one batch at End (each part's own batch re-dirtied the same chunks again and again: a freeze on a big blueprint).
 void BuildTool_BeginFoundationBatch();
 void BuildTool_EndFoundationBatch(Planetoid& body);
+// (#1183) Foundations queued by a placement land over the next frames: each frame applies them within budgetMs (0: all
+// now, e.g. before a save). BuildTool_PendingFoundations: how many wait.
+void BuildTool_ApplyPendingFoundations(double budgetMs);
+int BuildTool_PendingFoundations();
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,
 // in the server's order, so the plots and their part indices stay the same everywhere): beams as cubes, the foundation.
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);

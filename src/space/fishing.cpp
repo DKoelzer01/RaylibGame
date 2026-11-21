@@ -23,7 +23,7 @@ namespace {
     uint32_t rng = 0x2545F491u;
     float Rand() { rng = rng * 1664525u + 1013904223u; return (rng >> 8) * (1.0f / 16777216.0f); }
 
-    Vector3 PlayerLocal(Scene& world, const Planetoid& b) { return b.toLocal((player.position - world.renderOrigin).toFloat()); }
+    Vector3 PlayerLocal(Scene& world, const Planetoid& b) { return b.toLocalOf(player.position, world.renderOrigin); }
 
     // The first water along the view within reach (render space -> body-local), as the bucket finds it.
     bool WaterAlongView(Scene& world, Planetoid& b, Vector3& outLocal) {

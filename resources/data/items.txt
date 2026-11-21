@@ -18,6 +18,7 @@ any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 any_stone       | Any stone       | 999 | 130,130,135 | Stone or any rock: granite, basalt, sandstone, limestone or marble.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
+bitterroot      | Bitterroot      | 200 | 150,110, 60 | A bitter wild root from bushes. Cures poison (eat it even when full); a little food.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
 clay            | Clay            | 999 | 170,120, 95 | Dug from river and pond beds, swamps and pockets in the dirt. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.

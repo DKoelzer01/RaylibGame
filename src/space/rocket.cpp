@@ -703,7 +703,8 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         Planetoid* body = player.nearest;
         if (!body || !body->plots || player.flyMode) return;
         const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-        const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+        const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+        const Vector3 ld = body->dirToLocal(dir);
         float best = 7.0f;
         Plot* hit = nullptr;
         int hitPart = -1;
@@ -1072,7 +1073,7 @@ bool Rocket_UseRepairKit() {
     if (!best) {
         Planetoid* body = player.nearest;
         if (body && body->plots) {
-            const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
             float bestD = 12.0f;
             for (const auto& pl : body->plots->plots) {
                 if (pl->damage.empty()) continue;

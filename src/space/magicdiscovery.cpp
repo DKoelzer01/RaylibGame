@@ -138,7 +138,7 @@ void MagicDiscovery_Update(Scene& world, float dt) {
     Planetoid* body = StartPlanet(world);
     const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
     if (!f || !pf) return; // (not player.nearest: a bench never sets it)
-    const Vector3 local = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 local = body->toLocalOf(player.position, world.renderOrigin);
     const float r = Vector3Length(local);
     if (r < 1.0f || r > pf->radius + 2000.0f) return; // on or near the start planet
     const Vector3 dir = Vector3Scale(local, 1.0f / r);

@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -542,6 +542,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Animals: { MsgAnimals m; return NetRead(r, m); }
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
         case NetMsg::Damage: { MsgDamage m; return NetRead(r, m); }
+        case NetMsg::CreatureFx: { MsgCreatureFx m; return NetRead(r, m); }
         case NetMsg::Vitals: { MsgVitals m; return NetRead(r, m); }
         case NetMsg::UseItem: { MsgUseItem m; return NetRead(r, m); }
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
@@ -699,6 +700,15 @@ bool NetProto_Test() {
         check(RoundTrip(h, hb, &s2) && hb.netId == h.netId && hb.action == 2, "animal hit"); samples.push_back(s2);
         MsgDamage dm{ 8.0f, 2, true, 1, DVec3{ 10.0, 60000.0, -3.0 }, 3.0f, 0x2000000000000005ull }, db; std::vector<uint8_t> s3;
         check(RoundTrip(dm, db, &s3) && db.amount == 8.0f && db.kind == 2 && db.hasSource && db.knockback == 3.0f && db.sourceId == dm.sourceId && fabs(db.local.y - 60000.0) < 0.001, "damage"); samples.push_back(s3);
+        { // (#1343, #1364) creature shots and events
+            MsgCreatureFx fa, fb; std::vector<uint8_t> sf;
+            fa.shots.push_back({ 7u, 2ull, DVec3(1.5, 60000.25, -3.0), { 12.0f, 4.5f, -1.0f }, 2, 99ull });
+            fa.ended = { 5u, 6u };
+            fa.events.push_back({ 1234ull, 2, 9, 2ull, DVec3(0.5, 60001.0, 2.0) });
+            check(RoundTrip(fa, fb, &sf) && fb.shots.size() == 1 && fb.shots[0].id == 7u && fb.shots[0].kind == 2 && fb.shots[0].vel.y == 4.5f && fb.shots[0].owner == 99ull &&
+                  fabs(fb.shots[0].pos.y - 60000.25) < 0.001 && fb.ended == fa.ended && fb.events.size() == 1 && fb.events[0].netId == 1234ull && fb.events[0].kind == 2 && fb.events[0].species == 9, "creature fx");
+            samples.push_back(sf);
+        }
         MsgVitals va{ 72.5f, 40.25f, 99.0f, 0.0f, -3.5f, 1 | 8, 3 }, vb; std::vector<uint8_t> s4;
         check(RoundTrip(va, vb, &s4) && fabs(vb.health - 72.5f) < 0.006f && fabs(vb.food - 40.25f) < 0.006f && vb.temperature == -3.5f && vb.flags == 9 && vb.deaths == 3, "vitals"); samples.push_back(s4);
         MsgUseItem ua{ "berries" }, ub; std::vector<uint8_t> s5;
@@ -817,6 +827,46 @@ bool NetRead(NetReader& r, MsgAnimals& m) {
 }
 void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); w.u8(m.action); }
 bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); m.action = r.u8(); if (m.action > 2) r.ok = false; return Done(r); }
+// (#1343, #1364) Creature shots and events.
+void NetWrite(NetWriter& w, const MsgCreatureFx& m) {
+    Id(w, NetMsg::CreatureFx);
+    const size_t ns = std::min<size_t>(m.shots.size(), 64), ne = std::min<size_t>(m.ended.size(), 64), nv = std::min<size_t>(m.events.size(), 64);
+    w.varu(ns);
+    for (size_t i = 0; i < ns; ++i) {
+        const MsgCreatureFx::Shot& s = m.shots[i];
+        w.u32(s.id); w.varu(s.body); w.pos(s.pos); w.f32(s.vel.x); w.f32(s.vel.y); w.f32(s.vel.z); w.u8(s.kind); w.varu(s.owner);
+    }
+    w.varu(ne);
+    for (size_t i = 0; i < ne; ++i) w.u32(m.ended[i]);
+    w.varu(nv);
+    for (size_t i = 0; i < nv; ++i) {
+        const MsgCreatureFx::Event& e = m.events[i];
+        w.varu(e.netId); w.u8(e.kind); w.u8(e.species); w.varu(e.body); w.pos(e.pos);
+    }
+}
+bool NetRead(NetReader& r, MsgCreatureFx& m) {
+    m.shots.clear(); m.ended.clear(); m.events.clear();
+    const uint64_t ns = r.varu();
+    if (ns > 64) r.ok = false;
+    for (uint64_t i = 0; i < ns && r.ok; ++i) {
+        MsgCreatureFx::Shot s;
+        s.id = r.u32(); s.body = r.varu(); s.pos = r.pos(); s.vel.x = r.f32(); s.vel.y = r.f32(); s.vel.z = r.f32(); s.kind = r.u8(); s.owner = r.varu();
+        if (s.kind > 2 || !(std::fabs(s.vel.x) < 200.0f && std::fabs(s.vel.y) < 200.0f && std::fabs(s.vel.z) < 200.0f)) r.ok = false;
+        m.shots.push_back(s);
+    }
+    const uint64_t ne = r.varu();
+    if (ne > 64) r.ok = false;
+    for (uint64_t i = 0; i < ne && r.ok; ++i) m.ended.push_back(r.u32());
+    const uint64_t nv = r.varu();
+    if (nv > 64) r.ok = false;
+    for (uint64_t i = 0; i < nv && r.ok; ++i) {
+        MsgCreatureFx::Event e;
+        e.netId = r.varu(); e.kind = r.u8(); e.species = r.u8(); e.body = r.varu(); e.pos = r.pos();
+        if (e.kind > 4) r.ok = false;
+        m.events.push_back(e);
+    }
+    return Done(r);
+}
 void NetWrite(NetWriter& w, const MsgDamage& m) {
     Id(w, NetMsg::Damage);
     w.f32(m.amount); w.u8(m.kind); w.boolean(m.hasSource); w.varu(m.body); w.pos(m.local); w.f32(m.knockback); w.varu(m.sourceId);

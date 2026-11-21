@@ -267,6 +267,13 @@ namespace {
                 Animals_ApplyNet(in, am.removed);
                 return;
             }
+            case NetMsg::CreatureFx: { // (#1343, #1364) the server's creature shots (flown here) and creature events (heard here)
+                MsgCreatureFx fx;
+                if (c.state != NetClient::State::Joined || !NetRead(r, fx)) return;
+                ++c.creatureFxMsgs;
+                if (gAnimalsReplicated) Animals_ApplyFx(fx);
+                return;
+            }
             case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
                 MsgDamage dm;
                 if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
