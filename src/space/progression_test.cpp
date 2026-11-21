@@ -767,9 +767,16 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
                 return done ? 1 : -1;
             }
             const int need = full ? 7 : 5;
+            // (#1271 L6b-3) the base run, gate on: tier 4's tasks all done; its research milestone (40 circuits, the LV packs'
+            // throughput) needs the LV assembler (L6c), so the base run passes with only the milestone left
+            bool ok = QuestBook_Tier() >= need;
+            if (!full && !ok && QuestBook_Tier() == 4 && ResearchGate_On()) {
+                ok = true;
+                for (int k = 0; k < QuestBook_TaskCount(4); ++k) ok = ok && QuestBook_TaskDone(4, k);
+            }
             printf("bench: progression: bare hands to %s in %.0f s, quest tier %d -> %s\n", full ? "titanium alloy (rocketry)" : "a working LV machine",
-                   GetTime() - testStart, QuestBook_Tier(), QuestBook_Tier() >= need ? "PASS" : "FAIL");
-            return QuestBook_Tier() >= need ? 1 : -1;
+                   GetTime() - testStart, QuestBook_Tier(), ok ? "PASS" : "FAIL");
+            return ok ? 1 : -1;
         }
     } else if (GetTime() - stepStart > 120.0 || failed) {
         printf("bench: progression: FAIL at \"%s\" (logs %d, copper %d/%d ore/ingot, tin %d/%d, iron %d/%d, coal %d, bronze %d, steel %d/%d)\n", steps[current].name.c_str(),
