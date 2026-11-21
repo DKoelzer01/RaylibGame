@@ -40,6 +40,8 @@ bool PlayerId_Valid(const std::string& id) {
 
 std::string PlayerId_Local() {
     // Settings_Load makes and saves it on the first start; a bench (no settings read) gets one for the run.
+    // (#901) RAYLIBGAME_PLAYER_UUID=<uuid>: tests that are the same player in two runs (joined to a host, then single player)
+    if (const char* e = getenv("RAYLIBGAME_PLAYER_UUID"); e && PlayerId_Valid(e)) settings.playerUuid = e;
     if (!PlayerId_Valid(settings.playerUuid)) settings.playerUuid = PlayerId_New();
     return settings.playerUuid;
 }

@@ -29,8 +29,15 @@ static std::vector<std::string> Split(const std::string& s, char sep) {
 }
 
 bool ItemDB::loadExtra(const char* itemsPath) {
-    std::ifstream items(itemsPath);
-    if (!items) { LOG_ERROR("Items", "Cannot open %s\n", itemsPath); return false; }
+    std::ifstream file(itemsPath);
+    if (!file) { LOG_ERROR("Items", "Cannot open %s\n", itemsPath); return false; }
+    std::stringstream text;
+    text << file.rdbuf();
+    return loadExtraText(text.str());
+}
+
+bool ItemDB::loadExtraText(const std::string& text) {
+    std::istringstream items(text);
     std::string line;
     std::vector<std::string> recipeLines; // (#1252) "out n = in n, ..." lines: parsed once every item of the file is known
     while (std::getline(items, line)) {

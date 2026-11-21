@@ -503,7 +503,7 @@ static DigPerkScale AimedPerks() {
 }
 float TerrainTool_StrokeRate() {
     if (terrainTool.terraform) return terrainTool.strokesPerSecond;
-    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate;
+    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate * (gTerrainStrokeScale ? gTerrainStrokeScale() : 1.0f); // (#1254) mining haste
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;

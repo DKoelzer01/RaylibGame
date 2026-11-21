@@ -96,6 +96,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "magicsight.h"
 #include "magicdiscovery.h"
 #include "magicmachines.h"
+#include "alchemy.h"
+#include "potions.h"
 #include "tome.h"
 #include "wind.h"
 #include "storage.h"
@@ -659,7 +661,7 @@ int main(int argc, char** argv)
     bool benchSuit = false, suitOk = true; int suitPhase = 0; double suitStart = 0.0; float suitFoodRatio = 0.0f, suitWater = 0.0f, suitRebreather = 0.0f; // --test-suit
     int benchShotTabs = 0; // --shot-tabs
     bool benchBiomes = false; int benchShotBiomes = -1; // --test-biomes, --shot-biomes
-    bool benchOil = false, oilRateOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
+    bool benchOil = false, oilRateOk = false, oilBucketOk = false; int oilPhase = 0; double oilT0 = 0.0; // --test-oil
     bool benchSpring = false; int springPhase = 0; double springT0 = 0.0; // --test-spring
     bool benchShotAnimals = false; int animalShotPhase = 0; // --shot-animals
     bool benchShotAvatar = false; int avatarShotPhase = 0;  // --shot-avatar (#328)
@@ -1288,7 +1290,7 @@ int main(int argc, char** argv)
     if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 180, windowTitle("headless").c_str());
-        SetTargetFPS(bench ? std::max(0, benchFps) : kSimHz); // a server ticks at the sim rate
+        { const int fps = bench ? std::max(0, benchFps) : kSimHz; SetTargetFPS(fps); SetFrameTarget(fps); } // a server ticks at the sim rate
     } else if ((!bench && !benchWindow && playNewSeconds <= 0.0) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
@@ -1296,7 +1298,7 @@ int main(int argc, char** argv)
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        SetTargetFPS(bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
+        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); SetTargetFPS(fps); SetFrameTarget(fps); }
     } else {
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
@@ -1304,7 +1306,7 @@ int main(int argc, char** argv)
         int winW = playNewSeconds > 0.0 ? 1280 : 1920, winH = playNewSeconds > 0.0 ? 720 : 1080;
         for (int i = 1; i + 2 < argc; ++i) if (std::string(argv[i]) == "--window") { winW = std::max(320, atoi(argv[i + 1])); winH = std::max(240, atoi(argv[i + 2])); } // --window W H (#512: menus at 1280x720)
         InitWindow(winW, winH, windowTitle(playNewSeconds > 0.0 ? "play-new" : playLoadSeconds > 0.0 ? "play-load" : "bench").c_str()); // #520
-        SetTargetFPS(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+        SetTargetFPS(std::max(0, benchFps)); SetFrameTarget(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
@@ -1341,6 +1343,11 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
+    // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
+    Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",
+                      "resources/compute/fluid_pack.comp", "resources/compute/fluid_flowpack.comp", "resources/compute/fluid_groups.comp",
+                      "resources/compute/chunk_cull.comp", "resources/compute/tree_cull.comp" });
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
@@ -1354,6 +1361,7 @@ int main(int argc, char** argv)
     ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
     ResearchGate_InstallTierGate(); // (#1271 L6b-2)
     if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
+    if (Magic_Enabled()) Alchemy_Install(); // (#1254) essences, phials and potions as items, the distillery and cauldron recipes (before the factory loads its tables)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
@@ -2617,6 +2625,7 @@ int main(int argc, char** argv)
                    ws.preloadNodes, GetTime() - preloadT0, TerrainArena_Stats().vertices / 1048576.0, ws.nodes);
             preloadT0 = -1.0;
         }
+        if (bench && loading) Scenario_Loading(); // (#1422) a run held in a loading screen still beats and times out
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
@@ -5513,7 +5522,11 @@ int main(int argc, char** argv)
                             oilPhase = 2; oilT0 = GetTime();
                         } else if (oilPhase == 2 && t > 3.0) {
                             const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
-                            printf("bench: oil: after the bucket %.1f m^3; saved %d, loaded %d\n", oil, (int)saved, (int)loaded);
+                            // (#1414) the bucket really took the oil: the pool stands at least half a bucket under its level
+                            // before it (the seep refills ~0.08 m^3/s meanwhile). It never dropped: 1.6 -> 1.8 m^3.
+                            oilBucketOk = oil <= before - 0.5f;
+                            printf("bench: oil: after the bucket %.1f m^3 (%.1f before it): %s; saved %d, loaded %d\n", oil, before,
+                                   oilBucketOk ? "the bucket took it" : "the pool did NOT drop (#1414)", (int)saved, (int)loaded);
                             oilPhase = 4; oilT0 = GetTime();
                         } else if (oilPhase == 4 && t > 5.0 && oilAfter5 < 0.0f) {
                             oilAfter5 = oil;
@@ -5527,7 +5540,7 @@ int main(int argc, char** argv)
                         } else if (oilPhase == 3 && t > 6.0 && Fluid::Asleep()) {
                             Fluid::SetSpeed(1);
                             TakeScreenshot("bench_oil.png");
-                            const bool ok = oilRateOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
+                            const bool ok = oilRateOk && oilBucketOk && before >= 1.0f && oil >= 0.9f * before && Fluid::SourceCount() >= 1; // refilled to its level before the bucket (#603: the 3 m^3 fitted the old seep; seed 42's nearest basin now rests at 1.7)
                             printf("bench: oil: after the load the seep (%d source) filled its basin and rested at %.1f m^3 (equilibrium) -> %s\n", Fluid::SourceCount(), oil, ok ? "PASS" : "FAIL");
                             benchOil = false;
                         } else if (oilPhase == 3 && t > 90.0) { Fluid::SetSpeed(1); printf("bench: oil: no equilibrium after the load (%.1f m^3) -> FAIL\n", oil); benchOil = false; }
@@ -10475,6 +10488,8 @@ int main(int argc, char** argv)
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
             ResearchGate_Update();                                // (#1271 L6b) machine recipes the research has not unlocked
             MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
+            Alchemy_Update(world, SimTime());                     // (#1254) alchemy: pipe runs of essence, spills fizzling
+            if (!loading) Potion_Update(simDt);                   // (#1254) potions: their timers
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
@@ -10634,7 +10649,7 @@ int main(int argc, char** argv)
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
-            if (!ship.piloted && !Rocket_Boarded()) { player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165)
+            if (!ship.piloted && !Rocket_Boarded()) { if (!gScenarioCamera) player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165); a scenario's own camera (#1105)
             else if (Rocket_Boarded()) Rocket_View(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), SimAlpha());
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world); // after the camera is placed (#1337)
             Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // after the camera: aims with this frame's view (#285, as #222)
@@ -10805,6 +10820,7 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
+        if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];
@@ -12662,6 +12678,10 @@ int main(int argc, char** argv)
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    if (b) { // (#901) where we leave, body-local: the server's record should say the same (a hosted save loaded in single player)
+                        const DVec3 at = b->toLocalD(player.position);
+                        printf("join: %s leaves at body %llu local %.3f %.3f %.3f\n", joinName.c_str(), (unsigned long long)b->netId, at.x, at.y, at.z);
+                    }
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
                 }
@@ -13953,6 +13973,7 @@ int main(int argc, char** argv)
             // (#768) a long frame: its main-thread CPU against its wall time (CPU well under wall = the thread waited: starved, or blocked)
             if (workMs > 50.0) printf("bench: soak: long frame %.1f ms wall, %.1f ms main-thread CPU (%.0f%%) at %.1f s\n", workMs, cpuMs, 100.0 * cpuMs / workMs, GetTime());
         }
+        gFrameBusyMs = (float)((GetTime() - gFrameWorkStart) * 1000.0); // (#545) the frame's work, before EndDrawing's wait
         EndDrawing();
         gInFrame = false;
         {   // Unfocused (#510): at most ~30 frames a second (the streaming still gets every frame's budget), so a background
