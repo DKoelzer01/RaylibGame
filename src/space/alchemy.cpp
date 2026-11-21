@@ -276,7 +276,7 @@ namespace {
 double nextAt = 0.0;
 AlchemyStats stats;
 int essenceKind = -1;
-constexpr float kFizzleReach = 8.0f; // m: a spill fizzles wherever it ran within this of its outlet
+constexpr float kFizzleReach = 5.0f; // m: a spill fizzles wherever it ran within this of its outlet (a puddle runs ~4-5 m)
 struct Spill { uint64_t body; Vector3 local; float m3; double at; int tries = 0; };
 std::vector<Spill> spills;
 std::map<Factory::MachineKey, std::string> panel; // the last pass's run state per vessel
@@ -317,8 +317,11 @@ void Alchemy_Update(Scene& world, double now) {
         Spill& sp = spills[i];
         if (now - sp.at < s.fizzleSeconds) { ++i; continue; }
         Planetoid* b = Planetoid::find(sp.body);
-        if (b && essenceKind >= 0) {
-            Fluid::Take(*b, sp.local, std::max(sp.m3 * 1.5f, Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind)), kFizzleReach, essenceKind); // (the spill runs out several metres)
+        // Look first (the published snapshot: allocates nothing), take only essence that is there: a take allocates the
+        // simulated cells around it, and by the sea or a pond that would pull their water into the simulation (Water's advice).
+        const float there = b && essenceKind >= 0 ? Fluid::FluidAt(*b, sp.local, kFizzleReach, essenceKind) : 0.0f;
+        if (there > 0.0f) {
+            Fluid::Take(*b, sp.local, there, kFizzleReach, essenceKind); // only that kind (the take skips other fluids' cells)
             ParticleBurst pb; pb.kind = ParticleKind::Spark; pb.color = { 215, 195, 255, 255 }; pb.count = 10; pb.size = 0.06f; pb.life = 0.6f; pb.speed = 1.2f; pb.spread = 0.9f;
             Particles_Emit(*b, sp.local, pb);
         }
