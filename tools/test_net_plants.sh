@@ -30,11 +30,20 @@ stop_host() { # #795: by the Windows PID too, only while it is still our game.ex
 trap stop_host EXIT
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 240 ]; do sleep 1; done
 until grep -q "world ready" "$tmp/host.log" 2>/dev/null || [ $SECONDS -gt 280 ]; do sleep 1; done
+# (#1367) The clients regenerate the host's world: hand them its erosion bake, as test_join does (the cache is keyed on the
+# bake's parameters, so a mismatch just bakes again). Without it each client baked for ~80 s, one after the other.
+shared=0
+if [ -f "$tmp/host.sav.erosion" ]; then
+    mkdir -p saves/mp_cache
+    for n in watcher feller; do cp "$tmp/host.sav.erosion" "saves/mp_cache/client_$n.sav.erosion"; done
+    shared=1
+fi
 join() { RAYLIBGAME_PLANTS_SECONDS=${PLANTS_SECONDS:-40} RAYLIBGAME_NET_PLANTS_ROLE=$1 timeout ${CLIENT_TIMEOUT:-300} "$exe" --join "127.0.0.1:$port" --name "$1" --bench 3 $NET_LIGHT_CLIENT --test-net-plants > "$tmp/$1.log" 2>&1; }
-if [ "${TERRAIN:-}" = default ]; then PLANTS_SECONDS=240 CLIENT_TIMEOUT=600 join watcher & wp=$!; else join watcher & wp=$!; fi
-if [ "${TERRAIN:-}" = default ]; then
-    # (#1107) each client bakes the erosion terrain itself: two at once with the host ran out of memory (bad_alloc). The
-    # feller joins once the watcher is in the world ("world ready" prints only at the end; the watcher listens longer).
+if [ "${TERRAIN:-}" = default ] && [ "$shared" = 0 ]; then PLANTS_SECONDS=240 CLIENT_TIMEOUT=600 join watcher & wp=$!; else join watcher & wp=$!; fi
+if [ "${TERRAIN:-}" = default ] && [ "$shared" = 0 ]; then
+    # (#1107) without a shared bake each client bakes the erosion terrain itself: two at once with the host ran out of memory
+    # (bad_alloc). The feller joins once the watcher is in the world ("world ready" prints only at the end; the watcher
+    # listens longer).
     until grep -q "loading screen after a spawn" "$tmp/watcher.log" 2>/dev/null || ! kill -0 "$wp" 2>/dev/null || [ $SECONDS -gt 600 ]; do sleep 2; done
 else
     sleep 2
