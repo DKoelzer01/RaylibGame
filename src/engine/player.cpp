@@ -751,6 +751,17 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     return onGround;
 }
 
+void Player::aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const {
+    if (Frames_On() && !flyMode && lastEyeD.length() > 0.0) {
+        dirWorld = Vector3Normalize(forward);
+        originLocal = body.toLocalD(lastEyeD);
+    } else {
+        dirWorld = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        originLocal = body.toLocalRenderD(world.camera.position, world.renderOrigin);
+    }
+    dirLocal = body.dirToLocal(dirWorld);
+}
+
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
@@ -799,6 +810,9 @@ void Player::applyToCamera(Scene& world) const {
     }
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
+    // (F4, #1412) the eye in double: the interpolated feet (double) plus the eye's small offset from them. The render-space
+    // camera rounds it (~61 um steps 1 km from the render origin), and aims taken from it wobbled while the player stood still.
+    lastEyeD = renderPosition(SimAlpha()) + DVec3(Vector3Subtract(eye, feet));
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
     else cameraUp = up;

@@ -131,6 +131,12 @@ struct Player {
     // they were on, so walking looks smooth while the simulation steps at 60 Hz. `position` when nothing to blend.
     DVec3 renderPosition(float alpha) const;
     void applyToCamera(Scene& world) const;  // camera at the eye (renderPosition), looking along forward
+    // (F4, #1412) the eye applyToCamera last placed the camera at, in absolute world doubles (the camera's float rounds it).
+    // Aim rays start here with RAYLIBGAME_FRAMES=1 (AimOrigin): a still player's aim then holds still.
+    mutable DVec3 lastEyeD{};
+    // The aim ray for a body: its body-local double origin and body-local direction. With the switch on, the eye above in
+    // double and `forward`; off (or flying), the render camera as before. dirWorld: the same direction in world axes.
+    void aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const;
     mutable float lastEyePush = 0.0f;         // how far applyToCamera pushed the eye out of the terrain last frame (m; #255 tests)
     mutable float eyeDrop = 0.0f;              // how far the eye is lowered toward the head sphere's centre to keep it out of the terrain (#255)
     // Fly mode follows the reference body (the nearest whose sphere of influence holds the camera):
