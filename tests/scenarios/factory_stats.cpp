@@ -93,7 +93,8 @@ SCENARIO("factory/stats") {
         // Totals over the minute: 10 crafts x 100 ticks x 4 EU/t, all inside the last minute of factory time (50 s of work).
         const double minuteTicks = v.coveredMinutes * 60.0 * kTicksPerSecond;
         c.between("EU used = 10 x 100 x 4", euUsed * minuteTicks, 3999.0, 4001.0);
-        c.check("the generator made at least what was used", euMade * minuteTicks >= euUsed * minuteTicks - 0.5);
+        // (#1205) demand-driven: it makes what is drawn, give or take one tick of its output (32 EU) waiting in its buffer
+        c.between("the generator made what was used (within one tick of output)", euMade * minuteTicks - euUsed * minuteTicks, -0.5, 32.5);
         const long long statusB = StatusTicks(macK);
         c.between("the macerator's ticks per status add up to the ticks passed", (double)(statusB - statusA) - (double)(ticksB - ticksA), -2.0, 2.0);
         float sparkSum = 0.0f;

@@ -1270,8 +1270,14 @@ static bool ScreenTab(const char* label, const char* key, bool on, float w, floa
     const ImVec2 p = ImGui::GetCursorScreenPos();
     // (#891) with its key when both fit the tab, else the name alone (a large font in a narrow tab clipped "Skills [K")
     const char* withKey = key && *key ? TextFormat("%s  [%s]", label, key) : label;
-    const bool fits = ImGui::CalcTextSize(withKey).x + ImGui::GetStyle().FramePadding.x * 2.0f <= w;
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const bool fits = ImGui::CalcTextSize(withKey).x + pad <= w;
+    // (#1206) the name alone too wide (8 tabs in creative): a smaller font, down to 70%, rather than a clipped name
+    const float nameW = ImGui::CalcTextSize(label).x + pad;
+    const bool shrink = !fits && nameW > w;
+    if (shrink) ImGui::PushFont(nullptr, ImGui::GetFontSize() * std::max(0.7f, w / nameW));
     const bool clicked = ImGui::Button(TextFormat("%s##%s", fits ? withKey : label, label), ImVec2(w, h));
+    if (shrink) ImGui::PopFont();
     if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
     ImGui::PopStyleColor(4);
     return clicked;
@@ -1732,7 +1738,7 @@ void GameUI_Draw(Scene& world) {
                                     { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
                                     { GameScreen::Research, "Research", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database)
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
-        const float smallW = 102.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key)
+        const float smallW = 92.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key; #1206: 102 -> 92, room for 8 tabs)
         const int nTabs = terrainTool.creative ? 8 : 7;
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
         if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
