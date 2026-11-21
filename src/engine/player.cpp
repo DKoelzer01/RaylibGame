@@ -58,7 +58,8 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     for (bool& v : collideCache.valid) v = false;
     // (F2b, #1146) Moved from outside since the last update (a spawn, placeAt, a respawn, a load): the velocity was set in
     // world terms then, so the frame path converts it again instead of restoring the last flight's stored frame velocity.
-    if ((position - lastEndPosition).length() > 1e-6) { fxActive = false; airVelBody = 0; viewBody = 0; }
+    movedOutside = (position - lastEndPosition).length() > 1e-6;
+    if (movedOutside) { fxActive = false; airVelBody = 0; viewBody = 0; }
     if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
@@ -362,7 +363,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // body, a teleport (spawns) or a jump of over 5 m (placed from outside) starts again from here.
     if (nearest) {
         const DVec3 l = nearest->toLocalD(position);
-        const bool cont = nearest->id == interpBody && interpSpawns == spawns && (l - interpCur).length() * nearest->scale < 5.0;
+        // (F2d, RAYLIBGAME_FRAMES=1) the update knows when the player was moved from outside, so the frame path restarts on
+        // that instead of guessing from a 5 m step (which also cut the interpolation for anything faster than 300 m/s).
+        const bool jumped = Frames_On() ? movedOutside : (l - interpCur).length() * nearest->scale >= 5.0;
+        const bool cont = nearest->id == interpBody && interpSpawns == spawns && !jumped;
         interpPrev = cont ? interpCur : l;
         interpCur = l;
         interpBody = nearest->id;
