@@ -135,6 +135,7 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "light") { if (v == "none") c.light = LightPref::None; else if (v == "avoids") c.light = LightPref::Avoids; else if (v == "drawn") c.light = LightPref::Drawn; else ok = false; }
         else if (k == "sleeps") c.sleepsByDay = v == "day" || v == "1";
         else if (k == "fire") c.fireScares = v == "scares" || v == "1";
+        else if (k == "firesafe") c.fireSafe = !(v == "0" || v == "no");
         else if (k == "ceiling") c.ceiling = v == "1" || v == "yes";
         else if (k == "drop") ok = num(c.dropScale);
         else if (k == "droprange") ok = num(c.dropRange);

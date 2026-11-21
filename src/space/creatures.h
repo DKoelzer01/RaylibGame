@@ -55,7 +55,9 @@ struct CreatureSpec {
     float retreatAt = 0.0f;    // health share under which it retreats (0: never)
     float threat = 1.0f;       // how dangerous it looks to others (fear and target choice)
     bool sleepsByDay = false;  // a night creature: rests in daylight
-    bool fireScares = false;   // keeps 14 m from fires; a player by a fire within 10 m is safe from it
+    bool fireScares = false;   // keeps 14 m from fires
+    bool fireSafe = true;      // (#1225) a player by a fire within 10 m, or carrying a light, is safe from it (beasts); torch-bearing
+                               // humanoids (scavengers: firesafe=0) attack them anyway
     // (#1224) Movement: clings to cave ceilings while it waits and drops on what passes under (the drop: damage x dropScale, a
     // heavy hit); runs in bursts (full speed for burstOn s, then a third of it for burstOff s).
     bool ceiling = false;

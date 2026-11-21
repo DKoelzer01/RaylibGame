@@ -1194,7 +1194,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 Percept p;
                 p.id = kPlayerPercept | tg->session; p.pos = tgLocal; p.dist = pdist; p.faction = Faction_Player();
                 p.seen = Sense_Sees(*cs, pdist, dark && !tg->lit ? 0.0f : 1.0f, true);
-                Vector3 f2; p.safe = NearFire(tgLocal, 10.0f, f2);
+                Vector3 f2; p.safe = cs->fireSafe && NearFire(tgLocal, 10.0f, f2); // (#1225: not for torch-bearers)
                 p.vulnerable = tg->vulnerable;
                 bi.others.push_back(p);
             }
@@ -1216,6 +1216,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
             const Mood before = a.brain.mood;
             bo = Brain_Step(a.brain, *cs, bi, step);
+            if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
+                printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
                 Creature_Event(*cs, CreatureEvent::Alert, body->id, a.pos);
             if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; }
