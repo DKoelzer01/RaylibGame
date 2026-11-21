@@ -1,4 +1,5 @@
 #include "machinemodels.h"
+#include "rotationmodels.h"
 #include "factory.h"
 #include "trapping.h"
 #include "instancebatch.h"
@@ -99,6 +100,7 @@ float TopReach(PartType type) {
     case PartType::Refinery: return 1.85f;
     case PartType::Miner: return 0.93f;
     case PartType::PrecisionAssembler: return 0.95f;
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return 0.42f; // (#1193) the dish on its mast
     case PartType::FusionReactor: return 0.29f;
     case PartType::MassDriver: return 1.3f;
     case PartType::Torch: return 0.25f;
@@ -262,6 +264,19 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         rlPopMatrix();
         rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
         p.glow({ 0, top * 0.6f, (fabsf(f.front.x) > 0.5f ? f.w : f.d) * 0.5f + 0.01f }, { f.w * 0.4f, f.h * 0.25f, 0.02f }, working ? Color{ 80, 230, 140, 255 } : Color{ 20, 50, 40, 255 }); // screen
+        rlPopMatrix();
+        break;
+    }
+    case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: { // (#1193) a research lab: a white bench, flasks, a dish on a mast
+        const Color band = type == PartType::LvLab ? Color{ 90, 150, 220, 255 } : type == PartType::MvLab ? Color{ 230, 150, 60, 255 } : Color{ 180, 90, 210, 255 }; // its tier's colour
+        p.cube({ 0, top * 0.55f, 0 }, { f.w * 1.01f, 0.06f, f.d * 1.01f }, band);
+        for (int k = -1; k <= 1; ++k) p.cyl({ k * 0.18f, top, 0.12f }, 0.05f, 0.03f, 0.16f, kGlass);  // flasks
+        rlPushMatrix(); rlTranslatef(-0.25f, top, -0.2f); rlRotatef(working ? t * 45.0f : 0.0f, 0, 1, 0);
+        p.cyl({ 0, 0, 0 }, 0.025f, 0.025f, 0.3f, kDarkSteel);                                  // the mast
+        p.cyl({ 0, 0.3f, 0 }, 0.02f, 0.14f, 0.1f, kSteel);                                      // the dish
+        rlPopMatrix();
+        rlPushMatrix(); rlRotatef(f.yawDeg, 0, 1, 0);
+        p.glow({ 0, top * 0.3f, (fabsf(f.front.x) > 0.5f ? f.w : f.d) * 0.5f + 0.01f }, { f.w * 0.5f, f.h * 0.18f, 0.02f }, working ? Color{ 120, 200, 255, 255 } : Color{ 20, 40, 60, 255 }); // its screen
         rlPopMatrix();
         break;
     }
@@ -474,6 +489,7 @@ void Machines_Draw3D(Scene& world) {
     }
     rlDrawRenderBatchActive();
     rlEnableBackfaceCulling();
+    RotationModels_Draw3D(world); // (#1269) shafts, cogs, cranks and the rotation machines' turning parts
 }
 
 bool Machine_RaycastDetails(const Plot& plot, Vector3 o, Vector3 d, float maxDist, int& part, float& dist) {

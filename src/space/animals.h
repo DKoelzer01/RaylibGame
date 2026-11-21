@@ -30,6 +30,8 @@ void Animals_DrawHUD();
 struct PlayerInput;
 void Animals_Aim(Scene& world, const PlayerInput& in); // this frame's aim and actions (after the camera is placed, before the terrain tool)
 bool Animals_Aiming();                    // the crosshair is on an animal (the terrain tool holds off)
+int Animals_AimedIndex();                 // the animal under the crosshair, -1 none (#1249: studying by looking)
+std::pair<std::string, std::string> Animals_SpeciesOf(int index); // its species (id, display name); empty if none
 void Animals_Reset();
 void Animals_Save(FILE* f);
 bool Animals_LoadLine(const char* tok, FILE* f);

@@ -20,6 +20,7 @@ constexpr int kDefault[(int)Act::Count] = {
     KEY_Q,
     KEY_ENTER,
     KEY_Q, KEY_F,
+    KEY_Y,
 };
 int binding[(int)Act::Count] = {}; // the live bindings (filled from kDefault on first use)
 bool bindingsReady = false;
@@ -42,6 +43,7 @@ constexpr ActInfo kActs[(int)Act::Count] = {
     { "offhand_use", "Use the off hand (food, oxygen)" },
     { "chat", "Command line / chat" },
     { "drop_item", "Inventory: drop from the slot (Ctrl: all)" }, { "swap_offhand", "Inventory: swap the slot with the off hand" },
+    { "magic_sight", "Magic sight: tap to show or hide, hold to study" },
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 static_assert((int)Act::Count <= 64, "Act bits fit a uint64_t");

@@ -436,7 +436,8 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             };
             std::vector<int> fit;
             for (size_t i = 0; i < species.size(); ++i)
-                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
+                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0) &&
+                    (!body.profile || body.profile->allowsCreature(species[i].id))) // the world file's creatures (#1274)
                     fit.push_back((int)i);
             if (fit.empty()) continue;
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
@@ -483,6 +484,13 @@ const std::string& Animals_Body(int i) { static const std::string none; return i
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
 bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
+int Animals_AimedIndex() { return aimed >= 0 && aimed < (int)animals.size() ? aimed : -1; }
+std::pair<std::string, std::string> Animals_SpeciesOf(int i) {
+    LoadSpecies();
+    if (i < 0 || i >= (int)animals.size() || animals[i].species < 0 || animals[i].species >= (int)species.size()) return {};
+    const Species& s = species[animals[i].species];
+    return { s.id, s.name };
+}
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 double Animals_BiteWindUp() { return kBiteWindUp; }
@@ -681,6 +689,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) { // (#334: around every player out in the dark, as around the local one)
         const PlanetField* tf = dynamic_cast<const PlanetField*>(t.body->field.get());
         if (!tf || !t.vulnerable || hunter < 0) continue;
+        if (t.body->profile && !t.body->profile->allowsCreature(species[hunter].id)) continue; // the world file's creatures (#1274)
         const Vector3 up = Vector3Normalize(t.local);
         const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), t.body->dirToWorld(up)) < -0.1f;
         const bool surface = Vector3Length(t.local) > tf->radius + tf->elevation(up) - 6.0f;
