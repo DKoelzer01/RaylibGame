@@ -1,18 +1,20 @@
 // combat/damage-types (#1215, combat step 1): a creature hit with each damage type. Each hit does its amount (a hornhide has
 // no resistances yet, so 4 of 4) and brings its effect: heat burns, cold chills (and slows it), energy shocks (the wind-up
 // interrupt), a slash heavy bleeds, a bite poisons; blunt and pierce bring none. Then a second of standing still: the burn,
-// bleed and poison take health over time.
+// bleed and poison take health over time. Last (#1374), the player is poisoned and eats bitterroot while full: it cures.
 #include "scenario.h"
 #include "animals.h"
 #include "combat.h"
 #include "damage.h"
 #include "player.h"
+#include "playersession.h"
+#include "survival.h"
 #include "world.h"
 #include <raymath.h>
 #include <string>
 
 namespace {
-struct State { int idx = -1; uint64_t net = 0; float hpAfterHits = 0.0f; } S; // (net: its stable id; an index shifts when another animal goes)
+struct State { int idx = -1; uint64_t net = 0; float hpAfterHits = 0.0f, playerHp = 0.0f; } S; // (net: its stable id; an index shifts when another animal goes)
 
 int Fresh(ScenarioCtx& c) { // a new hornhide 6 m from the start (the last one spawned)
     const Vector3 home = c.spawnDirLocal();
@@ -86,6 +88,27 @@ SCENARIO("combat/damage-types") {
         const float lost = S.hpAfterHits - Animals_HealthOf(i);
         // burn 3/s + bleed 2/s + poison 1.5/s = 6.5 a second (the animal near the start simulates every step)
         c.between("health lost to effects over ~1 s", lost, 5.0, 8.5);
+        return true;
+    });
+    // (#1374) The player is bitten: poisoned, health ticks away; bitterroot cures it, eaten even with a full stomach.
+    s.step("the player is poisoned", 3.0, [](ScenarioCtx&) {
+        survival.health = 100.0f;
+        survival.food = 100.0f;
+        Status_Apply(survival.status, StatusKind::Poison);
+        S.playerHp = survival.health;
+        return true;
+    });
+    s.step("poison takes health, bitterroot cures it", 5.0, [](ScenarioCtx& c) {
+        if (c.t < 1.0) return false;
+        c.check("the player is poisoned", survival.status.poison > 0.0f);
+        c.between("player health lost to ~1 s of poison", S.playerHp - survival.health, 0.8, 3.0);
+        Inventory& inv = LocalSession().inventory;
+        inv.add("bitterroot", 2);
+        survival.food = 100.0f;
+        c.check("eaten though full", Survival_UseItem("bitterroot"));
+        c.check("the poison is cured", survival.status.poison <= 0.0f);
+        c.check("one bitterroot eaten", inv.count("bitterroot") == 1, std::to_string(inv.count("bitterroot")));
+        c.check("full and well: the second waits", !Survival_UseItem("bitterroot") && inv.count("bitterroot") == 1);
         return true;
     });
 }
