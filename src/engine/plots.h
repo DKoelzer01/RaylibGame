@@ -131,6 +131,7 @@ public:
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
+    Vector3 toPlot(const DVec3& bodyLocal) const; // (#1277) from a double body-local point: no 4 mm float step at 60 km
     Vector3 toBody(Vector3 plotPos) const;
     // Plot coordinates (metres along east, up, north from the origin) to render space, built in double the way the
     // plot meshes are (lines and boxes drawn under it stay on the blocks as the planet turns, #271).
@@ -157,6 +158,7 @@ public:
     bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut) const;
     // Ray (body-local) against part cells: the nearest hit cell, its face normal (plot space), distance.
     bool raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const;
+    bool raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const; // (#1277) aim rays
 
 private:
     struct Section { Mesh mesh{}; bool dirty = true; };

@@ -63,6 +63,7 @@ struct NetClient {
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
+    int creatureFxMsgs = 0;                      // (#1343, #1364) creature shot and event messages heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)

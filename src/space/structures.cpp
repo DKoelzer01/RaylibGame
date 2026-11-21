@@ -824,7 +824,7 @@ void Structures_Update(Scene& world) {
     if (sets.empty()) return;
     Planetoid* body = player.nearest;
     const bool onFoot = body && !player.flyMode;
-    const Vector3 me = body ? body->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    const Vector3 me = body ? body->toLocalOf(player.position, world.renderOrigin) : Vector3{};
     // Only the authority generates (#164 design, MP): a client gets the structures as plot and terrain edits. It builds
     // round the local player and every interest centre (#318: a server's players).
     if (Net_IsAuthority()) {
