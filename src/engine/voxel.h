@@ -268,6 +268,7 @@ public:
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres
     float karstWeight(Vector3 s) const { return gen.karst ? Strata_KarstWeight(s, fieldSeed) : 0.0f; } // #592: 0..1
+    unsigned int terrainSeed() const { return fieldSeed; } // #1248: the mana field is seeded from it
     float volcanoWeight(Vector3 s) const { float w = 0.0f; if (gen.volcanoes) Strata_Volcano(s, radius, fieldSeed, &w); return w; } // #1063: 0..1 toward a vent (0 off volcanoes)
     // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
     float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
