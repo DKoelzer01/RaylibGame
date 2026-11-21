@@ -192,3 +192,5 @@ windmill 1         = any_planks 12, rope 8, shaft 1
 steam_engine 1     = iron_plate 6, bronze_plate 4, cogwheel 2
 dynamo 1           = iron_plate 4, copper_wire 8, shaft 1
 electric_motor 1   = iron_plate 4, copper_wire 8, shaft 1, basic_circuit 1
+# (#1271 L6) the first lab, on a shaft: the tier 2 milestone hands over its recipe (once gating is on)
+steam_lab 1        = iron_plate 4, glass 2, cogwheel 2, any_planks 8

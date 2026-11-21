@@ -1368,7 +1368,7 @@ void Factory::Sync(Scene& world) {
                             const int dep = pf ? pf->depositNear(at, 40.0f) : -1;
                             variant = dep >= 0 ? PlanetField::OreKindName(dep) : pf ? (OreKindOf(*body, at) ? OreKindOf(*body, at) : "iron_ore") : OreKindAt(at, body->seed);
                         }
-                        if (part.type >= PartType::LvLab && part.type <= PartType::HvLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
+                        if ((part.type >= PartType::LvLab && part.type <= PartType::HvLab) || part.type == PartType::SteamLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         L.machineVariant.push_back(variant);
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
@@ -2077,5 +2077,44 @@ TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
         EXPECT_DOUBLE_EQ(full, 2.0) << m << ": the MV chain";
     }
     EXPECT_GT(ratio(PartType::Centrifuge, "copper_purified", "gold_dust"), 0.0) << "gold still comes from the MV centrifuge";
+}
+
+// (#1271 L6) The steam lab: a rotation machine. Steered to tier 3 (the game's research labs set its variant), it turns steam
+// packs into research units while a hand crank on its shaft turns, at the crank's speed; with nobody cranking it waits.
+TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 91; L.version = 1;
+    int part = 0;
+    const int up = RotationPlot_OrientFor({ 0, 1, 0 });
+    auto add = [&](PartType t, Int3 at, int orient = 0) {
+        const Part pt = RotationPlot_PartAt(t, at, orient);
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(pt, fp);
+        if (IsMachine(t)) {
+            std::vector<Int3> cells;
+            for (const auto& c : fp) cells.push_back(c.first);
+            L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back(t == PartType::SteamLab ? "research_t3" : "");
+        }
+        RotationPartMsg rm;
+        if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+        return part++;
+    };
+    const int lab = add(PartType::SteamLab, { 0, 0, 0 });
+    add(PartType::Shaft, { 0, 2, 0 }, up);
+    const int crank = add(PartType::HandCrank, { 0, 3, 0 }, up);
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 91);
+    Machine& m = ps.machines[ps.byPart.at(lab)];
+    int buckets = 0;
+    InsertInto(m, tables.item("steam_pack"), 4, false, buckets);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 300; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(m.out, kSlots, tables.item("research_t3")), 0) << "nobody turns the crank: no research";
+    for (int t = 0; t < 450; ++t) { ps.rot.Hold(crank); TickPlot(ps, 1, made, active); }
+    EXPECT_EQ(CountItems(m.out, kSlots, tables.item("research_t3")), 2) << "450 ticks at the crank's 32 RPM (its rated speed): two 200-tick units";
+    EXPECT_EQ(CountItems(m.in.data(), InSlots(m), tables.item("steam_pack")), 2);
+    plots.clear(); plotIndexDirty = true;
 }
 #endif
