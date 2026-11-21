@@ -570,6 +570,21 @@ bool Plot::remove(int idx) {
     return true;
 }
 
+bool Plot::retype(int idx, PartType t) {
+    if (idx < 0 || idx >= (int)parts.size() || parts[idx].type == PartType::Count || parts[idx].type == t) return false;
+    Part np = parts[idx];
+    np.type = t;
+    std::vector<std::pair<Int3, CellShape>> a, b;
+    Footprint(parts[idx], a);
+    Footprint(np, b);
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) if (!(a[i].first == b[i].first)) return false;
+    parts[idx] = np;
+    for (const auto& c : b) { cells[c.first] = { idx, c.second }; markDirty(c.first); changedCells.push_back(c.first); }
+    ++version;
+    return true;
+}
+
 int Plot::partAt(Int3 c) const {
     auto it = cells.find(c);
     return it == cells.end() ? -1 : it->second.part;

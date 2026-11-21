@@ -126,6 +126,7 @@ std::string ResearchState::Text() const {
     for (const auto& [id, units] : progress) if (units > 0) s += "progress " + id + " " + std::to_string(units) + "\n";
     if (insight > 0.0) { char b[64]; snprintf(b, sizeof b, "insight %.3f\n", insight); s += b; }
     for (const auto& [tier, line] : milestoneDone) s += "milestone " + std::to_string(tier) + " " + std::to_string(line) + "\n"; // (#1271)
+    if (ladderMigrated) s += "ladder_migrated\n"; // (#1272)
     return s;
 }
 
@@ -141,6 +142,7 @@ bool ResearchState::FromText(const std::string& text) {
         else if (key == "progress") { std::string id; int u = 0; if (ls >> id >> u && u > 0) { progress[id] = u; any = true; } }
         else if (key == "insight") { ls >> insight; any = true; }
         else if (key == "milestone") { int t = 0, l = 0; if (ls >> t >> l) { milestoneDone.insert({ t, l }); any = true; } } // (#1271)
+        else if (key == "ladder_migrated") { ladderMigrated = true; any = true; } // (#1272)
     }
     return any;
 }
@@ -160,6 +162,7 @@ ResearchSight Research_Sight(const ResearchState& s, const ResearchNode& n, int 
 void Research_Merge(const ResearchState& from, ResearchState& into) {
     into.done.insert(from.done.begin(), from.done.end());
     into.milestoneDone.insert(from.milestoneDone.begin(), from.milestoneDone.end()); // (#1271)
+    into.ladderMigrated = into.ladderMigrated || from.ladderMigrated;
     for (const auto& [id, units] : from.progress) {
         if (into.done.count(id)) continue;
         int& u = into.progress[id];
