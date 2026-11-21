@@ -453,5 +453,6 @@ void Recorder_FrameDone() { if (active && !waiting) ++rendered; }
 
 bool Recorder_Finished() { return finished; }
 bool Recorder_Active() { return active; }
+int Recorder_Captured() { return active && !waiting ? captured : -1; } // (#545) the next frame_NNNN index
 void Recorder_Shutdown() { End(); if (finisher.joinable()) finisher.join(); }
 std::string Recorder_LastDir() { std::lock_guard<std::mutex> lk(lastDirM); return lastDir; }

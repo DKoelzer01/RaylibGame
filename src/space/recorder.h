@@ -36,6 +36,7 @@ void Recorder_Capture();                  // grab the back buffer now (call wher
 bool Recorder_Finished();                 // a command-line recording is done and the game should exit
 void Recorder_Shutdown();                 // finish writing (frames still queued, GIF, sheet)
 bool Recorder_Active();
+int Recorder_Captured();                  // (#545) the index the next captured frame gets (-1: not recording)
 void Recorder_Cue();                      // --record-on-cue: start capturing now
 void Recorder_Screenshot();             // F2 (#579): the next finished frame (HUD included) to <root>/<date>/shot-<HHMMSS>/screenshot.png
 // (#910) F2 also writes <shot dir>/lod.txt from this (called on the main thread with the screenshot image)

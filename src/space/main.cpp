@@ -10790,6 +10790,39 @@ int main(int argc, char** argv)
                 };
                 long skyMasked = 0;
                 const long holes = CrackHoles(px, shot.width, shot.height, 2, &skyMasked, rayToSky);
+                // (#545/#1163) RAYLIBGAME_POP_CHECK=1 (with RAYLIBGAME_CRACK_EVERY=1): single-frame pops, such as a hole or a
+                // shadow that shows for one frame. The screen in 10 px cells of mean luminance; frame N-1 is flagged where its cells
+                // differ from the mean of N-2 and N by much more than N-2 and N differ (motion), in more than 6 cells. Logged and
+                // saved as bench_pop_<frame>.png (the first 40).
+                static const bool popCheck = getenv("RAYLIBGAME_POP_CHECK") && getenv("RAYLIBGAME_POP_CHECK")[0] == '1';
+                if (popCheck && crackEvery == 1) {
+                    static std::vector<float> l0, l1; // frames N-2, N-1
+                    static Image prevShot{};
+                    static int popsSaved = 0;
+                    const int cw = shot.width / 10, ch = shot.height / 10;
+                    std::vector<float> l2((size_t)cw * ch, 0.0f);
+                    for (int cy = 0; cy < ch; ++cy)
+                        for (int cx = 0; cx < cw; ++cx) {
+                            float s = 0.0f;
+                            for (int y = cy * 10; y < cy * 10 + 10; y += 2)
+                                for (int x = cx * 10; x < cx * 10 + 10; x += 2) { const Color c = px[y * shot.width + x]; s += 0.3f * c.r + 0.59f * c.g + 0.11f * c.b; }
+                            l2[(size_t)cy * cw + cx] = s / 25.0f;
+                        }
+                    if (l0.size() == l2.size() && l1.size() == l2.size()) {
+                        int cells = 0; float worst = 0.0f;
+                        for (size_t i = 0; i < l2.size(); ++i) {
+                            const float t = fabsf(l1[i] - 0.5f * (l0[i] + l2[i])) - 0.5f * fabsf(l2[i] - l0[i]);
+                            if (t > 14.0f) { ++cells; worst = std::max(worst, t); }
+                        }
+                        if (cells > 6) {
+                            printf("bench: pop: frame %ld, t=%.2f s, rec frame %d, %d cells (of %d), worst %.0f/255 over the neighbours\n", crackFrame - 1, GetTime(), Recorder_Captured() - 1, cells, cw * ch, worst);
+                            if (popsSaved < 40 && prevShot.data) { ++popsSaved; ExportImage(prevShot, TextFormat("bench_pop_%05ld.png", crackFrame - 1)); }
+                        }
+                    }
+                    l0.swap(l1); l1.swap(l2);
+                    if (prevShot.data) UnloadImage(prevShot);
+                    prevShot = ImageCopy(shot);
+                }
                 UnloadImageColors(px);
                 if (holes > 20) {
                     const WorldStats& s = GetWorldStats();
@@ -10799,10 +10832,10 @@ int main(int argc, char** argv)
                         const double r = l.length();
                         where = TextFormat("%.4f %.4f, %.1f m from the centre", asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r);
                     }
-                    printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
-                           crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+                    printf("bench: holes: frame %ld, t=%.2f s, rec frame %d, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
+                           crackFrame, GetTime(), Recorder_Captured(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
                     if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
-                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
+                    { static int saved = 0; static const int saveCap = getenv("RAYLIBGAME_CRACK_SAVE") ? atoi(getenv("RAYLIBGAME_CRACK_SAVE")) : 24; if (saved < saveCap) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
                 }
                 UnloadImage(shot);
             }
