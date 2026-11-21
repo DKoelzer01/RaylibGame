@@ -239,6 +239,11 @@ static bool gInFrame = false; // between the main loop's BeginDrawing and EndDra
 // --perf-log (#387): once a second, the frames per screen state (menu, newworld, bake, loading, play, paused): count,
 // average and worst frame, to stdout and log.txt. Called once per drawn frame.
 static bool gFpsLog = false;
+// (#1387) The bench save for a seed: seed 42 (and no --seed) keep saves/bench.sav, which tools and scenarios copy by name; any
+// other seed gets its own, so its erosion bake (<save>.erosion, one per save) survives switching seeds (~80 s a re-bake).
+static std::string BenchSavePath(unsigned seed) {
+    return seed == 0 || seed == 42 ? std::string("saves/bench.sav") : "saves/bench-" + std::to_string(seed) + ".sav";
+}
 static void FpsLog_Frame(const char* state) {
     if (!gFpsLog) return;
     static const char* cur = nullptr;
@@ -1218,7 +1223,7 @@ int main(int argc, char** argv)
     }
     const bool bench = benchSeconds > 0.0;
     benchMode = bench;
-    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : "saves/bench.sav"); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
+    if (bench) SetWorldSavePath(gSandboxWorld ? "saves/sandbox.sav" : BenchSavePath(worldGen.seed).c_str()); // tests save and load; keep the player's F5 save out of it (#662: the sandbox its own)
     Scenario_Setup(); // (#870) a scenario saves to its run's scratch dir
     if (bench && !benchThreats && !benchAnimalPath) Animals_SetThreats(false); // hostile animals and night spawns would upset other tests
 
@@ -1506,7 +1511,7 @@ int main(int argc, char** argv)
             SetWorldSavePath("saves/world.sav");
             generateWorld(world);
         }
-        if (bench) SetWorldSavePath("saves/bench.sav");
+        if (bench) SetWorldSavePath(BenchSavePath(worldGen.seed).c_str());
         if (benchLoadHold) { // --test-load-hold (#901): where the player was saved, body-local, from the record itself
             namespace fs = std::filesystem;
             std::error_code ec;
@@ -8954,6 +8959,11 @@ int main(int argc, char** argv)
                         const Vector3 lup = Vector3Normalize(local), lnorth = p->dirToLocal(north);
                         const Vector3 wp = Vector3Normalize(Vector3Add(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 200.0f)));
                         Nav_AddWaypoint(p->name, wp, "test");
+                        { // (#828) a grave of ours 150 m south, as a server lists it: the map draws a headstone and its time to open
+                            GraveInfo g; g.id = 1; g.body = p->name; g.owner = "bench"; g.name = "bench's grave 1"; g.diedAt = (int64_t)time(nullptr) - 120;
+                            g.local = DVec3(Vector3Normalize(Vector3Subtract(Vector3Scale(lup, p->radius * p->scale), Vector3Scale(lnorth, 150.0f)))) * (double)(p->radius * p->scale);
+                            Combat_SetGraveMirror({ g }, "bench");
+                        }
                         mapBearing = Nav_Bearing(world, wp);
                         printf("bench: map: facing east the compass reads %.1f deg; walked %.0f m, %d tiles explored; a waypoint 200 m north bears %.1f deg\n",
                                mapHeading, walked, mapTiles, mapBearing);

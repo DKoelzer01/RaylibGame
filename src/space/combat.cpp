@@ -389,6 +389,19 @@ void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string
 
 int Combat_GraveCount() { return (int)std::count_if(graves.begin(), graves.end(), [](const Grave& g) { return !g.dropped; }); }
 
+bool Combat_GraveMark(const std::string& body, const std::string& name, std::string& label) {
+    for (const Grave& g : graves) {
+        if (g.dropped || g.body != body || g.name != name) continue;
+        label = g.name;
+        if (!g.owner.empty()) { // (#828) multiplayer: the owner's team alone until kGraveOpenToAllSeconds after the death
+            const int64_t left = g.diedAt + kGraveOpenToAllSeconds - WallNow();
+            label += left > 0 ? TextFormat(", open to all in %lld min", (long long)((left + 59) / 60)) : ", open to all";
+        }
+        return true;
+    }
+    return false;
+}
+
 
 // (#1225) Thieves: the nearest dropped pile (not a grave) within `radius` of `at` on `body`; and taking one (its items into `out`).
 bool Combat_PileNear(const std::string& body, Vector3 at, float radius, Vector3& pileAt) {
@@ -847,3 +860,30 @@ bool Combat_TestFrame(Scene& world) {
     }
 }
 
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#828): a grave's map label ----
+#include "unit_helpers.h"
+
+// A multiplayer grave reads its time until it opens to others (15 min after the death), then "open to all"; a single
+// player's grave (no owner: anyone may take it) its name alone; a waypoint that is no grave is not one.
+TEST(Combat, AGraveOnTheMapSaysWhenItOpensToOthers) {
+    Combat_Reset();
+    const int64_t now = (int64_t)time(nullptr);
+    std::vector<GraveInfo> list(3);
+    list[0].id = 1; list[0].body = "terra"; list[0].local = { 0, 60000, 0 }; list[0].owner = "bob-uuid"; list[0].name = "bob's grave 1"; list[0].diedAt = now - 60;
+    list[1].id = 2; list[1].body = "terra"; list[1].local = { 0, 60000, 10 }; list[1].owner = "bob-uuid"; list[1].name = "bob's grave 2"; list[1].diedAt = now - 20 * 60;
+    list[2].id = 3; list[2].body = "terra"; list[2].local = { 0, 60000, 20 }; list[2].name = "Grave 3"; list[2].diedAt = now;
+    Combat_SetGraveMirror(list, "someone-else");
+    std::string label;
+    ASSERT_TRUE(Combat_GraveMark("terra", "bob's grave 1", label));
+    EXPECT_EQ(label, "bob's grave 1, open to all in 14 min");
+    ASSERT_TRUE(Combat_GraveMark("terra", "bob's grave 2", label));
+    EXPECT_EQ(label, "bob's grave 2, open to all");
+    ASSERT_TRUE(Combat_GraveMark("terra", "Grave 3", label));
+    EXPECT_EQ(label, "Grave 3");
+    EXPECT_FALSE(Combat_GraveMark("terra", "Copper hill", label)) << "a plain waypoint";
+    EXPECT_FALSE(Combat_GraveMark("luna", "Grave 3", label)) << "on another body";
+    Combat_Reset();
+}
+#endif
