@@ -222,7 +222,26 @@ namespace Factory {
     bool Remote();
     void SetRemoteView(const MachineKey& key, const MachineView& view);
     void SetRemoteWorking(uint64_t bodyId, uint32_t plotId, const std::vector<int>& parts); // that plot's working machines
+
+    // ---- (#1254) Fluid in machine slots: alchemy's essences ----
+    // Items whose names start with a registered prefix ("essence_") are fluid held in a machine's slots, not things: no
+    // machine or chest accepts them from a conveyor or a hand, hands never take them out, and a removed machine's are lost
+    // with it. Only MoveFluids moves them (pipes, phials); recipes make and use them as usual. Register before Start.
+    void AddFluidPrefix(const std::string& prefix);
+    bool IsFluidItem(const std::string& item);
+    // Between ticks: each machine's fluid stacks (by item, summed) in its inputs and outputs, and its empty slots.
+    struct FluidSlots { bool valid = false; std::vector<std::pair<std::string, int>> in, out; int freeIn = 0, freeOut = 0; };
+    std::vector<FluidSlots> ReadFluids(const std::vector<MachineKey>& keys);
+    // Between ticks, in order: up to `count` of a fluid item out of one machine's slots (which: 0 inputs, 1 outputs) into
+    // another's. Either end may be absent (hasFrom / hasTo false: a phial poured in, a spill). Moves at most what the source
+    // holds and what fits the target, keeping the target's total of the item at most `cap` (0: no cap). Returns each move's
+    // amount.
+    struct FluidMove { MachineKey from{}, to{}; bool hasFrom = false, hasTo = false; int fromWhich = 1, toWhich = 0; std::string item; int count = 0, cap = 0; };
+    std::vector<int> MoveFluids(const std::vector<FluidMove>& moves);
 }
+// (#1254) More machine recipes, made by the game from its own data (alchemy: the distillery from aspects.txt, the cauldron
+// from alchemy.txt): called once when the factory first loads its tables, after machine_recipes.txt. Set it before then.
+inline std::function<void(std::vector<Factory::RecipeInfo>& out)> gFactoryExtraRecipes;
 // Server: results for a player (Extract / TakeSlot / Take / leftovers with `to`) go here instead of this game's inventory.
 inline std::function<void(uint32_t to, const std::string& item, double amount, float heat)> gFactoryDeliver; // (#1102: an amount: a chest's fraction too)
 // Client (#332): the machine the screen or look-at panel views changed (Factory::View with SetRemote): ask the server for it.

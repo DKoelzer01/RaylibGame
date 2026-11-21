@@ -76,13 +76,26 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
         bool rotate = false;
         Planetoid* ref = flyFollow ? flyReference(world, rotate) : nullptr;
-        if (ref && ref->id == flyBodyId && rotate == flyRotate) {
-            if (rotate) {
+        // (F4, #1412) Carried in the frame recordFly() saw, even when the reference has changed since: crossing a body's
+        // altitude line (2 radii: spinning frame <-> centred) or into another body's SOI skipped the carry that frame and
+        // left the camera a frame of the body's motion behind (frames/fly-cross: 3.2 m at the moon's line). The next
+        // recordFly() takes the new frame.
+        if (ref && ref->id != flyBodyId && flyBodyId != 0) {
+            ref = nullptr;
+            for (auto& obj : world.objects)
+                if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->id == flyBodyId) { ref = q; break; }
+        }
+        if (ref && ref->id == flyBodyId) {
+            if (flyRotate) {
                 flyCarried = ref->toWorldD(flyLocal);
                 flyCarriedValid = true;
                 world.camera.position = (flyCarried - world.renderOrigin).toFloat();
                 world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
                 world.camera.up = ref->dirToWorld(flyLocalUp);
+            } else if (Frames_On()) { // (F4, #1412) centred on the body: its centre + the double offset, the view kept
+                const Vector3 view = Vector3Subtract(world.camera.target, world.camera.position);
+                world.camera.position = (ref->worldPos + flyOffset - world.renderOrigin).toFloat();
+                world.camera.target = Vector3Add(world.camera.position, view);
             } else {
                 const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
                 world.camera.position = Vector3Add(world.camera.position, move);
@@ -218,7 +231,7 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         // space it fires the suit thrusters along the view.
         const Vector3 f = (grounded || gravity >= 0.5f) ? flat : forward;
         if (in.down(Act::Forward)) wish = Vector3Add(wish, f);
-        if (in.down(Act::Back)) wish = Vector3Subtract(wish, f);
+        if (in.down(Act::Back) && !onLadder) wish = Vector3Subtract(wish, f); // (#1105: on a ladder S only climbs down; it walked you off it)
         if (in.down(Act::Right)) wish = Vector3Add(wish, side);
         if (in.down(Act::Left)) wish = Vector3Subtract(wish, side);
         if (Vector3Length(wish) > 0.0f) wish = Vector3Normalize(wish);
@@ -258,6 +271,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         const float vUp = Vector3DotProduct((fxActive ? velocity : Vector3Subtract(velocity, nearest->surfaceVelocity(at))), up);
         if (vUp < -12.0f) hovering = true;
     }
+    // (#1105) A ladder's input for the physics steps: W climbs, S descends; Space pushes off (not also a ground jump)
+    climbInput = in.enabled && !flyMode ? (in.down(Act::Forward) ? 1.0f : in.down(Act::Back) ? -1.0f : 0.0f) : 0.0f;
+    climbJump = onLadder && jump;
+    if (climbJump) jump = false;
     // Jump buffer: a press is remembered briefly, so it is not lost on a frame where "grounded"
     // flickers off over bumpy ground (see coyote time in stepPhysics).
     if (jump) jumpBuffer = 0.15f;
@@ -410,6 +427,17 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     gravity = Vector3Length(gFelt);
     const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
+    // (#1105) A ladder: the capsule's lower or upper sphere over a ladder's cell. Climbing up from the ground starts as a
+    // jump does (the ground branch takes it off, with its frame); in the air the ladder holds the climb speed (below).
+    ladderCooldown = std::max(0.0f, ladderCooldown - dt);
+    onLadder = false;
+    if (!flyMode && ladderCooldown <= 0.0f && nearest && nearest->plots) {
+        const float r = 0.35f / nearest->scale;
+        const Vector3 lo = nearest->toLocal(Vector3Add(feet, Vector3Scale(up, 0.45f))), hi = nearest->toLocal(Vector3Add(feet, Vector3Scale(up, 1.25f)));
+        for (const auto& pl : nearest->plots->plots) if (pl->touchesPart(lo, r, PartType::Ladder) || pl->touchesPart(hi, r, PartType::Ladder)) { onLadder = true; break; }
+    }
+    if (onLadder && grounded && climbInput > 0.0f) jumpBuffer = 0.15f;
+
     const float vUp = Vector3DotProduct(velocity, up);
     bool resting = false; // grounded with no walking input
     if (grounded) {
@@ -524,6 +552,22 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         velocity = Vector3Add(frame, Vector3Scale(Vector3Subtract(velocity, frame), expf(-1.8f * dt)));
         if (swimUp) velocity = Vector3Add(velocity, Vector3Scale(up, 9.0f * dt));
         if (swimDown) velocity = Vector3Subtract(velocity, Vector3Scale(up, 6.0f * dt));
+    }
+    if (onLadder && !grounded && !wasGrounded) { // (not the step that leaves the ground: its velocity is still the ground's)
+        // (#1105) On a ladder: no gravity; up and down at the climb speed against the surface (W, S; nothing holds); sideways
+        // only as the walking input asks (W into the ladder, A/D along it), never a leftover drift (it carried the player off
+        // the ladder going down); Space pushes off, back from where the player faces (the ladder), a little up.
+        const Vector3 surface = (nearest && !fxActive) ? nearest->surfaceVelocity(feet) : Vector3{ 0, 0, 0 };
+        Vector3 side = Vector3Subtract(wish, Vector3Scale(up, Vector3DotProduct(wish, up)));
+        if (const float sl = Vector3Length(side); sl > 1e-4f) side = Vector3Scale(side, kClimbSpeed / std::max(1.0f, sl));
+        velocity = Vector3Add(surface, Vector3Add(side, Vector3Scale(up, climbInput * kClimbSpeed)));
+        gAccel = { 0, 0, 0 };
+        if (climbJump) {
+            Vector3 back = Vector3Subtract(forward, Vector3Scale(up, Vector3DotProduct(forward, up)));
+            back = Vector3LengthSqr(back) > 1e-6f ? Vector3Scale(Vector3Normalize(back), -kLadderPushOff) : Vector3{ 0, 0, 0 };
+            velocity = Vector3Add(velocity, Vector3Add(back, Vector3Scale(up, 2.0f)));
+            climbJump = false; ladderCooldown = 0.4f; onLadder = false;
+        }
     }
     // Static friction: standing on walkable ground, only gravity's push into the ground applies.
     // (The downhill part made a standing player creep ~1.6 cm/s down slopes at fixed substeps.)
@@ -747,14 +791,28 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     return onGround;
 }
 
+void Player::aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const {
+    if (Frames_On() && !flyMode && lastEyeD.length() > 0.0) {
+        dirWorld = Vector3Normalize(forward);
+        originLocal = body.toLocalD(lastEyeD);
+    } else {
+        dirWorld = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        originLocal = body.toLocalRenderD(world.camera.position, world.renderOrigin);
+    }
+    dirLocal = body.dirToLocal(dirWorld);
+}
+
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
-    Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    // The eye's offset from the feet, kept on its own (small numbers): (F4, #1412) the double eye below adds it to the
+    // double feet; eye - feet in render space carried both points' rounding (~61 um 1 km from the render origin).
+    Vector3 eyeOff = Vector3Scale(up, eyeHeight + eyeOffset);
     if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
         const float len = Vector3Length(eyeOffsetH);
-        if (len > 1e-6f) eye = Vector3Add(eye, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
+        if (len > 1e-6f) eyeOff = Vector3Add(eyeOff, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
     }
+    Vector3 eye = Vector3Add(feet, eyeOff);
     lastEyePush = 0.0f;
     // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
     // shape: keep it 0.25 m clear of the terrain (the near plane's reach) so it never looks through a ceiling or an
@@ -791,10 +849,14 @@ void Player::applyToCamera(Scene& world) const {
             eyeDrop = roomy ? eyeDrop + (want - eyeDrop) * (1.0f - expf(-dt / 0.04f)) : want;
         } else eyeDrop += (want - eyeDrop) * (1.0f - expf(-dt / 0.15f)); // back up eased
         eye = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+        eyeOff = Vector3Subtract(eyeOff, Vector3Scale(up, eyeDrop));
         lastEyePush = eyeDrop;
     }
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
+    // (F4, #1412) the eye in double: the interpolated feet (double) plus the eye's small offset from them. The render-space
+    // camera rounds it (~61 um steps 1 km from the render origin), and aims taken from it wobbled while the player stood still.
+    lastEyeD = renderPosition(SimAlpha()) + DVec3(eyeOff);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
     else cameraUp = up;
@@ -863,6 +925,10 @@ void Player::recordFly(Scene& world) {
     // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
     const DVec3 cam = world.renderOrigin + world.camera.position;
     flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
+    // (F4, #1412) unmoved by input since the centred carry: keep the double offset (the float camera rounds it each frame)
+    const DVec3 offsetNow = cam - ref->worldPos;
+    if (!(Frames_On() && !rotate && ref->id == flyBodyIdPrev && (offsetNow - flyOffset).length() < 0.01)) flyOffset = offsetNow;
+    flyBodyIdPrev = ref->id;
     flyCarriedValid = false;
     flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
     flyLocalUp = ref->dirToLocal(world.camera.up);

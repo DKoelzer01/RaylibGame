@@ -23,3 +23,13 @@ research_table 1 = oak_planks 4, glass 2, bronze_ingot 2
 mana_jar 2 = glass 2
 mana_siphon 1 = iron_plate 2, glass 2, quartz 1
 mana_dynamo 1 = iron_plate 4, basic_circuit 1, quartz 2
+
+# Alchemy (#1254). Essences, full phials and potions are made from aspects.txt and alchemy.txt at load (alchemy.cpp).
+distillery       | Distillery             | block | 160,120,80  | LV: boils an item into essences by its aspects. Pipe them to an essence tank or a cauldron, or fill phials from it (RMB with phials in hand).
+essence_tank     | Essence tank           | block | 170,190,200 | Holds 256 measures of one aspect's essence. Pipes fill and empty it; RMB with phials fills them or pours them in.
+cauldron         | Cauldron               | block | 60,60,66    | Brews two essences, water and empty phials into potions over its own fire (wood or coal). Feed essences by pipe or pour phials in.
+phial            | Phial                  | 64 | 210,225,235 | An empty glass phial: holds one measure of essence, or a potion from a cauldron.
+distillery 1 = copper_plate 4, glass 2, basic_circuit 1
+essence_tank 1 = glass 4, iron_plate 2
+cauldron 1 = iron_plate 6
+phial 4 = glass 1

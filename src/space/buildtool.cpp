@@ -18,6 +18,7 @@
 #include "worldtypes.h"
 #include "simclock.h"
 #include "factory.h"
+#include "alchemy.h" // (#1254) phials on vessels, the run on their panel
 #include "blueprint.h"
 #include <deque>
 #include "claims.h"
@@ -242,9 +243,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = buildTool.active ? buildTool.reach : terrainTool.reach;
     Plot* hitPlot = nullptr;
     Int3 hitCell{};
@@ -344,9 +344,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     }
     Planetoid* body = player.nearest;
     if (!body) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     aim.body = body;
     aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
@@ -631,9 +630,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     farmAim = FarmAim{};
     Planetoid* body = player.nearest;
     if (!body || player.flyMode) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
-    const Vector3 ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = 6.0f;
     if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
@@ -703,6 +701,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
     // beside the inventory, like the player's.
     if (!buildTool.active && in.hit(Act::Secondary)) {
+        // (#1254) phials in hand on an alchemy vessel: empty ones fill from it, full ones pour in
+        if (Alchemy_UsePhials(machineAim.body, machineAim.plot, machineAim.part, machineAim.type, Hotbar_Slot(Hotbar_Selected()))) { Audio_Play(Sfx::Pickup, 0.4f, 1.4f); return; }
         GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
         Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
         return;
@@ -819,7 +819,8 @@ void Machine_DrawHUD() {
     // counted (#567: a full chest ran off the screen).
     const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
     const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
-    const int lines = (int)(in.size() + out.size());
+    const std::string runLine = Alchemy_IsVessel(machineAim.type) ? Alchemy_PanelLine(machineAim.body, machineAim.plot, machineAim.part) : std::string(); // (#1254)
+    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
@@ -843,6 +844,7 @@ void Machine_DrawHUD() {
     }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(machineAim.type == PartType::Anvil ? "hold RMB to hammer   I put work in   O take it out" : chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
