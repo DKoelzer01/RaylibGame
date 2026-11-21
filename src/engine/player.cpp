@@ -83,6 +83,10 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
                 world.camera.position = (flyCarried - world.renderOrigin).toFloat();
                 world.camera.target = Vector3Add(world.camera.position, ref->dirToWorld(flyLocalFwd));
                 world.camera.up = ref->dirToWorld(flyLocalUp);
+            } else if (Frames_On()) { // (F4, #1412) centred on the body: its centre + the double offset, the view kept
+                const Vector3 view = Vector3Subtract(world.camera.target, world.camera.position);
+                world.camera.position = (ref->worldPos + flyOffset - world.renderOrigin).toFloat();
+                world.camera.target = Vector3Add(world.camera.position, view);
             } else {
                 const Vector3 move = (ref->worldPos - flyBodyPos).toFloat();
                 world.camera.position = Vector3Add(world.camera.position, move);
@@ -778,14 +782,28 @@ bool Player::resolveCollisions(Scene&, Vector3& feet) {
     return onGround;
 }
 
+void Player::aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const {
+    if (Frames_On() && !flyMode && lastEyeD.length() > 0.0) {
+        dirWorld = Vector3Normalize(forward);
+        originLocal = body.toLocalD(lastEyeD);
+    } else {
+        dirWorld = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        originLocal = body.toLocalRenderD(world.camera.position, world.renderOrigin);
+    }
+    dirLocal = body.dirToLocal(dirWorld);
+}
+
 void Player::applyToCamera(Scene& world) const {
     if (flyMode) return;
     const Vector3 feet = (renderPosition(SimAlpha()) - world.renderOrigin).toFloat(); // between the last two steps (#315)
-    Vector3 eye = Vector3Add(feet, Vector3Scale(up, eyeHeight + eyeOffset));
+    // The eye's offset from the feet, kept on its own (small numbers): (F4, #1412) the double eye below adds it to the
+    // double feet; eye - feet in render space carried both points' rounding (~61 um 1 km from the render origin).
+    Vector3 eyeOff = Vector3Scale(up, eyeHeight + eyeOffset);
     if (nearest && eyeOffsetBody == nearest->id) { // sideways smoothing (#255); dirToWorld normalises, so scale back
         const float len = Vector3Length(eyeOffsetH);
-        if (len > 1e-6f) eye = Vector3Add(eye, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
+        if (len > 1e-6f) eyeOff = Vector3Add(eyeOff, Vector3Scale(nearest->dirToWorld(eyeOffsetH), len));
     }
+    Vector3 eye = Vector3Add(feet, eyeOff);
     lastEyePush = 0.0f;
     // The eye sits at the head sphere's top (and the smoothing can lift it 0.25 m more), outside the collision
     // shape: keep it 0.25 m clear of the terrain (the near plane's reach) so it never looks through a ceiling or an
@@ -822,10 +840,14 @@ void Player::applyToCamera(Scene& world) const {
             eyeDrop = roomy ? eyeDrop + (want - eyeDrop) * (1.0f - expf(-dt / 0.04f)) : want;
         } else eyeDrop += (want - eyeDrop) * (1.0f - expf(-dt / 0.15f)); // back up eased
         eye = Vector3Subtract(eye, Vector3Scale(up, eyeDrop));
+        eyeOff = Vector3Subtract(eyeOff, Vector3Scale(up, eyeDrop));
         lastEyePush = eyeDrop;
     }
     world.camera.position = eye;
     world.camera.target = Vector3Add(world.camera.position, forward);
+    // (F4, #1412) the eye in double: the interpolated feet (double) plus the eye's small offset from them. The render-space
+    // camera rounds it (~61 um steps 1 km from the render origin), and aims taken from it wobbled while the player stood still.
+    lastEyeD = renderPosition(SimAlpha()) + DVec3(eyeOff);
     // Reduce motion: the camera's up follows the ground's gently (no lurch when it changes).
     if (smoothMotion && Vector3Length(cameraUp) > 0.5f) cameraUp = Vector3Normalize(Vector3Lerp(cameraUp, up, std::min(1.0f, 4.0f * GameFrameTime())));
     else cameraUp = up;
@@ -894,6 +916,10 @@ void Player::recordFly(Scene& world) {
     // Unmoved by input since the carry: the double pose, not its float rounding (which drifted ~0.2 m in 3 s).
     const DVec3 cam = world.renderOrigin + world.camera.position;
     flyLocal = ref->toLocalD(flyCarriedValid && (cam - flyCarried).length() < 0.01 ? flyCarried : cam);
+    // (F4, #1412) unmoved by input since the centred carry: keep the double offset (the float camera rounds it each frame)
+    const DVec3 offsetNow = cam - ref->worldPos;
+    if (!(Frames_On() && !rotate && ref->id == flyBodyIdPrev && (offsetNow - flyOffset).length() < 0.01)) flyOffset = offsetNow;
+    flyBodyIdPrev = ref->id;
     flyCarriedValid = false;
     flyLocalFwd = ref->dirToLocal(Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
     flyLocalUp = ref->dirToLocal(world.camera.up);

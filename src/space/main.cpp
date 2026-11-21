@@ -94,6 +94,8 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "magicsight.h"
 #include "magicdiscovery.h"
 #include "magicmachines.h"
+#include "alchemy.h"
+#include "potions.h"
 #include "tome.h"
 #include "wind.h"
 #include "storage.h"
@@ -1339,6 +1341,11 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
+    // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
+    Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",
+                      "resources/compute/fluid_pack.comp", "resources/compute/fluid_flowpack.comp", "resources/compute/fluid_groups.comp",
+                      "resources/compute/chunk_cull.comp", "resources/compute/tree_cull.comp" });
     SetExitKey(KEY_NULL);
     SetTraceLogLevel(LOG_WARNING); // Set log level to warning to reduce output noise
     rlSetClipPlanes(0.5, 60000.0); // space scale: see other bodies kilometres away (0.2 m near walls: see the frame loop)
@@ -1350,6 +1357,7 @@ int main(int argc, char** argv)
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
+    if (Magic_Enabled()) Alchemy_Install(); // (#1254) essences, phials and potions as items, the distillery and cauldron recipes (before the factory loads its tables)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
     Fluid::LoadKinds("resources/data/fluids.txt"); // water, crude oil, ... (fluid.h)
     ItemIcons_Init(); // one painted icon per item (itemicons.h)
@@ -10470,6 +10478,8 @@ int main(int argc, char** argv)
             Factory::Sync(world);                                // machine layouts in, items out
             ResearchLabs_Update(world, SimTime());                // (#1193) labs: steered to their team's queue, their units counted
             MagicMachines_Update(world, SimTime());               // (#1252) magic: siphons on their nodes, the research table's reach
+            Alchemy_Update(world, SimTime());                     // (#1254) alchemy: pipe runs of essence, spills fizzling
+            if (!loading) Potion_Update(simDt);                   // (#1254) potions: their timers
             QuestBook_TickClock(loading ? -1.0 : SimTime());    // (#1199) the tier clock (sim steps: not while loading or paused)
             Factory::Advance(simDt);                             // the factory thread runs its ticks on the sim clock (#315)
             if (!loading && !survival.dead && player.nearest) // (#1018) blueprint ghosts within reach build themselves from the inventory
@@ -10799,6 +10809,7 @@ int main(int argc, char** argv)
         while (world.lights.size() < 4) world.lights.push_back(Light{});
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
+        if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
         {   // Slot 3: a torch in hand (#218), a flickering point light at the hand. (#1093, the user) Torches never burn out,
             // held or placed: the burn timer took one a few minutes and, in the off hand, the whole stack.
             Light& torch = world.lights[3];
@@ -12656,6 +12667,10 @@ int main(int argc, char** argv)
                            "world clock %.1f s, estimate off by %.0f ms, %.0f ms still to slew (%d pongs, rtt %.0f ms); saw %zu other player(s) (want %d), farthest one moved %.1f m -> %s\n",
                            joinName.c_str(), gJoin.welcome.session, (int)fpOk, walked, gJoin.states, gJoin.worstError, gJoin.corrections, WorldTime(),
                            gJoin.clockError * 1000.0, WorldTime_Pending() * 1000.0, gJoin.pongs, gJoin.rttMs, seen.size(), wantOthers, othersMoved, ok ? "PASS" : "FAIL");
+                    if (b) { // (#901) where we leave, body-local: the server's record should say the same (a hosted save loaded in single player)
+                        const DVec3 at = b->toLocalD(player.position);
+                        printf("join: %s leaves at body %llu local %.3f %.3f %.3f\n", joinName.c_str(), (unsigned long long)b->netId, at.x, at.y, at.z);
+                    }
                     NetClient_Disconnect(gJoin);
                     benchJoin = false;
                 }

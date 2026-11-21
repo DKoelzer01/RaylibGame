@@ -59,13 +59,14 @@ enum class PartType : uint8_t {
     WaterWheel, Windmill,                                            // (#1270) rotation sources from the river and the wind (rotationsources.*)
     LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
     ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
+    Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
     Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo; }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo || (t >= PartType::Distillery && t <= PartType::Cauldron); }
 // (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
 inline bool IsRotationPart(PartType t) { return t >= PartType::Shaft && t <= PartType::Windmill; }
 // (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
