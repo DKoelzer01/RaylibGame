@@ -41,10 +41,16 @@ struct State {
         e.radius = Vector3Length(e.half);
         return e;
     }
-    // The water level (m against the ground) in a pit at x: the surface above a point just over the floor.
+    // The water level (m against the ground) in a pit at x: the top of the highest wet cell, scanning down from over the
+    // rim. (#1168: the first surface going up from the floor read a gap in a rising column as the level, and the pour,
+    // gated on it, kept pouring into a full pit.)
     float level(const Planetoid& p, float x) const {
-        const float s = Fluid::SurfaceAbove(p, pt(x, 0.0f, kFloor + 0.05f), 6.0f);
-        return s > 0.0f ? kFloor + 0.05f + s : kFloor;
+        const float cs = WaterField::CellSize();
+        for (float h = 1.0f - 0.5f * cs; h > kFloor; h -= cs) {
+            const float w = Fluid::WaterAt(p, pt(x, 0.0f, h), 0.0f) / WaterField::CellVolume();
+            if (w > 0.02f) return h - 0.5f * cs + std::min(w, 1.0f) * cs;
+        }
+        return kFloor;
     }
     // Side on, a little above the ground: both pits and the line of the tunnel between them.
     void camera(ScenarioCtx& c) const { c.camera(pt(0.0f, -18.0f, 5.0f), pt(0.0f, 0.0f, -2.0f), home); }
