@@ -629,7 +629,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
         inventory.clear();
         QuestBook_SetTier(0);
         Factory::SetSpeed(60);
-        home = body->toLocal((player.position - world.renderOrigin).toFloat());
+        home = body->toLocalOf(player.position, world.renderOrigin);
         if (!body->plots) body->plots = std::make_unique<PlotSet>();
         // The workshop: a plot on the ground a few metres ahead.
         const Vector3 up = Vector3Normalize(home);

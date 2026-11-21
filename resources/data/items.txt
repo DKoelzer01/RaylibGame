@@ -18,6 +18,7 @@ any_log         | Any log         | 999 | 120, 84, 50 | A log of any tree.
 any_stone       | Any stone       | 999 | 130,130,135 | Stone or any rock: granite, basalt, sandstone, limestone or marble.
 fibre           | Plant fibre     | 999 | 170,190,110 | Tough stems from bushes. Twists into rope.
 berries         | Berries         | 200 | 190, 40, 70 | Wild berries. Edible.
+bitterroot      | Bitterroot      | 200 | 150,110, 60 | A bitter wild root from bushes. Cures poison (eat it even when full); a little food.
 rope            | Rope            | 200 | 200,170,120 | Twisted plant fibre.
 clay            | Clay            | 999 | 170,120, 95 | Dug from river and pond beds, swamps and pockets in the dirt. Moulds into crucibles; bricks for kilns and ovens.
 crucible_mold   | Crucible mould  |  20 | 175,125,100 | Unfired clay crucible. Fire it in a campfire.
@@ -110,6 +111,9 @@ milk             | Milk             |   999 | 245,245,240 | Food: 12. From a hor
 wool             | Wool             |   999 | 235,235,225 | Shorn from woolbacks (O, with shears). Spins into fibre (Tab).
 hide             | Hide             |   999 | 160,110,70  | From plains runners and hornhides. Leather for suits.
 feather          | Feather          |   999 | 230,220,210 | From cluckers.
+chitin           | Chitin           |   999 | 190,185,160 | Plates from a tunnel lurker's shell: light, hard armour (armour step to come).
+scrap            | Scrap            |   999 | 140,130,115 | Bits of old tools and metal a cave scavenger carried. (A smelting use comes with the metallurgy step.)
+map_fragment     | Map fragment     |   999 | 210,190,140 | A torn page of an old mine map: it marks the way to a dungeon. (Reading it comes with the dungeons, #719.)
 shears           | Shears           |  tool | 180,180,190 | Shear a woolback for wool (look at it, O).
 bucket           | Bucket           |  tool | 160,160,170 | Hold it (hotbar): RMB scoops 1 m^3 of water from a river, pond, the sea or a channel. Milks a hornhide (look at it, O).
 water_bucket     | Water bucket     |  tool |  70,120,200 | A bucket of water (1 m^3): RMB pours it where you look (water a field, fill a basin).

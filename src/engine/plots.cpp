@@ -62,6 +62,7 @@ const char* PartName(PartType t) {
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
         case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
+        case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
@@ -132,6 +133,7 @@ const char* PartMachineName(PartType t) {
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision_assembler";
         case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
+        case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
         case PartType::SteamLab: return "steam_lab"; // (#1271 L6)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
@@ -279,6 +281,7 @@ static Color PartColor(PartType t) {
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
+        case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -378,6 +381,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: // (#1193; #1271 L6)
+        case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
         case PartType::SteamEngine: case PartType::Dynamo: case PartType::Motor: // (#1271 L3)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
@@ -503,8 +507,9 @@ int RotateOrientation(int index, int axis) {
 // Plot geometry
 // ---------------------------------------------------------------------------------------------
 
-Vector3 Plot::toPlot(Vector3 b) const {
-    const DVec3 d = DVec3(b) - origin;
+Vector3 Plot::toPlot(Vector3 b) const { return toPlot(DVec3(b)); }
+Vector3 Plot::toPlot(const DVec3& b) const {
+    const DVec3 d = b - origin;
     const Vector3 v = { (float)d.x, (float)d.y, (float)d.z };
     return { Vector3DotProduct(v, east), Vector3DotProduct(v, up), Vector3DotProduct(v, north) };
 }
@@ -990,6 +995,9 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
 }
 
 bool Plot::raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
+    return raycast(DVec3(o), d, maxDist, cell, faceNormal, dist); // (bit-identical: toPlot widened the float anyway)
+}
+bool Plot::raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
     if (cells.empty()) return false;
     // DDA through the cell grid in plot space.
     Vector3 p = Vector3Scale(toPlot(o), 1.0f / kCellSize);

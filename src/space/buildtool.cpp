@@ -19,6 +19,7 @@
 #include "simclock.h"
 #include "factory.h"
 #include "blueprint.h"
+#include <deque>
 #include "claims.h"
 #include "playerrecord.h"
 #include "menus.h"
@@ -62,6 +63,16 @@ bool IsMachineItem(const std::string& id) {
 namespace {
     bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
     std::vector<TerrainEdit> foundationBatch;
+    // (#1183) A blueprint's foundations land over the next frames: the edits wait here (with their body) and each frame
+    // applies them in small groups until kFoundationFrameMs is spent; the parts are placed at once. (The terrain edit was
+    // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
+    struct PendingFoundation { uint64_t body; TerrainEdit edit; };
+    std::deque<PendingFoundation> foundationsPending;
+    // A frame's share for foundations (#1372, perf/blueprint-place with the world idle, 2026-11-21): a 60-part placement all in
+    // one frame was a ~12 ms frame; queued at 3 ms its worst frame after was +5.4 ms over a ~2.7 ms baseline (5 frames), at
+    // 1 ms +3.9 ms (14 frames, ~0.23 s). An edit costs ~0.16 ms. RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 1.0; }();
+    constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
 }
 void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
     static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
@@ -70,8 +81,33 @@ void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch
 void BuildTool_EndFoundationBatch(Planetoid& body) {
     PROFILE_SCOPE("blueprint foundations");
     foundationBatching = false;
-    if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    static const bool async = !(getenv("RAYLIBGAME_BLUEPRINT_ASYNC") && getenv("RAYLIBGAME_BLUEPRINT_ASYNC")[0] == '0');
+    if (async) for (const TerrainEdit& e : foundationBatch) foundationsPending.push_back({ body.id, e });
+    else if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
     foundationBatch.clear();
+}
+int BuildTool_PendingFoundations() { return (int)foundationsPending.size(); }
+void BuildTool_ApplyPendingFoundations(double budgetMs) {
+    if (foundationsPending.empty()) return;
+    PROFILE_SCOPE("blueprint foundations (queued)");
+    const double t0 = GetTime();
+    // (#1372) the next group only if it fits the budget by the groups' cost so far (checking only before each group overran a
+    // 3 ms budget to 4); at least one group a frame, so the queue always drains
+    static double groupMs = 0.0; // a running average
+    std::vector<TerrainEdit> group;
+    int groups = 0;
+    while (!foundationsPending.empty()) {
+        const double spent = (GetTime() - t0) * 1000.0;
+        if (budgetMs > 0.0 && groups > 0 && spent + groupMs > budgetMs) break;
+        const uint64_t id = foundationsPending.front().body;
+        group.clear();
+        while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        const double g0 = GetTime();
+        if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+        const double ms = (GetTime() - g0) * 1000.0;
+        groupMs = groupMs > 0.0 ? groupMs * 0.8 + ms * 0.2 : ms;
+        ++groups;
+    }
 }
 
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
@@ -207,7 +243,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     float best = buildTool.active ? buildTool.reach : terrainTool.reach;
     Plot* hitPlot = nullptr;
     Int3 hitCell{};
@@ -276,6 +313,7 @@ void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part&
 
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
+    BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
@@ -307,7 +345,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     Planetoid* body = player.nearest;
     if (!body) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     aim.body = body;
     aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
@@ -325,7 +364,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // A part bigger than a cell is centred on the aimed point across the face it is placed on (#196: a 2x2 machine hung
     // off one corner of the aimed cell). `normal` is the face's axis (a plot axis); the other two axes move the
     // footprint so its middle is nearest the hit point (in cells).
-    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal, bool onGround = false) {
+    auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
         if (fp.size() <= 1) return;
@@ -380,7 +419,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
-        centreOn(*hitPlot, hitFace, Vector3Add(lo, Vector3Scale(ld, bestPart)));
+        centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
         {   // A part bigger than a cell grows from its origin, which could reach back into the block
             // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
             std::vector<std::pair<Int3, CellShape>> fp;
@@ -412,7 +451,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             faceToward(towardViewer(*near));
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
-            centreOn(*near, Int3{ 0, 1, 0 }, ground, true); // on the ground: the bottom face's middle at the aim
+            centreOn(*near, Int3{ 0, 1, 0 }, DVec3(ground), true); // on the ground: the bottom face's middle at the aim
         } else {
             // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
             // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
@@ -593,7 +632,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     Planetoid* body = player.nearest;
     if (!body || player.flyMode) return;
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     float best = 6.0f;
     if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;

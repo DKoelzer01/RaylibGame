@@ -58,6 +58,7 @@ enum class PartType : uint8_t {
     Millstone, Saw, Press,
     WaterWheel, Windmill,                                            // (#1270) rotation sources from the river and the wind (rotationsources.*)
     LvLab, MvLab, HvLab,                                             // (#1193) research labs: turn packs into research units for the team's queue (after the rotation parts: saved by index)
+    ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
     SteamEngine, Dynamo, Motor,                                      // (#1271 L3) a boiler's steam into rotation; rotation into 32 V EU and back
     SteamLab,                                                        // (#1271 L6) the first lab: steam packs into tier 3 research, driven by a shaft
     Count
@@ -65,7 +66,7 @@ enum class PartType : uint8_t {
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || (t >= PartType::SteamEngine && t <= PartType::SteamLab); }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo || (t >= PartType::SteamEngine && t <= PartType::SteamLab); }
 // (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
 inline bool IsRotationPart(PartType t) { return (t >= PartType::Shaft && t <= PartType::Windmill) || (t >= PartType::SteamEngine && t <= PartType::SteamLab); }
 // (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
@@ -132,6 +133,7 @@ public:
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;
+    Vector3 toPlot(const DVec3& bodyLocal) const; // (#1277) from a double body-local point: no 4 mm float step at 60 km
     Vector3 toBody(Vector3 plotPos) const;
     // Plot coordinates (metres along east, up, north from the origin) to render space, built in double the way the
     // plot meshes are (lines and boxes drawn under it stay on the blocks as the planet turns, #271).
@@ -160,6 +162,7 @@ public:
     bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut) const;
     // Ray (body-local) against part cells: the nearest hit cell, its face normal (plot space), distance.
     bool raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const;
+    bool raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const; // (#1277) aim rays
 
 private:
     struct Section { Mesh mesh{}; bool dirty = true; };

@@ -8,6 +8,8 @@
 #include "ship.h"
 #include "telescope.h"
 #include "audio.h"
+#include "combat.h" // (#1218) gDoubleTapDodge
+#include "subtitles.h"
 #include "foliage.h"
 #include "world.h"
 #include "headless.h"
@@ -297,6 +299,10 @@ namespace {
             changed |= Slider({ x, y, w, h }, Audio_V2() ? "Master volume" : "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
             if (Audio_V2()) // (#1238) the buses; the old engine has only the master volume
                 for (int b = 1; b < (int)AudioBus::Count; ++b) { changed |= Slider({ x, y, w, h }, AudioBus_Name((AudioBus)b), settings.busVolume[b], 0.0f, 1.0f, "%.2f"); next(); }
+            if (Audio_V2()) { // (#1244) captions for sounds, with their direction
+                static const char* const kSub[] = { "Off", "Important", "All" };
+                changed |= Choice({ x, y, w, h }, "Subtitles", kSub, 3, settings.subtitles); next();
+            }
             break;
         case SettingsTab::Gameplay: {
             // (Difficulty is chosen on the New World screen and kept by the world, #526: no setting here.)
@@ -307,6 +313,7 @@ namespace {
             changed |= Choice({ x, y, w, h }, "Hand bob", bob, 3, settings.handBob); next();
             changed |= Toggle({ x, y, w, h }, "Speed vignette", settings.speedVignette); next();
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
+            changed |= Toggle({ x, y, w, h }, "Double-tap to dodge", settings.doubleTapDodge); next(); // (#1218)
             changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
@@ -336,6 +343,7 @@ void Settings_Load() {
             if (!strncmp(key, "bind_", 5)) { Act a; if (PlayerInput_ActFromId(key + 5, a)) PlayerInput_SetBinding(a, atoi(val)); continue; } // (#821) a key binding
             if (!strcmp(key, "uiscale")) { settings.uiScale = std::clamp(v, 0.0f, 1.5f); continue; } // (#821) 0 auto
             if (!strncmp(key, "tabwin_", 7) && key[7] >= '0' && key[7] <= '3' && !key[8]) { settings.tabWin[key[7] - '0'] = std::clamp(v, 0.0f, 1.0f); continue; } // (#1080)
+            if (!strcmp(key, "subtitles")) { settings.subtitles = std::clamp((int)v, 0, 2); continue; } // (#1244)
             if (!strncmp(key, "volume_", 7)) { // (#1238) a bus volume
                 for (int b = 1; b < (int)AudioBus::Count; ++b) if (!strcmp(key + 7, AudioBus_Key((AudioBus)b))) settings.busVolume[b] = std::clamp(v, 0.0f, 1.0f);
                 continue;
@@ -366,6 +374,7 @@ void Settings_Load() {
             else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
+            else if (!strcmp(key, "doubletapdodge")) settings.doubleTapDodge = v != 0; // (#1218)
         }
         fclose(f);
     }
@@ -379,6 +388,7 @@ void Settings_Save() {
     fprintf(f, "mouse %.3f\nfov %.1f\nvolume %.3f\nfoliage %d\nfpscap %d\nvsync %d\nreducemotion %d\n", settings.mouseSensitivity, settings.fov, settings.volume,
             settings.foliage ? 1 : 0, settings.fpsCap, settings.vsync ? 1 : 0, settings.reduceMotion ? 1 : 0);
     for (int b = 1; b < (int)AudioBus::Count; ++b) fprintf(f, "volume_%s %.3f\n", AudioBus_Key((AudioBus)b), settings.busVolume[b]); // (#1238)
+    fprintf(f, "subtitles %d\n", settings.subtitles); // (#1244)
     fprintf(f, "showhands %d\nhandbob %d\n", settings.showHands ? 1 : 0, settings.handBob);
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
@@ -391,6 +401,7 @@ void Settings_Save() {
     for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
     fprintf(f, "invertslotwheel %d\n", settings.invertSlotWheel ? 1 : 0); // (#862)
+    fprintf(f, "doubletapdodge %d\n", settings.doubleTapDodge ? 1 : 0); // (#1218)
     for (int a = 0; a < (int)Act::Count; ++a) // (#821) only the key bindings changed from their defaults
         if (PlayerInput_Binding((Act)a) != PlayerInput_DefaultBinding((Act)a)) fprintf(f, "bind_%s %d\n", PlayerInput_ActId((Act)a), PlayerInput_Binding((Act)a));
     if (!settings.logLevel.empty()) fprintf(f, "log_level %s\n", settings.logLevel.c_str()); // set by hand in the file (#514)
@@ -410,6 +421,7 @@ void Settings_Apply() {
     Audio_SetMasterVolume(settings.volume);
     static_assert(sizeof(settings.busVolume) / sizeof(settings.busVolume[0]) == (int)AudioBus::Count, "one volume per audio bus");
     for (int b = 1; b < (int)AudioBus::Count; ++b) Audio_SetBusVolume((AudioBus)b, settings.busVolume[b]); // (#1238)
+    Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
@@ -420,6 +432,7 @@ void Settings_Apply() {
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     player.smoothMotion = settings.reduceMotion;
+    gDoubleTapDodge = settings.doubleTapDodge; // (#1218)
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
     player.speedVignette = settings.speedVignette;
 }
@@ -427,7 +440,9 @@ void Settings_Apply() {
 bool Menu_IsWorldSave(const std::string& path) {
     const fs::path p(path);
     std::error_code ec;
-    return p.extension() == ".sav" && p.filename() != "bench.sav" && !fs::exists(path + ".synced", ec);
+    const std::string name = p.filename().string();
+    const bool benchSave = name == "bench.sav" || name.rfind("bench-", 0) == 0; // (#1387) bench-<seed>.sav too
+    return p.extension() == ".sav" && !benchSave && !fs::exists(path + ".synced", ec);
 }
 
 std::string Menu_NewSavePath() {
@@ -702,6 +717,8 @@ TEST(Menus, AJoinedGamesCacheIsNotAWorldToHost) { // (#1110: hosting the client'
     EXPECT_TRUE(Menu_IsWorldSave((dir / "world_25.sav").string())) << "a world";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "client_player.sav").string())) << "a joined game's cache (a .synced beside it)";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "bench.sav").string())) << "the bench's";
+    touch("bench-7.sav");
+    EXPECT_FALSE(Menu_IsWorldSave((dir / "bench-7.sav").string())) << "(#1387) a bench save for another seed";
     EXPECT_FALSE(Menu_IsWorldSave((dir / "world_25.sav.synced").string())) << "not a .sav";
     fs::remove_all(dir, ec);
 }

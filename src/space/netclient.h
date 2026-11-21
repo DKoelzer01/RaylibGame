@@ -63,6 +63,7 @@ struct NetClient {
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
+    int creatureFxMsgs = 0;                      // (#1343, #1364) creature shot and event messages heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
@@ -74,6 +75,7 @@ struct NetClient {
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
     int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
+    double respawnGraceUntil = -1.0;             // (#828) dead, or just respawned: the server moved us (not a miss); errors are not counted
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
     // Who is playing and what they hold (#750)

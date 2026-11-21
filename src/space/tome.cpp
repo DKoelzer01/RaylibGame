@@ -101,6 +101,7 @@ bool Tome_LoadText(const std::string& text, std::string& error) {
             else if (key == "needs") p.needs = Words(rest);
             else if (key == "research") p.research = Words(rest);
             else if (key == "unlocks") p.unlocks = Words(rest);
+            else if (key == "burden") p.minBurden = (float)atof(rest.c_str()); // (#1255)
             else if (key == "cost") {
                 const auto w = Words(rest);
                 if (w.size() % 2) { error = "tome.txt line " + std::to_string(lineNo) + ": cost is '<aspect> <n> ...'"; return false; }
@@ -199,6 +200,7 @@ void Tome_GrantStudy(MagicPlayerState& me, const std::string& type, float value)
 bool Tome_CanUnlock(const TomeState& team, const MagicPlayerState& me, const ResearchState& research, const TomePage& p, std::string* why) {
     auto no = [&](const std::string& w) { if (why) *why = w; return false; };
     if (team.Has(p.id)) return no("the team has it");
+    if (me.burden < p.minBurden) return no("it shows only to the burdened"); // (#1255)
     for (const std::string& d : p.needs) if (!team.Has(d)) { const TomePage* q = Tome_Find(d); return no("needs the page " + (q ? q->name : d)); }
     for (const std::string& r : p.research) if (!research.Done(r)) { const ResearchNode* n = Research_Find(r); return no("needs the research " + (n ? n->name : r)); }
     for (const auto& [id, n] : p.cost) {

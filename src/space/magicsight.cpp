@@ -55,6 +55,10 @@ std::string MagicSight_SaveText(const MagicPlayerState& s) {
     snprintf(buf, sizeof buf, "magic_pool %.3f %.3f\n", s.pool, s.poolMax);
     out += buf;
     if (s.found) out += "magic_found 1\n"; // (#1250)
+    if (s.strain > 0.0f || s.burden > 0.0f || s.wardingCharm) { // (#1255)
+        snprintf(buf, sizeof buf, "magic_burden %.3f %.3f %d\n", s.strain, s.burden, s.wardingCharm ? 1 : 0);
+        out += buf;
+    }
     for (const auto& [id, v] : s.aspects) { // (#1251)
         if (v <= 0.0f || id.empty() || id.find_first_of(" \t\r\n") != std::string::npos) continue;
         snprintf(buf, sizeof buf, "magic_aspect %s %.3f\n", id.c_str(), v);
@@ -83,6 +87,10 @@ bool MagicSight_LoadLine(MagicPlayerState& s, const char* line) {
     }
     if (sscanf(line, "magic_studied %159s %d", type, &n) == 2) { if (n > 0) s.studied[type] = n; return true; }
     if (sscanf(line, "magic_found %d", &n) == 1) { s.found = n != 0; return true; } // (#1250)
+    if (float st = 0.0f, bu = 0.0f; sscanf(line, "magic_burden %f %f %d", &st, &bu, &n) == 3) { // (#1255)
+        s.strain = std::clamp(st, 0.0f, 100.0f); s.burden = std::clamp(bu, 0.0f, 100.0f); s.wardingCharm = n != 0;
+        return true;
+    }
     if (sscanf(line, "magic_aspect %159s %f", type, &pool) == 2) { if (pool > 0.0f) s.aspects[type] = pool; return true; } // (#1251)
     return false;
 }
@@ -101,6 +109,7 @@ bool MagicSight_LoadLine(MagicPlayerState& s, const char* line) {
 #include "magicdiscovery.h" // (#1250) the Arcane line's study steps
 #include "survival.h"       // QuestBook_Count
 #include "tome.h"           // (#1251) aspects from studies, the team's pages
+#include "burden.h"         // (#1255) strain and burden
 #include "playerrecord.h"   // Teams_Of, PlayerId_Local: the local team
 #include "worldtypes.h"
 
@@ -163,10 +172,11 @@ void MagicSight_Update(Scene& world, float dt, const PlayerInput& in) {
     if (const ManaField* f = Magic_Field(world)) {
         float flow = 0.0f;
         if (Planetoid* p = StartPlanet(world); p && player.nearest == p) {
-            const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
             if (Vector3Length(local) > 1.0f) for (int k = 0; k < kManaBases; ++k) flow = std::max(flow, f->lineFlow(k, Vector3Normalize(local)));
         }
-        MagicSight_Regen(s, dt, flow);
+        MagicSight_Regen(s, dt * Burden_RegenFactor(s.burden), flow); // (#1255) Unsettled and up: 10% slower
+        Strain_Drain(s, dt, false);
     }
     // The key: a tap toggles the overlay, a hold studies what the crosshair is on (only while the sight is shown).
     const bool down = in.down(Act::MagicSight);
@@ -221,7 +231,7 @@ void MagicSight_DrawHUD(Scene& world) {
     DrawRectangle(bx, by, (int)(bw * std::clamp(s.pool / s.poolMax, 0.0f, 1.0f)), bh, Color{ 200, 170, 255, 200 });
     const float reserved = MagicSight_Reserved(s) / s.poolMax;
     if (reserved > 0.0f) DrawRectangle(bx + (int)(bw * (1.0f - reserved)), by, (int)(bw * reserved), bh, Color{ 120, 90, 200, 220 });
-    const char* label = TextFormat("Aether %.0f / %.0f%s", s.pool, s.poolMax, s.shown ? TextFormat("  (sight holds %.0f)", MagicSight_Reserved(s)) : "");
+    const char* label = TextFormat("Aether %.0f / %.0f%s%s", s.pool, s.poolMax, s.shown ? TextFormat("  (sight holds %.0f)", MagicSight_Reserved(s)) : "", s.burden >= 20.0f ? TextFormat("   %s", Burden_BandName(Burden_Band(s.burden))) : ""); // (#1255) the burden band beside the pool
     DrawText(label, bx, by - (int)(16 * sc), (int)(14 * sc), Fade(RAYWHITE, 0.85f));
     // Studying: a bar under the crosshair with what it is.
     if (!target.empty() && progress > 0.0f) {

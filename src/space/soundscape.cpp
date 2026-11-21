@@ -178,6 +178,7 @@ void Soundscape_Update(Scene& world, float dt) {
 }
 
 float Soundscape_Air() { return inputs.air; }
+const AmbienceInputs& Soundscape_Inputs() { return inputs; }
 float Soundscape_HeightAboveGround() { return inputs.heightAboveGround; }
 
 void Soundscape_PreloadStep() {
@@ -189,7 +190,9 @@ void Soundscape_PreloadStep() {
     if (names.empty()) {
         for (const AmbienceTable::Bed& b : table.biome) { names.push_back(b.day); names.push_back(b.night); }
         names.insert(names.end(), { table.rain, table.leaves, table.wind, "thunder_near", "thunder_far",
-                                    "water", "bed_waterfall", "bed_rumble", "drip" }); // (#1242 water and caves too)
+                                    "water", "bed_waterfall", "bed_rumble", "drip", // (#1242 water and caves too)
+                                    "music_pad_day", "music_pad_night", "music_pad_cave", "music_pad_space", "music_danger",
+                                    "music_discovery", "music_achievement" }); // (#1245 the procedural music)
     }
     while (next < names.size()) {
         const std::string& n = names[next++];

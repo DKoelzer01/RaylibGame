@@ -98,6 +98,7 @@ struct FactoryStats {
 enum class StatWindow : uint8_t { Minute, Hour, TenHours }; // the last minute (by seconds), hour (by minutes), 10 hours
 struct StatLine {
     std::string item;
+    bool estimated = false;                                        // (#1261) partly from far plots in the summary sim
     double madePerMin = 0, usedPerMin = 0, handInPerMin = 0, handOutPerMin = 0;
     long long made = 0, used = 0, handIn = 0, handOut = 0;      // totals since the world loaded (finished seconds)
     std::vector<float> madeSpark, usedSpark;                      // the window's buckets, oldest first (per bucket)
@@ -112,7 +113,7 @@ struct StatKind {
 struct FactoryStatsView {
     StatWindow window = StatWindow::Minute;                        // the one shown (a longer one not filled yet falls back)
     double coveredMinutes = 0;                                     // how much of it has data
-    int plots = 0;
+    int plots = 0, estimatedPlots = 0;                             // (#1261) plots in the summary sim (their figures are estimates)
     std::vector<StatLine> items;                                   // by item name
     std::vector<StatKind> kinds;                                   // by PartType
     double euMadePerTick = 0, euUsedPerTick = 0, euDemandPerTick = 0;
@@ -205,8 +206,13 @@ namespace Factory {
     MachineView Watched(const MachineKey& key);       // the last tick's view of a WatchMany machine (invalid until then)
     // Server: more places whose plots count as near (ticked every tick, their working machines published): its players.
     void SetNearPoints(const std::vector<Vector3>& renderPoints);
+    void SetCameraNear(bool counts);                 // (#1302) false on a dedicated server: only its players make plots near
+                                                    // (with nobody about, every plot runs in the summary sim)
     // The machines working on one plot now (near plots only): what clients get for animations (MachineStates).
     std::vector<int> WorkingParts(uint64_t bodyId, uint32_t plotId);
+    // (#1243) The machines on a near plot stopped for a reason now (no power, overvoltage, output full, no fuel, no water;
+    // not plain idle): machine sounds' stall cues. Local simulation only (empty on a joined client).
+    std::vector<int> StalledParts(uint64_t bodyId, uint32_t plotId);
     // Client: the server's views stand in for the simulation (which then runs no ticks): View / Working read these.
     void SetRemote(bool remote);
     bool Remote();

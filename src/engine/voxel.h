@@ -348,6 +348,12 @@ public:
     struct CaveShaft { Vector3 top, up; float radius, depth; };          // #1067: a shaft open to the sky (karst sink, tube skylight)
     void shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const; // those whose shaft can reach the box [lo, hi]
     int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
+    // (#1223) For creature spawning: the cave segments (axis a-b, radii, the up of their floor, kind: 0 passage, 1 mouth, 2 rubble
+    // (solid), 3 chamber or lava tube, 4 slot) and the entrances (kind as nearestCaveMouth's) whose axis passes through the box.
+    struct CaveSpan { Vector3 a, b, up; float ra, rb; int kind; };
+    struct CaveEntrance { Vector3 at, out; int kind; };
+    void caveSpansNear(Vector3 lo, Vector3 hi, std::vector<CaveSpan>& out) const;
+    void caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntrance>& out) const;
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 
