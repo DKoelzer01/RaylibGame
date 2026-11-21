@@ -41,3 +41,8 @@ lost_miner | undead | aggro=territorial firesafe=0 range=12 chase=24 angry=30 si
 # a tool that strikes it, 5). Cut (slash, pierce) it splits in two, twice at most; blunt hits and fire don't split it. It takes
 # on the colour of the ore where it lives and drops that ore (3; a split-off one, 1).
 mineral_ooze | ooze | aggro=territorial range=6 chase=12 angry=15 sight=0 darksight=0 hearing=10 damage=4 reach=1.3 windup=0.8 cooldown=1.6 knock=1 type=blunt split=1 corrode=15 wet=1 habitat=cave depth=10-400 dark=0.2 cap=2 respawn=900 sound_idle=ooze_burble sound_alert=ooze_squelch sound_telegraph=creature_telegraph_ooze_gather sound_hurt=ooze_splat sound_death=ooze_collapse
+# Ruin sentinel (#1228): a construct, near-stationary, guarding dungeons and ruins (#719; it spawns there when they come).
+# Every sentinel shoots: a 1.2 s charge-up (its eye glows red to white, lighting the room), then a dart at 28 m/s for 7,
+# out to 22 m: dodge it, or take it on a shield. Weak to blunt (x1.5), hard to cut (slash 40%, pierce 50% resisted, armour
+# 2), and it neither bleeds nor is poisoned. Drops a basic circuit, iron plates and scrap: a tech shortcut.
+ruin_sentinel | construct | aggro=territorial firesafe=0 range=20 chase=24 angry=30 sight=26 darksight=0.8 hearing=14 ranged=1 dart=1 dartspeed=28 throw=7 throwmin=0 throwrange=22 throwwindup=1.2 throwcooldown=2.5 damage=6 reach=1.6 windup=0.6 cooldown=1.5 knock=3 type=blunt resist=blunt:-0.5,slash:0.4,pierce:0.5 armour=2 immune=bleed,poison habitat=dungeon cap=2 respawn=1800 sound_idle=sentinel_hum sound_alert=sentinel_ping sound_telegraph=creature_telegraph_sentinel_charge sound_hurt=sentinel_clang sound_death=sentinel_shutdown

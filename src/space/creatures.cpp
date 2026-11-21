@@ -155,6 +155,10 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
         else if (k == "group") { float n = 1.0f; ok = num(n); c.group = std::max(1, (int)n); }
         else if (k == "thrower") c.thrower = v == "1" || v == "yes";
         else if (k == "thief") c.thief = v == "1" || v == "yes";
+        else if (k == "ranged") c.ranged = v == "1" || v == "yes";
+        else if (k == "dart") c.dart = v == "1" || v == "yes";
+        else if (k == "dartspeed") ok = num(c.dartSpeed);
+        else if (k == "immune") { for (const std::string& s : SplitOn(v, ',')) { if (s == "bleed") c.immuneBleed = true; else if (s == "poison") c.immunePoison = true; else ok = false; } }
         else if (k == "torch") c.torch = v == "1" || v == "yes";
         else if (k == "split") c.split = v == "1" || v == "yes";
         else if (k == "wet") c.wet = v == "1" || v == "yes";
@@ -623,5 +627,16 @@ TEST(Creatures, OozeKeysAndWetSites) {
     EXPECT_FALSE(Spawn_Fits(c, s)); // dry
     s.wet = true;
     EXPECT_TRUE(Spawn_Fits(c, s));
+}
+
+// #1228: the sentinel keys; a weakness parses as a negative resistance.
+TEST(Creatures, SentinelKeys) {
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("ruin_sentinel | construct | ranged=1 dart=1 dartspeed=28 immune=bleed,poison resist=blunt:-0.5,slash:0.4", c, &err)) << err;
+    EXPECT_TRUE(c.ranged); EXPECT_TRUE(c.dart); EXPECT_FLOAT_EQ(c.dartSpeed, 28.0f);
+    EXPECT_TRUE(c.immuneBleed); EXPECT_TRUE(c.immunePoison);
+    EXPECT_FLOAT_EQ(c.resist.r[(int)DamageType::Blunt], -0.5f);
+    EXPECT_FLOAT_EQ(Damage_Apply(10.0f, DamageType::Blunt, c.resist), 15.0f);
+    EXPECT_FALSE(Creatures_ParseLine("x | construct | immune=fire", c, &err));
 }
 #endif

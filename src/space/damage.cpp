@@ -37,7 +37,7 @@ const char* StatusKind_Name(StatusKind s) {
 float Damage_Apply(float amount, DamageType type, const Resistances& res, bool ignoresArmour) {
     if (amount <= 0.0f) return 0.0f;
     const int ti = std::clamp((int)type, 0, (int)DamageType::Count - 1);
-    const float resisted = amount * (1.0f - std::clamp(res.r[ti], 0.0f, 1.0f));
+    const float resisted = amount * (1.0f - std::clamp(res.r[ti], -1.0f, 1.0f)); // (#1228) below 0: a weakness (-0.5: x1.5)
     const float afterArmour = ignoresArmour ? resisted : resisted - std::max(0.0f, res.armour);
     return std::max(amount * kMinDamageShare, afterArmour);
 }
@@ -147,6 +147,8 @@ TEST(Damage, FormulaResistanceArmourAndFloor) {
     EXPECT_FLOAT_EQ(Damage_Apply(20.0f, DamageType::Blunt, res), 2.0f);             // never below 10%
     res.r[(int)DamageType::Heat] = 1.0f;
     EXPECT_FLOAT_EQ(Damage_Apply(20.0f, DamageType::Heat, res), 2.0f);              // immune still takes the floor
+    Resistances weak; weak.r[(int)DamageType::Blunt] = -0.5f;
+    EXPECT_FLOAT_EQ(Damage_Apply(20.0f, DamageType::Blunt, weak), 30.0f);           // (#1228) a weakness: x1.5
 }
 
 TEST(Damage, StatusFromHit) {
