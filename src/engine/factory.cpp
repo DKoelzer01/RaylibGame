@@ -288,7 +288,7 @@ struct PlotSim {
     PlotStats stats;                        // (#1199)
     RotationPlot rot;                       // (#1269) its shaft networks (per plot: ticks on any worker)
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
-    struct Published { bool near = false; std::vector<int> working, chests; uint64_t chestHash = 0; } pub;
+    struct Published { bool near = false; std::vector<int> working, chests, stalled; uint64_t chestHash = 0; } pub;
     // (#1261) the summary sim's state (doc 2.1): Near ticks every tick; Measuring takes today's 20-tick step for 60 s and
     // counts each machine's crafts; Summary is advanced by rates (S2) until the plot comes near again.
     enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
@@ -442,6 +442,7 @@ inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
 bool viewsRebuild = false; // (#1207) a moved plot: rebuild the near-plot views from scratch
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
+std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> stalledByPlot; // (#1243) machines stopped for a reason (no power, output full, no fuel, no water) on near plots (viewMutex)
 // (#1269) every rotation part of the plots near the player, as of the last tick (viewMutex): models, gauges, tooltips
 struct RotPub { int part = -1; int64_t milli = 0; Rotation::Status status = Rotation::Status::Stopped; Rotation::NetResult net; };
 std::map<std::pair<uint64_t, uint32_t>, std::vector<RotPub>> rotView;
@@ -1544,24 +1545,26 @@ void SimLoop() {
                 // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
                 // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
                 if (reset || viewsRebuild) {
-                    workingView.clear(); workingByPlot.clear(); chestView.clear();
+                    workingView.clear(); workingByPlot.clear(); chestView.clear(); stalledByPlot.clear();
                     for (PlotSim& ps : plots) ps.pub = PlotSim::Published{};
                     viewsRebuild = false;
                 }
-                static std::vector<int> working, chests;
+                static std::vector<int> working, chests, stalled;
                 for (PlotSim& ps : plots) {
                     PlotSim::Published& pub = ps.pub;
-                    auto unpublishWorking = [&] { for (int part : pub.working) workingView.erase(WorkingKey(ps.body, ps.plot, part)); workingByPlot.erase({ ps.body, ps.plot }); pub.working.clear(); };
+                    auto unpublishWorking = [&] { for (int part : pub.working) workingView.erase(WorkingKey(ps.body, ps.plot, part)); workingByPlot.erase({ ps.body, ps.plot }); pub.working.clear();
+                                                  stalledByPlot.erase({ ps.body, ps.plot }); pub.stalled.clear(); };
                     auto unpublishChests = [&] { for (int part : pub.chests) chestView.erase(std::make_tuple(ps.body, ps.plot, part)); pub.chests.clear(); };
                     if (!ps.nearPlayer) {
                         if (pub.near) { unpublishWorking(); unpublishChests(); pub.near = false; }
                         continue;
                     }
-                    working.clear(); chests.clear();
+                    working.clear(); chests.clear(); stalled.clear();
                     uint64_t h = 1469598103934665603ull; // FNV-1a over the chests' parts and slots
                     auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
                     for (const Machine& m : ps.machines) {
                         if (m.status == MachineStatus::Working) working.push_back(m.part);
+                        else if (m.status != MachineStatus::Idle && m.status != MachineStatus::NoLoad) stalled.push_back(m.part); // (#1243)
                         if (m.type != PartType::Chest) continue;
                         chests.push_back(m.part);
                         mix((uint64_t)m.part);
@@ -1572,6 +1575,10 @@ void SimLoop() {
                         for (int part : working) workingView.insert(WorkingKey(ps.body, ps.plot, part));
                         if (!working.empty()) workingByPlot[{ ps.body, ps.plot }] = working;
                         pub.working = working;
+                    }
+                    if (!pub.near || stalled != pub.stalled) { // (#1243) machine sounds' stall cues
+                        if (stalled.empty()) stalledByPlot.erase({ ps.body, ps.plot }); else stalledByPlot[{ ps.body, ps.plot }] = stalled;
+                        pub.stalled = stalled;
                     }
                     if (!pub.near || h != pub.chestHash || chests != pub.chests) {
                         unpublishChests();
@@ -2088,6 +2095,12 @@ std::vector<int> Factory::WorkingParts(uint64_t body, uint32_t plot) {
     std::lock_guard<std::mutex> v(viewMutex);
     auto it = workingByPlot.find({ body, plot });
     return it == workingByPlot.end() ? std::vector<int>{} : it->second;
+}
+std::vector<int> Factory::StalledParts(uint64_t body, uint32_t plot) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    if (remoteMode) return {}; // (not replicated yet: a joined client hears only working and idle)
+    auto it = stalledByPlot.find({ body, plot });
+    return it == stalledByPlot.end() ? std::vector<int>{} : it->second;
 }
 void Factory::SetRemote(bool remote) {
     std::lock_guard<std::mutex> v(viewMutex);

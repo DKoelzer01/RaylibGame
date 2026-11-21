@@ -117,6 +117,7 @@ extern "C" __declspec(dllimport) int __stdcall MessageBoxA(void*, const char*, c
 #include "footsteps.h"
 #include "soundscape.h"
 #include "watercaves.h"
+#include "machinesounds.h"
 
 // Avatars drawn this frame (#328): remote players (the net client fills them, #327), bench avatars, and the
 // RAYLIBGAME_AVATAR_SELF=1 debug figure. Rebuilt each frame before drawScene.
@@ -193,20 +194,32 @@ int gameState = 0; // 0: Main Menu, 1: Game, 2: Pause Menu, 3: New World screen 
 // body (default: the moon) wherever it is in the sky.
 static float benchTelescope = 0.0f;
 static std::string benchTelescopeTarget = "luna";
+// --telescope Z --telescope-target NAME: the view looks at the target every frame. Called after the camera is placed: the
+// player's forward turns to it (walking views), and the camera itself too, since a plain --bench draws from its own fly
+// camera 40 m over the start, which forward doesn't move (#1337: the shot showed the ground and no target label).
+// A target below the horizon is reported as SKIP (it is behind the planet: nothing to show).
 static void AimAtTelescopeTarget(Scene& world) {
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || p->name != benchTelescopeTarget) continue;
-        const Vector3 eye = Vector3Add((player.position - world.renderOrigin).toFloat(), Vector3Scale(player.up, player.eyeHeight));
-        player.forward = Vector3Normalize(Vector3Subtract(p->position, eye));
+        const Vector3 eye = world.camera.position;
+        const Vector3 dir = Vector3Normalize(Vector3Subtract(p->position, eye));
+        player.forward = dir;
+        world.camera.target = Vector3Add(eye, Vector3Scale(dir, 100.0f));
+        world.camera.up = player.up;
+        if (fabsf(Vector3DotProduct(dir, player.up)) > 0.999f) // looking straight up or down: any up that isn't the view
+            world.camera.up = Vector3Normalize(Vector3CrossProduct(dir, Vector3CrossProduct(player.up, fabsf(dir.x) < 0.9f ? Vector3{ 1, 0, 0 } : Vector3{ 0, 0, 1 })));
         static bool told = false;
         if (!told) {
             told = true;
-            printf("bench: telescope on %s, %.0f km away, %.1f deg above the horizon\n", p->name.c_str(),
-                   Vector3Distance(eye, p->position) / 1000.0f, asinf(Vector3DotProduct(player.forward, player.up)) * RAD2DEG);
+            const float elev = asinf(std::clamp(Vector3DotProduct(dir, player.up), -1.0f, 1.0f)) * RAD2DEG;
+            printf("bench: telescope on %s, %.0f km away, %.1f deg above the horizon%s\n", p->name.c_str(),
+                   Vector3Distance(eye, p->position) / 1000.0f, elev, elev < 0.0f ? " -> SKIP (below the horizon: behind the planet)" : "");
         }
         return;
     }
+    static bool missing = false;
+    if (!missing) { missing = true; printf("bench: telescope: no body named %s -> SKIP\n", benchTelescopeTarget.c_str()); }
 }
 
 // RAYLIBGAME_SPAWN_DIR="x,y,z" (body-local) moves the start there, so a bench photographs a chosen place (the erosion
@@ -301,6 +314,7 @@ static void StartNewWorld(Scene& world, bool reset, bool dawn) {
         Ambience_Reset();
         Waterfalls_Reset();
         WaterCaves_Reset(); // (#1242)
+        MachineSounds_Reset(); // (#1243)
         Station_Reset();
         Suit_Reset();
         ToolWear_Reset();
@@ -10561,9 +10575,9 @@ int main(int argc, char** argv)
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
                 player.forward = Vector3Normalize(Vector3Subtract(Vector3Scale(Vector3Normalize(t), 0.8f), player.up)); // ~50 deg down
             }
-            if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world);
             if (!ship.piloted && !Rocket_Boarded()) { player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165)
             else if (Rocket_Boarded()) Rocket_View(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), SimAlpha());
+            if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world); // after the camera is placed (#1337)
             Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // after the camera: aims with this frame's view (#285, as #222)
             Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); // aboard, T moves fuel
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
@@ -13842,6 +13856,7 @@ int main(int argc, char** argv)
         if (!gHeadless) Footsteps_Update(world, player, gAvatars, GetFrameTime()); // (#1240) steps, landings, their noise
         if (!gHeadless) Soundscape_Update(world, GetFrameTime()); // (#1241) ambience beds, rain, wind, the suit's muffle
         if (!gHeadless) WaterCaves_Update(world, GetFrameTime()); // (#1242) rivers, flowing water, cave drips, mouth wind, rumble
+        if (!gHeadless) MachineSounds_Update(world, GetFrameTime()); // (#1243) hums, stall and done cues, the factory bed
         Audio_Update();
         PROFILE_FRAME();
     }

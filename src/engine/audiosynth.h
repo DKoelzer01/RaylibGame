@@ -20,5 +20,9 @@ bool AudioSynth_BedRecipe(const std::string& name, AudioBedRecipe& r);
 std::vector<float> AudioSynth_Bed(const AudioBedRecipe& r, float seconds, unsigned seed);
 // A thunderclap: a crack (near strikes) and a long rumble. near: 0 (far, rumble only) .. 1 (overhead).
 std::vector<float> AudioSynth_Thunder(float near, unsigned seed);
+// (#1243) Machines: hums by class ("hum_fire", "hum_steam", "hum_lv", "hum_mv", "hum_hv", "hum_ev": seamless loops), the
+// factory bed ("factory_bed": many machines at once) and the state cues ("machine_stall" a falling tone, "machine_click",
+// "machine_done" a soft chime). False: not a machine sound.
+bool AudioSynth_Machine(const std::string& name, unsigned seed, std::vector<float>& out);
 
 #endif

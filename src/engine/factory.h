@@ -208,6 +208,9 @@ namespace Factory {
     void SetNearPoints(const std::vector<Vector3>& renderPoints);
     // The machines working on one plot now (near plots only): what clients get for animations (MachineStates).
     std::vector<int> WorkingParts(uint64_t bodyId, uint32_t plotId);
+    // (#1243) The machines on a near plot stopped for a reason now (no power, overvoltage, output full, no fuel, no water;
+    // not plain idle): machine sounds' stall cues. Local simulation only (empty on a joined client).
+    std::vector<int> StalledParts(uint64_t bodyId, uint32_t plotId);
     // Client: the server's views stand in for the simulation (which then runs no ticks): View / Working read these.
     void SetRemote(bool remote);
     bool Remote();

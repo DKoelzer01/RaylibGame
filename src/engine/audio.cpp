@@ -312,6 +312,7 @@ namespace {
         if (name == "thunder_near") { out = AudioSynth_Thunder(1.0f, seed); return true; }
         if (name == "thunder_far") { out = AudioSynth_Thunder(0.0f, seed); return true; }
         if (name == "drip") { out = AudioSynth_Drip(seed); return true; } // (#1242) cave drips
+        if (AudioSynth_Machine(name, seed, out)) return true;            // (#1243) machine hums, the factory bed, cues
         return false;
     }
 
