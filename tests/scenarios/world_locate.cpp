@@ -41,7 +41,7 @@ SCENARIO("world/locate") {
         Player& p = LocalSession().player;
         const Vector3 from = p.nearest->toLocalD(p.position).toFloat();
         const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert" };
-        const char* rare[] = { "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
+        const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
         for (const char* f : common) {
             std::vector<LocateHit> hits; std::string why;
             const bool ok = Locate_Find(*p.nearest, from, f, 3, hits, why);

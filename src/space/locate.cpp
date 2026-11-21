@@ -93,7 +93,7 @@ const char* Locate_CompassPoint(float bearing) {
 }
 
 std::string Locate_FeatureList() {
-    return "cave, karst, tube, chamber, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, biome:<name>";
+    return "cave, hillside, sinkhole, resurgence, chamber, karst, tube, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, biome:<name>";
 }
 
 bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& featureIn, int n, std::vector<LocateHit>& out, std::string& why) {
@@ -104,9 +104,12 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
     const std::string feature = Lower(featureIn);
     const Vector3 home = Vector3Normalize(from);
     auto add = [&](Vector3 at, const std::string& what) { out.push_back({ at, what }); };
-    if (feature == "cave" || feature == "chamber" || feature == "karst" || feature == "tube") {
+    if (feature == "cave" || feature == "hillside" || feature == "sinkhole" || feature == "resurgence" || feature == "chamber" || feature == "karst" || feature == "tube") {
         if (!PlanetField::CavesGraph()) { why = "The cave graph is off (RAYLIBGAME_CAVES=0)"; return false; }
-        Vector3 near = home; float range = 3000.0f; int kind = feature == "cave" ? 0 : feature == "chamber" ? 3 : 1;
+        // nearestCaveMouth's kinds (the cave finders, #615/#1052/#1181): -1 any entrance, 0 hillside mouth, 1 shaft (sinkholes,
+        // karst sinks, lava-tube skylights), 2 resurgence, 3 chamber centre. karst and tube look near their country first.
+        Vector3 near = home; float range = 3000.0f;
+        const int kind = feature == "cave" ? -1 : feature == "hillside" ? 0 : feature == "resurgence" ? 2 : feature == "chamber" ? 3 : 1;
         if (feature == "karst") { // (#1052) karst sinks near strong karst ground (regions ~10 km apart)
             const auto g = GridSearch(*pf, home, 500.0f, 30000.0f, 0.0f, 1, [&](Vector3 d) { return pf->karstWeight(Vector3Scale(d, pf->radius)) > 0.6f && pf->elevation(d) > 10.0f; });
             if (g.empty()) { why = "No karst country within 30 km"; return false; }
@@ -118,7 +121,8 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
         }
         Vector3 at{}, outward{};
         if (!pf->nearestCaveMouth(near, range, at, outward, kind)) { why = "None within " + std::to_string((int)(range / 1000.0f)) + " km of there"; return false; }
-        add(at, feature == "cave" ? "cave mouth" : feature == "chamber" ? "cave chamber" : feature == "karst" ? "karst sink" : "lava tube skylight");
+        add(at, feature == "cave" ? "cave entrance" : feature == "hillside" ? "hillside cave mouth" : feature == "sinkhole" ? "sinkhole" : feature == "resurgence" ? "resurgence (a spring from a cave)"
+              : feature == "chamber" ? "cave chamber" : feature == "karst" ? "karst sink" : "lava tube skylight");
         if (n > 1) why = "(caves: the nearest only)";
     } else if (feature == "volcano") {
         for (const Vector3& d : Summits(*pf, home, n)) add(Ground(*pf, d), "volcano summit");
