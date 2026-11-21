@@ -55,6 +55,38 @@ float streaks(vec3 q, vec3 fd)
     return (s + 0.5 * valueNoise(q * 2.0)) / 3.5;
 }
 
+// (#1164 part 3) Screen-space reflections: the opaque scene resolved before the water (colour, reverse-Z depth) and this
+// view's matrix (scene.cpp). The reflected ray is marched in growing steps; where it passes just behind the scene's depth
+// it takes that colour (faded toward the screen's edges and along the ray), else the physical sky (SkyPhysToward).
+uniform int ssrOn;
+uniform sampler2D ssrColor;
+uniform sampler2D ssrDepth;
+uniform vec2 ssrSize;
+uniform mat4 ssrViewProj;
+vec4 ssrTrace(vec3 origin, vec3 dir) {
+    float stepLen = 0.6;
+    vec3 pos = origin + dir * 0.3;
+    for (int i = 0; i < 28; ++i) {
+        pos += dir * stepLen;
+        stepLen *= 1.15;
+        vec4 clip = ssrViewProj * vec4(pos, 1.0);
+        if (clip.w <= 0.05) break;
+        vec3 ndc = clip.xyz / clip.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float dS = texture(ssrDepth, uv).r;
+        if (dS <= 0.0) continue;                                   // nothing drawn there (reverse-Z: far = 0)
+        float wS = ndc.z * clip.w / dS;                            // the scene's view distance there (depth = near / w)
+        float behind = clip.w - wS;
+        if (behind > 0.0 && behind < max(1.0, 2.0 * stepLen)) {
+            vec3 c = pow(max(texture(ssrColor, uv).rgb, vec3(0.0)), vec3(2.2)); // display-encoded -> linear
+            vec2 e = min(uv, 1.0 - uv);
+            return vec4(c, smoothstep(0.0, 0.08, min(e.x, e.y)) * (1.0 - float(i) / 28.0));
+        }
+    }
+    return vec4(0.0);
+}
+
 // (#1164) Small waves: value noise on a 2D plane of the body-aligned position, periodic with the 20 m wrap (so chunks meet
 // without a seam), two octaves drifting at different speeds and directions. A height in metres.
 float wHash(vec2 c) { return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453); }
@@ -161,7 +193,12 @@ void main()
     // blue-green, deeper water the dark body; the clarity (how much the bed shows, the alpha) follows the light left.
     vec3 Tr = exp(-fragDepth * vec3(0.7, 0.28, 0.2));
     float clarity = dot(Tr, vec3(0.2, 0.5, 0.3));
-    vec3 refl = SkyPhysToward(reflect(-v, n), skyColor);
+    vec3 rdir = reflect(-v, n);
+    vec3 refl = SkyPhysToward(rdir, skyColor);
+    if (ssrOn != 0 && fragKind == 0 && dot(normalize(fragNormal), v) > 0.0 && dist < 400.0) { // (#1164 part 3) from above, water only
+        vec4 hit = ssrTrace(fragPosition, rdir);
+        refl = mix(refl, hit.rgb, hit.a);
+    }
     vec3 color = mix(mix(deep, shallow, Tr), refl, fresnel);
     vec3 h = normalize(sunDir + v);
     float glint = pow(max(dot(n, h), 0.0), 800.0) * 1.2 * sunVis;

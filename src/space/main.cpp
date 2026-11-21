@@ -1,3 +1,4 @@
+#include <functional>
 #include <set>
 #include <map>
 #include <cstring>
@@ -351,32 +352,7 @@ static int PartCensusDiff(const PartCensusMap& was, const PartCensusMap& now, co
 }
 static PartCensusMap gBuildCensus;
 
-// --crack-check (#725): magenta (the clear colour, nothing drawn) pixels that are holes in the terrain, not open sky. With
-// the skybox off the sky is magenta too: magenta connected to the screen's top edge (4-way, through the gaps in the HUD's
-// text) is sky; magenta enclosed by drawn pixels is a hole. Colour test loose enough for the tonemapped composite. The sky
-// spreads through magenta-tinted pixels too (anti-aliased edges, where far terrain blends into it), or a horizon pixel pair
-// sealing a bit of sky off reads as a hole (the 4-5 left after the HUD went, #725).
-// step: sample every step-th pixel both ways. skyOut: the magenta samples taken as sky.
-static long CrackHoles(const Color* px, int w, int h, int step, long* skyOut) {
-    auto magenta = [](Color c) { return c.r > 200 && c.g < 60 && c.b > 200; };
-    const int gw = (w + step - 1) / step, gh = (h + step - 1) / step;
-    auto tinted = [](Color c) { return (int)c.r - (int)c.g > 25 && (int)c.b - (int)c.g > 25; }; // magenta, or a blend with it
-    std::vector<uint8_t> m((size_t)gw * gh), t((size_t)gw * gh), seen((size_t)gw * gh, 0);
-    long total = 0;
-    for (int y = 0; y < gh; ++y)
-        for (int x = 0; x < gw; ++x) { const Color c = px[(size_t)(y * step) * w + x * step]; m[(size_t)y * gw + x] = magenta(c); t[(size_t)y * gw + x] = magenta(c) || tinted(c); total += m[(size_t)y * gw + x]; }
-    std::vector<int> stack;
-    for (int x = 0; x < gw; ++x) if (t[x]) { seen[x] = 1; stack.push_back(x); }
-    long sky = 0;
-    while (!stack.empty()) {
-        const int i = stack.back(); stack.pop_back(); sky += m[i];
-        const int x = i % gw, y = i / gw;
-        const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < gw ? i + 1 : -1, y > 0 ? i - gw : -1, y + 1 < gh ? i + gw : -1 };
-        for (int j : nb) if (j >= 0 && t[j] && !seen[j]) { seen[j] = 1; stack.push_back(j); }
-    }
-    if (skyOut) *skyOut = sky;
-    return total - sky;
-}
+#include "crackcheck.h" // (#725) CrackHoles, shared with the visual/crack-check scenario
 
 // #134: the planet's drawn terrain chunks in the view whose 8 box corners are all hidden from the camera behind the height
 // map (each ray sampled every 1/24 of its length; hidden = the ground there is 1 m+ above the ray): an estimate of what Hi-Z
@@ -510,6 +486,8 @@ int main(int argc, char** argv)
     float benchFlySpeed = 0.0f;    // --bench-fly V: the camera flies over body 0 at V m/s through the bench (LOD streaming)
     bool benchFlyBack = false;     // --bench-fly-back: fly out for half the bench, then back the same way (chunk cache, #295)
     float benchFlyAlt = 1e9f;      // --bench-fly-alt A: fly at A m relative to sea level instead (negative: underwater, looking up)
+    bool benchSweepLook = false; // --sweep-look
+    bool spawnDirLocal = false;  // --spawn-latlon: spawnDir is in the body's frame (the HUD's lat/lon), not the world's
     bool hasSpawnDir = false;      // --spawn-dir x y z: where --test-walk / --test-stand spawn on body 0
     Vector3 spawnDir = { 0, 1, 0 };
     double walkStart = -1.0;
@@ -915,6 +893,8 @@ int main(int argc, char** argv)
         }
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
+        if (std::string(argv[i]) == "--sweep-look") benchSweepLook = true; // (#904/#910) with --test-walk: look left and right, 20-40 deg down, while walking
+        if (std::string(argv[i]) == "--spawn-latlon" && i + 2 < argc) { const float la = (float)atof(argv[i + 1]) * DEG2RAD, lo = (float)atof(argv[i + 2]) * DEG2RAD; hasSpawnDir = true; spawnDirLocal = true; spawnDir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) }; } // body-local: turned with the body at the spawn
         if (std::string(argv[i]) == "--test-suffocate") benchSuffocate = true;
         if (std::string(argv[i]) == "--test-orbit" && i + 1 < argc) benchOrbitSeconds = atof(argv[i + 1]);
         if (std::string(argv[i]) == "--test-ride") benchRide = true;
@@ -2390,6 +2370,68 @@ int main(int argc, char** argv)
             return pass ? 0 : 1;
         }
     Recorder_Start(); // --record (#375): fixed frame time, seeded random values, the capture folder
+    // (#910) F2's screenshot also writes lod.txt: the camera, the clear-colour pixels (nothing drawn: a hole when enclosed),
+    // and every LOD node within 150 m of the camera with its level, state and whether it is drawn.
+    std::function<std::string(const Image&)> lodDump = [&](const Image& img) -> std::string {
+        std::string out;
+        char line[512];
+        auto add = [&](const char* fmt, auto... a) { snprintf(line, sizeof line, fmt, a...); out += line; };
+        Planetoid* b = player.nearest ? player.nearest : (world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()));
+        add("time %.3f s, frame dt %.4f s\n", GetTime(), GetFrameTime());
+        const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
+        if (b) {
+            const DVec3 l = b->toLocalD(world.renderOrigin + world.camera.position);
+            const double r = l.length();
+            const Vector3 fl = b->dirToLocal(fwd);
+            add("camera %.5f %.5f, %.2f m from the centre (%.2f m over the radius); look (body) %.3f %.3f %.3f\n",
+                asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r, r - b->radius, fl.x, fl.y, fl.z);
+        }
+        add("player velocity %.2f %.2f %.2f (%.2f m/s), grounded %d, fly %d\n", player.velocity.x, player.velocity.y, player.velocity.z,
+            Vector3Length(player.velocity), (int)player.grounded, (int)player.flyMode);
+        {   // Pixels of the clear colour (exact +-2): with the skybox on, nothing should show it; enclosed = not touching the top edge.
+            const Color cc = world.clearColor;
+            const Color* px = (const Color*)img.data;
+            const int w = img.width, h = img.height;
+            std::vector<uint8_t> m((size_t)w * h), seen((size_t)w * h, 0);
+            long total = 0;
+            for (int i = 0; i < w * h; ++i) { const Color c = px[i]; m[i] = abs(c.r - cc.r) <= 2 && abs(c.g - cc.g) <= 2 && abs(c.b - cc.b) <= 2; total += m[i]; }
+            std::vector<int> st; long top = 0;
+            for (int x = 0; x < w; ++x) if (m[x]) { seen[x] = 1; st.push_back(x); }
+            while (!st.empty()) { const int i = st.back(); st.pop_back(); ++top; const int x = i % w, y = i / w;
+                const int nb[4] = { x > 0 ? i - 1 : -1, x + 1 < w ? i + 1 : -1, y > 0 ? i - w : -1, y + 1 < h ? i + w : -1 };
+                for (int j : nb) if (j >= 0 && m[j] && !seen[j]) { seen[j] = 1; st.push_back(j); } }
+            add("clear colour %d,%d,%d: %ld pixels, %ld enclosed (dark scenery can match too)\n", cc.r, cc.g, cc.b, total, total - top);
+        }
+        const WorldStats& s = GetWorldStats();
+        add("world: nodes %d, drawn %d, queued jobs %d, pending uploads %d\n", s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+        if (b) {
+            const Vector3 cam = b->toLocal(world.camera.position);
+            const double now = GetTime();
+            std::unordered_set<const Chunk*> drawn(b->drawList.begin(), b->drawList.end());
+            struct Row { float dist; const Chunk* c; };
+            std::vector<Row> rows;
+            for (const auto& [k, c] : b->nodes) {
+                const Vector3 o = k.origin(); const float sz = k.size();
+                const Vector3 q = { std::clamp(cam.x, o.x, o.x + sz), std::clamp(cam.y, o.y, o.y + sz), std::clamp(cam.z, o.z, o.z + sz) };
+                const float dist = Vector3Distance(q, cam);
+                if (dist <= 150.0f) rows.push_back({ dist, c.get() });
+            }
+            std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b2) { return a.dist < b2.dist; });
+            add("nodes within 150 m: %d (sorted by distance; drawn = in this frame's draw list)\n", (int)rows.size());
+            add("dist_m level x y z size_m drawn ready mesh ring background want req fade_age_s fade_out last_wanted_ago_s\n");
+            int n = 0;
+            for (const Row& r : rows) {
+                if (++n > 600) { add("... %d more\n", (int)rows.size() - 600); break; }
+                const Chunk* c = r.c; const NodeKey& k = c->key;
+                auto rq = b->requestedVersion.find(k);
+                add("%.1f %d %d %d %d %.0f %d %d %d %d %d %u %u %.2f %d %.2f\n", r.dist, k.level, k.x, k.y, k.z, k.size(), (int)drawn.count(c),
+                    (int)c->ready, (int)c->hasMesh(), (int)c->inRing, (int)c->background, c->wanted ? c->wanted->load() : 0u,
+                    rq != b->requestedVersion.end() ? rq->second : 0u, c->fadeT0 >= 0.0 ? now - c->fadeT0 : -1.0, (int)c->fadeOut, now - c->lastWanted);
+            }
+        }
+        return out;
+    };
+    Recorder_SetShotExtra(lodDump);
     // --play-new S (#387): the menus as a player uses them, for --perf-log. 10 s on the title screen; New Game (the New World
     // screen creates after a moment) -> bake -> loading -> S s of play; Save & Quit -> 10 s on the title screen; Load that
     // save -> loading -> 30 s of play; exit.
@@ -9609,7 +9651,7 @@ int main(int argc, char** argv)
                     if (walkStart < 0.0) {
                         player.autoWalk = !benchStandOnly;
                         Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
+                        if (hasSpawnDir) player.spawnOn(world, *start, spawnDirLocal ? start->dirToWorld(spawnDir) : spawnDir); else player.spawnOn(world, *start, StartSpawnDir(*start));
 
                         walkStart = GetTime();
                         walkFrom = start->toLocalD(player.position); // body frame: the spin carries the walker too
@@ -9617,6 +9659,19 @@ int main(int argc, char** argv)
                         walkLast = walkFrom; walkPath = 0.0;
                         walkLegStart = walkStart; walkLegPath = 0.0; walkLeg = 0; walkLegReady = true;
                         walkLegs = walkTargetM > 0.0 ? std::max(1, (int)lround(walkTargetM / kWalkLegM)) : 0;
+                    }
+                    if (benchSweepLook) {
+                        // (#904/#910) Looking for rocks on foot: the view sweeps +-70 deg about a heading that drifts (a turn of up to
+                        // ~150 deg/s), pitched 20-40 deg down, so the frustum keeps changing which nodes it wants. The walk follows the view.
+                        static Vector3 heading = { 0, 0, 0 };
+                        const Vector3 up = player.up;
+                        if (Vector3LengthSqr(heading) < 0.5f || fabsf(Vector3DotProduct(heading, up)) > 0.2f)
+                            heading = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(up, Vector3DotProduct(player.forward, up))));
+                        const float t = (float)(GetTime() - walkStart);
+                        const float yaw = 70.0f * sinf(2.0f * PI * t / 3.0f) + 6.0f * t; // drifting heading: the walk wanders (slowly: 25 deg/s walked in 9 m circles)
+                        const float pitch = -(30.0f + 10.0f * sinf(2.0f * PI * t / 4.3f));
+                        Vector3 h = Vector3RotateByAxisAngle(heading, up, yaw * DEG2RAD);
+                        player.forward = Vector3Normalize(Vector3Add(Vector3Scale(h, cosf(pitch * DEG2RAD)), Vector3Scale(up, sinf(pitch * DEG2RAD))));
                     }
                     Planetoid* start = dynamic_cast<Planetoid*>(world.objects[0].get());
                     const Vector3 feet = (player.position - world.renderOrigin).toFloat();
@@ -10538,6 +10593,50 @@ int main(int argc, char** argv)
                            GetTime(), camH, as.vertices / 1e6, as.vertexCapacity / 1e6, as.indices / 1e6, as.indexCapacity / 1e6,
                            v[0] / 1e6, n[0], under[0] / 1e6, nu[0], v[1] / 1e6, n[1], under[1] / 1e6, v[2] / 1e6, n[2], under[2] / 1e6, v[3] / 1e6, n[3], under[3] / 1e6);
                 }
+            }
+        }
+        {   // (#904/#910) --crack-check with RAYLIBGAME_CRACK_EVERY=N: every Nth frame of any phase (the loading screen and spawn
+            // included, as LODs change), count the holes (magenta enclosed by drawn pixels); a frame with any is logged with the
+            // time, the camera's place and the chunk counts, and the worst one saved (bench_holes_worst.png).
+            static const int crackEvery = getenv("RAYLIBGAME_CRACK_EVERY") ? std::max(1, atoi(getenv("RAYLIBGAME_CRACK_EVERY"))) : 0;
+            static long crackFrame = 0;
+            static long worstCrack = 0;
+            if (crackCheck && crackEvery > 0 && gameState == 1 && (++crackFrame % crackEvery) == 0) {
+                Image shot = LoadImageFromScreen();
+                Color* px = LoadImageColors(shot);
+                // Sky between canopies is not a hole: march the pixel's view ray through the density field (edits included).
+                Planetoid* cb = dynamic_cast<Planetoid*>(world.objects.empty() ? nullptr : world.objects[0].get());
+                const float sx = (float)GetScreenWidth() / shot.width, sy = (float)GetScreenHeight() / shot.height;
+                auto rayToSky = [&](int x, int y) {
+                    if (!cb) return false;
+                    const Ray ray = GetScreenToWorldRay({ x * sx, y * sy }, world.camera);
+                    const Vector3 o = cb->toLocal(ray.position), d = cb->dirToLocal(ray.direction);
+                    // Solid right at the start (the eye against a crevice wall: the field and the mesh differ by a few cm) is
+                    // skipped: only ground the ray meets after it has been in open air counts.
+                    bool aired = false;
+                    for (float s = 0.3f; s < 3000.0f; s += 0.5f + s * 0.03f) {
+                        const bool solid = cb->densityAt(Vector3Add(o, Vector3Scale(d, s))) >= ISO_LEVEL;
+                        if (!solid) aired = true; else if (aired || s > 2.0f) return false;
+                    }
+                    return true;
+                };
+                long skyMasked = 0;
+                const long holes = CrackHoles(px, shot.width, shot.height, 2, &skyMasked, rayToSky);
+                UnloadImageColors(px);
+                if (holes > 20) {
+                    const WorldStats& s = GetWorldStats();
+                    std::string where = "?";
+                    if (Planetoid* b = player.nearest) {
+                        const DVec3 l = b->toLocalD(world.renderOrigin + world.camera.position);
+                        const double r = l.length();
+                        where = TextFormat("%.4f %.4f, %.1f m from the centre", asin(l.y / r) * RAD2DEG, atan2(l.z, l.x) * RAD2DEG, r);
+                    }
+                    printf("bench: holes: frame %ld, t=%.2f s, %ld magenta samples (every 2nd px); camera %s; loading %d; nodes %d drawn %d queued %d uploads %d\n",
+                           crackFrame, GetTime(), holes, where.c_str(), (int)loading, s.nodes, s.chunks, s.queuedJobs, s.pendingUploads);
+                    if (holes > worstCrack) { worstCrack = holes; ExportImage(shot, "bench_holes_worst.png"); }
+                    { static int saved = 0; if (saved < 24) { ++saved; ExportImage(shot, TextFormat("bench_holes_%05ld.png", crackFrame)); const std::string dump = lodDump(shot); if (FILE* lf = fopen(TextFormat("bench_holes_%05ld.txt", crackFrame), "wb")) { fwrite(dump.data(), 1, dump.size(), lf); fclose(lf); } } } // every flagged frame (the first 24)
+                }
+                UnloadImage(shot);
             }
         }
         if (crackCheck) world.drawSkybox = false;
