@@ -121,6 +121,21 @@ static void Build(ScenarioDef& s) {
             for (float h = kFloor + 0.125f; h < 0.0f; h += 0.5f) farUp += std::to_string(Fluid::HeadAt(*c.body, S.pt(10.0f, 0.0f, h))) + " ";
             c.note("heads along the floor (x -10..10 m): " + floorH + "| up the far leg (every 0.5 m): " + farUp);
         }
+        { // The rest, coarsely (every 0.5 m, each sample standing for its 8 cells): on the ground around the site, in the rock
+          // beside the pits and tunnel (|y| 1.5-6 m), and under the floor. Finds where water that left the U-bend went.
+            auto coarse = [&](float x0, float x1, float y0, float y1, float h0, float h1) {
+                double v = 0.0;
+                for (float x = x0 + 0.25f; x < x1; x += 0.5f)
+                    for (float y = y0 + 0.25f; y < y1; y += 0.5f)
+                        for (float h = h0 + 0.25f; h < h1; h += 0.5f) v += 8.0 * Fluid::WaterAt(*c.body, S.pt(x, y, h), 0.0f);
+                return v;
+            };
+            const double ground = coarse(-40.0f, 40.0f, -40.0f, 40.0f, 1.0f, 4.0f) + coarse(-40.0f, 40.0f, -40.0f, 40.0f, 0.0f, 1.0f) - coarse(-12.5f, 12.5f, -1.5f, 1.5f, 0.0f, 1.0f);
+            const double beside = coarse(-14.0f, 14.0f, 1.5f, 6.0f, kFloor - 0.5f, 0.0f) + coarse(-14.0f, 14.0f, -6.0f, -1.5f, kFloor - 0.5f, 0.0f);
+            const double under = coarse(-14.0f, 14.0f, -2.0f, 2.0f, kFloor - 3.0f, kFloor - 0.5f);
+            c.note(TextFormat("outside the U-bend, coarsely (m^3): on the ground (80 x 80 m, to 4 m up) %.2f, in the rock beside %.2f, under the floor %.2f",
+                              ground, beside, under));
+        }
         c.note(TextFormat("volume by region (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row and roof %.2f; outside %.2f of %.2f",
                           vNear, vFar, vTunnel, vRoof, vol1 - (vNear + vFar + vTunnel + vRoof), vol1));
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");
