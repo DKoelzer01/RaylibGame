@@ -306,6 +306,17 @@ void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part&
     if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, part.origin, part.type, SimTime() });
 }
 
+void BuildTool_BenchAimAt(Plot& plot, Int3 cell) {
+    // The part's first footprint cell onto `cell`: a facing rotates the footprint about the origin cell's centre, which can
+    // move it a cell off the origin (Plot::Footprint).
+    aim.plot = &plot;
+    aim.part.origin = { 0, 0, 0 };
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(aim.part, fp);
+    aim.part.origin = fp.empty() ? cell : Int3{ cell.x - fp[0].first.x, cell.y - fp[0].first.y, cell.z - fp[0].first.z };
+    aim.canPlace = plot.canPlace(aim.part);
+}
+
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
     BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
