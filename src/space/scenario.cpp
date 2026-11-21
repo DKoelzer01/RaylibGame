@@ -1,5 +1,6 @@
 // Tier 2 scenario runner (#870); see scenario.h.
 #include "scenario.h"
+#include "survival.h"
 #include "fluid.h"
 #include "player.h"
 #include "playersession.h"
@@ -301,6 +302,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--scenario-report") { std::exit(ScenarioReport_Main(argc - i - 1, argv + i + 1)); }
+        else if (a == "--tier-report" && i + 1 < argc) { std::exit(QuestBook_TierReport(argv[i + 1])); } // (#1199)
         else if (a == "--scenario-ab") { std::exit(ScenarioAB_Main(argc - i - 1, argv + i + 1)); } // (#871) scenarioab.cpp
         else if (a == "--scenario" && i + 1 < argc) sel = argv[++i];
         else if (a == "--scenario-parity" && i + 1 < argc) { // (#968) NAME [TICKS]: the fluid's CPU and GPU paths compared
