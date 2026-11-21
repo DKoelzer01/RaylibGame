@@ -13,6 +13,7 @@
 #include "toolwear.h"
 #include "questtree.h"
 #include "researchtab.h"
+#include "tometab.h" // (#1251)
 #include "statstab.h"
 #include "navigation.h"
 #include "recipebook.h"
@@ -177,6 +178,7 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") GameUI_ShowScreen(GameScreen::Quests); // (#890: one view)
     else if (t == "Research") GameUI_ShowScreen(GameScreen::Research); // (#1192)
+    else if (t == "Tome") GameUI_ShowScreen(TomeTab_Shown() ? GameScreen::Tome : GameScreen::Inventory); // (#1251)
     else if (t == "Statistics") GameUI_ShowScreen(GameScreen::Statistics); // (#1199)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
@@ -1743,19 +1745,21 @@ void GameUI_Draw(Scene& world) {
         struct Tab { GameScreen s; const char* name; Act key; };
         static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
                                     { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
-                                    { GameScreen::Research, "Research", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database)
+                                    { GameScreen::Research, "Research", Act::Count }, { GameScreen::Tome, "Tome", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database; #1251 the Tome beside Research, once magic is found)
+        auto tabShown = [](GameScreen s) { return (s != GameScreen::Catalog || terrainTool.creative) && (s != GameScreen::Tome || TomeTab_Shown()); };
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
         const float smallW = 92.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key; #1206: 102 -> 92, room for 8 tabs)
-        const int nTabs = terrainTool.creative ? 8 : 7;
+        int nTabs = 0;
+        for (const Tab& t : tabs) nTabs += tabShown(t.s);
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
-        if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
+        if (!tabShown(screen)) screen = GameScreen::Inventory; // (left creative; the Tome without magic)
         {   // (#1206) one font for the row: the largest at which every shown name fits
             const char* names[16]; int n = 0;
-            for (const Tab& t : tabs) if (n < 16 && (t.s != GameScreen::Catalog || terrainTool.creative)) names[n++] = t.name;
+            for (const Tab& t : tabs) if (n < 16 && tabShown(t.s)) names[n++] = t.name;
             ScreenTabFont(names, n, tabW);
         }
         for (const Tab& t : tabs) {
-            if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
+            if (!tabShown(t.s)) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
             if (ScreenTab(t.name, key, screen == t.s, tabW, tabH, true)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
@@ -1795,6 +1799,7 @@ void GameUI_Draw(Scene& world) {
                 break;
             case GameScreen::Skills: DrawSkills(); break; // (#883)
             case GameScreen::Research: ResearchTab_Draw(); break; // (#1192)
+            case GameScreen::Tome: TomeTab_Draw(); break; // (#1251) magic, once found
             case GameScreen::Statistics: StatsTab_Draw(); break; // (#1199)
             case GameScreen::Team: DrawTeam(); break;
             case GameScreen::Count: break;
