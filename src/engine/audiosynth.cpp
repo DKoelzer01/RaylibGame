@@ -448,6 +448,90 @@ bool AudioSynth_Music(const std::string& name, unsigned seed, std::vector<float>
     return true;
 }
 
+bool AudioSynth_Creature(const std::string& event, const std::string& voice, unsigned seed, std::vector<float>& out) {
+    // The event shapes the call: how long, the pitch from start to end, the loudness over time.
+    struct Shape { float seconds, p0, p1, attack, decay; bool crescendo; };
+    Shape sh;
+    if (event == "idle") sh = { 0.45f, 1.0f, 0.95f, 0.05f, 6.0f, false };
+    else if (event == "alert") sh = { 0.6f, 1.1f, 1.0f, 0.03f, 4.0f, false };
+    else if (event == "telegraph") sh = { 0.5f, 0.9f, 1.35f, 0.0f, 0.0f, true }; // a wind-up: swelling and rising
+    else if (event == "hurt") sh = { 0.3f, 1.6f, 1.1f, 0.01f, 9.0f, false };
+    else if (event == "death") sh = { 1.1f, 1.0f, 0.55f, 0.05f, 2.2f, false };
+    else return false;
+    enum V { Beast, Lurker, Scavenger, Ooze, Undead, Construct } v;
+    if (voice == "beast") v = Beast;
+    else if (voice == "lurker") v = Lurker;
+    else if (voice == "scavenger") v = Scavenger;
+    else if (voice == "ooze") v = Ooze;
+    else if (voice == "undead") v = Undead;
+    else if (voice == "construct") v = Construct;
+    else return false;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> n(-1.0f, 1.0f), u(0.0f, 1.0f);
+    const int len = (int)(sh.seconds * kRate);
+    out.assign(len, 0.0f);
+    double ph = 0.0, ph2 = 0.0;
+    float lp = 0.0f, lp2 = 0.0f, click = 0.0f, bub = 0.0f, bubF = 0.0f, bubT = 1.0f;
+    for (int i = 0; i < len; ++i) {
+        const float t = (float)i / kRate, x = t / sh.seconds;
+        const float p = sh.p0 + (sh.p1 - sh.p0) * x;
+        const float env = sh.crescendo ? std::min(1.0f, 0.2f + x * 1.2f) * std::min(1.0f, (1.0f - x) * 25.0f)
+                                       : std::min(1.0f, sh.attack > 0.0f ? t / sh.attack : 1.0f) * expf(-t * sh.decay);
+        float s = 0.0f;
+        switch (v) {
+            case Beast: { // a growl: a rough saw tooth near 110 Hz, low-passed, rumbling
+                const float f = 110.0f * p * (1.0f + 0.03f * n(rng));
+                ph += f / kRate;
+                const float saw = 2.0f * (float)(ph - floor(ph)) - 1.0f;
+                lp += (saw + 0.3f * n(rng) - lp) * 0.18f;
+                s = lp * (1.0f + 0.4f * sinf(kTau * 32.0f * t));
+                break;
+            }
+            case Lurker: { // a rattle: a train of clicks, faster as it winds up, over a hiss
+                const float rate = 30.0f * p * (sh.crescendo ? 1.0f + 1.5f * x : 1.0f);
+                ph += rate / kRate;
+                if (ph >= 1.0) { ph -= 1.0; click = 1.0f; }
+                click *= 0.93f;
+                lp += (n(rng) - lp) * 0.6f;
+                s = click * n(rng) * 1.2f + (n(rng) - lp) * 0.15f;
+                break;
+            }
+            case Scavenger: { // a chittering screech: a frequency-modulated whistle near 1.1 kHz
+                const float f = 1100.0f * p;
+                ph2 += 37.0f / kRate;
+                ph += (f * (1.0f + 0.15f * SinCycles(ph2))) / kRate;
+                s = SinCycles(ph) * 0.8f + 0.2f * n(rng) * (0.5f + 0.5f * SinCycles(ph2 * 0.5));
+                break;
+            }
+            case Ooze: { // a gurgle: low bubbles over a wet, low-passed noise
+                if (u(rng) < (sh.crescendo ? 40.0f + 120.0f * x : 50.0f) / kRate) { bubF = (120.0f + 220.0f * u(rng)) * p; bubT = 0.0f; }
+                if (bubT < 0.06f) { ph += bubF * (1.0f + 4.0f * bubT) / kRate; bub = (float)SinCycles(ph) * (1.0f - bubT / 0.06f); bubT += 1.0f / kRate; } else bub = 0.0f;
+                lp += (n(rng) - lp) * 0.05f;
+                s = bub * 0.8f + lp * 1.5f;
+                break;
+            }
+            case Undead: { // a moan: a voiced tone with vibrato and breath
+                const float f = 130.0f * p * (1.0f + 0.02f * sinf(kTau * 5.0f * t));
+                ph += f / kRate;
+                lp2 += (n(rng) - lp2) * 0.3f;
+                s = (float)(SinCycles(ph) + 0.5 * SinCycles(2.0 * ph) + 0.25 * SinCycles(3.0 * ph)) * 0.6f + (n(rng) - lp2) * 0.3f;
+                break;
+            }
+            case Construct: { // tones: a square-ish buzz and an octave over it, charging up as it winds up
+                const float f = 330.0f * p * (sh.crescendo ? 1.0f + 2.0f * x * x : 1.0f);
+                ph += f / kRate;
+                const float sq = (ph - floor(ph)) < 0.5 ? 0.5f : -0.5f;
+                lp += (sq - lp) * 0.3f;
+                s = lp + 0.3f * (float)SinCycles(2.0 * ph);
+                break;
+            }
+        }
+        out[i] = s * env;
+    }
+    Normalise(out, 0.8f);
+    return true;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1241): the beds are seamless, the same each start, and every named one exists ----
 #include "unit_helpers.h"
@@ -498,5 +582,27 @@ TEST(AudioSynth, MusicPadsLoopAndStingsAreBounded) {
     }
     std::vector<float> none;
     EXPECT_FALSE(AudioSynth_Music("music_unknown", 1u, none));
+}
+
+TEST(AudioSynth, CreatureVoicesForEveryEvent) {
+    for (const char* voice : { "beast", "lurker", "scavenger", "ooze", "undead", "construct" })
+        for (const char* ev : { "idle", "alert", "telegraph", "hurt", "death" }) {
+            std::vector<float> s;
+            ASSERT_TRUE(AudioSynth_Creature(ev, voice, 3u, s)) << ev << " " << voice;
+            float peak = 0.0f;
+            for (float v : s) peak = std::max(peak, fabsf(v));
+            EXPECT_NEAR(peak, 0.8f, 1e-4f) << ev << " " << voice;
+            if (std::string(ev) == "telegraph") {
+                EXPECT_EQ(s.size(), (size_t)(0.5f * 44100)) << voice; // the wind-up fits a 0.5 s telegraph
+                // It swells: the second half is louder than the first.
+                float a = 0.0f, b = 0.0f;
+                for (size_t i = 0; i < s.size() / 2; ++i) a += s[i] * s[i];
+                for (size_t i = s.size() / 2; i < s.size(); ++i) b += s[i] * s[i];
+                EXPECT_GT(b, a) << voice;
+            }
+        }
+    std::vector<float> s;
+    EXPECT_FALSE(AudioSynth_Creature("sing", "beast", 1u, s));
+    EXPECT_FALSE(AudioSynth_Creature("idle", "dragon", 1u, s));
 }
 #endif

@@ -315,6 +315,10 @@ namespace {
         if (name == "drip") { out = AudioSynth_Drip(seed); return true; } // (#1242) cave drips
         if (AudioSynth_Machine(name, seed, out)) return true;            // (#1243) machine hums, the factory bed, cues
         if (AudioSynth_Music(name, seed, out)) return true;              // (#1245) generative music until real pieces exist
+        if (name.rfind("creature_", 0) == 0) {                           // (#1246) creature_<event>_<voice>
+            const size_t us = name.find('_', 9);
+            if (us != std::string::npos && AudioSynth_Creature(name.substr(9, us - 9), name.substr(us + 1), seed, out)) return true;
+        }
         return false;
     }
 

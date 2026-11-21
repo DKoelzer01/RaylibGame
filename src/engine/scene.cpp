@@ -1212,6 +1212,9 @@ RenderOriginScope::RenderOriginScope(Scene& s, const DVec3& centre) : scene(s), 
     scene.renderOrigin = centre;
     scene.camera.position = Vector3Subtract(scene.camera.position, d);
     scene.camera.target = Vector3Subtract(scene.camera.target, d);
+    // (#1360) the atmosphere's centre is a render-space copy the frame setup took: it moves with the bodies, or code in the
+    // scope (a server's survival step for a remote player) measured the air from the server's origin, not the player's
+    scene.atmosphere.centre = Vector3Subtract(scene.atmosphere.centre, d);
     scene.syncRenderPositions();
 }
 
@@ -1220,6 +1223,7 @@ RenderOriginScope::~RenderOriginScope() {
     scene.renderOrigin = saved;
     scene.camera.position = Vector3Add(scene.camera.position, d);
     scene.camera.target = Vector3Add(scene.camera.target, d);
+    scene.atmosphere.centre = Vector3Add(scene.atmosphere.centre, d); // (#1360)
     scene.syncRenderPositions();
 }
 
@@ -1229,3 +1233,24 @@ void Scene::setCameraWorld(DVec3 position, DVec3 target) {
     camera.target = (target - position).toFloat();
     syncRenderPositions();
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1360): a RenderOriginScope moves every render-space copy with the origin ----
+#include "unit_helpers.h"
+
+// A server steps each remote player in a scope centred on it: the atmosphere's centre (a copy the frame setup took) must
+// be in the scope's frame, so a player 60 km from the planet's centre is in the air wherever the server's own origin is.
+TEST(RenderOriginScope, TheAtmosphereMovesWithTheOrigin) {
+    Scene& world = UnitTest::FieldOnlyScene();
+    world.renderOrigin = DVec3{ 0, 0, 0 };
+    world.atmosphere.centre = { 0, -80000.0f, 0 }; // the server's origin 80 km above the planet's centre (out of the air)
+    const DVec3 player{ 0, -20000.0, 0 };          // a player on the ground, 60 km from the centre
+    {
+        RenderOriginScope frame(world, player);
+        const Vector3 pr = (player - world.renderOrigin).toFloat();
+        EXPECT_NEAR(Vector3Distance(pr, world.atmosphere.centre), 60000.0f, 1.0f) << "the player's own distance to the centre";
+    }
+    EXPECT_NEAR(world.atmosphere.centre.y, -80000.0f, 1.0f) << "restored after the scope";
+    world.atmosphere.centre = { 0, 0, 0 };
+}
+#endif
