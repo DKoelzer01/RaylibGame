@@ -39,7 +39,7 @@ double FluidSeconds() {
 
 SCENARIO("fluid/pond") {
     // (#1431) Not tagged "fluid", so the self-hosted runner skips it: its slow GPU fluid step (#1447) never finished the drain. Local only for now.
-    s.tags = { "water", "planet", "saves", "slow" };
+    s.tags = { "water", "planet", "saves", "slow", "local" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 1000.0; // the drain runs ~3 min of fluid time on seed 42's pond; the timed steps allow twice their fluid time in sim time (#1431)
     s.env = { { "RAYLIBGAME_FLUID_LOCKSTEP", "0" } }; // lockstep ran this pond at ~0.4x real time (10+ min); as the flag runs it

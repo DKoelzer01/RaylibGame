@@ -27,7 +27,7 @@ struct State {
 SCENARIO("fluid/flow-meter") {
     // (#1431) Not tagged "fluid": the self-hosted runner picks tag:fluid, and its GPU fluid step (~150 ms a tick, #1447) runs the
     // water at 25-70% of real time, too slow for this test's 60 s of water. Local only for now; put "fluid" back once that is fixed.
-    s.tags = { "water", "planet" };
+    s.tags = { "water", "planet", "local" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 260.0; // (#1431) the stream step allows twice its 60 s of fluid time in sim time
     s.legacyFlag = "--seed 42 --test-flow-meter";
