@@ -168,7 +168,9 @@ void RotationModels_Draw3D(Scene& world) {
                 rlMultMatrixf(MatrixToFloat(mm));
                 if (s.axis == 0) rlRotatef(-90.0f, 0, 0, 1);  // its y onto plot x
                 else if (s.axis == 2) rlRotatef(90.0f, 1, 0, 0); // its y onto plot z
-                rlRotatef(angle, 0, 1, 0);
+                // The plot frame (east, up, north) is left-handed (north = up x east): a turn by +a about an axis in it is a turn by -a about
+                // that axis in the body. The speeds are signed in the body (a wheel turns the way its water goes), so draw them negated.
+                rlRotatef(-angle, 0, 1, 0);
                 DrawPart(s.type);
                 rlPopMatrix();
                 ++drawn;

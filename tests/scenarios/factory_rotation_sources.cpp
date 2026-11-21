@@ -60,7 +60,7 @@ SCENARIO("factory/rotation-sources") {
     });
     s.step("the stream reaches the wheel and turns it", 90.0, [](ScenarioCtx& c) {
         const Vector3 up = Vector3Normalize(At(0.0f, 0.0f));
-        c.camera(Vector3Add(At(1.5f, 3.0f), Vector3Scale(plot->north, -7.0f)), At(2.0f, 0.5f, 1.5f), up);
+        c.camera(At(0.6f, 2.6f, -3.2f), At(0.4f, -1.2f, 0.2f), up); // from the south bank, down into the trench at the wheel
         Factory::Sync(c.world);
         const RotationView w = View(wheel);
         if (c.t - lastNote >= 10.0) { lastNote = c.t; c.note(TextFormat("t=%d s: wheel %.0f RPM, flow %.2f m^3/s along x", (int)c.t, w.rpm, Vector3DotProduct(Fluid::FlowAt(*c.body, At(0.25f, -1.6f), 1.0f), plot->east))); }
