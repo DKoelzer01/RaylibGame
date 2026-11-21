@@ -2596,7 +2596,10 @@ TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallTh
     long long made = 0; int active = 0;
     constexpr long long kTicks = 2 * 60 * kTicksPerSecond;
     for (long long t = 0; t < kTicks; ++t) TickPlot(ps, 1, made, active);
-    const long long full = kTicks / 150 * 6 * 2; // 150 ticks a craft, 2 crushed each, unlimited power
+    // (#996, ladder L4) the macerator's iron recipe from the table (2 ore -> 3 crushed in 150 ticks; it was 1 -> 2), unlimited power
+    int craftTicks = 150, perCraft = 2;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::Macerator && !r.in.empty() && r.in[0].item == tables.item("iron_ore") && !r.out.empty()) { craftTicks = r.ticks; perCraft = r.out[0].count; break; }
+    const long long full = kTicks / craftTicks * 6 * perCraft;
     // (each gets floor(8 x 32 / 48) = 5 EU of 8: 5/8 of full speed; a craft's last part-tick of EU is not carried over)
     EXPECT_GE(made * 100, full * 5 / 8 * 85) << "about 5/8 of the full rate (at least 85% of it): made " << made << " of " << full;
     EXPECT_LE(made, full * 32 / 48) << "and no more than the share allows";

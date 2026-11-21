@@ -30,11 +30,11 @@ macerator       | sand 2           | stone 1                   | 100 | 4
 macerator       | gravel 2         | concrete 1                | 100 | 4
 # Milestone 8. Ore processing (#996, ladder L4): the LV macerator alone gives x1.5 (2 ore -> 3 crushed, smelted 1:1); the MV
 # chain (washer: 3 crushed -> 4 purified; centrifuge: dust + byproduct; dust smelted 1:1) gives x2 plus the byproducts.
-macerator       | iron_crushed 3     | iron_ore 2                | 300 | 8
-macerator       | copper_crushed 3   | copper_ore 2              | 300 | 8
-macerator       | tin_crushed 3      | tin_ore 2                 | 300 | 8
-macerator       | bauxite_crushed 3  | bauxite_ore 2             | 300 | 8
-macerator       | ilmenite_crushed 3 | ilmenite_ore 2            | 300 | 8
+macerator       | iron_crushed 3     | iron_ore 2                | 150 | 8
+macerator       | copper_crushed 3   | copper_ore 2              | 150 | 8
+macerator       | tin_crushed 3      | tin_ore 2                 | 150 | 8
+macerator       | bauxite_crushed 3  | bauxite_ore 2             | 150 | 8
+macerator       | ilmenite_crushed 3 | ilmenite_ore 2            | 150 | 8
 ore_washer      | iron_purified 4   | iron_crushed 3, water 1   | 300 | 8
 ore_washer      | copper_purified 4 | copper_crushed 3, water 1 | 300 | 8
 ore_washer      | tin_purified 4    | tin_crushed 3, water 1    | 300 | 8
