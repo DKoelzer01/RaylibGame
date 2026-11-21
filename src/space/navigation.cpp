@@ -2,6 +2,7 @@
 #include "playerinput.h"
 #include "navigation.h"
 #include "claims.h"
+#include "combat.h"
 #include "survival.h"
 #include "animals.h"
 #include "farsphere.h"
@@ -246,6 +247,16 @@ void DrawMarker(Vector2 at, Color col, const char* label, float size) {
     DrawPolyLines(at, 4, size, 45.0f, BLACK);
     if (label && *label) DrawText(label, (int)(at.x + size + 3), (int)(at.y - 7), 14, RAYWHITE);
 }
+// (#828) A grave on the map: a small headstone (a rounded top on a slab) in grey, its label beside it.
+const Color kGraveColour = { 200, 202, 210, 255 };
+void DrawGraveMarker(Vector2 at, const char* label) {
+    const Rectangle stone = { at.x - 5.0f, at.y - 6.0f, 10.0f, 12.0f };
+    DrawRectangleRounded(stone, 0.6f, 6, kGraveColour);
+    DrawRectangleRoundedLines(stone, 0.6f, 6, BLACK);
+    DrawLine((int)at.x, (int)(at.y - 3), (int)at.x, (int)(at.y + 3), DARKGRAY); // a cross cut in it
+    DrawLine((int)(at.x - 2), (int)(at.y - 1), (int)(at.x + 3), (int)(at.y - 1), DARKGRAY);
+    if (label && *label) DrawText(label, (int)(at.x + 9), (int)(at.y - 7), 14, RAYWHITE);
+}
 
 } // namespace
 
@@ -440,7 +451,7 @@ void Nav_DrawHUD(Scene& world) {
             DrawText(TextFormat("%s %.0fm", label, metres), x - 20, cy + ch + 2, 12, col);
         };
         if (hasStart && startBody == h.body->name) marker(startDir, GREEN, "start");
-        for (const Waypoint& w : waypoints) if (w.body == h.body->name) marker(w.dir, GOLD, w.name.c_str());
+        for (const Waypoint& w : waypoints) if (w.body == h.body->name) { std::string g; marker(w.dir, Combat_GraveMark(w.body, w.name, g) ? kGraveColour : GOLD, w.name.c_str()); } // (#828: graves grey)
         DrawLine(cx, cy, cx, cy + ch, SKYBLUE);
         DrawText(TextFormat("%03.0f", heading), cx - MeasureText("000", 14) / 2, cy + ch + 16, 14, SKYBLUE);
     }
@@ -501,7 +512,7 @@ void Nav_DrawHUD(Scene& world) {
         DrawMarker(s, col, nullptr, 5.0f);
     };
     if (hasStart && startBody == h.body->name) onMini(startDir, GREEN);
-    for (const Waypoint& w : waypoints) if (w.body == h.body->name) onMini(w.dir, GOLD);
+    for (const Waypoint& w : waypoints) if (w.body == h.body->name) { std::string g; onMini(w.dir, Combat_GraveMark(w.body, w.name, g) ? kGraveColour : GOLD); } // (#828)
     // Animals nearby: small dots (not pinned to the rim), wild ones tan.
     for (int i = 0; i < Animals_Count(); ++i) {
         if (Animals_Body(i) != h.body->name) continue;
@@ -554,7 +565,10 @@ void Nav_DrawMap(Scene& world) {
             if (rp > 14.0f) { const char* t = TextFormat("%s%s", c.teamName.c_str(), c.ours ? " (yours)" : c.allowed ? " (ally)" : ""); DrawText(t, (int)(cp.x - MeasureText(t, 14) * 0.5f), (int)cp.y - 7, 14, Fade(RAYWHITE, 0.85f)); }
         }
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), GREEN, "Start", 7.0f);
-        for (const Waypoint& w : waypoints) if (w.body == h.body->name) DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
+        for (const Waypoint& w : waypoints) if (w.body == h.body->name) { // (#828) a grave: a headstone, and when it opens to others
+            std::string g;
+            if (Combat_GraveMark(w.body, w.name, g)) DrawGraveMarker(toScreen(w.dir), g.c_str()); else DrawMarker(toScreen(w.dir), GOLD, w.name.c_str(), 7.0f);
+        }
         // The player and where they look.
         const Vector2 p = toScreen(h.up);
         const float hd = BearingOf(h.up, h.forward);

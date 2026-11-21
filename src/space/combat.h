@@ -69,6 +69,9 @@ bool Combat_HitStop(const PlayerSession& s, bool reduceMotion);
 // stack; hard, everything goes into a grave at the death spot (a waypoint; walk up to it to take it all back).
 void Combat_OnDeath(PlayerSession& s);
 int Combat_GraveCount();
+// (#828) Whether the waypoint `name` on `body` is a grave; `label` then reads as the map shows it ("bob's grave 2, open to
+// all in 12 min" in multiplayer, its name alone in single player, where anyone may take it).
+bool Combat_GraveMark(const std::string& body, const std::string& name, std::string& label);
 // Drops a stack at the player's feet as a pile (#564), picked up by walking back to it after leaving; false: nowhere.
 bool Combat_Drop(PlayerSession& s, const struct InvSlot& stack);
 // (#865) A pile at `at` (body-local) on that body: a server dropping a remote player's stack (who: its name, the pile's owner;
