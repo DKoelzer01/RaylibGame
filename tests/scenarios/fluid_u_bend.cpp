@@ -113,6 +113,14 @@ static void Build(ScenarioDef& s) {
         };
         const double vNear = region(-12.5f, -7.75f, kFloor - 0.5f, 1.0f), vFar = region(7.75f, 12.5f, kFloor - 0.5f, 1.0f);
         const double vTunnel = region(-7.75f, 7.75f, kFloor - 0.5f, kTunnelTop - 0.25f), vRoof = region(-7.75f, 7.75f, kTunnelTop - 0.25f, kTunnelTop + 0.5f);
+        { // The pressure heads (CPU mode, the pass on; fill units over each cell's bottom, 255 a row): along the floor, near
+          // pit to far pit, then up the far leg. A chain that formed reads ~(near surface rows) x 255 at the floor, falling by
+          // 1 a cell along the tunnel and by 256 a row up the far leg.
+            std::string floorH, farUp;
+            for (float x = -10.0f; x <= 10.0f; x += 2.0f) floorH += std::to_string(Fluid::HeadAt(*c.body, S.pt(x, 0.0f, kFloor + 0.125f))) + " ";
+            for (float h = kFloor + 0.125f; h < 0.0f; h += 0.5f) farUp += std::to_string(Fluid::HeadAt(*c.body, S.pt(10.0f, 0.0f, h))) + " ";
+            c.note("heads along the floor (x -10..10 m): " + floorH + "| up the far leg (every 0.5 m): " + farUp);
+        }
         c.note(TextFormat("volume by region (m^3): near pit %.2f, far pit %.2f, tunnel %.2f, its top row and roof %.2f; outside %.2f of %.2f",
                           vNear, vFar, vTunnel, vRoof, vol1 - (vNear + vFar + vTunnel + vRoof), vol1));
         c.note("simulated volume " + std::to_string(S.vol0) + " m^3 after the pour, " + std::to_string(vol1) + " m^3 at the end");

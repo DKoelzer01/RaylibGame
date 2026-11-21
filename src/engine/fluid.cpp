@@ -2808,6 +2808,18 @@ void Fluid::WaitIdle() {
 
 void Fluid::SetSpeed(int steps) { speed = std::max(1, steps); }
 
+int Fluid::HeadAt(const Planetoid& body, Vector3 local) {
+    if (running.load()) WaitIdle();
+    std::lock_guard<std::mutex> lock(simMx);
+    for (auto& s : sites) {
+        if (s->body != body.id) continue;
+        int ci, cj, ck; s->cellOf(local, ci, cj, ck);
+        Brick* b; int i;
+        if (s->cell(ci, cj, ck, b, i)) return b->press.size() == (size_t)B3 ? b->press[i] : -1;
+    }
+    return -1;
+}
+
 bool Fluid::Asleep() {
     // Lockstep (tests): the answer must not depend on whether this frame's job has finished yet (#814: a dam-break's wall
     // went at tick 4038 in one run and 4040 in an identical one), so wait for it, as Update does each tick.
