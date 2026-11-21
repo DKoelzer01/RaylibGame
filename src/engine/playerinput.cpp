@@ -20,6 +20,7 @@ constexpr int kDefault[(int)Act::Count] = {
     KEY_Q,
     KEY_ENTER,
     KEY_Q, KEY_F,
+    kMouse + MOUSE_BUTTON_MIDDLE,
     KEY_Y,
 };
 int binding[(int)Act::Count] = {}; // the live bindings (filled from kDefault on first use)
@@ -43,6 +44,7 @@ constexpr ActInfo kActs[(int)Act::Count] = {
     { "offhand_use", "Use the off hand (food, oxygen)" },
     { "chat", "Command line / chat" },
     { "drop_item", "Inventory: drop from the slot (Ctrl: all)" }, { "swap_offhand", "Inventory: swap the slot with the off hand" },
+    { "lock_on", "Lock on to a creature (toggle)" },
     { "magic_sight", "Magic sight: tap to show or hide, hold to study" },
 };
 constexpr int kSlotKeys[10] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
@@ -66,12 +68,16 @@ void PlayerInput_BeginFrame() {
     EnsureBindings();
     PlayerInput f;
     f.enabled = true;
+    static uint64_t fakeBefore = 0; // (#1216) scripted presses: a fake hold's first frame is a press, its end a release
     for (int a = 0; a < (int)Act::Count; ++a) {
         const uint64_t bit = 1ull << a;
         if (Down(binding[a]) || (gFakeHeld & bit)) f.held |= bit;
         if (Pressed(binding[a])) f.pressed |= bit;
         if (Released(binding[a])) f.released |= bit;
+        if ((gFakeHeld & bit) && !(fakeBefore & bit)) f.pressed |= bit;
+        if (!(gFakeHeld & bit) && (fakeBefore & bit)) f.released |= bit;
     }
+    fakeBefore = gFakeHeld;
     f.look = GetMouseDelta();
     f.look.x += gFakeLook.x; f.look.y += gFakeLook.y; // --play-load turning (#509)
     f.wheel = GetMouseWheelMove();
