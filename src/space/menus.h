@@ -30,6 +30,7 @@ struct GameSettings {
     float fov = 65.0f;              // degrees (vertical; narrow views are a motion-sickness trigger)
     float volume = 0.35f;
     float busVolume[7] = { 1, 1, 1, 1, 1, 1, 1 }; // (#1238) per AudioBus (audiomixer.h); [0] Master is `volume`. Audio v2 only
+    int subtitles = 1;              // (#1244) sound subtitles: 0 off, 1 important (default, user decision), 2 all. Audio v2 only
     bool foliage = true;
     int fpsCap = 0;                 // 0: the monitor's refresh rate
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)

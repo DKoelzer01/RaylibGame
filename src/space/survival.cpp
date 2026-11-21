@@ -11,6 +11,7 @@
 #include "player.h"
 #include "ship.h"
 #include "audio.h"
+#include "music.h"
 #include "particles.h"
 #include "gameui.h"
 #include "world.h"
@@ -534,7 +535,7 @@ void QuestBook_Update() {
             if (gQuestNews) gQuestNews(news); // (a server: the team hears it)
             else { // (#226) the player's own book: a banner, a fanfare and a burst of golden sparkles round the player
                 GameUI_TierBanner(Q().tier);
-                Audio_Play(Sfx::Fanfare, 0.8f);
+                Audio_Play(Sfx::Fanfare, 0.8f); Music_Event(MusicEvent::Achievement); // (#1245)
                 if (player.nearest) {
                     ParticleBurst b;
                     b.kind = ParticleKind::Spark; b.color = { 255, 214, 110, 255 };
