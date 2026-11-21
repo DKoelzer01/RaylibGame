@@ -132,9 +132,13 @@ jobs:
           # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
           "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
+          # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
+          "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
+          grep -E "^scenario: parity" parity-pressure.log || true
           echo "fluid parity: $(grep -E '^scenario: parity .* -> ' parity.log | tail -1 | sed -E 's/^scenario: parity //')" >> "$GITHUB_STEP_SUMMARY"
+          echo "fluid parity, pressure pass: $(grep -E '^scenario: parity .* -> ' parity-pressure.log | tail -1 | sed -E 's/^scenario: parity //')" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
       - name: Headless scenarios (fluid, craft, skills, world, frames)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
