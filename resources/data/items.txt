@@ -270,5 +270,5 @@ bronze_pick_head | Bronze pick head | 64  | 205,150, 75 | Haft it (Tab) into a b
 bronze_axe_head  | Bronze axe head  | 64  | 205,150, 75 | Haft it (Tab) into a bronze axe.
 bronze_pickaxe   | Bronze pickaxe   | tool | 205,150, 75 | Cast and hammered: digs as an iron pickaxe.
 bronze_axe       | Bronze axe       | tool | 205,145, 70 | Cast and hammered: fells as an iron axe.
-steam_assembler  | Steam assembler  | 20  | 170,140, 90 | Makes steam research packs from iron plates, bronze gears and coal, driven by a shaft: the real route for the research (by hand is slow).
+steam_assembler  | Steam assembler  | 20  | 170,140, 90 | Makes steam research packs from iron plates, cogwheels and coal, driven by a shaft: the real route for the research (by hand is slow).
 ruin_schematic   | Ruin schematic   | 20  | 200,180,130 | A machine drawing from a ruin. Hand it in at a lab: it stands in for a tier milestone's find.

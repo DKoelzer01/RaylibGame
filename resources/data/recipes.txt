@@ -168,7 +168,7 @@ mass_driver 1        = ev_hull 1, superconductor 12, steel_plate 8, advanced_cir
 cargo_capsule 1      = aluminium_plate 4, iron_plate 2
 fibre 2           = cactus 1
 # Research (#1193, #1030; the doc's pack recipes): packs by hand (slow: the assembler is the real route, later) and the labs.
-steam_pack 1         = iron_plate 1, bronze_gear 1, coal 1
+steam_pack 1         = iron_plate 1, cogwheel 1, coal 1
 lv_pack 2            = steel_plate 1, copper_wire 2, vacuum_tube 1
 mv_pack 2            = basic_circuit 2, steel_plate 1, iron_crushed 3
 hv_pack 2            = aluminium_plate 2, gold_ingot 1, iron_purified 2
