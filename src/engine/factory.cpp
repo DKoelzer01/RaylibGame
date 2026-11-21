@@ -436,9 +436,13 @@ int BurnFuel(Machine& m, const MachineDef& def, int maxTicks) {
 // consumers and battery room), not every tick whatever the load. A boiler also needs water (litres per tick of
 // burning) and heats up: from cold it burns flat out until hot (with or without a cable), making steam in proportion
 // to its heat; hot with nothing to power it banks the fire (one tick in eight keeps the heat). Without fuel or water
-// it cools. Returns the EU made.
+// it cools. Returns the EU made. (#1205) A fuel generator keeps the EU of a burnt tick that nothing drew (m.fuelEU, at most
+// one tick's output) and serves the next demand from it first: fuel burns in proportion to the EU drawn (a whole tick per
+// tick under a 4 EU/t load wasted 88% of it).
 long long GeneratorStep(Machine& m, const MachineDef& def, int dt, long long needEU) {
     const bool steam = def.waterPerTick > 0;
+    long long fromBuffer = 0;
+    if (!steam) { fromBuffer = std::min<long long>(std::max(0, m.fuelEU), std::max(0LL, needEU)); m.fuelEU -= (int)fromBuffer; needEU -= fromBuffer; }
     int want;
     if (steam && m.heat < kHeatMax) want = dt;                                             // warming up
     else want = needEU > 0 ? (int)std::min<long long>(dt, (needEU + def.euOut - 1) / std::max(1, def.euOut)) : 0;
@@ -452,12 +456,15 @@ long long GeneratorStep(Machine& m, const MachineDef& def, int dt, long long nee
         if (!banked) eu = (long long)burnt * def.euOut * std::min(m.heat + burnt, kHeatMax) / kHeatMax;
         m.heat = std::min(kHeatMax, m.heat + burnt);
     } else {
-        eu = (long long)burnt * def.euOut;
+        const long long made = (long long)burnt * def.euOut;
+        const long long drawn = std::min(made, std::max(0LL, needEU));
+        m.fuelEU = (int)std::min<long long>(def.euOut, m.fuelEU + (made - drawn)); // (#1205) what was not drawn waits for the next demand
+        eu = fromBuffer + drawn;
     }
     const bool noWater = steam && m.water < def.waterPerTick;
     const bool noFuel = m.energy <= 0 && m.fuel.count <= 0;
     if (steam && (noWater || noFuel)) m.heat = std::max(0, m.heat - dt);             // the fire is out: it cools
-    m.status = noWater ? MachineStatus::NoWater : (noFuel && burnt == 0) ? MachineStatus::NoFuel
+    m.status = noWater ? MachineStatus::NoWater : (noFuel && eu == 0) ? MachineStatus::NoFuel
              : eu > 0 || (steam && burnt > 0 && !banked) ? MachineStatus::Working : MachineStatus::NoLoad;
     return eu;
 }

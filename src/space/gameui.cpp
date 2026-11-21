@@ -1261,7 +1261,15 @@ static void DrawTeamProgress() {
 }
 
 // The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
-static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
+// (#1206) the screen tabs' font: one size for the row, the largest at which every name fits (down to 70%; ScreenTabFont)
+static float screenTabFont = 1.0f;
+static void ScreenTabFont(const char* const* labels, int n, float w) {
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    screenTabFont = 1.0f;
+    for (int i = 0; i < n; ++i) screenTabFont = std::min(screenTabFont, (w - pad) / std::max(1.0f, ImGui::CalcTextSize(labels[i]).x));
+    screenTabFont = std::max(0.7f, screenTabFont);
+}
+static bool ScreenTab(const char* label, const char* key, bool on, float w, float h, bool rowFont = false) {
     const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, bg);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.32f, 0.44f, 1.0f));
@@ -1269,9 +1277,14 @@ static bool ScreenTab(const char* label, const char* key, bool on, float w, floa
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
     // (#891) with its key when both fit the tab, else the name alone (a large font in a narrow tab clipped "Skills [K")
+    // (#1206) the row's font when its names don't all fit (8 tabs in creative): smaller, rather than clipped names
+    const bool shrink = rowFont && screenTabFont < 1.0f;
+    if (shrink) ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * screenTabFont); // (FontSizeBase: GetFontSize is scaled already)
     const char* withKey = key && *key ? TextFormat("%s  [%s]", label, key) : label;
-    const bool fits = ImGui::CalcTextSize(withKey).x + ImGui::GetStyle().FramePadding.x * 2.0f <= w;
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const bool fits = ImGui::CalcTextSize(withKey).x + pad <= w;
     const bool clicked = ImGui::Button(TextFormat("%s##%s", fits ? withKey : label, label), ImVec2(w, h));
+    if (shrink) ImGui::PopFont();
     if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
     ImGui::PopStyleColor(4);
     return clicked;
@@ -1732,14 +1745,19 @@ void GameUI_Draw(Scene& world) {
                                     { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
                                     { GameScreen::Research, "Research", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database)
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
-        const float smallW = 102.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key)
+        const float smallW = 92.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key; #1206: 102 -> 92, room for 8 tabs)
         const int nTabs = terrainTool.creative ? 8 : 7;
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
         if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
+        {   // (#1206) one font for the row: the largest at which every shown name fits
+            const char* names[16]; int n = 0;
+            for (const Tab& t : tabs) if (n < 16 && (t.s != GameScreen::Catalog || terrainTool.creative)) names[n++] = t.name;
+            ScreenTabFont(names, n, tabW);
+        }
         for (const Tab& t : tabs) {
             if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
-            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
+            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH, true)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
