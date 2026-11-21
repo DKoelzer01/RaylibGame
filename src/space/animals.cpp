@@ -598,7 +598,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
-    if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
+    if (here) playerLocal = here->toLocalOf(player.position, world.renderOrigin);
     // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
     // are simulated around all of them; player-specific behaviour (fleeing the player, following food in hand, night
     // hunters, campfires) still looks at the local player only.

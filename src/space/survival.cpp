@@ -73,7 +73,7 @@ namespace {
         if (!p || !world.atmosphere.enabled) return NAN;
         const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
         if (!pf || pf->moon) return NAN;
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         const float d = Vector3Length(local);
         if (d < 1.0f) return NAN;
         const Vector3 up = Vector3Scale(local, 1.0f / d);
@@ -267,7 +267,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     // while sick; the cockpit's life support feeds you. Heat does slow damage.
     survival.temperature = AirTemperature(world, player, survival, local);
     if (!std::isnan(survival.temperature)) { // rain and snow chill the air
-        const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocal((player.position - world.renderOrigin).toFloat())), WorldTime()) : WeatherState{});
+        const WeatherState w = local ? Weather_Here() : (player.nearest ? Weather_At(world, Vector3Normalize(player.nearest->toLocalOf(player.position, world.renderOrigin)), WorldTime()) : WeatherState{});
         if (w.kind == WeatherKind::Rain || w.kind == WeatherKind::Storm) survival.temperature -= 4.0f * w.precipitation;
         else if (w.kind == WeatherKind::Snow) survival.temperature -= 3.0f * w.precipitation;
     }

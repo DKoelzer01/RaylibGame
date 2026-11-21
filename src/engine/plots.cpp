@@ -449,8 +449,9 @@ int RotateOrientation(int index, int axis) {
 // Plot geometry
 // ---------------------------------------------------------------------------------------------
 
-Vector3 Plot::toPlot(Vector3 b) const {
-    const DVec3 d = DVec3(b) - origin;
+Vector3 Plot::toPlot(Vector3 b) const { return toPlot(DVec3(b)); }
+Vector3 Plot::toPlot(const DVec3& b) const {
+    const DVec3 d = b - origin;
     const Vector3 v = { (float)d.x, (float)d.y, (float)d.z };
     return { Vector3DotProduct(v, east), Vector3DotProduct(v, up), Vector3DotProduct(v, north) };
 }
@@ -920,6 +921,9 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
 }
 
 bool Plot::raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
+    return raycast(DVec3(o), d, maxDist, cell, faceNormal, dist); // (bit-identical: toPlot widened the float anyway)
+}
+bool Plot::raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
     if (cells.empty()) return false;
     // DDA through the cell grid in plot space.
     Vector3 p = Vector3Scale(toPlot(o), 1.0f / kCellSize);

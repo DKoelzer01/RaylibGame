@@ -142,6 +142,12 @@ public:
     // body centre, for anchors and chunk placement on large bodies (floats step ~4-8 mm at 60 km).
     DVec3 toWorldD(const DVec3& local) const;
     DVec3 toLocalD(const DVec3& worldAbs) const;
+    // Plan 11 F3 (#1277): gameplay readers and aim rays. With RAYLIBGAME_FRAMES=1 these go through toLocalD (exact, rounded
+    // once), so a point that is still on the turning body stays still; off, they are today's float path through render
+    // space (toLocal), bit for bit. toLocalOf: an absolute world point (player.position); toLocalRenderD: a render-space
+    // point (the camera) kept in double for aim rays into plots (Plot::raycast(DVec3)).
+    Vector3 toLocalOf(const DVec3& worldAbs, const DVec3& renderOrigin) const;
+    DVec3 toLocalRenderD(Vector3 renderPos, const DVec3& renderOrigin) const;
     // Model matrix of one of this body's chunks in render space, its translation computed in double.
     Matrix chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const;
     // Model matrix for geometry positioned relative to a body-local anchor (foliage batches).

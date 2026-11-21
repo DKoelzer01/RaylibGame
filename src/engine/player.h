@@ -50,6 +50,10 @@ struct Player {
     // the line, Centred above; double position and the frame velocity: in Fixed the speed against the ground, airborne
     // too), refreshed at the end of every update. Observed only for now (tests, net); F2b makes it the state physics runs on.
     FramePos frame{};
+    // (F3, #1277) The velocity against the ground of the body the player is near, for readers (HUD, perf log, benches):
+    // on the frame path that is the velocity itself, airborne too; else airborne velocities are world-frame and take the
+    // surface's motion out (grounded ones are surface-relative already). Fly mode has no nearest: the nearest body is found.
+    Vector3 groundVelocity(Scene& world) const;
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
     bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
     Vector3 riverCurrent{ 0, 0, 0 };  // in a river: its current (world m/s, #361): carries a swimmer, pushes a wader
