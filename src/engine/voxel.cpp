@@ -1978,7 +1978,8 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fa = (len - 0.5f * rw) / (0.4f * rw);
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
-                const float ra = hall ? std::min(rw, 8.0f) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
+                static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 8.0f; // (#1116 tuning, CPU only)
+                const float ra = hall ? std::min(rw, hallRa) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
                 intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
             }
         }
