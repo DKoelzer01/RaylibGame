@@ -13,7 +13,6 @@
 #include "avatar.h" // (#1225) humanoid creatures
 #include "locallights.h"
 #include "toolwear.h" // (#1226) an ooze corrodes tools
-#include "music.h" // (#1353) the danger layer
 #include "claims.h"
 #include "headless.h"
 #include "net.h"
@@ -1156,7 +1155,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     int plansLeft = pathsOn ? 1 : 0; // route plans this update (#253)
     std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
-    float danger = 0.0f; // (#1353) the nearest threat to the local player this update (0 none, 1 striking)
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
         const Species& s = species[a.species];
@@ -1264,6 +1262,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
             const Mood before = a.brain.mood;
             bo = Brain_Step(a.brain, *cs, bi, step);
+            if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) Creature_Event(*cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
             if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
                 printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
@@ -1378,8 +1377,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (cs && cs->burst) speed *= fmodf((float)simClock + (a.rng % 97) * 0.01f, cs->burstOn + cs->burstOff) < cs->burstOn ? 1.0f : 0.33f; // (#1224) bursts
             const float reach = cs ? cs->reach : 0.5f * s.size.x + 1.0f;
             const bool atPlayer = preyIdx < 0;
-            if (atPlayer && sameBody && tg->session == 0 && !goingTo) // (#1353) the danger music: a creature hunting the local player, louder near and when it strikes
-                danger = std::max(danger, (bo.mood == Mood::Attack || a.windUpAt >= 0.0) ? 1.0f : std::clamp(1.0f - pdist / 30.0f, 0.3f, 1.0f));
             // A telegraphed attack (#165): in reach it winds up (a growl, a warning) and strikes kBiteWindUp later; the
             // hit goes through Combat_Damage (a shield block, knockback away from it). Out of reach by then: it missed.
             bool windUp = false, strike = false;
@@ -1614,7 +1611,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // Night hunters gone at daylight.
     for (int k = (int)gone.size() - 1; k >= 0; --k) animals.erase(animals.begin() + gone[k]);
     if (!gone.empty()) aimed = -1;
-    if (danger > 0.0f && !gHeadless) Music_SetDanger(danger); // (#1353) a tense layer while something hunts the player
     // (#1223) Creatures' strikes on each other, gathered in the loop (a kill shifts the list), found again by id.
     for (const CreatureHit& h : creatureHits) { const int t = IndexOfNet(h.target); if (t >= 0) HitByCreature(t, h.e, h.attacker, h.from); }
     creatureHits.clear();
