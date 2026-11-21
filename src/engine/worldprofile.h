@@ -2,12 +2,18 @@
 #define WORLDPROFILE_H
 
 // What a planet or moon is (Plan 13 step 2, #1274): one world file per body, resources/data/worlds/<body name>.txt,
-// read where the game used to decide by the body's kind. bodies.txt keeps what a body does in the system (radius,
-// orbit, spin, gravity: saved with the world and sent to joining players); the world file holds what it is like to be
-// there (terrain style, foliage, air, sky, biomes, resources, creatures). Bodies without a file get their kind's
-// default, which is today's planet (Terra) or moon (Luna), so a missing file changes nothing.
+// read where the game used to decide by the body's kind. bodies.txt keeps where a body is in the system (position or
+// orbit, spin); the world file holds what it is (radius, gravity) and what it is like to be there (terrain style,
+// foliage, air, sky, biomes, resources, creatures). Bodies without a file get their kind's default, which is today's
+// planet (Terra) or moon (Luna), so a missing file changes nothing (but then radius= has to be on the bodies.txt line).
+//
+// Radius and gravity (#1298, the user 2026-11-21) live here too: a bodies.txt line without radius= / gravity= takes
+// them from the world file when the system is loaded (LoadSystemDef), and the resolved values are saved and sent to
+// joining players as before, so a save keeps the size it was made with.
 //
 // One `key value...` per line, '#' starts a comment, unknown keys are errors (logged with the line):
+//   radius    m                     the body's radius (sea level for planets)
+//   gravity   auto | m/s^2          at the mean surface (auto: bodies.h AutoSurfaceGravity)
 //   terrain   earthlike | airless   PlanetField's style: earthlike = sea, rivers, erosion, caves, the 3D band, biomes;
 //                                   airless = cratered regolith, no water, one cold biome
 //   newworld  yes | no              the New World screen's choices (#504) shape this body (the home world)
@@ -31,6 +37,10 @@
 struct WorldProfile {
     std::string name;                 // the body (and file) name
     std::string source;               // the file it came from, or "default:<kind>"
+    bool hasRadius = false;           // radius and gravity (#1298): applied to the system definition by LoadSystemDef
+    float radius = 0.0f;
+    bool hasGravity = false;
+    float gravity = -1.0f;            // < 0: auto
     bool airless = false;             // PlanetField's `moon` style
     bool newWorld = true;
     bool erosion = true;

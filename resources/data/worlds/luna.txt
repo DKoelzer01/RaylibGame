@@ -1,6 +1,9 @@
-# Luna, Terra's moon (Plan 13 step 2, #1274). What it is like there; bodies.txt holds its radius, orbit, spin and gravity.
-# Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (moon = these values).
+# Luna, Terra's moon (Plan 13 step 2, #1274). What it is and what it is like there; bodies.txt holds its orbit and spin.
+# Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (moon = these values,
+# except radius and gravity, which a bodies.txt line then has to give).
 
+radius    10000
+gravity   auto                # 9.81 * 10 / 100 = 0.98 m/s^2
 terrain   airless             # cratered regolith, no water, one cold biome
 newworld  no
 erosion   no
