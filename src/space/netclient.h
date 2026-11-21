@@ -74,6 +74,7 @@ struct NetClient {
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
     int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
+    double respawnGraceUntil = -1.0;             // (#828) dead, or just respawned: the server moved us (not a miss); errors are not counted
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
     // Who is playing and what they hold (#750)
