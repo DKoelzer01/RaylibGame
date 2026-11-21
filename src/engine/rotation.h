@@ -33,6 +33,8 @@ struct ConsumerSpec { int stressPerRpm, minRpm, ratedRpm; }; // stress per RPM w
 constexpr SourceSpec kHandCrank   { 32, 8 };    // 256 SU while held
 constexpr SourceSpec kWaterWheel  { 16, 16 };   // 256 SU at full current (step 3 scales the speed by the flow)
 constexpr SourceSpec kWindmillSail{ 8, 32 };    // per sail: 256 SU at full wind (doc: 256 SU a sail, Create's scale)
+constexpr int kWindmillSails = 4;               // (#1270) a windmill's sails: 1024 SU at full wind
+constexpr SourceSpec kWindmill    { kWindmillSail.rpm, kWindmillSail.suPerRpm * kWindmillSails };
 constexpr SourceSpec kSteamEngine { 64, 16 };   // 1024 SU (tier 3)
 constexpr ConsumerSpec kMillstone { 4, 16, 32 }; // doc: a millstone needs 16 RPM
 constexpr ConsumerSpec kSaw       { 4, 16, 32 };

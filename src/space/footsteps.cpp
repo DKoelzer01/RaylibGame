@@ -95,11 +95,12 @@ namespace {
     }
 
     void Play(Scene& world, const DVec3& feet, Vector3 up, bool wading, StepTracker::Event ev, float landing,
-              Player::Posture posture, bool running, uint32_t who, bool isSelf) {
+              Player::Posture posture, bool running, uint32_t who, bool isSelf, bool audible = true) {
         const StepSurface s = SurfaceAt(world, feet, up, wading);
         float loud = StepLoudness(s, posture, running);
         if (ev == StepTracker::Landing) loud = std::max(loud, 0.8f + 0.12f * landing);
         noises.push_back({ feet, loud, GetTime(), who });
+        if (!audible) return; // (the dedicated server: the noise for creature hearing, no sound)
         static int ids[(int)StepSurface::Count];
         static bool looked[(int)StepSurface::Count] = {};
         if (!looked[(int)s]) { ids[(int)s] = Audio_Sound(StepSurface_Sound(s)); looked[(int)s] = true; }
@@ -112,55 +113,78 @@ namespace {
         const float pitch = (ev == StepTracker::Landing ? 0.8f : 1.0f) * (1.0f + 0.07f * jitter(rng));
         Audio_PlaySoundAt(ids[(int)s], feet, AudioBus::Effects, AudioPriority::Low, volume, pitch, att);
     }
-}
 
-const std::vector<StepNoise>& Footsteps_RecentNoises() { return noises; }
+    void Prune() {
+        const double now = GetTime();
+        noises.erase(std::remove_if(noises.begin(), noises.end(), [&](const StepNoise& n) { return now - n.time > 2.0; }), noises.end());
+    }
 
-void Footsteps_Update(Scene& world, const Player& p, const std::vector<AvatarState>& others, float dt) {
-    const double now = GetTime();
-    noises.erase(std::remove_if(noises.begin(), noises.end(), [&](const StepNoise& n) { return now - n.time > 2.0; }), noises.end());
-    if (dt <= 0.0f) return;
+    // Walkers known only by their avatar state (remote players on a client; every player on the server).
+    void UpdateWalkers(Scene& world, const std::vector<AvatarState>& walkers, float dt) {
+        for (const AvatarState& a : walkers) {
+            Walker& w = remote[a.session];
+            const Vector3 horiz = Vector3Subtract(a.velocity, Vector3Scale(a.up, Vector3DotProduct(a.velocity, a.up)));
+            const float speed = Vector3Length(horiz);
+            const float down = std::max(0.0f, -Vector3DotProduct(a.velocity, a.up));
+            float landing = 0.0f;
+            const bool grounded = a.grounded && !a.flying && !a.swimming;
+            const StepTracker::Event ev = w.t.update(grounded, speed * dt, down, a.posture, landing);
+            if (ev != StepTracker::None) Play(world, a.position, a.up, false, ev, landing, a.posture, speed > 7.5f, a.session, false);
+        }
+        if (remote.size() > walkers.size() + 8) { // players who left
+            std::unordered_map<uint32_t, Walker> kept;
+            for (const AvatarState& a : walkers) kept[a.session] = remote[a.session];
+            remote.swap(kept);
+        }
+    }
 
-    // The local player: distance walked measured in its body's frame (the planet's spin is not walking).
-    {
+    // A full Player (the local one, or a session's on the server): the distance walked measured in its body's frame (the
+    // planet's spin is not walking; Player::velocity includes it), its touchdown speed from landingSpeed.
+    void UpdatePlayer(Scene& world, Walker& w, const Player& p, float dt, uint32_t who, bool isSelf, bool audible) {
         const bool grounded = p.grounded && !p.flyMode && !p.hovering;
         float moved = 0.0f;
         const Planetoid* body = p.nearest;
         if (body) {
             const DVec3 local = body->toLocalD(p.position);
-            if (self.known && self.body == body) {
-                const double d = (local - self.lastLocal).length();
+            if (w.known && w.body == body) {
+                const double d = (local - w.lastLocal).length();
                 moved = d < 5.0 ? (float)d : 0.0f; // (a teleport or respawn is not a step)
             }
-            self.lastLocal = local;
-            self.body = body;
-            self.known = true;
-        } else self.known = false;
+            w.lastLocal = local;
+            w.body = body;
+            w.known = true;
+        } else w.known = false;
         float landing = 0.0f;
         const bool swimming = p.inWater && !grounded;
-        const StepTracker::Event ev = self.t.update(grounded && !swimming, moved, p.landingSpeed, p.posture, landing);
+        const StepTracker::Event ev = w.t.update(grounded && !swimming, moved, p.landingSpeed, p.posture, landing);
         if (ev != StepTracker::None) {
             const bool running = moved / dt > p.walkSpeed * 1.25f;
-            Play(world, p.position, p.up, p.inWater, ev, landing, p.posture, running, 0, true);
+            Play(world, p.position, p.up, p.inWater, ev, landing, p.posture, running, who, isSelf, audible);
         }
     }
+    std::unordered_map<uint32_t, Walker> serverWalkers;
+}
 
-    // Remote players (multiplayer): their replicated state, already interpolated (#327).
-    for (const AvatarState& a : others) {
-        Walker& w = remote[a.session];
-        const Vector3 horiz = Vector3Subtract(a.velocity, Vector3Scale(a.up, Vector3DotProduct(a.velocity, a.up)));
-        const float speed = Vector3Length(horiz);
-        const float down = std::max(0.0f, -Vector3DotProduct(a.velocity, a.up));
-        float landing = 0.0f;
-        const bool grounded = a.grounded && !a.flying && !a.swimming;
-        const StepTracker::Event ev = w.t.update(grounded, speed * dt, down, a.posture, landing);
-        if (ev != StepTracker::None) Play(world, a.position, a.up, false, ev, landing, a.posture, speed > 7.5f, a.session, false);
-    }
-    if (remote.size() > others.size() + 8) { // players who left
+const std::vector<StepNoise>& Footsteps_RecentNoises() { return noises; }
+
+void Footsteps_UpdateServer(Scene& world, const std::vector<std::pair<uint32_t, const Player*>>& players, float dt) {
+    Prune();
+    if (dt <= 0.0f) return;
+    for (const auto& [session, p] : players)
+        if (p) UpdatePlayer(world, serverWalkers[session], *p, dt, session, false, false);
+    if (serverWalkers.size() > players.size() + 8) { // players who left
         std::unordered_map<uint32_t, Walker> kept;
-        for (const AvatarState& a : others) kept[a.session] = remote[a.session];
-        remote.swap(kept);
+        for (const auto& kv : players) kept[kv.first] = serverWalkers[kv.first];
+        serverWalkers.swap(kept);
     }
+}
+
+void Footsteps_Update(Scene& world, const Player& p, const std::vector<AvatarState>& others, float dt) {
+    Prune();
+    if (dt <= 0.0f) return;
+    UpdatePlayer(world, self, p, dt, 0, true, true);
+    // Remote players (multiplayer): their replicated state, already interpolated (#327).
+    UpdateWalkers(world, others, dt);
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS

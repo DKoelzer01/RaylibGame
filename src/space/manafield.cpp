@@ -203,8 +203,9 @@ void ManaField::nodesNear(Vector3 dir, float range, std::vector<ManaNode>& out) 
         const uint64_t key = ((uint64_t)face << 40) | ((uint64_t)ti << 20) | (uint64_t)tj;
         if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
         seen.push_back(key);
-        const float cosRange = cosf(std::min(range / p.radius, 3.14159f));
-        for (const ManaNode& node : tile(face, ti, tj)) if (Vector3DotProduct(node.dir, dir) >= cosRange) out.push_back(node);
+        // By the chord, not a cosine: cosf of a few metres over the radius rounds to 1 in float, and a node right here was lost.
+        const float chord = 2.0f * p.radius * sinf(0.5f * std::min(range / p.radius, 3.14159f)) + 0.01f;
+        for (const ManaNode& node : tile(face, ti, tj)) if (Vector3Distance(node.dir, dir) * p.radius <= chord) out.push_back(node);
     };
     visit(dir);
     const float ringStep = 0.4f * kTileSize;

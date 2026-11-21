@@ -5,9 +5,9 @@ name: PR checks
 
 on:
   pull_request:
-    branches: [m84-integration, develop, main]
+    branches: [m84-integration, develop, main, ladder]
   push:
-    branches: [m84-integration, develop]
+    branches: [m84-integration, develop, ladder]
   workflow_dispatch:
 
 permissions:

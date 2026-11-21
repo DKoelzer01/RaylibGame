@@ -170,6 +170,15 @@ fusion_reactor 1     = ev_hull 1, superconductor 8, advanced_circuit 2, platinum
 mass_driver 1        = ev_hull 1, superconductor 12, steel_plate 8, advanced_circuit 1
 cargo_capsule 1      = aluminium_plate 4, iron_plate 2
 fibre 2           = cactus 1
+# Research (#1193, #1030; the doc's pack recipes): packs by hand (slow: the assembler is the real route, later) and the labs.
+steam_pack 1         = iron_plate 1, bronze_gear 1, coal 1
+lv_pack 2            = steel_plate 1, copper_wire 2, vacuum_tube 1
+mv_pack 2            = basic_circuit 2, steel_plate 1, iron_crushed 3
+hv_pack 2            = aluminium_plate 2, gold_ingot 1, iron_purified 2
+rocket_pack 1        = titanium_alloy_plate 1, advanced_circuit 1, rocket_fuel 1
+lv_lab 1             = steel_plate 4, basic_circuit 2, glass 4
+mv_lab 1             = lv_lab 1, aluminium_plate 4, basic_circuit 4
+hv_lab 1             = mv_lab 1, titanium_plate 4, advanced_circuit 2
 # --- (#1269) Mechanical power: shafts, cogs and the machines they turn ---
 shaft 4            = any_planks 2
 cogwheel 1         = shaft 1, any_planks 1
@@ -180,3 +189,5 @@ stress_gauge 1     = shaft 1, any_planks 2, copper_ingot 1
 millstone 1        = any_stone 8, cogwheel 1, any_planks 4
 mechanical_saw 1   = iron_plate 2, shaft 1, any_planks 4
 mechanical_press 1 = iron_ingot 4, shaft 1, any_planks 4
+water_wheel 1      = any_planks 24, shaft 2
+windmill 1         = any_planks 12, rope 8, shaft 1
