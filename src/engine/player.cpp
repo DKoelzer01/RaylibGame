@@ -76,8 +76,17 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
         // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
         bool rotate = false;
         Planetoid* ref = flyFollow ? flyReference(world, rotate) : nullptr;
-        if (ref && ref->id == flyBodyId && rotate == flyRotate) {
-            if (rotate) {
+        // (F4, #1412) Carried in the frame recordFly() saw, even when the reference has changed since: crossing a body's
+        // altitude line (2 radii: spinning frame <-> centred) or into another body's SOI skipped the carry that frame and
+        // left the camera a frame of the body's motion behind (frames/fly-cross: 3.2 m at the moon's line). The next
+        // recordFly() takes the new frame.
+        if (ref && ref->id != flyBodyId && flyBodyId != 0) {
+            ref = nullptr;
+            for (auto& obj : world.objects)
+                if (auto* q = dynamic_cast<Planetoid*>(obj.get())) if (q->id == flyBodyId) { ref = q; break; }
+        }
+        if (ref && ref->id == flyBodyId) {
+            if (flyRotate) {
                 flyCarried = ref->toWorldD(flyLocal);
                 flyCarriedValid = true;
                 world.camera.position = (flyCarried - world.renderOrigin).toFloat();
