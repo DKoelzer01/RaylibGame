@@ -28,6 +28,28 @@ static std::vector<std::string> Split(const std::string& s, char sep) {
     return out;
 }
 
+bool ItemDB::loadExtra(const char* itemsPath) {
+    std::ifstream items(itemsPath);
+    if (!items) { LOG_ERROR("Items", "Cannot open %s\n", itemsPath); return false; }
+    std::string line;
+    while (std::getline(items, line)) {
+        line = Trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        const auto f = Split(line, '|');
+        if (f.size() < 5 || byId.count(f[0])) continue;
+        ItemDef d;
+        d.id = f[0];
+        d.name = f[1];
+        d.kind = f[2] == "tool" || f[2] == "1" ? ItemKind::Tool : f[2] == "block" ? ItemKind::Block : ItemKind::Resource;
+        const auto rgb = Split(f[3], ',');
+        if (rgb.size() == 3) d.color = { (unsigned char)atoi(rgb[0].c_str()), (unsigned char)atoi(rgb[1].c_str()), (unsigned char)atoi(rgb[2].c_str()), 255 };
+        d.description = f[4];
+        byId[d.id] = itemList.size();
+        itemList.push_back(d);
+    }
+    return true;
+}
+
 bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     itemList.clear();
     byId.clear();
@@ -556,5 +578,22 @@ TEST_F(InventoryTest, SavedCellsMoveUpFromNineWideSaves) {
     EXPECT_EQ(Inventory::SavedCell(3, 9), 3);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, 9), Inventory::kGrid);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, Inventory::kCols), Inventory::kOldGrid);
+}
+
+// (#1250) magic_items.txt adds its items after the table; items.txt's own stay as they were.
+TEST(ItemDBExtra, MagicItemsAddWithoutReplacing) {
+    ItemDB db;
+    ASSERT_TRUE(db.load("resources/data/items.txt", "resources/data/recipes.txt"));
+    const size_t before = db.items().size();
+    EXPECT_EQ(db.find("first_sight_page"), nullptr) << "not in the base game";
+    ASSERT_TRUE(db.loadExtra("resources/data/magic_items.txt"));
+    ASSERT_NE(db.find("first_sight_page"), nullptr);
+    ASSERT_NE(db.find("resonant_crystal"), nullptr);
+    EXPECT_EQ(db.items().size(), before + 2);
+    const std::string stoneName = db.find("stone")->name;
+    EXPECT_TRUE(db.loadExtra("resources/data/items.txt")) << "loading known ids again";
+    EXPECT_EQ(db.items().size(), before + 2) << "known ids are kept, not added twice";
+    EXPECT_EQ(db.find("stone")->name, stoneName);
+    EXPECT_FALSE(db.loadExtra("resources/data/no_such_file.txt"));
 }
 #endif
