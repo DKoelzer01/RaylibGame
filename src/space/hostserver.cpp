@@ -206,6 +206,7 @@ namespace {
                 // (#1087) the player's own suit, as single player applies it every frame: the starting suit has no jetpack
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
+                r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
                 if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
@@ -2449,6 +2450,7 @@ bool Host_SetCreative(const std::string& name, bool on) {
         if (it == remotes.end()) return false;
         it->second.creative = on;
         it->second.player.flyAllowed = on; // (#781: flying only for creative players, whom ops set)
+        it->second.player.doubleTapFly = on; // (#1562) as the client predicts it
         if (!on) it->second.player.flyMode = false;
         lastVitals = 0; // (its client hears at once, with the next vitals)
         return true;

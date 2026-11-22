@@ -231,6 +231,19 @@ namespace {
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / BreakHold()) : 0.0f; }
 float BuildTool_BreakHold() { return BreakHold(); }
 bool BuildTool_AimingPart() { return breakAiming; }
+
+int BuildTool_AutoOrient(int partType, Int3 target) {
+    const PartType type = (PartType)partType;
+    // The part's front - its local +z, where machines have their door - toward target (one of the 4 turns about up). (#1578) A
+    // ladder is a thin frame against its cell's -x side: its climbing face (local +x) goes toward target, not its edge.
+    const int col = type == PartType::Ladder ? 0 : 2;
+    int o = 0;
+    for (int k = 0; k < 4; ++k, o = RotateOrientation(o, 1)) {
+        const int* m = Orientation(o);
+        if (m[col] == target.x && m[3 + col] == target.y && m[6 + col] == target.z) return o;
+    }
+    return 0; // (straight up or down: no turn about up faces it)
+}
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
 
@@ -408,11 +421,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // turns toward the player - on a wall, out of the wall; on the ground or a floor, back along the view.
     auto faceToward = [&](Int3 target) {
         if (buildTool.orientManual) return;
-        int o = 0;
-        for (int k = 0; k < 4; ++k, o = RotateOrientation(o, 1)) {
-            const int* m = Orientation(o);
-            if (m[2] == target.x && m[5] == target.y && m[8] == target.z) break;
-        }
+        const int o = BuildTool_AutoOrient((int)aim.part.type, target);
         buildTool.orient = o;          // shown, and where a hand rotation starts from
         aim.part.orient = (uint8_t)o;
     };
@@ -425,17 +434,9 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
-        {   // A part bigger than a cell grows from its origin, which could reach back into the block
-            // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
-            std::vector<std::pair<Int3, CellShape>> fp;
-            Plot::Footprint(aim.part, fp);
-            int behind = 0;
-            for (const auto& c : fp) {
-                const int d = (c.first.x - hitCell.x) * hitFace.x + (c.first.y - hitCell.y) * hitFace.y + (c.first.z - hitCell.z) * hitFace.z;
-                behind = std::max(behind, 1 - d);
-            }
-            aim.part.origin = { aim.part.origin.x + hitFace.x * behind, aim.part.origin.y + hitFace.y * behind, aim.part.origin.z + hitFace.z * behind };
-        }
+        // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a
+        // cell off it: flush against the aimed face, every cell in front of it (#1574: it slid only outward).
+        aim.part.origin = Plot::FlushAgainstFace(aim.part, hitCell, hitFace);
         aim.removePlot = hitPlot;
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
@@ -859,3 +860,21 @@ void Machine_DrawHUD() {
 
 // The world is going (#902): the aim points into its bodies and plots.
 void BuildTool_ForgetWorld() { aim = {}; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+// #1578 (playtest: a ladder placed against a wall showed its edge): automatic facing turns a ladder's climbing face out of the
+// wall (its frame against the wall), and a machine's front (local +z) as before.
+TEST(BuildFacing, LadderClimbingFaceOutOfTheWallMachinesFrontAsBefore) {
+    for (const Int3 out : { Int3{ 1, 0, 0 }, Int3{ -1, 0, 0 }, Int3{ 0, 0, 1 }, Int3{ 0, 0, -1 } }) {
+        Part ladder{ PartType::Ladder, { 0, 0, 0 }, (uint8_t)BuildTool_AutoOrient((int)PartType::Ladder, out), 0 };
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(ladder, fp);
+        ASSERT_EQ(fp.size(), 1u);
+        const Vector3 n = fp[0].second.n[0]; // the frame's open side: the cell beyond its climbing face
+        EXPECT_EQ(Int3({ (int)lroundf(n.x), (int)lroundf(n.y), (int)lroundf(n.z) }), out) << "ladder, out of the wall (" << out.x << ", " << out.z << ")";
+        const int* m = Orientation(BuildTool_AutoOrient((int)PartType::Chest, out));
+        EXPECT_EQ(Int3({ m[2], m[5], m[8] }), out) << "a chest's front, out of the wall (" << out.x << ", " << out.z << ")";
+    }
+}
+#endif

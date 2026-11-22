@@ -62,7 +62,7 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     if (Combat1_On() && !sv.dead) {
         if (sv.status.interrupted) ++sv.shocks; // (#1216) seen by the melee wind-up before Status_Step clears it
         const float dot = Status_Step(sv.status, dt, s.player.inWater, sv.resist);
-        if (dot > 0.0f) {
+        if (dot > 0.0f && !sv.invulnerable) { // (#1561)
             sv.health -= dot;
             sv.lastHarm = sv.status.poison > 0.0f ? "poison" : sv.status.burn > 0.0f ? "burn" : "bleed"; // (#844 logs)
         }
@@ -107,7 +107,7 @@ DamageResult Combat_Damage(PlayerSession& s, const DamageEvent& e) { return Comb
 // (#337) any player's state: the local session's, or a remote player's on a server (its block from its held input).
 DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e) {
     DamageResult r;
-    if (sv.dead || e.amount <= 0.0f) return r;
+    if (sv.dead || sv.invulnerable || e.amount <= 0.0f) return r; // (#1561: creative takes no hits, no knockback)
     // (#1218) A dodge's invulnerability: the hit passes through.
     if (Combat4_On() && sv.dodgeInvuln > 0.0f && e.kind != DamageKind::Other) { r.dodged = true; return r; }
     float amount = e.amount, push = e.knockback;
