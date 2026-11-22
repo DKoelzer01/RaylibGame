@@ -750,11 +750,21 @@ bool NetProto_Test() {
             MsgMachineAction a{ 7, 4, 17, 8, "stone", 12, 31, 0 }, b; std::vector<uint8_t> s;
             check(RoundTrip(a, b, &s) && b.action == 8 && b.item == "stone" && b.count == 12 && b.slot == 31, "machine action: into a slot"); samples.push_back(s);
         }
+        { // (#1446 2b) a composed item into a chest slot carries its record
+            MsgMachineAction a{ 7, 4, 17, 8, "tool_pickaxe", 1, 3, 0, "head=bronze;handle=wood;binding=leather;q=100;w=12" }, b; std::vector<uint8_t> s;
+            check(RoundTrip(a, b, &s) && b.item == "tool_pickaxe" && b.data == a.data, "machine action: with data"); samples.push_back(s);
+            MsgMachineAction bad = a, rb; bad.data = "head=bronze;=x;;";
+            check(!RoundTrip(bad, rb), "machine action: a bad record is refused");
+        }
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
-        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.valid = true;
+        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.mode = 1; va2.view.pick = "lv_pack"; va2.view.valid = true;
         std::vector<uint8_t> s11;
         check(RoundTrip(va2, vb2, &s11) && vb2.view.status == MachineStatus::Working && vb2.view.progress == 40 && vb2.view.inSlots.size() == 2 && vb2.view.inSlots[0].first == "iron_ore"
-              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.valid, "machine view"); samples.push_back(s11);
+              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.mode == 1 && vb2.view.pick == "lv_pack" && vb2.view.valid, "machine view"); samples.push_back(s11);
+        { // (#1446 2b) a slot's record rides along, sparse
+            MsgMachineView a = va2, b; a.view.inSlots = { { "iron_ore", 3 }, { "tool_pickaxe", 1 }, { "", 0 } }; a.view.inData = { "", "head=bronze;w=4", "" }; std::vector<uint8_t> s;
+            check(RoundTrip(a, b, &s) && b.view.inData.size() == 3 && b.view.inData[0].empty() && b.view.inData[1] == "head=bronze;w=4" && b.view.inData[2].empty(), "machine view: slot data"); samples.push_back(s);
+        }
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
         MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 12.25f, 60001.5f, -3.75f, "grain_seeds" }, pb; std::vector<uint8_t> s13;
@@ -942,11 +952,12 @@ bool NetRead(NetReader& r, MsgCreativeGive& m) { m.item = r.str(64); m.count = (
 
 // ---- Machines on the server (#332) ----
 void NetWrite(NetWriter& w, const MsgMachineAction& m) {
-    Id(w, NetMsg::MachineAction); w.varu(m.body); w.u32(m.plot); w.vari(m.part); w.u8(m.action); w.str(m.item.substr(0, 64)); w.u16(m.count); w.u8(m.slot); w.u8(m.which);
+    Id(w, NetMsg::MachineAction); w.varu(m.body); w.u32(m.plot); w.vari(m.part); w.u8(m.action); w.str(m.item.substr(0, 64)); w.u16(m.count); w.u8(m.slot); w.u8(m.which); w.str(m.data.substr(0, 255)); // (#1446 2b) data
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
-    m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 10 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103 - widen with each new action, #1365)
+    m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8(); m.data = r.str(255);
+    if (!ItemData::Valid(m.data)) r.ok = false; // (#1446 2b)
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 12 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103; 11: an assembler's mode, 12: a recipe pick, #1271 - widen with each new action, #1365)
     m.part = (int32_t)part;
     return Done(r);
 }
@@ -971,7 +982,12 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
     w.str(v.input.substr(0, 128)); w.str(v.output.substr(0, 128));
     WriteSlots(w, v.inSlots); WriteSlots(w, v.outSlots);
     w.boolean(v.hasFuelSlot); w.str(v.fuelSlot.first.substr(0, 64)); w.vari(v.fuelSlot.second);
-    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.canLight); w.u8(v.fire); w.boolean(v.valid);
+    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.canLight); w.u8(v.fire); w.u8(v.mode); w.str(v.pick.substr(0, 64)); w.boolean(v.valid);
+    { // (#1446 2b) the input slots' own records, sparse: how many, then slot and record each
+        size_t n = 0; for (size_t i = 0; i < v.inData.size() && i < kMaxViewSlots; ++i) n += v.inData[i].empty() ? 0 : 1;
+        w.varu(n);
+        for (size_t i = 0; i < v.inData.size() && i < kMaxViewSlots; ++i) if (!v.inData[i].empty()) { w.varu(i); w.str(v.inData[i].substr(0, 255)); }
+    }
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -983,7 +999,13 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
     v.input = r.str(128); v.output = r.str(128);
     ReadSlots(r, v.inSlots); ReadSlots(r, v.outSlots);
     v.hasFuelSlot = r.boolean(); v.fuelSlot.first = r.str(64); v.fuelSlot.second = (int)r.vari();
-    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.canLight = r.boolean(); v.fire = r.u8(); v.valid = r.boolean();
+    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.canLight = r.boolean(); v.fire = r.u8(); v.mode = r.u8(); v.pick = r.str(64); v.valid = r.boolean();
+    { // (#1446 2b) the input slots' own records
+        v.inData.assign(v.inSlots.size(), std::string());
+        const uint64_t n = r.varu();
+        if (n > kMaxViewSlots) r.ok = false;
+        for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.inData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.inData[(size_t)i] = std::move(d); }
+    }
     return Done(r);
 }
 void NetWrite(NetWriter& w, const MsgMachineStates& m) {
@@ -1206,7 +1228,10 @@ TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
     MsgMachineAction fireBack;
     EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
     EXPECT_EQ(fireBack.action, 10);
-    MsgMachineAction past = fire; past.action = 11;
+    MsgMachineAction pick = fire; pick.action = 12; pick.item = "basic_circuit"; pick.count = 0; // (#1271 L6c) the largest: a recipe pick
+    EXPECT_TRUE(RoundTrip(pick, fireBack)) << "a recipe pick (action 12) reaches the server";
+    EXPECT_EQ(fireBack.action, 12);
+    MsgMachineAction past = fire; past.action = 13;
     EXPECT_FALSE(RoundTrip(past, fireBack));
     MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
     MsgEditRequest qBack;

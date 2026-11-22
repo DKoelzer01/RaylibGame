@@ -6,3 +6,18 @@ ore_scanner   | do explored 40
 # (#1271 L6b) the tier 2 milestone hands over the first lab and its pack (and the research begins); later labs come from nodes
 steam_lab     | tier 3
 steam_pack    | tier 3
+# (#1271 L6c) the LV assembler comes with tier 4: it makes the LV packs tier 4's research needs
+lv_assembler  | tier 4
+# (#1427 L7b) the tiered machines come with their tier
+electric_furnace_mv | tier 5
+macerator_mv  | tier 5
+ore_washer_mv | tier 5
+centrifuge_mv | tier 5
+mv_assembler  | tier 5
+electric_furnace_hv | tier 6
+macerator_hv  | tier 6
+ore_washer_hv | tier 6
+centrifuge_hv | tier 6
+hv_assembler  | tier 6
+electrolyzer_hv | tier 6
+chemical_reactor_hv | tier 6

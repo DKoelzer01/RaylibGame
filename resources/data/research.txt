@@ -29,7 +29,7 @@ node basic_circuits   | Basic circuits              | tier 4 | core            |
 node electric_furnace | Electric furnace            | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs electricity | unlocks machine:electric_furnace
 node lv_power         | LV hull and generator       | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs electricity | unlocks machine:generator
 node batteries        | Batteries                   | tier 4 | core            | units 30 | time 15 | packs steam_pack lv_pack | needs lv_power | unlocks machine:battery
-node basic_macerator  | Basic macerator x1.5        | tier 4 | branch efficiency | units 30 | time 15 | packs steam_pack lv_pack | needs lv_power | unlocks machine:macerator
+node basic_macerator  | Basic macerator x1.5        | tier 4 | core              | units 30 | time 15 | packs steam_pack lv_pack | needs lv_power | unlocks machine:macerator
 node rifles           | Rifles and repeaters        | tier 4 | branch combat   | units 30 | time 15 | packs steam_pack lv_pack | needs gunpowder | unlocks recipe:rifle
 node dynamite         | Dynamite (~5 m)             | tier 4 | branch mining   | units 30 | time 15 | packs steam_pack lv_pack | needs blasting_powder | unlocks recipe:dynamite
 node filters          | Filters and splitters       | tier 4 | branch logistics | units 30 | time 15 | packs steam_pack lv_pack | needs chutes | unlocks machine:splitter

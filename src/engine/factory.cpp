@@ -1,6 +1,7 @@
 #include "factory.h"
 #include "inventory.h"
 #include "plots.h"
+#include "machinetiers.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "utils/logger.h"
@@ -48,7 +49,8 @@ namespace {
 
 // (#1102) centi: hundredths of one more item (0-99), the player inventory's resolution: chests keep fractions (0.4 dirt);
 // a slot holding only a fraction is not empty. Machines craft and conveyors move whole items only.
-struct Stack { int item = -1, count = 0, centi = 0; };
+struct Stack { int item = -1, count = 0, centi = 0; std::string data; }; // (#1446 2b) data: one item's own record (a chest holds it, one a slot; automation never moves it)
+inline bool Plain(const Stack& s) { return s.data.empty(); }
 inline bool Empty(const Stack& s) { return s.count <= 0 && s.centi <= 0; }
 // #580: results taken from a heating machine's output carry this bit on their item index: they reach the inventory hot.
 constexpr int kHotItem = 1 << 30;
@@ -69,6 +71,7 @@ struct Recipe {
     PartType machine;
     std::vector<Stack> in, out;
     int ticks = 0, eu = 0;   // generators: ticks of burn per fuel item, EU per tick produced
+    int tier = -1;           // (#1427 L7a) its voltage tier (machine_recipes.txt's sixth column; else its machine's first)
 };
 
 struct Tables {
@@ -212,6 +215,7 @@ void LoadRecipes() {
         parseStacks(cols[2], r.in);
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
+        if (cols.size() >= 6 && !cols[5].empty()) r.tier = MachineTiers_ByName(cols[5]); // (#1427 L7a)
         tables.recipes.push_back(r);
     }
     if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
@@ -228,6 +232,9 @@ void LoadRecipes() {
             tables.recipes.push_back(r);
         }
     }
+    // (#1427 L7a) A recipe with no tier is its machine's first: a tiered family's first tier, else its machines.txt voltage's.
+    for (Recipe& r : tables.recipes)
+        if (r.tier < 0) r.tier = MachineTiers_Tiered(r.machine) ? MachineTiers_First(r.machine) : MachineTiers_ForVolts(Def(r.machine).volts);
     // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
     // through every recipe of every machine, each tick).
     for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
@@ -273,10 +280,12 @@ struct Machine {
     Stack fuel;                             // fuel-burning machines and generators: their own fuel slot (#194)
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
     uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
+    uint8_t mode = 0;                       // (#1271 L6c) an assembler: 0 assembles, 1 disassembles (#1427; until then it idles)
+    int pick = -1;                          // (#1271 L6c) the recipe output a player chose for a machine of several recipes (-1: any)
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
-    int tier = kTierLV;
+    int tier = 0;                           // (#1427 L7a) its voltage tier (machine_tiers.txt: 0 LV, 1 MV ...; -1 under LV), from its part
     int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
@@ -286,6 +295,12 @@ struct Machine {
     int bellows = -1;                       // (#1271 L2) a bloomery or blast furnace: the bellows touching it (blowing while its shaft turns), else -1
     int strike = 0;                         // (#1271 L2) a manual machine (the anvil): ticks of work a player's strikes have put in, not yet used
 };
+// (#1427 L7a) A recipe in a machine: overclocked by the tiers it is under the machine (machine_tiers.txt), its time down
+// and its EU a tick up; and the voltage a machine takes (a tiered variant's, else machines.txt's).
+static int StepsOf(const Machine& m, const Recipe& r) { return std::max(0, MachineTiers_Steps(m.tier, r.tier)); }
+static int TicksOf(const Machine& m, const Recipe& r) { return MachineTiers_Ticks(r.ticks, StepsOf(m, r)); }
+static int EuOf(const Machine& m, const Recipe& r) { return MachineTiers_Eu(r.eu, StepsOf(m, r)); }
+static int VoltsOf(const Machine& m) { const int v = Def(m.type).volts; return MachineTiers_Tiered(m.type) ? std::max(v, MachineTiers_Volts(m.tier)) : v; }
 
 struct Net {
     std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
@@ -366,7 +381,7 @@ void RotateNearBuckets(PlotSim& ps, long long t) {
 // craft nearly done before the window began counted whole, and the summary made more than the full sim.
 int CapOf(const Machine& m, int r, int n, int r0, int p0, long long window) {
     if (r < 0 || r >= (int)tables.recipes.size() || window <= 0) return 0;
-    const long long R = std::max(1, tables.recipes[r].ticks);
+    const long long R = std::max(1, TicksOf(m, tables.recipes[r])); // (#1427 L7a) overclocked, as its progress counts
     long long work = (long long)n * R + (m.recipe == r ? m.progress : 0) - (r0 == r ? p0 : 0);
     if (work < 0) work = 0;
     return (int)(work * kCapTicks / (R * window));
@@ -461,11 +476,12 @@ struct LayoutMsg {
     std::vector<std::pair<int, PartType>> machines;      // part index, type
     std::vector<std::vector<Int3>> machineCells;
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
+    std::vector<int> machineTier;                          // (#1427 L7a) per machine: its voltage tier (a tiered machine's variant)
     std::vector<Int3> conveyors, cables;
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
     std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
 };
-struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; int centi = 0; }; // (#1102) centi: a fraction (hundredths) more, for a chest // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
+struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; int centi = 0; std::string data; }; // (#1446 2b) data: one item's record (kinds 0, 9: count 1) // (#1102) centi: a fraction (hundredths) more, for a chest // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
@@ -483,10 +499,10 @@ bool resetRequested = false;
 std::vector<int> lockedQueue; bool lockedQueued = false;
 std::unordered_set<int> lockedSim;
 bool RecipeLocked(const Recipe& r) { if (lockedSim.empty()) return false; for (const Stack& s : r.out) if (lockedSim.count(s.item)) return true; return false; }
-struct ItemOut { int item = 0, count = 0; uint32_t to = 0; int centi = 0; }; // (#1102) centi: a fraction more (from a chest) // (#332) to: the player it goes to (0: this game's own inventory)
+struct ItemOut { int item = 0, count = 0; uint32_t to = 0; int centi = 0; std::string data; }; // (#1446 2b) data: one item's record (count 1) // (#1102) centi: a fraction more (from a chest) // (#332) to: the player it goes to (0: this game's own inventory)
 std::vector<ItemOut> results;     // sim -> main: (item, count) back to the inventory
 std::vector<ItemOut> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
-void (*cursorSink)(const std::string&, int, float) = nullptr;
+void (*cursorSink)(const std::string&, int, float, const std::string&) = nullptr; // (#1446) data: one item's record
 std::vector<ItemOut> refunds;     // sim thread: contents of removed machines (to results)
 
 std::mutex viewMutex;                         // snapshot for the HUD
@@ -566,7 +582,7 @@ PlotSim* FindPlot(uint64_t body, uint32_t plot) {
 int AddItems(Stack* s, int n, int item, int count) {
     const int cap = tables.cap(item);
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
+        if (s[i].item == item && Plain(s[i]) && s[i].count < cap) { const int k = std::min(count, cap - s[i].count); s[i].count += k; count -= k; }
     for (int i = 0; i < n && count > 0; ++i)
         if (Empty(s[i])) { s[i] = Stack{}; s[i].item = item; const int k = std::min(count, cap); s[i].count = k; count -= k; }
     return count;
@@ -577,7 +593,7 @@ int AddCenti(Stack* s, int n, int item, int centi) {
     if (centi <= 0) return 0;
     const int cap = tables.cap(item);
     for (int i = 0; i < n; ++i)
-        if (s[i].item == item && !Empty(s[i]) && s[i].count < cap) {
+        if (s[i].item == item && Plain(s[i]) && !Empty(s[i]) && s[i].count < cap) {
             s[i].centi += centi;
             if (s[i].centi >= 100) { s[i].centi -= 100; ++s[i].count; }
             return 0;
@@ -586,11 +602,11 @@ int AddCenti(Stack* s, int n, int item, int centi) {
         if (Empty(s[i])) { s[i] = Stack{}; s[i].item = item; s[i].centi = centi; return 0; }
     return centi;
 }
-bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (Empty(s[i]) || (s[i].item == item && s[i].count < tables.cap(item))) return true; return false; }
-int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item) c += s[i].count; return c; }
+bool RoomFor(const Stack* s, int n, int item) { for (int i = 0; i < n; ++i) if (Empty(s[i]) || (s[i].item == item && Plain(s[i]) && s[i].count < tables.cap(item))) return true; return false; }
+int CountItems(const Stack* s, int n, int item) { int c = 0; for (int i = 0; i < n; ++i) if (s[i].item == item && Plain(s[i])) c += s[i].count; return c; }
 void TakeItems(Stack* s, int n, int item, int count) {
     for (int i = 0; i < n && count > 0; ++i)
-        if (s[i].item == item) { const int k = std::min(count, s[i].count); s[i].count -= k; count -= k; if (Empty(s[i])) s[i] = Stack{}; } // (#1102: a fraction keeps its item)
+        if (s[i].item == item && Plain(s[i])) { const int k = std::min(count, s[i].count); s[i].count -= k; count -= k; if (Empty(s[i])) s[i] = Stack{}; } // (#1102: a fraction keeps its item)
 }
 int InSlots(const Machine& m) { return m.type == PartType::Chest ? kChestSlots : kSlots; }
 
@@ -790,6 +806,7 @@ void ApplyLayout(const LayoutMsg& L) {
         m.dirty = true; m.asleep = false; // (#1214) a new layout: everything looks again
         m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
+        m.tier = i < L.machineTier.size() ? L.machineTier[i] : MachineTiers_PartTier(type, 0, Def(type).volts); // (#1427 L7a)
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -798,7 +815,15 @@ void ApplyLayout(const LayoutMsg& L) {
             auto num = [&]() { return k < s.size() ? atoi(s[k++].c_str()) : 0; };
             m.recipe = num(); m.progress = num(); m.energy = num(); m.fuelEU = num();
             const int nin = num();
-            for (int j = 0; j < nin && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const double a = atof(s[k + 1].c_str()); k += 2; const int c = (int)a, centi = (int)lround((a - c) * 100.0); AddItems(m.in.data(), InSlots(m), item, c); if (centi > 0) AddCenti(m.in.data(), InSlots(m), item, std::min(centi, 99)); } // (#1102) "2.50": a fraction
+            for (int j = 0; j < nin && k + 1 < s.size(); ++j) {
+                const std::string tok = s[k]; const size_t bar = tok.find('|'); // (#1446 2b) "name|record": one item with its own data
+                const int item = tables.item(bar == std::string::npos ? tok : tok.substr(0, bar)); const double a = atof(s[k + 1].c_str()); k += 2;
+                if (bar != std::string::npos) {
+                    for (int q = 0; q < InSlots(m); ++q) if (Empty(m.in[q])) { m.in[q] = Stack{}; m.in[q].item = item; m.in[q].count = 1; m.in[q].data = tok.substr(bar + 1); break; }
+                    continue;
+                }
+                const int c = (int)a, centi = (int)lround((a - c) * 100.0); AddItems(m.in.data(), InSlots(m), item, c); if (centi > 0) AddCenti(m.in.data(), InSlots(m), item, std::min(centi, 99)); // (#1102) "2.50": a fraction
+            }
             const int nout = num();
             for (int j = 0; j < nout && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.out, kSlots, item, c); }
             // Then tagged extras: "f item count" (the fuel slot), "w litres", "h heat".
@@ -808,6 +833,8 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "w") m.water = num();
                 else if (tag == "h") m.heat = num();
                 else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
+                else if (tag == "mode") m.mode = (uint8_t)std::clamp(num(), 0, 1); // (#1271 L6c)
+                else if (tag == "pick" && k < s.size()) m.pick = tables.item(s[k++]); // (#1271 L6c) a player's recipe choice
                 else if (tag == "sum") ps->loadedSummary = true; // (#1302) it was in the summary sim: its caps follow
                 else if (tag == "cap" && k + 2 < s.size()) { // a cap, kept only if that recipe is still this machine's with that output
                     const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int c = atoi(s[k + 2].c_str()); k += 3;
@@ -820,7 +847,7 @@ void ApplyLayout(const LayoutMsg& L) {
             if (HasFuelSlot(m.type))
                 for (int j = 0; j < InSlots(m); ++j) {
                     Stack& st = m.in[j];
-                    if (st.count <= 0 || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
+                    if (st.count <= 0 || !Plain(st) || !IsFuel(Def(m.type), st.item) || RecipeWants(m.type, st.item)) continue;
                     if (m.fuel.count > 0 && m.fuel.item != st.item) continue;
                     const int k = std::min(st.count, tables.cap(st.item) - m.fuel.count);
                     m.fuel.item = st.item; m.fuel.count += k; st.count -= k;
@@ -910,10 +937,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 batteryAvail += std::min(m.energy, kBatteryRate * dt);
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
             } else if (def.power == Power::Eu) {
-                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                if (m.recipe >= 0) demand += (long long)tables.recipes[m.recipe].eu * dt;
+                if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (m.recipe >= 0) demand += (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
             } else if (def.power == Power::Motor) { // (#1271 L3) a motor draws while its shaft network has work
-                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (ps.rot.NetHasLoad(m.part)) demand += (long long)Rotation::kMotorEuPerTick * dt;
             }
         }
@@ -942,11 +969,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Eu && m.recipe >= 0 && def.volts >= net.voltage) {
-                const long long need = (long long)tables.recipes[m.recipe].eu * dt;
+            if (def.power == Power::Eu && m.recipe >= 0 && VoltsOf(m) >= net.voltage) {
+                const long long need = (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
-            } else if (def.power == Power::Motor && def.volts >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
+            } else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
                 const long long need = (long long)Rotation::kMotorEuPerTick * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received);
@@ -996,9 +1023,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
+        if (m.mode == 1) { m.status = MachineStatus::Idle; continue; } // (#1271 L6c) set to disassemble: #1427 brings it
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
-                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
+                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && MachineTiers_Steps(m.tier, r.tier) >= 0 && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
@@ -1024,20 +1052,21 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (m.recipe < 0) { m.status = MachineStatus::Idle; m.asleep = true; continue; } // asleep until items arrive (#1214: really now)
         }
         const Recipe& r = tables.recipes[m.recipe];
-        if (m.progress < r.ticks) {
+        const int rTicks = TicksOf(m, r), rEu = EuOf(m, r); // (#1427 L7a) overclocked under its machine's tier
+        if (m.progress < rTicks) {
             int ticks = 0;
             if (def.power == Power::Eu) {
                 if (m.powerNet < 0) { m.status = MachineStatus::NoPower; continue; }
-                if (def.volts < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (VoltsOf(m) < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 // (#1266) the EU under one tick's worth waits for the next step (an overloaded net slows its machines, it does not
                 // stall them: a 5-of-8 EU share made 0 ticks every tick near the player)
-                if (r.eu > 0) { const int eu = m.received + m.euCarry; ticks = eu / r.eu; m.euCarry = eu % r.eu; } else ticks = dt;
+                if (rEu > 0) { const int eu = m.received + m.euCarry; ticks = eu / rEu; m.euCarry = eu % rEu; } else ticks = dt;
             } else if (def.power == Power::Manual) { // (#1271 L2) as far as the player's strikes go
-                ticks = std::min(m.strike, r.ticks - m.progress);
+                ticks = std::min(m.strike, rTicks - m.progress);
                 m.strike -= ticks;
                 if (ticks == 0) { m.status = MachineStatus::Idle; continue; }
             } else if (def.power == Power::Fuel) {
-                ticks = BurnFuel(m, def, std::min(dt + BellowsTicks(ps, m, dt), r.ticks - m.progress)); // (#1271 L2) bellows: up to twice as fast
+                ticks = BurnFuel(m, def, std::min(dt + BellowsTicks(ps, m, dt), rTicks - m.progress)); // (#1271 L2) bellows: up to twice as fast
             } else if (def.power == Power::Rotation) { // (#1269) at the shaft's speed: permille of a tick per tick, carried over
                 const int rate = ps.rot.ProgressPermille(m.part), acc = m.rotAcc + rate * dt;
                 ticks = acc / 1000; m.rotAcc = acc % 1000;
@@ -1045,11 +1074,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             } else {
                 ticks = dt + BellowsTicks(ps, m, dt); // runs by itself (coke oven, bloomery; #1271 L2: with bellows up to twice as fast)
             }
-            m.progress = std::min(r.ticks, m.progress + ticks);
+            m.progress = std::min(rTicks, m.progress + ticks);
             m.status = ticks > 0 ? MachineStatus::Working : def.power == Power::Fuel ? MachineStatus::NoFuel : MachineStatus::NoPower;
             if (ticks > 0) ++active;
         }
-        if (m.progress >= r.ticks) {
+        if (m.progress >= rTicks) {
             // Finish only if every output fits.
             Stack trial[kSlots];
             std::copy(m.out, m.out + kSlots, trial);
@@ -1240,13 +1269,13 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         for (int mi = 0; mi < nm; ++mi) {
             const Machine& m = ps.machines[mi];
             if (m.type == PartType::Chest) {
-                for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) chestStock[{ netOf(mi), m.in[i].item }] += m.in[i].count;
+                for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0 && Plain(m.in[i])) chestStock[{ netOf(mi), m.in[i].item }] += m.in[i].count; // (#1446) never an item with data
                 continue;
             }
-            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0) own[mi][m.in[i].item] += m.in[i].count;
+            for (int i = 0; i < InSlots(m); ++i) if (m.in[i].count > 0 && Plain(m.in[i])) own[mi][m.in[i].item] += m.in[i].count;
             if (m.fuel.count > 0) own[mi][m.fuel.item] += m.fuel.count;
         }
-        auto roomFor = [&](const Stack* s, int n, int item) { long long r = 0; for (int i = 0; i < n; ++i) r += s[i].count <= 0 ? tables.cap(item) : s[i].item == item ? std::max(0, tables.cap(item) - s[i].count) : 0; return r; };
+        auto roomFor = [&](const Stack* s, int n, int item) { long long r = 0; for (int i = 0; i < n; ++i) r += s[i].count <= 0 ? tables.cap(item) : s[i].item == item && Plain(s[i]) ? std::max(0, tables.cap(item) - s[i].count) : 0; return r; };
         auto chestRoomFor = [&](int net, int item) {
             auto key = std::make_pair(net, item);
             auto it = chestRoom.find(key);
@@ -1274,13 +1303,13 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             for (const auto& [recipe, cap] : m.capPerWindow) {
                 if (cap <= 0) continue;
                 const Recipe& r = tables.recipes[recipe];
-                SumNode n{ mi, recipe, std::min<long long>((long long)cap * kFix / kCapTicks, kFix / std::max(1, r.ticks)) };
+                SumNode n{ mi, recipe, std::min<long long>((long long)cap * kFix / kCapTicks, kFix / std::max(1, TicksOf(m, r))) };
                 if (def.power == Power::Fuel) {
                     n.fuelItem = m.fuel.count > 0 ? m.fuel.item : -1;
                     for (int f : def.fuels) if (n.fuelItem < 0 && chestStock.count({ netOf(mi), f })) n.fuelItem = f;
                     if (n.fuelItem < 0) continue;
                 }
-                if (def.power == Power::Eu && (m.powerNet < 0 || def.volts < ps.powerNets[m.powerNet].voltage)) continue;
+                if (def.power == Power::Eu && (m.powerNet < 0 || VoltsOf(m) < ps.powerNets[m.powerNet].voltage)) continue;
                 nodes.push_back(n);
             }
         }
@@ -1299,7 +1328,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             // Power: a net's consumers share its generators' supply (the TickPlot rule: everyone slows equally).
             for (size_t pn = 0; pn < ps.powerNets.size(); ++pn) {
                 long long demand = 0, supply = 0;
-                for (const SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) { const Recipe& r = tables.recipes[n.recipe]; demand += n.rate * r.eu * r.ticks; } // (EU a tick while it crafts x the ticks of a craft)
+                for (const SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) { const Recipe& r = tables.recipes[n.recipe]; demand += n.rate * EuOf(ps.machines[n.mi], r) * TicksOf(ps.machines[n.mi], r); } // (EU a tick while it crafts x the ticks of a craft)
                 for (const SumGen& g : gens) if (ps.machines[g.mi].powerNet == (int)pn) supply += Scaled(g.eu, g.scale, kFix);
                 if (demand > supply) for (SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) scaleNode(n, supply, demand);
                 const long long used = std::min(demand, supply);
@@ -1413,7 +1442,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         for (size_t g = 0; g < gens.size(); ++g) {
             long long eu = 0, euAll = 0, supply = 0;
             const int pn = ps.machines[gens[g].mi].powerNet;
-            for (size_t k = 0; k < nodes.size(); ++k) if (Def(ps.machines[nodes[k].mi].type).power == Power::Eu && ps.machines[nodes[k].mi].powerNet == pn) { const Recipe& r = tables.recipes[nodes[k].recipe]; euAll += crafts[k] * r.eu * r.ticks; }
+            for (size_t k = 0; k < nodes.size(); ++k) if (Def(ps.machines[nodes[k].mi].type).power == Power::Eu && ps.machines[nodes[k].mi].powerNet == pn) { const Recipe& r = tables.recipes[nodes[k].recipe]; euAll += crafts[k] * EuOf(ps.machines[nodes[k].mi], r) * TicksOf(ps.machines[nodes[k].mi], r); }
             for (const SumGen& o : gens) if (ps.machines[o.mi].powerNet == pn) supply += Scaled(o.eu, o.scale, kFix);
             eu = Scaled(euAll, Scaled(gens[g].eu, gens[g].scale, kFix), std::max(1LL, supply));
             const long long per = (long long)std::max(1, Def(ps.machines[gens[g].mi].type).euOut) * fuelOf(gens[g].fuelItem);
@@ -1505,13 +1534,15 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     const Machine& m = ps.machines[it->second];
     v.valid = true;
     v.status = m.status;
-    if (m.recipe >= 0) { v.progress = m.progress; v.duration = tables.recipes[m.recipe].ticks; }
+    if (m.recipe >= 0) { v.progress = m.progress; v.duration = TicksOf(m, tables.recipes[m.recipe]); }
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
     v.hotOutputs = HeatsItems(m.type);
     v.canLight = m.type == PartType::Campfire;
     v.fire = m.fire;
+    v.mode = m.mode; // (#1271 L6c)
+    v.pick = m.pick >= 0 ? tables.name(m.pick) : std::string(); // (#1271 L6c)
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -1527,7 +1558,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     };
     v.input = list(m.in.data(), InSlots(m));
     v.output = list(m.out, kSlots);
-    for (int i = 0; i < InSlots(m); ++i) { v.inSlots.push_back({ !Empty(m.in[i]) ? tables.name(m.in[i].item) : std::string(), m.in[i].count }); v.inCenti.push_back(m.in[i].centi); } // (#1102)
+    for (int i = 0; i < InSlots(m); ++i) { v.inSlots.push_back({ !Empty(m.in[i]) ? tables.name(m.in[i].item) : std::string(), m.in[i].count }); v.inCenti.push_back(m.in[i].centi); v.inData.push_back(m.in[i].data); } // (#1102; #1446 data)
     if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
     if (Def(m.type).power == Power::Rotation) { // (#1269)
         v.rotation = true;
@@ -1595,6 +1626,7 @@ void SimLoop() {
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
+                if (im.kind == 14) { if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; if (im.count < 0) { sm.pick = im.item; if (sm.recipe >= 0 && sm.pick >= 0 && (tables.recipes[sm.recipe].out.empty() || tables.recipes[sm.recipe].out[0].item != sm.pick)) { sm.recipe = -1; sm.progress = 0; } } else { sm.mode = (uint8_t)std::clamp(im.count, 0, 1); sm.recipe = -1; sm.progress = 0; } sm.dirty = true; } continue; } // (#1271 L6c) an assembler's mode (count 0/1), or a machine's recipe pick (count -1: item, -1 any)
                 if (im.kind == 13) { // (#1271 L2) a strike on an anvil: its work, up to two strikes ahead
                     if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; sm.strike = std::min(sm.strike + kStrikeTicks, 2 * kStrikeTicks); sm.dirty = true; }
                     continue;
@@ -1610,11 +1642,28 @@ void SimLoop() {
                 Machine& m = p->machines[it->second];
                 m.dirty = true; // (#1214) any command on a machine wakes it and its network
                 if (!p->nearPlayer && im.kind != 5 && im.kind != 7) BeginMeasuring(*p, tickCount.load()); // (#1261) a player's insert or take while far (not pipe flows: pumps, tanks)
-                if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
+                if (!im.data.empty() && (im.kind == 0 || im.kind == 2 || im.kind == 6 || im.kind == 9)) { // (#1446 2b) one item with its record
+                    bool placed = false;
+                    Stack* s = nullptr; int n = 0;
+                    if (m.type == PartType::Chest) { s = m.in.data(); n = kChestSlots; }
+                    // (#1271 L7c hook) an assembler set to disassemble takes a composed item into an input slot, record intact;
+                    // what it gives back is L7c's (Progression). Every other machine and automation path refuses items with data.
+                    else if (m.mode == 1 && im.kind != 6) { s = m.in.data(); n = InSlots(m); }
+                    if (s) {
+                        const int want = im.kind == 9 && m.type == PartType::Chest ? im.amount : -1;
+                        for (int i = 0; i < n && !placed; ++i) {
+                            if (want >= 0 && i != want) continue;
+                            if (!Empty(s[i])) continue;
+                            s[i] = Stack{}; s[i].item = im.item; s[i].count = 1; s[i].data = im.data; placed = true;
+                        }
+                    }
+                    if (placed) p->stats.items[im.item].handIn.add(1);
+                    else if (im.kind != 2) { ItemOut o{ im.item, 1, im.to }; o.data = im.data; back.push_back(o); }
+                } else if (im.kind == 9 && m.type == PartType::Chest) { // (#862) into one storage slot: empty, or the same item up to its cap
                     int left = im.count, leftCenti = im.centi;
                     if (im.amount >= 0 && im.amount < kChestSlots && im.item >= 0) {
                         Stack& s = m.in[im.amount];
-                        if (Empty(s) || s.item == im.item) {
+                        if (Empty(s) || (s.item == im.item && Plain(s))) {
                             if (Empty(s)) { s = Stack{}; s.item = im.item; }
                             const int k = std::min(left, tables.cap(im.item) - std::max(0, s.count));
                             if (k > 0) { s.count += k; left -= k; }
@@ -1651,14 +1700,14 @@ void SimLoop() {
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // fresh out of a furnace (#580)
-                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); back.push_back({ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }); s[im.item] = Stack{}; } // (#1254) never fluid
+                    if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { p->stats.items[s[im.item].item].handOut.add(s[im.item].count); ItemOut o{ s[im.item].item | hot, s[im.item].count, im.to, s[im.item].centi }; o.data = s[im.item].data; back.push_back(o); s[im.item] = Stack{}; } // (#1254) never fluid; (#1446) the record goes with it
                 } else if (im.kind == 8) { // part of a slot onto the cursor (#192)
                     Stack* s = im.count == 2 ? &m.fuel : im.count ? m.out : m.in.data();
                     const int n = im.count == 2 ? 1 : im.count ? kSlots : InSlots(m);
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0;
                     if (im.item >= 0 && im.item < n && !Empty(s[im.item]) && !tables.fluid(s[im.item].item)) { // (#1254) never fluid
                         const int k = im.amount > 0 ? std::min(im.amount, s[im.item].count) : s[im.item].count;
-                        if (k > 0) toCursor.push_back({ s[im.item].item | hot, k, im.to });
+                        if (k > 0) { ItemOut o{ s[im.item].item | hot, k, im.to }; o.data = s[im.item].data; toCursor.push_back(o); } // (#1446) with its record
                         p->stats.items[s[im.item].item].handOut.add(k); // (#1199)
                         s[im.item].count -= k;
                         // (#1102) the whole slot taken: its fraction goes to the inventory (the cursor holds whole items from here)
@@ -1669,7 +1718,7 @@ void SimLoop() {
                     Stack* s = m.type == PartType::Chest ? m.in.data() : m.out;
                     const int n = m.type == PartType::Chest ? kChestSlots : kSlots;
                     const int hot = s == m.out && HeatsItems(m.type) ? kHotItem : 0; // #580
-                    for (int i = 0; i < n; ++i) if (!Empty(s[i]) && !tables.fluid(s[i].item)) { p->stats.items[s[i].item].handOut.add(s[i].count); back.push_back({ s[i].item | hot, s[i].count, im.to, s[i].centi }); s[i] = Stack{}; }
+                    for (int i = 0; i < n; ++i) if (!Empty(s[i]) && !tables.fluid(s[i].item)) { p->stats.items[s[i].item].handOut.add(s[i].count); ItemOut o{ s[i].item | hot, s[i].count, im.to, s[i].centi }; o.data = s[i].data; back.push_back(o); s[i] = Stack{}; } // (#1446) with its record
                 }
             }
             const auto t1 = clk::now(); // (#1207) commands done
@@ -1761,7 +1810,7 @@ void SimLoop() {
                         for (const Machine& m : ps.machines) {
                             if (m.type != PartType::Chest) continue;
                             auto& v = chestView[std::make_tuple(ps.body, ps.plot, m.part)];
-                            for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0) v.push_back({ m.in[i].item, m.in[i].count });
+                            for (int i = 0; i < kChestSlots; ++i) if (m.in[i].count > 0 && Plain(m.in[i])) v.push_back({ m.in[i].item, m.in[i].count }); // (#1446) crafting from chests never takes an item with data
                         }
                         pub.chests = chests;
                         pub.chestHash = h;
@@ -1857,6 +1906,7 @@ void Factory::Sync(Scene& world) {
                         if ((part.type >= PartType::LvLab && part.type <= PartType::HvLab) || part.type == PartType::SteamLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         if (part.type == PartType::ManaSiphon) variant = "jar_none"; // (#1252) idle until the game finds the ley node it stands on
                         L.machineVariant.push_back(variant);
+                        L.machineTier.push_back(MachineTiers_PartTier(part.type, part.material, Def(part.type).volts)); // (#1427 L7a) its variant
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
                     if (RotationPartMsg rm; RotationPlot_Describe(part, (int)i, rm)) L.rotation.push_back(std::move(rm)); // (#1269)
@@ -1887,8 +1937,8 @@ void Factory::Sync(Scene& world) {
         cur.swap(cursorResults);
     }
     // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
-    for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; const double amount = r.count + r.centi / 100.0; /* (#1102) */ if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, amount, h); else inventory.addAmount(id, amount, h); } // (#332) a server: to that player
-    for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h); else if (cursorSink) cursorSink(id, r.count, h); else inventory.addAmount(id, r.count, h); }
+    for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; const double amount = r.count + r.centi / 100.0; /* (#1102) */ if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, amount, h, r.data); else if (!r.data.empty()) inventory.addInstance(id, r.data, h); else inventory.addAmount(id, amount, h); } // (#332) a server: to that player
+    for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h, r.data); else if (cursorSink) cursorSink(id, r.count, h, r.data); else if (!r.data.empty()) inventory.addInstance(id, r.data, h); else inventory.addAmount(id, r.count, h); }
 }
 
 void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot, int which, int count, uint32_t to) {
@@ -1897,13 +1947,13 @@ void Factory::TakeSlotToCursor(uint64_t body, uint32_t plot, int part, int slot,
     m.amount = count; m.to = to; // (#854) a server: that player's inventory (its client puts it on its cursor)
     itemQueue.push_back(m);
 }
-void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to, int centi) {
+void Factory::InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, uint32_t to, int centi, const std::string& data) {
     std::lock_guard<std::mutex> q(queueMutex);
     ItemMsg m{ 9, body, plot, part, tables.item(item), count };
-    m.amount = slot; m.to = to; m.centi = std::clamp(centi, 0, 99); // (#1102)
+    m.amount = slot; m.to = to; m.centi = data.empty() ? std::clamp(centi, 0, 99) : 0; m.data = data; if (!data.empty()) m.count = 1; // (#1102; #1446 data: one item)
     itemQueue.push_back(m);
 }
-void Factory::SetCursorSink(void (*sink)(const std::string&, int, float)) { cursorSink = sink; }
+void Factory::SetCursorSink(void (*sink)(const std::string&, int, float, const std::string&)) { cursorSink = sink; }
 
 MachineView Factory::View(uint64_t body, uint32_t plot, int part) {
     std::lock_guard<std::mutex> v(viewMutex);
@@ -1996,9 +2046,9 @@ FactoryStatsView Factory::StatsView(StatWindow window, bool onePlot, uint64_t bo
     return out;
 }
 
-void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to, int centi) {
+void Factory::Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, uint32_t to, int centi, const std::string& data) {
     std::lock_guard<std::mutex> q(queueMutex);
-    ItemMsg m{ 0, body, plot, part, tables.item(item), count }; m.to = to; m.centi = std::clamp(centi, 0, 99); itemQueue.push_back(m); // (#1102)
+    ItemMsg m{ 0, body, plot, part, tables.item(item), data.empty() ? count : 1 }; m.to = to; m.centi = data.empty() ? std::clamp(centi, 0, 99) : 0; m.data = data; itemQueue.push_back(m); // (#1102; #1446 data: one item)
 }
 void Factory::Extract(uint64_t body, uint32_t plot, int part, uint32_t to) {
     std::lock_guard<std::mutex> q(queueMutex);
@@ -2121,6 +2171,14 @@ void Factory::SetLockedOutputs(const std::vector<std::string>& outputs) { // (#1
     std::lock_guard<std::mutex> q(queueMutex);
     lockedQueue = std::move(ids); lockedQueued = true;
 }
+void Factory::SetMode(uint64_t body, uint32_t plot, int part, int mode) { // (#1271 L6c)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 14, body, plot, part, -1, mode });
+}
+void Factory::SetPick(uint64_t body, uint32_t plot, int part, const std::string& item) { // (#1271 L6c)
+    std::lock_guard<std::mutex> q(queueMutex);
+    itemQueue.push_back(ItemMsg{ 14, body, plot, part, item.empty() ? -1 : tables.item(item), -1 });
+}
 void Factory::Strike(uint64_t body, uint32_t plot, int part) { // (#1271 L2)
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back(ItemMsg{ 13, body, plot, part, -1, 0 });
@@ -2229,7 +2287,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             fprintf(f, "m %u %d %d %d %d %d", ps.plot, m.part, m.recipe, m.progress, m.energy, m.fuelEU);
             int nin = 0; for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) ++nin;
             fprintf(f, " %d", nin);
-            for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) { if (m.in[i].centi > 0) fprintf(f, " %s %d.%02d", tables.name(m.in[i].item).c_str(), m.in[i].count, m.in[i].centi); else fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count); } // (#1102) a fraction: "2.50"
+            for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) { if (!m.in[i].data.empty()) fprintf(f, " %s|%s 1", tables.name(m.in[i].item).c_str(), m.in[i].data.c_str()); /* (#1446) its record */ else if (m.in[i].centi > 0) fprintf(f, " %s %d.%02d", tables.name(m.in[i].item).c_str(), m.in[i].count, m.in[i].centi); else fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count); } // (#1102) a fraction: "2.50"
             int nout = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) ++nout;
             fprintf(f, " %d", nout);
             for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) fprintf(f, " %s %d", tables.name(m.out[i].item).c_str(), m.out[i].count);
@@ -2237,6 +2295,8 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
             if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
+            if (m.mode != 0) fprintf(f, " mode %d", m.mode); // (#1271 L6c)
+            if (m.pick >= 0) fprintf(f, " pick %s", tables.name(m.pick).c_str()); // (#1271 L6c)
             // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
             // far it goes on in the summary at once instead of measuring for a minute
             if (summary) {
@@ -2388,7 +2448,7 @@ void Factory::SetRemoteWorking(uint64_t body, uint32_t plot, const std::vector<i
     was = parts;
     for (int p : parts) remoteWorking.insert(WorkingKey(body, plot, p));
 }
-void (*Factory::CursorSink())(const std::string&, int, float) { return cursorSink; }
+void (*Factory::CursorSink())(const std::string&, int, float, const std::string&) { return cursorSink; }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1214): sleeping machines and conveyor networks change nothing but the time ----
@@ -2901,6 +2961,87 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
 }
 
+// (#1446 step 2b) An item with its own record (a composed tool): a chest keeps it in a slot of its own, never merged, and gives
+// it back with the record; a machine refuses it (automation never moves one) unless it is an assembler set to disassemble (the
+// L7c hook); the save keeps the record.
+TEST(Factory, AChestKeepsAnItemsRecordAndOnlyADisassemblerTakesOne) {
+    LoadRecipes();
+    Factory::Start();
+    LayoutMsg L{};
+    L.body = 11; L.plot = 2; L.version = 1;
+    const PartType types[2] = { PartType::Chest, PartType::LvAssembler };
+    for (int i = 0; i < 2; ++i) {
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ i * 3 + dx, dy, dz });
+        L.machines.push_back({ i, types[i] }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+    }
+    { std::lock_guard<std::mutex> q(queueMutex); layoutQueue.push_back(L); }
+    Factory::WaitTicks(2);
+    { std::lock_guard<std::mutex> v(viewMutex); results.clear(); }
+    const std::string d1 = "head=bronze;w=4", d2 = "head=bronze;w=9";
+    Factory::InsertSlot(11, 2, 0, "bronze_pickaxe", 1, 3, 0, 0, d1); // into slot 3
+    Factory::Insert(11, 2, 0, "bronze_pickaxe", 5, 0, 0, d2);        // routed: an empty slot of its own (count forced to 1)
+    Factory::Insert(11, 2, 0, "bronze_pickaxe", 2);                  // plain ones: a slot of their own too, never onto a record
+    Factory::Insert(11, 2, 1, "bronze_pickaxe", 1, 0, 0, d1);        // the assembler makes: it comes back
+    Factory::WaitTicks(3);
+    auto backData = [&]() { std::vector<std::string> d; std::lock_guard<std::mutex> l(viewMutex); for (const ItemOut& r : results) if (!r.data.empty()) d.push_back(r.data); return d; };
+    EXPECT_EQ(backData(), std::vector<std::string>{ d1 }) << "an assembler making refuses an item with a record, and returns it whole";
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    Factory::SetMode(11, 2, 1, 1);
+    Factory::WaitTicks(2);
+    Factory::Insert(11, 2, 1, "bronze_pickaxe", 1, 0, 0, d1);
+    Factory::WaitTicks(3);
+    EXPECT_TRUE(backData().empty()) << "set to disassemble it takes one (L7c)";
+    Factory::View(11, 2, 1); // (the sim fills the one watched view: ask, wait, read)
+    Factory::WaitTicks(3);
+    const MachineView a = Factory::View(11, 2, 1);
+    int inAsm = 0; for (const std::string& d : a.inData) inAsm += d == d1 ? 1 : 0;
+    EXPECT_EQ(inAsm, 1);
+    Factory::View(11, 2, 0);
+    Factory::WaitTicks(3);
+    const MachineView v = Factory::View(11, 2, 0);
+    EXPECT_GE(v.inData.size(), 4u);
+    if (v.inData.size() >= 4 && v.inSlots.size() >= 4) {
+        EXPECT_EQ(v.inSlots[3].first, "bronze_pickaxe");
+        EXPECT_EQ(v.inSlots[3].second, 1);
+        EXPECT_EQ(v.inData[3], d1);
+    }
+    int withD2 = 0, plain = 0;
+    for (size_t i = 0; i < v.inData.size(); ++i) {
+        if (v.inData[i] == d2) { ++withD2; EXPECT_EQ(v.inSlots[i].second, 1) << "one item to a record"; }
+        if (v.inData[i].empty() && v.inSlots[i].first == "bronze_pickaxe") plain += v.inSlots[i].second;
+    }
+    EXPECT_EQ(withD2, 1);
+    EXPECT_EQ(plain, 2);
+    // The save keeps the records; a fresh factory loads them back.
+    Factory::Stop();
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_data_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 11);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    bool saved = false; for (const std::string& l : lines) saved |= l.find(" bronze_pickaxe|" + d1 + " 1") != std::string::npos;
+    EXPECT_TRUE(saved) << "a record is saved as name|record";
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    Factory::LoadSaved(11, lines);
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(11, 2);
+    ASSERT_TRUE(ps);
+    const Machine& chest = ps->machines[ps->byPart.at(0)];
+    int records = 0; for (int i = 0; i < kChestSlots; ++i) if (!chest.in[i].data.empty()) { ++records; EXPECT_EQ(chest.in[i].count, 1); }
+    EXPECT_EQ(records, 2);
+    EXPECT_EQ(CountItems(chest.in.data(), kChestSlots, tables.item("bronze_pickaxe")), 2) << "plain counts never include a record";
+    const Machine& asm1 = ps->machines[ps->byPart.at(1)];
+    EXPECT_EQ(asm1.mode, 1);
+    bool asmKept = false; for (int i = 0; i < InSlots(asm1); ++i) asmKept |= asm1.in[i].data == d1;
+    EXPECT_TRUE(asmKept);
+    plots.clear(); plotIndexDirty = true; pendingStates.clear();
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+}
+
 // (#996, ladder L4) The ore split, from machine_recipes.txt: the LV macerator alone gives half again as many ingots as the ore
 // (crushed ore smelted 1:1); the MV chain (washer, centrifuge, dust smelted 1:1) gives twice as many, plus byproducts.
 TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
@@ -3022,6 +3163,77 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
     anvil.strike = std::min(anvil.strike + kStrikeTicks, 2 * kStrikeTicks);
     for (int t = 0; t < 60; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 1) << "the third strike: an ingot";
+    plots.clear(); plotIndexDirty = true;
+}
+// (#1271 L6c) The LV assembler: on a generator's power it assembles basic circuits from their parts; switched to
+// disassembly (#1427 to come) it waits, and switched back it goes on.
+TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 } }, {}, Row(0, 4, -1)));
+    PlotSim& ps = *FindPlot(9, 5);
+    Machine& gen = ps.machines[ps.byPart.at(0)];
+    Machine& asm1 = ps.machines[ps.byPart.at(1)];
+    int b = 0;
+    InsertInto(gen, tables.item("coal"), 16, true, b);
+    InsertInto(asm1, tables.item("vacuum_tube"), 8, false, b);
+    InsertInto(asm1, tables.item("copper_wire"), 16, false, b);
+    InsertInto(asm1, tables.item("steel_plate"), 4, false, b);
+    int ticks = 160;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == tables.item("basic_circuit")) { ticks = r.ticks; break; }
+    long long made = 0; int active = 0;
+    asm1.mode = 1;
+    for (int t = 0; t < 3 * ticks; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 0) << "set to disassemble: it waits";
+    EXPECT_EQ(asm1.status, MachineStatus::Idle);
+    asm1.mode = 0;
+    for (int t = 0; t < 2 * ticks + 40; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "two circuits in two crafts' time";
+    EXPECT_EQ(CountItems(asm1.in.data(), InSlots(asm1), tables.item("vacuum_tube")), 4);
+    // Its recipe picked (the screen's "Makes"): LV packs from the same parts, never a circuit
+    asm1.pick = tables.item("lv_pack"); asm1.recipe = -1; asm1.progress = 0; asm1.dirty = true; // (as SetPick does: the circuit it began is dropped)
+    int packTicks = 200;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == asm1.pick) { packTicks = r.ticks; break; }
+    for (int t = 0; t < packTicks + 40; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "picked LV packs: no more circuits";
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("lv_pack")), 2) << "one craft of 2 LV packs";
+    plots.clear(); plotIndexDirty = true;
+}
+// (#1427 L7a) Tiers: an MV macerator runs the LV iron recipe overclocked one step (half the time, three times the EU a
+// tick); a recipe a tier above a machine never starts in it.
+TEST(Factory, AHigherTierMachineOverclocksALowerRecipeAndALowerOneRefusesAHigherRecipe) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L = OracleLayout(6, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 } }, {}, Row(0, 7, -1));
+    L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("MV"), MachineTiers_ByName("LV") };
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 6);
+    Machine& gen = ps.machines[ps.byPart.at(0)];
+    Machine& mv = ps.machines[ps.byPart.at(1)];
+    Machine& lv = ps.machines[ps.byPart.at(2)];
+    EXPECT_EQ(mv.tier, 1);
+    EXPECT_EQ(lv.tier, 0);
+    decltype(&tables.recipes[0]) iron = nullptr;
+    for (auto& r : tables.recipes) if (r.machine == PartType::Macerator && !r.in.empty() && r.in[0].item == tables.item("iron_ore")) { iron = &r; break; }
+    ASSERT_NE(iron, nullptr);
+    EXPECT_EQ(iron->tier, 0) << "no tier column: the macerator's first, LV";
+    EXPECT_EQ(TicksOf(mv, *iron), iron->ticks / 2);
+    EXPECT_EQ(EuOf(mv, *iron), iron->eu * 3);
+    EXPECT_EQ(TicksOf(lv, *iron), iron->ticks);
+    int b = 0;
+    InsertInto(gen, tables.item("coal"), 32, true, b);
+    InsertInto(mv, tables.item("iron_ore"), 8, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < iron->ticks + 20; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(mv.out, kSlots, tables.item("iron_crushed")), 2 * iron->out[0].count) << "two crafts in one LV craft's time";
+    // The same recipe made MV: the LV macerator never starts it; the MV one runs it at its own tier (no overclock).
+    const int was = iron->tier;
+    iron->tier = 1;
+    InsertInto(lv, tables.item("iron_ore"), 4, false, b);
+    for (int t = 0; t < iron->ticks + 20; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(lv.out, kSlots, tables.item("iron_crushed")), 0) << "an MV recipe in an LV machine: never";
+    EXPECT_EQ(TicksOf(mv, *iron), iron->ticks) << "at its own tier: no overclock";
+    iron->tier = was;
     plots.clear(); plotIndexDirty = true;
 }
 #endif

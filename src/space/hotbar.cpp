@@ -1,4 +1,6 @@
 #include "hotbar.h"
+#include "machinetiers.h"
+#include "uipalette.h"
 #include "playersession.h"
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
@@ -51,7 +53,9 @@ namespace {
     const int kKeys[kHotbarSlots] = { KEY_ONE, KEY_TWO, KEY_THREE, KEY_FOUR, KEY_FIVE, KEY_SIX, KEY_SEVEN, KEY_EIGHT, KEY_NINE, KEY_ZERO };
 
     // A part type placed from this item (machines, conveyors, cables), or Count.
-    PartType PartForItem(const std::string& id) {
+    PartType PartForItem(const std::string& id, int* step = nullptr) {
+        if (step) *step = 0;
+        { PartType vt; int vs = 0; if (MachineTiers_ItemPart(id, vt, vs)) { if (step) *step = vs; return vt; } } // (#1427 L7a) a machine variant
         for (int t = 0; t < (int)PartType::Count; ++t)
             if (IsShape((PartType)t)) continue; else
             if (id == PartCostItem((PartType)t)) return (PartType)t;
@@ -129,11 +133,13 @@ namespace {
             if (!IsShape((PartType)buildTool.part)) buildTool.part = (int)PartType::Cube;
             return;
         }
-        const PartType t = PartForItem(id);
+        int variantStep = 0;
+        const PartType t = PartForItem(id, &variantStep);
         if (t != PartType::Count) {
             take();
             buildTool.active = true;
             buildTool.part = (int)t;
+            buildTool.variant = variantStep; // (#1427 L7a) the variant: its step rides in the part's material
             return;
         }
         // (#534, the user) Anything else is just held: LMB punches (bare hands), RMB does nothing unless it has a use (the
@@ -294,7 +300,7 @@ void Hotbar_DrawHUD(bool piloting) {
             const float left = own.valid && own.durability > 0 ? 1.0f - (float)own.wear / (float)own.durability : ToolWear_Left(id);
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
-                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
+                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, UiPalette_Lerp(left));
             }
         }
         std::string name = ShortName(id);

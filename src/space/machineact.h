@@ -11,11 +11,13 @@
 
 // The caller has already taken `count` of `item` out of the inventory (or off the cursor), as before. Joined: it is
 // given back here and the server takes it out of the inventory it keeps (the delta then removes it here too).
-void MachineAct_Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, bool fuel = false, int centi = 0); // centi (#1102): a fraction more (a local chest keeps it)
+void MachineAct_Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, bool fuel = false, int centi = 0, const std::string& data = {}); // centi (#1102): a fraction more (a local chest keeps it)
 void MachineAct_Extract(uint64_t bodyId, uint32_t plotId, int part);
 void MachineAct_SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit); // (#1103) light or put out a campfire. Joined: action 10.
+void MachineAct_SetMode(uint64_t bodyId, uint32_t plotId, int part, int mode); // (#1271 L6c) an assembler: 0 assembles, 1 disassembles. Joined: action 11.
+void MachineAct_SetPick(uint64_t bodyId, uint32_t plotId, int part, const std::string& item); // (#1271 L6c) a machine's recipe choice ("": any). Joined: action 12.
 // (#862) As Insert, into one storage slot of a chest (a machine routes it as Insert does). Joined: action 8.
-void MachineAct_InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, int centi = 0);
+void MachineAct_InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, int centi = 0, const std::string& data = {}); // data (#1446): that one item, record and all
 // (#862) `count` of item out of a chest into the inventory (the scroll wheel's pull). Joined: action 9.
 void MachineAct_Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
 // One slot of a machine's screen: to the inventory, or (cursorCount >= 0) onto the cursor (0: all). Joined: always to the
@@ -30,3 +32,5 @@ int MachineAct_CursorMoves();                    // (#854 tests) cursor takes co
 
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;
+// (#1446 2b) Inserting one item with its own record (action 1: a machine, 8: a chest slot): the server takes exactly that item.
+inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int slot, const std::string& data)> gMachineInsertData;

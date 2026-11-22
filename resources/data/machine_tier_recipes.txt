@@ -1,0 +1,15 @@
+# (#1427 L7b) Tiered machines: each variant's own recipe (never from the tier below's machine): its tier's hull and
+# circuits and the base's other parts, more of them. Loaded after machine_tiers.txt's variant items (items.txt's format:
+# recipe lines only). Unlocked with their tier (recipe_unlocks.txt).
+electric_furnace_mv 1  = mv_hull 1, good_circuit 2, copper_wire 8
+electric_furnace_hv 1  = hv_hull 1, advanced_circuit 2, copper_wire 16
+macerator_mv 1         = mv_hull 1, good_circuit 2, steel_plate 4
+macerator_hv 1         = hv_hull 1, advanced_circuit 2, aluminium_plate 4
+ore_washer_mv 1        = mv_hull 1, good_circuit 1, steel_plate 8
+ore_washer_hv 1        = hv_hull 1, advanced_circuit 1, aluminium_plate 8
+centrifuge_mv 1        = mv_hull 1, good_circuit 2, copper_wire 16
+centrifuge_hv 1        = hv_hull 1, advanced_circuit 2, copper_wire 32
+mv_assembler 1         = mv_hull 1, good_circuit 2, copper_wire 16, steel_plate 4
+hv_assembler 1         = hv_hull 1, advanced_circuit 2, copper_wire 32, aluminium_plate 4
+electrolyzer_hv 1      = hv_hull 1, advanced_circuit 2, copper_wire 32
+chemical_reactor_hv 1  = hv_hull 1, advanced_circuit 2, glass 8

@@ -1,5 +1,6 @@
 // Tier 2 scenario runner (#870); see scenario.h.
 #include "scenario.h"
+#include "cliptelemetry.h"
 #include "survival.h"
 #include "fluid.h"
 #include "player.h"
@@ -177,6 +178,20 @@ void WriteResults() {
 void Finish(const std::string& verdict, const std::string& reason) {
     if (R.finished) return;
     if (R.step < (int)R.stepTimes.size()) { R.stepTimes[R.step].sim = SimTime() - R.stepSim; R.stepTimes[R.step].wall = Wall() - R.stepWall; }
+    {   // (#1442) frames whose view was not normal gameplay: the camera or the player inside solid
+        const ClipStats& k = ClipTelemetry_Stats();
+        R.metrics.push_back({ "camera_inside_solid_frames", "frames", (double)k.cameraFrames, true });
+        R.metrics.push_back({ "player_inside_solid_frames", "frames", (double)k.playerFrames, true });
+        if (k.cameraFrames) R.notes.push_back(TextFormat("the camera was inside solid for %ld frames (%.2f s, t=%.2f-%.2f s, %.1f m deep at most)",
+                                                         k.cameraFrames, k.cameraSeconds, k.cameraFirst, k.cameraLast, k.cameraDepthMax));
+        if (k.playerFrames) R.notes.push_back(TextFormat("the player was inside solid for %ld frames (%.2f s, t=%.2f-%.2f s, %.1f m deep at most)",
+                                                         k.playerFrames, k.playerSeconds, k.playerFirst, k.playerLast, k.playerDepthMax));
+        if (R.def.expectNoClip && k.cameraFrames + k.playerFrames > 0 && verdict == "PASS") {
+            R.checks.push_back({ "no frame with the camera or the player inside solid", "==", "0", std::to_string(k.cameraFrames) + " camera, " + std::to_string(k.playerFrames) + " player frames",
+                                 (double)(k.cameraFrames + k.playerFrames), false });
+            R.finished = false; Finish("FAIL", "the camera or the player was inside solid (expectNoClip)"); return;
+        }
+    }
     R.finished = true;
     R.verdict = verdict; R.reason = reason;
     int failed = 0; for (const auto& c : R.checks) failed += c.pass ? 0 : 1;
@@ -438,6 +453,7 @@ bool Scenario_Frame(Scene& world) {
     if (R.simStart < 0.0) {
         R.simStart = SimTime(); R.stepSim = SimTime(); R.wallStart = now; R.stepWall = now; R.lastBeat = now;
         printf("scenario: %s: world ready after %.1f s; %zu steps\n", R.def.name.c_str(), now - R.startedAt, R.def.steps.size());
+        ClipTelemetry_Reset(); // (#1442) the scenario's own frames, not the loading screen's
         StartWatchdog(); // (#1422)
         if (Profiler_On()) { GpuTimer_KeepOn(true); Profiler_Reset(); } // (#871) the passes as cpu:/gpu: zones; the summary from here on (not the loading)
     }

@@ -18,6 +18,7 @@
 #include "terraintool.h"
 #include "buildtool.h"
 #include "plots.h"
+#include "machinetiers.h"
 #include "factory.h"
 #include "gamerng.h"
 #include "tools.h"
@@ -556,6 +557,16 @@ namespace {
         ++machineActions;
         switch (a.action) {
             case 1: case 3: case 8: { // one item into the machine (or its fuel slot; 8: one storage slot of a chest, #862)
+                if (!a.data.empty()) { // (#1446 2b) exactly that item with its record: a chest slot, or a machine (the factory refuses all
+                                       // but an assembler set to disassemble, and sends it back to this player through gFactoryDeliver)
+                    if (a.action == 3) { refuse("It doesn't take that"); return; }
+                    const int cell = inv.findInstance(a.item, a.data);
+                    if (cell < 0) { refuse("You don't have that"); return; }
+                    const InvSlot one = inv.takeInstance(cell); // (journalled: the client sees it go)
+                    if (a.action == 8) Factory::InsertSlot(b->id, plot->id, a.part, one.id, 1, a.slot, session, 0, one.data);
+                    else Factory::Insert(b->id, plot->id, a.part, one.id, 1, session, 0, one.data);
+                    break;
+                }
                 const int n = std::min<int>(a.count, inv.count(a.item));
                 const std::vector<std::string> fuels = a.action == 3 ? Factory::FuelsOf(type) : std::vector<std::string>{};
                 const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item);
@@ -587,6 +598,17 @@ namespace {
                 if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
                 Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
                 break;
+            case 11: // (#1271 L6c) an assembler's mode: 0 assembles, 1 disassembles
+                if (type != PartType::LvAssembler) { refuse("Only an assembler switches that way"); return; }
+                Factory::SetMode(b->id, plot->id, a.part, a.count != 0 ? 1 : 0);
+                break;
+            case 12: { // (#1271 L6c) a machine's recipe pick ("" any): only an output one of its recipes makes
+                bool known = a.item.empty();
+                for (const Factory::RecipeInfo& r : Factory::RecipeList()) known = known || (r.machine == type && !r.out.empty() && r.out[0].first == a.item);
+                if (!known) { refuse("That machine makes no such thing"); return; }
+                Factory::SetPick(b->id, plot->id, a.part, a.item);
+                break;
+            }
             default: return;
         }
         SendChangedItems(conn, inv, before);
@@ -1683,7 +1705,8 @@ namespace {
             SendToJoined(out);
             if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
-            const Part part = ToPart(q.part);
+            Part part = ToPart(q.part);
+            if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type)); // (#1427 L7a) a machine's variant step
             if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
@@ -1730,7 +1753,7 @@ namespace {
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
             if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
-            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
+            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part; out.part.material = part.material;
             SendToJoined(out);
         }
         rm.partTokens -= 1.0;
@@ -2208,9 +2231,10 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat, const std::string& data) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
+        if (!data.empty()) { rit->second.inventory.addInstance(item, data, heat); return; } // (#1446) one item with its record: the journal tells its client
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
         rit->second.inventory.addAmount(item, count, heat);
         if (const uint32_t conn = ConnOf(to)) SendInventoryDeltas(conn, rit->second.inventory, before);

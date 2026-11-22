@@ -1,12 +1,15 @@
 #include "plots.h"
 #include "gpumem.h"
 #include "worldtypes.h"
+#include "machinetiers.h"
 
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
 #include <array>
 #include <map>
+#include <mutex>
+#include <string>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -68,6 +71,7 @@ const char* PartName(PartType t) {
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam assembler"; // (#1271 L6b-2)
+        case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -143,6 +147,7 @@ const char* PartMachineName(PartType t) {
         case PartType::SteamLab: return "steam_lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam_assembler"; // (#1271 L6b-2)
+        case PartType::LvAssembler: return "lv_assembler"; // (#1271 L6c)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -250,7 +255,18 @@ int BuildMaterialForItem(const char* item) {
     for (int i = 0; i < BuildMaterialCount(); ++i) if (strcmp(kBuildMaterials[i].item, item) == 0) return i;
     return -1;
 }
-const char* PartItem(const Part& p) { return IsShape(p.type) ? GetBuildMaterial(p.material).item : PartCostItem(p.type); }
+const char* PartItem(const Part& p) {
+    if (IsShape(p.type)) return GetBuildMaterial(p.material).item;
+    if (p.material > 0 && IsMachine(p.type)) { // (#1427 L7a) a tiered machine's variant: its step in the material
+        static std::mutex m;
+        static std::map<std::pair<int, int>, std::string> names; // (nodes never move: the pointers stay good)
+        std::lock_guard<std::mutex> lock(m);
+        auto it = names.find({ (int)p.type, (int)p.material });
+        if (it == names.end()) it = names.emplace(std::make_pair((int)p.type, (int)p.material), MachineTiers_VariantItem(p.type, p.material)).first;
+        if (!it->second.empty()) return it->second.c_str();
+    }
+    return PartCostItem(p.type);
+}
 static Color PartColor(PartType t) {
     switch (t) {
 
@@ -398,6 +414,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
         case PartType::Bloomery: // (#1271 L2)
         case PartType::SteamAssembler: // (#1271 L6b-2)
+        case PartType::LvAssembler: // (#1271 L6c)
         case PartType::SteamEngine: case PartType::Dynamo: case PartType::Motor: // (#1271 L3)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;

@@ -1,0 +1,25 @@
+# Tiered machines (#1427, ladder L7a): voltage tiers, overclocking, machine families, disassembly yields (L7c).
+#
+# tier | name | volts             a voltage tier, numbered from 0 in this order
+tier | LV | 32
+tier | MV | 128
+tier | HV | 512
+tier | EV | 2048
+tier | IV | 8192
+#
+# overclock | speed x | EU x | cap   per tier a recipe is under its machine: time / speed, EU a tick x EU (cap 0: no cap)
+overclock | 2 | 3 | 0
+#
+# yield | 3+ above | 2 above | 1 above | same | 1 below | 2+ below    disassembly (L7c), in percent, the item's tier
+#                                                                  against the assembler's
+yield | 0 | 1 | 10 | 50 | 75 | 100
+#
+# machine | first tier | variant tiers [| item names, tier:item ...]   a machines.txt machine; its first tier's item is its
+# own, the others <item>_<tier> unless named here. Variants place the same part, a step above the first in its material.
+macerator        | LV | LV MV HV
+furnace          | LV | LV MV HV
+ore_washer       | LV | LV MV HV
+centrifuge       | LV | LV MV HV
+lv_assembler     | LV | LV MV HV | MV:mv_assembler HV:hv_assembler
+electrolyzer     | MV | MV HV
+chemical_reactor | MV | MV HV

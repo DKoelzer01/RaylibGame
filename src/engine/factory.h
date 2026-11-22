@@ -48,6 +48,7 @@ struct MachineView {             // published per machine each tick
     std::string input, output;      // "iron_ore x3"
     std::vector<std::pair<std::string, int>> inSlots, outSlots; // per slot ("", 0 when empty); chests use inSlots
     std::vector<int> inCenti;                                   // (#1102) per input slot, a fraction more (hundredths): a chest's 0.4 dirt
+    std::vector<std::string> inData;                            // (#1446 2b) per input slot, an item's own record ("" plain)
     bool hasFuelSlot = false;       // fuel-burning machines and generators (#194)
     std::pair<std::string, int> fuelSlot;
     int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)
@@ -55,6 +56,8 @@ struct MachineView {             // published per machine each tick
     bool hotOutputs = false;        // its outputs come out hot (a furnace, kiln...: their icons glow, #580)
     bool canLight = false;          // a campfire: the screen offers to light it or put it out (#1103)
     uint8_t fire = kFireAuto;
+    uint8_t mode = 0;               // (#1271 L6c) an assembler: 0 assembles, 1 disassembles
+    std::string pick;               // (#1271 L6c) the recipe output a player chose ("": any)
     bool rotation = false;          // (#1269) a rotation machine: its shaft's speed and its network's load
     float rpm = 0.0f;
     int speedPercent = 100, stressPercent = 0;
@@ -136,7 +139,7 @@ namespace Factory {
     // (#1199) The production statistics over a window: every simulated plot (onePlot false) or one plot. Waits for the tick.
     FactoryStatsView StatsView(StatWindow window, bool onePlot = false, uint64_t bodyId = 0, uint32_t plotId = 0);
     // Player item transfers (queued for the next tick).
-    void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0, int centi = 0); // to (#332): leftovers to that player; centi (#1102): a fraction more (a chest keeps it)
+    void Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0, int centi = 0, const std::string& data = {}); // to (#332): leftovers to that player; centi (#1102): a fraction more (a chest keeps it)
     // The same, into the fuel slot (Shift+click: an item that is both fuel and a recipe input goes to the inputs by default).
     void InsertFuel(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, uint32_t to = 0);
     // (#1193) Research labs, between ticks: a machine's one output (as a miner's ore; "" any), and its output stacks whose
@@ -149,6 +152,10 @@ namespace Factory {
     void Crank(uint64_t bodyId, uint32_t plotId, int part);
     // (#1271 L2) A player strikes an anvil with a hammer: its recipe moves on by kStrikeTicks (two strikes can wait).
     void Strike(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1271 L6c) An assembler's mode: 0 assembles, 1 disassembles (#1427; until then a disassembling assembler idles).
+    void SetMode(uint64_t bodyId, uint32_t plotId, int part, int mode);
+    // (#1271 L6c) A machine of several recipes makes only `item`'s (its first output); "" any (the first its inputs allow).
+    void SetPick(uint64_t bodyId, uint32_t plotId, int part, const std::string& item);
     // (#1271 L6b) Machine recipes making these items never start (the team's research has not unlocked them); replaces the last list.
     void SetLockedOutputs(const std::vector<std::string>& outputs);
     // (#1270) A water wheel's or windmill's speed from its river or wind (signed RPM about its plot axis): rotationsources.*
@@ -175,9 +182,9 @@ namespace Factory {
     void TakeSlotToCursor(uint64_t bodyId, uint32_t plotId, int part, int slot, int which, int count, uint32_t to = 0);
     // (#862) `count` of item into one storage slot of a chest (empty, or the same item up to its cap), as a held stack is put
     // down in Minecraft; what doesn't fit goes back as Insert's leftovers do. Not a chest: as Insert (machines route inputs).
-    void InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, uint32_t to = 0, int centi = 0); // centi (#1102): a fraction more
-    void SetCursorSink(void (*sink)(const std::string& item, int count, float heat)); // heat: 1 fresh out of a heating machine (#580)
-    void (*CursorSink())(const std::string& item, int count, float heat); // (#854) the one set (a joined client puts a server take on the cursor)
+    void InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, uint32_t to = 0, int centi = 0, const std::string& data = {}); // centi (#1102): a fraction more
+    void SetCursorSink(void (*sink)(const std::string& item, int count, float heat, const std::string& data)); // heat: 1 fresh out of a heating machine (#580); data (#1446): one item's record
+    void (*CursorSink())(const std::string& item, int count, float heat, const std::string& data); // (#854) the one set (a joined client puts a server take on the cursor)
     // Water pumps (waterworks): water units in a pump's outputs (as of the last tick), and removing
     // them as they go down its pipes.
     int PumpWater(uint64_t bodyId, uint32_t plotId, int part);
@@ -243,7 +250,7 @@ namespace Factory {
 // from alchemy.txt): called once when the factory first loads its tables, after machine_recipes.txt. Set it before then.
 inline std::function<void(std::vector<Factory::RecipeInfo>& out)> gFactoryExtraRecipes;
 // Server: results for a player (Extract / TakeSlot / Take / leftovers with `to`) go here instead of this game's inventory.
-inline std::function<void(uint32_t to, const std::string& item, double amount, float heat)> gFactoryDeliver; // (#1102: an amount: a chest's fraction too)
+inline std::function<void(uint32_t to, const std::string& item, double amount, float heat, const std::string& data)> gFactoryDeliver; // (#1102: an amount: a chest's fraction too; #1446: data, one item's record)
 // Client (#332): the machine the screen or look-at panel views changed (Factory::View with SetRemote): ask the server for it.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part)> gFactoryRemoteWatch;
 

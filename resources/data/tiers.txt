@@ -50,6 +50,7 @@
     task | place generator        | Place the LV generator
     task | place electric_furnace | Place the electric furnace and cable it to the generator
     task | place macerator        | Place a macerator: 2 ore crush into 3 (half again as many ingots)
+    task | place lv_assembler     | Place an LV assembler: it makes circuits and the LV packs the research needs
 # (#1271) Tier 4's milestone
     milestone | deliver basic_circuit 40 | Hand in 40 basic circuits at a lab
     milestone | deliver cable 100        | Hand in 100 copper cable at a lab
@@ -63,6 +64,7 @@
     task | get hydrogen 2         | Electrolyse water into hydrogen
     task | get polyethylene 1     | Make polyethylene in a chemical reactor
     task | get aluminium_ingot 1  | Electrolyse bauxite dust into aluminium
+    task | place mv_assembler     | Place an MV assembler: MV research packs (and the LV recipes overclocked, twice as fast)
 # (#1271) Tier 5's milestone
     milestone | deliver aluminium_plate 50 | Hand in 50 aluminium plates at a lab
     milestone | deliver gold_ingot 20    | Hand in 20 gold ingots at a lab
@@ -73,6 +75,7 @@
     task | get advanced_circuit 1 | Craft an advanced circuit
     task | place hv_generator     | Place an HV generator (512 V)
     task | place arc_furnace      | Place an arc furnace
+    task | place hv_assembler     | Place an HV assembler: HV and rocket research packs
     task | get titanium_ingot 1   | Make titanium from ilmenite and coke
     task | get titanium_alloy_ingot 1 | Alloy titanium with aluminium
 # (#1271) Tier 6's milestone

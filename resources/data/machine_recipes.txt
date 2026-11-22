@@ -1,4 +1,4 @@
-# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick (eu machines)
+# Machine recipes: machine | outputs | inputs | ticks (20 a second) | EU per tick (eu machines) [| tier: LV, MV, ... (#1427: the machine's first tier if left out; a machine runs its tier's recipes and below, those under it overclocked, machine_tiers.txt)]
 campfire        | charcoal 1       | oak_log 1                 | 200 | 0
 campfire        | charcoal 1       | birch_log 1               | 200 | 0
 campfire        | charcoal 1       | maple_log 1               | 200 | 0
@@ -139,4 +139,10 @@ anvil            | bronze_pick_head 1 | rough_bronze_pick_head 1  | 80  | 0
 anvil            | bronze_axe_head 1  | rough_bronze_axe_head 1   | 80  | 0
 mechanical_press | iron_ingot 1       | iron_bloom 1              | 100 | 0
 # (#1271 L6b-2) the steam assembler makes steam packs (twice as fast as by hand, and without you)
-steam_assembler  | steam_pack 1       | iron_plate 1, bronze_gear 1, coal 1 | 100 | 0
+steam_assembler  | steam_pack 1       | iron_plate 1, cogwheel 1, coal 1 | 100 | 0
+# (#1271 L6c) the LV assembler: the real route for circuits and the LV/MV packs, and with tiers (#1427 L7b) the MV pack in an MV assembler and up, the HV and rocket packs in an HV one
+lv_assembler     | basic_circuit 1    | vacuum_tube 2, copper_wire 4, steel_plate 1 | 160 | 16
+lv_assembler     | lv_pack 2          | steel_plate 1, copper_wire 2, vacuum_tube 1 | 200 | 12
+lv_assembler     | mv_pack 2          | basic_circuit 2, steel_plate 1, iron_crushed 3 | 300 | 24 | MV
+lv_assembler     | hv_pack 2          | aluminium_plate 2, gold_ingot 1, iron_purified 2 | 400 | 96 | HV
+lv_assembler     | rocket_pack 1      | titanium_alloy_plate 1, advanced_circuit 1, rocket_fuel 1 | 600 | 128 | HV
