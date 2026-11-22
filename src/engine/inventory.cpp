@@ -382,7 +382,11 @@ int Inventory::addInstance(const std::string& id, const std::string& data, float
     s.id = id; s.centi = 100; s.heat = std::clamp(heat, 0.0f, 1.0f); s.data = data;
     if (journal) instanceLog.push_back({ id, +1, data, {} });
     obtained[id] += 1.0;
-    if (onAdded && muted <= 0) onAdded(id, 1.0);
+    // (#1449 T1) a composed tool also counts as the old tool its head makes it (tasks say "get stone_pickaxe 1"); the
+    // pickup line and a team's book (onAdded) get that name: "Stone pickaxe"
+    const std::string legacy = Composed_LegacyId(id, data);
+    if (!legacy.empty()) obtained[legacy] += 1.0;
+    if (onAdded && muted <= 0) onAdded(legacy.empty() ? id : legacy, 1.0);
     return cell;
 }
 
@@ -666,6 +670,42 @@ TEST_F(InventoryTest, HaftingAHeadMakesAComposedWeapon) {
     EXPECT_EQ(inv.count("bronze_blade"), 0) << "the blades went into it";
     const int cell = inv.findInstance("weapon_sword", Composed_MakeData("bronze"));
     EXPECT_GE(cell, 0) << "a bronze head, the default handle and binding";
+}
+
+// (#1449 T1) Tools from recipes.txt: no recipe makes an old per-material tool any more; every tool_ recipe hafts a head the
+// class takes, and the copy counts as the old tool its head makes it for tasks ("get stone_pickaxe 1", "get bronze_pickaxe 1").
+TEST_F(InventoryTest, HaftingAHeadMakesAComposedToolThatCountsAsTheOldOne) {
+    ASSERT_TRUE(Composed_Load());
+    std::map<std::string, int> heads; // class -> recipes
+    const Recipe* stonePick = nullptr;
+    for (const Recipe& r : itemDB.recipes()) {
+        std::string cls, data;
+        EXPECT_FALSE(Composed_FromLegacy(r.output, cls, data)) << r.output << ": an old tool id is never made";
+        if (r.output.rfind("tool_", 0) != 0) continue;
+        std::vector<std::string> parts; for (const auto& in : r.inputs) parts.push_back(in.first);
+        const std::string d = Composed_FromParts(r.output, parts);
+        EXPECT_TRUE(Composed_Stats(r.output, d).valid) << r.output << " from " << (parts.empty() ? std::string("?") : parts[0]);
+        for (const auto& in : r.inputs) EXPECT_TRUE(itemDB.find(in.first) || IsWildcardItem(in.first)) << in.first << " is an item";
+        ++heads[r.output];
+        if (r.output == "tool_pickaxe" && !r.inputs.empty() && r.inputs[0].first == "stone_pick_head") stonePick = &r;
+    }
+    EXPECT_EQ(heads["tool_pickaxe"], 5) << "stone, iron, steel, titanium, bronze";
+    EXPECT_EQ(heads["tool_hoe"], 4);
+    ASSERT_NE(stonePick, nullptr);
+    Inventory inv;
+    std::string added;
+    inv.onAdded = [&](const std::string& id, double) { added = id; };
+    for (const auto& in : stonePick->inputs) inv.add(ItemMatches(in.first, "oak_planks") ? "oak_planks" : in.first, in.second);
+    ASSERT_TRUE(inv.craft(*stonePick));
+    EXPECT_EQ(inv.countInstances("tool_pickaxe"), 1);
+    EXPECT_GE(inv.findInstance("tool_pickaxe", Composed_MakeData("stone")), 0);
+    EXPECT_DOUBLE_EQ(inv.obtainedTotal("stone_pickaxe"), 1.0) << "the tier-0 task counts it";
+    EXPECT_DOUBLE_EQ(inv.obtainedTotal("tool_pickaxe"), 1.0);
+    EXPECT_EQ(added, "stone_pickaxe") << "the pickup line and a team's book get the old name";
+    EXPECT_EQ(Composed_LegacyId("tool_axe", Composed_MakeData("bronze")), "bronze_axe");
+    EXPECT_EQ(Composed_LegacyId("tool_hoe", Composed_MakeData("bronze")), "") << "there was no bronze hoe";
+    EXPECT_EQ(Composed_LegacyId("tool_pickaxe", Composed_MakeData("flint")), "");
+    EXPECT_EQ(Composed_LegacyId("weapon_sword", Composed_MakeData("steel")), "");
 }
 
 TEST_F(InventoryTest, CraftNeedsRoomForTheOutput) {

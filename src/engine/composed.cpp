@@ -196,6 +196,17 @@ bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string
     return true;
 }
 
+std::string Composed_LegacyId(const std::string& cls, const std::string& data) {
+    if (cls.rfind("tool_", 0) != 0 || !Composed_Is(cls)) return {};
+    const std::string head = ItemData::Get(data, "h");
+    // The old tools' materials: stone, bronze (pickaxe and axe only), iron, steel, titanium
+    static const char* kOld[] = { "stone", "bronze", "iron", "steel", "titanium" };
+    if (std::find(std::begin(kOld), std::end(kOld), head) == std::end(kOld)) return {};
+    const std::string type = cls.substr(5);
+    if (head == "bronze" && type != "pickaxe" && type != "axe") return {};
+    return head + "_" + type;
+}
+
 int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed) {
     int n = 0;
     auto& cells = inv.grid();
