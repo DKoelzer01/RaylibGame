@@ -1842,6 +1842,7 @@ int main(int argc, char** argv)
             for (const auto& [fam, n] : perFamily) printf("bench: ore stats: family %-20s %4d deposits\n", fam.c_str(), n);
             return 0;
         }
+    for (int i = 1; i < argc; ++i) // (the loop's body is the one if below: --ore-stats has its own loop above)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
             // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
