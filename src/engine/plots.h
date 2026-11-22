@@ -142,6 +142,9 @@ public:
 
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
+    // (#1574) The origin that puts a part flush against a face: every cell in front of the face of hitCell (along `face`, a
+    // unit axis), the nearest ones touching it. Moves it out or back in along the face only.
+    static Int3 FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face);
     // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
     static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
