@@ -7,8 +7,8 @@ copper     | Copper     | 205,115,65  | ore crushed purified dust ingot plate wi
 tin        | Tin        | 205,205,215 | ore crushed purified dust ingot plate
 bronze     | Bronze     | 205,140,60  | dust ingot plate gear
 steel      | Steel      | 120,122,132 | ingot plate rod gear
-nickel     | Nickel     | 200,200,150 | dust ingot
-gold       | Gold       | 240,200,60  | dust ingot
+nickel     | Nickel     | 200,200,150 | dust ingot plate
+gold       | Gold       | 240,200,60  | ore crushed purified dust ingot
 bauxite    | Bauxite    | 190,110,90  | ore crushed purified dust
 aluminium  | Aluminium  | 190,205,220 | dust ingot plate
 ilmenite   | Ilmenite   | 70,60,60    | ore crushed purified dust
@@ -17,3 +17,19 @@ titanium_alloy | Titanium alloy | 170,150,200 | ingot plate
 # Ring metals (M24): from ring rocks, smelted in the arc furnace.
 platinum   | Platinum   | 215,215,205 | ore ingot
 iridium    | Iridium    | 185,195,205 | ore ingot
+# (#1473, the underground plan #1465) Ores of the vein families (ore_families.txt) and their metals. Each ore has the
+# generic LV line (machine_recipes.txt, GUESS) so it is reachable; GregTech byproducts, the real chains and the ladder
+# tiers come after the playtest. Mercury (cinnabar) comes as a fluid later.
+galena      | Galena      | 95,98,110   | ore crushed purified dust
+sphalerite  | Sphalerite  | 120,85,40   | ore crushed purified dust
+acanthite   | Acanthite   | 60,60,66    | ore crushed purified dust
+magnetite   | Magnetite   | 40,40,44    | ore crushed purified dust
+pentlandite | Pentlandite | 175,150,75  | ore crushed purified dust
+cinnabar    | Cinnabar    | 170,35,35   | ore crushed purified dust
+chromite    | Chromite    | 50,45,42    | ore crushed purified dust
+wolframite  | Wolframite  | 70,58,50    | ore crushed purified dust
+lead        | Lead        | 110,110,130 | dust ingot plate
+zinc        | Zinc        | 180,190,195 | dust ingot plate
+silver      | Silver      | 215,220,225 | dust ingot plate
+chromium    | Chromium    | 205,210,220 | dust ingot
+tungsten    | Tungsten    | 95,95,105   | dust ingot

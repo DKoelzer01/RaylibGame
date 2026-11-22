@@ -13,3 +13,14 @@ tin        | tin_ore      | 0.62, 0.62, 0.64  | speckle     | 4         | 0.12  
 coal       | coal         | 0.03, 0.03, 0.035 | seams       | 4         | 0.22    | 0    | 0.25
 bauxite    | bauxite_ore  | 0.62, 0.22, 0.16  | nodules     | 20        | 0.14    | 4    | 0
 ilmenite   | ilmenite_ore | 0.13, 0.08, 0.16  | crystals    | 60        | 0.10    | 5    | 0
+# (#1467, #1473) The vein families' ores (ore_families.txt). No deposit or pocket share of their own: they appear only
+# through their families (Lighting's family pick in PlanetField), so today's worlds are unchanged until that lands.
+galena      | galena_ore      | 0.34, 0.35, 0.40  | crystals    | 20        | 0       | 6    | 0
+sphalerite  | sphalerite_ore  | 0.36, 0.22, 0.08  | speckle     | 20        | 0       | 7    | 0
+acanthite   | acanthite_ore   | 0.18, 0.18, 0.21  | speckle     | 20        | 0       | 8    | 0
+magnetite   | magnetite_ore   | 0.07, 0.07, 0.08  | nodules     | 10        | 0       | 9    | 0
+pentlandite | pentlandite_ore | 0.62, 0.52, 0.24  | veins       | 40        | 0       | 10   | 0
+cinnabar    | cinnabar_ore    | 0.62, 0.10, 0.09  | crystals    | 15        | 0       | 11   | 0
+chromite    | chromite_ore    | 0.11, 0.10, 0.09  | nodules     | 80        | 0       | 12   | 0
+wolframite  | wolframite_ore  | 0.20, 0.16, 0.13  | crystals    | 90        | 0       | 13   | 0
+gold        | gold_ore        | 0.85, 0.66, 0.16  | veins       | 30        | 0       | 14   | 0

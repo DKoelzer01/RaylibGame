@@ -26,6 +26,8 @@
 #include "hostserver.h"
 #include "composed.h"
 #include "laddermigrate.h"
+#include "ores.h"
+#include "orefamilies.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -5129,9 +5131,14 @@ int main(int argc, char** argv)
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
                     std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "bitterroot", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
-                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
+                                                   "ice", "regolith", "telescope", "map", "basic_suit",
                                                    "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
                                                    "quartz", "amethyst", "ruby", "sapphire", "emerald" };
+                    // (#1467) The ores the world places: ores.txt kinds with a deposit or pocket share of their own, and
+                    // every member of an ore family (ore_families.txt)
+                    for (const OreDef& o : Ores_All()) if (o.deposit > 0.0f || o.pocket > 0.0f) have.insert(o.item);
+                    for (const OreFamily& fam : OreFamilies_All())
+                        for (const OreFamilyMember& m : fam.members) if (const OreDef* o = Ores_Get(m.kind)) have.insert(o->item);
                     std::set<std::string> used;
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
@@ -5139,6 +5146,8 @@ int main(int argc, char** argv)
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log", "any_stone" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
+                    // (#1449 T1) an old per-material tool (stone_shovel) is its class with that head now: had with the class
+                    for (const ItemDef& d : itemDB.items()) { std::string cls, data; if (Composed_FromLegacy(d.id, cls, data)) { Rule u; u.in = { cls }; u.out = { d.id }; rules.push_back(u); } }
                     // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
                     { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
                     { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
