@@ -317,7 +317,15 @@ void QuestTree_DrawTab() {
     // (#890) The open tier's objectives: a semi-transparent pop-out beside its box, each with its progress and a pin box
     // (up to kMaxPins pinned to the HUD, the player's own). Esc, a click outside it or the tier again closes it.
     if (openTier >= 0 && openTier < QuestBook_TierCount()) {
-        { const ImVec2 b = boxAt(0.0f, (float)openTier); ImGui::SetNextWindowPos(ImVec2(b.x + bw + 8.0f, b.y), ImGuiCond_Always); } // (beside its box, wherever the tree is scrolled)
+        static ImVec2 popSize(0.0f, 0.0f); // (its size last frame: it sizes itself to its contents)
+        { // beside its box, wherever the tree is scrolled; kept on screen (#1558: a tier near the bottom ran it off the bottom)
+            const ImVec2 b = boxAt(0.0f, (float)openTier), screen = ImGui::GetIO().DisplaySize;
+            const float m = 8.0f;
+            float x = b.x + bw + m, y = b.y;
+            if (x + popSize.x > screen.x - m && b.x - m - popSize.x >= m) x = b.x - m - popSize.x; // no room on the right: the left
+            y = std::max(m, std::min(y, screen.y - m - popSize.y));                               // up, to end above the bottom
+            ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+        }
         ImGui::SetNextWindowBgAlpha(0.93f); // (semi-transparent, but the tree behind must not show through the text)
         if (focusedTier != openTier) { focusedTier = openTier; ImGui::SetNextWindowFocus(); } // (#1077) focus it when a tier opens (it opened behind the Tab window)
         bool keep = true;
@@ -327,6 +335,7 @@ void QuestTree_DrawTab() {
             // (#1077) and keep it in front of the tree it belongs to: a click on the tree (or anywhere in the Tab window) would
             // otherwise bring that window over it again
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+            popSize = ImGui::GetWindowSize();
             const int t = openTier;
             ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.55f, 1.0f), "Tier %d: %s", t, QuestBook_TierName(t));
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 26.0f);
