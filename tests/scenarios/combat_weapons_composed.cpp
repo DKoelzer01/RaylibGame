@@ -13,6 +13,7 @@
 #include "inventory.h"
 #include "itemdata.h"
 #include "melee.h"
+#include "damage.h"
 #include "player.h"
 #include "playerinput.h"
 #include "terraintool.h"
@@ -130,6 +131,28 @@ SCENARIO("combat/weapons-composed") {
         if (cell >= 0) c.check("its own wear rose", ItemData::GetInt(inventory.grid()[cell].data, "w", 0) > S.wear0,
                                "w " + std::to_string(S.wear0) + " -> " + inventory.grid()[cell].data);
         c.keepCapture("a composed bronze sword's light hit (#1219)");
+        return true;
+    });
+    // (#1219) A ruby in its one socket: the next hit burns (instead of bleeding).
+    s.step("a ruby set in the sword: the next hit burns", 8.0, [](ScenarioCtx& c) {
+        Pin(); LookAtDummy(c);
+        static long press = -1; static int hits0 = 0;
+        if (press < 0) {
+            if (c.t < 0.2) return false;
+            const int cell = SwordCell();
+            if (!c.check("the sword", cell >= 0)) { c.fail("no sword"); return true; }
+            c.check("the ruby set", inventory.setInstanceData(cell, ItemData::Set(inventory.grid()[cell].data, "j", "ruby")));
+            const StatusState* st0 = Animals_Status(Idx());
+            if (st0) c.note("burn before: " + std::to_string(st0->burn));
+            hits0 = Animals_MeleeHits();
+            if (Animals_Melee().phase != MeleePhase::Idle) return false;
+            gFakeHeld |= kLmb; press = c.frame;
+            return false;
+        }
+        if (c.frame > press) gFakeHeld &= ~kLmb;
+        if (Animals_MeleeHits() == hits0) { c.waitingFor("the second hit"); return false; }
+        const StatusState* st = Animals_Status(Idx());
+        c.check("it burns", st && st->burn > 0.0f, st ? "burn " + std::to_string(st->burn) : std::string("gone"));
         gScenarioInput = false;
         return true;
     });

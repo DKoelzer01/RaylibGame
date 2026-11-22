@@ -2,6 +2,7 @@
 #include "melee.h"
 #include "composed.h"
 #include "tools.h"
+#include "itemdata.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -52,6 +53,21 @@ WeaponSpec Weapon_SpecOf(const std::string& id, const std::string& data) {
     const float k = Weapon_TimeScale(id, data);
     w.windUp *= k; w.hit *= k; w.recovery *= k;
     return w;
+}
+
+GemEffect Weapon_GemEffect(const std::string& id, const std::string& data) {
+    GemEffect g;
+    if (!Composed_Is(id)) return g;
+    const ComposedStats s = Composed_Stats(id, data);
+    for (const std::string& gem : s.gems) {
+        if (g.status == StatusKind::None) { // the first elemental gem sets the hit's effect (GUESS)
+            if (gem == "ruby") g.status = StatusKind::Burn;
+            else if (gem == "sapphire") g.status = StatusKind::Chill;
+            else if (gem == "amethyst") g.status = StatusKind::Shock;
+        }
+        if (gem == "quartz") g.poiseScale *= 1.5f; // GUESS
+    }
+    return g;
 }
 
 float Weapon_BaseDamage(const std::string& id, const std::string& data) {
@@ -343,6 +359,29 @@ TEST(Melee, AHeavierHeadSwingsSlower) { // (#1219)
     EXPECT_FLOAT_EQ(b.recovery, base.recovery * bronze);
     EXPECT_FLOAT_EQ(b.reach, base.reach) << "reach stays the class's";
     EXPECT_FLOAT_EQ(Weapon_SpecOf("", "").windUp, Weapon_Spec(WeaponClass::Tools).windUp) << "hands as before";
+}
+
+TEST(Melee, SetGemsAddTheirEffects) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    const std::string steel = Composed_MakeData("steel"); // two sockets
+    EXPECT_EQ(Composed_Stats("weapon_sword", steel).sockets, 2);
+    const std::string two = ItemData::Set(steel, "j", "ruby,quartz");
+    const GemEffect g = Weapon_GemEffect("weapon_sword", two);
+    EXPECT_EQ(g.status, StatusKind::Burn);
+    EXPECT_FLOAT_EQ(g.poiseScale, 1.5f);
+    EXPECT_EQ(Weapon_GemEffect("weapon_sword", ItemData::Set(steel, "j", "sapphire,amethyst")).status, StatusKind::Chill) << "the first elemental gem";
+    EXPECT_EQ(Weapon_GemEffect("weapon_sword", steel).status, StatusKind::None) << "no gems";
+    // No more gems than sockets: bronze has one; an unknown gem is ignored.
+    const ComposedStats b = Composed_Stats("weapon_sword", ItemData::Set(Composed_MakeData("bronze"), "j", "ruby,sapphire"));
+    ASSERT_EQ(b.gems.size(), 1u);
+    EXPECT_EQ(b.gems[0], "ruby");
+    EXPECT_TRUE(Composed_Stats("weapon_sword", ItemData::Set(steel, "j", "diamond")).gems.empty());
+    // An emerald: +25% durability; the tooltip lists the gems.
+    const int plain = Composed_Stats("weapon_sword", steel).durability;
+    EXPECT_EQ(Composed_Stats("weapon_sword", ItemData::Set(steel, "j", "emerald")).durability, (int)std::lround(plain * 1.25f));
+    const std::string t = Composed_PartsText("weapon_sword", two);
+    EXPECT_NE(t.find("Sockets 2/2"), std::string::npos) << t;
+    EXPECT_NE(t.find("Ruby (burns)"), std::string::npos) << t;
 }
 
 TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)
