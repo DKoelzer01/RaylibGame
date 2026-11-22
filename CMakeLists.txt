@@ -153,6 +153,7 @@ if(RAYLIBGAME_HEADLESS)
 endif()
 if(WIN32)
     target_link_libraries(engine PUBLIC ws2_32 iphlpapi) # (#341) the menu's Host checks its port is free (hostprocess.cpp), in every build
+    target_link_libraries(engine PUBLIC dbghelp) # (#1526) the crash handler's minidump (logger.cpp)
 endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(engine PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security -ffp-contract=off) # no FMA contraction: the GPU terrain port (terrain.glsl) matches the CPU bit for bit

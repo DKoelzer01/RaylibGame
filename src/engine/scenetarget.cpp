@@ -45,6 +45,7 @@ namespace {
         bool hdr = true, autoExposure = true;
         int tonemap = 0;                       // tonemap: 0 knee (today's look up to the knee, highlights roll off), 1 ACES, 2 clip
         float knee = 0.8f, key = 0.35f, eMin = 0.35f, eMax = 1.0f, tau = 1.5f;
+        float brightnessEV = getenv("RAYLIBGAME_BRIGHTNESS") ? std::clamp((float)atof(getenv("RAYLIBGAME_BRIGHTNESS")), -1.0f, 1.0f) : 0.0f; // (#1166) Settings > Brightness (stops); RAYLIBGAME_BRIGHTNESS for captures
         GLuint expProg = 0, expBuf = 0;         // the exposure (and the measured luminance) in a 2-float SSBO
         GLint locTonemap = -1, locKnee = -1, locDt = -1, locKey = -1, locEMin = -1, locEMax = -1, locTau = -1;
         // Bloom (#140): a dual-filter (Kawase) chain on the linear scene, kBloomLevels from half size, mixed into the
@@ -93,6 +94,7 @@ in vec2 uv;
 uniform sampler2D scene;
 uniform int tonemap;
 uniform float knee;
+uniform float brightnessEV; // (#1166) Settings > Brightness: an exposure offset in stops (0: as tuned)
 uniform int nanDebug; // RAYLIBGAME_NAN_CHECK=1: non-finite pixels in magenta (#402)
 uniform sampler2D bloomTex; // #140: the blur chain's top level (linear), 0 strength = none
 uniform float bloomStrength;
@@ -197,7 +199,7 @@ void main() {
     if (ssaoDebug == 1) { color = vec4(vec3(ssaoStrength > 0.0 ? ssao() : 1.0), 1.0); return; }
     if (ssaoStrength > 0.0) lin *= ssao(); // #933
     if (bloomStrength > 0.0) lin = mix(lin, texture(bloomTex, gl_FragCoord.xy / vec2(textureSize(scene, 0))).rgb / bloomLevels, bloomStrength); // #140
-    lin = lin * (exposure > 0.0 ? exposure : 1.0);
+    lin = lin * (exposure > 0.0 ? exposure : 1.0) * exp2(brightnessEV); // (#1166) the player's brightness
     vec3 t = tonemap == 1 ? aces(lin) : tonemap == 2 ? min(lin, vec3(1.0)) : kneeCurve(lin);
     color = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
 }
@@ -685,6 +687,7 @@ void SceneTarget_End() {
     if (S.hdr) {
         static const int nanCheck = getenv("RAYLIBGAME_NAN_CHECK") && getenv("RAYLIBGAME_NAN_CHECK")[0] == '1';
         glUniform1i(S.locTonemap, S.tonemap); glUniform1f(S.locKnee, S.knee);
+        glUniform1f(glGetUniformLocation(S.prog, "brightnessEV"), S.brightnessEV); // (#1166)
         glUniform1i(glGetUniformLocation(S.prog, "nanDebug"), nanCheck);
         const bool bloomOn = S.bloom && S.bloomTex[0];
         glActiveTexture(GL_TEXTURE1);
@@ -735,3 +738,5 @@ void SceneTarget_SetTonemap(int curve) {
     S.tonemap = std::clamp(curve, 0, 2);
 }
 int SceneTarget_Tonemap() { return S.tonemap; }
+// (#1166) Settings > Brightness: an exposure offset in stops, after auto-exposure and before the tonemap (-1..+1).
+void SceneTarget_SetBrightness(float ev) { if (getenv("RAYLIBGAME_BRIGHTNESS")) return; S.brightnessEV = std::clamp(ev, -1.0f, 1.0f); } // the env wins (captures)
