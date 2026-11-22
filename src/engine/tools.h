@@ -6,6 +6,7 @@
 // only scrape soft ground a little at a time and fell trees slowly. Each tier digs a bigger sphere.
 // Items are "<tier>_<type>" (stone_pickaxe ... titanium_axe); see items.txt and recipes.txt.
 
+#include <functional>
 #include <string>
 #include "voxel.h"
 
@@ -16,7 +17,11 @@ struct ToolSpec {
     int tier = 0; // 0 hands, 1 stone, 2 iron, 3 steel, 4 titanium
 };
 
-ToolSpec ToolOf(const std::string& itemId);  // hands for anything that is not a tool
+ToolSpec ToolOf(const std::string& itemId);  // hands for anything that is not a tool; a composed class (#1449): the held copy's parts (gToolDataOf)
+ToolSpec ToolOf(const std::string& itemId, const std::string& data); // (#1449) a composed item's type and tier from its own parts
+int ToolDurabilityOf(const std::string& itemId, const std::string& data); // (#1449) its strokes (composed: from its parts)
+// (#1449) A composed tool named by id alone (the local player's held tool): its record, from the game (the held hotbar cell).
+inline std::function<std::string(const std::string& id)> gToolDataOf;
 const char* ToolTierName(int tier);          // "stone", "iron"...
 const char* ToolTypeName(ToolType t);        // "pickaxe"...
 

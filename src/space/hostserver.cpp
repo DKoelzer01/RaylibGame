@@ -22,6 +22,7 @@
 #include "factory.h"
 #include "gamerng.h"
 #include "tools.h"
+#include "composed.h"
 #include "animals.h"
 #include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
@@ -231,6 +232,7 @@ namespace {
     }
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
     void FlushInstanceDeltas(); // (below, #1446)
+    ToolSpec RemoteToolOf(uint32_t session, const std::string& held); // (below, #1449)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     template <class M> void SendToJoined(const M& m); // (below)
     // ---- #334 animals ----
@@ -696,7 +698,7 @@ namespace {
             if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuseLog(why.c_str(), why.c_str()); return; } // (#343)
             std::string held;
             for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-            const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
+            const int hits = TerrainTool_HitsToFell(pl, RemoteToolOf(session, held));
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuseLog(TextFormat("too soon (%.2f s of %.2f s, %d swings with '%s')", SimTime() - rm.lastFellAt, minGap, hits, held.c_str()), nullptr); return; }
             rm.lastFellAt = SimTime();
@@ -923,7 +925,7 @@ namespace {
             return;
         }
         std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-        const ToolSpec t = ToolOf(held);
+        const ToolSpec t = RemoteToolOf(session, held);
         const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
@@ -1524,6 +1526,15 @@ namespace {
 
     // (#1446) Each remote player's journal of items with their own data (added, taken, record changed) as InventoryDeltas,
     // in order, once a tick; an offline player's journal is dropped (their client gets their record on the next join).
+    // (#1449) A remote player's tool by its loadout id: a composed class takes its parts from that player's own copy (the
+    // first held: the loadout names only the id), never from gToolDataOf (the server's local player).
+    ToolSpec RemoteToolOf(uint32_t session, const std::string& held) {
+        if (!Composed_Is(held)) return ToolOf(held);
+        auto rit = remotes.find(session);
+        if (rit != remotes.end())
+            for (const InvSlot& c : rit->second.inventory.grid()) if (c.id == held && c.hasData()) return ToolOf(held, c.data);
+        return ToolOf(held, std::string());
+    }
     void FlushInstanceDeltas() {
         for (auto& [session, r] : remotes) {
             if (r.inventory.instanceLog.empty()) continue;
@@ -1561,7 +1572,7 @@ namespace {
         // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
         std::string held;
         for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-        const ToolSpec tool = ToolOf(held);
+        const ToolSpec tool = RemoteToolOf(session, held);
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
         const DigRule rule = DigRuleFor(tool, mat, TerrainTool_ItemAt(*p, hit, (int)mat));

@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "composed.h"
 
 #include <cstring>
 
@@ -10,7 +11,25 @@ namespace {
 const char* ToolTierName(int tier) { return kTiers[tier < 0 ? 0 : tier > 4 ? 4 : tier]; }
 const char* ToolTypeName(ToolType t) { return kTypes[(int)t]; }
 
+ToolSpec ToolOf(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id)) return ToolOf(id);
+    const ComposedStats st = Composed_Stats(id, data);
+    if (st.valid) return st.tool;
+    // A composed tool without a known head (spawned bare): its type at the lowest tier.
+    const ComposedStats bare = Composed_Stats(id, Composed_MakeData("stone"));
+    ToolSpec s = bare.tool;
+    if (s.type != ToolType::Hands) s.tier = 1;
+    return s;
+}
+
+int ToolDurabilityOf(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id)) return ToolDurability(ToolOf(id));
+    const ComposedStats st = Composed_Stats(id, data);
+    return st.valid ? st.durability : ToolDurability(ToolOf(id, data)); // (weapons wear too)
+}
+
 ToolSpec ToolOf(const std::string& id) {
+    if (Composed_Is(id)) return ToolOf(id, gToolDataOf ? gToolDataOf(id) : std::string()); // (#1449) the held copy's parts
     ToolSpec s;
     const size_t u = id.find('_');
     if (u == std::string::npos) return s;

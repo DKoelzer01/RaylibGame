@@ -14,6 +14,7 @@
 #include "netid.h"
 #include "inventory.h"
 #include "itemdata.h"
+#include "composed.h"
 #include "player.h"
 #include "playerrecord.h"
 #include "teamquests.h"
@@ -241,6 +242,8 @@ bool ReadRecordInto(const std::string& path, RecordTarget t, PlayerRecordMeta& m
         if (!t.local) t.kept += std::string(tok) + rest; // another game's line (hotbar, pins, ...): kept as it was
     }
     fclose(f);
+    // (#1449) old per-material tools become composed ones (a remote player's per-id wear stays in its kept lines: lost here)
+    Composed_ConvertInventory(t.inv, t.local ? &LocalSession().toolWear.used : nullptr);
     return true;
 }
 
@@ -388,6 +391,8 @@ void GameSave_Register() {
             }
         pendingFrames.clear();
         Farm_LoadDone(); // (#1085) an old save's farmland parts become tilled ground, with their crops
+        // (#1449) old per-material tools in the player's hands become composed ones, their wear moved into each
+        if (const int n = Composed_ConvertInventory(inventory, &LocalSession().toolWear.used)) printf("load: %d old tools became composed tools (#1449)\n", n);
         if (!ladderWorld) LadderMigrate_World(); // (#1272) an old save: tiers, research and the removed 8 V machines, once
         ladderWorld = true;
         inWorldLoad = false;
@@ -705,9 +710,9 @@ TEST_F(SaveTest, PlayerRecordRoundTrip) {
     EXPECT_FLOAT_EQ(p2.jetpackFuel, 0.4f);
     EXPECT_EQ(inv2.count("iron_ingot"), 7);
     EXPECT_DOUBLE_EQ(inv2.amount("iron_ore"), 2.5);
-    EXPECT_EQ(inv2.count("stone_pickaxe"), 1);
+    EXPECT_EQ(inv2.countInstances("tool_pickaxe"), 1) << "(#1449) the old stone pickaxe loads as a composed one";
     for (int i = 0; i < Inventory::kCells; ++i) {
-        EXPECT_EQ(inv2.grid()[i].id, inv.grid()[i].id) << "cell " << i;
+        EXPECT_EQ(inv2.grid()[i].id, inv.grid()[i].id == "stone_pickaxe" ? std::string("tool_pickaxe") : inv.grid()[i].id) << "cell " << i; // (#1449)
         EXPECT_NEAR(inv2.grid()[i].heat, inv.grid()[i].heat, 1e-3f) << "cell " << i;
     }
     EXPECT_FLOAT_EQ(sv2.health, 63.0f); EXPECT_FLOAT_EQ(sv2.food, 41.0f); EXPECT_FLOAT_EQ(sv2.oxygen, 80.0f); EXPECT_EQ(sv2.deaths, 3);
@@ -833,6 +838,7 @@ TEST_F(SaveTest, Format12MigratesTo13) {
     inventory.clear();
     ReadExtras(w);
     EXPECT_EQ(inventory.count("iron_ingot"), 7);
-    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "stone_pickaxe");
+    EXPECT_EQ(inventory.grid()[Inventory::kGrid].id, "tool_pickaxe") << "(#1449) an old tool loads as its composed class";
+    EXPECT_EQ(ItemData::Get(inventory.grid()[Inventory::kGrid].data, "h"), "stone");
 }
 #endif

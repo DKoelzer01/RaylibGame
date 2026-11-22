@@ -53,7 +53,7 @@ namespace {
     int HitsToFell(const Plant& p) { return TerrainTool_HitsToFell(p, tool); }
 
     ToolSpec HeldTool() {
-        if (terrainTool.heldTool.empty() || inventory.count(terrainTool.heldTool) <= 0) return ToolSpec{};
+        if (terrainTool.heldTool.empty() || inventory.held(terrainTool.heldTool) <= 0) return ToolSpec{}; // (#1449) copies with data count
         return ToolOf(terrainTool.heldTool);
     }
 
