@@ -8171,7 +8171,9 @@ int main(int argc, char** argv)
                                         const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
                                         const float eq = pf->elevation(q);
                                         if (pf->waterSourceAt(q).kind) continue;
-                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
+                                        // (#1504) from the sea, at least 10 m of open water first: a shore 2 m out put the trench's end in the sea's
+                                        // reach at once (flooded in 0.1 s, never asleep), where the 21 m of the old pick ran a real channel
+                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 10.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
                                         break;
                                     }
                                 }

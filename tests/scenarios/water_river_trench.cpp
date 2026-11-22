@@ -59,8 +59,8 @@ SCENARIO("water/river-trench") {
             cut.push_back({ Vector3Scale(d, floorR + 1.5f), 1.2f, -1.0f, true });
         }
         ApplyTerrainEdits(*c.body, cut.data(), cut.size());
-        c.note(TextFormat("river at %.0f m: half width %.1f m, level %.2f m; trench from its bank 15 m out, floor 1.5 m under the level (%s)",
-                          Vector3Distance(Vector3Scale(home, R), Vector3Scale(hit, R)), rh.halfWidth, ws.level,
+        c.note(TextFormat("river at %.0f m (lat %.5f lon %.5f): half width %.1f m, level %.2f m; trench from its bank 15 m out, floor 1.5 m under the level (%s)",
+                          Vector3Distance(Vector3Scale(home, R), Vector3Scale(hit, R)), asinf(hit.y) * RAD2DEG, atan2f(hit.z, hit.x) * RAD2DEG, rh.halfWidth, ws.level,
                           getenv("RAYLIBGAME_RIVER_VALLEY") && getenv("RAYLIBGAME_RIVER_VALLEY")[0] == '0' ? "valley widths off" : "valley widths on"));
         const Vector3 eye = Vector3Add(Vector3Scale(hit, R + ws.level + 25.0f), Vector3Scale(side, 25.0f));
         c.camera(eye, Vector3Scale(hit, R + ws.level), hit);
