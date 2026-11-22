@@ -33,6 +33,7 @@ struct ComposedStats {
     float digSpeed = 1.0f;         // against its tier's usual (1 for the default parts)
     float weight = 0.0f;           // kg
     int sockets = 0;
+    std::vector<std::string> gems; // (#1219) set in its sockets ("j="), at most sockets
     float quality = 1.0f;          // the anvil's quality (q %, 90-110)
     int wear = 0;                  // strokes used (w)
     std::string name;              // "Bronze pickaxe"
@@ -50,6 +51,9 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
 // handle / binding (wood_handle, leather_binding); the material is a part_materials.txt row. Other ingredients are ignored.
 // A missing handle or binding takes the head's default; no head: "" (the recipe is wrong: the item stays plain).
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct = 100);
+// (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
+bool Composed_IsGem(const std::string& id);
+std::string Composed_GemText(const std::string& id);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
 class Inventory;

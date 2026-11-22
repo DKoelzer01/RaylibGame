@@ -99,6 +99,17 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
     return d;
 }
 
+bool Composed_IsGem(const std::string& id) { return id == "ruby" || id == "sapphire" || id == "emerald" || id == "amethyst" || id == "quartz"; }
+
+std::string Composed_GemText(const std::string& id) { // (#1219, combat doc: GUESS effects)
+    if (id == "ruby") return "Ruby (burns)";
+    if (id == "sapphire") return "Sapphire (chills)";
+    if (id == "emerald") return "Emerald (+25% durability)";
+    if (id == "amethyst") return "Amethyst (shocks)";
+    if (id == "quartz") return "Quartz (+50% poise damage)";
+    return id;
+}
+
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct) {
     const ComposedClass* c = Composed_Class(cls);
     if (!c) return {};
@@ -144,6 +155,17 @@ ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
     s.digSpeed = head->tier > 0 ? std::clamp(head->hardness / (float)head->tier, 0.5f, 1.5f) : 1.0f;
     s.weight = 0.4f * head->density + 0.3f * (handle ? handle->density : 0.7f) + 0.05f * (binding ? binding->density : 0.3f);
     s.sockets = std::max(head->sockets, binding ? binding->sockets : 0);
+    { // (#1219) gems set in its sockets: "j=ruby,sapphire", no more than it has sockets; an emerald: x1.25 durability (GUESS)
+        const std::string j = ItemData::Get(data, "j");
+        size_t a = 0;
+        while (a < j.size() && (int)s.gems.size() < s.sockets) {
+            size_t b = j.find(',', a); if (b == std::string::npos) b = j.size();
+            const std::string g = j.substr(a, b - a);
+            if (Composed_IsGem(g)) s.gems.push_back(g);
+            a = b + 1;
+        }
+        for (const std::string& g : s.gems) if (g == "emerald") s.durability = (int)std::lround(s.durability * 1.25f);
+    }
     std::string noun = c->noun;
     std::string mat = head->name;
     s.name = mat + " " + noun;
@@ -202,7 +224,13 @@ std::string Composed_PartsText(const std::string& id, const std::string& data) {
     if (s.tool.type != ToolType::Hands) { snprintf(buf, sizeof buf, "\nTier %d (%s)", s.tool.tier, ToolTierName(s.tool.tier)); t += buf; }
     snprintf(buf, sizeof buf, "\nDurability %d / %d", std::max(0, s.durability - s.wear), s.durability); t += buf;
     if (s.quality != 1.0f) { snprintf(buf, sizeof buf, "   Quality %+.0f%%", (s.quality - 1.0f) * 100.0f); t += buf; }
-    if (s.sockets > 0) { snprintf(buf, sizeof buf, "   Sockets %d", s.sockets); t += buf; }
+    if (s.sockets > 0) {
+        snprintf(buf, sizeof buf, "   Sockets %d/%d", (int)s.gems.size(), s.sockets); t += buf; // (#1219) set / free
+        if (!s.gems.empty()) {
+            t += "\nGems:";
+            for (const std::string& g : s.gems) t += " " + Composed_GemText(g);
+        }
+    }
     return t;
 }
 
@@ -308,7 +336,7 @@ TEST(Composed, NamesAndPartsForTheUi) {
     EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;
     EXPECT_NE(t.find("Durability 380 / 420"), std::string::npos) << t; // 400 x 1.05 quality, 40 used
     EXPECT_NE(t.find("Quality +5%"), std::string::npos) << t;
-    EXPECT_NE(t.find("Sockets 1"), std::string::npos) << t;
+    EXPECT_NE(t.find("Sockets 0/1"), std::string::npos) << t; // (#1219: set / sockets)
 }
 
 TEST(Composed, UnknownsAreNotValid) {

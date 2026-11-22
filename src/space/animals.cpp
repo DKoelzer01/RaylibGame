@@ -1862,6 +1862,9 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         e.type = Weapon_TypeOf(terrainTool.heldTool);
         e.heavy = gMelee.heavy;
         e.poise = Melee_Poise(gMelee, w);
+        { const GemEffect ge = Weapon_GemEffect(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string()); // (#1219) set gems
+          if (ge.status != StatusKind::None) e.status = ge.status;
+          e.poise *= ge.poiseScale; }
         e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
         { const CreatureSpec* fs = Creature_Spec(species[a.species].id); // (#1227) at its face: within its shield's arc of its facing
           e.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(eye, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
