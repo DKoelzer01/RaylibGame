@@ -37,19 +37,22 @@ SCENARIO("world/locate") {
     s.timeout = 240.0;
     s.step("locate every feature from the start", 180.0, [](ScenarioCtx& c) { // (most of it waiting for the spawn screen on a slow machine)
         Player& p = LocalSession().player;
-        if (c.T < 1.0 || !p.nearest) return false; // (a slow machine is still on the spawn loading screen: no body yet)
+        if (c.T < 1.0) return false;
         terrainTool.creative = true; // (the commands are creative's)
-        const Vector3 from = p.nearest->toLocalD(p.position).toFloat();
+        // From the player where it stands; before its first update (no body yet) from the spawn point on the planet
+        Planetoid* const body = p.nearest ? p.nearest : c.body;
+        const Vector3 from = p.nearest ? p.nearest->toLocalD(p.position).toFloat() : Vector3Scale(c.field->findSpawnDir(c.body->seed), c.field->radius + 2.0f);
+        if (!p.nearest) c.note("the player has no body yet: searching from the spawn point");
         const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert", "ore", "ore:iron" };
         const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
         for (const char* f : common) {
             std::vector<LocateHit> hits; std::string why;
-            const bool ok = Locate_Find(*p.nearest, from, f, 3, hits, why);
+            const bool ok = Locate_Find(*body, from, f, 3, hits, why);
             c.check(TextFormat("/locate %s finds one", f), ok, ok ? TextFormat("%s at %.0f m", hits[0].what.c_str(), hits[0].distance) : why);
         }
         for (const char* f : rare) {
             std::vector<LocateHit> hits; std::string why;
-            if (Locate_Find(*p.nearest, from, f, 1, hits, why)) c.note(TextFormat("/locate %s: %s, %.1f km %s", f, hits[0].what.c_str(), hits[0].distance / 1000.0f, Locate_CompassPoint(hits[0].bearing)));
+            if (Locate_Find(*body, from, f, 1, hits, why)) c.note(TextFormat("/locate %s: %s, %.1f km %s", f, hits[0].what.c_str(), hits[0].distance / 1000.0f, Locate_CompassPoint(hits[0].bearing)));
             else c.note(TextFormat("/locate %s: %s", f, why.c_str()));
         }
         // The command itself (a waypoint, its reply) and an unknown feature's answer.
