@@ -1938,7 +1938,7 @@ int main(int argc, char** argv)
                 const Vector3 o = Vector3AddValue(Vector3Scale(d, r), -0.5f * stride * (E - 1));
                 const float fp = std::max(stride, 1.0f);
                 PlanetField::BlockGrid g;
-                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, 32)) { ++skipped; continue; }
+                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, PlanetField::kGpuCaveSegsMax)) { ++skipped; continue; }
                 const double c1 = GetTime();
                 pf->sampleBlock(o, stride, E, fp, g, cpuB.data());
                 cpuBlockMs += (GetTime() - c1) * 1000.0;

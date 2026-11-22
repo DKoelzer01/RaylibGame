@@ -343,6 +343,7 @@ public:
     // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
     // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
     bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
+    static constexpr int kGpuCaveSegsMax = 64;  // (#1465) a block with more cave segments takes the CPU path (was 32: ~15% of cave blocks over it)
     static bool CavesGraph();
     // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
     // outward (downhill) direction, body-local. Tests and captures.
