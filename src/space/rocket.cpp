@@ -1318,3 +1318,21 @@ bool Rocket_DockedAtStation() {
     Planetoid* body = state == RocketState::OnPad ? PadBody() : nullptr;
     return body && Station_Is(*body);
 }
+
+bool Rocket_TestState(DVec3& c, Vector3& v, FrameRef* frame) {
+    if (state != RocketState::Flying) return false;
+    c = com; v = vel;
+    if (frame) *frame = Framed() ? rf.frame : FrameRef{};
+    return true;
+}
+
+bool Rocket_TestSetState(const DVec3& c, const Vector3& v) {
+    if (state != RocketState::Flying) return false;
+    com = c; vel = v;           // the frame step sees an outside write and re-seeds its state from these
+    angVel = { 0, 0, 0 };
+    throttle = 0.0f;
+    autopilot = RocketAutopilot::Off;
+    flightTime = 2.0;           // past the lift-off grace: contacts count from here
+    interpValid = false;        // a teleport: no interpolation from the old place
+    return true;
+}
