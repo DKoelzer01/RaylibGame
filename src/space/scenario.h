@@ -99,6 +99,9 @@ struct ScenarioDef {
     bool legacyDrives = false;
     std::vector<std::string> shots;           // (legacyDrives) the files to compare, e.g. "bench_graves.png"; empty: all new
     double shotTolerance = 3.0;               // (legacyDrives) % of differing pixels allowed
+    // (#1442) Every scenario reports camera_inside_solid_frames / player_inside_solid_frames (cliptelemetry.h); with this
+    // set, a frame with the camera or the player inside solid ground or a built cube turns a PASS into a FAIL.
+    bool expectNoClip = false;
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }
