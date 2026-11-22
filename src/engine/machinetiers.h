@@ -21,6 +21,7 @@ const char* MachineTiers_Name(int tier);           // "LV", "MV", ... ("" out of
 int MachineTiers_Volts(int tier);                  // 32, 128, ... (0 out of range)
 int MachineTiers_ByName(const std::string& name);  // "lv" / "LV" -> 0; -1 if unknown
 int MachineTiers_ForVolts(int volts);              // the tier whose voltage that is (the highest at or under it); -1 under LV
+Color MachineTiers_Color(int tier);                 // (L7d) its tint for machines and icons
 const MachineOverclock& MachineTiers_Overclock();
 
 // Families: is this part type tiered, its first tier, its highest variant step (0: only its base).

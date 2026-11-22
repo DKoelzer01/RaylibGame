@@ -11,7 +11,7 @@
 #include <sstream>
 
 namespace {
-struct Tier { std::string name; int volts = 0; };
+struct Tier { std::string name; int volts = 0; Color color = GRAY; };
 struct Family { PartType type = PartType::Count; int first = 0; std::vector<int> tiers; std::map<int, std::string> names; };
 std::vector<Tier> tiers;
 std::vector<Family> families;
@@ -44,7 +44,13 @@ void Parse(std::istream& in) {
         if (line.empty() || line[0] == '#') continue;
         const std::vector<std::string> c = Cols(line);
         if (c.size() < 2) continue;
-        if (c[0] == "tier" && c.size() >= 3) { tiers.push_back({ c[1], atoi(c[2].c_str()) }); continue; }
+        if (c[0] == "tier" && c.size() >= 3) {
+            Tier t{ c[1], atoi(c[2].c_str()) };
+            int r = 0, g = 0, b = 0;
+            if (c.size() >= 4 && sscanf(c[3].c_str(), "%d,%d,%d", &r, &g, &b) == 3) t.color = { (unsigned char)r, (unsigned char)g, (unsigned char)b, 255 }; // (L7d)
+            tiers.push_back(t);
+            continue;
+        }
         if (c[0] == "overclock" && c.size() >= 4) { overclock = { std::max(1, atoi(c[1].c_str())), std::max(1, atoi(c[2].c_str())), std::max(0, atoi(c[3].c_str())) }; continue; }
         if (c[0] == "yield" && c.size() >= 7) { for (int k = 0; k < 6; ++k) yields[k] = std::clamp(atoi(c[k + 1].c_str()), 0, 100); continue; }
         if (c.size() < 3) continue;
@@ -85,6 +91,7 @@ int MachineTiers_ForVolts(int volts) {
     for (int t = 0; t < (int)tiers.size(); ++t) if (tiers[t].volts <= volts) best = t;
     return best;
 }
+Color MachineTiers_Color(int t) { MachineTiers_Load(); return t >= 0 && t < (int)tiers.size() ? tiers[t].color : GRAY; }
 const MachineOverclock& MachineTiers_Overclock() { MachineTiers_Load(); return overclock; }
 
 bool MachineTiers_Tiered(PartType t) { return FamilyOf(t) != nullptr; }
@@ -124,7 +131,8 @@ std::string MachineTiers_ItemsText() {
             const std::string firstName = tiers[f.first].name + " ";
             if (name.compare(0, firstName.size(), firstName) == 0) name = name.substr(firstName.size()); // "LV assembler" -> "assembler"
             name = tiers[tier].name + " " + name;
-            const Color c = base ? base->color : GRAY;
+            const Color b0 = base ? base->color : GRAY, tc = tiers[tier].color; // (L7d) its base's colour toward its tier's
+            const Color c = { (unsigned char)((b0.r * 3 + tc.r * 2) / 5), (unsigned char)((b0.g * 3 + tc.g * 2) / 5), (unsigned char)((b0.b * 3 + tc.b * 2) / 5), 255 };
             char buf[512];
             snprintf(buf, sizeof buf, "%s | %s | block | %d,%d,%d | %s (%d V): its tier's recipes and every one below, those overclocked.\n",
                      id.c_str(), name.c_str(), c.r, c.g, c.b, name.c_str(), tiers[tier].volts);

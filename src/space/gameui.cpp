@@ -34,6 +34,7 @@
 #include "buildtool.h"
 #include "itemicons.h"
 #include "plots.h"
+#include "machinetiers.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
 #include "menus.h"
@@ -1106,9 +1107,28 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
     }
 }
 
+// (#1427 L7d) The open machine's part (its variant step is its material), its voltage tier (-1: not a tiered machine).
+static const Part* ContainerPart() {
+    Planetoid* b = Planetoid::find(container.body);
+    Plot* pl = b && b->plots ? b->plots->byId(container.plot) : nullptr;
+    return pl && container.part >= 0 && container.part < (int)pl->parts.size() && pl->parts[container.part].type == container.type ? &pl->parts[container.part] : nullptr;
+}
+static int ContainerTier() {
+    const Part* p = ContainerPart();
+    return p && MachineTiers_Tiered(p->type) ? MachineTiers_PartTier(p->type, p->material, 0) : -1;
+}
 static void DrawContainer() {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    ImGui::Text("%s", PartName(container.type));
+    { // (#1427 L7d) a variant by its own name, a tiered machine with its tier and voltage
+        const Part* p = ContainerPart();
+        const ItemDef* d = p && IsMachine(p->type) && p->material > 0 ? itemDB.find(PartItem(*p)) : nullptr;
+        ImGui::Text("%s", d ? d->name.c_str() : PartName(container.type));
+        if (const int t = ContainerTier(); t >= 0) {
+            const Color c = MachineTiers_Color(t);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f), "%s %d V", MachineTiers_Name(t), MachineTiers_Volts(t));
+        }
+    }
     ImGui::SameLine();
     if (v.valid) ImGui::TextColored(v.status == MachineStatus::Working ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f) : ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "  %s", MachineStatusName(v.status));
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60.0f);
@@ -1140,9 +1160,20 @@ static void DrawContainer() {
         if (v.mode == 1) ImGui::TextDisabled("Disassembly is not built yet: the assembler waits (#1427)");
     }
     { // (#1271 L6c) a machine of several recipes: what it makes ("Any": the first its inputs allow)
+        // (#1427 L7d) each output with its recipe's tier: one above the machine's can't run here; one under it is overclocked
         std::vector<std::string> outs;
+        std::vector<int> outTier;
         for (const Factory::RecipeInfo& r : Factory::RecipeList())
-            if (r.machine == container.type && !r.out.empty() && std::find(outs.begin(), outs.end(), r.out[0].first) == outs.end()) outs.push_back(r.out[0].first);
+            if (r.machine == container.type && !r.out.empty() && std::find(outs.begin(), outs.end(), r.out[0].first) == outs.end()) { outs.push_back(r.out[0].first); outTier.push_back(r.tier); }
+        const int myTier = ContainerTier();
+        auto tierNote = [&](int rt) -> std::string {
+            if (rt < 0 || myTier < 0) return "";
+            const int steps = MachineTiers_Steps(myTier, rt);
+            if (steps < 0) return TextFormat("  (%s: needs a %s machine)", MachineTiers_Name(rt), MachineTiers_Name(rt));
+            if (steps == 0) return TextFormat("  (%s)", MachineTiers_Name(rt));
+            int speed = 1; for (int s = 0; s < steps; ++s) speed *= MachineTiers_Overclock().speed;
+            return TextFormat("  (%s, overclocked: x%d speed, x%d EU/t)", MachineTiers_Name(rt), speed, MachineTiers_Eu(1, steps));
+        };
         const bool steered = container.type == PartType::Miner || (container.type >= PartType::LvLab && container.type <= PartType::HvLab)
                           || container.type == PartType::SteamLab || container.type == PartType::ManaSiphon; // (the game picks these)
         if (outs.size() > 1 && !steered && !chest) {
@@ -1151,8 +1182,13 @@ static void DrawContainer() {
             ImGui::SetNextItemWidth(std::min(300.0f, ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize("Makes").x - ImGui::GetStyle().ItemInnerSpacing.x)); // ("Makes" stays in view on a narrow screen)
             if (ImGui::BeginCombo("Makes", now.c_str())) {
                 if (ImGui::Selectable("Any (what its inputs allow)", v.pick.empty())) MachineAct_SetPick(container.body, container.plot, container.part, "");
-                for (const std::string& o : outs)
-                    if (ImGui::Selectable(label(o).c_str(), v.pick == o)) MachineAct_SetPick(container.body, container.plot, container.part, o);
+                for (size_t k = 0; k < outs.size(); ++k) {
+                    const std::string& o = outs[k];
+                    const bool tooHigh = myTier >= 0 && outTier[k] >= 0 && MachineTiers_Steps(myTier, outTier[k]) < 0;
+                    if (tooHigh) ImGui::BeginDisabled();
+                    if (ImGui::Selectable((label(o) + tierNote(outTier[k]) + "##" + o).c_str(), v.pick == o)) MachineAct_SetPick(container.body, container.plot, container.part, o);
+                    if (tooHigh) ImGui::EndDisabled();
+                }
                 ImGui::EndCombo();
             }
         }
