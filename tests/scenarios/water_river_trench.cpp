@@ -1,5 +1,5 @@
 // water/river-trench (#1504): what a dig into a river costs the fluid simulation. The river nearest the start (seed 42) gets
-// a dead-end trench, 15 m long and ~2.4 m wide, cut from its bank straight out, its floor 1.5 m under the river's level:
+// (one at least 1.5 m deep: past its head, the same river whatever the valley widths) a dead-end trench, 15 m long and ~2.4 m wide, cut from its bank straight out, its floor 1.5 m under the river's level:
 // normal play (a pond dug off a river). For 40 s: the fluid step time (mean and worst of 1 s windows), active and
 // steady bricks, and whether the water sleeps. Run with RAYLIBGAME_RIVER_VALLEY=0 and =1 (#637's valley-filling widths)
 // for the same river narrow and wide. Reported only (a measurement); tagged local (timing).
@@ -43,7 +43,7 @@ SCENARIO("water/river-trench") {
             for (int k = 0; k < 64 && !found; ++k) {
                 const float a = 2.0f * PI * k / 64.0f;
                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(ax, r * cosf(a) / R), Vector3Scale(ay, r * sinf(a) / R))));
-                if (c.field->waterSourceAt(d).kind == 1) { hit = d; found = true; }
+                if (c.field->waterSourceAt(d).kind == 1 && net->nearest(d, 60.0f).depth >= 1.5f) { hit = d; found = true; } // past its head: depth (from the discharge alone) picks the same river with valley widths off or on
             }
         if (!found) { c.fail("no river within 3 km"); return true; }
         const RiverNetwork::Hit rh = net->nearest(hit, 60.0f);
