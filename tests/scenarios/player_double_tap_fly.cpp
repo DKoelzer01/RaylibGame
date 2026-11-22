@@ -1,5 +1,6 @@
 // player/double-tap-fly (#1562): in creative a double-tap of Space toggles flying (as F does); a single tap still jumps. Out of
-// creative a double-tap is two jumps. Space is pressed through the real input path (gFakeHeld), one sim step a frame.
+// creative a double-tap is two jumps. Space is pressed through the real input path (gFakeHeld), one sim step a frame; the
+// player's own view follows it (c.camera would put it in flight).
 #include "scenario.h"
 #include "player.h"
 #include "playerinput.h"
@@ -17,10 +18,6 @@ bool Taps(ScenarioCtx& c, long f0, int taps) {
     if (down) gFakeHeld |= kSpace; else gFakeHeld &= ~kSpace;
     return f >= 10;
 }
-void Watch(ScenarioCtx& c) {
-    const Vector3 at = c.body->toLocal((player.position - c.world.renderOrigin).toFloat()), up = Vector3Normalize(at);
-    c.camera(Vector3Add(at, Vector3Add(Vector3Scale(up, 2.0f), Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })), 6.0f))), at, up);
-}
 long f0 = 0;
 bool airborne = false;
 }
@@ -33,13 +30,11 @@ SCENARIO("player/double-tap-fly") {
         c.waitingFor("1 s of play, an idle world, on the ground");
         terrainTool.creative = true;
         player.flyMode = false;
-        Watch(c);
         if (c.T < 1.0 || !WorldIdle() || !player.grounded) return false;
         f0 = c.frame + 5;
         return true;
     });
     s.step("creative: one tap jumps, no flying", 5.0, [](ScenarioCtx& c) {
-        Watch(c);
         airborne = airborne || !player.grounded;
         if (!Taps(c, f0, 1) || c.frame < f0 + 45) return false;
         c.check("a single tap jumped", airborne);
@@ -48,21 +43,18 @@ SCENARIO("player/double-tap-fly") {
         return true;
     });
     s.step("creative: a double-tap flies", 5.0, [](ScenarioCtx& c) {
-        Watch(c);
         if (!Taps(c, f0, 2)) return false;
         c.check("a double-tap toggles flying on", player.flyMode);
         f0 = c.frame + 20;
         return true;
     });
     s.step("creative: another double-tap lands", 5.0, [](ScenarioCtx& c) {
-        Watch(c);
         if (!Taps(c, f0, 2)) return false;
         c.check("a double-tap toggles flying off", !player.flyMode);
         f0 = c.frame + 90; // (down on the ground again)
         return true;
     });
     s.step("survival: a double-tap doesn't fly", 8.0, [](ScenarioCtx& c) {
-        Watch(c);
         terrainTool.creative = false;
         if (!Taps(c, f0, 2) || c.frame < f0 + 20) return false;
         c.check("survival: a double-tap doesn't fly", !player.flyMode);
