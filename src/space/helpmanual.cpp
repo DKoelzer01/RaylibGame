@@ -164,6 +164,11 @@ namespace {
                                    MachineTiers_Overclock().speed, MachineTiers_Overclock().eu);
                 for (int s = 0; s <= MachineTiers_MaxStep(m); ++s) { if (s) ImGui::SameLine(); Link(MachineTiers_VariantItem(m, s), 0, uid++); }
             }
+            if (const PartType next = MachineTiers_Successor(m); next != PartType::Count) { // (#1427 L7e) its job from LV on
+                Heading("From LV on");
+                ImGui::TextWrapped("An electric machine does this job, with tiers:");
+                Link(MachineItem(next), 0, uid++);
+            }
             any = false;
             for (const auto& r : mr) {
                 if (r.machine != m) continue;

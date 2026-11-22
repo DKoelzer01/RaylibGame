@@ -13,3 +13,7 @@ mv_assembler 1         = mv_hull 1, good_circuit 2, copper_wire 16, steel_plate 
 hv_assembler 1         = hv_hull 1, advanced_circuit 2, copper_wire 32, aluminium_plate 4
 electrolyzer_hv 1      = hv_hull 1, advanced_circuit 2, copper_wire 32
 chemical_reactor_hv 1  = hv_hull 1, advanced_circuit 2, glass 8
+compressor_mv 1        = mv_hull 1, good_circuit 2, steel_plate 8
+compressor_hv 1        = hv_hull 1, advanced_circuit 2, aluminium_plate 8
+cutter_mv 1            = mv_hull 1, good_circuit 2, steel_plate 4, iron_plate 4
+cutter_hv 1            = hv_hull 1, advanced_circuit 2, aluminium_plate 4, steel_plate 4

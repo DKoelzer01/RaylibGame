@@ -90,3 +90,6 @@ anvil            | 0  | manual   | 0  |
 steam_assembler  | 0  | rotation | 0  |
 # (#1271 L6c) the LV assembler: circuits and research packs on LV power (a disassembly mode switch: #1427 brings it)
 lv_assembler     | 32 | eu       | 0  |
+# (#1427 L7e) the LV successors of the press and the saw (the macerator and the electric furnace take the millstone's and kiln's jobs)
+compressor       | 32 | eu       | 0  |
+cutter           | 32 | eu       | 0  |

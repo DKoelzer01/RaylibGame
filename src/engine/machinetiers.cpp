@@ -15,6 +15,7 @@ struct Tier { std::string name; int volts = 0; Color color = GRAY; };
 struct Family { PartType type = PartType::Count; int first = 0; std::vector<int> tiers; std::map<int, std::string> names; };
 std::vector<Tier> tiers;
 std::vector<Family> families;
+std::vector<std::pair<PartType, PartType>> successors; // (L7e) an older machine, the electric one doing its job from LV on
 MachineOverclock overclock;
 int yields[6] = { 0, 1, 10, 50, 75, 100 };
 bool loaded = false;
@@ -53,6 +54,13 @@ void Parse(std::istream& in) {
         }
         if (c[0] == "overclock" && c.size() >= 4) { overclock = { std::max(1, atoi(c[1].c_str())), std::max(1, atoi(c[2].c_str())), std::max(0, atoi(c[3].c_str())) }; continue; }
         if (c[0] == "yield" && c.size() >= 7) { for (int k = 0; k < 6; ++k) yields[k] = std::clamp(atoi(c[k + 1].c_str()), 0, 100); continue; }
+        if (c[0] == "successor" && c.size() >= 3) { // (L7e)
+            PartType a = PartType::Count, b = PartType::Count;
+            for (int t = 0; t < (int)PartType::Count; ++t) { const char* m = PartMachineName((PartType)t); if (m && c[1] == m) a = (PartType)t; if (m && c[2] == m) b = (PartType)t; }
+            if (a != PartType::Count && b != PartType::Count) successors.push_back({ a, b }); else printf("machine_tiers: skipped \"%s\"
+", line.c_str());
+            continue;
+        }
         if (c.size() < 3) continue;
         Family f;
         for (int t = 0; t < (int)PartType::Count; ++t) { const char* m = PartMachineName((PartType)t); if (m && c[0] == m) { f.type = (PartType)t; break; } }
@@ -94,6 +102,7 @@ int MachineTiers_ForVolts(int volts) {
 Color MachineTiers_Color(int t) { MachineTiers_Load(); return t >= 0 && t < (int)tiers.size() ? tiers[t].color : GRAY; }
 const MachineOverclock& MachineTiers_Overclock() { MachineTiers_Load(); return overclock; }
 
+PartType MachineTiers_Successor(PartType t) { MachineTiers_Load(); for (const auto& s : successors) if (s.first == t) return s.second; return PartType::Count; }
 bool MachineTiers_Tiered(PartType t) { return FamilyOf(t) != nullptr; }
 int MachineTiers_First(PartType t) { const Family* f = FamilyOf(t); return f ? f->first : -1; }
 int MachineTiers_MaxStep(PartType t) { const Family* f = FamilyOf(t); return f ? f->tiers.back() - f->first : 0; }
@@ -237,6 +246,12 @@ TEST(MachineTiers, EveryVariantHasItsOwnRecipeAndNoneTakesTheTierBelow) {
             }
         }
     }
-    EXPECT_EQ(variants, 12) << "MV and HV of the five LV families, HV of the two MV ones";
+    EXPECT_EQ(variants, 16) << "MV and HV of the seven LV families, HV of the two MV ones";
+    // (L7e) the older machines' jobs from LV on
+    EXPECT_EQ(MachineTiers_Successor(PartType::Millstone), PartType::Macerator);
+    EXPECT_EQ(MachineTiers_Successor(PartType::Press), PartType::Compressor);
+    EXPECT_EQ(MachineTiers_Successor(PartType::Saw), PartType::Cutter);
+    EXPECT_EQ(MachineTiers_Successor(PartType::Kiln), PartType::Furnace);
+    EXPECT_EQ(MachineTiers_Successor(PartType::Macerator), PartType::Count) << "an electric machine has none";
 }
 #endif
