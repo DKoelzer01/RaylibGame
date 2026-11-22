@@ -1576,7 +1576,7 @@ static void DrawTeam() {
     ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "Land claims");
     int ours = 0, theirs = 0;
     for (const ClaimView& cv : Claims_Mirror()) (cv.ours ? ours : theirs) += 1;
-    if (ours == 0) ImGui::TextDisabled("None yet. Craft a claim banner and place it: only your team may build, dig or open chests inside.");
+    if (ours == 0 && theirs == 0) ImGui::TextDisabled("None known."); // (how to claim: the Shared panel's Claims line)
     if ((ours > 0 || theirs > 0) && ImGui::BeginTable("claims", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         for (int pass = 0; pass < 2; ++pass) // ours first
             for (const ClaimView& cv : Claims_Mirror()) {
@@ -1596,9 +1596,8 @@ static void DrawTeam() {
     }
     if (youOwn) {
         static char ally[32] = {};
-        ImGui::SetNextItemWidth(220 * s);
+        ImGui::SetNextItemWidth(-1.0f); // the column's width: the two buttons go on the next line (side by side they were cut off)
         ImGui::InputTextWithHint("##ally", "another team's name", ally, sizeof(ally));
-        ImGui::SameLine();
         if (ImGui::Button("Let them in") && ally[0]) { say(std::string("/claim ally ") + ally); ally[0] = 0; }
         ImGui::SameLine();
         if (ImGui::Button("Shut them out") && ally[0]) { say(std::string("/claim unally ") + ally); ally[0] = 0; }
