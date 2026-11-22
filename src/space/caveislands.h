@@ -13,9 +13,11 @@ struct CaveIslands {
     long long pieces = 0, volume = 0;  // floating components and their m^3, over all chambers
     long long byHeight[8] = {};        // m^3 by mean height from the chamber centre: -28..+28 m in 8 bins
     long long byDistance[8] = {};      // m^3 by mean distance across from it: 0..72 m in 8 bins
+    int caverns = 0;                   // (#1465) large caverns (centre kind 4) within cavernRange, on a 2 m grid
+    long long cavernPieces = 0, cavernVolume = 0;
     float seconds = 0.0f;
 };
 
-CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, bool print);
+CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, bool print, float cavernRange = 0.0f);
 
 #endif

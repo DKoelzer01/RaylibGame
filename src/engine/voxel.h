@@ -348,7 +348,7 @@ public:
     // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
     // outward (downhill) direction, body-local. Tests and captures.
     bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind = -1) const; // kind: -1 any entrance, 0 hillside, 1 karst sink, 2 resurgence (#1052), 3 a chamber centre (#1058)
-    void caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const; // #1116: the entries of one kind within range (tests)
+    void caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out, std::vector<float>* radii = nullptr) const; // #1116: the entries of one kind within range (tests)
     struct CaveShaft { Vector3 top, up; float radius, depth; };          // #1067: a shaft open to the sky (karst sink, tube skylight)
     void shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const; // those whose shaft can reach the box [lo, hi]
     int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)

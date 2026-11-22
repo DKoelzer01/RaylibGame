@@ -477,8 +477,13 @@ float caveGraphDistance(vec3 q, out float solid) {
         }
         precise float rw = r * max(0.7, rs);
         precise float pk = hv > 0.0 ? pocket : 0.0;
+        precise float sh = shift;
+        if (kCK_wander[ki] == 1) {                                    // (#1465) caverns: pockets and wander at a passage's size
+            precise float wk = min(1.0, xdiv(8.0, r));
+            pk = pk * wk; sh = shift * wk;
+        }
         precise float vfac = U.w * (1.0 + 0.5 * pk);
-        precise float hp = hs - shift * rw;
+        precise float hp = hs - sh * rw;
         precise float hvM = hv - 0.5 * hp;
         precise float hvT = kCK_lopsided[ki] == 1 ? hvM : hv;
         precise float v2 = xdiv(hvT, vfac);

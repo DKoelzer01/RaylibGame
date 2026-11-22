@@ -1200,6 +1200,7 @@ bool PlanetField::CavesGraph() {
 namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
+constexpr float kCavernShare = 0.006f;  // (#1465) the share of deep (100 m+) main-passage vertices with a large cavern (GUESS)
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
 struct CaveMouth { Vector3 at, out; int kind = 0; float radius = 0.0f, depth = 0.0f; }; // radius, depth: shafts (kind 1, #1067) // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
@@ -1281,6 +1282,55 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             if (solidsTest) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), cr, cr, 1.0f, 2);
         }
     };
+    // (#1465 cave variety) A large cavern at a rare deep main-passage vertex: the chamber's shape scaled up (half-width
+    // 50-150 m, mostly the smaller; height x0.3-0.4), kind 4 (cavekinds.h: the chamber's rules, so the same walls and the
+    // 4 m outcrop cap), a breakdown floor of 8-19 boulders (r 3-10 m) and 3-11 pillars floor to roof (r 3-8 m, solids that
+    // hold to both, so nothing floats). Its own numbers: the decision is a hash of the cell and the vertex, and the shape
+    // its own generator, so every passage and chamber elsewhere comes out as before. Only where its whole reach (2.6 r:
+    // swell, outline, wander) stays inside the cells' gather reach (kCaveCellReach), and its dome 10 m+ under the ground.
+    // RAYLIBGAME_CAVE_CAVERNS=0: none.
+    static const bool cavernsOn = !(getenv("RAYLIBGAME_CAVE_CAVERNS") && getenv("RAYLIBGAME_CAVE_CAVERNS")[0] == '0');
+    const uint32_t cellBits = (uint32_t)CaveCellHash{}(key);
+    int vertexNo = 0;
+    const Vector3 cellLo = { key.x * kCaveCell, key.y * kCaveCell, key.z * kCaveCell };
+    auto cavern = [&](Vector3 c, Vector3 head, float depth, uint32_t bits) {
+        std::mt19937 g(bits);
+        std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
+        const float u0 = Ug(g), u1 = Ug(g);
+        const float r = 50.0f + 100.0f * u0 * u0, flat = 0.3f + 0.1f * u1;
+        if (depth - r * flat * 2.3f < 10.0f) return;
+        const Vector3 sp = Vector3Scale(Vector3Normalize(c), R); // (the gather finds cells by sea-level projections)
+        for (int a = 0; a < 3; ++a) {
+            const float p = a == 0 ? sp.x : a == 1 ? sp.y : sp.z, lo = a == 0 ? cellLo.x : a == 1 ? cellLo.y : cellLo.z;
+            const float outside = std::max(0.0f, std::max(lo - p, p - (lo + kCaveCell)));
+            if (outside + 2.6f * r > kCaveCellReach * kCaveCell - 64.0f) return;
+        }
+        const Vector3 up = Vector3Normalize(c);
+        const Vector3 hd = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
+        const Vector3 sd = Vector3CrossProduct(up, hd);
+        auto add = [&](Vector3 a, Vector3 b, float ra, float rb, float fl, int kind) {
+            CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
+        };
+        add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, (int)CaveKind::Cavern);
+        CaveMouth cm; cm.at = c; cm.out = up; cm.kind = 4; cm.radius = r; cm.depth = depth; // (kind 4: a cavern centre, for the tests and the islands gate)
+        data->mouths.push_back(cm);
+        const float floorH = -0.4f * r * flat;
+        auto onFloor = [&](float dist, float ang, float h) {
+            return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
+        };
+        static const bool cavernSolids = !(getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS") && getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS")[0] == '0'); // (isolation, as chambers)
+        const int boulders = 8 + (int)(12.0f * Ug(g));
+        for (int i = 0; i < boulders; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 3.0f + 7.0f * Ug(g);
+            const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
+            if (cavernSolids) add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, (int)CaveKind::Solid);
+        }
+        const int pillars = 3 + (int)(9.0f * Ug(g));
+        for (int i = 0; i < pillars; ++i) {
+            const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), pr = 3.0f + 5.0f * Ug(g);
+            if (cavernSolids) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), pr, pr, 1.0f, (int)CaveKind::Solid);
+        }
+    };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
         Vector3 dir = Vector3Normalize(pos);
         const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
@@ -1305,6 +1355,11 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
             if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
+            if (level == 0 && cavernsOn) { // (#1465) a large cavern: its own numbers (no draw from rng: the rest stays as before)
+                uint32_t h = cellBits ^ (uint32_t)(++vertexNo) * 0x9E3779B1u;
+                h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+                if (depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+            }
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
                 const float bt = (U(rng) < 0.5f ? -1.0f : 1.0f) * (1.0f + 0.7f * U(rng)); // 57-97 degrees off
@@ -1808,8 +1863,8 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
     return found;
 }
 
-void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const {
-    out.clear();
+void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out, std::vector<float>* radii) const {
+    out.clear(); if (radii) radii->clear();
     if (!CavesGraph() || moon) return;
     const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
     const int R = (int)ceilf(range / kCaveCell) + 1;
@@ -1820,7 +1875,7 @@ void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector
                 const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
                 if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
                 for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
-                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) out.push_back(m.at);
+                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) { out.push_back(m.at); if (radii) radii->push_back(m.radius); }
             }
 }
 
@@ -2000,9 +2055,14 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         }
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
         static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
-        const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
+        float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
+        float sh = shift;
+        if (K.wander == 1) { // (#1465) caverns: roof pockets and wander at a passage's size (at full size they fold the dome)
+            const float wk = std::min(1.0f, 8.0f / r);
+            pk = pk * wk; sh = shift * wk;
+        }
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
-        const float hp = hs - shift * rw;
+        const float hp = hs - sh * rw;
         const float hvT = K.lopsided == 1 ? hv - 0.5f * hp : hv;    // mouths: taller on one side
         const float v2 = hvT / vfac;
         const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;
