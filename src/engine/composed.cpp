@@ -1,5 +1,6 @@
 #include "composed.h"
 #include "itemdata.h"
+#include "inventory.h"
 #include "utils/logger.h"
 
 #include <algorithm>
@@ -141,6 +142,28 @@ bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string
     return true;
 }
 
+int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed) {
+    int n = 0;
+    auto& cells = inv.grid();
+    for (int i = 0; i < Inventory::kCells; ++i) {
+        InvSlot& s = cells[i];
+        if (s.empty() || s.hasData()) continue;
+        std::string cls, data;
+        if (!Composed_FromLegacy(s.id, cls, data) || !itemDB.find(cls)) continue;
+        if (wearUsed) {
+            auto it = wearUsed->find(s.id);
+            if (it != wearUsed->end()) { if (it->second > 0) data = ItemData::SetInt(data, "w", it->second); wearUsed->erase(it); }
+        }
+        const std::string old = s.id;
+        const int64_t extra = s.centi - 100; // tools hold one a cell; any more (an odd save) become copies of their own
+        s.id = cls; s.data = data; s.centi = 100;
+        ++n;
+        for (int64_t k = extra; k >= 100; k -= 100) { ++inv.muted; inv.addInstance(cls, Composed_MakeData(ItemData::Get(data, "h"))); --inv.muted; ++n; }
+        (void)old;
+    }
+    return n;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1449): composed items' stats from their parts ----
 #include "unit_helpers.h"
@@ -189,6 +212,31 @@ TEST(Composed, StatsFollowTheParts) {
     EXPECT_GT(sword.damage, Composed_Stats("weapon_sword", Composed_MakeData("bronze")).damage);
     // Wear is read from the record.
     EXPECT_EQ(Composed_Stats("tool_pickaxe", ItemData::SetInt(Composed_MakeData("iron"), "w", 37)).wear, 37);
+}
+
+// (#1449 part 2) Old tools in an inventory become composed ones, their wear moved into the first copy of each.
+TEST(Composed, ConvertInventoryMovesOldToolsAndTheirWear) {
+    UnitTest::EnsureItemDB();
+    ASSERT_TRUE(Composed_Load());
+    Inventory inv;
+    inv.add("stone_pickaxe", 1);
+    inv.add("iron_axe", 1);
+    inv.add("stone", 4);
+    std::map<std::string, int> wear = { { "stone_pickaxe", 37 }, { "bronze_axe", 5 } };
+    EXPECT_EQ(Composed_ConvertInventory(inv, &wear), 2);
+    EXPECT_EQ(inv.count("stone_pickaxe"), 0);
+    EXPECT_EQ(inv.countInstances("tool_pickaxe"), 1);
+    EXPECT_EQ(inv.countInstances("tool_axe"), 1);
+    EXPECT_EQ(inv.count("stone"), 4) << "everything else stays";
+    const int p = inv.findInstance("tool_pickaxe", ItemData::SetInt(Composed_MakeData("stone"), "w", 37));
+    EXPECT_GE(p, 0) << "the old pickaxe's 37 strokes are in its record";
+    EXPECT_EQ(wear.count("stone_pickaxe"), 0u) << "its per-id wear went";
+    EXPECT_EQ(wear.count("bronze_axe"), 1u) << "wear for a tool not held stays (nothing to move it into)";
+    // The converted copies are tools with their old tier and durability.
+    EXPECT_EQ(ToolOf("tool_axe", Composed_MakeData("iron")).tier, 2);
+    EXPECT_EQ(ToolDurabilityOf("tool_axe", Composed_MakeData("iron")), 400);
+    EXPECT_EQ(ToolDurabilityOf("stone_axe", ""), 150) << "old ids still answer as before";
+    EXPECT_EQ(Composed_ConvertInventory(inv, &wear), 0) << "converting again does nothing";
 }
 
 TEST(Composed, UnknownsAreNotValid) {

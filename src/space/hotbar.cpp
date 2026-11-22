@@ -87,13 +87,13 @@ namespace {
                 if (Survival_IsFood(id)) GameUI_Toast(TextFormat("Hold right-click to eat the %s", ShortName(id)));
                 return;
             }
-            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
+            if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
             H().selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true; // RMB: no terrain (#201)
             GameUI_Toast(Survival_IsFood(id) ? TextFormat("Holding %s: hold right-click to eat", ShortName(id)) : TextFormat("Holding %s: animals that eat it follow you", ShortName(id)));
             return;
         }
         if ((Hotbar_IsLight(id) || Hotbar_IsPlaceable(id)) && !piloting) { // a torch (#218): held for its light; a snare (#176): set down with RMB; LMB still digs with bare hands
-            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
+            if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); return; }
             H().selected = slot; buildTool.active = false; terrainTool.heldTool.clear(); terrainTool.holdingItem = true;
             return;
         }
@@ -104,21 +104,21 @@ namespace {
         auto take = [&]() { H().selected = slot; terrainTool.holdingItem = false; };
         if (id == kHotbarTerrainTool) { take(); buildTool.active = false; terrainTool.heldTool.clear(); return; }
         if (id == "bucket" || id == "water_bucket" || id == "fishing_rod") { // in hand: RMB scoops / pours water (terraintool), or casts (fishing.cpp, #176)
-            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
             terrainTool.heldTool = id;
             return;
         }
         if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
-            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
             terrainTool.heldTool = id;
             return;
         }
         if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // ground (loose fillers and raw stone, #1098): in hand, RMB places it
-            if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+            if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
             terrainTool.heldTool = id;
@@ -143,7 +143,7 @@ namespace {
         }
         // (#534, the user) Anything else is just held: LMB punches (bare hands), RMB does nothing unless it has a use (the
         // telescope's RMB raises it: Telescope_Update).
-        if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
+        if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
         take();
         buildTool.active = false;
         terrainTool.heldTool.clear();
@@ -201,7 +201,7 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     // while more waits in the grid, or moved to the grid or a chest) or another item takes the slot, the hand follows the
     // slot - what is there now if it is held that way, else bare hands. (A tool a test put in hand with no slot is left be.)
     if (lastSlot == H().selected && cur != lastId && !lastId.empty() && terrainTool.heldTool == lastId) {
-        const bool heldLikeThat = !cur.empty() && inventory.count(cur) > 0 &&
+        const bool heldLikeThat = !cur.empty() && inventory.held(cur) > 0 &&
             ((KindOf(cur) == ItemKind::Tool && ToolOf(cur).type != ToolType::Hands) || cur == "bucket" || cur == "water_bucket" ||
              cur == "fishing_rod" || (TerrainTool_IsFiller(cur) && BuildMaterialForItem(cur.c_str()) < 0));
         terrainTool.heldTool = heldLikeThat ? cur : std::string();
@@ -218,7 +218,7 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
         terrainTool.heldTool.clear();
     }
     // A tool lost (or never carried) falls back to bare hands.
-    if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) <= 0) terrainTool.heldTool.clear();
+    if (!terrainTool.heldTool.empty() && inventory.held(terrainTool.heldTool) <= 0) terrainTool.heldTool.clear();
     // (New tools land in an empty slot by themselves: Inventory::addAmount, #209.)
     if (in.enabled) {
         const int k = in.slot;

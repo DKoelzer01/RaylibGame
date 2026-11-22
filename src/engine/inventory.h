@@ -118,6 +118,7 @@ public:
     int addInstance(const std::string& id, const std::string& data, float heat = 0.0f);
     InvSlot takeInstance(int cell);             // the cell's item, record and all; the cell is emptied (an empty slot if none)
     int countInstances(const std::string& id) const; // items of `id` that carry data
+    int held(const std::string& id) const { return count(id) + countInstances(id); } // (#1449) possession: plain ones and copies with data
     bool setInstanceData(int cell, const std::string& newData); // a held item's record changed (wear, sockets); false if no such item
     int findInstance(const std::string& id, const std::string& data) const; // the cell holding exactly that item, -1 none
     // (#1446) With `journal` on (a server, for each remote player), every change to an item with data is logged here:

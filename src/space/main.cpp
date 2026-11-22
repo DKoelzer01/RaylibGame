@@ -1345,6 +1345,7 @@ int main(int argc, char** argv)
         return 1;
     }
     GL_Caps(); // log the GL version and the optional 4.4-4.6 paths available (#286)
+    gToolDataOf = ToolWear_HeldData; // (#1449) a composed tool named by id: the held copy's parts
     // (#1047) The compute shaders the world will need, compiling on the driver's threads from now on (menus, the join, the
     // loading screen): cold, fluid_step.comp alone blocked one frame ~3 s here and ~37 s on the CI runner.
     Compute_Prewarm({ "resources/compute/terrain_density.comp", "resources/compute/fluid_step.comp", "resources/compute/fluid_delta.comp",
@@ -10611,7 +10612,7 @@ int main(int argc, char** argv)
                     if (gJoin.skillStates != skillStatesSeen) { skillStatesSeen = gJoin.skillStates; LocalSession().skills = gJoin.skills; }
                 }
                 // (#750, #341) what the others see in our hands, the lamp, the suit colour (sent only when it changes)
-                NetClient_SetLoadout(gJoin, inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string(), survival.headlamp, 0);
+                NetClient_SetLoadout(gJoin, inventory.held(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string(), survival.headlamp, 0);
                 static bool cacheSaved = false; // (#776) the sync done: keep what we now hold for a rejoin, and report
                 if (!cacheSaved && gJoin.syncDoneAt > 0.0) {
                     cacheSaved = true;
@@ -13865,7 +13866,7 @@ int main(int argc, char** argv)
                     const Vector3 ahead = a.facing;
                     a.position = a.position + DVec3(Vector3Scale(ahead, 3.0f));
                     a.facing = Vector3Negate(ahead);
-                    a.held = inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
+                    a.held = inventory.held(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
                     a.headlamp = survival.headlamp;
                     a.name = "you";
                     gAvatars.push_back(a);
