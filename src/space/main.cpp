@@ -12286,7 +12286,8 @@ int main(int argc, char** argv)
         // build there, open the chest and break it, and to break the banner: each is refused. At RAYLIBGAME_CLAIMS_ALLY_AT s (25)
         // the owner allies the other's team (/claim ally other): the other sees the claim allowed and breaks the chest (refunded).
         // At RAYLIBGAME_CLAIMS_BREAK_AT s (32) the owner breaks its banner: the claim goes (both lists empty). Both report after
-        // RAYLIBGAME_CLAIMS_SECONDS (40).
+        // RAYLIBGAME_CLAIMS_SECONDS (40). RAYLIBGAME_CLAIMS_SHOW_TEAM=1: both keep the Team tab open and shoot
+        // claims_team_<role>_<state>.png (#828).
         if (benchNetClaims && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
             static double t0 = -1.0;
             static bool bannerSent = false, chestSent = false, tried = false, allySent = false, breakSent = false, entered = false, openRefused = false, allied = false, removeSent = false, bannerGone = false;
@@ -12315,6 +12316,13 @@ int main(int argc, char** argv)
                     }
             const Vector3 up = Vector3Normalize(me);
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            if (getenv("RAYLIBGAME_CLAIMS_SHOW_TEAM")) { // (#828) the Team tab open over the test, a screenshot a second into each claim state
+                static int shown = -1; static double since = 0.0;
+                const int state = owner ? (bannerPl ? (allySent ? 2 : 1) : 0) : (sawAllowed ? 2 : sawNotAllowed ? 1 : 0);
+                if (shown < 0) GameUI_ShowTab("Team");
+                if (state != shown) { shown = state; since = GetTime(); }
+                else if (since > 0.0 && GetTime() - since > 1.0) { TakeScreenshot(TextFormat("claims_team_%s_%d.png", owner ? "owner" : "other", state)); since = 0.0; }
+            }
             if (owner && cb && !bannerSent && GetTime() - t0 > 4.0) bannerSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, 2.0f)), Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             if (owner && cb && bannerPl && !chestSent) chestSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, -2.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             if (owner && bannerPl && !allySent && GetTime() - t0 > envAt("RAYLIBGAME_CLAIMS_ALLY_AT", 25.0)) { NetClient_SendChat(gJoin, "/claim ally other"); allySent = true; }
