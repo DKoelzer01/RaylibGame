@@ -7,7 +7,9 @@ goes to `develop`, then `main`, only when the user says so. Several agent sessio
 This file is the core rules. Detail lives in `docs/notes/` - read the file for your area before you start:
 `testing.md` (benches, scenarios, profiler, regression, runner), `architecture.md` (subsystem notes: erosion, sky, HDR,
 multiplayer, caves, streaming, fluids...), `decisions.md` (the user's rulings by area and date - check before changing
-a behaviour the user decided), `plans.md` (every plan doc and its history), `board.md` (board commands and field ids).
+a behaviour the user decided), `plans.md` (every plan doc and its history), `board.md` (board commands and field ids),
+`incidents.md` (mistakes we made and the patterns behind them - read its "Recurring patterns" before debugging a red
+test; add a line when something goes wrong).
 
 ## Build and run
 
