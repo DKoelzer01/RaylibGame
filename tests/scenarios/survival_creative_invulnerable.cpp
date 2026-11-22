@@ -9,6 +9,7 @@
 #include "terraintool.h"
 #include "world.h"
 #include <raymath.h>
+#include <algorithm>
 
 namespace {
 float health0 = 0.0f;
@@ -51,9 +52,11 @@ SCENARIO("survival/creative-invulnerable") {
             dropped = true;
             return false;
         }
-        c.camera(Vector3Add(c.body->toLocal((player.position - c.world.renderOrigin).toFloat()), { 6.0f, 2.0f, 6.0f }),
-                 c.body->toLocal((player.position - c.world.renderOrigin).toFloat()), Vector3{ 0, 1, 0 });
+        // (the player's own first-person view follows it down: c.camera would put it in flight and it would never land)
+        static float vmax = 0.0f;
+        vmax = std::max(vmax, Vector3Length(player.velocity));
         if (!player.grounded || c.t < 1.0) return false;
+        c.gt("creative: a hard fall (peak m/s; 6 is safe)", vmax, 12.0f);
         c.check("creative: landed alive", !survival.dead);
         c.near("creative: no fall damage", survival.health, health0, 0.01f);
         return true;
