@@ -628,6 +628,7 @@ namespace {
     float handPumpLitres = 0.0f;
     double crankAt = -10.0; // (#1269) the last frame a hand crank was turned (GetTime)
 }
+bool BuildTool_AimingCampfire() { return machineAim.part >= 0 && machineAim.type == PartType::Campfire; }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
@@ -683,6 +684,16 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
         }
+        return;
+    }
+    if (machineAim.type == PartType::Campfire && in.hit(Act::Use)) {
+        // (#1103) E on a campfire lights it or puts it out, as its screen's button does (E elsewhere opens the game window)
+        const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
+        const bool burning = v.status == MachineStatus::Working;
+        if (burning || v.fuelSlot.second > 0 || v.energy > 0) {
+            MachineAct_SetFire(machineAim.body, machineAim.plot, machineAim.part, !burning);
+            GameUI_Toast(burning ? "Campfire put out" : "Campfire lit");
+        } else GameUI_Toast("The campfire needs fuel to light");
         return;
     }
     if (machineAim.type == PartType::Bed) {

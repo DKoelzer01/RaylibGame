@@ -10335,7 +10335,7 @@ int main(int argc, char** argv)
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
-            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || !Rocket_AimingCockpit())) GameUI_ToggleInventory();
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingCampfire()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it)
             else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
             else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
