@@ -1,0 +1,48 @@
+# Creatures (#1223, Plan 12): the species from animals.txt that the creature brain drives. animals.txt keeps the body,
+# model, health and drops; a row here adds:
+# id | faction (factions.txt) | key=value ...
+#   behaviour: aggro=passive|defensive|territorial|predator  range= (m, a target this near is taken)  chase= (m, given up past)
+#              angry= (s after a hit)  retreat= (health share; 0 never)  threat=  sleeps=day  fire=scares
+#              firesafe=0 (a player by a fire or carrying a light is NOT safe from it; default: safe, as from beasts)
+#   senses:    sight= (m in full light)  darksight= (share of it in the dark)  hearing= (m for a loudness-1 noise)
+#              light=none|avoids|drawn
+#   attack:    damage=  reach= (m from its centre)  windup= (s, the telegraph)  cooldown=  knock= (m/s)  poise=
+#              type=blunt|slash|pierce|heat|cold|energy  bite=1
+#   defence:   resist=type:share,...  armour=
+#   spawning:  habitat=surface|night|cave|mouth|dungeon  depth=min-max (m)  dark= (most light it spawns in, 0..1)
+#              cap= (per 64 m chunk)  respawn= (s)  nests=1
+#   loot=item:n,...  (on top of animals.txt's drops)
+#   sound_idle= sound_alert= sound_telegraph= sound_hurt= sound_death=  (names the audio side maps, #1246; a telegraph named
+#   creature_telegraph_<x> gets a subtitle caption with a direction arrow, #1346)
+#
+# The surface hunters reproduce the behaviour from before the framework (#165): the thornback charges within 12 m by day
+# and night, chases a player who hit it for 20 s up to 30 m, runs when under 35% health; the dusk stalker hunts within
+# 70 m after dark, keeps 14 m from fires and leaves at dawn. Both see everything in range (their old rule), strike 0.5 s
+# after the telegraph with a 1.2 s cooldown for 8 (x the difficulty), 2.5 poise a point.
+thornback    | beast | aggro=territorial range=12 chase=30 angry=20 retreat=0.35 sight=1000 darksight=1 hearing=12 damage=8 reach=1.8 windup=0.5 cooldown=1.2 knock=6 type=blunt habitat=surface
+dusk_stalker | beast | aggro=predator range=70 chase=70 angry=20 retreat=0.35 sight=1000 darksight=1 hearing=20 sleeps=day fire=scares damage=8 reach=1.7 windup=0.5 cooldown=1.2 knock=3 type=pierce bite=1 habitat=night
+
+# The first cave wave (Plan 12, #1224-#1228). Sound names are the audio side's to map (#1246).
+# Tunnel lurker (#1224): blind (sight 0), hunts by sound: sprinting (22 m), digging (26 m) and combat draw it; walking only within
+# ~9 m; sneaking (crouched, prone) is silent. Clings to ceilings and drops on prey passing under (x1.5, a heavy hit), fast in
+# short bursts, avoids light. Karst caves and chambers, 8 m+ down, dark; nests in large chambers.
+tunnel_lurker | lurker | aggro=predator range=24 chase=32 angry=20 retreat=0.25 sight=0 darksight=0 hearing=22 light=avoids ceiling=1 drop=1.5 droprange=3 burst=1 damage=9 reach=1.5 windup=0.4 cooldown=1.4 knock=4 type=slash habitat=cave depth=8-400 dark=0.15 cap=2 respawn=900 nests=1 sound_idle=lurker_click sound_alert=lurker_hiss sound_telegraph=creature_telegraph_lurker_rattle sound_hurt=lurker_shriek sound_death=lurker_death
+# Cave scavenger (#1225): humanoid groups of up to 3 by cave mouths, with torches. The first of a group throws stones from
+# 5-14 m (a 0.6 s wind-up you can see, then a stone on an arc for 6: block it with a shield or dodge) while the others close
+# in with blades; they retreat under 40% health; a dropped pile within 12 m is taken whole and run off with (it comes back
+# when the thief falls). Hostile to players and lurkers; they fear ruin sentinels.
+cave_scavenger | scavenger | aggro=territorial firesafe=0 range=16 chase=30 angry=25 retreat=0.4 threat=1.5 sight=24 darksight=0.6 hearing=16 damage=7 reach=1.6 windup=0.5 cooldown=1.3 knock=4 type=slash habitat=mouth depth=0-25 dark=1 cap=3 respawn=1200 group=3 thrower=1 thief=1 torch=1 throw=6 throwmin=5 throwrange=14 throwwindup=0.6 throwcooldown=2.8 sound_idle=scav_mutter sound_alert=scav_shout sound_telegraph=creature_telegraph_scavenger_windup sound_hurt=scav_hurt sound_death=scav_death
+# Lost miner (#1227): undead, slow and tough (80, armour 3), deep tunnels and old mine shafts 40 m+ down. It sleeps until a light
+# comes within 10 m (a torch or lantern carried, a lamp, a fire) or it is hit, then hunts a minute past the last; drawn to light
+# (a lit player is no safer). Its plank shield takes 85% of a non-blunt hit at its face: go round it, or use blunt. Its rusted
+# pick strikes slow and hard. Drops its pick, scrap and planks, and a quarter of the time a map fragment to a dungeon.
+lost_miner | undead | aggro=territorial firesafe=0 range=12 chase=24 angry=30 sight=14 darksight=0.3 hearing=8 light=drawn wake=light wakerange=10 shield=0.85 shieldarc=60 armour=3 damage=10 reach=1.7 windup=0.9 cooldown=1.8 knock=5 type=pierce poise=20 habitat=cave depth=40-400 dark=0.1 cap=2 respawn=1500 rare=map_fragment:1:0.25 sound_idle=miner_groan sound_alert=miner_rattle sound_telegraph=creature_telegraph_miner_raise sound_hurt=miner_hurt sound_death=miner_collapse
+# Mineral ooze (#1226): slow, in wet karst by cave water and sumps, 10 m+ down. Its touch corrodes a held tool (15 strokes;
+# a tool that strikes it, 5). Cut (slash, pierce) it splits in two, twice at most; blunt hits and fire don't split it. It takes
+# on the colour of the ore where it lives and drops that ore (3; a split-off one, 1).
+mineral_ooze | ooze | aggro=territorial range=6 chase=12 angry=15 sight=0 darksight=0 hearing=10 damage=4 reach=1.3 windup=0.8 cooldown=1.6 knock=1 type=blunt split=1 corrode=15 wet=1 habitat=cave depth=10-400 dark=0.2 cap=2 respawn=900 sound_idle=ooze_burble sound_alert=ooze_squelch sound_telegraph=creature_telegraph_ooze_gather sound_hurt=ooze_splat sound_death=ooze_collapse
+# Ruin sentinel (#1228): a construct, near-stationary, guarding dungeons and ruins (#719; it spawns there when they come).
+# Every sentinel shoots: a 1.2 s charge-up (its eye glows red to white, lighting the room), then a dart at 28 m/s for 7,
+# out to 22 m: dodge it, or take it on a shield. Weak to blunt (x1.5), hard to cut (slash 40%, pierce 50% resisted, armour
+# 2), and it neither bleeds nor is poisoned. Drops a basic circuit, iron plates and scrap: a tech shortcut.
+ruin_sentinel | construct | aggro=territorial firesafe=0 range=20 chase=24 angry=30 sight=26 darksight=0.8 hearing=14 ranged=1 dart=1 dartspeed=28 throw=7 throwmin=0 throwrange=22 throwwindup=1.2 throwcooldown=2.5 damage=6 reach=1.6 windup=0.6 cooldown=1.5 knock=3 type=blunt resist=blunt:-0.5,slash:0.4,pierce:0.5 armour=2 immune=bleed,poison habitat=dungeon cap=2 respawn=1800 sound_idle=sentinel_hum sound_alert=sentinel_ping sound_telegraph=creature_telegraph_sentinel_charge sound_hurt=sentinel_clang sound_death=sentinel_shutdown

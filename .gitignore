@@ -23,3 +23,10 @@ settings.txt
 .claude/worktrees/
 captures/
 deps/
+phonon.dll
+
+# The PC machine slot (#1477, tools/slot.sh)
+.machine-lock
+.machine-lock.d/
+.machine-queue
+.machine-queue.tmp

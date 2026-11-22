@@ -44,7 +44,7 @@ int RocketTest_Update(Scene& world) {
     switch (phase) {
     case 0: {
         testStart = GetTime();
-        const Vector3 home = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 home = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
         padDir = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 14.0f / pf->radius)));
         if (!p->plots) p->plots = std::make_unique<PlotSet>();
@@ -122,7 +122,7 @@ int RocketTest_Update(Scene& world) {
         if (GetTime() - lastLog > 1.0 && t.groundAltitude < 8000.0) { lastLog = GetTime(); printf("bench: rocket: descent %.0f m above ground, vertical %+.1f m/s, surface %.1f m/s, throttle %.2f, fuel %.0f\n", t.groundAltitude, t.verticalSpeed, t.surfaceSpeed, t.throttle, t.fuel); }
     }
         if (t.state == RocketState::OnPad && t.landings > 0) {
-            const Vector3 landed = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+            const Vector3 landed = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
             const double km = acos(std::clamp(Vector3DotProduct(landed, padDir), -1.0f, 1.0f)) * pf->radius / 1000.0;
             printf("bench: rocket: LANDED on %s after %.0f s: touchdown %.1f m/s, %d parts broken, %.0f km from the pad, fuel %.0f kg left (highest %.1f km, hottest %.0f C)\n",
                    t.body.c_str(), GetTime() - testStart, t.lastTouchdown, t.damage, km, t.fuel, maxAlt / 1000.0, Rocket_MaxTemperature());
@@ -178,7 +178,7 @@ int StationTest_Update(Scene& world) {
     switch (sphase) {
     case 0: {
         sStart = GetTime();
-        const Vector3 home = Vector3Normalize(p->toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 home = Vector3Normalize(p->toLocalOf(player.position, world.renderOrigin));
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
         const Vector3 pad = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 14.0f / pf->radius)));
         if (!p->plots) p->plots = std::make_unique<PlotSet>();
@@ -223,6 +223,7 @@ int StationTest_Update(Scene& world) {
     }
     case 4: // dock (it is right beside us, at the same speed)
         if (ST() < 1.0) break;
+        printf("bench: station: docking from %.1f m (the station's nearest part)\n", Rocket_TestStationGap()); // (#1460)
         SCheck(Rocket_Dock() && Rocket_DockedAtStation(), "docked");
         SNext();
         break;
@@ -232,12 +233,20 @@ int StationTest_Update(Scene& world) {
         sGiven = -Rocket_TransferFuel(-400.0f);
         SCheck(sGiven > 300.0f && StationFuel(world) > before + 300.0f, "fuel given to the station");
         SCheck(Rocket_Undock() && Rocket_Telemetry(world).state == RocketState::Flying, "undocked");
+        printf("bench: station: undocked %.1f m from the station's nearest part\n", Rocket_TestStationGap()); // (#1460)
         SNext();
         break;
     }
     case 6: // drift a few seconds beside it, dock again, take fuel back
         if (ST() < 3.0) break;
-        SCheck(Rocket_Dock(), "docked again");
+        if (!Rocket_Dock()) { // (#1460) why: Rocket_Dock says so only in a toast (no station near, > 40 m, or > 2 m/s)
+            DVec3 c; Vector3 v;
+            Planetoid* st = Rocket_TestState(c, v) ? Station_Nearest(world, c, 1e9f) : nullptr;
+            if (st) printf("bench: station: re-dock refused: its nearest part %.1f m away (centre %.1f m), closing at %.2f m/s (rocket %s)\n",
+                           Rocket_TestStationGap(), (st->worldPos - c).length(), Vector3Length(Vector3Subtract(v, st->linearVelocity)), Frames_On() ? "framed" : "global");
+            else printf("bench: station: re-dock refused: no flying rocket or no station\n");
+        }
+        SCheck(Rocket_DockedAtStation(), "docked again");
         sTaken = Rocket_TransferFuel(200.0f);
         SCheck(sTaken > 150.0f, "fuel taken from the station");
         SNext();

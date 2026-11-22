@@ -12,7 +12,11 @@
 #include "suit.h"
 #include "toolwear.h"
 #include "questtree.h"
+#include "researchtab.h"
+#include "tometab.h" // (#1251)
+#include "statstab.h"
 #include "navigation.h"
+#include "claims.h"
 #include "recipebook.h"
 #include "craftplan.h"
 #include "net.h"
@@ -174,6 +178,11 @@ void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests a
     const std::string t = tab;
     if (t == "Crafting") GameUI_ShowScreen(GameScreen::Crafting);
     else if (t == "Quest tree" || t == "Quests") GameUI_ShowScreen(GameScreen::Quests); // (#890: one view)
+    else if (t == "Research") GameUI_ShowScreen(GameScreen::Research); // (#1192)
+    else if (t == "Tome") GameUI_ShowScreen(TomeTab_Shown() ? GameScreen::Tome : GameScreen::Inventory); // (#1251)
+    else if (t == "Statistics") GameUI_ShowScreen(GameScreen::Statistics); // (#1199)
+    else if (t == "Team") GameUI_ShowScreen(GameScreen::Team);     // (#828)
+    else if (t == "Skills") GameUI_ShowScreen(GameScreen::Skills); // (#828)
     else if (t == "Help" || t == "Database") { if (!inventoryOpen) GameUI_ShowScreen(GameScreen::Inventory); databaseOpen = true; }
     else if (t == "Creative" || t == "Catalog") GameUI_ShowScreen(terrainTool.creative ? GameScreen::Catalog : GameScreen::Inventory);
     else GameUI_ShowScreen(GameScreen::Inventory); // "Suit": beside the inventory
@@ -324,11 +333,14 @@ struct PlayerGrid : SlotGrid {
         if (GameUI_ContainerOpen()) {
             const std::string id = c.id;
             if (!ContainerTakes(id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str())); return; }
-            const int n = (int)(std::min(centi, c.centi) / 100);
-            if (n <= 0) return;
-            c.centi -= (int64_t)n * 100;
+            const int64_t amount = std::min(centi, c.centi);
+            // (#1102) a chest (here, not as a joined client) keeps the fraction too; a machine takes whole units
+            const bool fractions = container.type == PartType::Chest && !MachineAct_Remote();
+            const int n = (int)(amount / 100), frac = fractions ? (int)(amount % 100) : 0;
+            if (n <= 0 && frac <= 0) return;
+            c.centi -= (int64_t)n * 100 + frac;
             if (c.centi <= 0) c = InvSlot{};
-            MachineAct_Insert(container.body, container.plot, container.part, id, n);
+            MachineAct_Insert(container.body, container.plot, container.part, id, n, false, frac);
             Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
             return;
         }
@@ -385,13 +397,18 @@ struct PlayerGrid : SlotGrid {
 struct ContainerGrid : SlotGrid {
     int which = 0;
     std::vector<std::pair<std::string, int>> slots;
+    std::vector<int> fracs; // (#1102) a chest slot's fraction more (hundredths), as the view has it
     explicit ContainerGrid(int w) : which(w) {}
     int size() const override { return (int)slots.size(); }
     InvSlot at(int i) const override {
         InvSlot s;
-        if (i >= 0 && i < (int)slots.size() && slots[i].second > 0) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100; }
+        const int frac = i >= 0 && i < (int)fracs.size() ? fracs[i] : 0;
+        if (i >= 0 && i < (int)slots.size() && (slots[i].second > 0 || frac > 0)) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100 + frac; }
         return s;
     }
+    // (#1102) A chest here keeps fractions (0.4 dirt); machines hold whole units, and a joined client's moves are whole too
+    // (the fraction stays in its inventory) until the container messages carry fractions.
+    bool keepsFractions() const { return container.type == PartType::Chest && which == 0 && !MachineAct_Remote(); }
     int64_t room(int i, const std::string& id) const override {
         if (which == 1 || id.empty()) return 0; // outputs only give
         const InvSlot s = at(i);
@@ -403,17 +420,19 @@ struct ContainerGrid : SlotGrid {
         return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
-        const int n = (int)(std::min(centi, held.centi) / 100);
-        if (n <= 0 || room(i, held.id) <= 0) return 0;
+        const int64_t amount = std::min({ centi, held.centi, room(i, held.id) });
+        const int n = (int)(amount / 100), frac = keepsFractions() ? (int)(amount % 100) : 0;
+        if ((n <= 0 && frac <= 0) || room(i, held.id) <= 0) return 0;
         if (which == 2) MachineAct_Insert(container.body, container.plot, container.part, held.id, n, true);
-        else if (container.type == PartType::Chest) MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, n, i);
+        else if (container.type == PartType::Chest) MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, n, i, frac);
         else MachineAct_Insert(container.body, container.plot, container.part, held.id, n);
         Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
-        return (int64_t)n * 100;
+        return (int64_t)n * 100 + frac;
     }
     int64_t take(int i, int64_t centi, InvSlot& held) override {
         const InvSlot s = at(i);
         if (s.empty() || (!held.empty() && held.id != s.id)) return 0;
+        if (s.centi < 100) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); return 0; } // (#1102) only a fraction: to the inventory (the hand holds whole items here)
         const int n = (int)std::clamp<int64_t>(centi / 100, 1, s.centi / 100);
         MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, n);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
@@ -1047,35 +1066,37 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
 
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false) { // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr) { // fracs (#1102): a chest's fractions // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float gap = 4.0f, cell = std::min(54.0f * GameUI_Scale(), (ImGui::GetContentRegionAvail().x - (cols - 1) * gap) / (float)cols); // (#891: at the scale, fitting the column)
     ContainerGrid& grid = ContainerPart(which);
     grid.slots = slots; // (this frame's view: what the rules see)
+    grid.fracs = fracs ? *fracs : std::vector<int>{};
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
         const ImVec2 p = ImGui::GetCursorScreenPos(), q(p.x + cell, p.y + cell);
         ImGui::InvisibleButton("slot", ImVec2(cell, cell), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-        if (ImGui::IsItemClicked()) OpenIfAlt(slots[i].second > 0 ? slots[i].first : std::string()); // (#826; the rules skip alt-clicks)
+        const InvSlot here = grid.at(i); // (#1102) whole items and a chest's fraction
+        if (ImGui::IsItemClicked()) OpenIfAlt(!here.empty() ? here.id : std::string()); // (#826; the rules skip alt-clicks)
         NoteHover(&grid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
         const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
-        if (slots[i].second > 0) DrawGlow(dl, p, q, Item_GlowOf(slots[i].first, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
-        const auto& s = slots[i];
-        if (s.second > 0) {
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, s.first);
-            const ItemDef* d = itemDB.find(s.first);
-            CellName(dl, p, q, d ? d->name : s.first, hover);
-            const char* amt = TextFormat("%d", s.second);
+        if (!here.empty()) DrawGlow(dl, p, q, Item_GlowOf(here.id, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
+        if (!here.empty()) {
+            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, here.id);
+            const ItemDef* d = itemDB.find(here.id);
+            CellName(dl, p, q, d ? d->name : here.id, hover);
+            // the amount as the player inventory shows it: "12", "2.5", "0.4"
+            const char* amt = here.centi % 100 == 0 ? TextFormat("%d", (int)(here.centi / 100)) : here.centi % 10 == 0 ? TextFormat("%.1f", here.centi / 100.0) : TextFormat("%.2f", here.centi / 100.0);
             CellCount(dl, p, q, amt); // (#891)
-            if (hover && cursorStack.empty()) ImGui::SetTooltip("%s x%d\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory  wheel: move one)", d ? d->name.c_str() : s.first.c_str(), s.second, d ? d->description.c_str() : "");
+            if (hover && cursorStack.empty()) ImGui::SetTooltip("%s x%s\n%s\n(click: pick up  right-click: half  Shift+click: to the inventory  wheel: move one)", d ? d->name.c_str() : here.id.c_str(), amt, d ? d->description.c_str() : "");
         }
         DrawDragShare(dl, &grid, i, p, q);
         dl->AddRect(p, q, hover ? IM_COL32(200, 200, 200, 255) : IM_COL32(70, 72, 78, 255), 4.0f, 0, 1.0f);
@@ -1097,7 +1118,7 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4); // a chest lines up with the player's grid (#495)
+    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti); // a chest lines up with the player's grid (#495)
     if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
@@ -1135,7 +1156,7 @@ static void DrawContainer() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Take all (O)") || PlayerInput_BindingPressed(Act::Extract)) {
-        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0) MachineAct_TakeSlot(container.body, container.plot, container.part, i, 0); }
+        if (chest) for (int i = 0; i < (int)v.inSlots.size(); ++i) { if (v.inSlots[i].second > 0 || (i < (int)v.inCenti.size() && v.inCenti[i] > 0)) MachineAct_TakeSlot(container.body, container.plot, container.part, i, 0); }
         else MachineAct_Extract(container.body, container.plot, container.part);
         Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
     }
@@ -1150,7 +1171,7 @@ static void CheckContainer(Scene& world) {
     if (!pl || container.part >= (int)pl->parts.size() || pl->parts[container.part].type != container.type) { container.open = false; return; }
     const Part& part = pl->parts[container.part];
     const Vector3 c = pl->toBody({ (part.origin.x + 0.5f) * kCellSize, (part.origin.y + 0.5f) * kCellSize, (part.origin.z + 0.5f) * kCellSize });
-    const Vector3 me = b->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = b->toLocalOf(player.position, world.renderOrigin);
     if (Vector3Distance(c, me) * b->scale > 9.0f) { container.open = false; GameUI_Toast("Too far from it"); }
 }
 
@@ -1257,7 +1278,15 @@ static void DrawTeamProgress() {
 }
 
 // The game window's large tab across the top: true when clicked. The selected one is lit, with an accent underline.
-static bool ScreenTab(const char* label, const char* key, bool on, float w, float h) {
+// (#1206) the screen tabs' font: one size for the row, the largest at which every name fits (down to 70%; ScreenTabFont)
+static float screenTabFont = 1.0f;
+static void ScreenTabFont(const char* const* labels, int n, float w) {
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    screenTabFont = 1.0f;
+    for (int i = 0; i < n; ++i) screenTabFont = std::min(screenTabFont, (w - pad) / std::max(1.0f, ImGui::CalcTextSize(labels[i]).x));
+    screenTabFont = std::max(0.7f, screenTabFont);
+}
+static bool ScreenTab(const char* label, const char* key, bool on, float w, float h, bool rowFont = false) {
     const ImVec4 bg = on ? ImVec4(0.20f, 0.27f, 0.37f, 1.0f) : ImVec4(0.13f, 0.17f, 0.24f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, bg);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.32f, 0.44f, 1.0f));
@@ -1265,9 +1294,14 @@ static bool ScreenTab(const char* label, const char* key, bool on, float w, floa
     ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.95f, 0.96f, 0.98f, 1.0f) : ImVec4(0.62f, 0.68f, 0.76f, 1.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
     // (#891) with its key when both fit the tab, else the name alone (a large font in a narrow tab clipped "Skills [K")
+    // (#1206) the row's font when its names don't all fit (8 tabs in creative): smaller, rather than clipped names
+    const bool shrink = rowFont && screenTabFont < 1.0f;
+    if (shrink) ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * screenTabFont); // (FontSizeBase: GetFontSize is scaled already)
     const char* withKey = key && *key ? TextFormat("%s  [%s]", label, key) : label;
-    const bool fits = ImGui::CalcTextSize(withKey).x + ImGui::GetStyle().FramePadding.x * 2.0f <= w;
+    const float pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+    const bool fits = ImGui::CalcTextSize(withKey).x + pad <= w;
     const bool clicked = ImGui::Button(TextFormat("%s##%s", fits ? withKey : label, label), ImVec2(w, h));
+    if (shrink) ImGui::PopFont();
     if (on) ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 6, p.y + h - 4), ImVec2(p.x + w - 6, p.y + h), IM_COL32(224, 169, 64, 255));
     ImGui::PopStyleColor(4);
     return clicked;
@@ -1311,44 +1345,74 @@ static void DrawSkills() {
     double into = xp; for (int k = 1; k <= level; ++k) into -= Skills_XpForLevel(k);
     ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f), "%s  level %d", d.name.c_str(), level);
     ImGui::SameLine();
-    ImGui::TextDisabled("  %.0f / %.0f XP to level %d   |   %d point%s to spend   |   world XP rate %gx", into, Skills_XpForLevel(level + 1), level + 1,
-                        Skills_PointsFree(st, d.id), Skills_PointsFree(st, d.id) == 1 ? "" : "s", worldXpRate);
+    ImGui::TextDisabled("  %.0f / %.0f XP to level %d", into, Skills_XpForLevel(level + 1), level + 1);
+    { // (#828) the points on a line of their own (the header ran out of the pane at 1080p)
+        const int pts = Skills_PointsFree(st, d.id);
+        ImGui::TextColored(pts > 0 ? ImVec4(0.55f, 0.9f, 0.6f, 1.0f) : ImVec4(0.6f, 0.6f, 0.65f, 1.0f), "%d point%s to spend", pts, pts == 1 ? "" : "s");
+        ImGui::SameLine(); ImGui::TextDisabled("   world XP rate %gx", worldXpRate);
+    }
     std::string earns;
     for (const auto& [ev, x] : d.xp) earns += TextFormat("%s%s %g", earns.empty() ? "" : ", ", ev.c_str(), x);
     ImGui::TextDisabled("XP from: %s", earns.empty() ? "nothing yet" : earns.c_str());
-    if (gNetClient && gNetClient->state == NetClient::State::Joined) ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.4f, 1.0f), "On a server, skills don't gain XP yet (the server's XP comes next: #883 slice 2).");
     ImGui::Separator();
+    // (#828) The perk tree as nodes, a row per tier (the plan's grid): learned (green), can learn now (amber: click it),
+    // locked or not yet (grey). Each node: its name, ranks and effect; hover for its cost, what it needs and why not.
     bool any = false;
+    const int kNodeCols = 3; // (4 left names and their ranks overlapping at 1080p)
+    const float gap = fh * 0.6f, nodeW = (ImGui::GetContentRegionAvail().x - gap * (kNodeCols - 1)) / kNodeCols, nodeH = fh * 5.0f;
     for (int tier = 1; tier <= 3; ++tier) {
         const int need = kSkillTierLevel[tier - 1];
         ImGui::TextColored(level >= need ? ImVec4(0.6f, 0.85f, 1.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.55f, 1.0f), "Tier %d  (level %d)%s", tier, need, level >= need ? "" : "  - locked");
+        int col = 0;
         for (const PerkDef& p : Skills_Perks()) {
             if (p.skill != d.id || p.tier != tier) continue;
             any = true;
             const int rank = st.ranks.count(p.id) ? st.ranks.at(p.id) : 0;
             const std::string why = Skills_CanBuy(st, p.id);
+            const bool learned = rank > 0, full = rank >= p.ranks, canLearn = why.empty();
+            if (col > 0) ImGui::SameLine(0.0f, gap);
             ImGui::PushID(p.id.c_str());
-            ImGui::BeginGroup();
-            ImGui::TextColored(rank > 0 ? ImVec4(0.55f, 0.95f, 0.6f, 1.0f) : ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "%s  %d/%d", p.name.c_str(), rank, p.ranks);
-            ImGui::SameLine();
-            ImGui::TextDisabled("  %s%s", p.text.c_str(), p.cost > 1 ? TextFormat("  (%d points a rank)", p.cost) : "");
-            if (!p.needs.empty()) {
-                std::string n;
-                for (const std::string& q : p.needs) { const PerkDef* qd = Skills_FindPerk(q); n += (n.empty() ? "" : ", ") + (qd ? qd->name : q); }
-                ImGui::SameLine(); ImGui::TextDisabled("  needs %s", n.c_str());
+            const ImVec2 a = ImGui::GetCursorScreenPos(), b(a.x + nodeW, a.y + nodeH);
+            const bool clicked = ImGui::InvisibleButton("##node", ImVec2(nodeW, nodeH));
+            const bool hovered = ImGui::IsItemHovered();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImU32 edge = canLearn ? IM_COL32(230, 180, 60, 255) : learned ? IM_COL32(110, 210, 130, 255) : IM_COL32(80, 88, 100, 255);
+            const ImU32 text = canLearn ? IM_COL32(240, 200, 110, 255) : learned ? IM_COL32(150, 235, 165, 255) : IM_COL32(150, 155, 165, 255);
+            dl->AddRectFilled(a, b, hovered ? IM_COL32(34, 44, 58, 255) : IM_COL32(22, 30, 40, 255), 6.0f);
+            dl->AddRect(a, b, edge, 6.0f, 0, canLearn || learned ? 2.0f : 1.0f);
+            const float pad = fh * 0.4f, small = fh * 0.8f;
+            dl->PushClipRect(ImVec2(a.x + 2, a.y + 2), ImVec2(b.x - 2, b.y - 2), true); // every line stays in its node
+            dl->AddText(ImVec2(a.x + pad, a.y + pad), text, p.name.c_str());
+            // the effect: at most two lines (the rest in the tooltip), above the status row
+            dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(b.x, b.y - pad - small * 1.15f), true);
+            dl->AddText(ImGui::GetFont(), fh * 0.85f, ImVec2(a.x + pad, a.y + pad + fh * 1.25f), IM_COL32(190, 196, 206, 255), p.text.c_str(), nullptr, nodeW - 2.0f * pad);
+            dl->PopClipRect();
+            // the status row: what you can do (or why not: just "locked" under a locked tier, whose header says so) and the ranks
+            const char* status = full ? "learned" : canLearn ? "can learn" : level < need ? "locked" : why.c_str(); // (click the node: the tooltip says so)
+            const char* ranks = TextFormat("rank %d/%d", rank, p.ranks);
+            const float rw = ImGui::GetFont()->CalcTextSizeA(small, FLT_MAX, 0.0f, ranks).x;
+            dl->PushClipRect(ImVec2(a.x, a.y), ImVec2(b.x - pad - rw - pad, b.y), true);
+            dl->AddText(ImGui::GetFont(), small, ImVec2(a.x + pad, b.y - pad - small), canLearn ? IM_COL32(230, 180, 60, 255) : IM_COL32(130, 136, 146, 255), status);
+            dl->PopClipRect();
+            dl->AddText(ImGui::GetFont(), small, ImVec2(b.x - pad - rw, b.y - pad - small), learned ? IM_COL32(150, 235, 165, 255) : IM_COL32(130, 136, 146, 255), ranks);
+            dl->PopClipRect();
+            if (hovered) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(p.name.c_str());
+                ImGui::TextDisabled("%s", p.text.c_str());
+                ImGui::TextDisabled("%d point%s a rank, %d rank%s", p.cost, p.cost == 1 ? "" : "s", p.ranks, p.ranks == 1 ? "" : "s");
+                if (canLearn) ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.25f, 1.0f), "Click to learn a rank");
+                if (!p.needs.empty()) {
+                    std::string n;
+                    for (const std::string& q : p.needs) { const PerkDef* qd = Skills_FindPerk(q); n += (n.empty() ? "" : ", ") + (qd ? qd->name : q); }
+                    ImGui::TextDisabled("Needs %s", n.c_str());
+                }
+                if (!canLearn && !full) ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.4f, 1.0f), "%s", why.c_str());
+                ImGui::EndTooltip();
             }
-            // Learn, or why not, right-aligned by its own width (a fixed column cut "Needs Mining level 5" short)
-            const char* right = why.empty() ? "Learn" : rank < p.ranks ? why.c_str() : "";
-            const float rw = ImGui::CalcTextSize(right).x + (why.empty() ? ImGui::GetStyle().FramePadding.x * 2.0f : 0.0f);
-            { // where the row's text ended: room there, else under it at the right (#891: the large font overlapped them)
-                const float target = ImGui::GetWindowContentRegionMax().x - rw - 4.0f;
-                const float endX = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-                if (endX + ImGui::GetStyle().ItemSpacing.x < target) ImGui::SameLine(target); else ImGui::SetCursorPosX(target);
-            }
-            if (why.empty()) { if (ImGui::SmallButton("Learn")) { if (gSkillSpendRequest) gSkillSpendRequest(p.id); else Skills_Buy(st, p.id); } } // (#920: joined, the server decides)
-            else if (rank < p.ranks) ImGui::TextDisabled("%s", right);
-            ImGui::EndGroup();
+            if (clicked && canLearn) { if (gSkillSpendRequest) gSkillSpendRequest(p.id); else Skills_Buy(st, p.id); } // (#920: joined, the server decides)
             ImGui::PopID();
+            col = (col + 1) % kNodeCols;
         }
         ImGui::Spacing();
     }
@@ -1367,22 +1431,100 @@ static void DrawSkills() {
     ImGui::EndChild();
 }
 
-// The Team screen (#604). Joined to a server: the team as the server says (members, who's online, their health, the owner),
-// with Invite / Leave / Kick / Rename / team chat as /team commands (the server decides), and an invite waiting to accept.
-// Single player: a team of one.
+// (#828) The Team screen's helpers: how long ago, a compass word, where a teammate is from here.
+namespace {
+    std::string AgoText(uint32_t sec) {
+        if (sec == 0) return "";
+        if (sec < 120) return "just now";
+        if (sec < 2 * 3600) return TextFormat("%u min ago", sec / 60);
+        if (sec < 2 * 86400) return TextFormat("%u h ago", sec / 3600);
+        return TextFormat("%u days ago", sec / 86400);
+    }
+    const char* CompassWord(float deg) {
+        static const char* const w[8] = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" };
+        return deg < 0.0f ? "" : w[(int)std::floor(fmodf(deg + 22.5f, 360.0f) / 45.0f) % 8];
+    }
+    // "420 m NE", "on luna", "here"; "" when their position hasn't arrived
+    std::string WhereText(const NetClient& c, uint32_t session) {
+        uint64_t body = 0; DVec3 local{};
+        if (!session || !NetClient_OtherView(c, session, body, local)) return "";
+        const Planetoid* theirs = Planetoid::findNet(body);
+        Planetoid* mine = player.nearest;
+        if (!theirs) return "";
+        if (theirs != mine || !mine) return "on " + theirs->name;
+        const double d = (local - mine->toLocalD(player.position)).length() * mine->scale;
+        if (d < 8.0) return "here";
+        const float bearing = uiWorld ? Nav_Bearing(*uiWorld, local.toFloat()) : -1.0f;
+        return d < 1000.0 ? TextFormat("%.0f m %s", d, CompassWord(bearing)) : TextFormat("%.1f km %s", d / 1000.0, CompassWord(bearing));
+    }
+    // The right pane: what the team shares - its tier, the recipes you know, its claims (of its budget) and who may enter them.
+    void DrawTeamShared(int claimBudget, const std::vector<std::string>& allies) {
+        const float fh = ImGui::GetFontSize();
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "Shared");
+        ImGui::Separator();
+        const int cur = QuestBook_Tier(), tiersN = QuestBook_TierCount();
+        if (cur < tiersN) ImGui::Text("Quests: tier %d of %d (%s)", cur, tiersN - 1, QuestBook_TierName(cur));
+        else ImGui::Text("Quests: every tier done");
+        ImGui::Text("Recipes you know: %d", (int)LocalSession().recipes.known.size());
+        ImGui::Dummy(ImVec2(0, fh * 0.4f));
+        // Claims: a joined game's from the server's list, single player's from the claims here
+        struct Row { std::string body; Vector3 centre; float radius; };
+        std::vector<Row> rows;
+        if (gNetClient && gNetClient->state == NetClient::State::Joined) { for (const ClaimView& cv : Claims_Mirror()) if (cv.ours) rows.push_back({ cv.body, cv.centre, cv.radius }); }
+        else for (const Claim& cl : Claims_OfTeam(Teams_Of(PlayerId_Local()))) rows.push_back({ cl.body, cl.centre, cl.radius });
+        ImGui::Text("Claims: %d of %d", (int)rows.size(), claimBudget);
+        if (rows.empty()) ImGui::TextDisabled("  none yet: place a claim banner to claim land");
+        for (const Row& r : rows) {
+            std::string where;
+            if (player.nearest && player.nearest->name == r.body) {
+                const double d = (DVec3(r.centre) - player.nearest->toLocalD(player.position)).length() * player.nearest->scale;
+                where = d < r.radius ? "you are in it" : (d < 1000.0 ? TextFormat("%.0f m %s", d, CompassWord(uiWorld ? Nav_Bearing(*uiWorld, r.centre) : -1.0f))
+                                                                     : TextFormat("%.1f km %s", d / 1000.0, CompassWord(uiWorld ? Nav_Bearing(*uiWorld, r.centre) : -1.0f)));
+            } else where = "on " + r.body;
+            ImGui::BulletText("%.0f m across, %s", r.radius * 2.0f, where.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, fh * 0.4f));
+        ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.0f, 1.0f), "In our claims");
+        ImGui::Separator();
+        ImGui::TextWrapped("Our team%s may build, dig, open chests and machines, farm and use beds; anyone else is refused.", allies.empty() ? "" : " and our allies");
+        if (!allies.empty()) {
+            std::string a;
+            for (const std::string& n : allies) a += (a.empty() ? "" : ", ") + n;
+            ImGui::TextWrapped("Allies: %s", a.c_str());
+        } else ImGui::TextDisabled("No allies.");
+    }
+}
+
+// The Team screen (#604; the two panes of #828). Joined to a server: the team as the server says (members, who's online,
+// where they are, their health, the owner; when the others were last seen), with Invite / Leave / Kick / Rename / team chat
+// as /team commands (the server decides), and an invite waiting to accept. Single player: a team of one, with its claims.
 static void DrawTeam() {
     const float s = GameUI_Scale();
     ImGui::Dummy(ImVec2(0, 12 * s));
     NetClient* c = gNetClient && gNetClient->state == NetClient::State::Joined ? gNetClient : nullptr;
+    const float sharedW = std::max(ImGui::GetContentRegionAvail().x * 0.38f, 320.0f * s);
     if (!c) {
         const int id = Teams_Of(PlayerId_Local());
         const TeamRecord* team = nullptr;
         for (const TeamRecord& t : Teams_All()) if (t.id == id) team = &t;
+        ImGui::BeginChild("teamleft", ImVec2(ImGui::GetContentRegionAvail().x - sharedW - 8.0f * s, 0.0f), true);
         ImGui::TextColored(ImVec4(0.88f, 0.66f, 0.25f, 1.0f), "%s", team ? team->name.c_str() : "Your team");
-        ImGui::TextWrapped("You are a team of one. Quests and tiers belong to the team. In multiplayer, invite others to share them: Multiplayer on the main menu.");
+        ImGui::SameLine(); ImGui::TextDisabled("1 member");
+        ImGui::Separator();
+        ImGui::Text("%s (you)  - owner", settings.mpName.empty() ? "You" : settings.mpName.c_str());
+        ImGui::Dummy(ImVec2(0, 8 * s));
+        ImGui::TextWrapped("You are a team of one. Quests, tiers and claims belong to the team. In multiplayer, invite others to share them: Multiplayer on the main menu.");
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("teamshared", ImVec2(0.0f, 0.0f), true);
+        std::vector<std::string> allies;
+        for (const int a : Claims_AlliesOf(id)) if (const TeamRecord* at = Teams_Find(a)) allies.push_back(at->name);
+        DrawTeamShared(Claims_Budget(std::max(1, (int)QuestBook_LocalState().visitedBodies.size())), allies);
+        ImGui::EndChild();
         return;
     }
     const MsgTeamState& t = c->team;
+    ImGui::BeginChild("teamleft", ImVec2(ImGui::GetContentRegionAvail().x - sharedW - 8.0f * s, 0.0f), true);
     auto say = [&](const std::string& line) { NetClient_SendChat(*c, line); };
     bool youOwn = false;
     for (const auto& m : t.members) youOwn = youOwn || (m.you && m.owner);
@@ -1406,7 +1548,9 @@ static void DrawTeam() {
             ImGui::TableNextColumn();
             if (m.online) ImGui::ProgressBar(std::clamp(m.health / 100.0f, 0.0f, 1.0f), ImVec2(160 * s, 0), TextFormat("HP %.0f", m.health));
             else ImGui::TextDisabled("offline");
-            ImGui::TableNextColumn();
+            ImGui::TableNextColumn(); // (#828) where they are from here, or when they were last seen
+            if (m.online && !m.you) { const std::string w = WhereText(*c, m.session); if (!w.empty()) ImGui::TextUnformatted(w.c_str()); }
+            else if (!m.online && m.lastSeen) ImGui::TextDisabled("last seen %s", AgoText(m.lastSeen).c_str());
             ImGui::TableNextColumn();
             if (youOwn && !m.you) { ImGui::PushID(m.name.c_str()); if (ImGui::SmallButton("Kick")) say("/team kick " + m.name); ImGui::PopID(); }
         }
@@ -1431,6 +1575,11 @@ static void DrawTeam() {
         say(std::string("/t ") + teamSay); teamSay[0] = 0;
     }
     ImGui::TextDisabled("Also from the command line: /team, /team invite NAME, /team accept, /team leave, /t TEXT");
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("teamshared", ImVec2(0.0f, 0.0f), true);
+    DrawTeamShared(t.claimBudget, t.allies);
+    ImGui::EndChild();
 }
 
 // ---- The inventory screen's player (#822): a turning preview, the suit, its module slots and the off hand ----
@@ -1725,23 +1874,31 @@ void GameUI_Draw(Scene& world) {
         // end the temporary Help page (until #826) and Close.
         struct Tab { GameScreen s; const char* name; Act key; };
         static const Tab tabs[] = { { GameScreen::Inventory, "Inventory", Act::Inventory }, { GameScreen::Catalog, "Catalog", Act::Count }, { GameScreen::Crafting, "Crafting", Act::Crafting },
-                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills }, { GameScreen::Team, "Team", Act::Count } };
+                                    { GameScreen::Quests, "Quests", Act::Count }, { GameScreen::Skills, "Skills", Act::Skills },
+                                    { GameScreen::Research, "Research", Act::Count }, { GameScreen::Tome, "Tome", Act::Count }, { GameScreen::Team, "Team", Act::Count }, { GameScreen::Statistics, "Statistics", Act::Count } }; // (#1192: Research beside Skills; #1199 Statistics last, beside the Database; #1251 the Tome beside Research, once magic is found)
+        auto tabShown = [](GameScreen s) { return (s != GameScreen::Catalog || terrainTool.creative) && (s != GameScreen::Tome || TomeTab_Shown()); };
         // (#891) tabs as large as the row allows at the doubled scale (6 at 190 x s overflowed 1080 p): the row less Database and Close
-        const float smallW = 102.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key)
-        const int nTabs = terrainTool.creative ? 6 : 5;
+        const float smallW = 92.0f * s, tabH = 34.0f * s; // (#913 review: "Close [Esc]" keeps its key; #1206: 102 -> 92, room for 8 tabs)
+        int nTabs = 0;
+        for (const Tab& t : tabs) nTabs += tabShown(t.s);
         const float tabW = std::min(145.0f * s, (ImGui::GetContentRegionAvail().x - 2 * smallW - 6.0f * s * (nTabs + 2)) / (float)nTabs);
-        if (screen == GameScreen::Catalog && !terrainTool.creative) screen = GameScreen::Inventory; // (left creative)
+        if (!tabShown(screen)) screen = GameScreen::Inventory; // (left creative; the Tome without magic)
+        {   // (#1206) one font for the row: the largest at which every shown name fits
+            const char* names[16]; int n = 0;
+            for (const Tab& t : tabs) if (n < 16 && tabShown(t.s)) names[n++] = t.name;
+            ScreenTabFont(names, n, tabW);
+        }
         for (const Tab& t : tabs) {
-            if (t.s == GameScreen::Catalog && !terrainTool.creative) continue;
+            if (!tabShown(t.s)) continue;
             const char* key = t.key == Act::Count ? "" : PlayerInput_KeyName(PlayerInput_Binding(t.key));
-            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
+            if (ScreenTab(t.name, key, screen == t.s, tabW, tabH, true)) { screen = t.s; if (t.s != GameScreen::Inventory) container.open = false; }
             ImGui::SameLine(0.0f, 6.0f * s);
         }
         const float right = ImGui::GetWindowContentRegionMax().x;
         ImGui::SetCursorPosX(right - 2 * smallW - 6.0f * s);
-        if (ScreenTab("Database", "", databaseOpen, smallW, tabH)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
+        if (ScreenTab("Database", "", databaseOpen, smallW, tabH, true)) databaseOpen = !databaseOpen; // (#826: alt-click an item for its page)
         ImGui::SameLine(0.0f, 6.0f * s);
-        if (ScreenTab("Close", "Esc", false, smallW, tabH)) inventoryOpen = false;
+        if (ScreenTab("Close", "Esc", false, smallW, tabH, true)) inventoryOpen = false;
         ImGui::Separator();
         ImGui::BeginChild("screen", ImVec2(0, 0), false);
         gGridCell = SlotCellFor(ImGui::GetContentRegionAvail()); // (#1148) one slot size for the Inventory, Crafting and Catalog pages
@@ -1771,6 +1928,9 @@ void GameUI_Draw(Scene& world) {
                 QuestTree_DrawTab(); // (#890: the tree is the Quests screen; a tier's objectives and pins open in a pop-out)
                 break;
             case GameScreen::Skills: DrawSkills(); break; // (#883)
+            case GameScreen::Research: ResearchTab_Draw(); break; // (#1192)
+            case GameScreen::Tome: TomeTab_Draw(); break; // (#1251) magic, once found
+            case GameScreen::Statistics: StatsTab_Draw(); break; // (#1199)
             case GameScreen::Team: DrawTeam(); break;
             case GameScreen::Count: break;
         }
@@ -1959,7 +2119,7 @@ void GameUI_DrawHUD(Scene& world) {
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
         const float turn = Vector3LengthSqr(lastFwd) > 0.5f ? acosf(std::clamp(Vector3DotProduct(fwd, lastFwd), -1.0f, 1.0f)) * RAD2DEG / dt : 0.0f;
         lastFwd = fwd;
-        const float speed = relSpeed(player.velocity, player.grounded);
+        const float speed = Vector3Length(player.groundVelocity(world));
         const float want = std::clamp(std::clamp((speed - 8.0f) / 20.0f, 0.0f, 1.0f) + std::clamp((turn - 120.0f) / 240.0f, 0.0f, 1.0f), 0.0f, 1.0f);
         strength += (want - strength) * (1.0f - expf(-dt * 4.0f));
         if (strength > 0.01f) {
@@ -2003,7 +2163,7 @@ void GameUI_DrawHUD(Scene& world) {
             line(TextFormat("%.1f  %.1f  %.1f km", p.x / 1000.0, p.y / 1000.0, p.z / 1000.0), RAYWHITE);
         }
         const char* mode = player.flyMode && terrainTool.creative ? "FLY (F)" : player.grounded ? "WALK" : player.hovering ? "HOVER (H)" : player.gravity >= 0.5f ? "AIR" : "SPACE"; // (#932: fly is creative only)
-        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, relSpeed(player.velocity, player.grounded)), RAYWHITE);
+        line(TextFormat("%s   g %.1f   %.1f m/s", mode, player.gravity, Vector3Length(player.groundVelocity(world))), RAYWHITE);
         const char* biome = Survival_BiomeName();
         const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
         if (biome[0]) { line(weather ? TextFormat("%s   %s", biome, Weather_Name(Weather_Here().kind)) : biome, Fade(RAYWHITE, 0.8f)); }

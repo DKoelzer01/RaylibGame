@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "uipalette.h"
 #include "tools.h"
 #include "gamerng.h"
 #include "terraintool.h"
@@ -149,7 +150,7 @@ void Farm_Update(Scene& world, float dt) {
         // Rain on the field speeds it by half again (the weather where the player is: fields
         // more than 3 km away grow at their own rate).
         const bool rainy = (Weather_Here().kind == WeatherKind::Rain || Weather_Here().kind == WeatherKind::Storm) && body == player.nearest &&
-                           Vector3Distance(pos, body->toLocal((player.position - world.renderOrigin).toFloat())) < 3000.0f;
+                           Vector3Distance(pos, body->toLocalOf(player.position, world.renderOrigin)) < 3000.0f;
         // Irrigation by moving water (a channel dug to the field, water carried in a bucket).
         if (g.rate < 2.0f && SimTime() - g.wetChecked > 2.0) { g.wetChecked = SimTime(); g.flowing = Fluid::StandingWaterNear(*body, pos, 4.0f); }
         const float rate = std::max(g.rate, g.flowing ? 2.0f : 0.0f) * (rainy ? 1.5f : 1.0f);
@@ -258,7 +259,7 @@ void Farm_DrawAimHUD(const Planetoid& body, Vector3 ground) {
     if (Farm_Crop(body, ground, crop, growth)) {
         DrawText(TextFormat("farmland: %s %s", crop.c_str(), growth >= 1.0f ? "- ripe" : ""), x, y, 20, Color{ 140, 220, 120, 255 });
         DrawRectangle(x, y + 26, 300, 8, Fade(RAYWHITE, 0.2f));
-        DrawRectangle(x, y + 26, (int)(300 * growth), 8, growth >= 1.0f ? GOLD : GREEN);
+        DrawRectangle(x, y + 26, (int)(300 * growth), 8, growth >= 1.0f ? Ui().warn : Ui().good);
         DrawText(growth >= 1.0f ? "O harvest" : "grows in daylight; water nearby doubles it", x, y + 38, 14, Fade(RAYWHITE, 0.7f));
     } else {
         DrawText("farmland", x, y, 20, Color{ 200, 170, 120, 255 });

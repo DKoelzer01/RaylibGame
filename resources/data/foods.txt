@@ -1,6 +1,7 @@
-# Foods: item | food value (the bar is 0-100) | raw (optional: may make you sick)
+# Foods: item | food value (the bar is 0-100) | flag (optional: raw = may make you sick; cure = cures poison, eaten even when full)
 # Eat from the hotbar (hover an item in the inventory, press 1-0 to bind it).
 berries        | 4
+bitterroot     | 2  | cure
 roots          | 6
 roasted_roots  | 15
 bread          | 25

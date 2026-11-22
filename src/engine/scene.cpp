@@ -235,6 +235,7 @@ Scene::Scene(std::string name, bool isActive)
     shadowMap = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     shadowNear = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
     if (const char* e = getenv("RAYLIBGAME_WIDE_SHADOWS")) wideShadows = e[0] != '0';
+    if (const char* e = getenv("RAYLIBGAME_WIDE_EVERY")) wideEvery = std::max(1, atoi(e)); // (#1163) A/B: 4 was the old cadence
     if (wideShadows) { shadowWide = LoadShadowmapRenderTexture(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE); terrainMaterial.maps[MATERIAL_MAP_EMISSION].texture = shadowWide.depth; } // #138
     terrainMaterial.maps[MATERIAL_MAP_HEIGHT].texture = shadowNear.depth; // a spare slot: the near cascade
     terrainMaterial.maps[MATERIAL_MAP_BRDF].texture = shadowMap.depth;
@@ -669,6 +670,7 @@ void Scene::drawScene(int gamestate) {
     static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
     const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
     SetShaderValue(s, GetShaderLocation(s, "ambientUp"), &hemiUp, SHADER_UNIFORM_VEC3);
+    { static const int bounce = (getenv("RAYLIBGAME_BOUNCE") && getenv("RAYLIBGAME_BOUNCE")[0] == '0') ? 0 : 1; SetShaderValue(s, GetShaderLocation(s, "bounceOn"), &bounce, SHADER_UNIFORM_INT); } // (#898) A/B
     const float ambient[4] = { effAmbient.x, effAmbient.y, effAmbient.z, 1.0f };
     SetShaderValue(s, locAmbient, ambient, SHADER_UNIFORM_VEC4);
     { static const int dbgSky = getenv("RAYLIBGAME_SHOW_SKY") ? atoi(getenv("RAYLIBGAME_SHOW_SKY")) : 0; SetShaderValue(s, GetShaderLocation(s, "debugSky"), &dbgSky, SHADER_UNIFORM_INT); } // (#898)
@@ -1064,6 +1066,28 @@ void Scene::drawScene(int gamestate) {
         GpuTimer_Mark("grass");
         KickGpu();
 
+        // (#1164 part 3) Screen-space reflections on the water: the opaque scene so far, resolved, with this view's
+        // matrix; the water shader marches its reflected ray through the depth and falls back to the sky. Reverse-Z only
+        // (the resolve targets exist there). RAYLIBGAME_WATER_SSR=0: off.
+        {
+            static const bool ssrAllowed = !(getenv("RAYLIBGAME_WATER_SSR") && getenv("RAYLIBGAME_WATER_SSR")[0] == '0');
+            Shader& ws = water.shader;
+            unsigned sc = 0, sd = 0; int sw = 0, sh = 0;
+            const bool ssr = ssrAllowed && revZ && SceneTarget_ResolveOpaque(sc, sd, sw, sh);
+            const int on = ssr ? 1 : 0;
+            SetShaderValue(ws, GetShaderLocation(ws, "ssrOn"), &on, SHADER_UNIFORM_INT);
+            if (ssr) {
+                rlActiveTextureSlot(16); rlEnableTexture(sc); // units 16-17: 13-14 are the local lights (locallights.cpp), 15 the haze LUT
+                rlActiveTextureSlot(17); rlEnableTexture(sd);
+                rlActiveTextureSlot(0);
+                const int u13 = 16, u14 = 17;
+                const float size[2] = { (float)sw, (float)sh };
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrColor"), &u13, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrDepth"), &u14, SHADER_UNIFORM_INT);
+                SetShaderValue(ws, GetShaderLocation(ws, "ssrSize"), size, SHADER_UNIFORM_VEC2);
+                SetShaderValueMatrix(ws, GetShaderLocation(ws, "ssrViewProj"), MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection()));
+            }
+        }
         // Transparent pass (sea surfaces) after everything opaque. Depth writes stay on: where LOD
         // nodes overlap, the second copy of the same surface then fails the depth test instead of
         // blending twice. Both faces are drawn (seen from under the water too).
@@ -1189,6 +1213,9 @@ RenderOriginScope::RenderOriginScope(Scene& s, const DVec3& centre) : scene(s), 
     scene.renderOrigin = centre;
     scene.camera.position = Vector3Subtract(scene.camera.position, d);
     scene.camera.target = Vector3Subtract(scene.camera.target, d);
+    // (#1360) the atmosphere's centre is a render-space copy the frame setup took: it moves with the bodies, or code in the
+    // scope (a server's survival step for a remote player) measured the air from the server's origin, not the player's
+    scene.atmosphere.centre = Vector3Subtract(scene.atmosphere.centre, d);
     scene.syncRenderPositions();
 }
 
@@ -1197,6 +1224,7 @@ RenderOriginScope::~RenderOriginScope() {
     scene.renderOrigin = saved;
     scene.camera.position = Vector3Add(scene.camera.position, d);
     scene.camera.target = Vector3Add(scene.camera.target, d);
+    scene.atmosphere.centre = Vector3Add(scene.atmosphere.centre, d); // (#1360)
     scene.syncRenderPositions();
 }
 
@@ -1206,3 +1234,24 @@ void Scene::setCameraWorld(DVec3 position, DVec3 target) {
     camera.target = (target - position).toFloat();
     syncRenderPositions();
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1360): a RenderOriginScope moves every render-space copy with the origin ----
+#include "unit_helpers.h"
+
+// A server steps each remote player in a scope centred on it: the atmosphere's centre (a copy the frame setup took) must
+// be in the scope's frame, so a player 60 km from the planet's centre is in the air wherever the server's own origin is.
+TEST(RenderOriginScope, TheAtmosphereMovesWithTheOrigin) {
+    Scene& world = UnitTest::FieldOnlyScene();
+    world.renderOrigin = DVec3{ 0, 0, 0 };
+    world.atmosphere.centre = { 0, -80000.0f, 0 }; // the server's origin 80 km above the planet's centre (out of the air)
+    const DVec3 player{ 0, -20000.0, 0 };          // a player on the ground, 60 km from the centre
+    {
+        RenderOriginScope frame(world, player);
+        const Vector3 pr = (player - world.renderOrigin).toFloat();
+        EXPECT_NEAR(Vector3Distance(pr, world.atmosphere.centre), 60000.0f, 1.0f) << "the player's own distance to the centre";
+    }
+    EXPECT_NEAR(world.atmosphere.centre.y, -80000.0f, 1.0f) << "restored after the scope";
+    world.atmosphere.centre = { 0, 0, 0 };
+}
+#endif

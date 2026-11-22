@@ -39,6 +39,9 @@ struct Params {
     bool shareFloat = !EnvFlag("RAYLIBGAME_FLUID_SHARE_INT");
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
+    // The pressure pass (#1168): full cells carry the head of the free surface they connect to, so water climbs the far leg
+    // of a U-bend. CPU-only and opt-in (RAYLIBGAME_FLUID_PRESSURE=1) until fluid_step.comp has it: the two must agree.
+    bool pressure = EnvFlag("RAYLIBGAME_FLUID_PRESSURE");
     void setCell(float cs, int column) {
         cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column;
         wakeUnits = std::max(4, (int)(0.016f * hu + 0.5f));
@@ -66,6 +69,10 @@ struct Grid {
     std::vector<uint32_t> dem, cap;
     std::vector<uint16_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
+    // The pressure pass (#1168), per cell: the head H of the free surface a water cell is connected to, in fill units (255 a
+    // row) above the cell's own bottom. pr: the last substep's (read by the vertical pass), prN: this substep's (written by it);
+    // the apply pass copies prN to pr per cell. The host carries pr per brick between ticks, as faceP.
+    std::vector<int32_t> pr, prN;
     // The dry-cell skip (#747, as the GPU's #675 fluid_groups.comp): per slot, 3 rotating substeps x 64 group bits (the
     // 64-cell groups that held water: group = z * 4 + y / 4), and the groups the next substep runs. groupsFull: the next
     // substep runs every cell (BeginTick seeds the masks instead; FLUID_CPU_FULLFIRST=1 keeps the full first substep).

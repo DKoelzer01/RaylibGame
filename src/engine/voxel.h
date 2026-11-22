@@ -268,6 +268,7 @@ public:
     float foldWeight(Vector3 s) const { return Strata_FoldWeight(s, fieldSeed); }   // #591: 0..1
     float volcano(Vector3 s) const { return gen.volcanoes ? Strata_Volcano(s, radius, fieldSeed) : 0.0f; } // #593: metres
     float karstWeight(Vector3 s) const { return gen.karst ? Strata_KarstWeight(s, fieldSeed) : 0.0f; } // #592: 0..1
+    unsigned int terrainSeed() const { return fieldSeed; } // #1248: the mana field is seeded from it
     float volcanoWeight(Vector3 s) const { float w = 0.0f; if (gen.volcanoes) Strata_Volcano(s, radius, fieldSeed, &w); return w; } // #1063: 0..1 toward a vent (0 off volcanoes)
     // #588: the cliff face of a steep resistant layer at surface point s (m), height h (final m), the bake's gradient.
     float cliffFace(Vector3 s, float h, Vector3 grad, float fp) const;
@@ -343,9 +344,16 @@ public:
     // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
     // outward (downhill) direction, body-local. Tests and captures.
     bool nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector3& outward, int kind = -1) const; // kind: -1 any entrance, 0 hillside, 1 karst sink, 2 resurgence (#1052), 3 a chamber centre (#1058)
+    void caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const; // #1116: the entries of one kind within range (tests)
     struct CaveShaft { Vector3 top, up; float radius, depth; };          // #1067: a shaft open to the sky (karst sink, tube skylight)
     void shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out) const; // those whose shaft can reach the box [lo, hi]
     int caveMouthsNear(Vector3 dir, float range) const; // (#615 step 3) how many mouths within range (m) of a direction (stats)
+    // (#1223) For creature spawning: the cave segments (axis a-b, radii, the up of their floor, kind: 0 passage, 1 mouth, 2 rubble
+    // (solid), 3 chamber or lava tube, 4 slot) and the entrances (kind as nearestCaveMouth's) whose axis passes through the box.
+    struct CaveSpan { Vector3 a, b, up; float ra, rb; int kind; };
+    struct CaveEntrance { Vector3 at, out; int kind; };
+    void caveSpansNear(Vector3 lo, Vector3 hi, std::vector<CaveSpan>& out) const;
+    void caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntrance>& out) const;
     Vector3 uphillAt(Vector3 dir) const; // the eroded height's gradient (body frame, m per m; zero without the bake): benches face cliffs
     float terrain3D(Vector3 p, float d, float surface, float footprint, const Column3D* col = nullptr) const;
 

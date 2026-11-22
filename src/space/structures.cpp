@@ -1,4 +1,5 @@
 #include "structures.h"
+#include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
 #include "factory.h"
 #include "inventory.h"
@@ -728,6 +729,17 @@ void FillLoot(Planetoid& body, const PendingLoot& L) {
     for (const LootEntry& e : it->second) {
         if (Unit(h) > e.chance) continue;
         const int n = e.lo + (int)(Unit(h) * (e.hi - e.lo + 1));
+        if (n > 0 && MagicDiscovery_IsPage(e.item)) { // (#1250) a First Sight page only lies near a ley line (magic items come last: the rolls before stay)
+            Vector3 at{};
+            bool placed = false;
+            if (body.plots) for (auto& p : body.plots->plots)
+                if (p->id == L.plot && L.part >= 0 && L.part < (int)p->parts.size()) {
+                    const Int3 o = p->parts[L.part].origin;
+                    at = p->toBody({ (o.x + 1) * kCellSize, (o.y + 1) * kCellSize, (o.z + 1) * kCellSize });
+                    placed = true;
+                }
+            if (!placed || !MagicDiscovery_LootAllowed(body, at, e.item)) continue;
+        }
         if (n > 0) Factory::Insert(body.id, L.plot, L.part, e.item, std::min(n, e.hi));
     }
 }
@@ -812,7 +824,7 @@ void Structures_Update(Scene& world) {
     if (sets.empty()) return;
     Planetoid* body = player.nearest;
     const bool onFoot = body && !player.flyMode;
-    const Vector3 me = body ? body->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    const Vector3 me = body ? body->toLocalOf(player.position, world.renderOrigin) : Vector3{};
     // Only the authority generates (#164 design, MP): a client gets the structures as plot and terrain edits. It builds
     // round the local player and every interest centre (#318: a server's players).
     if (Net_IsAuthority()) {

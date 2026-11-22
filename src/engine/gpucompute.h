@@ -44,6 +44,12 @@ struct ComputeBuffer {
     void destroy();
 };
 
+// (#1047) Start compiling these compute shaders in the background (parallel shader compile, shaderasync.h), so a later
+// ComputeProgram::load of the same path takes the finished program instead of compiling cold in one frame. Returns how many
+// were started (0 without the extension: load compiles as before). Compute_PrewarmPending: those not finished yet.
+int Compute_Prewarm(const std::vector<std::string>& paths);
+int Compute_PrewarmPending();
+
 // glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) and friends.
 void Compute_Barrier();
 

@@ -70,7 +70,7 @@ namespace {
     }
     // The local player's feet against a plot point: horizontal (plot xz) and vertical (plot y) offsets, m.
     bool FeetNear(const Scene& world, const Planetoid& b, const Plot& p, Vector3 at, float horiz, float below, float above) {
-        const Vector3 me = p.toPlot(b.toLocal((player.position - world.renderOrigin).toFloat()));
+        const Vector3 me = p.toPlot(b.toLocalOf(player.position, world.renderOrigin));
         const float dy = me.y - at.y;
         return fabsf(me.x - at.x) < horiz && fabsf(me.z - at.z) < horiz && dy > -below && dy < above;
     }
@@ -88,7 +88,7 @@ void DungeonTraps_Update(Scene& world) {
         traps.clear();
         stats.plates = stats.vents = 0;
         if (body && body->plots) {
-            const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+            const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
             for (auto& plot : body->plots->plots) {
                 if (Vector3Distance(plot->toBody({ 0, 0, 0 }), me) > kScanRange) continue;
                 for (int i = 0; i < (int)plot->parts.size(); ++i) {
@@ -106,7 +106,7 @@ void DungeonTraps_Update(Scene& world) {
         Plot* plot = PlotOf(t.body, t.plot);
         if (!plot || t.part >= (int)plot->parts.size() || plot->parts[t.part].type != t.type) continue; // gone since the scan
         if (t.type == PartType::GasVent) {
-            if (now >= nextHaze && Vector3Distance(plot->toBody(t.at), t.body->toLocal((player.position - world.renderOrigin).toFloat())) < 30.0f) {
+            if (now >= nextHaze && Vector3Distance(plot->toBody(t.at), t.body->toLocalOf(player.position, world.renderOrigin)) < 30.0f) {
                 ParticleBurst s; // a sickly haze over the vent
                 s.kind = ParticleKind::Smoke; s.color = { 132, 168, 70, 70 };
                 s.count = 2; s.size = 0.45f; s.life = 3.5f; s.speed = 0.25f; s.spread = 1.0f; s.dir = plot->up;
@@ -176,7 +176,7 @@ void DungeonTraps_Update(Scene& world) {
         if (!plot) { d.hit = true; continue; }
         const float flown = (float)(now - d.started) * kDartSpeed;
         if (!d.hit && authority && flown > 0.0f) {
-            const Vector3 me = plot->toPlot(d.body->toLocal((player.position - world.renderOrigin).toFloat()));
+            const Vector3 me = plot->toPlot(d.body->toLocalOf(player.position, world.renderOrigin));
             // The player's place along the dart's path; hit once it has flown that far, if they are within 0.4 m of it.
             const Vector3 path = Vector3Subtract(d.to, d.from);
             const float len = Vector3Length(path);
@@ -246,7 +246,7 @@ int DungeonTraps_Test(Scene& world, Planetoid& body, int frame) {
     auto toRender = [&](Vector3 plotPos) { return body.toWorld(plot->toBody(plotPos)); };
     auto stand = [&](Vector3 plotPos) { player.placeAt(world, body, toRender({ plotPos.x, plotPos.y + 0.08f, plotPos.z })); };
     if (frame == 1) {
-        const Vector3 me = body.toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 me = body.toLocalOf(player.position, world.renderOrigin);
         if (!body.plots) body.plots = std::make_unique<PlotSet>();
         plot = body.plots->plotFor(me, 0.0f, true);
         if (!plot) { printf("bench: dungeon traps: no plot -> FAIL\n"); return -1; }
