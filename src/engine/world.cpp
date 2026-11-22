@@ -1303,6 +1303,15 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         long long need = (long long)ring.keys.size() * 800 + lodSettings.cacheVertices + (4 << 20);
         if (need > as.vertexCapacity + as.vertexCapacity / 10) { // (Reserve creates the arena if it is not up yet)
             need += need / 10;
+            // (#1560) A ring near a ring asteroid asked for 146.7 M vertices (880 M indices, ~4.9 GB) with 11 M in use, and the
+            // allocation aborted the game. Say which ring, and grow at most by half at a time: this is a head start, not a
+            // need (an upload that doesn't fit still grows the arena itself).
+            const long long cap = std::max<long long>((long long)as.vertexCapacity * 3 / 2, 8 << 20);
+            if (need > cap) {
+                LOG_WARN("Arena", "preload ring of %s: %zu nodes (scale %.3g, radius %.0f local) would reserve %.1f M vertices with %.1f M in use: capped at %.1f M\n",
+                         p.name.c_str(), ring.keys.size(), p.scale, r, need / 1e6, as.vertices / 1e6, cap / 1e6);
+                need = cap;
+            }
             const double ipv = std::max(6.0, as.vertices > 0 ? (double)as.indices / as.vertices : 6.0);
             TerrainArena_Reserve((int)std::min<long long>(need, INT_MAX / 2), (int)std::min<long long>((long long)(need * ipv), INT_MAX / 2));
         }
