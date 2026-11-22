@@ -35,7 +35,7 @@ SCENARIO("world/locate") {
     s.tags = { "world" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 240.0;
-    s.step("locate every feature from the start", 60.0, [](ScenarioCtx& c) {
+    s.step("locate every feature from the start", 180.0, [](ScenarioCtx& c) { // (most of it waiting for the spawn screen on a slow machine)
         Player& p = LocalSession().player;
         if (c.T < 1.0 || !p.nearest) return false; // (a slow machine is still on the spawn loading screen: no body yet)
         terrainTool.creative = true; // (the commands are creative's)
