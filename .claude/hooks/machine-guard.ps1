@@ -1,0 +1,46 @@
+# PreToolUse hook (Bash|PowerShell), #1477: the one-at-a-time machine rule, enforced.
+# - Running the game or the tests (game.exe, game_tests.exe, ctest) needs the machine: this session's worktree must
+#   hold it (tools/slot.sh request|take). Otherwise the command is refused with how to ask.
+# - Building (cmake --build) during someone else's quiet window is refused (tools/slot.sh wait-quiet, then build).
+# Commands that only mention those names (gh, git, grep, ls, cat, Stop-Process, taskkill...) pass.
+# Fails open: any error here lets the command through, so a broken hook never blocks work.
+$ErrorActionPreference = 'Stop'
+try {
+    $raw = [Console]::In.ReadToEnd()
+    $evt = $raw | ConvertFrom-Json
+    $cmd = [string]$evt.tool_input.command
+    if (-not $cmd) { exit 0 }
+    $cwd = [string]$evt.cwd
+    if (-not $cwd) { $cwd = (Get-Location).Path }
+
+    $first = ($cmd.TrimStart() -split '\s+')[0]
+    $inert = '^(gh|git|grep|rg|ls|cat|head|tail|wc|sed|awk|find|echo|printf|cp|mv|rm|copy|Copy-Item|Move-Item|Get-\w+|Select-String|Stop-Process|taskkill|tasklist|Test-Path|Write-Output|Out-File)$'
+    if ($first -match $inert) { exit 0 }
+
+    $runs = $cmd -match '(?i)(^|[\s;&|("''/\\])(\.[/\\])?([\w.:/\\-]*[/\\])?game(_tests)?(\.exe)?(\s|$|"|'')' -or $cmd -match '(?i)(^|[\s;&|(])ctest(\s|$)'
+    $builds = $cmd -match '(?i)cmake(\.exe)?"?\s+--build'
+    if (-not ($runs -or $builds)) { exit 0 }
+
+    $slot = Join-Path $env:CLAUDE_PROJECT_DIR 'tools/slot.sh'
+    if (-not (Test-Path $slot)) { exit 0 }  # an older checkout without the tool: don't enforce
+    $bash = 'C:\Program Files\Git\bin\bash.exe'
+    if (-not (Test-Path $bash)) { exit 0 }
+    Push-Location $cwd
+    try {
+        if ($runs) {
+            & $bash $slot holds *> $null
+            if ($LASTEXITCODE -ne 0) {
+                $st = (& $bash $slot status 2>&1) -join "`n"
+                [Console]::Error.WriteLine("machine-guard: running the game/tests needs the machine slot (one session at a time, #1477).`n$st`nAsk with: tools/slot.sh request <minutes> [quiet] <what>   (run it in the background; it returns when the machine is yours), then tools/slot.sh free when done.")
+                exit 2
+            }
+        } elseif ($builds) {
+            $q = (& $bash $slot quiet-other 2>$null) -join ''
+            if ($LASTEXITCODE -eq 0) {
+                [Console]::Error.WriteLine("machine-guard: quiet window held by $q - no builds until it ends. Wait with: tools/slot.sh wait-quiet (then build at low priority, -j 4).")
+                exit 2
+            }
+        }
+    } finally { Pop-Location }
+    exit 0
+} catch { exit 0 }
