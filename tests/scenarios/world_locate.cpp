@@ -20,9 +20,8 @@ bool Arrived(ScenarioCtx& c, const char* what) {
     if (!p.nearest) return false;
     const Vector3 here = p.nearest->toLocalD(p.position).toFloat();
     const float d = Vector3Distance(here, target);
-    // The subject in view: the camera a few metres behind and above the player, looking at the target.
-    const Vector3 up = Vector3Normalize(target);
-    c.camera(Vector3Add(here, Vector3Add(Vector3Scale(up, 4.0f), Vector3Scale(Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), 6.0f))), target, up);
+    // (The player's own view, at the place: c.camera moved the player into flight every frame, which held the loading screen
+    // up after the teleport, so the world never went idle and the step never ended - #1584.)
     c.waitingFor(TextFormat("the player at the %s (%.0f m away, idle %d)", what, d, WorldIdle() ? 1 : 0));
     if (!WorldIdle() || c.t < 3.0) return false;
     c.lt(TextFormat("/tp %s: the player arrived (m from the target)", what), d, 30.0);
