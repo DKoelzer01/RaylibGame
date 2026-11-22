@@ -5246,7 +5246,8 @@ int main(int argc, char** argv)
                     for (const auto& m : unused) printf(" %s", m.c_str());
                     // #214: ores only go into smelting and ore processing; every product is made from ingots (plates, wire...).
                     static const char* kOreMachines[] = { "kiln", "electric_furnace", "steam_macerator", "macerator", "arc_furnace", "blast_furnace",
-                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge" };
+                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge",
+                                                          "millstone", "bloomery" }; // (#1271 L2-L3, #1549) the ladder's early ore crushing and smelting
                     std::vector<std::string> oreUses;
                     for (const Rule& u : rules)
                         for (const std::string& in : u.in) {
