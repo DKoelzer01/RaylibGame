@@ -1621,6 +1621,9 @@ int main(int argc, char** argv)
         gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
             if (Planetoid* b = Planetoid::find(bodyId)) NetClient_MachineAction(gJoin, b->netId, plot, part, action, item, count, slot, which);
         };
+        gMachineInsertData = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int slot, const std::string& data) { // (#1446 2b)
+            if (Planetoid* b = Planetoid::find(bodyId)) NetClient_MachineAction(gJoin, b->netId, plot, part, action, item, 1, slot, 0, data);
+        };
         gFactoryRemoteWatch = [](uint64_t bodyId, uint32_t plot, int part) { if (gMachineRequest) gMachineRequest(bodyId, plot, part, 6, std::string(), 0, 0, 0); };
         gBedUseRequest = [](const Planetoid& body, const Plot& plot, int part) { // (#800) and our spawn bed
             if (part < 0 || part >= (int)plot.parts.size()) return;
@@ -13636,7 +13639,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gMachineInsertData = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }

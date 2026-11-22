@@ -9,7 +9,12 @@
 
 bool MachineAct_Remote() { return (bool)gMachineRequest; }
 
-void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, bool fuel, int centi) {
+void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, bool fuel, int centi, const std::string& data) {
+    if (!data.empty()) { // (#1446 2b) one item with its record (never fuel)
+        if (gMachineRequest) { inventory.addInstance(item, data); if (gMachineInsertData) gMachineInsertData(body, plot, part, 1, item, 0, data); return; }
+        Factory::Insert(body, plot, part, item, 1, 0, 0, data);
+        return;
+    }
     if (count <= 0 && centi <= 0) return;
     if (gMachineRequest) {
         inventory.addAmount(item, count); // back: the server takes it from the inventory it keeps, and its delta from ours
@@ -20,7 +25,12 @@ void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string
     else Factory::Insert(body, plot, part, item, count, 0, centi);
 }
 
-void MachineAct_InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, int centi) {
+void MachineAct_InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, int centi, const std::string& data) {
+    if (!data.empty()) { // (#1446 2b) one item with its record into that chest slot
+        if (gMachineRequest) { inventory.addInstance(item, data); if (gMachineInsertData) gMachineInsertData(body, plot, part, 8, item, slot, data); return; }
+        Factory::InsertSlot(body, plot, part, item, 1, slot, 0, 0, data);
+        return;
+    }
     if (count <= 0 && centi <= 0) return;
     if (gMachineRequest) {
         inventory.addAmount(item, count); // back, as Insert: the server takes it from the inventory it keeps
@@ -66,7 +76,7 @@ void MachineAct_Update() {
         CursorTake& t = cursorTakes[i];
         auto sink = Factory::CursorSink();
         if (inventory.count(t.item) >= t.base + t.count) {
-            if (sink && inventory.removeAmount(t.item, t.count)) { sink(t.item, t.count, 0.0f); ++cursorMoves; }
+            if (sink && inventory.removeAmount(t.item, t.count)) { sink(t.item, t.count, 0.0f, std::string()); ++cursorMoves; }
             cursorTakes.erase(cursorTakes.begin() + i);
             continue;
         }
