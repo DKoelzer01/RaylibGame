@@ -1936,7 +1936,10 @@ void SimLoop() {
                 stats.cmdMs = n ? sum.cmd / n : 0.0; stats.tickOnlyMs = n ? sum.tick / n : 0.0; stats.viewMs = n ? sum.view / n : 0.0;
             }
         }
-        tickCount++;
+        { // (#1524) under the waiters' mutex: a WaitTicks between its check and its sleep would miss the notify (30 s stall)
+            std::lock_guard<std::mutex> lk(tickCvMutex);
+            tickCount++;
+        }
         tickCv.notify_all();
     }
 }
