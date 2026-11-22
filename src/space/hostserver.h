@@ -70,6 +70,8 @@ int Host_TeamXpGiven();                                                        /
 int Host_SkillSpends();                                                        // (#920 tests) allowed
 int Host_SkillSpendsRefused();                                                 // (#920 tests) refused
 bool Host_TestGive(uint32_t session, const std::string& item, int count); // (tests) into a remote player's inventory; count < 0 takes
+bool Host_TestGiveInstance(uint32_t session, const std::string& item, const std::string& data); // (#1219 tests) one item with its record (journalled)
+bool Host_HasInstance(uint32_t session, const std::string& item, const std::string& data);      // (#1219 tests) that copy is in its inventory
 double Host_PlayersApart(class Scene& world, uint32_t a, uint32_t b);          // (#865 tests) metres between two remote players
 bool Host_TestPutPlayerAt(class Scene& world, uint32_t who, uint32_t at); // (#865 tests) one remote player onto another's spot
 bool Host_ForgetPlayers();

@@ -13,7 +13,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -546,6 +546,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
         case NetMsg::Damage: { MsgDamage m; return NetRead(r, m); }
         case NetMsg::CreatureFx: { MsgCreatureFx m; return NetRead(r, m); }
+        case NetMsg::SetGem: { MsgSetGem m; return NetRead(r, m); }
         case NetMsg::Vitals: { MsgVitals m; return NetRead(r, m); }
         case NetMsg::UseItem: { MsgUseItem m; return NetRead(r, m); }
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
@@ -727,6 +728,8 @@ bool NetProto_Test() {
             check(RoundTrip(a, b, &s) && b.graves.size() == 1 && b.graves[0].dropped && b.graves[0].items.size() == 2 && b.graves[0].items[1] == "oak_log", "graves: a dropped pile"); samples.push_back(s);
             MsgDropItems da{ "stone", 250 }, db; std::vector<uint8_t> s2;
             check(RoundTrip(da, db, &s2) && db.item == "stone" && db.centi == 250, "drop items"); samples.push_back(s2);
+            { MsgSetGem a{ "weapon_sword", "h=steel;g=wood;b=iron;w=3", "ruby" }, b; std::vector<uint8_t> s; // (#1219)
+              check(RoundTrip(a, b, &s) && b.item == a.item && b.data == a.data && b.gem == "ruby", "set gem"); samples.push_back(s); }
             MsgCreativeGive ca{ "diamond", 64 }, cb; std::vector<uint8_t> s3;
             check(RoundTrip(ca, cb, &s3) && cb.item == "diamond" && cb.count == 64, "creative give"); samples.push_back(s3);
         }
@@ -949,6 +952,8 @@ bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = 
 // (#865, #866) drops and creative items
 void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); w.str(m.data.substr(0, 255)); }
 bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); m.data = r.str(255); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000 && ItemData::Valid(m.data) && (m.data.empty() || m.centi == 100); }
+void NetWrite(NetWriter& w, const MsgSetGem& m) { Id(w, NetMsg::SetGem); w.str(m.item.substr(0, 64)); w.str(m.data.substr(0, 255)); w.str(m.gem.substr(0, 64)); } // (#1219)
+bool NetRead(NetReader& r, MsgSetGem& m) { m.item = r.str(64); m.data = r.str(255); m.gem = r.str(64); if (!ItemData::Valid(m.data)) r.ok = false; return Done(r); }
 void NetWrite(NetWriter& w, const MsgCreativeGive& m) { Id(w, NetMsg::CreativeGive); w.str(m.item.substr(0, 64)); w.varu(m.count); }
 bool NetRead(NetReader& r, MsgCreativeGive& m) { m.item = r.str(64); m.count = (uint32_t)std::min<uint64_t>(r.varu(), 1000000); return Done(r); }
 

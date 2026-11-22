@@ -397,6 +397,20 @@ TEST(Melee, SetGemsAddTheirEffects) { // (#1219)
     EXPECT_NE(t.find("Ruby (burns)"), std::string::npos) << t;
 }
 
+TEST(Melee, AGemSetsInAFreeSocketOnly) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    const std::string bronze = Composed_MakeData("bronze"); // one socket
+    const std::string one = Composed_SetGem("weapon_sword", bronze, "ruby");
+    EXPECT_EQ(ItemData::Get(one, "j"), "ruby");
+    EXPECT_EQ(Composed_SetGem("weapon_sword", one, "sapphire"), "") << "its one socket is taken";
+    EXPECT_EQ(Composed_SetGem("weapon_sword", bronze, "stone"), "") << "not a gem";
+    EXPECT_EQ(Composed_SetGem("weapon_sword", Composed_MakeData("iron"), "ruby"), "") << "iron has no socket";
+    EXPECT_EQ(Composed_SetGem("stone", bronze, "ruby"), "") << "not a composed class";
+    const std::string steel = Composed_SetGem("weapon_sword", Composed_SetGem("weapon_sword", Composed_MakeData("steel"), "quartz"), "emerald");
+    EXPECT_EQ(ItemData::Get(steel, "j"), "quartz,emerald") << "two sockets, in order";
+    EXPECT_EQ(ItemData::Get(Composed_SetGem("weapon_sword", ItemData::Set(Composed_MakeData("steel"), "j", "junk"), "ruby"), "j"), "ruby") << "junk in j= is dropped";
+}
+
 TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)
     ASSERT_TRUE(Composed_Load());
     EXPECT_FLOAT_EQ(Weapon_BaseDamage("", ""), 2.0f) << "hands";
