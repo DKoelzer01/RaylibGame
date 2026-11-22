@@ -2055,9 +2055,14 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         }
         const float rw = r * std::max(0.7f, rs);                           // the skeleton: the clear bore (never pinched shut)
         static const bool pocketsTest = !(getenv("RAYLIBGAME_CAVE_POCKETS") && getenv("RAYLIBGAME_CAVE_POCKETS")[0] == '0'); // (#1116 isolation, CPU only)
-        const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
+        float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
+        float sh = shift;
+        if (K.wander == 1) { // (#1465) caverns: roof pockets and wander at a passage's size (at full size they fold the dome)
+            const float wk = std::min(1.0f, 8.0f / r);
+            pk = pk * wk; sh = shift * wk;
+        }
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
-        const float hp = hs - shift * rw;
+        const float hp = hs - sh * rw;
         const float hvT = K.lopsided == 1 ? hv - 0.5f * hp : hv;    // mouths: taller on one side
         const float v2 = hvT / vfac;
         const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;

@@ -32,6 +32,7 @@ std::string CaveKinds_Glsl() {
     s += Array("int", "kCK_scale", [](const CaveKindDef& k) { return std::to_string(k.scaleToPassage); });
     s += Array("float", "kCK_intrude", [](const CaveKindDef& k) { return F(k.intrude); });
     s += Array("float", "kCK_outcropCap", [](const CaveKindDef& k) { return F(k.outcropCap); });
+    s += Array("int", "kCK_wander", [](const CaveKindDef& k) { return std::to_string(k.wander); });
     // CaveKind_Index, as in cavekinds.h
     s += "int caveKindIndex(float k) { int i = int(k + 0.5); return k < 0.5 ? 0 : i >= kCaveKindCount ? kCaveKindCount - 1 : i; }\n";
     return s;
