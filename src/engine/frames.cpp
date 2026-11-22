@@ -262,4 +262,22 @@ TEST(FramesCore, ChooseFramesWithHysteresis) {
     EXPECT_EQ(Frames_Choose(bodies, edge, FrameRef{ 0x9006, FrameKind::Centred }).body, 0x9006u);
     EXPECT_EQ(Frames_Choose(bodies, edge, tc).body, 0x9005u);
 }
+
+// (Plan 11 F5, #1457) A station: an Asteroid-kind body of 4 m with no gravity of its own, 45 km over a Terra-like root.
+// A point 20 m from it, coming from Centred(Terra), belongs in Fixed(station) (its SOI is 10 x 4 m); and as a free
+// faller its frame accelerates with the gravity at its centre.
+TEST(FramesCore, StationFrameAndFreeFall) {
+    auto terra = Body("terra", 0x9101, { 0.0, 0.0, 0.0 }, 60000.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.1f, 0.0f }, BodyKind::Planet);
+    auto st = Body("station", 0x9102, { 0.0, 105000.0, 0.0 }, 4.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
+    st->surfaceGravity = 0.0f;
+    st->freeFall = true;
+    const std::vector<Planetoid*> bodies{ terra.get(), st.get() };
+    const DVec3 p{ 0.0, 105000.0, 20.0 };
+    const FrameRef pick = Frames_Choose(bodies, p, FrameRef{ 0x9101, FrameKind::Centred });
+    EXPECT_EQ(pick.body, 0x9102u);
+    EXPECT_EQ((int)pick.kind, (int)FrameKind::Fixed);
+    const DVec3 g = Frames_GravityGlobal(bodies, st->worldPos);
+    EXPECT_GT(g.length(), 1.0); // ~1.9 m/s^2 at 105 km
+    EXPECT_LT(Dist(Frames_Pose(*st).acc, g), 1e-9);
+}
 #endif
