@@ -134,6 +134,23 @@ SCENARIO("water/river-dry") {
         c.metric("dry over the real ground", drySurf, "points");
         c.metric("dry over the height map", dryMap, "points");
         c.metric("under one cell of water", thin, "points");
+        // RAYLIBGAME_RIVER_PROBE="lat lon" (degrees, the HUD's and --spawn-latlon's convention): everything about one point,
+        // for a place someone saw (#637: UI/UX's slide, a dry crease where waterSourceAt says river).
+        if (const char* pr = getenv("RAYLIBGAME_RIVER_PROBE")) {
+            float la = 0.0f, lo = 0.0f;
+            if (sscanf(pr, "%f %f", &la, &lo) == 2) {
+                la *= DEG2RAD; lo *= DEG2RAD;
+                const Vector3 dir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) };
+                const PlanetField::WaterSource ws = c.field->waterSourceAt(dir);
+                const RiverNetwork::Hit rh = net ? net->nearest(dir, 60.0f) : RiverNetwork::Hit{};
+                const bool inLake = rh.piece >= 0 && rh.piece < (int)pieceInLake.size() && pieceInLake[rh.piece];
+                const float hm = c.field->elevation(dir), surf = SurfaceAt(c, dir, hm);
+                c.note(TextFormat("probe %s: water kind %d at level %.2f m; nearest river %s: %.1f m from its centre line, half width %.1f m, depth %.1f m%s; "
+                                  "ground before rivers %.2f m, height map %.2f m, real surface %.2f m; channel weight %.2f",
+                                  pr, ws.kind, ws.level, rh.found ? "found" : "none", rh.dist, rh.halfWidth, rh.depth, inLake ? " (an in-lake piece)" : "",
+                                  c.field->elevationBase(dir), hm, surf, c.field->riverChannel(dir)));
+            }
+        }
         return true;
     });
 }
