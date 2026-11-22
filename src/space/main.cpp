@@ -11091,6 +11091,8 @@ int main(int argc, char** argv)
                 world.camera.target = p->toWorld(plot->toBody(at));
                 world.camera.up = p->dirToWorld(plot->up);
                 BuildTool_Update(world, PlayerInput::None(), true);
+                if (red) // into the cube placed at f == 1, wherever placing settled it (#1432: aiming slides out now)
+                    for (const Part& q : plot->parts) if (q.type == PartType::Cube) { BuildTool_BenchAimAt(*plot, q.origin); break; }
                 if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }

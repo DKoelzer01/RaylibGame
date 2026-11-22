@@ -1,4 +1,5 @@
 #include "rocket.h"
+#include "uipalette.h"
 #include "netid.h"
 #include "playerinput.h"
 // The input of the current Rocket_Update (#312): its flight step and camera read it.
@@ -1024,7 +1025,7 @@ static void DrawOrbitMap(Scene& world) {
         const double rr = semiLatus / (1.0 + e * cos(th));
         if (rr <= 0.0 || rr > extent * 4.0) { prev = {}; continue; }
         const Vector2 sp = toScreen(rr * cos(th), rr * sin(th));
-        if (i > 0 && (prev.x != 0.0f || prev.y != 0.0f)) DrawLineEx(prev, sp, 2.0f, rr < R ? Fade(RED, 0.8f) : Fade(GREEN, 0.9f));
+        if (i > 0 && (prev.x != 0.0f || prev.y != 0.0f)) DrawLineEx(prev, sp, 2.0f, rr < R ? Fade(Ui().bad, 0.8f) : Fade(Ui().good, 0.9f));
         prev = sp;
     }
     // Apoapsis and periapsis.
@@ -1069,7 +1070,7 @@ void Rocket_DrawHUD(Scene& world) {
         DrawText(TextFormat("%d engine(s), %d tank(s), %d landing leg(s)", s.engines, s.tanks, s.legs), x, y, 16, RAYWHITE); y += 24;
         if (s.damagedParts > 0) { DrawText(TextFormat("DAMAGE: %d part(s), %.0f%% overall%s - repair kits mend them (hotbar)", s.damagedParts, s.damage * 100.0f, s.leak > 0.0f ? ", tanks leaking" : ""), x, y, 16, ORANGE); y += 22; }
         if (s.airCapacity > 0.0f) { DrawText(TextFormat("Air: %.0f of %.0f min (oxygen canisters, I) - %d seat(s)", plot->air, s.airCapacity, s.seats), x, y, 16, plot->air > 0.0f ? RAYWHITE : ORANGE); y += 22; }
-        if (s.ready) { DrawText("READY", x, y, 18, GREEN); y += 22; }
+        if (s.ready) { DrawText("READY", x, y, 18, Ui().good); y += 22; }
         for (const std::string& m : s.missing) { DrawText(TextFormat("needs %s", m.c_str()), x, y, 16, ORANGE); y += 20; }
         DrawText(aimCockpit ? "E board   I load fuel" : "I load fuel (look at the cockpit to board)", x, y + 4, 16, Fade(RAYWHITE, 0.8f));
         return;

@@ -24,6 +24,7 @@ done
 if [ -z "$slot" ]; then echo "::error::no free ci-persist slot (6 in use): more concurrent jobs than slots"; exit 1; fi
 dir="$root/slot$slot"
 mkdir -p "$dir/out" "$dir/run"
+touch "$root/slot$slot.lock" # its time = the job's start (tools/ci/save_summary.sh keeps only this job's files)
 echo "ci-persist slot $slot ($dir), held by pid $holder"
 branch="${REF#refs/heads/}"
 {

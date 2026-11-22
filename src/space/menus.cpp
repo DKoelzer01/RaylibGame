@@ -10,6 +10,7 @@
 #include "audio.h"
 #include "combat.h" // (#1218) gDoubleTapDodge
 #include "subtitles.h"
+#include "uipalette.h"
 #include "foliage.h"
 #include "world.h"
 #include "headless.h"
@@ -315,6 +316,8 @@ namespace {
             changed |= Toggle({ x, y, w, h }, "Firelight flicker", settings.fireFlicker); next(); // torches and campfires (#558)
             changed |= Toggle({ x, y, w, h }, "Double-tap to dodge", settings.doubleTapDodge); next(); // (#1218)
             changed |= Toggle({ x, y, w, h }, "Reduce flashing", settings.reduceFlashing); next(); // lightning (#1162)
+            static const char* vision[] = { "Normal", "Red-green", "Blue-yellow" }; // (#1432) colour-blind-safe meaning colours
+            changed |= Choice({ x, y, w, h }, "Colour vision", vision, 3, settings.colorVision); next();
             static const char* hints[] = { "Auto", "Always", "Off" }; // (#827) Auto: fades after your first 2 hours of play
             changed |= Choice({ x, y, w, h }, "Key hints", hints, 3, settings.keyHints); next();
             changed |= Toggle({ x, y, w, h }, "Inventory scroll: up sends", settings.invertSlotWheel); next(); // (#862) off: down sends to the other side, up pulls in (Mouse Tweaks)
@@ -372,6 +375,7 @@ void Settings_Load() {
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
             else if (!strcmp(key, "reduceflashing")) settings.reduceFlashing = v != 0.0f;
+            else if (!strcmp(key, "colorvision")) settings.colorVision = std::clamp((int)v, 0, 2); // (#1432)
             else if (!strcmp(key, "keyhints")) settings.keyHints = std::clamp((int)v, 0, 2); // (#827)
             else if (!strcmp(key, "invertslotwheel")) settings.invertSlotWheel = v != 0; // (#862)
             else if (!strcmp(key, "doubletapdodge")) settings.doubleTapDodge = v != 0; // (#1218)
@@ -397,6 +401,7 @@ void Settings_Save() {
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     fprintf(f, "reduceflashing %d\n", settings.reduceFlashing ? 1 : 0);
+    fprintf(f, "colorvision %d\n", settings.colorVision); // (#1432)
     fprintf(f, "uiscale %.2f\n", settings.uiScale); // (#821)
     for (int k = 0; k < 4; ++k) fprintf(f, "tabwin_%d %.4f\n", k, settings.tabWin[k]); // (#1080) the Tab window's place and size
     fprintf(f, "keyhints %d\n", settings.keyHints); // (#827)
@@ -422,6 +427,7 @@ void Settings_Apply() {
     static_assert(sizeof(settings.busVolume) / sizeof(settings.busVolume[0]) == (int)AudioBus::Count, "one volume per audio bus");
     for (int b = 1; b < (int)AudioBus::Count; ++b) Audio_SetBusVolume((AudioBus)b, settings.busVolume[b]); // (#1238)
     Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
+    UiPalette_Set((ColorVision)std::clamp(settings.colorVision, 0, 2)); // (#1432)
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)

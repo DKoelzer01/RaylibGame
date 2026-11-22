@@ -1,4 +1,5 @@
 #include "profiler.h"
+#include "uipalette.h"
 #include "blueprint.h"
 #include "playerinput.h"
 #include "buildtool.h"
@@ -244,7 +245,7 @@ void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool o
     const Blueprint* bp = Blueprint_Active();
     if (!bp) return;
     std::vector<std::pair<Int3, CellShape>> fp;
-    const Color col = ok ? Fade(SKYBLUE, 0.8f) : Fade(RED, 0.8f);
+    const Color col = ok ? Fade(UiPalette_Mode() == ColorVision::Normal ? SKYBLUE : Ui().good, 0.8f) : Fade(Ui().bad, 0.8f); // (#1432)
     // In plot coordinates under the plot's double-precision model, as its blocks are drawn (#271).
     rlDrawRenderBatchActive();
     rlPushMatrix();
