@@ -36,9 +36,9 @@ SCENARIO("world/locate") {
     s.world = ScenarioWorld::Planet;
     s.timeout = 240.0;
     s.step("locate every feature from the start", 60.0, [](ScenarioCtx& c) {
-        if (c.T < 1.0) return false;
-        terrainTool.creative = true; // (the commands are creative's)
         Player& p = LocalSession().player;
+        if (c.T < 1.0 || !p.nearest) return false; // (a slow machine is still on the spawn loading screen: no body yet)
+        terrainTool.creative = true; // (the commands are creative's)
         const Vector3 from = p.nearest->toLocalD(p.position).toFloat();
         const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert", "ore", "ore:iron" };
         const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
@@ -63,6 +63,7 @@ SCENARIO("world/locate") {
     s.step("/tp cave: the player goes to the nearest cave mouth", 90.0, [](ScenarioCtx& c) {
         if (tpAt < 0.0) {
             Player& p = LocalSession().player;
+            if (!p.nearest) return false;
             std::vector<LocateHit> hits; std::string why;
             if (!Locate_Find(*p.nearest, p.nearest->toLocalD(p.position).toFloat(), "cave", 1, hits, why)) { c.fail("no cave to go to: " + why); return true; }
             target = hits[0].at;
@@ -77,6 +78,7 @@ SCENARIO("world/locate") {
     s.step("/tp ruin: the player goes to the nearest ruin", 90.0, [](ScenarioCtx& c) {
         if (tpAt < 0.0) {
             Player& p = LocalSession().player;
+            if (!p.nearest) return false;
             std::vector<LocateHit> hits; std::string why;
             if (!Locate_Find(*p.nearest, p.nearest->toLocalD(p.position).toFloat(), "ruin", 1, hits, why)) { c.fail("no ruin to go to: " + why); return true; }
             target = hits[0].at;
