@@ -223,6 +223,7 @@ int StationTest_Update(Scene& world) {
     }
     case 4: // dock (it is right beside us, at the same speed)
         if (ST() < 1.0) break;
+        printf("bench: station: docking from %.1f m (the station's nearest part)\n", Rocket_TestStationGap()); // (#1460)
         SCheck(Rocket_Dock() && Rocket_DockedAtStation(), "docked");
         SNext();
         break;
@@ -232,12 +233,20 @@ int StationTest_Update(Scene& world) {
         sGiven = -Rocket_TransferFuel(-400.0f);
         SCheck(sGiven > 300.0f && StationFuel(world) > before + 300.0f, "fuel given to the station");
         SCheck(Rocket_Undock() && Rocket_Telemetry(world).state == RocketState::Flying, "undocked");
+        printf("bench: station: undocked %.1f m from the station's nearest part\n", Rocket_TestStationGap()); // (#1460)
         SNext();
         break;
     }
     case 6: // drift a few seconds beside it, dock again, take fuel back
         if (ST() < 3.0) break;
-        SCheck(Rocket_Dock(), "docked again");
+        if (!Rocket_Dock()) { // (#1460) why: Rocket_Dock says so only in a toast (no station near, > 40 m, or > 2 m/s)
+            DVec3 c; Vector3 v;
+            Planetoid* st = Rocket_TestState(c, v) ? Station_Nearest(world, c, 1e9f) : nullptr;
+            if (st) printf("bench: station: re-dock refused: its nearest part %.1f m away (centre %.1f m), closing at %.2f m/s (rocket %s)\n",
+                           Rocket_TestStationGap(), (st->worldPos - c).length(), Vector3Length(Vector3Subtract(v, st->linearVelocity)), Frames_On() ? "framed" : "global");
+            else printf("bench: station: re-dock refused: no flying rocket or no station\n");
+        }
+        SCheck(Rocket_DockedAtStation(), "docked again");
         sTaken = Rocket_TransferFuel(200.0f);
         SCheck(sTaken > 150.0f, "fuel taken from the station");
         SNext();

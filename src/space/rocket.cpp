@@ -1266,7 +1266,10 @@ bool Rocket_Dock() {
     // The rocket's plot joins the station's body, keeping its attitude.
     const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, rot), ez = Vector3RotateByQuaternion({ 0, 0, -1 }, rot);
     std::unique_ptr<Plot> plot = veh->plots->release(vp);
-    plot->origin = st->toLocalD(veh->worldPos);
+    // (#1460) From the simulated centre of mass, the inverse of Launch's com = origin + rot comLocal: the vehicle body's
+    // worldPos lagged it by a step, so the undocked rocket reappeared a step of orbital motion away (59 m at x8) and
+    // couldn't dock again.
+    plot->origin = st->toLocalD(com - DVec3(Vector3RotateByQuaternion(comLocal, rot)));
     plot->east = st->dirToLocal(ex);
     plot->up = st->dirToLocal(ey);
     plot->north = st->dirToLocal(ez);
@@ -1341,4 +1344,14 @@ bool Rocket_TestSetState(const DVec3& c, const Vector3& v) {
     flightTime = 2.0;           // past the lift-off grace: contacts count from here
     interpValid = false;        // a teleport: no interpolation from the old place
     return true;
+}
+
+double Rocket_TestStationGap() {
+    if (!gWorld || state != RocketState::Flying) return -1.0;
+    Planetoid* st = Station_Nearest(*gWorld, com, 1e9f);
+    if (!st || !st->plots) return -1.0;
+    double nearest = 1e30; // as Rocket_Dock measures it: the station's nearest part from the centre of mass
+    for (const auto& pl : st->plots->plots)
+        for (const auto& kv : pl->cells) nearest = std::min(nearest, (st->toWorldD(DVec3(pl->toBody(CellCentre(kv.first)))) - com).length());
+    return nearest;
 }
