@@ -941,7 +941,10 @@ float RiverNetwork::carve(Vector3 dir, float h) const {
         if (d >= half + kBankReach) continue;
         const float level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb;
         const float depth = pc.da + (pc.db - pc.da) * t;
-        const float dep = std::min(depth, 1.0f); // light: deeper water only where the worn ground is lower (#609)
+        // light: deeper water only where the worn ground is lower (#609). At least 0.8 m (#637, the user's choice for river
+        // heads): a head's 0.5 m left 7 cm over most of its narrow bed, under one fluid cell, so nothing showed; 0.8 m holds
+        // ~0.3 m out to 0.7 of the half width, a visible trickle in the crease.
+        const float dep = std::clamp(depth, 0.8f, 1.0f);
         const float bed = d < half ? level + 0.3f - (dep + 0.3f) * (1.0f - (d / half) * (d / half)) : level + 0.3f + (d - half) * kBank;
         h = std::min(h, bed);
     }
