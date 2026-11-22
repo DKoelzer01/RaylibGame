@@ -84,6 +84,11 @@ std::vector<std::pair<std::string, std::string>> Animals_SpeciesList();
 double Animals_BiteWindUp();            // s from a hostile's warning to its strike (#165)
 int Animals_Nearest(Vector3 bodyLocal, float range);          // index or -1
 Vector3 Animals_Position(int index);                           // body-local
+// (#1108, lag compensation, the combat design #1002) A server's hit check: the closest the animal came to `from` (body-local)
+// in the last `window` seconds of sim time, its current place included. A joined player swings at where they saw it
+// (a round trip and their interpolation behind); the rewind is capped (kHitRewind in the server: favour the attacker, a little).
+float Animals_HitDistance(int index, Vector3 from, double window);
+float Animals_RewindDistance(const std::vector<std::pair<double, Vector3>>& trail, Vector3 current, Vector3 from, double now, double window); // (the rule; tests)
 bool Animals_Hit(int index, float damage);                     // true if it fell
 // (#1215) A typed hit (damage.h): through the species' resistances, with its status effect; true if it fell. dealtOut: the damage.
 bool Animals_HitEvent(int index, const struct DamageEvent& e, float* dealtOut = nullptr);
