@@ -460,7 +460,8 @@ struct ContainerGrid : SlotGrid {
                 MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, 1, i, 0, held.data);
             } else {
                 const MachineView v = Factory::View(container.body, container.plot, container.part);
-                if (v.mode != 1) return 0; // only an assembler taking things apart takes an item with its own record
+                const bool anvil = container.type == PartType::Anvil && Composed_Is(held.id); // (#1219) to repair it or take a gem out
+                if (v.mode != 1 && !anvil) return 0; // only an assembler taking things apart, or an anvil, takes an item with its own record
                 MachineAct_Insert(container.body, container.plot, container.part, held.id, 1, false, 0, held.data);
             }
             Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
