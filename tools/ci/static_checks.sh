@@ -179,7 +179,7 @@ fi
 # 5. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
 #    `--scenario tag:...` lists (parts 1 and 2 of the headless scenarios), not both - unless it carries a local-only tag
 #    (rendering, timing and looks belong on the PC). A new tag in neither list would silently never run there: an error.
-LOCAL_ONLY_TAGS="perf visual fx light"
+LOCAL_ONLY_TAGS="perf visual fx light local" # local: needs the PC's real-time rates (fluid tests the runner can't keep up with, #1447)
 WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')

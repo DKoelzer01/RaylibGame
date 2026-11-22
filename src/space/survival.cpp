@@ -1,4 +1,5 @@
 #include "survival.h"
+#include "uipalette.h"
 #include "magicdiscovery.h" // (#1250) the First Sight page is read like a consumable is used
 #include "potions.h" // (#1254) drunk like a consumable; their effects on the suit's figures
 #include "net.h"
@@ -331,7 +332,7 @@ static void Bar(int x, int y, int w, const char* label, float value, Color c, bo
     const int bh = (int)(16 * hudS);
     DrawRectangle(x, y, w, bh, Fade(BLACK, 0.55f));
     const bool flash = warn && fmodf((float)GetTime(), 0.8f) < 0.4f;
-    DrawRectangle(x, y, (int)(w * value / 100.0f), bh, flash ? RED : c);
+    DrawRectangle(x, y, (int)(w * value / 100.0f), bh, flash ? Ui().bad : c);
     DrawRectangleLines(x, y, w, bh, Fade(RAYWHITE, 0.4f));
     DrawText(TextFormat("%s %3.0f", label, value), x + (int)(6 * hudS), y + (int)hudS, (int)(14 * hudS), RAYWHITE);
 }
@@ -371,7 +372,7 @@ void Survival_DrawHUD() {
     if (survival.dead) {
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(BLACK, 0.6f));
         const char* msg = survival.oxygen <= 0.0f ? "You suffocated" : "You died";
-        DrawText(msg, GetScreenWidth() / 2 - MeasureText(msg, 40) / 2, GetScreenHeight() / 2 - 30, 40, RED);
+        DrawText(msg, GetScreenWidth() / 2 - MeasureText(msg, 40) / 2, GetScreenHeight() / 2 - 30, 40, Ui().bad);
         DrawText("Respawning...", GetScreenWidth() / 2 - MeasureText("Respawning...", 20) / 2, GetScreenHeight() / 2 + 20, 20, RAYWHITE);
     }
 }

@@ -65,6 +65,7 @@ namespace {
     constexpr float kBackgroundPriority = 1e7f;
     long long gEvicted = 0;                    // cache evictions (#295)
     bool gPreloadUrgent = false;               // spawn preload (#294): ring builds without the spare-time gate
+    bool gZoomUrgent = false;                  // (#1424) a zoom change: the view re-selects at once, unbudgeted until its nodes are built
     std::atomic<int> gForegroundBuilds{ 0 };   // view/edit builds whose closures are alive (#296)
     struct ForegroundToken {
         ForegroundToken() { ++gForegroundBuilds; }
@@ -1373,6 +1374,10 @@ void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
     s.zoomHalfAngle = halfAngle;
     if (!changed) return;
     s.zoomDir = dir;
+    // (#1424) Opening or closing the telescope re-selects much of the view in one go: its builds bypass the streaming budget until
+    // the view's nodes are in (the budget saw the slow frames of the swap and throttled them: closing took 200-350 ms, was ~25).
+    static const bool zoomUrgentOn = !(getenv("RAYLIBGAME_ZOOM_URGENT") && getenv("RAYLIBGAME_ZOOM_URGENT")[0] == '0');
+    if (zoomUrgentOn) gZoomUrgent = true;
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
@@ -1578,7 +1583,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         // throughput with the frame rate: at 30-60 FPS one batch a frame was too few for flight whatever the busy time).
         const bool slack = busyOn && heldByCap && gFrameBusyMs > 0.0f && gTargetFrameMs - gFrameBusyMs >= 7.0f;
         int limit = 2;
-        if (budgetOn && !gPreloadUrgent && generationStart < 0.0 && !slack) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        if (budgetOn && !gPreloadUrgent && !gZoomUrgent && generationStart < 0.0 && !slack) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
         static const bool budgetLog = getenv("RAYLIBGAME_BUDGET_LOG") && getenv("RAYLIBGAME_BUDGET_LOG")[0] == '1';
         static double lastBudgetLog = 0.0;
         if (budgetLog && GetTime() - lastBudgetLog > 2.0) {
@@ -1788,6 +1793,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         }
     }
 
+    if (gZoomUrgent && !AnyLodPending(world)) gZoomUrgent = false; // (#1424) the zoomed (or unzoomed) view is in: budget again
     if (generationStart >= 0.0 && PipelineIdle() && !AnyLodPending(world)) {
         stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
         LOG_INFO("World", "ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",
