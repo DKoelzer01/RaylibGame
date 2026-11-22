@@ -1740,6 +1740,7 @@ int gMeleeShocks = 0, gMeleeStaggers = 0, gMeleeDodges = 0;
 uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
 Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
 WeaponClass gMeleeClass = WeaponClass::Tools;
+WeaponSpec gMeleeSpec = Weapon_Spec(WeaponClass::Tools); // (#1219) this swing's spec (the held copy's timing)
 int gMeleeHits = 0;                 // hits landed (tests)
 
 
@@ -1777,8 +1778,11 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
     const double now = SimTime();
     const float dt = gMeleeClock < 0.0 ? 0.0f : (float)std::clamp(now - gMeleeClock, 0.0, 0.1);
     gMeleeClock = now;
-    if (gMelee.phase == MeleePhase::Idle) gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
-    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    if (gMelee.phase == MeleePhase::Idle) { // (#1219) the held copy's own timing: its weight against its class's iron one
+        gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
+        gMeleeSpec = Weapon_SpecOf(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string());
+    }
+    const WeaponSpec& w = gMeleeSpec;
     const bool live = here && !player.flyMode && in.enabled && !buildTool.active && !survival.dead;
     if (!here || survival.dead || player.flyMode) { gMelee = MeleeState{}; gLockNet = 0; gLockScreen = { -1.0f, -1.0f }; return; }
     const Vector3 eye = here->toLocal(world.camera.position);
@@ -1876,7 +1880,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
 
 bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
     if (!Combat2_On() || gMelee.phase == MeleePhase::Idle) return false;
-    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    const WeaponSpec& w = gMeleeSpec; // (#1219) the pose follows the swing's own timing
     phase = (int)gMelee.phase;
     back = gMelee.chain == 1;
     charge = gMelee.heavy ? 1.0f : 0.0f;
