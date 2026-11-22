@@ -410,6 +410,8 @@ float floatingIsland(vec3 p, float d) {
 // (#615 step 3) The graph tunnels' distance at q and `solid` (rubble aprons): PlanetField's CaveGraphDistance (voxel.cpp),
 // the same operations in the same order. Every sum handed to xdiv / xsqrt sits in a precise variable first (else the
 // compiler may fuse it into FMAs and miss the CPU by an ulp).
+// (#1465) The segment kinds' table (kCK_*, caveKindIndex), generated from src/engine/cavekinds.h at load:
+#pragma cave_kinds
 float caveGraphDistance(vec3 q, out float solid) {
     solid = -1e9;
     bool any = false;
@@ -451,9 +453,8 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float hhx = hx - U.x * hv, hhy = hy - U.y * hv, hhz = hz - U.z * hv;
         precise float hs = hhx * Sd.x + hhy * Sd.y + hhz * Sd.z;
         precise float r = A.w + (Bs.w - A.w) * t;
-        float kind = lo.w;
-        bool mouth = kind > 0.5 && kind < 1.5, hall = kind > 2.5;   // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
-        if (kind > 1.5 && kind < 2.5) {
+        int ki = caveKindIndex(lo.w);                                // (#1465) the kind's row (cavekinds.h): 0 passage, 1 mouth, 2 solid, 3 chamber
+        if (kCK_solid[ki] == 1) {
             precise float va = xdiv(hv, U.w);
             precise float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             precise float la = xsqrt(la2);
@@ -461,10 +462,10 @@ float caveGraphDistance(vec3 q, out float solid) {
             solid = max(solid, rr - la);
             continue;
         }
-        precise float bk = mouth ? 0.4 : 0.2;
+        precise float bk = kCK_outline[ki];
         precise float rough = 1.0 + bk * big;
         precise float rs = swell * rough;
-        if (hall) {                                                   // (#1116) a chamber's swell and outline at a passage's size
+        if (kCK_scale[ki] == 1) {                                     // (#1116) a chamber's swell and outline at a passage's size
             precise float hk = min(1.0, xdiv(8.0, r));
             precise float sw0 = swell - 1.0;
             precise float sw1 = sw0 * hk;
@@ -479,17 +480,17 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float vfac = U.w * (1.0 + 0.5 * pk);
         precise float hp = hs - shift * rw;
         precise float hvM = hv - 0.5 * hp;
-        precise float hvT = mouth ? hvM : hv;
+        precise float hvT = kCK_lopsided[ki] == 1 ? hvM : hv;
         precise float v2 = xdiv(hvT, vfac);
         precise float lh = hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp;
         precise float v22 = v2 * v2;
         precise float l2 = max(0.0, lh) + v22;
         precise float len = xsqrt(l2);
-        precise float rub6 = 0.35 * max(0.0, rub);
-        precise float rubble = mouth ? rub6 : 0.0;
-        precise float levK = mouth ? 0.45 : lev;
-        precise float tiltK = mouth || hall ? 0.0 : tilt;
-        precise float flo = hall ? 0.4 * r : levK * rw;
+        precise float rub6 = kCK_rubble[ki] * max(0.0, rub);
+        precise float rubble = kCK_rubble[ki] > 0.0 ? rub6 : 0.0;
+        precise float levK = kCK_fixedLevel[ki] >= 0.0 ? kCK_fixedLevel[ki] : lev;
+        precise float tiltK = kCK_tilt[ki] == 1 ? tilt : 0.0;
+        precise float flo = kCK_floorR[ki] > 0.0 ? kCK_floorR[ki] * r : levK * rw;
         precise float floorCut = (0.0 - hv) - flo * U.w + 0.5 * tiltK * hp + rubble;
         // (#1022) Noise grows the wall inward, looked up at a point squeezed radially toward the wall (no voids behind it).
         precise float intrude = 0.0;
@@ -518,8 +519,8 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float fa = xdiv(fnum, fden);
                 precise float fc = clamp(fa, 0.0, 1.0);
                 precise float fade = fc * fc * (3.0 - 2.0 * fc);
-                precise float akk = mouth ? 0.65 : 0.55;
-                precise float ra = hall ? min(rw, 4.0) : rw;                  // (#1116: 8 -> 4 m, as voxel.cpp)
+                precise float akk = kCK_intrude[ki];
+                precise float ra = kCK_outcropCap[ki] > 0.0 ? min(rw, kCK_outcropCap[ki]) : rw; // (#1116: chambers 4 m, as voxel.cpp)
                 intrude = akk * ra * fade * wn;
             }
         }

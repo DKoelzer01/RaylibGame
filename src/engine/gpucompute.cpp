@@ -1,4 +1,5 @@
 #include "gpucompute.h"
+#include "cavekinds.h"
 #include "shaderasync.h"
 #include "utils/logger.h"
 
@@ -49,6 +50,8 @@ std::string LoadShaderSource(const std::string& path, std::vector<std::string>& 
                     const std::string file = dir + line.substr(q0 + 1, q1 - q0 - 1);
                     inc.push_back(file);
                     out += Load(file, inc, depth + 1);
+                } else if (line.find("#pragma cave_kinds") != std::string::npos && line.find_first_not_of(" \t") == line.find('#')) {
+                    out += CaveKinds_Glsl(); // (#1465) the cave segment kinds' table, from cavekinds.h
                 } else {
                     out += line;
                 }
