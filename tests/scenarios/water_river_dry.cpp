@@ -58,6 +58,7 @@ SCENARIO("water/river-dry") {
         const Vector3 ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), ay = Vector3CrossProduct(ax, home);
         const float R = c.field->radius;
         int river = 0, dryMap = 0, drySurf = 0, thin = 0;
+        double sumHalf = 0.0; float maxHalf = 0.0f; // (#637) the rivers' widths at the sampled points
         int dryBand[3] = {}; // dry over the real ground, by where across the channel: the centre (d < 0.5 half), the middle, the edge (> 0.85)
         double sumUnder = 0.0;
         const RiverNetwork* net = c.field->rivers();
@@ -75,6 +76,7 @@ SCENARIO("water/river-dry") {
                 const PlanetField::WaterSource ws = c.field->waterSourceAt(dir);
                 if (ws.kind != 1) continue;
                 ++river;
+                if (net) { const RiverNetwork::Hit hw = net->nearest(dir, 60.0f); if (hw.found) { sumHalf += hw.halfWidth; maxHalf = std::max(maxHalf, hw.halfWidth); } } // (#637)
                 const float hm = c.field->elevation(dir);
                 const float depthMap = ws.level - hm;              // water over the height map (m)
                 if (depthMap <= 0.0f) ++dryMap;
@@ -126,6 +128,8 @@ SCENARIO("water/river-dry") {
         for (size_t k = 0; k < dry.size() && k < 8; ++k)
             c.note(TextFormat("dry river point %.0f m from the start: the level %.2f m under the ground, %.2f of the half-width (%.1f m) from the centre line%s, lat %.4f lon %.4f, river %.0f m wide along x",
                               dry[k].dist, dry[k].under, dry[k].across, dry[k].half, dry[k].inLake ? " (an in-lake piece)" : "", dry[k].lat, dry[k].lon, dry[k].width));
+        c.note(TextFormat("river half-widths at those points: mean %.1f m, widest %.1f m (#637)", river ? sumHalf / river : 0.0, maxHalf));
+        c.metric("mean river half-width", river ? sumHalf / river : 0.0, "m", false);
         c.metric("river points", river, "", false);
         c.metric("dry over the real ground", drySurf, "points");
         c.metric("dry over the height map", dryMap, "points");

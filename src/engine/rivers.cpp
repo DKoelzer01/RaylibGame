@@ -716,7 +716,38 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         for (int k : topo) { wetArea[k] = acc[k]; if (nodeParent[k] >= 0) acc[nodeParent[k]] += acc[k]; }
     }
     auto sOf = [&](int k) { return sqrtf(wetArea[k] / 7.06e6f); };
-    auto widthOf = [&](int k) { return std::max(1.0f, std::min(3.0f + 4.0f * sOf(k), 30.0f) * headRamp(area[k])); }; // half width
+    // (#637) The valley floor each river wore: from the node, out both ways across its link in 2 m steps to 60 m, while the
+    // ground beside it stays within 0.5 m of the water's level; the narrower side is the floor's half width. A river fills
+    // ~0.8 of it (x valleyFill, from the water cycle): the discharge width alone left 2-5 m streams in 30-50 m worn sand
+    // valleys, which read as dry beds (#1438's slides).
+    std::vector<float> floorHalf(M, 0.0f);
+    if (params.bankHeight && params.valleyFill > 0.0f) {
+        const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < T; ++t)
+            pool.emplace_back([&, t] {
+                for (int k = t; k < M; k += T) {
+                    if (fillLevel.count(nodeCell[k])) continue; // lakes keep their own shores
+                    const Vector3 P = Vector3Scale(pos[k], R);
+                    const Vector3 Q = nodeParent[k] >= 0 ? Vector3Scale(pos[nodeParent[k]], R) : P;
+                    const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
+                                         : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                    const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
+                    float reach[2] = { 0.0f, 0.0f };
+                    for (int s = 0; s < 2; ++s)
+                        for (float off = 2.0f; off <= 60.0f; off += 2.0f) {
+                            if (params.bankHeight(Vector3Normalize(Vector3Add(P, Vector3Scale(side, (s ? 1.0f : -1.0f) * off)))) > own[k] + 0.5f) break;
+                            reach[s] = off;
+                        }
+                    floorHalf[k] = std::min(reach[0], reach[1]);
+                }
+            });
+        for (auto& th : pool) th.join();
+    }
+    auto widthOf = [&](int k) { // half width: the discharge's, or the valley floor's share when wider
+        const float disc = std::min(3.0f + 4.0f * sOf(k), 30.0f), valley = std::min(0.8f * floorHalf[k], 30.0f) * params.valleyFill;
+        return std::max(1.0f, std::max(disc, valley) * headRamp(area[k]));
+    };
     auto depthOf = [&](int k) { return std::max(0.5f, std::min(1.0f + 0.7f * sOf(k), 6.0f) * headRamp(area[k])); };
     // Banks (#640): the bake's level stood over the real ground beside a third of the rivers (the runtime adds detail the
     // bake's 50 m cells average away), and the water ended there as a wall. Each node's level is held 0.3 m under the bank
