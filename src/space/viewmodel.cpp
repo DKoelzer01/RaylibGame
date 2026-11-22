@@ -18,6 +18,8 @@
 #include "toolwear.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "locallights.h"
+#include "rlights.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -140,6 +142,33 @@ void Viewmodel_Update(Scene& world, float dt) {
     lowered += (lowerTarget - lowered) * std::min(1.0f, 8.0f * dt);
 }
 
+// (#1588) The light the world's own point lights give the hand at the eye: local lights (lamps, torches, campfires, glowing
+// machines; shadow.glsl's (1 - d/range)^2 falloff, its wrap ~0.75 for a hand) and the scene's point / spot lights (the
+// camera light, the held lamp; lighting.fs's alpha x 3 / (1 + 4 (d/range)^2), a spot at half: the hand sits at its beam's
+// edge). By luminance, 0..1. Before, the hand took only the sky, the sun and the headlamp: black in a torch-lit cave
+// while the walls around it were bright.
+static float LocalLightAtEye(const Scene& world) {
+    const Vector3 eye = world.camera.position;
+    auto lum = [](float r, float g, float b) { return 0.2126f * r + 0.7152f * g + 0.0722f * b; };
+    float sum = 0.0f;
+    for (const LocalLight& L : world.localLights) {
+        const float d = Vector3Distance(L.position, eye);
+        if (d >= L.range || L.range <= 0.0f) continue;
+        const float f = 1.0f - d / L.range;
+        sum += lum(L.color.x, L.color.y, L.color.z) * L.intensity * f * f * 0.75f;
+    }
+    for (const Light& L : world.lights) {
+        if (!L.enabled || (L.type != LIGHT_POINT && L.type != LIGHT_SPOT)) continue;
+        const float range = L.type == LIGHT_POINT ? std::max(L.target.x, 1.0f) : std::max(Vector3Distance(L.target, L.position), 1.0f);
+        const float dl = Vector3Distance(L.position, eye) / range;
+        const float a = L.color.a / 255.0f * 3.0f / (1.0f + 4.0f * dl * dl) * (L.type == LIGHT_SPOT ? 0.5f : 1.0f);
+        sum += lum(L.color.r / 255.0f, L.color.g / 255.0f, L.color.b / 255.0f) * a;
+    }
+    return std::isfinite(sum) ? std::min(sum, 1.0f) : 0.0f;
+}
+static float gViewmodelLight = -1.0f; // (#1588) the hand's eased light (Viewmodel_Light)
+float Viewmodel_Light() { return gViewmodelLight; }
+
 void Viewmodel_Draw(Scene& world) {
     visible = settings.showHands && !player.flyMode && !Rocket_Boarded() && !telescope.active && !survival.dead;
     if (!visible) return;
@@ -162,9 +191,13 @@ void Viewmodel_Draw(Scene& world) {
     }
     float target = (0.08f + 0.27f * day) * sky + 0.65f * day * sunVis * sky;
     if (survival.headlamp) target = std::max(target, 0.8f);
-    static float light = -1.0f;
+    target = std::min(1.0f, target + LocalLightAtEye(world)); // (#1588) lamps, torches, the camera light
+    // (#1588) The eased value carries over frames: one non-finite target or frame time made it NaN for good, and every box
+    // drew black from then on (a NaN colour clamps to 0). Both are guarded.
+    if (!std::isfinite(target)) target = 0.35f;
+    float& light = gViewmodelLight;
     const float dtl = GameFrameTime();
-    light = light < 0.0f || dtl <= 0.0f ? target : light + (target - light) * (1.0f - expf(-dtl / 0.15f));
+    light = light < 0.0f || !std::isfinite(light) || !(dtl > 0.0f) ? target : light + (target - light) * (1.0f - expf(-dtl / 0.15f));
     const float handLight = IsTorch(held) ? std::max(light, 0.55f) : light; // a held torch lights its own hand (#558)
 
     rlDrawRenderBatchActive();
@@ -286,7 +319,10 @@ void Viewmodel_Draw(Scene& world) {
     } else {
         // A tool: a wooden handle rising nearly upright out of the fist (leaning a little forward and
         // in), its head across the top. It leaned 52 degrees forward and read as lying along the view.
-        const Color wood = { 120, 84, 50, 255 }, head = TierColour(tool.tier);
+        const Color wood = { 120, 84, 50, 255 };
+        Color head = TierColour(tool.tier);
+        // (#1449) A composed tool's head in its own head material's colour (the held copy's record), as weapons do.
+        if (const PartMaterial* m = Composed_Material(ItemData::Get(ToolWear_HeldData(held), "h"))) head = { m->r, m->g, m->b, 255 };
         // Scaled to 0.65: full size, the head filled the upper right of the view.
         const Matrix handle = MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), local({ 0, 0.09f, -0.07f }, { -14, 0, 10 }));
         Box(handle, { 0.028f, 0.42f, 0.028f }, wood, light);
