@@ -4,6 +4,7 @@
 // with c.grab (only when RAYLIBGAME_SLIDE_SHOTS names a folder; tools/slides/shots_c.sh runs them). Tagged visual: they
 // judge nothing and run on the PC only.
 #include "scenario.h"
+#include "terraintool.h"
 #include "plots.h"
 #include "voxel.h"
 #include "world.h"
@@ -40,7 +41,14 @@ void Common(ScenarioDef& s) {
     s.args = { "--day" };
     s.timeout = 300.0;
     s.record = false;
-    s.step("settle", 60.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play and an idle world"); return c.T >= 2.0 && WorldIdle(); });
+    s.step("settle", 60.0, [](ScenarioCtx& c) {
+        // No tool aim in the pictures: with the eye near a wall the dig preview drew its red "can't dig" ring in the
+        // middle of the cave chamber's slide (#1071). These views use no tool. (reach doesn't do it: c.camera flies, and
+        // a flying aim reaches 150 m.)
+        terrainTool.noAim = true;
+        c.waitingFor("2 s of play and an idle world");
+        return c.T >= 2.0 && WorldIdle();
+    });
 }
 
 // The river: the nearest river cell to the start on a spiral of directions out to 8 km.

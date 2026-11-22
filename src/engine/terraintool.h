@@ -18,6 +18,7 @@ struct TerrainToolSettings {
     float digStrength = 0.12f;   // density change per stroke at the brush centre (~0.5-1 m of rock)
     float strokesPerSecond = 10.0f;
     float reach = 12.0f;         // max raycast distance (arm's reach; fly mode uses 150)
+    bool noAim = false;          // (#1071) no aim at all (no hit, no dig preview): scripted pictures that use no tool
     bool creative = false;       // building costs nothing
     bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
