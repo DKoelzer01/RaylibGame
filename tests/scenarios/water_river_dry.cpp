@@ -8,11 +8,13 @@
 #include "scenario.h"
 #include "rivers.h"
 #include "voxel.h"
+#include "watersurface.h"
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -152,6 +154,16 @@ SCENARIO("water/river-dry") {
                                   "ground before rivers %.2f m, height map %.2f m, real surface %.2f m; channel weight %.2f",
                                   la * RAD2DEG, lo * RAD2DEG, ws.kind, ws.level, rh.found ? "found" : "none", rh.dist, rh.halfWidth, rh.depth, inLake ? " (an in-lake piece)" : "",
                                   c.field->elevationBase(dir), hm, surf, c.field->riverChannel(dir)));
+                // The drawn water (#637's slab: a quad on dry ground at one level of detail): per chunk sample spacing, the
+                // level the water mesh takes from the surface map, the mesh rule's level and the ground at that spacing.
+                std::string lods;
+                for (float st = 0.5f; st <= 32.0f; st *= 2.0f) {
+                    WaterSurface::Reader rd(*c.field, st);
+                    const float wm = c.field->waterElevationMesh(dir, st);
+                    lods += TextFormat(" [%g m: drawn %.2f, mesh %s, ground %.2f]", st, rd.drawLevel(dir),
+                                       wm == PlanetField::kNoWater ? "-" : TextFormat("%.2f", wm), c.field->elevation(dir, st));
+                }
+                c.note(TextFormat("probe %.5f %.5f by spacing:%s", la * RAD2DEG, lo * RAD2DEG, lods.c_str()));
             }
         }
         return true;
