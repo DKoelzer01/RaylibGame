@@ -31,7 +31,7 @@ int Count(const std::vector<std::pair<std::string, int>>& slots, const std::stri
 SCENARIO("factory/disassembly") {
     s.tags = { "factory", "machines", "ui" };
     s.world = ScenarioWorld::Sandbox;
-    s.args = { "--day" };
+    s.args = { "--day", "--record-hud", "1" }; // (the recording shows the machine screen: the runner records without the UI)
     s.timeout = 90.0;
     s.step("an LV generator cabled to an LV assembler, its screen open", 10.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;

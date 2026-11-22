@@ -1187,8 +1187,8 @@ static void DrawContainer() {
         ImGui::SameLine();
         if (ImGui::RadioButton("Disassemble", v.mode == 1) && v.mode != 1) MachineAct_SetMode(container.body, container.plot, container.part, 1);
         if (v.mode == 1) { // (#1427 L7c) what it gives back for each input, at its tier's yield
-            ImGui::TextDisabled("Takes an item apart into what its recipe used (a tool or weapon: its parts' materials),");
-            ImGui::TextDisabled("at a yield by the item's tier against this assembler's.");
+            ImGui::PushTextWrapPos(0.0f); // (the panel is narrow at small windows: wrap, never clip)
+            ImGui::TextDisabled("Takes an item apart into what its recipe used (a tool or weapon: its parts' materials), at a yield by the item's tier against this assembler's.");
             const int myTier = ContainerTier();
             for (size_t i = 0; i < v.inSlots.size(); ++i) {
                 const std::string& id = v.inSlots[i].first;
@@ -1201,9 +1201,10 @@ static void DrawContainer() {
                 if (!ok) { ImGui::Text("%s: can't be taken apart", name); continue; }
                 const int y = MachineTiers_YieldPercent(std::max(0, myTier), e.tier);
                 if (y <= 0) ImGui::Text("%s: too advanced for this assembler (0%%)", name);
-                else if (e.keepPct < 100) ImGui::Text("%s: %d%% back (worn: %d%% of %d%%)", name, y * e.keepPct / 100, e.keepPct, y);
+                else if (e.keepPct < 100) ImGui::Text("%s: %d%% back (worn, %d%% left)", name, y * e.keepPct / 100, e.keepPct);
                 else ImGui::Text("%s: %d%% back", name, y);
             }
+            ImGui::PopTextWrapPos();
         }
     }
     { // (#1271 L6c) a machine of several recipes: what it makes ("Any": the first its inputs allow)
