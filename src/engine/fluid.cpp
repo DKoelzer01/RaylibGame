@@ -844,9 +844,12 @@ void MaybeRelease(Site& s, const BodyRef& ref, Vector3 c, float r) {
         if ((ci - o.ci) * (ci - o.ci) + (cj - o.cj) * (cj - o.cj) < (int)(o.r * o.r * 0.36f)) return; // already released
     const RiverNetwork::Hit h = pf->rivers()->nearest(dir, 1e4f);
     if (!h.found) return;
-    Site::Release rel{ ci, cj, kReleaseMetres / WaterField::CellSize(), c, h.down }; // r in cells
+    // (#1504) The reach's radius shrinks as the river widens, keeping its simulated area about that of a 6 m river's 40 m
+    // reach (at least 15 m): a 40 m reach across a valley-wide 28 m river (#637) held ~5x the cells and cost ~7x the step.
+    const float reachM = std::max(15.0f, kReleaseMetres * std::min(1.0f, 6.0f / std::max(1.0f, 2.0f * h.halfWidth)));
+    Site::Release rel{ ci, cj, reachM / WaterField::CellSize(), c, h.down }; // r in cells
     // The river link just below the reach (#656): its flow follows what the reach lets out.
-    rel.piece = pf->rivers()->pieceBeyond(h.piece, c, kReleaseMetres + 5.0f);
+    rel.piece = pf->rivers()->pieceBeyond(h.piece, c, reachM + 5.0f);
     rel.upPiece = h.piece; // the link through the reach: the flow arriving from upstream (a cut further up feeds less, #656)
     s.releases.push_back(rel);
     // The reach's bricks: per brick column, the river's depth under its own level down, 8 m over it up (#645: a reach
