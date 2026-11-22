@@ -172,7 +172,12 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
             }
         }
         std::vector<Vector3> centres;
-        GridSearch(*pf, home, 96.0f, 1500.0f, 0.0f, 1, [&](Vector3 d) {
+        Vector3 north, east; Frame(home, north, east);
+        constexpr float kStep = 96.0f, kRange = 1500.0f; // (one deposit cell a step; Locate_Find sorts the hits by distance)
+        for (float a = -kRange; a <= kRange; a += kStep)
+        for (float b = -kRange; b <= kRange; b += kStep) {
+            if (a * a + b * b > kRange * kRange) continue;
+            const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
             const float ground = pf->radius + pf->elevation(d);
             for (float depth = 5.0f; depth <= 100.0f; depth += 47.5f) {
                 Vector3 c; float r; int kind;
@@ -187,8 +192,7 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
                 snprintf(what, sizeof what, "%s deposit, ~%.0f m across, %.0f m down", PlanetField::OreKindName(kind), 2.0f * r, down);
                 add(Ground(*pf, Vector3Normalize(c)), what);
             }
-            return false; // (the deposits are collected above; the grid only walks the ground)
-        });
+        }
     } else if (feature.rfind("biome:", 0) == 0 || feature.rfind("biome ", 0) == 0) {
         const std::string name = feature.substr(6);
         int b = -1;
