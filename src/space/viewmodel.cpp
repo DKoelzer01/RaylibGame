@@ -12,6 +12,10 @@
 #include "telescope.h"
 #include "terraintool.h"
 #include "tools.h"
+#include "composed.h"
+#include "itemdata.h"
+#include "melee.h"
+#include "toolwear.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -41,13 +45,13 @@ namespace {
     std::string Held() {
         if (buildTool.active) {
             const std::string& s = Hotbar_Slot(Hotbar_Selected());
-            return s == kHotbarTerrainTool || inventory.count(s) <= 0 ? std::string() : s; // only what is carried (#272)
+            return s == kHotbarTerrainTool || inventory.held(s) <= 0 ? std::string() : s; // only what is carried (#272; #1503: held counts a composed copy)
         }
         if (Hotbar_Selected() >= 0) { // a torch in hand (#558: it showed an empty glove, selecting it clears heldTool)
             const std::string& s = Hotbar_Slot(Hotbar_Selected());
-            if (Hotbar_IsLight(s) && inventory.count(s) > 0) return s;
+            if (Hotbar_IsLight(s) && inventory.held(s) > 0) return s;
         }
-        return inventory.count(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string();
+        return inventory.held(terrainTool.heldTool) > 0 ? terrainTool.heldTool : std::string(); // (#1503) count() ignores a composed copy: it drew an empty glove
     }
 
     // The held torch's flame (#558): a few additive sprites in the hands' own view space, rising from the head.
@@ -229,6 +233,32 @@ void Viewmodel_Draw(Scene& world) {
         rlDrawRenderBatchActive();
         rlEnableDepthMask();
         rlSetBlendMode(BLEND_ALPHA);
+    } else if (!held.empty() && held.rfind("weapon_", 0) == 0) {
+        // (#1219) A composed weapon: a short grip in the fist, its head in the head material's colour (the held copy's record).
+        const Color wood = { 120, 84, 50, 255 };
+        Color head = { 170, 170, 175, 255 };
+        if (const PartMaterial* m = Composed_Material(ItemData::Get(ToolWear_HeldData(held), "h"))) head = { m->r, m->g, m->b, 255 };
+        const WeaponClass wc = Weapon_ClassOf(held);
+        const Matrix grip = MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), local({ 0, 0.09f, -0.07f }, { -14, 0, 10 }));
+        auto onGrip = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), grip); };
+        switch (wc) {
+            case WeaponClass::Spear:
+                Box(onGrip({ 0, 0.12f, 0 }), { 0.024f, 0.62f, 0.024f }, wood, light);
+                Box(onGrip({ 0, 0.47f, 0 }, { 0, 0, 0 }), { 0.05f, 0.12f, 0.012f }, head, light);
+                break;
+            case WeaponClass::Mace:
+                Box(onGrip({ 0, 0, 0 }), { 0.03f, 0.36f, 0.03f }, wood, light);
+                Box(onGrip({ 0, 0.2f, 0 }, { 0, 45, 0 }), { 0.09f, 0.09f, 0.09f }, head, light);
+                break;
+            default: { // knife, sword, greatsword: a guard and a blade
+                const float len = wc == WeaponClass::Knife ? 0.16f : wc == WeaponClass::TwoHanded ? 0.62f : 0.46f;
+                const float w = wc == WeaponClass::TwoHanded ? 0.06f : 0.045f;
+                Box(onGrip({ 0, -0.04f, 0 }), { 0.03f, 0.12f, 0.03f }, wood, light);
+                Box(onGrip({ 0, 0.025f, 0 }), { wc == WeaponClass::Knife ? 0.06f : 0.13f, 0.02f, 0.03f }, Color{ (unsigned char)(head.r * 0.7f), (unsigned char)(head.g * 0.7f), (unsigned char)(head.b * 0.7f), 255 }, light);
+                Box(onGrip({ 0, 0.035f + len * 0.5f, 0 }), { w, len, 0.012f }, head, light);
+                break;
+            }
+        }
     } else if (held.empty() || tool.type == ToolType::Hands) {
         if (held.empty()) {
             Box(local({ 0, 0.005f, -0.1f }, { -12, 0, 0 }), { 0.08f, 0.03f, 0.07f }, glove, light); // open fingers

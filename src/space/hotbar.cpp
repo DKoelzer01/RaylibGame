@@ -1,4 +1,5 @@
 #include "hotbar.h"
+#include "melee.h"
 #include "machinetiers.h"
 #include "uipalette.h"
 #include "playersession.h"
@@ -111,7 +112,7 @@ namespace {
             terrainTool.heldTool = id;
             return;
         }
-        if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
+        if (KindOf(id) == ItemKind::Tool && (ToolOf(id).type != ToolType::Hands || Weapon_ClassOf(id) != WeaponClass::Tools)) { // (#1219) a weapon goes in the hand too (it digs as hands)
             if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
@@ -262,6 +263,7 @@ static void DrawOffHand(int x, int y, int size, float sc) {
     if (ItemIcons_Has(s.id)) ItemIcons_Draw(s.id, { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
     if (KindOf(s.id) != ItemKind::Tool) { const char* n = TextFormat("%d", (int)s.amount()); DrawText(n, x + size - (int)(4 * sc) - MeasureText(n, (int)(14 * sc)), y + (int)(3 * sc), (int)(14 * sc), RAYWHITE); }
     std::string name = ShortName(s.id);
+    if (s.hasData()) { const std::string cn = Composed_DisplayName(s.id, s.data); if (!cn.empty()) name = cn; } // (#1219)
     int fs = (int)(12 * sc);
     while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back();
     DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y + size - fs - (int)(6 * sc), fs, RAYWHITE);
@@ -304,6 +306,7 @@ void Hotbar_DrawHUD(bool piloting) {
             }
         }
         std::string name = ShortName(id);
+        { const InvSlot& own = inventory.grid()[Inventory::kGrid + i]; const std::string cn = own.hasData() ? Composed_DisplayName(own.id, own.data) : std::string(); if (!cn.empty()) name = cn; } // (#1219) "Bronze sword", as the inventory names it
         // (#925 follow-up) As the inventory's names: never cut mid-word. One line, shrunk to 70% at most; else two lines split at
         // the space nearest the middle; a single long word shrinks to fit (raylib's font has a 10 px floor).
         const int fs0 = (int)(12 * sc), room = size - 4;
