@@ -11,7 +11,7 @@
 
 #include <string>
 
-enum class CaveKind : int { Passage = 0, Mouth = 1, Solid = 2, Chamber = 3 };
+enum class CaveKind : int { Passage = 0, Mouth = 1, Solid = 2, Chamber = 3, Cavern = 4 };
 
 struct CaveKindDef {
     const char* name;
@@ -25,14 +25,19 @@ struct CaveKindDef {
     int scaleToPassage; // 1: swell and outline scaled by min(1, 8 m / r): at a passage's size on a big bore (chambers, #1116)
     float intrude;      // the wall noise's reach as a share of the bore (0.55; mouths 0.65)
     float outcropCap;   // > 0: wall outcrops at most this many metres (chambers 4, #1116: floating rock), else the bore's
+    int wander;         // 1: the roof pockets and the sideways wander scaled by min(1, 8 m / r) too (caverns: at full size they
+                        //    fold a big dome and leave floating rock, --cave-islands)
 };
 
 constexpr CaveKindDef kCaveKinds[] = {
-    //  name       solid outline lop rubble level floorR tilt scale intrude cap
-    { "passage",   0,    0.2f,   0,  0.0f,  -1.0f, 0.0f,  1,   0,    0.55f,  0.0f },
-    { "mouth",     0,    0.4f,   1,  0.35f, 0.45f, 0.0f,  0,   0,    0.65f,  0.0f },
-    { "solid",     1,    0.2f,   0,  0.0f,  -1.0f, 0.0f,  0,   0,    0.55f,  0.0f },
-    { "chamber",   0,    0.2f,   0,  0.0f,  -1.0f, 0.4f,  0,   1,    0.55f,  4.0f },
+    //  name       solid outline lop rubble level floorR tilt scale intrude cap   wander
+    { "passage",   0,    0.2f,   0,  0.0f,  -1.0f, 0.0f,  1,   0,    0.55f,  0.0f, 0 },
+    { "mouth",     0,    0.4f,   1,  0.35f, 0.45f, 0.0f,  0,   0,    0.65f,  0.0f, 0 },
+    { "solid",     1,    0.2f,   0,  0.0f,  -1.0f, 0.0f,  0,   0,    0.55f,  0.0f, 0 },
+    { "chamber",   0,    0.2f,   0,  0.0f,  -1.0f, 0.4f,  0,   1,    0.55f,  4.0f, 0 },
+    // (#1465) a large cavern (r 50-150 m, rare and deep): the chamber's rules exactly (swell and outline at a passage's
+    // size, a level floor, outcrops capped at 4 m: the floating-rock control), and its roof pockets and wander at that size too
+    { "cavern",    0,    0.2f,   0,  0.0f,  -1.0f, 0.4f,  0,   1,    0.55f,  4.0f, 1 },
 };
 constexpr int kCaveKindCount = (int)(sizeof(kCaveKinds) / sizeof(kCaveKinds[0]));
 
