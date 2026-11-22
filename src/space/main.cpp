@@ -52,6 +52,7 @@
 #include "buildtool.h"
 #include "recorder.h"
 #include "scenario.h"
+#include "cliptelemetry.h"
 #include "slideshow.h"
 #include "bugreport.h"
 #include "progression_test.h"
@@ -1623,6 +1624,9 @@ int main(int argc, char** argv)
         Factory::SetRemote(true);
         gMachineRequest = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) {
             if (Planetoid* b = Planetoid::find(bodyId)) NetClient_MachineAction(gJoin, b->netId, plot, part, action, item, count, slot, which);
+        };
+        gMachineInsertData = [](uint64_t bodyId, uint32_t plot, int part, int action, const std::string& item, int slot, const std::string& data) { // (#1446 2b)
+            if (Planetoid* b = Planetoid::find(bodyId)) NetClient_MachineAction(gJoin, b->netId, plot, part, action, item, 1, slot, 0, data);
         };
         gFactoryRemoteWatch = [](uint64_t bodyId, uint32_t plot, int part) { if (gMachineRequest) gMachineRequest(bodyId, plot, part, 6, std::string(), 0, 0, 0); };
         gBedUseRequest = [](const Planetoid& body, const Plot& plot, int part) { // (#800) and our spawn bed
@@ -6660,7 +6664,20 @@ int main(int argc, char** argv)
                     } else {
                         const Vector3 up = Vector3Normalize(mouthAt);
                         const float r = kMouthDist[mouthPhase - 1];
-                        const Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        // (#1428) Where the ground rises away from the mouth the eye lands inside a hill: back faces culled, the view saw
+                        // through the rock to the land beyond, and the cave passages in it as black tubes (their far walls, unlit). Lifted
+                        // along up until it and 2 m above it are open air (at most 300 m), once per view.
+                        {
+                            static int liftedFor = -1; static float lift = 0.0f;
+                            if (liftedFor != mouthPhase) {
+                                liftedFor = mouthPhase; lift = 0.0f;
+                                while (lift < 300.0f && (p->densityAt(Vector3Add(eye, Vector3Scale(up, lift))) >= ISO_LEVEL ||
+                                                         p->densityAt(Vector3Add(eye, Vector3Scale(up, lift + 2.0f))) >= ISO_LEVEL)) lift += 2.0f;
+                                if (lift > 0.0f) printf("bench: cave mouth: the %d m view's eye was inside the ground: lifted %.0f m\n", (int)r, lift);
+                            }
+                            eye = Vector3Add(eye, Vector3Scale(up, lift));
+                        }
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(mouthAt, Vector3Scale(up, -3.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         if (t > 4.0 && WorldIdle()) {
@@ -11087,6 +11104,8 @@ int main(int argc, char** argv)
                 world.camera.target = p->toWorld(plot->toBody(at));
                 world.camera.up = p->dirToWorld(plot->up);
                 BuildTool_Update(world, PlayerInput::None(), true);
+                if (red) // into the cube placed at f == 1, wherever placing settled it (#1432: aiming slides out now)
+                    for (const Part& q : plot->parts) if (q.type == PartType::Cube) { BuildTool_BenchAimAt(*plot, q.origin); break; }
                 if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
@@ -13640,7 +13659,7 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gMachineInsertData = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
                 gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
@@ -13852,6 +13871,8 @@ int main(int argc, char** argv)
                     gAvatars.push_back(a);
                 }
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
+                ClipTelemetry_Frame(world, SimTime(), GetFrameTime()); // (#1442) the camera that drew this frame, in solid?
+                if (Recorder_Active()) ClipTelemetry_DrawTag();       // a recorded frame says so ("CLIPPED")
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI

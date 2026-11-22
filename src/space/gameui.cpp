@@ -257,7 +257,8 @@ static InvSlot cursorStack;
 static void ReturnCursorStack() {
     if (cursorStack.empty()) return;
     ++inventory.muted; // not a pickup (#208)
-    inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat); // still as hot (#580)
+    if (cursorStack.hasData()) inventory.addInstance(cursorStack.id, cursorStack.data, cursorStack.heat); // (#1446) one item, record and all
+    else inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat); // still as hot (#580)
     --inventory.muted;
     cursorStack = InvSlot{};
 }
@@ -399,12 +400,14 @@ struct ContainerGrid : SlotGrid {
     int which = 0;
     std::vector<std::pair<std::string, int>> slots;
     std::vector<int> fracs; // (#1102) a chest slot's fraction more (hundredths), as the view has it
+    std::vector<std::string> datas; // (#1446 2b) a slot's own record (a composed tool in a chest)
     explicit ContainerGrid(int w) : which(w) {}
     int size() const override { return (int)slots.size(); }
     InvSlot at(int i) const override {
         InvSlot s;
         const int frac = i >= 0 && i < (int)fracs.size() ? fracs[i] : 0;
         if (i >= 0 && i < (int)slots.size() && (slots[i].second > 0 || frac > 0)) { s.id = slots[i].first; s.centi = (int64_t)slots[i].second * 100 + frac; }
+        if (!s.empty() && i < (int)datas.size()) s.data = datas[i];
         return s;
     }
     // (#1102) A chest here keeps fractions (0.4 dirt); machines hold whole units, and a joined client's moves are whole too
@@ -421,6 +424,19 @@ struct ContainerGrid : SlotGrid {
         return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
+        if (held.hasData()) { // (#1446 2b) one item with its record: an empty chest slot, or a machine set to disassemble (L7c)
+            if (which != 0) return 0;
+            if (container.type == PartType::Chest) {
+                if (!at(i).empty()) return 0;
+                MachineAct_InsertSlot(container.body, container.plot, container.part, held.id, 1, i, 0, held.data);
+            } else {
+                const MachineView v = Factory::View(container.body, container.plot, container.part);
+                if (v.mode != 1) return 0; // only an assembler taking things apart takes an item with its own record
+                MachineAct_Insert(container.body, container.plot, container.part, held.id, 1, false, 0, held.data);
+            }
+            Audio_Play(Sfx::Pickup, 0.4f, 0.8f);
+            return 100;
+        }
         const int64_t amount = std::min({ centi, held.centi, room(i, held.id) });
         const int n = (int)(amount / 100), frac = keepsFractions() ? (int)(amount % 100) : 0;
         if ((n <= 0 && frac <= 0) || room(i, held.id) <= 0) return 0;
@@ -433,6 +449,12 @@ struct ContainerGrid : SlotGrid {
     int64_t take(int i, int64_t centi, InvSlot& held) override {
         const InvSlot s = at(i);
         if (s.empty() || (!held.empty() && held.id != s.id)) return 0;
+        if (s.hasData() || held.hasData()) { // (#1446 2b) an item with its record comes alone, onto an empty hand
+            if (!held.empty()) return 0;
+            MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, 1);
+            Audio_Play(Sfx::Pickup, 0.4f, 1.2f);
+            return 0; // (next tick, onto the hand with its record)
+        }
         if (s.centi < 100) { MachineAct_TakeSlot(container.body, container.plot, container.part, i, which); return 0; } // (#1102) only a fraction: to the inventory (the hand holds whole items here)
         const int n = (int)std::clamp<int64_t>(centi / 100, 1, s.centi / 100);
         MachineAct_TakeSlot(container.body, container.plot, container.part, i, which, n);
@@ -565,7 +587,7 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     return ok;
 }
 
-static void CursorSink(const std::string& id, int count, float heat);
+static void CursorSink(const std::string& id, int count, float heat, const std::string& data);
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();
     auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
@@ -604,9 +626,9 @@ bool GameUI_TestCursorStack() {
         Combat_Step(s, 1.0f / 60.0f, none); check(inventory.count("stone") == 10 && Combat_DroppedPiles() == piles0, "coming back picks it all up");
     } else check(false, "the player is on a body");
     // #580: a stack taken hot out of a furnace stays hot on the cursor, and when put down; a cold one joining it averages.
-    CursorSink("iron_ingot", 4, 1.0f);
+    CursorSink("iron_ingot", 4, 1.0f, std::string());
     check(cursorStack.id == "iron_ingot" && cursorStack.heat > 0.99f, "a hot stack onto the cursor stays hot (#580)");
-    CursorSink("iron_ingot", 4, 0.0f);
+    CursorSink("iron_ingot", 4, 0.0f, std::string());
     check(fabsf(cursorStack.heat - 0.5f) < 0.01f, "a cold one joining it halves the heat");
     int empty = -1; for (int k = 0; k < Inventory::kGrid && empty < 0; ++k) if (g[k].empty()) empty = k;
     if (empty >= 0) CellClick(empty, false, false);
@@ -1069,7 +1091,7 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b) containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
@@ -1123,16 +1145,15 @@ static void DrawContainer() {
         const Part* p = ContainerPart();
         const ItemDef* d = p && IsMachine(p->type) && p->material > 0 ? itemDB.find(PartItem(*p)) : nullptr;
         ImGui::Text("%s", d ? d->name.c_str() : PartName(container.type));
-        if (const int t = ContainerTier(); t >= 0) {
-            const Color c = MachineTiers_Color(t);
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f), "%s %d V", MachineTiers_Name(t), MachineTiers_Volts(t));
-        }
     }
     ImGui::SameLine();
     if (v.valid) ImGui::TextColored(v.status == MachineStatus::Working ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f) : ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "  %s", MachineStatusName(v.status));
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60.0f);
     if (ImGui::Button("Close")) { container.open = false; return; }
+    if (const int t = ContainerTier(); t >= 0) { // (#1427 L7d) its tier and voltage on a line of their own (the title row: name, status, Close)
+        const Color c = MachineTiers_Color(t);
+        ImGui::TextColored(ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f), "%s, %d V", MachineTiers_Name(t), MachineTiers_Volts(t));
+    }
     ImGui::Separator();
     if (!v.valid) { ImGui::TextDisabled("..."); return; }
     if (v.duration > 0) ImGui::ProgressBar((float)v.progress / (float)v.duration, ImVec2(300.0f, 0.0f), TextFormat("%d%%", 100 * v.progress / v.duration));
@@ -2102,10 +2123,15 @@ namespace {
 }
 // Items taken from a machine or chest slot onto the cursor (#192), a tick after the click: onto the held stack when it is
 // empty or the same item, else into the inventory.
-static void CursorSink(const std::string& id, int count, float heat) { // heat: fresh out of a furnace stays hot on the cursor (#580)
+static void CursorSink(const std::string& id, int count, float heat, const std::string& data) { // heat: fresh out of a furnace stays hot on the cursor (#580)
     if (count <= 0) return;
+    if (!data.empty()) { // (#1446) one item with its own record: onto an empty cursor, else into the inventory as it is
+        if (cursorStack.empty()) { cursorStack = InvSlot{}; cursorStack.id = id; cursorStack.centi = 100; cursorStack.heat = heat; cursorStack.data = data; return; }
+        ++inventory.muted; inventory.addInstance(id, data, heat); --inventory.muted;
+        return;
+    }
     if (cursorStack.empty()) { cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat; return; }
-    if (cursorStack.id == id) {
+    if (cursorStack.id == id && !cursorStack.hasData()) {
         const int64_t add = (int64_t)count * 100;
         cursorStack.heat = (float)((cursorStack.heat * cursorStack.centi + heat * add) / (double)(cursorStack.centi + add));
         cursorStack.centi += add;

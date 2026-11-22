@@ -1,5 +1,5 @@
-// factory/tiers-ui (#1427 L7d): tiered machines on screen. In the sandbox, an LV generator cabled to an LV assembler and,
-// beside it, an MV assembler (the same part, its variant step 1): the MV one is tinted toward MV's orange. Its screen shows
+// factory/tiers-ui (#1427 L7d): tiered machines on screen. In the sandbox, an MV generator cabled to an MV assembler and,
+// beside it, an LV assembler (the MV one is the same part at variant step 1, tinted toward MV's orange). Its screen shows
 // its own name, "MV 128 V" and the circuit it makes overclocked (an LV recipe in an MV machine: twice as fast); then the
 // Help page of the MV assembler lists its tiers and its recipes with their times, the MV pack's at its own tier.
 #include "scenario.h"
@@ -36,10 +36,10 @@ SCENARIO("factory/tiers-ui") {
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         plot = c.body->plots->plotFor(ground, 0.0f, true);
         bodyId = c.body->id;
-        bool ok = Place(c, PartType::Generator, { 0, 0, 0 }) && Place(c, PartType::LvAssembler, { 3, 0, 0 }) && Place(c, PartType::LvAssembler, { 6, 0, 0 }, 1);
-        for (int x = 0; x <= 7 && ok; ++x) ok = Place(c, PartType::Cable, { x, 0, -1 });
+        bool ok = Place(c, PartType::MvGenerator, { 0, 0, 0 }) && Place(c, PartType::LvAssembler, { 3, 0, 0 }, 1) && Place(c, PartType::LvAssembler, { 6, 0, 0 });
+        for (int x = 0; x <= 4 && ok; ++x) ok = Place(c, PartType::Cable, { x, 0, -1 }); // the MV assembler on the MV generator (the LV one only for the look: 128 V would be too much for it)
         if (!c.check("placed", ok)) return true;
-        gen = plot->partAt({ 0, 0, 0 }); lvAsm = plot->partAt({ 3, 0, 0 }); mvAsm = plot->partAt({ 6, 0, 0 });
+        gen = plot->partAt({ 0, 0, 0 }); mvAsm = plot->partAt({ 3, 0, 0 }); lvAsm = plot->partAt({ 6, 0, 0 });
         c.check("the MV assembler is the assembler part at step 1", plot->parts[mvAsm].type == PartType::LvAssembler && plot->parts[mvAsm].material == 1);
         c.check("its item is the MV assembler", std::string(PartItem(plot->parts[mvAsm])) == "mv_assembler");
         c.camera(plot->toBody({ 3.5f, 2.5f, -5.0f }), plot->toBody({ 3.5f, 0.5f, 0.5f }), plot->up);
@@ -53,17 +53,19 @@ SCENARIO("factory/tiers-ui") {
             fed = true;
             Factory::InsertFuel(bodyId, plot->id, gen, "coal", 16);
             MachineAct_SetPick(bodyId, plot->id, mvAsm, "basic_circuit");
-            Factory::Insert(bodyId, plot->id, mvAsm, "vacuum_tube", 4);
-            Factory::Insert(bodyId, plot->id, mvAsm, "copper_wire", 8);
-            Factory::Insert(bodyId, plot->id, mvAsm, "steel_plate", 2);
+            Factory::Insert(bodyId, plot->id, mvAsm, "vacuum_tube", 16);
+            Factory::Insert(bodyId, plot->id, mvAsm, "copper_wire", 32);
+            Factory::Insert(bodyId, plot->id, mvAsm, "steel_plate", 8);
             GameUI_OpenContainer(bodyId, plot->id, mvAsm, (int)PartType::LvAssembler);
         }
         Factory::Sync(c.world);
         Factory::View(bodyId, plot->id, mvAsm); Factory::WaitTicks(2);
         const MachineView v = Factory::View(bodyId, plot->id, mvAsm);
         c.waitingFor(TextFormat("duration %d, status %s", v.duration, MachineStatusName(v.status)));
-        if (v.duration <= 0 || c.t < 2.0) return false;
-        return c.eq("an LV recipe in the MV assembler: half its 160 ticks", v.duration, 80);
+        static int seen = 0;
+        if (v.duration > 0) seen = v.duration;
+        if (seen <= 0 || c.t < 3.0) return false; // (held a moment for the recording)
+        return c.eq("an LV recipe in the MV assembler: half its 160 ticks", seen, 80);
     });
     s.step("the Help page of the MV assembler", 5.0, [](ScenarioCtx& c) {
         static bool opened = false;

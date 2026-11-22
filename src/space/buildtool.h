@@ -30,6 +30,10 @@ extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
+// --shot-preview (#1432): after BuildTool_Update, push the preview onto `cell` in `plot` (a built cell: the
+// can't-place ghost). Parts now slide out of the face they're aimed at, so aiming alone no longer gets there.
+class Plot; struct Int3;
+void BuildTool_BenchAimAt(Plot& plot, Int3 cell);
 void BuildTool_Draw3D(Scene& world);
 void BuildTool_ForgetWorld(); // drop the aim's pointers into a world being unloaded (#902)
 void BuildTool_DrawHUD();

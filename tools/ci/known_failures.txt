@@ -1,0 +1,10 @@
+# Known failures on the self-hosted runner (#1479): a failure line matching a pattern here is already tracked.
+# Don't re-diagnose these; read the issue. Remove a line when its issue is fixed.
+#   <extended regex matched against the failure line> | <issue> | <note>
+join: creature \(                      | #1421 | clients spend the join sync while the creature lives (fix in review)
+bench: join \(alice, session 2\)       | #1421 | that session's verdict includes the creature check above
+parity fluid/                          | #968  | CPU vs GPU fluid paths part by a unit (diagnostic, informational)
+bench: half:                           | #968  | the exact-halfway rounding check (diagnostic)
+factory/stats                          | #1406 | the EU window on the slow runner (fix in review)
+farm/till-rmb                          | #1176 | no RMB stroke runs on the runner (#1178)
+fluid/flow-meter|fluid/pond            | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448

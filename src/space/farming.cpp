@@ -1,4 +1,5 @@
 #include "farming.h"
+#include "uipalette.h"
 #include "tools.h"
 #include "gamerng.h"
 #include "terraintool.h"
@@ -258,7 +259,7 @@ void Farm_DrawAimHUD(const Planetoid& body, Vector3 ground) {
     if (Farm_Crop(body, ground, crop, growth)) {
         DrawText(TextFormat("farmland: %s %s", crop.c_str(), growth >= 1.0f ? "- ripe" : ""), x, y, 20, Color{ 140, 220, 120, 255 });
         DrawRectangle(x, y + 26, 300, 8, Fade(RAYWHITE, 0.2f));
-        DrawRectangle(x, y + 26, (int)(300 * growth), 8, growth >= 1.0f ? GOLD : GREEN);
+        DrawRectangle(x, y + 26, (int)(300 * growth), 8, growth >= 1.0f ? Ui().warn : Ui().good);
         DrawText(growth >= 1.0f ? "O harvest" : "grows in daylight; water nearby doubles it", x, y + 38, 14, Fade(RAYWHITE, 0.7f));
     } else {
         DrawText("farmland", x, y, 20, Color{ 200, 170, 120, 255 });
