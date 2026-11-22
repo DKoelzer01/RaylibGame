@@ -167,6 +167,34 @@ void Research_Merge(const ResearchState& from, ResearchState& into) {
     into.insight = std::max(into.insight, from.insight);
 }
 
+const ResearchNode* Research_HeadFor(const ResearchState& s, int maxTier) {
+    for (const std::string& id : s.queue) {
+        const ResearchNode* n = Research_Find(id);
+        if (n && n->tier <= maxTier && Research_CanStart(s, *n)) return n;
+    }
+    return nullptr;
+}
+
+std::vector<std::string> Research_AddUnits(ResearchState& s, int tier, int units) {
+    std::vector<std::string> done;
+    while (units > 0) {
+        const ResearchNode* n = nullptr;
+        for (const std::string& id : s.queue)
+            if (const ResearchNode* q = Research_Find(id); q && q->tier == tier && Research_CanStart(s, *q)) { n = q; break; }
+        if (!n) break; // (nothing of that tier queued any more: the units are spent, as a lab's packs were)
+        int& have = s.progress[n->id];
+        const int take = std::min(units, n->units - have);
+        have += take; units -= take;
+        if (have >= n->units) {
+            s.progress.erase(n->id);
+            s.done.insert(n->id);
+            s.queue.erase(std::remove(s.queue.begin(), s.queue.end(), n->id), s.queue.end());
+            done.push_back(n->name);
+        }
+    }
+    return done;
+}
+
 ResearchState& Research_Team(int team) { return teams[team]; }
 void Research_Reset() { teams.clear(); }
 std::string Research_TeamText(int team) { auto it = teams.find(team); return it == teams.end() ? std::string() : it->second.Text(); }
@@ -247,6 +275,27 @@ TEST(Research, StartSightAndTheJoinRule) {
     EXPECT_EQ(team.progress.at("vacuum_tube"), 2);
     EXPECT_EQ(team.queue, std::vector<std::string>{ "steelmaking" }) << "a node now done leaves the queue";
     EXPECT_DOUBLE_EQ(team.insight, 2.0);
+}
+
+// (#1193) A lab runs the first queued node it can; units go to the queued node of their tier; a node done leaves the queue.
+TEST(Research, LabsRunTheQueueHeadTheyCanAndUnitsFinishNodes) {
+    ASSERT_TRUE(Research_Load());
+    ResearchState s;
+    s.done = { "steam_power", "wire_drawing", "vacuum_tube", "electricity" };
+    s.queue = { "aluminium", "basic_circuits", "steelmaking" }; // tier 5 (not startable yet: needs electrolysis), 4, 3
+    const ResearchNode* lv = Research_HeadFor(s, 4);
+    ASSERT_TRUE(lv);
+    EXPECT_EQ(lv->id, "basic_circuits") << "an LV lab skips the tier 5 node and takes the next it can";
+    s.queue = { "steelmaking" };
+    const int units = Research_Find("steelmaking")->units;
+    EXPECT_TRUE(Research_AddUnits(s, 3, units - 1).empty());
+    EXPECT_EQ(s.progress.at("steelmaking"), units - 1);
+    const auto done = Research_AddUnits(s, 3, 5);
+    ASSERT_EQ(done.size(), 1u);
+    EXPECT_TRUE(s.Done("steelmaking"));
+    EXPECT_TRUE(s.queue.empty() && s.progress.empty()) << "done: out of the queue (the extra units are spent)";
+    EXPECT_TRUE(Research_AddUnits(s, 4, 3).empty()) << "units of a tier nothing queued needs change nothing";
+    EXPECT_EQ(Research_HeadFor(s, 7), nullptr);
 }
 
 #include "playerrecord.h"

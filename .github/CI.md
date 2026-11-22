@@ -18,7 +18,8 @@ machine, which only the PC has.
 - **Static checks** (seconds, `tools/ci/static_checks.sh`): NetMsg ids unique and 1..255; a PR that adds, removes or
   renumbers a NetMsg or bumps `kNetProtocol` says so in the job summary (a NetMsg change without a bump is a warning);
   erosion bake code changed without a `kErosionBakeVersion` bump is a warning; a new `gh project` command in `tools/` is
-  an error. It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
+  an error; a `kNetProtocol` not reserved in `tools/ci/protocol_reservations.txt` (or one marked "(unused)") is an error
+  (#1480). It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
   skips them.
 - **Windows build + unit tests (w64devkit)**: w64devkit 2.0.0 (GCC 14.2, the shipping toolchain, SHA-256 pinned),
   MinGW Makefiles, `-DENABLE_GNS=ON`, targets `game` and `game_tests`, then `game_tests.exe` from the repo root.
@@ -45,16 +46,29 @@ variable `SELF_HOSTED_ENABLED` = `true`. While it is unset, the job is skipped a
 runner). `NIGHTLY_BRANCH` (optional) picks the branch the nightly run builds, default `m84-integration`; a schedule only
 fires from the default branch's (`main`'s) copy of the workflow, so the nightly starts once this file reaches `main`.
 
-The runner (Docker, on deweyserver) needs: the packages of `tools/linux/Dockerfile.build` (build-essential, cmake, git,
+The runners (three ephemeral GPU runners in Docker on deweyserver, all with the labels below; a job takes whichever is
+free) need: the packages of `tools/linux/Dockerfile.build` (build-essential, cmake, git,
 curl, libssl-dev, libegl1) plus ccache, the NVIDIA container runtime with `NVIDIA_VISIBLE_DEVICES=all` and
 `NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility` (the GPU step fails loudly on the null GL), and the labels
 `raylibgame-linux` and `gpu`. Builds, the erosion bake cache and ccache persist in `<runner work>/RaylibGame/ci-persist`.
+**Slots (#1410):** jobs run at once on several runners, which may share that volume, so each job claims a slot,
+`ci-persist/slotN` with its own `out/` (the build and binary) and `run/` (saves, the bake, test scratch), held by a
+`flock` for the whole job (`tools/ci/selfhosted_env.sh`); ccache is shared. A job's log starts with its runner, the
+volume's device and inode, and its slot. (Before, concurrent jobs shared one `out/` and `run/` and overwrote each
+other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
+After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
+`tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
-Three jobs, one after the other on the one runner (#1028): `package` (build, `game_tests`, the server tarball as an
-artifact), `linux-gpu` (the GPU bit-exact check, the headless scenarios, `test_server.sh` / `test_join.sh`, whose
-host and client logs go into the `selfhosted-test-results` artifact) and `regression` (below; nightly or on request). The
+Three jobs, each after the one before (#1028), each on any free runner: `package` (build, `game_tests`, the server
+tarball as an artifact), `linux-gpu` (the GPU bit-exact check, the headless scenarios in two steps of 45 min each (#1367: fluid, frames and factory; then the rest), `test_server.sh` / `test_join.sh`,
+whose host and client logs go into the `selfhosted-test-results` artifact) and `regression` (below; nightly or on
+request). **GPU steps only when needed (#1392):** on a push, `tools/ci/gpu_changes.sh` diffs the push against its base;
+the GPU bit-exact check (`--test-terrain-gpu`) and the fluid CPU = GPU parity run only when a shader, the terrain
+generation (voxel, noise, erosion, rivers, strata, the GPU terrain, meshing, world-gen data), fluid, render-target or
+build file changed. The headless scenarios and the server and join tests always run; a schedule or a manual run runs
+everything, as does a push whose base isn't in the checkout's last 50 commits. The step summary says which and why. The
 host-side fetch script takes the newest push run whose `package` job succeeded, so a failing test elsewhere in the run
 no longer holds a server build back. Each later job rebuilds incrementally first (a no-op unless another branch's run
 used the build folder in between).
@@ -75,7 +89,7 @@ than on the PC because the runner is slower, and are L until they have sim-time 
 
 - `tools/regression.sh planet --only headless`: the runner's half (the `regression` job of `selfhosted.yml`, after the
   checks; 71 tests, ~85 min on the PC, ~2.5 h on the runner, which runs at about half the PC's frame rate). It runs
-  as 4 jobs (`--shard 1/4` .. `4/4`, every 4th test; ~35-40 min each, 90 min timeout), so queued runs get the one GPU
+  as 4 jobs (`--shard 1/4` .. `4/4`, every 4th test; ~35-40 min each, 90 min timeout), so queued runs get a GPU
   runner in between; never on pushes.
 - `tools/regression.sh planet --only local`: the PC's half (30 tests, ~30 min instead of ~2 h).
 - No `--only`: every test, as before the split.

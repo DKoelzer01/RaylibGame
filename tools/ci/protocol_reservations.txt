@@ -1,0 +1,13 @@
+# kNetProtocol reservations (#1480). Reserve the next number here, in your PR, BEFORE bumping kNetProtocol;
+# a static check fails a branch whose kNetProtocol isn't listed. One line per number:
+#   <number> | <branch or base> | <issue> | <what>
+37 | m84-integration | #1252 | magic machines in NetPart
+38 | m84-integration | #1307 | combat Act bits LockOn, Dodge
+39 | m84-integration | #1343 | creature fx and events to clients
+40 | m84-integration | #828  | Team tab: members' session and last seen
+41 | (unused)        | #1105 | was the Ladder part's before alchemy merged first
+42 | m84-integration | #1254 | alchemy part types
+43 | m84-integration | #1105 | the Ladder part type
+44 | ladder          | #1271 | the ladder rework (assembler mode, recipe pick in MachineView)
+45 | ladder          | #1446 | item instance data in inventory deltas, drops, graves
+46 | ladder          | #1446 | item instance data in chest and machine slots

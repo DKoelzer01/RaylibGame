@@ -267,6 +267,13 @@ namespace {
                 Animals_ApplyNet(in, am.removed);
                 return;
             }
+            case NetMsg::CreatureFx: { // (#1343, #1364) the server's creature shots (flown here) and creature events (heard here)
+                MsgCreatureFx fx;
+                if (c.state != NetClient::State::Joined || !NetRead(r, fx)) return;
+                ++c.creatureFxMsgs;
+                if (gAnimalsReplicated) Animals_ApplyFx(fx);
+                return;
+            }
             case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
                 MsgDamage dm;
                 if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
@@ -371,6 +378,7 @@ namespace {
                 MsgVitals v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
                 c.vitals = v; ++c.vitalsMsgs;
+                if (v.flags & 1) c.respawnGraceUntil = GetTime() + 3.0; // (#828) dead: the respawn teleport that follows is no prediction miss
                 if (gNetRole != NetRole::Client) return; // (a host's in-process test client: not the host's own player)
                 SurvivalState& sv = LocalSession().survival;
                 sv.health = v.health; sv.food = v.food; sv.oxygen = v.oxygen; sv.power = v.power; sv.temperature = v.temperature;
@@ -519,7 +527,7 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
         if (body && !c.history.empty() && c.history.front().tick == c.own.ackInput) {
             const DVec3 d = c.history.front().local - c.own.local;
             c.lastError = d.length();
-            c.worstError = std::max(c.worstError, c.lastError);
+            if (GetTime() >= c.respawnGraceUntil) c.worstError = std::max(c.worstError, c.lastError); // (#828: not around a death's respawn)
             c.history.pop_front(); // acknowledged
             if (c.lastError > kReconcileError) {
                 ++c.corrections;

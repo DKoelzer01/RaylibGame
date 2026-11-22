@@ -18,6 +18,7 @@ struct TerrainToolSettings {
     float digStrength = 0.12f;   // density change per stroke at the brush centre (~0.5-1 m of rock)
     float strokesPerSecond = 10.0f;
     float reach = 12.0f;         // max raycast distance (arm's reach; fly mode uses 150)
+    bool noAim = false;          // (#1071) no aim at all (no hit, no dig preview): scripted pictures that use no tool
     bool creative = false;       // building costs nothing
     bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
@@ -43,6 +44,7 @@ inline float gHudScale = 1.0f; // (#891) the interface scale for the crosshair's
 inline std::function<void(const char* event, double n, Vector3 local)> gSkillEvent;
 inline std::function<float(const char* stat)> gSkillStat;
 inline float SkillStat(const char* stat) { return gSkillStat ? gSkillStat(stat) : 1.0f; }
+inline std::function<float()> gTerrainStrokeScale; // (#1254) a potion of mining haste: strokes a second times this (unset: 1)
 // (#919) n items times a yield stat: the whole part, and the fraction left by chance (the gameplay RNG): x1.1 on 3 logs
 // gives 3 most times and 4 one time in three.
 // by: whose stats (#920: a server's remote player); empty = the local player's (SkillStat).
@@ -85,6 +87,9 @@ struct DigYield {
     bool ore = false;            // some ore came out (a vein may be nearly done)
 };
 DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hitLocal, bool softOnly, float gemBoost); // gemBoost: x the gem odds (tests, perks)
+// (#1250) A rare find in rock other than a gem (magic: a resonant crystal on a ley line), asked after the gem roll when
+// none came up: an item id or nullptr. Unset: nothing.
+inline std::function<const char*(class Planetoid& body, Vector3 hitLocal)> gRockFind;
 float TerrainTool_PlaceCost(const Planetoid& p, const struct TerrainEdit& e); // (#1097) a soft placing blob's filler: 2 a m^3 of ground it adds
 // (#883, #1043) The perks on a stroke, from one player's stats (`stat`: a multiplier by name, 1 = none). The local stroke and
 // the server's check of a joined player's stroke both use these, so a perked stroke is never refused and both credit alike.

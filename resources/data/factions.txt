@@ -1,0 +1,16 @@
+# Factions (#1223, Plan 12): who hunts, fears or ignores whom. A creature's faction is set in creatures.txt.
+# faction | hostile: factions it attacks | fears: factions it runs from | friendly: factions it never attacks
+# Unstated pairs are neutral; a faction is always friendly to itself. "player" is every player.
+# The first cave wave (#1224-#1228) fights from the start (decided: infighting, 2026-11-19): scavengers hunt lurkers,
+# lurkers take scavengers, sentinels guard ruins against both, oozes and the lost go for anything warm.
+# Surface hunters (thornback, dusk stalker) keep today's behaviour: hostile to players only (their prey-chasing stays in
+# the animals' ecology pass).
+player
+livestock
+wild
+beast     | hostile: player
+lurker    | hostile: player, scavenger
+scavenger | hostile: player, lurker | fears: construct
+ooze      | hostile: player, scavenger
+undead    | hostile: player, scavenger
+construct | hostile: player, scavenger, lurker

@@ -11,6 +11,7 @@
 #include "object.h"
 #include "voxel.h"
 #include "bodies.h"
+#include "worldprofile.h"
 #include "foliage.h"
 #include "trees.h"
 #include "farsphere.h"
@@ -79,6 +80,7 @@ public:
     uint64_t netId = 0;                                  // stable across runs and machines (netid.h, #317); 0 until assigned
     unsigned int seed;
     BodyKind kind = BodyKind::Asteroid;
+    std::shared_ptr<const WorldProfile> profile;         // planets and moons: what the world is like (worldprofile.h, #1274); null otherwise
     float surfaceGravity = 9.81f;                        // m/s^2 at gravityRadius
     float gravityRadius = 0.0f;                          // mean surface: inverse-square outside, linear inside
     float radius;
@@ -128,6 +130,8 @@ public:
     // A body with no terrain that carries a build plot (rocket.h): no gravity, never meshed.
     Planetoid(std::string name, DVec3 worldPos, std::shared_ptr<const EmptyField> empty, float radius);
     bool vehicle = false;                                // a flying rocket: saved by the rocket code, not as a body
+    bool freeFall = false;                               // moved by other code on a free orbit (stations): its frame falls with gravity (Plan 11 F5)
+    DVec3 freeFallAcc{};                                 // (freeFall) its acceleration, set by the code that moves it (stations: their Kepler orbit)
     virtual ~Planetoid();
 
     void draw(const RenderContext& ctx) override;
@@ -142,6 +146,12 @@ public:
     // body centre, for anchors and chunk placement on large bodies (floats step ~4-8 mm at 60 km).
     DVec3 toWorldD(const DVec3& local) const;
     DVec3 toLocalD(const DVec3& worldAbs) const;
+    // Plan 11 F3 (#1277): gameplay readers and aim rays. With RAYLIBGAME_FRAMES=1 these go through toLocalD (exact, rounded
+    // once), so a point that is still on the turning body stays still; off, they are today's float path through render
+    // space (toLocal), bit for bit. toLocalOf: an absolute world point (player.position); toLocalRenderD: a render-space
+    // point (the camera) kept in double for aim rays into plots (Plot::raycast(DVec3)).
+    Vector3 toLocalOf(const DVec3& worldAbs, const DVec3& renderOrigin) const;
+    DVec3 toLocalRenderD(Vector3 renderPos, const DVec3& renderOrigin) const;
     // Model matrix of one of this body's chunks in render space, its translation computed in double.
     Matrix chunkModel(const Chunk& chunk, const DVec3& renderOrigin) const;
     // Model matrix for geometry positioned relative to a body-local anchor (foliage batches).

@@ -132,7 +132,8 @@ namespace {
 static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
     const Planetoid* body = h.planetoid;
     if (!body || !body->plots) return false;
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, h.distance / std::max(body->scale, 1e-6f), c, f, d)) return true;
@@ -224,11 +225,11 @@ static void SetToolSphere(const Scene& world); // (#1089) below
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
+    hasHit = !terrainTool.noAim && RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
     hasPlant = false;
     plantBody = player.nearest;
     if (plantBody && plantBody->trees && !player.flyMode) {
-        const Vector3 lo = plantBody->toLocal(world.camera.position), ld = plantBody->dirToLocal(dir);
+        const Vector3 lo = plantBody->toLocalRenderD(world.camera.position, world.renderOrigin).toFloat(), ld = plantBody->dirToLocal(dir); // (#1277)
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
     }
@@ -502,7 +503,7 @@ static DigPerkScale AimedPerks() {
 }
 float TerrainTool_StrokeRate() {
     if (terrainTool.terraform) return terrainTool.strokesPerSecond;
-    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate;
+    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate * (gTerrainStrokeScale ? gTerrainStrokeScale() : 1.0f); // (#1254) mining haste
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
@@ -578,6 +579,7 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
         const char* gem = GameRng_Int(0, 29999) < 10 * gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) out.gem = gem;
+        else if (gRockFind) if (const char* find = gRockFind(p, hitLocal); find && itemDB.find(find)) out.gem = find; // (#1250) a resonant crystal on a ley line
     }
     if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
@@ -931,7 +933,11 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
         if (seed && !itemDB.find(seed)) seed = nullptr;
         if (seed) add(seed, 1);
-        d.toast = TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "");
+        // (#1374) Bitterroot, the poison cure: under one bush in 4, one in 2 in wet country (swamp, jungle).
+        const bool wet = biome == Biome::Swamp || biome == Biome::Jungle;
+        const bool root = ((p.id >> 5) & (wet ? 1u : 3u)) == 0 && itemDB.find("bitterroot");
+        if (root) add("bitterroot", 1);
+        d.toast = TextFormat("+2 fibre%s%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
     }
     return d;
 }

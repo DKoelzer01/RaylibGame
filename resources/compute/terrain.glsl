@@ -464,6 +464,16 @@ float caveGraphDistance(vec3 q, out float solid) {
         precise float bk = mouth ? 0.4 : 0.2;
         precise float rough = 1.0 + bk * big;
         precise float rs = swell * rough;
+        if (hall) {                                                   // (#1116) a chamber's swell and outline at a passage's size
+            precise float hk = min(1.0, xdiv(8.0, r));
+            precise float sw0 = swell - 1.0;
+            precise float sw1 = sw0 * hk;
+            precise float sw = 1.0 + sw1;
+            precise float rg0 = rough - 1.0;
+            precise float rg1 = rg0 * hk;
+            precise float rg = 1.0 + rg1;
+            rs = sw * rg;
+        }
         precise float rw = r * max(0.7, rs);
         precise float pk = hv > 0.0 ? pocket : 0.0;
         precise float vfac = U.w * (1.0 + 0.5 * pk);
@@ -509,7 +519,7 @@ float caveGraphDistance(vec3 q, out float solid) {
                 precise float fc = clamp(fa, 0.0, 1.0);
                 precise float fade = fc * fc * (3.0 - 2.0 * fc);
                 precise float akk = mouth ? 0.65 : 0.55;
-                precise float ra = hall ? min(rw, 8.0) : rw;
+                precise float ra = hall ? min(rw, 4.0) : rw;                  // (#1116: 8 -> 4 m, as voxel.cpp)
                 intrude = akk * ra * fade * wn;
             }
         }
@@ -564,13 +574,14 @@ float caveDistance(vec3 p, float d, float depth, float fp, float cwet, out float
     return m;
 }
 
-float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet) { // cwet (#971): the wet lowland column
+float densityNear(vec3 p, float d, float surface, float fp, float cmask, float cf, float cwet, float criver) { // cwet (#971): the wet lowland column; criver (#1438): the river channel
     precise float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     precise float depth = surface - d;
     if (depth < K_BAND_BELOW && depth > -K_BAND_ABOVE) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, cmask, cf);
-    if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
+    precise float river = abs(depth) < 14.0 ? criver : 0.0; // (#1438) faded out in river channels, as the CPU
+    if (abs(depth) < 6.0) v += DENSITY_GRADIENT * 1.5 * (1.0 - river) * fractalLimited(N_DETAIL, 2, fp, p.x, p.y * 1.3, p.z);
     if (depth < 3.0 && depth > -14.0) {
-        precise float m = rockFeature(p, d, surface, fp);
+        precise float m = rockFeature(p, d, surface, fp) - 16.0 * river; // (#1438)
         if (m > -4.0) v = max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     { // caves (#615 step 1: caveDistance, bit-exact with the CPU's)

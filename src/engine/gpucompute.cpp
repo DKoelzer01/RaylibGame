@@ -1,10 +1,13 @@
 #include "gpucompute.h"
+#include "shaderasync.h"
 #include "utils/logger.h"
 
 #include <raylib.h>
 #include <rlgl.h>
 #include <cstdlib>
 #include <ctime>
+#include <unordered_map>
+#include <utility>
 
 extern "C" {
     typedef void (*PfnMemoryBarrier)(unsigned int);
@@ -58,16 +61,62 @@ std::string LoadShaderSource(const std::string& path, std::vector<std::string>& 
     return Rec::Load(path, includes, 0);
 }
 
-bool ComputeProgram::load(const std::string& p) {
-    if (!Compute_Available()) return false;
+namespace {
+// The source as compiled (includes expanded); empty if missing (logged).
+std::string ComputeSource(const std::string& p) {
     std::vector<std::string> inc;
     std::string src = LoadShaderSource(p, inc);
-    if (src.empty()) { LOG_ERROR("Compute", "compute shader %s: not found\n", p.c_str()); return false; }
+    if (src.empty()) { LOG_ERROR("Compute", "compute shader %s: not found\n", p.c_str()); return src; }
     // (#1047) RAYLIBGAME_COLD_SHADERS=1: a comment unique to this run first, so the driver's shader cache misses, as on a fresh
     // machine or CI runner (comments may come before #version)
     static const bool cold = getenv("RAYLIBGAME_COLD_SHADERS") && getenv("RAYLIBGAME_COLD_SHADERS")[0] == '1';
     static int coldN = 0;
     if (cold) src = std::string(TextFormat("// cold %lld %d\n", (long long)time(nullptr), ++coldN)) + src;
+    return src;
+}
+// (#1047) Compiles started early by Compute_Prewarm, by path; load() takes its program from here.
+std::unordered_map<std::string, std::pair<AsyncProgram, double>> gPending; // the program, when it was started
+}
+
+int Compute_Prewarm(const std::vector<std::string>& paths) {
+    if (!Compute_Available() || !ShaderAsync_Available()) return 0;
+    int n = 0;
+    for (const std::string& p : paths) {
+        if (gPending.count(p)) continue;
+        const std::string src = ComputeSource(p);
+        if (src.empty()) continue;
+        AsyncProgram a = ShaderAsync_BeginCompute(src);
+        if (a.started()) { gPending[p] = { a, GetTime() }; ++n; }
+    }
+    if (n) LOG_INFO("Compute", "%d compute shaders compiling in the background\n", n);
+    return n;
+}
+
+int Compute_PrewarmPending() {
+    int n = 0;
+    for (const auto& kv : gPending) n += ShaderAsync_Done(kv.second.first) ? 0 : 1;
+    return n;
+}
+
+bool ComputeProgram::load(const std::string& p) {
+    if (!Compute_Available()) return false;
+    if (auto it = gPending.find(p); it != gPending.end()) { // (#1047) started early: usually done by now
+        const double t0 = GetTime();
+        const bool wasDone = ShaderAsync_Done(it->second.first);
+        const unsigned prog = ShaderAsync_Finish(it->second.first, p.c_str());
+        const double waitedMs = (GetTime() - t0) * 1000.0, sinceMs = (t0 - it->second.second) * 1000.0;
+        gPending.erase(it);
+        if (waitedMs > 50.0 || !wasDone)
+            TraceLog(LOG_WARNING, "Compute shader %s: background compile %s; waited %.0f ms for it (started %.0f ms before)", p.c_str(),
+                     wasDone ? "done" : "not done yet", waitedMs, sinceMs);
+        if (prog == 0) { TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }
+        unload();
+        id = prog;
+        path = p;
+        return true;
+    }
+    const std::string src = ComputeSource(p);
+    if (src.empty()) return false;
     const double t0 = GetTime();
     const unsigned int sh = rlCompileShader(src.c_str(), RL_COMPUTE_SHADER);
     if (sh == 0) { LOG_ERROR("Compute", "compute shader %s failed to compile\n", p.c_str()); TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }

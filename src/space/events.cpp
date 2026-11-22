@@ -86,7 +86,7 @@ namespace {
         Particles_Emit(body, ground, sparks);
         glows.push_back({ body.name, Vector3Add(bottom, Vector3Scale(d, 0.8f)), GameClock() });
         // Heard and announced by the local player when it fell near them (it may have come down by another player).
-        const float near = player.nearest == &body ? Vector3Distance(ground, body.toLocal((player.position - world.renderOrigin).toFloat())) : 1e9f;
+        const float near = player.nearest == &body ? Vector3Distance(ground, body.toLocalOf(player.position, world.renderOrigin)) : 1e9f;
         if (near < 2000.0f) {
             Audio_Play(Sfx::Dig, std::clamp(1.4f - near / 250.0f, 0.3f, 1.0f), 0.35f);
             GameUI_Toast(TextFormat("A meteor came down %.0f m away", near));
@@ -137,7 +137,7 @@ static void SimulateShowers(Scene& world) {
         return pf && AboveGround(*pf, local) < 400.0f;
     };
     if (Planetoid* b = player.nearest; b && !player.flyMode) {
-        const Vector3 me = b->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 me = b->toLocalOf(player.position, world.renderOrigin);
         if (onGround(b, me)) targets.push_back({ b, me, false });
     }
     for (const InterestCentre& c : gInterestCentres)
@@ -162,7 +162,7 @@ void Events_Update(Scene& world, float dt) {
     Planetoid* body = player.nearest;
     const auto* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
     if (!pf || player.flyMode) return;
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
     if (AboveGround(*pf, me) > 400.0f) return;                             // on the ground (or near it) only
     const double now = WorldTime();
     if (now < showerEnd && DarkAt(world, *body, me)) {
@@ -225,5 +225,5 @@ bool Events_LoadLine(const char* tok, FILE* f) {
 }
 
 bool Events_TestImpact(Scene& world, Planetoid& body, float dist, float bearing) {
-    return Impact(world, body, body.toLocal((player.position - world.renderOrigin).toFloat()), dist, bearing);
+    return Impact(world, body, body.toLocalOf(player.position, world.renderOrigin), dist, bearing);
 }
