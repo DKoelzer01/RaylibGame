@@ -103,6 +103,17 @@ int LadderMigrate_World() {
             for (int i = 0; i < (int)pl->parts.size(); ++i)
                 if (LadderMigrate_IsRemovedMachine((int)pl->parts[i].type)) { LadderMigrate_RemovedMachineHook(*body, *pl, i); ++removed; }
     }
+    // (#1427 L7a) A machine's material is its variant step now: an older save's machines carry the build tool's shape material
+    // (it leaked in when placed). Cleared once, on the load that migrates the book (a ladder save is never touched).
+    if (migrated > 0)
+        for (Planetoid* body : Planetoid::All()) {
+            if (!body || !body->plots) continue;
+            for (auto& pl : body->plots->plots) {
+                bool changed = false;
+                for (Part& p : pl->parts) if (IsMachine(p.type) && p.material != 0) { p.material = 0; changed = true; }
+                if (changed) ++pl->version; // (the factory takes the layout again)
+            }
+        }
     if (removed > 0)
         GameUI_Toast(TextFormat("%d old steam machine%s became chests holding them: the press, millstone and steam engine do their work now", removed, removed == 1 ? "" : "s"));
     return migrated;

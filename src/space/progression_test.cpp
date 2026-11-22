@@ -702,6 +702,8 @@ namespace {
             Give("mv_generator", "coal", 8);
             return true;
         });
+        // (#1427 L7b) tier 5's MV assembler (its own recipe; scripted parts and placement: the full run checks the ladder, not more grind)
+        add("place an MV assembler (tier 5's task)", [] { return BuildTool_Place(*body, *plot, { PartType::LvAssembler, { 12, 0, 16 }, 0, (uint8_t)1 }, false); });
         add("pump 20 more water", Run("water_pump", {}, "water", 20));
         add("electrolyse water into 10 hydrogen", Run("electrolyzer", { { "water", 10 } }, "hydrogen", 10));
         add("make 5 polyethylene", Run("chemical_reactor", { { "coal", 5 }, { "hydrogen", 10 } }, "polyethylene", 5));
@@ -729,6 +731,7 @@ namespace {
             Give("hv_generator", "coke", 3);
             return true;
         });
+        add("place an HV assembler (tier 6's task)", [] { return BuildTool_Place(*body, *plot, { PartType::LvAssembler, { 12, 0, 20 }, 0, (uint8_t)2 }, false); });
         add("arc furnace: 3 titanium from ilmenite and coke", Run("arc_furnace", { { "ilmenite_dust", 6 }, { "coke", 3 } }, "titanium_ingot", 3));
         add("arc furnace: titanium alloy (HV gate)", Run("arc_furnace", { { "titanium_ingot", 3 }, { "aluminium_ingot", 1 } }, "titanium_alloy_ingot", 4));
         // The other HV machines (placed without charging and seeded: a recipe check, not more grind).

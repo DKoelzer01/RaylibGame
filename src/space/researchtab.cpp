@@ -68,9 +68,10 @@ void ResearchTab_Draw() {
     const int tier = QuestBook_Tier();
     ImGui::TextWrapped("Research from tier 3: labs turn research packs into the nodes below; a tier's core nodes are part of its milestone.");
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", joined ? "Joined: your team's research is the server's (shown here in a later step)."
-                                    : "Not active yet: the labs come next, and nothing is locked behind research yet. Click a node to queue it. "
-                                      "Drag to move, the wheel scrolls, Ctrl + wheel zooms.");
+    ImGui::TextWrapped("%s%s", joined ? "Joined: your team's research is the server's (shown here in a later step). "
+                                      : ResearchGate_On() ? "Machines, recipes and machine recipes unlock with their node; labs research the queue from the top (I at a lab hands in what the milestone wants). Click a node to queue it. "
+                                      : "Research gating is off (RAYLIBGAME_LADDER=0): nothing is locked. Click a node to queue it. ", // (#1271: the old "not active yet" note)
+                       joined ? "" : "Drag to move, the wheel scrolls, Ctrl + wheel zooms.");
     ImGui::PopStyleColor();
 
     const float avail = ImGui::GetContentRegionAvail().x;

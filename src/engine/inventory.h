@@ -130,7 +130,8 @@ public:
     bool craft(const Recipe& r);
     void clear() {
         if (journal) for (const InvSlot& s : slots) if (!s.empty() && s.hasData()) instanceLog.push_back({ s.id, -1, s.data, {} }); // (#1446)
-        for (auto& s : slots) s = InvSlot{}; partial.clear(); obtained.clear();
+        for (auto& s : slots) s = InvSlot{};
+        partial.clear(); obtained.clear();
     }
     // Everything ever obtained (crafted, mined, taken from machines), whatever happened to it since:
     // quest tasks count these. Saved with the game.
