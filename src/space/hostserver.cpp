@@ -569,7 +569,8 @@ namespace {
                 }
                 const int n = std::min<int>(a.count, inv.count(a.item));
                 const std::vector<std::string> fuels = a.action == 3 ? Factory::FuelsOf(type) : std::vector<std::string>{};
-                const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item);
+                // (#1427 L7c) an assembler may be set to disassemble: the factory checks its mode and gives back what it refuses
+                const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item) || Factory::Accepts(type, a.item, 1);
                 if (n <= 0 || !takes) { refuse("It doesn't take that"); return; }
                 inv.remove(a.item, n);
                 if (a.action == 3) Factory::InsertFuel(b->id, plot->id, a.part, a.item, n, session);

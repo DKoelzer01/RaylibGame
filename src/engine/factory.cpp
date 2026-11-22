@@ -2,6 +2,8 @@
 #include "inventory.h"
 #include "plots.h"
 #include "machinetiers.h"
+#include "disassembly.h"
+#include "composed.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "utils/logger.h"
@@ -181,6 +183,7 @@ void LoadMachineDefs() {
 // (#1207) built once by LoadRecipes
 std::array<std::vector<int>, 256> recipesOf;      // by PartType: indices into tables.recipes
 std::array<std::vector<uint8_t>, 256> wantsOf;   // by PartType, by item id: a recipe of it takes the item
+std::vector<uint8_t> disassemblable;              // (#1427 L7c) by item id: the disassembly index takes it apart
 // (#1214) sleeping machines and networks: on unless RAYLIBGAME_FACTORY_SLEEP=0 (A/B; the unit test runs both)
 bool sleepOn = [] { const char* e = getenv("RAYLIBGAME_FACTORY_SLEEP"); return !(e && e[0] == '0'); }();
 
@@ -243,7 +246,19 @@ void LoadRecipes() {
         std::vector<uint8_t>& w = wantsOf[(int)r.machine];
         for (const Stack& s : r.in) { if (s.item >= (int)w.size()) w.resize(s.item + 1, 0); w[s.item] = 1; }
     }
-    LOG_INFO("Factory", "%zu machine recipes\n", tables.recipes.size());
+    // (#1427 L7c) The disassembly index, from the forward recipes: hand recipes, then the assembler's (one output each)
+    std::vector<DisassemblyRecipe> forward;
+    for (const ::Recipe& h : itemDB.recipes()) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 });
+    for (const Recipe& r : tables.recipes) {
+        if (r.machine != PartType::LvAssembler || r.out.size() != 1) continue;
+        DisassemblyRecipe d{ tables.name(r.out[0].item), r.out[0].count, {}, r.ticks, r.eu };
+        for (const Stack& s : r.in) d.in.push_back({ tables.name(s.item), s.count });
+        forward.push_back(std::move(d));
+    }
+    Composed_Is(""); // (its tables load here, on the loading thread: the sim reads them)
+    Disassembly_Build(forward, gDisassemblyLadderTier);
+    for (const std::string& n : Disassembly_Items()) { const int id = tables.item(n); if (id >= (int)disassemblable.size()) disassemblable.resize(id + 1, 0); disassemblable[id] = 1; }
+    LOG_INFO("Factory", "%zu machine recipes, %zu items to take apart\n", tables.recipes.size(), Disassembly_Items().size());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -294,6 +309,11 @@ struct Machine {
     int boiler = -1;                        // (#1271 L3) a steam engine: the boiler it draws steam from (one touching it), else -1
     int bellows = -1;                       // (#1271 L2) a bloomery or blast furnace: the bellows touching it (blowing while its shaft turns), else -1
     int strike = 0;                         // (#1271 L2) a manual machine (the anvil): ticks of work a player's strikes have put in, not yet used
+    // (#1427 L7c) an assembler set to disassemble: the input slot it is taking apart (-1: none), that job's time and EU a
+    // tick (overclocked), the raw parts' fractions carried (hundredths, by item id) and the chance rolls' state (both saved)
+    int disSlot = -1, disTicks = 0, disEu = 0;
+    std::map<int, int> disCarry;
+    uint32_t disRng = 0;
 };
 // (#1427 L7a) A recipe in a machine: overclocked by the tiers it is under the machine (machine_tiers.txt), its time down
 // and its EU a tick up; and the voltage a machine takes (a tiered variant's, else machines.txt's).
@@ -301,6 +321,8 @@ static int StepsOf(const Machine& m, const Recipe& r) { return std::max(0, Machi
 static int TicksOf(const Machine& m, const Recipe& r) { return MachineTiers_Ticks(r.ticks, StepsOf(m, r)); }
 static int EuOf(const Machine& m, const Recipe& r) { return MachineTiers_Eu(r.eu, StepsOf(m, r)); }
 static int VoltsOf(const Machine& m) { const int v = Def(m.type).volts; return MachineTiers_Tiered(m.type) ? std::max(v, MachineTiers_Volts(m.tier)) : v; }
+// EU a tick its job (a recipe, or a disassembly: #1427 L7c) asks for; -1 with no job
+static int JobEu(const Machine& m);
 
 struct Net {
     std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
@@ -625,6 +647,9 @@ bool Accepts(PartType type, int item) {
     if (Def(type).waterPerTick > 0 && item == WaterBucketItem()) return true;
     return IsFuel(Def(type), item) || RecipeWants(type, item);
 }
+// (#1427 L7c) An assembler set to disassemble takes what it can take apart (`disassemblable`), and nothing else.
+bool Disassembles(int item) { return item >= 0 && item < (int)disassemblable.size() && disassemblable[item] && !tables.fluid(item); }
+bool AcceptsIn(const Machine& m, int item) { return m.mode == 1 && m.type == PartType::LvAssembler ? Disassembles(item) : Accepts(m.type, item); }
 
 // Puts items into a machine: water buckets empty into a boiler's tank (the empty bucket comes back), fuel that no
 // recipe of the machine wants goes to its fuel slot, the rest to its inputs (toFuel: the fuel slot whatever, e.g. logs
@@ -648,7 +673,7 @@ int InsertInto(Machine& m, int item, int count, bool toFuel, int& buckets) {
         count -= k;
         if (count <= 0 || toFuel || !dual) return count;
     }
-    if (toFuel || !Accepts(m.type, item)) return count;
+    if (toFuel || !AcceptsIn(m, item)) return count;
     const int left = AddItems(m.in.data(), InSlots(m), item, count);
     if (left < count && m.fire == kFireOut) m.fire = kFireAuto; // (#1103) something to cook: a put-out campfire lights by itself again
     return left;
@@ -835,6 +860,9 @@ void ApplyLayout(const LayoutMsg& L) {
                 else if (tag == "fire") m.fire = (uint8_t)std::clamp(num(), 0, 2); // (#1103)
                 else if (tag == "mode") m.mode = (uint8_t)std::clamp(num(), 0, 1); // (#1271 L6c)
                 else if (tag == "pick" && k < s.size()) m.pick = tables.item(s[k++]); // (#1271 L6c) a player's recipe choice
+                else if (tag == "dis") { m.disSlot = std::clamp(num(), -1, kSlots - 1); m.progress = std::max(0, num()); m.recipe = -1; } // (#1427 L7c)
+                else if (tag == "drng" && k < s.size()) m.disRng = (uint32_t)strtoul(s[k++].c_str(), nullptr, 10);
+                else if (tag == "dc" && k + 1 < s.size()) { const int id = tables.item(s[k]); m.disCarry[id] = std::clamp(atoi(s[k + 1].c_str()), 0, 99); k += 2; }
                 else if (tag == "sum") ps->loadedSummary = true; // (#1302) it was in the summary sim: its caps follow
                 else if (tag == "cap" && k + 2 < s.size()) { // a cap, kept only if that recipe is still this machine's with that output
                     const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int c = atoi(s[k + 2].c_str()); k += 3;
@@ -921,6 +949,75 @@ int BellowsTicks(PlotSim& ps, Machine& m, int dt) {
     return acc / 1000;
 }
 
+// (#1427 L7c) Disassembly: what taking a stack's item apart gives back (disassembly.h): a composed item by its record, else
+// the index's entry. False if it is not taken apart.
+static bool DisEntryOf(const Stack& s, DisassemblyEntry& e) {
+    if (s.count <= 0 || s.item < 0 || tables.fluid(s.item)) return false;
+    const std::string name = tables.name(s.item);
+    if (!s.data.empty()) return Disassembly_Composed(name, s.data, e);
+    const DisassemblyEntry* f = Disassembly_Find(name);
+    if (!f) return false;
+    e = *f;
+    return true;
+}
+// Its forward recipe's overclock in this machine: from the item's tier, at least the assembler's first (a hand recipe or a
+// tier-1 part is an LV job, not one 4 tiers under it)
+static int DisSteps(const Machine& m, const DisassemblyEntry& e) { return std::max(0, MachineTiers_Steps(m.tier, std::max(e.tier, MachineTiers_First(m.type)))); }
+static int JobEu(const Machine& m) {
+    if (m.mode == 1) return m.disSlot >= 0 ? m.disEu : -1;
+    return m.recipe >= 0 ? EuOf(m, tables.recipes[m.recipe]) : -1;
+}
+// An assembler set to disassemble, one step: the first input it can take apart starts a job (the forward recipe's time and EU,
+// overclocked); a finished job takes one item and gives back its parts at the tier yield, raw parts as hundredths carried in
+// the machine, components rolled per unit. Every output must fit, or it waits (nothing rolled or taken).
+static void DisassembleStep(PlotSim& ps, Machine& m, int dt, long long& made, int& active) {
+    DisassemblyEntry e;
+    if (m.disSlot >= 0 && (m.disSlot >= InSlots(m) || !DisEntryOf(m.in[m.disSlot], e))) { m.disSlot = -1; m.progress = 0; } // taken out meanwhile
+    if (m.disSlot < 0) {
+        for (int si = 0; si < InSlots(m) && m.disSlot < 0; ++si)
+            if (DisEntryOf(m.in[si], e) && MachineTiers_YieldPercent(m.tier, e.tier) > 0) { m.disSlot = si; m.progress = 0; m.disTicks = 0; }
+        if (m.disSlot < 0) { m.status = MachineStatus::Idle; m.asleep = true; return; } // nothing it takes apart: until items change
+    }
+    if (m.disTicks <= 0) { const int st = DisSteps(m, e); m.disTicks = MachineTiers_Ticks(e.ticks, st); m.disEu = MachineTiers_Eu(e.eu, st); } // (also after a load)
+    if (m.progress < m.disTicks) {
+        if (m.powerNet < 0) { m.status = MachineStatus::NoPower; return; }
+        if (VoltsOf(m) < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; return; }
+        int ticks = dt;
+        if (m.disEu > 0) { const int eu = m.received + m.euCarry; ticks = eu / m.disEu; m.euCarry = eu % m.disEu; }
+        m.progress = std::min(m.disTicks, m.progress + ticks);
+        m.status = ticks > 0 ? MachineStatus::Working : MachineStatus::NoPower;
+        if (ticks > 0) ++active;
+    }
+    if (m.progress < m.disTicks) return;
+    if (m.disRng == 0) m.disRng = (uint32_t)WorkingKey(ps.body, ps.plot, m.part) | 1u; // seeded by the machine: the same run every time
+    uint32_t rng = m.disRng;
+    std::vector<DisassemblyGive> give;
+    Disassembly_Give(e, MachineTiers_YieldPercent(m.tier, e.tier), rng, give);
+    Stack trial[kSlots];
+    std::copy(m.out, m.out + kSlots, trial);
+    std::map<int, int> carry = m.disCarry;
+    std::vector<std::pair<int, int>> whole;
+    for (const DisassemblyGive& g : give) {
+        const int id = tables.item(g.item);
+        const int c = carry[id] + g.centi;
+        carry[id] = c % 100;
+        if (c >= 100) {
+            if (AddItems(trial, kSlots, id, c / 100) > 0) { m.status = MachineStatus::OutputFull; return; }
+            whole.push_back({ id, c / 100 });
+        }
+    }
+    for (auto it = carry.begin(); it != carry.end();) it = it->second == 0 ? carry.erase(it) : std::next(it);
+    Stack& src = m.in[m.disSlot];
+    ps.stats.items[src.item].used.add(1);
+    if (--src.count <= 0) src = Stack{};
+    std::copy(trial, trial + kSlots, m.out);
+    for (const auto& [id, n] : whole) { made += n; ps.stats.items[id].made.add(n); }
+    m.disCarry = std::move(carry);
+    m.disRng = rng;
+    m.disSlot = -1; m.progress = 0; m.disTicks = 0; m.euCarry = 0;
+    m.dirty = true;
+}
+
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
@@ -938,7 +1035,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
             } else if (def.power == Power::Eu) {
                 if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                if (m.recipe >= 0) demand += (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
+                if (JobEu(m) >= 0) demand += (long long)JobEu(m) * dt;
             } else if (def.power == Power::Motor) { // (#1271 L3) a motor draws while its shaft network has work
                 if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (ps.rot.NetHasLoad(m.part)) demand += (long long)Rotation::kMotorEuPerTick * dt;
@@ -969,8 +1066,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Eu && m.recipe >= 0 && VoltsOf(m) >= net.voltage) {
-                const long long need = (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
+            if (def.power == Power::Eu && JobEu(m) >= 0 && VoltsOf(m) >= net.voltage) {
+                const long long need = (long long)JobEu(m) * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
             } else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
@@ -1023,7 +1120,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         };
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
-        if (m.mode == 1) { m.status = MachineStatus::Idle; continue; } // (#1271 L6c) set to disassemble: #1427 brings it
+        if (m.mode == 1) { m.recipe = -1; DisassembleStep(ps, m, dt, made, active); continue; } // (#1427 L7c) set to disassemble
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
                 return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && MachineTiers_Steps(m.tier, r.tier) >= 0 && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
@@ -1123,7 +1220,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     const int item = from[i].item;
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
-                        if (&dst == &src || (chest && dst.type == PartType::Chest) || !Accepts(dst.type, item)) continue;
+                        if (&dst == &src || (chest && dst.type == PartType::Chest) || !AcceptsIn(dst, item)) continue;
                         if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
                         else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
                                  !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
@@ -1535,6 +1632,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.valid = true;
     v.status = m.status;
     if (m.recipe >= 0) { v.progress = m.progress; v.duration = TicksOf(m, tables.recipes[m.recipe]); }
+    else if (m.mode == 1 && m.disSlot >= 0 && m.disTicks > 0) { v.progress = m.progress; v.duration = m.disTicks; } // (#1427 L7c)
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
@@ -1626,7 +1724,7 @@ void SimLoop() {
             for (const ItemMsg& im : items) {
                 PlotSim* p = FindPlot(im.body, im.plot);
                 if (im.kind == 11) { if (p) p->rot.Hold(im.part); continue; } // (#1269) a player turns a hand crank
-                if (im.kind == 14) { if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; if (im.count < 0) { sm.pick = im.item; if (sm.recipe >= 0 && sm.pick >= 0 && (tables.recipes[sm.recipe].out.empty() || tables.recipes[sm.recipe].out[0].item != sm.pick)) { sm.recipe = -1; sm.progress = 0; } } else { sm.mode = (uint8_t)std::clamp(im.count, 0, 1); sm.recipe = -1; sm.progress = 0; } sm.dirty = true; } continue; } // (#1271 L6c) an assembler's mode (count 0/1), or a machine's recipe pick (count -1: item, -1 any)
+                if (im.kind == 14) { if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; if (im.count < 0) { sm.pick = im.item; if (sm.recipe >= 0 && sm.pick >= 0 && (tables.recipes[sm.recipe].out.empty() || tables.recipes[sm.recipe].out[0].item != sm.pick)) { sm.recipe = -1; sm.progress = 0; } } else { sm.mode = (uint8_t)std::clamp(im.count, 0, 1); sm.recipe = -1; sm.progress = 0; sm.disSlot = -1; sm.disTicks = 0; } sm.dirty = true; } continue; } // (#1271 L6c) an assembler's mode (count 0/1), or a machine's recipe pick (count -1: item, -1 any)
                 if (im.kind == 13) { // (#1271 L2) a strike on an anvil: its work, up to two strikes ahead
                     if (p) if (auto sit = p->byPart.find(im.part); sit != p->byPart.end()) { Machine& sm = p->machines[sit->second]; sm.strike = std::min(sm.strike + kStrikeTicks, 2 * kStrikeTicks); sm.dirty = true; }
                     continue;
@@ -2297,6 +2395,10 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.fire != kFireAuto) fprintf(f, " fire %d", m.fire);
             if (m.mode != 0) fprintf(f, " mode %d", m.mode); // (#1271 L6c)
             if (m.pick >= 0) fprintf(f, " pick %s", tables.name(m.pick).c_str()); // (#1271 L6c)
+            // (#1427 L7c) a disassembly: its job (slot, progress), the chance rolls' state, the fractions carried
+            if (m.disSlot >= 0) fprintf(f, " dis %d %d", m.disSlot, m.progress);
+            if (m.disRng != 0) fprintf(f, " drng %u", m.disRng);
+            for (const auto& [id, c] : m.disCarry) if (c > 0) fprintf(f, " dc %s %d", tables.name(id).c_str(), c);
             // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
             // far it goes on in the summary at once instead of measuring for a minute
             if (summary) {
@@ -2346,13 +2448,14 @@ void Factory::MovePlot(uint64_t fromBody, uint32_t fromPlot, uint64_t toBody, ui
     moveQueue.push_back({ fromBody, fromPlot, toBody, toPlot });
 }
 
-bool Factory::Accepts(PartType type, const std::string& item) {
+bool Factory::Accepts(PartType type, const std::string& item, int mode) {
     LoadRecipes();
     if (!item.empty() && tables.fluid(tables.item(item))) return false; // (#1254) fluid (essence) never goes in as an item, not even into a chest
     // Storage takes anything (#283): looked up first, items no recipe or fuel list had interned (food, tools, gems,
     // dyes...) were refused before the storage rule was reached. Insert interns the name.
     if (Def(type).power == Power::Storage) return !item.empty();
     const int id = tables.find(item);
+    if (mode == 1 && type == PartType::LvAssembler) return Disassembles(id); // (#1427 L7c)
     return id >= 0 && ::Accepts(type, id);
 }
 
@@ -3169,6 +3272,7 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
 // disassembly (#1427 to come) it waits, and switched back it goes on.
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     LoadRecipes();
+    Disassembly_Build({}, nullptr); // (#1427 L7c) nothing to take apart here (other tests leave their own index)
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     ApplyLayout(OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 } }, {}, Row(0, 4, -1)));
     PlotSim& ps = *FindPlot(9, 5);
@@ -3184,9 +3288,9 @@ TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     long long made = 0; int active = 0;
     asm1.mode = 1;
     for (int t = 0; t < 3 * ticks; ++t) TickPlot(ps, 1, made, active);
-    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 0) << "set to disassemble: it waits";
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 0) << "set to disassemble: it waits (nothing it holds is taken apart)";
     EXPECT_EQ(asm1.status, MachineStatus::Idle);
-    asm1.mode = 0;
+    asm1.mode = 0; asm1.dirty = true; // (as SetMode does: it wakes)
     for (int t = 0; t < 2 * ticks + 40; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "two circuits in two crafts' time";
     EXPECT_EQ(CountItems(asm1.in.data(), InSlots(asm1), tables.item("vacuum_tube")), 4);
@@ -3197,6 +3301,77 @@ TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     for (int t = 0; t < packTicks + 40; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "picked LV packs: no more circuits";
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("lv_pack")), 2) << "one craft of 2 LV packs";
+    plots.clear(); plotIndexDirty = true;
+}
+// (#1427 L7c) Set to disassemble, an LV assembler takes LV circuits apart at 50%: the raw steel plate as hundredths carried
+// (3 circuits: 1 plate and half of one waiting), the made parts (wires, tubes) rolled per unit; each in the forward recipe's
+// time; the job and the carry survive a save; an MV assembler takes them apart at 75%, overclocked.
+TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
+    LoadRecipes();
+    // The game's ladder tiers (the hook): circuits unlock at tier 4 (LV); their parts are LV jobs too, by their ingredients
+    std::vector<DisassemblyRecipe> forward;
+    for (const auto& r : tables.recipes) {
+        if (r.machine != PartType::LvAssembler || r.out.size() != 1) continue;
+        DisassemblyRecipe d{ tables.name(r.out[0].item), r.out[0].count, {}, r.ticks, r.eu };
+        for (const Stack& s : r.in) d.in.push_back({ tables.name(s.item), s.count });
+        forward.push_back(d);
+    }
+    forward.push_back({ "vacuum_tube", 1, { { "glass", 1 }, { "copper_wire", 1 } }, 0, 0 });
+    forward.push_back({ "copper_wire", 2, { { "copper_ingot", 1 } }, 0, 0 });
+    Disassembly_Build(forward, [](const std::string& item) { return item == "basic_circuit" ? 4 : -1; });
+    for (const std::string& n : Disassembly_Items()) { const int id = tables.item(n); if (id >= (int)disassemblable.size()) disassemblable.resize(id + 1, 0); disassemblable[id] = 1; }
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L = OracleLayout(7, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 }, { PartType::LvAssembler, 6, 0 } }, {}, Row(0, 7, -1));
+    L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("LV"), MachineTiers_ByName("MV") };
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(9, 7);
+    auto M = [&](int part) -> Machine& { return ps->machines[ps->byPart.at(part)]; };
+    int b = 0;
+    InsertInto(M(0), tables.item("coal"), 64, true, b);
+    const int circuit = tables.item("basic_circuit"), steel = tables.item("steel_plate"), wire = tables.item("copper_wire"), tube = tables.item("vacuum_tube");
+    M(1).mode = 1; M(2).mode = 1;
+    EXPECT_EQ(InsertInto(M(1), tables.item("steel_plate"), 1, false, b), 1) << "set to disassemble it takes only what it can take apart";
+    EXPECT_EQ(InsertInto(M(1), circuit, 3, false, b), 0);
+    int ticks = 160;
+    for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == circuit) { ticks = r.ticks; break; }
+    long long made = 0; int active = 0;
+    for (int t = 0; t < ticks + ticks / 2; ++t) TickPlot(*ps, 1, made, active);
+    EXPECT_EQ(CountItems(M(1).in.data(), kSlots, circuit), 2) << "one circuit in one forward recipe's time";
+    EXPECT_EQ(M(1).disSlot, 0) << "the second one under way";
+    EXPECT_EQ(M(1).disCarry[steel], 50) << "half a steel plate carried";
+    // Save and load mid-job: the job, the carry and the rolls' state come back
+    const uint32_t rngBefore = M(1).disRng;
+    const int progressBefore = M(1).progress;
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_disassembly_save_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    plots.clear(); plotIndexDirty = true; pendingStates.clear();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(L);
+    ps = FindPlot(9, 7);
+    EXPECT_EQ(M(1).mode, 1);
+    EXPECT_EQ(M(1).disSlot, 0);
+    EXPECT_EQ(M(1).progress, progressBefore);
+    EXPECT_EQ(M(1).disRng, rngBefore);
+    EXPECT_EQ(M(1).disCarry[steel], 50);
+    for (int t = 0; t < 4 * ticks; ++t) TickPlot(*ps, 1, made, active);
+    EXPECT_EQ(CountItems(M(1).in.data(), kSlots, circuit), 0) << "all three taken apart";
+    EXPECT_EQ(CountItems(M(1).out, kSlots, steel), 1) << "3 x 1 plate x 50% = 1.5: one out";
+    EXPECT_EQ(M(1).disCarry[steel], 50) << "and half of one carried";
+    const int wires = CountItems(M(1).out, kSlots, wire), tubes = CountItems(M(1).out, kSlots, tube);
+    EXPECT_GT(wires, 0); EXPECT_LT(wires, 12) << "12 wires went in: rolled at 50% each, never all";
+    EXPECT_LE(tubes, 6);
+    // MV: 75% (one tier below), overclocked one step: half the time at 3x the EU a tick (48 on one 32 EU/t generator: 2/3 speed)
+    EXPECT_EQ(InsertInto(M(2), circuit, 4, false, b), 0);
+    M(2).dirty = true;
+    for (int t = 0; t < 4 * ticks; ++t) TickPlot(*ps, 1, made, active);
+    EXPECT_EQ(CountItems(M(2).in.data(), kSlots, circuit), 0) << "MV: four taken apart in 4 x 160 x 1/2 x 3/2 = 480 ticks";
+    EXPECT_EQ(CountItems(M(2).out, kSlots, steel), 3) << "4 x 75% = 3 plates";
     plots.clear(); plotIndexDirty = true;
 }
 // (#1427 L7a) Tiers: an MV macerator runs the LV iron recipe overclocked one step (half the time, three times the EU a

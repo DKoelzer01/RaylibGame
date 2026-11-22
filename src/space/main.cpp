@@ -1365,6 +1365,7 @@ int main(int argc, char** argv)
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
     ResearchGate_InstallTierGate(); // (#1271 L6b-2)
+    ResearchGate_InstallDisassembly(); // (#1427 L7c)
     if (Magic_Enabled()) Tome_Load(); // (#1251) aspects and tome pages (validated against the research nodes)
     if (Magic_Enabled()) Alchemy_Install(); // (#1254) essences, phials and potions as items, the distillery and cauldron recipes (before the factory loads its tables)
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--test-team-quests") { CloseWindow(); return TeamQuests_SelfTest() ? 0 : 1; } // (#338) no world needed
