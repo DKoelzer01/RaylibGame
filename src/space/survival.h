@@ -70,6 +70,7 @@ struct SurvivalState {
     float windedLeft = 0.0f;                                  // s winded left (ran out of stamina: no heavies, no dodge, slow walk)
     bool staminaEmpty = false;                                // at 0 last step (the winded state starts once per emptying)
     float dodgeInvuln = 0.0f;                                 // s of a dodge's invulnerability left
+    bool invulnerable = false;                                // (#1561) creative mode: no damage of any kind, no death (set every step)
     int dodges = 0, parries = 0;                              // counters (a melee swing sees dodges; tests)
     float shieldStops = 0.75f, shieldArcDeg = 60.0f, shieldParryWindow = 0.15f; // the off hand's shield (Combat_Step sets it)
     DoubleTap taps;                                           // the double-tap dodge's last presses
