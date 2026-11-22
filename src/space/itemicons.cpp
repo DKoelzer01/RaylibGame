@@ -1,6 +1,7 @@
 #include "itemicons.h"
 #include "inventory.h"
 #include "buildtool.h"
+#include "composed.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -710,7 +711,24 @@ std::unordered_map<std::string, int> cellOf;
 
 void ItemIcons_Init() {
     ItemIcons_Unload();
-    const auto& items = itemDB.items();
+    // Every item's own icon, then (#1449 part 3) one per composed class and head material, keyed "<class>@<material>":
+    // the same picture with the head in the material's colour, so each copy shows its head (ItemIcons_Key).
+    std::vector<ItemDef> items = itemDB.items();
+    std::vector<std::string> keys;
+    for (const ItemDef& d : items) keys.push_back(d.id);
+    const size_t base = items.size();
+    const std::vector<std::string> mats = Composed_MaterialIds();
+    for (size_t i = 0; i < base; ++i) {
+        if (!Composed_Is(items[i].id)) continue;
+        for (const std::string& m : mats) {
+            const PartMaterial* pm = Composed_Material(m);
+            if (!pm) continue;
+            ItemDef v = items[i];
+            v.color = Color{ pm->r, pm->g, pm->b, 255 };
+            items.push_back(v);
+            keys.push_back(items[i].id + "@" + m);
+        }
+    }
     const int n = (int)items.size();
     if (n == 0) return;
     const int rows = (n + kCols - 1) / kCols;
@@ -723,7 +741,7 @@ void ItemIcons_Init() {
         pool.emplace_back([&, t] {
             for (int i = t; i < n; i += threads) {
                 Canvas cv;
-                cv.seed = (int)std::hash<std::string>{}(items[i].id) & 0x7FFF;
+                cv.seed = (int)std::hash<std::string>{}(keys[i]) & 0x7FFF;
                 PaintItem(cv, items[i]);
                 const int ox = (i % kCols) * kPx, oy = (i / kCols) * kPx;
                 for (int y = 0; y < kPx; ++y)
@@ -736,7 +754,7 @@ void ItemIcons_Init() {
             }
         });
     for (auto& th : pool) th.join();
-    for (int i = 0; i < n; ++i) cellOf[items[i].id] = i;
+    for (int i = 0; i < n; ++i) cellOf[keys[i]] = i;
     atlas = LoadTextureFromImage(atlasImage);
     GenTextureMipmaps(&atlas);
     SetTextureFilter(atlas, TEXTURE_FILTER_TRILINEAR);
@@ -751,6 +769,12 @@ void ItemIcons_Unload() {
 }
 
 bool ItemIcons_Has(const std::string& id) { return atlas.id > 0 && cellOf.count(id) > 0; }
+std::string ItemIcons_Key(const std::string& id, const std::string& data) {
+    const std::string head = Composed_HeadOf(id, data);
+    if (head.empty()) return id;
+    std::string key = id + "@" + head;
+    return cellOf.count(key) ? key : id;
+}
 Texture2D ItemIcons_Texture() { return atlas; }
 
 Rectangle ItemIcons_Source(const std::string& id) {
