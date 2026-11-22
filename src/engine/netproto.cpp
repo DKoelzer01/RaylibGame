@@ -764,6 +764,8 @@ bool NetProto_Test() {
         { // (#1446 2b) a slot's record rides along, sparse
             MsgMachineView a = va2, b; a.view.inSlots = { { "iron_ore", 3 }, { "tool_pickaxe", 1 }, { "", 0 } }; a.view.inData = { "", "head=bronze;w=4", "" }; std::vector<uint8_t> s;
             check(RoundTrip(a, b, &s) && b.view.inData.size() == 3 && b.view.inData[0].empty() && b.view.inData[1] == "head=bronze;w=4" && b.view.inData[2].empty(), "machine view: slot data"); samples.push_back(s);
+            MsgMachineView o = a, ob; o.view.outSlots = { { "", 0 }, { "weapon_sword", 1 } }; o.view.outData = { "", "h=steel;q=106" }; std::vector<uint8_t> so; // (#1446 2c)
+            check(RoundTrip(o, ob, &so) && ob.view.outData.size() == 2 && ob.view.outData[0].empty() && ob.view.outData[1] == "h=steel;q=106" && ob.view.inData[1] == "head=bronze;w=4", "machine view: output data"); samples.push_back(so);
         }
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
@@ -988,6 +990,11 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
         w.varu(n);
         for (size_t i = 0; i < v.inData.size() && i < kMaxViewSlots; ++i) if (!v.inData[i].empty()) { w.varu(i); w.str(v.inData[i].substr(0, 255)); }
     }
+    { // (#1446 2c) the output slots' records, the same way
+        size_t n = 0; for (size_t i = 0; i < v.outData.size() && i < kMaxViewSlots; ++i) n += v.outData[i].empty() ? 0 : 1;
+        w.varu(n);
+        for (size_t i = 0; i < v.outData.size() && i < kMaxViewSlots; ++i) if (!v.outData[i].empty()) { w.varu(i); w.str(v.outData[i].substr(0, 255)); }
+    }
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -1005,6 +1012,12 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
         const uint64_t n = r.varu();
         if (n > kMaxViewSlots) r.ok = false;
         for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.inData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.inData[(size_t)i] = std::move(d); }
+    }
+    { // (#1446 2c) the output slots' records
+        v.outData.assign(v.outSlots.size(), std::string());
+        const uint64_t n = r.varu();
+        if (n > kMaxViewSlots) r.ok = false;
+        for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.outData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.outData[(size_t)i] = std::move(d); }
     }
     return Done(r);
 }

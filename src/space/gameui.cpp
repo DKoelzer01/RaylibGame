@@ -1091,18 +1091,20 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b) containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b)
+    containerOut.slots = v.outSlots; containerOut.datas = v.outData; containerFuel.slots = { v.fuelSlot }; // (#1499; #1446 2c)
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
 
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr) { // fracs (#1102): a chest's fractions // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr, const std::vector<std::string>* datas = nullptr) { // fracs (#1102): a chest's fractions; datas (#1446): each slot's record // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float gap = 4.0f, cell = std::min(54.0f * GameUI_Scale(), (ImGui::GetContentRegionAvail().x - (cols - 1) * gap) / (float)cols); // (#891: at the scale, fitting the column)
     ContainerGrid& grid = ContainerPart(which);
     grid.slots = slots; // (this frame's view: what the rules see)
     grid.fracs = fracs ? *fracs : std::vector<int>{};
+    grid.datas = datas ? *datas : std::vector<std::string>{}; // (#1446 2c) the drawn screen too, not only SlotClick: an item with data takes as one
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
@@ -1161,7 +1163,7 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti); // a chest lines up with the player's grid (#495)
+    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti, &v.inData); // a chest lines up with the player's grid (#495)
     if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
@@ -1220,7 +1222,7 @@ static void DrawContainer() {
     }
     if (!chest) {
         ImGui::TextUnformatted("Output");
-        DrawSlots(v.outSlots, 1, 4, v.hotOutputs);
+        DrawSlots(v.outSlots, 1, 4, v.hotOutputs, nullptr, &v.outData);
     }
     ImGui::Spacing();
     if (ImGui::Button("Put in all (I)") || PlayerInput_BindingPressed(Act::Insert)) {
