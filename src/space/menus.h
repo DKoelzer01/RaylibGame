@@ -29,11 +29,14 @@ struct GameSettings {
     float mouseSensitivity = 1.0f;  // multiplier on the default look speed
     float fov = 65.0f;              // degrees (vertical; narrow views are a motion-sickness trigger)
     float volume = 0.35f;
+    float busVolume[7] = { 1, 1, 1, 1, 1, 1, 1 }; // (#1238) per AudioBus (audiomixer.h); [0] Master is `volume`. Audio v2 only
+    int subtitles = 1;              // (#1244) sound subtitles: 0 off, 1 important (default, user decision), 2 all. Audio v2 only
     bool foliage = true;
     int fpsCap = 0;                 // 0: the monitor's refresh rate
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)
     bool showFps = false;           // the FPS counter, on every screen (#572)
     bool reduceMotion = false;      // eased walking starts/stops and a smoothed camera up (motion sickness)
+    bool doubleTapDodge = true;     // (#1218) double-tapping a direction dodges
     bool showHands = true;          // the hands and held tool (a fixed reference in view: motion sickness)
     int handBob = 0;                // 0 full, 1 reduced, 2 off
     int terrainDetail = 1;          // 0 Low, 1 Medium, 2 High, 3 Ultra: LOD factor 2 / 2.5 / 3 / 4 (#297)
@@ -41,6 +44,7 @@ struct GameSettings {
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
     bool reduceFlashing = false;    // (#1162) lightning: a soft single glow, about a third as bright, no flicker
+    int colorVision = 0;            // (#1432) 0 normal, 1 red-green, 2 blue-yellow: the colours that carry a meaning (uipalette.h)
     float uiScale = 0.0f;            // (#821) the interface size: 0 auto (by the screen's height), else 0.75-1.5
     float tabWin[4] = { 0.15f, 0.15f, 0.7f, 0.7f }; // (#1080) the Tab window: x, y, width, height as fractions of the screen
     int keyHints = 0;                // (#827) the key hints line: 0 auto (fades after the first 2 hours played), 1 always, 2 off

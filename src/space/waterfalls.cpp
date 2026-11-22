@@ -1,4 +1,5 @@
 #include "waterfalls.h"
+#include "audio.h"
 #include "particles.h"
 #include "player.h"
 #include "rivers.h"
@@ -65,7 +66,12 @@ namespace {
     }
 }
 
-void Waterfalls_Reset() { cachedNet = nullptr; falls.clear(); near.clear(); nearDist.clear(); drawnLast = 0; }
+namespace { constexpr int kSounding = 3; int soundEm[kSounding] = { -1, -1, -1 }; } // (#1242) the falls' sound emitters
+
+void Waterfalls_Reset() {
+    cachedNet = nullptr; falls.clear(); near.clear(); nearDist.clear(); drawnLast = 0;
+    for (int& e : soundEm) { Audio_EmitterDestroy(e); e = -1; }
+}
 int Waterfalls_Visible() { return drawnLast; }
 
 void Waterfalls_Update(Scene& world, float dt) {
@@ -127,6 +133,30 @@ void Waterfalls_Update(Scene& world, float dt) {
             spray.speed = 0.8f + 0.12f * std::min(fr.drop, 20.0f) * (0.4f + 0.6f * power); spray.spread = 0.7f;
             spray.dir = Vector3Normalize(Vector3Add(fr.up, Vector3Scale(fr.down, 0.6f)));
             Particles_Emit(*p, footL, spray);
+        }
+    }
+    // (#1242) The roar of the nearest falls (audio v2): at the pool, as loud as the fall is powerful, deeper the bigger.
+    if (Audio_V2()) {
+        int* em = soundEm;
+        static int snd = -2;
+        if (snd == -2) snd = Audio_Sound("bed_waterfall");
+        for (int k = 0; k < kSounding && snd >= 0; ++k) {
+            const bool have = k < (int)near.size() && nearDist[k] < 220.0f;
+            if (!have) { if (em[k] >= 0) Audio_EmitterSetPlaying(em[k], false); continue; }
+            const Frame fr = FrameOf(*pf, falls[near[k]]);
+            const float power = PowerOf(fr);
+            if (em[k] < 0) {
+                AudioAttenuation att;
+                att.refDistance = 4.0f + 0.5f * fr.width;
+                att.maxDistance = 220.0f;
+                att.lowpassDistance = 120.0f;
+                em[k] = Audio_EmitterCreate(snd, AudioBus::Ambience, AudioPriority::Low, att, true);
+                if (em[k] < 0) continue;
+            }
+            Audio_EmitterSetPosition(em[k], p->toWorldD(SheetPoint(fr, 0.9f, 0.0f)));
+            Audio_EmitterSetVolume(em[k], 0.3f + 0.7f * power);
+            Audio_EmitterSetPitch(em[k], 1.05f - 0.3f * power);
+            Audio_EmitterSetPlaying(em[k], true);
         }
     }
 }

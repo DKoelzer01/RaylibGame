@@ -46,5 +46,8 @@ void Particles_Draw(Scene& world);  // inside BeginMode3D (render space)
 void Particles_Clear();
 int Particles_Count();
 void Particles_Unload();
+// (#1126) A billboard of `size` m whose centre is `dist` m from the eye: 1 shown, falling to 0 as it nears the eye, so a
+// puff drifting into the camera fades instead of filling the screen. RAYLIBGAME_PARTICLE_NEAR_FADE=0: always 1 (A/B).
+float Particles_NearFade(float dist, float size);
 
 #endif

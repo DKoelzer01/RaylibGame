@@ -80,6 +80,8 @@ struct Counter { uint64_t n = 0; double sum = 0.0, max = -1e300, last = 0.0; };
 std::map<std::string, Counter> gCounters;
 Stat gFrames;
 struct Hitch { double atS, ms; std::vector<std::pair<std::string, double>> top; double gameS = -1.0; std::string context; };
+// (#1372) a hitch is a frame over this (ms): RAYLIBGAME_PROFILE_HITCH_MS lowers it to name the zones of shorter spikes
+const double gHitchMs = [] { const char* e = getenv("RAYLIBGAME_PROFILE_HITCH_MS"); const double v = e ? atof(e) : 0.0; return v > 0.0 ? v : 20.0; }();
 double (*gGameClock)() = nullptr;          // (#886) stamped on each hitch: the game time, and what was going on
 std::string (*gHitchContext)() = nullptr;
 size_t gHitchCap = 200;
@@ -174,7 +176,7 @@ void Frame() {
     if (gLastFrameTsc) {
         const double ms = (double)(now - gLastFrameTsc) * gNsPerTick / 1e6;
         gFrames.add(ms * 1e6);
-        if (ms > 20.0) {
+        if (ms > gHitchMs) {
             ++gHitchesOver;
             if (gHitches.size() < gHitchCap) {
                 Hitch h{ (double)(now - gTsc0) * gNsPerTick / 1e9, ms, {} };
@@ -271,9 +273,9 @@ std::string Profiler_SummaryJson() {
 void Profiler_PrintSummary() {
     if (!Prof::gOn || gFrames.count == 0) return;
     Calibrate();
-    printf("profile: %llu frames, mean %.2f ms, p50 %.2f, p95 %.2f, p99 %.2f, max %.2f ms; %llu over 20 ms; peak commit %.0f MB, VRAM %.0f MB\n",
+    printf("profile: %llu frames, mean %.2f ms, p50 %.2f, p95 %.2f, p99 %.2f, max %.2f ms; %llu over %g ms; peak commit %.0f MB, VRAM %.0f MB\n",
            (unsigned long long)gFrames.count, gFrames.sumNs / gFrames.count / 1e6, gFrames.pct(0.5) / 1e6, gFrames.pct(0.95) / 1e6, gFrames.pct(0.99) / 1e6, gFrames.maxNs / 1e6,
-           (unsigned long long)gHitchesOver, PeakCommitMB(), gPeakVramMB);
+           (unsigned long long)gHitchesOver, gHitchMs, PeakCommitMB(), gPeakVramMB);
     std::vector<std::pair<std::string, const Stat*>> zs;
     for (const auto& kv : gZones) if (kv.second.count) zs.push_back({ kv.first, &kv.second }); // (zones reset and not seen since: left out)
     std::sort(zs.begin(), zs.end(), [](const auto& a, const auto& b) { return a.second->sumNs > b.second->sumNs; });

@@ -44,7 +44,7 @@ void main() {
     precise float d = vlen(p);
     if (d > outerR + 4.0) { density[outI] = ISO_LEVEL + DENSITY_GRADIENT * (outerR - d); return; }
     precise float surface = innerR;
-    precise float cmask = 0.0, cf = 0.0, cwet = 0.0;
+    precise float cmask = 0.0, cf = 0.0, cwet = 0.0, criver = 0.0;
     if (d >= innerR - 4.0) {
         precise float s = vdot(p, B.n.xyz);
         precise float fu = clamp(xdiv(xdiv(vdot(p, B.t1.xyz), s) - B.t1.w, B.s.x), 0.0, float(nu - 1) - 1e-3);
@@ -57,6 +57,8 @@ void main() {
         cmask = (a0.y * (1.0 - au) + b0.y * au) * (1.0 - av) + (a1.y * (1.0 - au) + b1.y * au) * av;
         cf = (a0.z * (1.0 - au) + b0.z * au) * (1.0 - av) + (a1.z * (1.0 - au) + b1.z * au) * av;
         cwet = (a0.w * (1.0 - au) + b0.w * au) * (1.0 - av) + (a1.w * (1.0 - au) + b1.w * au) * av; // (#971)
+        // (#1438) the river channel weight: the second vec4's x, interpolated as the CPU does
+        criver = (grid[2 * k0 + 1].x * (1.0 - au) + grid[2 * (k0 + 1) + 1].x * au) * (1.0 - av) + (grid[2 * k1 + 1].x * (1.0 - au) + grid[2 * (k1 + 1) + 1].x * au) * av;
     }
-    density[outI] = densityNear(p, d, surface, fp, cmask, cf, cwet);
+    density[outI] = densityNear(p, d, surface, fp, cmask, cf, cwet, criver);
 }

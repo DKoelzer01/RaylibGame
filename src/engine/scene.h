@@ -95,7 +95,7 @@ class Scene {
         float shadowWideHalfExtent = 2000.0f;
         float shadowWideDistance = 4000.0f; // the light camera back along the sun (depth range twice this)
         bool wideShadows = true;
-        int wideEvery = 4;          // render it every Nth frame (world-anchored: 2 m texels hardly notice a few frames of spin)
+        int wideEvery = 1;          // render it every Nth frame (#1163: at 4 the stale map made shadows jump on and off every 4 frames in flight; RAYLIBGAME_WIDE_EVERY=N)
         int wideFrame = 0;
         DVec3 wideOrigin{};         // the render origin it was drawn with (the matrix is moved along if the origin shifts)
         Matrix lightSpaceWideDrawn{};

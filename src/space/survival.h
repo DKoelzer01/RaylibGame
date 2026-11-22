@@ -6,6 +6,8 @@
 #include <functional>
 #include <string>
 #include <map>
+#include "damage.h" // (#1215) resistances and status effects
+#include "defense.h" // (#1218)
 #include <set>
 #include <unordered_map>
 #include <utility>
@@ -19,6 +21,8 @@ class Scene;
 // respawns you at the ship.
 struct SurvivalState {
     float oxygen = 100.0f, power = 100.0f, health = 100.0f;   // 0..100
+    Resistances resist;              // (#1215) per damage type and flat armour (armour pieces will set it, #1220)
+    StatusState status;              // (#1215) burn, chill, bleed, poison (shock is an instant interrupt)
     float fallDamageTaken = 0.0f;   // health lost to hard landings so far (not saved; tests tell it from other damage, #439)
     const char* lastHarm = "";      // (#844) what last took health: fall, hit, vacuum, suffocation, starvation, heat (not saved; logs)
     float lastFallSpeed = 0.0f;     // (#844) m/s into the ground at the last harmful landing (logs)
@@ -38,7 +42,8 @@ struct SurvivalState {
     float wellFedHealPerSec = 0.25f;
     // The air around you (deg C): latitude, height, day and night, shelter underground; NaN in
     // vacuum (the suit regulates). Below 5 C food drains faster; above 35 C slow damage.
-    float temperature = 20.0f;
+    float temperature = 20.0f;   // felt air temperature, C (#1099: eased toward the air's, so it changes over seconds; NaN: none)
+    int tempBand = 0;            // (#1099) -1 cold, 0 fine, 1 hot: what the readout shows, with 1 C of hysteresis at each edge
     float sickUntil = 0.0f;                                   // raw meat: food drains faster for a while
     bool inLifeSupport = false;
     float breathableAltitude = 15000.0f;                      // a planet's air is breathable below this (m above sea level)
@@ -55,6 +60,19 @@ struct SurvivalState {
     float hitDamageTaken = 0.0f;                              // health lost to hits so far (not saved; tests)
     double lastHitAt = -1e9;                                  // sim time of the last hit taken (the camera shake, hit-stop)
     float lastHitStrength = 0.0f;                             // 0..1 (20 damage = 1)
+    double lastDealtAt = -1e9;                                // (#1216) sim time of the last melee hit landed (the hit-stop)
+    int shocks = 0;                                           // (#1216) shocks taken (a melee wind-up sees each one)
+    PoiseState poise;                                         // (#1217) from armour (combat.cpp sets its size)
+    int staggers = 0;                                         // (#1217) times staggered (a melee wind-up sees each one)
+    bool hyperArmour = false;                                 // (#1217) in a heavy or two-handed wind-up now: hits don't stagger
+    // (#1218) Parry, dodge and the winded state (defense.h).
+    double blockStartedAt = -1e9;                             // sim time the block was raised (the parry window counts from it)
+    float windedLeft = 0.0f;                                  // s winded left (ran out of stamina: no heavies, no dodge, slow walk)
+    bool staminaEmpty = false;                                // at 0 last step (the winded state starts once per emptying)
+    float dodgeInvuln = 0.0f;                                 // s of a dodge's invulnerability left
+    int dodges = 0, parries = 0;                              // counters (a melee swing sees dodges; tests)
+    float shieldStops = 0.75f, shieldArcDeg = 60.0f, shieldParryWindow = 0.15f; // the off hand's shield (Combat_Step sets it)
+    DoubleTap taps;                                           // the double-tap dodge's last presses
     bool dead = false;
     double deathTime = 0.0;
     int deaths = 0;
@@ -103,6 +121,9 @@ inline std::function<void(const Planetoid& body, const Plot& plot, int part)> gB
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
 const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
+// (#1099) The felt temperature eases toward `air` (C, NaN: none) over a few seconds; the readout's cold/hot band changes only
+// 1 C past each edge (5 C, 35 C).
+void Survival_FeelTemperature(SurvivalState& s, float air, float dt);
 
 // Lightweight objective tracker for the vertical slice.
 void Objectives_Update(Scene& world);
@@ -118,6 +139,7 @@ struct QuestBookState {
     std::map<std::string, double> counts;            // events for "do" tasks: eat, feed, penned, till, plant, harvest, ...
     std::set<std::pair<int, int>> tasksDone;         // main line: (tier, task)
     std::set<std::string> treeDone;                  // side lines: node ids (questtree.cpp)
+    std::map<int, double> tierSeconds;               // (#1199) the tier clock: seconds of play in each tier (sim time: not loading or paused)
     // "get" tasks count what was obtained. The local book reads the local inventory's totals (saved with them, as before);
     // a team book keeps its own, the sum of what its members obtained on the server.
     bool ownObtained = false;
@@ -140,6 +162,11 @@ double QuestBook_CountOf(const std::string& event);
 bool QuestBook_Met(const std::string& kind, const std::string& target, double n);
 int QuestBook_Tier();
 void QuestBook_SetTier(int tier);
+// (#1199) The tier clock: call once a frame with the sim time (negative while loading); the time since the last call (none after a load or a jump
+// back) goes to the current tier. QuestBook_TierSeconds: that tier's seconds so far.
+void QuestBook_TickClock(double simTime);
+double QuestBook_TierSeconds(int tier);
+int QuestBook_TierReport(const char* savePath); // (#1199) --tier-report: prints each quest book's hours per tier
 void QuestBook_Reset();                         // a new game: tier 0, nothing done
 void QuestBook_Save(FILE* f);                   // tier, done tasks, placed machines, obtained totals
 bool QuestBook_LoadLine(const char* tok, FILE* f);

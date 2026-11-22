@@ -26,8 +26,16 @@ hv_generator    | 512 | generator | 512 | coke
 arc_furnace     | 512 | eu        | 0  |
 refinery        | 512 | eu        | 0  |
 precision_assembler | 512 | eu    | 0  |
+# Research labs (#1193): each runs its team's queued node of a tier up to its own (machine_recipes: research_t3..t7)
+lv_lab          | 32 | eu        | 0  |
+mv_lab          | 128 | eu       | 0  |
+hv_lab          | 512 | eu       | 0  |
 fusion_reactor  | 2048 | generator | 2048 | helium3
 mass_driver     | 2048 | eu       | 0  |
+# (#1269) power "rotation": driven by a shaft network, working at its speed (rotationplot.*)
+millstone        | 0 | rotation | 0 |
+mechanical_saw   | 0 | rotation | 0 |
+mechanical_press | 0 | rotation | 0 |
 # fuel | burn ticks (20 a second)
 fuel oak_log 1200
 fuel birch_log 1200
@@ -46,3 +54,23 @@ fuel helium3 12000
 fuel peat 1000
 fuel fibre 100
 fuel crude_oil 2400
+
+# Magic (#1252): a siphon on a ley node fills empty jars with the node's mana (the game picks the jar: machine_recipes);
+# the mana dynamo burns full jars into EU (Storm best: the doc's best EU link). Items only exist with RAYLIBGAME_MAGIC=1.
+mana_siphon     | 0  | none      | 0  |
+mana_dynamo     | 32 | generator | 24 | jar_earth jar_water jar_fire jar_air jar_aether jar_frost jar_storm jar_shard jar_rot
+fuel jar_earth 400
+fuel jar_water 400
+fuel jar_fire 400
+fuel jar_air 400
+fuel jar_aether 400
+fuel jar_frost 400
+fuel jar_shard 400
+fuel jar_rot 400
+fuel jar_storm 560
+
+# Alchemy (#1254): the distillery turns an item into essences by its aspects (its recipes come from aspects.txt), the
+# essence tank holds one aspect, the cauldron brews on its own fire (its recipes come from alchemy.txt).
+distillery      | 32 | eu        | 0  |
+essence_tank    | 0  | none      | 0  |
+cauldron        | 0  | fuel      | 0  | oak_log birch_log maple_log pine_log spruce_log oak_planks birch_planks maple_planks pine_planks spruce_planks charcoal coal coke peat
