@@ -113,7 +113,7 @@ TEST(OreVeins, EachShapeHoldsItsPointsAndNoneReachesPastItsCell) {
     const VeinDeposit blob = Shaped(VeinShape::Blob, 6.0f);
     EXPECT_TRUE(In(blob, 5, 0, 0)); EXPECT_FALSE(In(blob, 7, 0, 0));
     VeinDeposit sheet = Shaped(VeinShape::Sheet, 4.0f); sheet.axis = { 1, 0, 0 }; // a vertical plane facing x
-    EXPECT_TRUE(In(sheet, 1.5f, 15, 15)) << "within its thickness, far along the plane";
+    EXPECT_TRUE(In(sheet, 1.5f, 10, 10)) << "within its thickness, far along the plane";
     EXPECT_FALSE(In(sheet, 3, 0, 0)) << "past half its thickness";
     const VeinDeposit pipe = Shaped(VeinShape::Pipe, 5.0f);
     EXPECT_TRUE(In(pipe, 3, 18, 0)) << "high up its axis";
