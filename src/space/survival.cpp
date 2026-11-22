@@ -92,6 +92,11 @@ namespace {
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
+        // (#1591) A volcano's heat: warmer toward the vent (GUESS +25 C at it), and the lava crust underfoot is hot to stand
+        // on (felt 60 C: the heat harm, ~1.25 health a second once the body has warmed; walkable, not instant death)
+        const float vw = pf->volcanoWeight(Vector3Scale(up, pf->radius));
+        if (vw > 0.0f) t += 25.0f * vw * vw;
+        if (vw > 0.9f && p->materialAt(Vector3Subtract(local, Vector3Scale(up, 0.4f))) == VoxelMaterial::Lava) t = std::max(t, 60.0f);
         return t;
     }
 }

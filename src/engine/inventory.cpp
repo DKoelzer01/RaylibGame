@@ -203,6 +203,8 @@ const char* ItemForMaterial(VoxelMaterial m, bool soil) {
         case VoxelMaterial::Sandstone: return "sandstone";
         case VoxelMaterial::Limestone: return "limestone";
         case VoxelMaterial::Marble: return "marble";
+        case VoxelMaterial::Ash: return "gravel";  // (#1591) volcanic ash and scoria (GUESS: its own item, and sulfur, later)
+        case VoxelMaterial::Lava: return "basalt"; // (#1591) the cooled crust over a crater's lava
         default: return "stone";
     }
 }

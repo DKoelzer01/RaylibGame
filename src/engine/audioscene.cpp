@@ -10,7 +10,7 @@
 
 AudioMat AudioMatOfVoxel(VoxelMaterial m) {
     switch (m) {
-        case VoxelMaterial::Regolith: case VoxelMaterial::Gravel: case VoxelMaterial::Pebbles: return AudioMat::Gravel;
+        case VoxelMaterial::Regolith: case VoxelMaterial::Gravel: case VoxelMaterial::Pebbles: case VoxelMaterial::Ash: return AudioMat::Gravel;
         case VoxelMaterial::Sand: case VoxelMaterial::Grass: case VoxelMaterial::Clay: case VoxelMaterial::Silt:
         case VoxelMaterial::Mud: case VoxelMaterial::Farmland: return AudioMat::Soil;
         case VoxelMaterial::Snow: return AudioMat::Snow;
