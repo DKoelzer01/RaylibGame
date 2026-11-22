@@ -840,14 +840,22 @@ namespace {
         // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
         // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
         // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
-        // (#1421) "Playing": each has sent 2 s of inputs - a client sends none until its join sync is done. Online alone was not
-        // enough: on the runner the clients synced for ~67 s, and the creature lived and fell before either was in the world.
+        // (#1421) "Playing": each has walked 3 m from where it first stood - the test's players walk once their loading screens
+        // are gone. Online was not enough (on the runner the join sync took 35-67 s), nor were inputs (they flow during the ~20 s
+        // spawn-area loading screen after the sync): the creature lived and fell before the clients were in the world.
         static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
         if (joinCreature) {
             static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
+            static std::unordered_map<uint32_t, Vector3> firstAt; static std::unordered_set<uint32_t> walked;
             const double now = GetTime();
-            int playing = 0;
-            for (const auto& kv : remotes) playing += kv.second.lastQueued > 120 ? 1 : 0; // client ticks: 2 s at 60 Hz
+            for (const auto& kv : remotes) {
+                uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+                if (kv.second.lastQueued == 0 || !RemoteLocal(kv.second, body, at, scale)) continue;
+                auto it = firstAt.find(kv.first);
+                if (it == firstAt.end()) firstAt[kv.first] = at;
+                else if (Vector3Distance(it->second, at) * (float)scale > 3.0f) walked.insert(kv.first);
+            }
+            const int playing = (int)walked.size();
             if (playing >= 2 && gAnimalTargets.size() >= 2 && bothAt < 0.0) {
                 bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false);
                 printf("host: creature: both players in the world\n");
