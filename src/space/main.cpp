@@ -1,6 +1,7 @@
 #include <functional>
 #include <set>
 #include <map>
+#include <tuple>
 #include <cstring>
 #include <raylib.h>
 #include <string>
@@ -29,6 +30,7 @@
 #include "laddermigrate.h"
 #include "ores.h"
 #include "orefamilies.h"
+#include "oreveins.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1839,7 +1841,89 @@ int main(int argc, char** argv)
             CaveIslands_Measure(*pf, p->seed, R, true, Rc); // (caveislands.cpp; the caves/islands scenario checks it, #1465)
             return 0;
         }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is the single if after it)
+        if (std::string(argv[i]) == "--ore-slices" && i + 1 < argc) {
+            // (#1467) The vein shapes, to look at: the nearest deposit of each family within R m of the start (cells
+            // searched to 400 m down), cut through its centre level and upright, 56 m across at 4 px a metre, each ore in
+            // its ores.txt colour over grey rock. One row per family into bench_ore_slices.png (order printed).
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: ore slices: no planet\n"); return 1; }
+            const Vector3 home = Vector3Scale(pf->findSpawnDir(p->seed), pf->radius);
+            const auto& fams = OreFamilies_All();
+            std::vector<VeinDeposit> best(fams.size());
+            std::vector<float> bestD(fams.size(), 1e30f);
+            const int n = (int)ceilf(R / kVeinCell), hx = (int)floorf(home.x / kVeinCell), hy = (int)floorf(home.y / kVeinCell), hz = (int)floorf(home.z / kVeinCell);
+            for (int z = hz - n; z <= hz + n; ++z) for (int y = hy - n; y <= hy + n; ++y) for (int x = hx - n; x <= hx + n; ++x) {
+                const VeinDeposit d = pf->depositOf(x, y, z);
+                if (!d.exists) continue;
+                const float dist = Vector3Distance(d.centre, home);
+                const float depth = pf->radius + pf->elevation(Vector3Normalize(d.centre)) - Vector3Length(d.centre);
+                if (dist > R || depth < 5.0f || depth > 400.0f || dist >= bestD[d.family]) continue;
+                bestD[d.family] = dist; best[d.family] = d;
+            }
+            constexpr int kPx = 224; // 56 m at 4 px a metre
+            Image img = GenImageColor(2 * kPx + 8, (int)fams.size() * (kPx + 8), Color{ 20, 20, 24, 255 });
+            for (size_t f = 0; f < fams.size(); ++f) {
+                if (bestD[f] > 1e29f) { printf("bench: ore slices: row %zu %-20s none within %.0f m\n", f, fams[f].id.c_str(), R); continue; }
+                const VeinDeposit& d = best[f];
+                const Vector3 up = Vector3Normalize(d.centre), e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(up, e1);
+                printf("bench: ore slices: row %zu %-20s %-9s size %.1f m, %.0f m away (left level, right upright)\n", f, fams[f].id.c_str(), OreFamilies_ShapeName(d.shape), d.size, bestD[f]);
+                for (int side = 0; side < 2; ++side)
+                    for (int py = 0; py < kPx; ++py) for (int px = 0; px < kPx; ++px) {
+                        const float u = (px - kPx / 2) / 4.0f, v = (kPx / 2 - py) / 4.0f;
+                        const Vector3 q = Vector3Add(d.centre, Vector3Add(Vector3Scale(e1, u), Vector3Scale(side == 0 ? e2 : up, v)));
+                        const float depth = pf->radius + pf->elevation(Vector3Normalize(q)) - Vector3Length(q);
+                        const int k = depth > 0.0f ? pf->oreKind(q, depth) : -1;
+                        Color c = depth <= 0.0f ? Color{ 120, 160, 200, 255 } : Color{ 95, 95, 100, 255 }; // sky, rock
+                        if (const OreDef* o = k >= 0 ? Ores_Get(k) : nullptr)
+                            c = { (unsigned char)(255 * powf(o->colour[0], 1 / 2.2f)), (unsigned char)(255 * powf(o->colour[1], 1 / 2.2f)), (unsigned char)(255 * powf(o->colour[2], 1 / 2.2f)), 255 };
+                        ImageDrawPixel(&img, side * (kPx + 8) + px, (int)f * (kPx + 8) + py, c);
+                    }
+            }
+            ExportImage(img, "bench_ore_slices.png");
+            UnloadImage(img);
+            printf("bench: ore slices: bench_ore_slices.png\n");
+            return 0;
+        }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--ore-stats" && i + 1 < argc) {
+            // (#1467) The ores within R m of the start: columns every 4 m, samples every 1 m from 3 m to D m (default 200)
+            // under the surface. Ore samples per kind, and the deposits per vein family (each 96 m cell counted once).
+            const float R = (float)atof(argv[i + 1]);
+            const float D = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 200.0f;
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: ore stats: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            std::vector<long long> perKind(PlanetField::OreKindCount(), 0);
+            std::map<std::string, int> perFamily;
+            std::set<std::tuple<int, int, int>> cells;
+            long long samples = 0;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (float a = -R; a <= R; a += 4.0f)
+                for (float b = -R; b <= R; b += 4.0f) {
+                    if (a * a + b * b > R * R) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                    const float surface = pf->radius + pf->elevation(dir);
+                    for (float d = 3.0f; d <= D; d += 1.0f) {
+                        const Vector3 q = Vector3Scale(dir, surface - d);
+                        ++samples;
+                        const int k = pf->oreKind(q, d);
+                        if (k >= 0 && k < (int)perKind.size()) ++perKind[k];
+                        const std::tuple<int, int, int> c{ (int)floorf(q.x / 96.0f), (int)floorf(q.y / 96.0f), (int)floorf(q.z / 96.0f) };
+                        if (cells.insert(c).second) if (const char* fam = pf->depositFamilyAt(q)) ++perFamily[fam];
+                    }
+                }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: ore stats: R %.0f m, depth 3-%.0f m: %lld samples, %zu deposit cells, %.0f ms\n", R, D, samples, cells.size(), ms);
+            for (int k = 0; k < (int)perKind.size(); ++k) printf("bench: ore stats: kind %-16s %8lld samples\n", PlanetField::OreKindName(k), perKind[k]);
+            for (const auto& [fam, n] : perFamily) printf("bench: ore stats: family %-20s %4d deposits\n", fam.c_str(), n);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i) // (the loop's body is the one if below: --ore-stats has its own loop above)
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
             // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a

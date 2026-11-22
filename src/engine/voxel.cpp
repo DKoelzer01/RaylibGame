@@ -4,6 +4,8 @@
 #include <cstring>
 #include "voxel.h"
 #include "ores.h"
+#include "oreveins.h"
+#include "underground.h"
 #include "cavekinds.h"
 #include "underground.h"
 #include "envflag.h"
@@ -3736,26 +3738,39 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    constexpr float kDepositCell = 96.0f;
-    uint32_t OreHash(int x, int y, int z, uint32_t seed) {
-        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
-        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
-        return h;
-    }
-    float OreUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
-    struct Deposit { bool exists; Vector3 centre; float radius; int kind; };
-    Deposit DepositOf(int cx, int cy, int cz, uint32_t seed) {
-        uint32_t h = OreHash(cx, cy, cz, seed);
-        Deposit d{ false, {}, 0, -1 };
-        if (OreUnit(h) > 0.35f) return d;
-        d.exists = true;
-        d.centre = { (cx + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cy + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cz + 0.25f + 0.5f * OreUnit(h)) * kDepositCell };
-        d.radius = 3.5f + 5.5f * OreUnit(h); // 7-18 m across
-        d.kind = Ores_DepositKind(OreUnit(h)); // (#1466) ores.txt: each kind's share of the deposits, in its roll order
-        if (d.kind < 0) d.exists = false;
-        return d;
-    }
+    constexpr float kDepositCell = kVeinCell;
+    uint32_t OreHash(int x, int y, int z, uint32_t seed) { return OreVeins_Hash(x, y, z, seed); }
+    float OreUnit(uint32_t& h) { return OreVeins_Unit(h); }
     float MinDepth(int kind) { const OreDef* o = Ores_Get(kind); return o ? o->minDepth : 1e30f; }
+    const char* RockName(RockType r) {
+        static const char* n[] = { "rock", "granite", "basalt", "sandstone", "limestone", "marble" };
+        return (int)r < (int)(sizeof(n) / sizeof(n[0])) ? n[(int)r] : "rock";
+    }
+}
+
+// (#1467) A cell's deposit: a vein family picked by the rock, depth, biome and region at its centre (oreveins.h). Those
+// lookups are dear and oreKind runs per mesh vertex on the workers, so each thread keeps the cells it has seen (the result
+// is a pure function of the field and the cell: no locks). Bounded: cleared past 65536 cells.
+VeinDeposit PlanetField::depositOf(int cx, int cy, int cz) const {
+    struct Key { const PlanetField* f; uint32_t seed; int x, y, z; bool operator==(const Key& o) const { return f == o.f && seed == o.seed && x == o.x && y == o.y && z == o.z; } };
+    struct KeyHash { size_t operator()(const Key& k) const { return (size_t)OreVeins_Hash(k.x, k.y, k.z, k.seed ^ (uint32_t)(uintptr_t)k.f); } };
+    static thread_local std::unordered_map<Key, VeinDeposit, KeyHash> cache;
+    const Key key{ this, oreSeed, cx, cy, cz };
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (cache.size() > 65536) cache.clear();
+    const VeinDeposit d = OreVeins_Make(cx, cy, cz, OreHash(cx, cy, cz, oreSeed), [&](Vector3 c) {
+        VeinSite s;
+        const float r = Vector3Length(c);
+        const Vector3 dir = Vector3Scale(c, 1.0f / std::max(r, 1.0f));
+        const float elev = elevation(dir, 8.0f);
+        s.depth = radius + elev - r;
+        s.rock = RockName(rockTypeAt(c));
+        s.biome = BiomeName(biomeAt(dir, elev));
+        s.region = UndergroundRegion_Name(Underground_RegionAt(*this, c)); // (#1548) the underground region map
+        return s;
+    });
+    cache.emplace(key, d);
+    return d;
 }
 
 const char* PlanetField::OreKindName(int kind) {
@@ -3766,13 +3781,18 @@ int PlanetField::OreKindCount() { return Ores_Count(); }
 
 int PlanetField::oreKind(Vector3 p, float depth) const {
     if (moon || depth < 3.0f) return -1;
-    // A deposit (its blob stays inside its own cell: centre at least 24 m from the edges, radius <= 9 m
-    // plus the lumpiness).
+    // A deposit of a vein family in its shape (#1467; every shape stays inside its own cell: centre at least 24 m from the
+    // edges, kVeinReach 22 m), each point one of the family's ores
     const int cx = (int)floorf(p.x / kDepositCell), cy = (int)floorf(p.y / kDepositCell), cz = (int)floorf(p.z / kDepositCell);
-    const Deposit d = DepositOf(cx, cy, cz, oreSeed);
-    if (d.exists && depth >= MinDepth(d.kind)) {
-        const float k = Vector3Distance(p, d.centre) / d.radius + 0.35f * veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
-        if (k < 1.0f) return d.kind;
+    const VeinDeposit d = depositOf(cx, cy, cz);
+    if (d.exists && Vector3Distance(p, d.centre) < kVeinReach + 1.0f) {
+        const float n1 = veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
+        const float s = d.shape == VeinShape::Stockwork ? 30.0f / std::max(d.size, 1.0f) : 0.0f; // (veins is 1/30 m: veins d.size apart)
+        const float n2 = d.shape == VeinShape::Stockwork ? veins.fractal(1, p.x * s + 517.0f, p.y * s, p.z * s) : 1.0f;
+        if (OreVeins_Inside(d, p, n1, n2)) {
+            const int k = OreVeins_Member(d, p);
+            if (k >= 0 && depth >= MinDepth(k)) return k;
+        }
     }
     // Scattered pockets of the common ores and coal, more of them near the surface.
     const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
@@ -3786,10 +3806,17 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
 
 bool PlanetField::depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const {
     if (moon) return false;
-    const Deposit d = DepositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell), oreSeed);
+    const VeinDeposit d = depositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell));
     if (!d.exists) return false;
-    centre = d.centre; radius = d.radius; kind = d.kind;
-    return true;
+    const auto& fams = OreFamilies_All();
+    centre = d.centre; radius = d.envelope; kind = fams[d.family].members.empty() ? -1 : fams[d.family].members[0].kind; // its main ore
+    return kind >= 0;
+}
+
+const char* PlanetField::depositFamilyAt(Vector3 p) const {
+    if (moon) return nullptr;
+    const VeinDeposit d = depositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell));
+    return d.exists ? OreFamilies_All()[d.family].id.c_str() : nullptr;
 }
 
 int PlanetField::depositNear(Vector3 p, float reach) const {
@@ -3801,10 +3828,10 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     for (int z = z0; z <= z1; ++z)
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x) {
-                const Deposit d = DepositOf(x, y, z, oreSeed);
-                if (!d.exists) continue;
-                const float dist = Vector3Distance(p, d.centre) - d.radius;
-                if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
+                const VeinDeposit d = depositOf(x, y, z);
+                if (!d.exists || d.family < 0 || OreFamilies_All()[d.family].members.empty()) continue;
+                const float dist = Vector3Distance(p, d.centre) - d.envelope;
+                if (dist < reach && dist < bestD) { bestD = dist; best = OreFamilies_All()[d.family].members[0].kind; } // its main ore
             }
     return best;
 }
