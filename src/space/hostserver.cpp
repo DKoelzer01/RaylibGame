@@ -229,6 +229,7 @@ namespace {
         return s;
     }
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
+    void FlushInstanceDeltas(); // (below, #1446)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     template <class M> void SendToJoined(const M& m); // (below)
     // ---- #334 animals ----
@@ -1107,6 +1108,8 @@ namespace {
             std::map<std::string, double> before;
             for (const InvSlot& c : rm.inventory.grid()) if (!c.empty()) before[c.id] = 0.0; // the client starts from nothing
             SendInventoryDeltas(conn, rm.inventory, before);
+            for (const InvSlot& c : rm.inventory.grid()) // (#1446) and each item with its own record, one by one
+                if (!c.empty() && c.hasData()) SendMsg(conn, MsgInventoryDelta{ c.id, 1.0, c.data, {} });
         }
         rm.record.uuid = s.uuid; rm.record.name = s.name;
         if (rm.record.firstSeen <= 0.0) rm.record.firstSeen = (double)time(nullptr);
@@ -1498,6 +1501,7 @@ namespace {
         {
             const uint32_t sid = s->id;
             remotes[sid].inventory.onAdded = [sid](const std::string& id, double n) { TeamEvent(sid, "obtained", id, n); };
+            remotes[sid].inventory.journal = true; // (#1446) its items with data reach the player through FlushInstanceDeltas
         }
         if (const int t = Teams_Of(s->uuid)) SendQuestBook(conn, t); // (#338) their team's book
     }
@@ -1507,6 +1511,17 @@ namespace {
     constexpr double kEditBurst = 3.0;                 // strokes that may arrive together (a hitch, packet bunching)
     int editsApplied = 0;
 
+    // (#1446) Each remote player's journal of items with their own data (added, taken, record changed) as InventoryDeltas,
+    // in order, once a tick; an offline player's journal is dropped (their client gets their record on the next join).
+    void FlushInstanceDeltas() {
+        for (auto& [session, r] : remotes) {
+            if (r.inventory.instanceLog.empty()) continue;
+            if (const uint32_t conn = ConnOf(session))
+                for (const Inventory::InstanceChange& ch : r.inventory.instanceLog)
+                    SendMsg(conn, MsgInventoryDelta{ ch.id, (double)ch.sign, ch.data, ch.newData });
+            r.inventory.instanceLog.clear();
+        }
+    }
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before) {
         for (const auto& [item, was] : before) {
             const double d = inv.amount(item) - was;
@@ -1978,6 +1993,18 @@ namespace {
                 auto rit = remotes.find(it->second.session);
                 if (rit == remotes.end() || rit->second.survival.dead) return;
                 Inventory& inv = rit->second.inventory;
+                if (!q.data.empty()) { // (#1446) that one item, record and all (the journal tells the client it went)
+                    const int cell = inv.findInstance(q.item, q.data);
+                    if (cell < 0) return;
+                    InvSlot one = inv.takeInstance(cell);
+                    std::string who;
+                    for (const Session& s : sessions) if (s.id == it->second.session) who = s.name;
+                    Player::NetState at;
+                    const Planetoid* b = rit->second.player.netState(world, at) ? Planetoid::findNet(at.body) : nullptr;
+                    if (b && Combat_DropFor(b->name, at.local, one, who)) ++dropsMade;
+                    else inv.addInstance(one.id, one.data, one.heat); // (not on a body: it stays)
+                    return;
+                }
                 const int64_t have = (int64_t)llround(inv.amount(q.item) * 100.0);
                 const int64_t centi = std::min(q.centi, have);
                 if (centi <= 0) return; // (it has none: the client's view was stale; nothing to send)
@@ -2244,6 +2271,7 @@ void Host_Update(Scene& world) {
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
     GpuTimer_CpuMark("host: receive, handshakes"); // (#348)
     StepRemotes(world);
+    FlushInstanceDeltas(); // (#1446) items with their own data that changed in a remote player's inventory, to that player
     StepSyncs(world);
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);

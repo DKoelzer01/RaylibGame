@@ -1,4 +1,5 @@
 #include "netproto.h"
+#include "itemdata.h"
 
 #include <algorithm>
 #include <cmath>
@@ -318,7 +319,7 @@ bool NetRead(NetReader& r, MsgEditRefused& m) {
     m.why = (NetEditRefusal)why;
     return Done(r);
 }
-void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); }
+void NetWrite(NetWriter& w, const MsgInventoryDelta& m) { Id(w, NetMsg::InventoryDelta); w.str(m.item.substr(0, 48)); w.f64(m.amount); w.str(m.data.substr(0, 255)); w.str(m.newData.substr(0, 255)); } // (#1446) data
 void NetWrite(NetWriter& w, const MsgChat& m) { Id(w, NetMsg::Chat); w.u32(m.from); w.str(m.text.substr(0, 256)); }
 bool NetRead(NetReader& r, MsgChat& m) { m.from = r.u32(); m.text = r.str(256); return Done(r); }
 
@@ -380,8 +381,10 @@ bool NetRead(NetReader& r, MsgSyncDone& m) {
     return Done(r);
 }
 bool NetRead(NetReader& r, MsgInventoryDelta& m) {
-    m.item = r.str(48); m.amount = r.f64();
+    m.item = r.str(48); m.amount = r.f64(); m.data = r.str(255); m.newData = r.str(255);
     if (m.item.empty() || !(std::fabs(m.amount) < 1e6)) r.ok = false;
+    if (!ItemData::Valid(m.data) || !ItemData::Valid(m.newData)) r.ok = false; // (#1446)
+    if (!m.data.empty() && m.amount != 1.0 && m.amount != -1.0 && !(m.amount == 0.0 && !m.newData.empty())) r.ok = false;
     return Done(r);
 }
 
@@ -628,6 +631,7 @@ bool NetProto_Test() {
     }
     { MsgEditRefused a{ 9, NetEditRefusal::Cost }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.seq == 9 && b.why == NetEditRefusal::Cost, "edit refused"); samples.push_back(s); }
     { MsgInventoryDelta a{ "gravel", -0.375 }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.item == "gravel" && b.amount == -0.375, "inventory delta"); samples.push_back(s); }
+    { MsgInventoryDelta a{ "tool_pickaxe", 0.0, "h=flint;w=3", "h=flint;w=4" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.data == "h=flint;w=3" && b.newData == "h=flint;w=4", "inventory delta with data (#1446)"); samples.push_back(s); }
     {
         MsgPartRequest a, b; a.seq = 4; a.op = NetPartOp::Place; a.body = 2; a.plot = 0; a.anchor[0] = 12.5f; a.anchor[1] = 59991.123f; a.anchor[2] = -3.0f;
         a.part = { 1, -3, 7, 120, 5, 2 };
@@ -931,8 +935,8 @@ bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(6
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items
-void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); }
-bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000; }
+void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); w.str(m.data.substr(0, 255)); }
+bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); m.data = r.str(255); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000 && ItemData::Valid(m.data) && (m.data.empty() || m.centi == 100); }
 void NetWrite(NetWriter& w, const MsgCreativeGive& m) { Id(w, NetMsg::CreativeGive); w.str(m.item.substr(0, 64)); w.varu(m.count); }
 bool NetRead(NetReader& r, MsgCreativeGive& m) { m.item = r.str(64); m.count = (uint32_t)std::min<uint64_t>(r.varu(), 1000000); return Done(r); }
 
