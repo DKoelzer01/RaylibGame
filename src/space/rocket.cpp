@@ -502,7 +502,7 @@ namespace {
         }
     }
 
-    void FlightStep(Scene& world, float h, bool input) {
+    void FlightStep(Scene& world, float h, bool input, bool stepEnd = true) {
         Plot* plot = VehiclePlot();
         if (!plot) { state = RocketState::None; return; }
         const RocketStats st = Rocket_Stats(*plot, FlightBody(world));
@@ -566,13 +566,15 @@ namespace {
                 rf.pos = rf.pos + rf.vel * (double)h;
                 DVec3 vg;
                 if (Frames_ToGlobal(rf, com, vg)) vel = vg.toFloat();
-                // The line or an SOI crossed: the same state, re-expressed. Here, after the step, where the state and the
-                // bodies' poses are at the same instant: advanceBodies moves the bodies to the step's end before the
-                // rocket steps, so a switch at the step's start converted last step's global position with this step's
-                // poses (a frame of the new body's motion: 16 m entering Luna's SOI at 5x warp, rocket/soi-trip).
-                const FrameRef to = Frames_Choose(bodies, com, rf.frame);
-                FramePos n;
-                if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
+                // The line or an SOI crossed: the same state, re-expressed - only after the step's last substep, the one
+                // instant where the state and the bodies' poses agree. advanceBodies moves the bodies to the step's end
+                // before the rocket's substeps run, so a switch at the step's start (16 m entering Luna's SOI at 5x warp)
+                // or after an earlier substep (13 m) converted with a pose from another time (rocket/soi-trip).
+                if (stepEnd) {
+                    const FrameRef to = Frames_Choose(bodies, com, rf.frame);
+                    FramePos n;
+                    if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
+                }
                 rfCom = com; rfVel = vel;
                 framed = true;
             }
@@ -860,7 +862,7 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         SyncVehicle(world); // the simulated pose again (Rocket_View drew it between steps)
         int steps = std::max(1, (int)ceil(dt / kMaxStep));
         const float h = dt / steps;
-        for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input);
+        for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input, i == steps - 1);
         if (state == RocketState::Flying) {
             SyncVehicle(world);
             if (Planetoid* b = FlightBody(world)) { // render interpolation (#315)
