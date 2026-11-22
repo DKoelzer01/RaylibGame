@@ -466,6 +466,10 @@ int main(int argc, char** argv)
             setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
+    Log_SetBuild(kGameVersion); // (#1526) in every crash entry (and logged with the pid); minidumps go to saves/logs
+    Log_InstallConsoleStop();   // (#1527) Ctrl+C / a script's timeout: a line and an immediate end, no fatal box (--server installs its own)
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--test-crash")) { Log_TestCrash(argv[i + 1]); return 1; } // (#1526) the crash entries in log.txt
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
     for (int i = 1; i + 1 < argc; ++i)
         if (std::string(argv[i]) == "--log-level") {
@@ -8160,7 +8164,10 @@ int main(int argc, char** argv)
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 PlanetField::WaterSource ws;
-                                if (benchFlowSea) { ws.kind = 4; ws.level = 0.0f; if (pf->elevation(d) > -1.5f) continue; } // the sea, 1.5 m+ deep (#190)
+                                if (benchFlowSea) { ws.kind = 4; ws.level = 0.0f; if (pf->elevation(d) > -1.5f) continue; // the sea, 1.5 m+ deep (#190)
+                                    // ...clear of rivers (#1504): a trench from a river mouth to the sea is a diversion, running forever by
+                                    // design; this test is about the sea. Valley-wide rivers (#637) put one on seed 42's first pick.
+                                    if (pf->rivers() && pf->rivers()->nearest(d, 120.0f).found) continue; }
                                 else {
                                     ws = pf->waterSourceAt(d);
                                     if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
@@ -8181,8 +8188,22 @@ int main(int argc, char** argv)
                                     for (float s = 2.0f; s <= 25.0f; s += 1.0f) {
                                         const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
                                         const float eq = pf->elevation(q);
-                                        if (pf->waterSourceAt(q).kind) continue;
-                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
+                                        // (#1504) the sea is water too: waterSourceAt reports rivers, lakes and ponds, never the sea, so from a sea
+                                        // point the walk stopped 2 m out (the old pick's 21 m came from a river mouth's water in the way)
+                                        if (pf->waterSourceAt(q).kind || (benchFlowSea && eq < ws.level - 0.2f)) continue;
+                                        // (#1504) from the sea, at least 5 m of open water first: a shore 2 m out put the trench's end in the sea's
+                                        // reach at once (flooded in 0.1 s, never asleep), where the 21 m of the old pick ran a real channel
+                                        // (#1512) from the sea, the cut must run into dry, low land: ground 0.3-4 m over the water from the
+                                        // shore to 4 m past the shaft. A shore climbing ~1 m a metre made the channel a tunnel and buried the
+                                        // camera in the hill; a sand spit with sea behind it flooded the shaft from the far side at once (a
+                                        // "pass" in 0.2 s).
+                                        bool open = true;
+                                        if (benchFlowSea)
+                                            for (float u = s + 2.0f; u <= s + 18.0f && open; u += 2.0f) {
+                                                const float e = pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(o, u / pf->radius))));
+                                                open = e > ws.level + 0.3f && e < ws.level + 4.0f;
+                                            }
+                                        if (open && eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 5.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
                                         break;
                                     }
                                 }
@@ -8220,7 +8241,11 @@ int main(int argc, char** argv)
                         }
                     } else if (flowPhase == 1) {
                         const Vector3 up = Vector3Normalize(flowEnd);
-                        const Vector3 eye = Vector3Add(Vector3Add(flowEnd, Vector3Scale(up, 9.0f)), Vector3Scale(flowOut, 9.0f));
+                        Vector3 eye = Vector3Add(Vector3Add(flowEnd, Vector3Scale(up, 9.0f)), Vector3Scale(flowOut, 9.0f));
+                        { // never inside the ground (#1512: a steep shore put the eye in the hill)
+                            const Vector3 ed = Vector3Normalize(eye);
+                            eye = Vector3Scale(ed, std::max(Vector3Length(eye), pf->radius + pf->elevation(ed) + 6.0f));
+                        }
                         world.camera.position = p->toWorld(eye);
                         world.camera.target = p->toWorld(Vector3Subtract(flowEnd, Vector3Scale(flowOut, 6.0f)));
                         world.camera.up = p->dirToWorld(up);
@@ -8256,6 +8281,24 @@ int main(int argc, char** argv)
                         }
                         if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 120.0) {
                             TakeScreenshot("bench_flow_end.png");
+                            if (EnvFlag("FLOWDBG")) {
+                                // Where the water stands at the end (#1512), 4 m cells +-40 m around the channel's end: rows along the
+                                // channel (the pick's sea at the top), columns across it. Simulated water: W over land (ground over the
+                                // sea level), w over ground under it; . ground under the sea level (the generated sea: Classify makes
+                                // any bed under it sea), space dry land, C the channel's end.
+                                const Vector3 up = Vector3Normalize(flowEnd), side = Vector3Normalize(Vector3CrossProduct(up, flowOut));
+                                for (float u = -40.0f; u <= 40.0f; u += 4.0f) {
+                                    std::string row;
+                                    for (float v = -40.0f; v <= 40.0f; v += 4.0f) {
+                                        const Vector3 d = Vector3Normalize(Vector3Add(flowEnd, Vector3Add(Vector3Scale(flowOut, u), Vector3Scale(side, v))));
+                                        const float g = pf->elevation(d);
+                                        bool wet = false;
+                                        for (float h = -2.0f; h <= 1.0f && !wet; h += 0.5f) wet = Fluid::Wet(*p, at(d, flowLevel + h));
+                                        row += (u == 0.0f && v == 0.0f) ? 'C' : wet ? (g > flowLevel ? 'W' : 'w') : (g < flowLevel ? '.' : ' ');
+                                    }
+                                    printf("bench: flow map %+4.0f m |%s|\n", u, row.c_str());
+                                }
+                            }
                             const Fluid::Stats s = Fluid::GetStats();
                             const float caveTop = Fluid::SurfaceAbove(*p, flowCave, 16.0f);
                             // The gate (#627): the worst 1 s rolling mean of the step time (a sustained cost, not one spike); the
@@ -12300,7 +12343,8 @@ int main(int argc, char** argv)
         // build there, open the chest and break it, and to break the banner: each is refused. At RAYLIBGAME_CLAIMS_ALLY_AT s (25)
         // the owner allies the other's team (/claim ally other): the other sees the claim allowed and breaks the chest (refunded).
         // At RAYLIBGAME_CLAIMS_BREAK_AT s (32) the owner breaks its banner: the claim goes (both lists empty). Both report after
-        // RAYLIBGAME_CLAIMS_SECONDS (40).
+        // RAYLIBGAME_CLAIMS_SECONDS (40). RAYLIBGAME_CLAIMS_SHOW_TEAM=1: both keep the Team tab open and shoot
+        // claims_team_<role>_<state>.png (#828).
         if (benchNetClaims && gameState == 1 && !loading && gJoinSynced && WorldIdle()) {
             static double t0 = -1.0;
             static bool bannerSent = false, chestSent = false, tried = false, allySent = false, breakSent = false, entered = false, openRefused = false, allied = false, removeSent = false, bannerGone = false;
@@ -12329,6 +12373,13 @@ int main(int argc, char** argv)
                     }
             const Vector3 up = Vector3Normalize(me);
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            if (getenv("RAYLIBGAME_CLAIMS_SHOW_TEAM")) { // (#828) the Team tab open over the test, a screenshot a second into each claim state
+                static int shown = -1; static double since = 0.0;
+                const int state = owner ? (bannerPl ? (allySent ? 2 : 1) : 0) : (sawAllowed ? 2 : sawNotAllowed ? 1 : 0);
+                if (shown < 0) GameUI_ShowTab("Team");
+                if (state != shown) { shown = state; since = GetTime(); }
+                else if (since > 0.0 && GetTime() - since > 1.0) { TakeScreenshot(TextFormat("claims_team_%s_%d.png", owner ? "owner" : "other", state)); since = 0.0; }
+            }
             if (owner && cb && !bannerSent && GetTime() - t0 > 4.0) bannerSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, 2.0f)), Part{ PartType::ClaimBanner, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             if (owner && cb && bannerPl && !chestSent) chestSent = NetClient_RequestPart(gJoin, *cb, nullptr, Vector3Add(me, Vector3Scale(t1, -2.0f)), Part{ PartType::Chest, { 0, 0, 0 }, 0, 0 }, false, -1) != 0;
             if (owner && bannerPl && !allySent && GetTime() - t0 > envAt("RAYLIBGAME_CLAIMS_ALLY_AT", 25.0)) { NetClient_SendChat(gJoin, "/claim ally other"); allySent = true; }

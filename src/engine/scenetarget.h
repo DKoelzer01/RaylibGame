@@ -37,5 +37,6 @@ void SceneTarget_Unload();
 // #131 the tonemap curve (0 knee - the default, today's look -, 1 ACES, 2 clip): Settings sets it; RAYLIBGAME_TONEMAP wins.
 void SceneTarget_SetTonemap(int curve);
 int SceneTarget_Tonemap();
+void SceneTarget_SetBrightness(float ev); // (#1166) Settings > Brightness: stops, -1..+1
 
 #endif

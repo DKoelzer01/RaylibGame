@@ -880,6 +880,9 @@ const RiverNetwork* PlanetField::rivers() const {
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
+            // (#637) Rivers fill their worn valley floors from a water cycle of 1 up; at 0.5 only the discharge width (narrow streams).
+            // RAYLIBGAME_RIVER_VALLEY=0: off (A/B).
+            rp.valleyFill = !(getenv("RAYLIBGAME_RIVER_VALLEY") && getenv("RAYLIBGAME_RIVER_VALLEY")[0] == '0') ? std::clamp((gen.waterCycle - 0.5f) / 0.5f, 0.0f, 1.0f) : 0.0f;
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             // #903: the biomes' regional reshaping (swamps pulled ~24 m down) moves the water with the ground; at a coarse
             // footprint only the regional part counts (dunes are bumps the channel cuts through). A/B: =1 the old levels.
@@ -1041,6 +1044,14 @@ PlanetField::Column3D PlanetField::terrain3DColumn(Vector3 dir, float elev) cons
 // (#971, user 2026-11-19) Wet lowlands keep their cave roofs: in swamps (the climate's swamp rule, smoothed: moist > ~0.74
 // under ~90 m) and on rivers' floodplains (within ~120 m of a real river's edge, under ~8 m over its level) a tunnel just
 // under the ground stays closed instead of collapsing into a trench (#549). RAYLIBGAME_WET_CAVE_ROOF=0: off.
+float PlanetField::riverChannel(Vector3 dir) const {
+    const RiverNetwork* net = rivers();
+    if (!net) return 0.0f;
+    const RiverNetwork::Hit rh = net->nearest(dir, 60.0f);
+    if (!rh.found) return 0.0f;
+    return 1.0f - Smoothstep(rh.halfWidth + 3.0f, rh.halfWidth + 15.0f, rh.dist);
+}
+
 float PlanetField::caveWetColumn(Vector3 dir, float elev) const {
     static const bool on = !(getenv("RAYLIBGAME_WET_CAVE_ROOF") && getenv("RAYLIBGAME_WET_CAVE_ROOF")[0] == '0');
     if (!on || moon || elev <= 0.0f) return 0.0f;
@@ -2173,9 +2184,11 @@ float PlanetField::densityNear(Vector3 p, float d, float surface, float fp, cons
     float v = ISO_LEVEL + DENSITY_GRADIENT * (surface - d);
     const float depth = surface - d;
     if (depth < kBand3DBelow && depth > -kBand3DAbove) v += DENSITY_GRADIENT * terrain3D(p, d, surface, fp, col); // hills, cliffs, overhangs
-    if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
+    // (#1438) faded out in river channels: the detail and the rock features refilled the 1 m channel over its water
+    const float river = std::fabs(depth) < 14.0f ? (col ? col->river : riverChannel(Vector3Scale(p, 1.0f / d))) : 0.0f;
+    if (fabsf(depth) < 6.0f) v += DENSITY_GRADIENT * 1.5f * (1.0f - river) * detail.fractalLimited(2, fp, p.x, p.y * 1.3f, p.z); // crags, overhangs
     if (depth < 3.0f && depth > -14.0f) {
-        const float m = rockFeature(p, d, surface, fp);
+        const float m = rockFeature(p, d, surface, fp) - 16.0f * river; // (#1438) none in a channel
         if (m > -4.0f) v = std::max(v, ISO_LEVEL + DENSITY_GRADIENT * m);
     }
     // Caves (#615 step 1: one shared caveDistance, bit-exact with terrain.glsl's): carved where under the meshing reach.
@@ -2282,6 +2295,7 @@ bool PlanetField::prepareBlock(Vector3 o, float stride, int S, float fp, BlockGr
             const float e = elevation(gdir, fp);
             Column3D col = terrain3DColumn(gdir, e); // the 3D band's column strength, once per node
             col.wet = caveWetColumn(gdir, e); // (#971)
+            col.river = riverChannel(gdir); // (#1438)
             h[(size_t)j * nu + i] = e;
             cols[(size_t)j * nu + i] = col;
             std::lock_guard<std::mutex> lock(sh.m);
@@ -2310,6 +2324,7 @@ bool PlanetField::gridSurface(const BlockGrid& g, Vector3 p, float& elev, Column
     const Column3D* c1 = c0 + g.nu;
     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
     col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
+    col.river = (c0[0].river * (1 - au) + c0[1].river * au) * (1 - av) + (c1[0].river * (1 - au) + c1[1].river * au) * av; // (#1438) as the GPU
     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
     return true;
 }
@@ -2345,6 +2360,7 @@ void PlanetField::sampleBlock(Vector3 o, float stride, int S, float fp, const Bl
                     const Column3D* c0 = &cols[(size_t)iv * nu + iu];
                     const Column3D* c1 = c0 + nu;
                     col.mask = (c0[0].mask * (1 - au) + c0[1].mask * au) * (1 - av) + (c1[0].mask * (1 - au) + c1[1].mask * au) * av;
+                    col.river = (c0[0].river * (1 - au) + c0[1].river * au) * (1 - av) + (c1[0].river * (1 - au) + c1[1].river * au) * av; // (#1438) as the GPU
                     col.wet = (c0[0].wet * (1 - au) + c0[1].wet * au) * (1 - av) + (c1[0].wet * (1 - au) + c1[1].wet * au) * av; // (#971) as the GPU
                     col.f = (c0[0].f * (1 - au) + c0[1].f * au) * (1 - av) + (c1[0].f * (1 - au) + c1[1].f * au) * av;
                 }

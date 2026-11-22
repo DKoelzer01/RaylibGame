@@ -239,7 +239,7 @@ namespace {
     long long lastAnimals = 0;
     std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
     std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
-    int animalHits = 0, animalHitsRefused = 0;
+    int animalHits = 0, animalHitsRefused = 0, animalHitsRewound = 0; // (rewound: #1108, allowed only by the rewind)
     bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
         Planetoid* b = r.player.nearest;
         if (!b) return false;
@@ -317,6 +317,7 @@ namespace {
     // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kHitRewind = 0.2;   // (#1108) s: how far back a hit may be checked (the combat design's cap, #1002)
     constexpr double kAnimalHitCooldown = 0.25; // s
     // (#337) each player's survival numbers to that player, 5 a second (its HUD; its own simulation fills in between)
     constexpr int kVitalsEvery = 12; // sim steps
@@ -902,7 +903,12 @@ namespace {
         const int i = Animals_FindNet(netId);
         if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
         const Planetoid* b = rit->second.player.nearest;
-        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        if (!b || Animals_Body(i) != b->name) { ++animalHitsRefused; return; }
+        // (#1108) lag compensation: within reach of where the animal was in the last kHitRewind (the player swung at what
+        // they saw: a round trip and their interpolation behind); a fleeing animal's hits were refused at the edge of reach
+        const float nowD = Vector3Distance(Animals_Position(i), at) * (float)scale, rewD = Animals_HitDistance(i, at, kHitRewind) * (float)scale;
+        if (rewD > kAnimalReach) { ++animalHitsRefused; return; }
+        if (nowD > kAnimalReach) ++animalHitsRewound; // (allowed only by the rewind)
         if (ClaimBlocks(session, b, Animals_Position(i))) { ++animalHitsRefused; if (const uint32_t conn = ConnOf(session)) SendMsg(conn, MsgChat{ 0, ClaimRefusal(b, Animals_Position(i)) + ": its animals are theirs" }); return; } // (#343)
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
