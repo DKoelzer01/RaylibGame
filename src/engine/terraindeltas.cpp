@@ -478,7 +478,7 @@ TEST(TerrainDeltas, TheGroundAtTheFootOfAPlacementKeepsItsSurface) {
         TerrainEdit e{};
         e.paint = (int)VoxelMaterial::Regolith; // (placed dirt, as in the playtest)
         if (kind == 0) { e.center = { 0.05f, 0.3f, -0.05f }; e.radius = 1.3f; e.strength = 0.6f; }
-        else { e.fill = true; e.center = { 0.05f, 0.4f, -0.05f }; e.radius = 0.7f; }
+        else { e.fill = true; e.center = { 0.05f, 0.1f, -0.05f }; e.radius = 0.8f; } // (sunk in: a steep step at its edge)
         b.apply(e, field);
         const auto d = b.finish();
         int foot = 0, rock = 0;
