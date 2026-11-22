@@ -837,14 +837,21 @@ namespace {
             const Planetoid* b = rit->second.player.nearest;
             gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
         }
-        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been online for
+        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
         // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
         // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
+        // (#1421) "Playing": each has sent 2 s of inputs - a client sends none until its join sync is done. Online alone was not
+        // enough: on the runner the clients synced for ~67 s, and the creature lived and fell before either was in the world.
         static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
         if (joinCreature) {
             static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
             const double now = GetTime();
-            if (gAnimalTargets.size() >= 2 && bothAt < 0.0) { bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false); }
+            int playing = 0;
+            for (const auto& kv : remotes) playing += kv.second.lastQueued > 120 ? 1 : 0; // client ticks: 2 s at 60 Hz
+            if (playing >= 2 && gAnimalTargets.size() >= 2 && bothAt < 0.0) {
+                bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false);
+                printf("host: creature: both players in the world\n");
+            }
             if (bothAt >= 0.0 && spawnedAt < 0.0 && now - bothAt > 3.0 && !gAnimalTargets.empty()) {
                 const AnimalTarget& t = gAnimalTargets[0];
                 Planetoid* b = Planetoid::findNet(t.body);
