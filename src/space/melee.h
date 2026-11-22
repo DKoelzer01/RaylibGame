@@ -59,6 +59,9 @@ float Weapon_TimeScale(const std::string& itemId, const std::string& data);
 // durability: Composed_Stats.)
 struct GemEffect { StatusKind status = StatusKind::None; float poiseScale = 1.0f; };
 GemEffect Weapon_GemEffect(const std::string& itemId, const std::string& data);
+// (#1509) A light melee hit with this item as the server builds it for a client's hit request: damage, type, poise and the
+// set gems' effect (heavy and from-behind don't come with the request yet).
+struct DamageEvent Weapon_HitEvent(const std::string& itemId, const std::string& data);
 WeaponSpec Weapon_SpecOf(const std::string& itemId, const std::string& data);
 
 enum class MeleePhase : uint8_t { Idle, WindUp, Hit, Recovery };

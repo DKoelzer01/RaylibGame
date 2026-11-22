@@ -2301,9 +2301,15 @@ void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64
 }
 
 bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops) {
+    DamageEvent e; e.amount = damage; e.kind = DamageKind::Melee;
+    return Animals_HitNetEvent(netId, e, drops, true);
+}
+bool Animals_HitNetEvent(uint64_t netId, const DamageEvent& e, std::vector<std::pair<std::string, int>>& drops, bool raw, float* dealtOut) {
     const int i = Animals_FindNet(netId);
     if (i < 0) return false;
     Animal& a = animals[i];
+    const float damage = raw ? e.amount : TypedAmount(a, e); // (#1509) a client's hit as a local one: resistances, poise, its effect
+    if (dealtOut) *dealtOut = damage;
     a.health -= damage;
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;

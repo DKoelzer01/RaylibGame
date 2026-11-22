@@ -927,10 +927,14 @@ namespace {
             return;
         }
         std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-        const float damage = Weapon_BaseDamage(held, RemoteHeldData(session, held)); // (#1219) a composed copy: from its head
+        const std::string heldData = RemoteHeldData(session, held);
+        // (#1509) The hit as the client's game makes it (animals.cpp MeleeFrame): its weapon's damage, type, poise and set
+        // gems, through the typed path (resistances, poise, status). A light hit: heavy and from-behind don't come with the
+        // request yet (a protocol change).
+        const DamageEvent ev = Weapon_HitEvent(held, heldData);
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
-        if (Animals_HitNet(netId, damage, drops)) {
+        if (Animals_HitNetEvent(netId, ev, drops)) {
             TeamEvent(session, "count", "slain"); // (#338) a kill counts for the hunter's team
             // The drops into the hunter's inventory as the server keeps it, and the change to its client in one go (UI/UX's pattern).
             Remote& rm = rit->second;
