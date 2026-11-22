@@ -13,6 +13,7 @@
 #include "player.h"
 #include "plots.h"
 #include "rocket.h"
+#include "station.h"
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
@@ -187,7 +188,48 @@ static void SoiTrip(ScenarioDef& s) {
     });
 }
 
+// rocket/station-hold (F5 stations): a station created 20 m beside the coasting rocket on its 45 km circular orbit, at
+// the same velocity; for 30 s both fall freely, so their separation must hold (the tidal divergence over 20 m is far under
+// a centimetre). Inside the station's small SOI a framed rocket flies in Fixed(station): if that frame's own acceleration
+// is missing (stations fly Kepler elements, not the frames' orbit rule), the rocket feels the free fall twice and drifts
+// metres away. Gate: the separation changes by under 1 m.
+static void StationHold(ScenarioDef& s) {
+    Common(s);
+    s.step("coast 30 s beside a station", 60.0, [](ScenarioCtx& c) {
+        Planetoid& t = *S.terra;
+        const double R = t.radius * t.scale, r = R + 45000.0, mu = Mu(t);
+        static Planetoid* st = nullptr;
+        static double sep0 = 0.0;
+        if (!S.placed) {
+            const DVec3 u(0.0, 1.0, 0.0), e(1.0, 0.0, 0.0);
+            const DVec3 pos = t.worldPos + u * r;
+            const DVec3 v = DVec3(t.linearVelocity) + e * sqrt(mu / r);
+            if (!Rocket_TestSetState(pos, v.toFloat())) { c.fail("not flying"); return true; }
+            st = Station_Create(c.world, t, pos + DVec3(0.0, 0.0, 20.0), v.toFloat(), { 0, 0, 0, 1 }, 4.0f);
+            if (!st) { c.fail("no station"); return true; }
+            sep0 = 20.0;
+            S.placed = true; S.t0 = c.T;
+            return false;
+        }
+        DVec3 com; Vector3 vel; FrameRef f;
+        if (!Rocket_TestState(com, vel, &f)) { c.fail("the rocket stopped flying"); return true; }
+        Track(c, com, f);
+        const double sep = (com - st->worldPos).length();
+        S.rMax = std::max(S.rMax, fabs(sep - sep0));
+        c.waitingFor(TextFormat("30 s beside the station (%.2f m apart)", sep));
+        if (c.T - S.t0 < 30.0) return false;
+        c.note(TextFormat("after 30 s: %.3f m apart (from %.1f), the separation changed by up to %.3f m; frame %s(%s) (%s)", sep, sep0, S.rMax,
+                          f.kind == FrameKind::Fixed ? "Fixed" : "Centred", f.body == st->netId ? "the station" : f.body == t.netId ? "Terra" : "?",
+                          Frames_On() ? "frames on" : "frames off"));
+        c.metric("separation change", S.rMax, "m");
+        c.lt("the separation from a free-falling station changed by (m)", S.rMax, 1.0);
+        return true;
+    });
+}
+
 SCENARIO("rocket/orbit-closure") { OrbitClosure(s); }
 SCENARIO("rocket/orbit-closure-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; OrbitClosure(s); }
 SCENARIO("rocket/soi-trip") { SoiTrip(s); }
 SCENARIO("rocket/soi-trip-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; SoiTrip(s); }
+SCENARIO("rocket/station-hold") { StationHold(s); }
+SCENARIO("rocket/station-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; StationHold(s); }
