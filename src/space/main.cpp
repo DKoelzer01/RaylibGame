@@ -5145,6 +5145,8 @@ int main(int argc, char** argv)
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log", "any_stone" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
+                    // (#1449 T1) an old per-material tool (stone_shovel) is its class with that head now: had with the class
+                    for (const ItemDef& d : itemDB.items()) { std::string cls, data; if (Composed_FromLegacy(d.id, cls, data)) { Rule u; u.in = { cls }; u.out = { d.id }; rules.push_back(u); } }
                     // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
                     { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
                     { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
