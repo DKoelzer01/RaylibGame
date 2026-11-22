@@ -14,6 +14,9 @@
 void ItemIcons_Init();                                    // after InitWindow and itemDB.load
 void ItemIcons_Unload();
 bool ItemIcons_Has(const std::string& id);
+// (#1449) The icon key for one copy: a composed item's class with its head material ("tool_pickaxe@bronze", the head in
+// that material's colour), else the id. Pass it wherever an id goes below.
+std::string ItemIcons_Key(const std::string& id, const std::string& data);
 Texture2D ItemIcons_Texture();
 Rectangle ItemIcons_Source(const std::string& id);        // the icon's cell in the atlas (pixels)
 void ItemIcons_Draw(const std::string& id, Rectangle dst, Color tint = WHITE); // raylib 2D

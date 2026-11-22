@@ -43,6 +43,8 @@ bool Composed_Load(const char* classesPath = "resources/data/composed_classes.tx
 bool Composed_Is(const std::string& id);                    // a composed class
 const ComposedClass* Composed_Class(const std::string& id);
 const PartMaterial* Composed_Material(const std::string& id);
+std::vector<std::string> Composed_MaterialIds(); // every part material, sorted (#1449: one icon per class and head)
+std::string Composed_HeadOf(const std::string& id, const std::string& data); // a composed copy's head material, or ""
 ComposedStats Composed_Stats(const std::string& id, const std::string& data);
 // The record for a new item: head, handle and binding materials ("" handle or binding: the head's default), quality %.
 std::string Composed_MakeData(const std::string& head, const std::string& handle = {}, const std::string& binding = {}, int qualityPct = 100);

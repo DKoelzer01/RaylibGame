@@ -696,7 +696,7 @@ static void DrawCell(int i, float cw, float cell) {
     DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
     if (!s.empty()) {
         const ItemDef* d = itemDB.find(s.id);
-        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
+        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, ItemIcons_Key(s.id, s.data));
         const std::string own = Composed_DisplayName(s.id, s.data); // (#1449) "Bronze pickaxe" from its head
         CellName(dl, p, q, !own.empty() ? own : d ? d->name : s.id, hover);
         if (KindOf(s.id) != ItemKind::Tool) {
@@ -745,7 +745,7 @@ static void DrawGrid(float cell = 54.0f) {
         if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
-        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
+        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, ItemIcons_Key(binned.id, binned.data), true);
         const float fs = CellFontSize(bin); // (#1161: the cells' label size: the window's font ran out of a small cell)
         const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Bin");
         dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
@@ -777,7 +777,7 @@ static void DrawGrid(float cell = 54.0f) {
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
         DrawGlow(fg, ImVec2(m.x - 17.0f * GameUI_Scale(), m.y - 17.0f * GameUI_Scale()), ImVec2(m.x + 17.0f * GameUI_Scale(), m.y + 17.0f * GameUI_Scale()), Item_Glow(cursorStack)); // (#580)
-        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, cursorStack.id); } // (#891: at the interface scale)
+        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, ItemIcons_Key(cursorStack.id, cursorStack.data)); } // (#891: at the interface scale)
         if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 10.0f * GameUI_Scale(), m.y + 6.0f * GameUI_Scale()), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
     }
 }
@@ -1161,7 +1161,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         if (!here.empty()) DrawGlow(dl, p, q, Item_GlowOf(here.id, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
         if (!here.empty()) {
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, here.id);
+            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, ItemIcons_Key(here.id, here.data));
             const ItemDef* d = itemDB.find(here.id);
             CellName(dl, p, q, d ? d->name : here.id, hover);
             // the amount as the player inventory shows it: "12", "2.5", "0.4"
