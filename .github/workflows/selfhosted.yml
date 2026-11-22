@@ -156,14 +156,14 @@ jobs:
         run: |
           # The shader's half rounding (packHalf2x16, the stored face flows) against the CPU kernel's, 1M floats (#968).
           set +e
-          timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
           grep -E "^bench: half" half.log || true
           echo "half rounding: $(grep -E '^bench: half: [0-9]+ floats' half.log | sed -E 's/^bench: half: //')" >> "$GITHUB_STEP_SUMMARY"
           # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
-          "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
           # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
-          "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
           grep -E "^scenario: parity" parity-pressure.log || true
@@ -183,7 +183,7 @@ jobs:
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           set +e
-          "$OUT/bin/game" --scenario tag:fluid,tag:frames,tag:factory --scenario-no-record --scenario-out "$RUN/scenarios/part1" \
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:fluid,tag:frames,tag:factory --scenario-no-record --scenario-out "$RUN/scenarios/part1" \
             > scenarios-1.log 2>&1
           rc=$?
           set -e
@@ -199,7 +199,7 @@ jobs:
           RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
         run: |
           set +e
-          "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
             > scenarios-2.log 2>&1
           rc=$?
           set -e
@@ -208,7 +208,7 @@ jobs:
           exit $rc
       - name: Extra scenarios (the dispatch input extra_scenarios, #1447)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.extra_scenarios != '' }}
-        timeout-minutes: 30
+        timeout-minutes: 90 # (up to 45 min waiting for the GPU to itself: tools/ci/gpu_lock.sh)
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
@@ -218,7 +218,7 @@ jobs:
           # the GPU samples (gpu-samples.csv). Labels only: a failure here doesn't fail the job.
           echo "extra scenarios start: $(date -u +%H:%M:%S)" | tee -a "$GITHUB_STEP_SUMMARY"
           set +e
-          "$OUT/bin/game" --scenario "$EXTRA" --scenario-no-record --scenario-out "$RUN/scenarios/extra" > scenarios-extra.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" exclusive 2700 -- "$OUT/bin/game" --scenario "$EXTRA" --scenario-no-record --scenario-out "$RUN/scenarios/extra" > scenarios-extra.log 2>&1
           set -e
           echo "extra scenarios end: $(date -u +%H:%M:%S)" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -E "^scenario: [a-z0-9_/-]+ -> " scenarios-extra.log | tee -a "$GITHUB_STEP_SUMMARY" || true
@@ -228,8 +228,8 @@ jobs:
         env:
           TMPDIR: ${{ env.RUN }}/join-logs # the scripts' mktemp -d folders (host and client logs) land in the uploaded results
         run: |
-          EXE="$OUT/bin/game" bash tools/test_server.sh
-          EXE="$OUT/bin/game" bash tools/test_join.sh
+          EXE="$OUT/bin/game" bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/test_server.sh
+          EXE="$OUT/bin/game" bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/test_join.sh
       - name: Failures, known or NEW (#1479)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
@@ -315,7 +315,7 @@ jobs:
           set +e
           start=$SECONDS
           for s in $SETS; do
-            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
+            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
           done 2>&1 | tee "$log"
           {
             echo "## Regression --only headless, shard $SHARD/4 ($SETS, $RAYLIBGAME_VERSION)"
