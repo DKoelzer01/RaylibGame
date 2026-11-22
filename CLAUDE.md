@@ -37,6 +37,10 @@ test; add a line when something goes wrong).
   refused: `tools/slot.sh wait-quiet` blocks until it ends. Never take a slot while the user playtests (the coordinator
   holds it as `playtest`).
 - Prefer the self-hosted runner for headless checks (below); this PC is for what needs a real display or the user's machine.
+- **Build sandbox on deweyserver** (no slot needed, nothing runs on this PC): `tools/sandbox.sh '<command>'` pushes your
+  branch, builds it there (Linux headless, warm ccache: seconds to minutes) and runs the command with `$GAME`/`$TESTS`, e.g.
+  `'$TESTS --gtest_brief=1'`, `'$GAME --seed 42 --bench 1 --test-terrain-gpu'`, `'$GAME --seed 42 --bench 1 --cave-stats 400'`
+  (cave tools need `--bench 1` to create the world). Use it while the user playtests and for compile/unit/headless loops.
 
 ## Testing (detail: docs/notes/testing.md)
 
