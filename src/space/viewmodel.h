@@ -17,6 +17,7 @@ class Scene;
 
 void Viewmodel_Update(Scene& world, float dt);
 void Viewmodel_Draw(Scene& world);        // after the world, before the 2D HUD
+float Viewmodel_Light();                  // (#1588 tests) the hand's light, 0..1 (-1 before the first draw)
 Vector3 Viewmodel_BobOffset();            // the current bob (view space, m) - tests
 bool Viewmodel_Visible();                 // drawn this frame
 
