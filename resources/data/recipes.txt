@@ -210,3 +210,28 @@ lv_assembler 1     = lv_hull 1, basic_circuit 2, copper_wire 8, steel_plate 2
 # (#1427 L7e) the LV successors of the press and the saw
 compressor 1       = lv_hull 1, basic_circuit 2, steel_plate 4
 cutter 1           = lv_hull 1, basic_circuit 2, steel_plate 2, iron_plate 2
+# (#1219) Composed weapons: heads hafted with planks (Composed_FromParts reads the head's material). Stone heads are knapped
+# by hand; bronze, iron and steel heads come from the kiln and the anvil (machine_recipes.txt).
+stone_blade 1        = any_stone 2
+stone_spearhead 1    = any_stone 1
+stone_mace_head 1    = any_stone 3
+weapon_knife 1       = stone_blade 1, any_planks 1
+weapon_sword 1       = stone_blade 2, any_planks 1
+weapon_greatsword 1  = stone_blade 3, any_planks 2
+weapon_spear 1       = stone_spearhead 1, any_planks 3
+weapon_mace 1        = stone_mace_head 1, any_planks 2
+weapon_knife 1       = bronze_blade 1, any_planks 1
+weapon_sword 1       = bronze_blade 2, any_planks 1
+weapon_greatsword 1  = bronze_blade 3, any_planks 2
+weapon_spear 1       = bronze_spearhead 1, any_planks 3
+weapon_mace 1        = bronze_mace_head 1, any_planks 2
+weapon_knife 1       = iron_blade 1, any_planks 1
+weapon_sword 1       = iron_blade 2, any_planks 1
+weapon_greatsword 1  = iron_blade 3, any_planks 2
+weapon_spear 1       = iron_spearhead 1, any_planks 3
+weapon_mace 1        = iron_mace_head 1, any_planks 2
+weapon_knife 1       = steel_blade 1, any_planks 1
+weapon_sword 1       = steel_blade 2, any_planks 1
+weapon_greatsword 1  = steel_blade 3, any_planks 2
+weapon_spear 1       = steel_spearhead 1, any_planks 3
+weapon_mace 1        = steel_mace_head 1, any_planks 2

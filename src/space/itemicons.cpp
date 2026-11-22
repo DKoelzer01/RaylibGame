@@ -453,6 +453,47 @@ void Tool(Canvas& cv, ToolKind t, C3 head, C3 handle) {
     }
     cv.paint(R(h), Lin(head, 0.4f), 1.6f);
 }
+// (#1219) Weapons, leaning as the tools do: the head in its colour on a wooden grip.
+enum class WeaponKind { Knife, Sword, Greatsword, Spear, Mace };
+void WeaponIcon(Canvas& cv, WeaponKind k, C3 head) {
+    const float ang = 0.72f;
+    auto R = [&](Sdf s) { return Rot(s, 32, 32, ang); };
+    switch (k) {
+    case WeaponKind::Knife:
+        cv.paint(R(Capsule(32, 58, 32, 42, 3.2f)), Lin(kWood));
+        cv.paint(R(Box(32, 41, 7, 1.6f)), Lin(head * 0.7f));
+        cv.paint(R(Poly({ { 29, 40 }, { 35, 40 }, { 34, 22 }, { 32, 16 }, { 30, 22 } })), Lin(head, 0.4f), 1.4f);
+        break;
+    case WeaponKind::Sword:
+    case WeaponKind::Greatsword: {
+        const bool big = k == WeaponKind::Greatsword;
+        const float w = big ? 4.2f : 3.2f, guard = big ? 11.0f : 9.0f;
+        cv.paint(R(Capsule(32, 60, 32, 48, 3.0f)), Lin(kWood));
+        cv.paint(R(Box(32, 47, guard, 2.0f)), Lin(head * 0.7f));
+        cv.paint(R(Poly({ { 32 - w, 45 }, { 32 + w, 45 }, { 32 + w, 10 }, { 32, 3 }, { 32 - w, 10 } })), Lin(head, 0.4f), 1.4f);
+        cv.line(32, 44, 32, 9, 0.6f, kWhite, 0.25f); // the fuller
+        break;
+    }
+    case WeaponKind::Spear:
+        cv.paint(R(Capsule(32, 62, 32, 16, 2.4f)), Lin(kWood));
+        cv.paint(R(Poly({ { 27, 18 }, { 37, 18 }, { 32, 2 } })), Lin(head, 0.4f), 1.4f);
+        break;
+    case WeaponKind::Mace:
+        cv.paint(R(Capsule(32, 60, 32, 22, 3.0f)), Lin(kWood));
+        cv.paint(R(Circle(32, 16, 10)), Round(head, 29, 12, 11), 1.4f);
+        for (int s = 0; s < 4; ++s) { const float a = s * 1.5708f; cv.paint(R(Circle(32 + 10 * cosf(a), 16 + 10 * sinf(a), 2.6f)), Flat(head * 0.75f)); }
+        break;
+    }
+}
+// (#1219) A weapon head on its own: a blade, a spearhead or a mace head (rough: darker, no shine).
+void WeaponHeadIcon(Canvas& cv, WeaponKind k, C3 c, bool rough) {
+    const C3 col = rough ? c * 0.8f : c;
+    if (k == WeaponKind::Spear) cv.paint(Rot(Poly({ { 22, 50 }, { 42, 50 }, { 32, 10 } }), 32, 32, 0.6f), Lin(col, 0.4f), 1.6f);
+    else if (k == WeaponKind::Mace) { cv.paint(Circle(32, 32, 16), Round(col, 27, 26, 18), 1.6f); for (int s = 0; s < 6; ++s) { const float a = s * 1.0472f; cv.paint(Circle(32 + 16 * cosf(a), 32 + 16 * sinf(a), 3.5f), Flat(col * 0.75f)); } }
+    else cv.paint(Rot(Poly({ { 27, 56 }, { 37, 56 }, { 37, 16 }, { 32, 6 }, { 27, 16 } }), 32, 32, 0.72f), Lin(col, 0.4f), 1.6f);
+    if (!rough) cv.shine(26, 24, 5, 1.5f, 0.4f);
+}
+
 void Shears(Canvas& cv) {
     cv.paint(Rot(Poly({ { 30, 32 }, { 34, 32 }, { 50, 6 }, { 46, 6 } }), 32, 32, 0.25f), Lin(kSteel));
     cv.paint(Rot(Poly({ { 30, 32 }, { 34, 32 }, { 18, 6 }, { 14, 6 } }), 32, 32, -0.25f), Lin(kSteel * 0.9f));
@@ -543,6 +584,16 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (ends("_pickaxe") || ends("_shovel") || ends("_axe") || ends("_hoe")) {
         const ToolKind t = ends("_pickaxe") ? ToolKind::Pickaxe : ends("_shovel") ? ToolKind::Shovel : ends("_axe") ? ToolKind::Axe : ToolKind::Hoe;
         Tool(cv, t, c, starts("titanium") || starts("steel") ? C3{ 0.3f, 0.3f, 0.34f } : kWood);
+        return;
+    }
+    // (#1219) Composed weapons and their heads
+    if (starts("weapon_")) {
+        const WeaponKind k = ends("_knife") ? WeaponKind::Knife : ends("_greatsword") ? WeaponKind::Greatsword : ends("_sword") ? WeaponKind::Sword : ends("_spear") ? WeaponKind::Spear : WeaponKind::Mace;
+        WeaponIcon(cv, k, c);
+        return;
+    }
+    if (ends("_blade") || ends("_spearhead") || ends("_mace_head")) {
+        WeaponHeadIcon(cv, ends("_spearhead") ? WeaponKind::Spear : ends("_mace_head") ? WeaponKind::Mace : WeaponKind::Sword, c, starts("rough_"));
         return;
     }
     if (id == "campfire") { Campfire(cv); return; }

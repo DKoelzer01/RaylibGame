@@ -97,6 +97,30 @@ tool_pickaxe     | Pickaxe          | tool | 160,155,150 | Its head sets what it
 tool_shovel      | Shovel           | tool | 160,145,125 | Digs dirt, sand, gravel and snow; a harder head digs wider and faster.
 tool_axe         | Axe              | tool | 160,135,115 | Fells trees, and fights as an axe; a harder head fells faster.
 tool_hoe         | Hoe              | tool | 160,150,130 | Tills soil into farmland (RMB); an iron or better head tills a wider patch.
+# (#1219) Composed weapons: one item per class; the head's material sets the damage (3 + 3 x hardness), durability and
+# sockets (part_materials.txt). Made at the grid from a head part and planks (Composed_FromParts reads the head).
+weapon_knife      | Knife      | tool | 170,165,160 | Quick light cuts (slash); the shortest reach.
+weapon_sword      | Sword      | tool | 175,170,170 | A balanced blade (slash): steady damage and reach.
+weapon_greatsword | Greatsword | tool | 165,160,165 | Two hands: slow, wide and heavy; its wind-ups shrug off blows.
+weapon_spear      | Spear      | tool | 170,150,120 | Thrusts (pierce) at the longest reach, in a narrow line.
+weapon_mace       | Mace       | tool | 150,145,140 | Crushes (blunt): breaks guards and poise.
+# (#1219) Weapon heads, <material>_<part> (composed.h): stone ones knapped by hand, bronze cast in a mould and finished at an
+# anvil, iron and steel forged at an anvil.
+stone_blade           | Stone blade           | 64 | 140,135,130 | Knapped stone. Haft it (Tab) with planks: one makes a knife, two a sword, three a greatsword.
+stone_spearhead       | Stone spearhead       | 64 | 140,135,130 | Knapped stone. Haft it (Tab) on planks into a spear.
+stone_mace_head       | Stone mace head       | 64 | 140,135,130 | A shaped stone. Haft it (Tab) into a mace.
+rough_bronze_blade    | Rough bronze blade    | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+rough_bronze_spearhead | Rough bronze spearhead | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+rough_bronze_mace_head | Rough bronze mace head | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+bronze_blade          | Bronze blade          | 64 | 205,150, 75 | Haft it (Tab) with planks: one makes a knife, two a sword, three a greatsword.
+bronze_spearhead      | Bronze spearhead      | 64 | 205,150, 75 | Haft it (Tab) on planks into a spear.
+bronze_mace_head      | Bronze mace head      | 64 | 205,150, 75 | Haft it (Tab) into a mace.
+iron_blade            | Iron blade            | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab): one makes a knife, two a sword, three a greatsword.
+iron_spearhead        | Iron spearhead        | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) on planks into a spear.
+iron_mace_head        | Iron mace head        | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into a mace.
+steel_blade           | Steel blade           | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab): one makes a knife, two a sword, three a greatsword.
+steel_spearhead       | Steel spearhead       | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) on planks into a spear.
+steel_mace_head       | Steel mace head       | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a mace.
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
