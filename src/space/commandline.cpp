@@ -25,6 +25,16 @@ namespace {
     std::string lastReply;
     double replyUntil = 0.0;
     std::string Lower(std::string s) { for (char& c : s) c = (char)tolower((unsigned char)c); return s; }
+    // (#1563) Single player: what was typed and what came back (help text, /locate results, errors), shown above the line
+    // whenever it is open, scrollable, so a long answer can be read again later. The newest last; the oldest go past 200.
+    struct Entry { std::string text; bool typed; };
+    std::vector<Entry> history;
+    bool scrollToEnd = false;
+    void Remember(const std::string& t, bool typed) {
+        history.push_back({ t, typed });
+        if (history.size() > 200) history.erase(history.begin(), history.begin() + (history.size() - 200));
+        scrollToEnd = true;
+    }
 }
 
 bool CommandLine_Open() { return open; }
@@ -89,7 +99,7 @@ void CommandLine_Update(Scene& world) {
     // Enter opens it empty; / opens it with the slash typed.
     if (PlayerInput_BindingPressed(Act::Chat)) { open = true; focusNext = true; text[0] = 0; }
     else if (IsKeyPressed(KEY_SLASH)) { open = true; focusNext = true; strcpy(text, "/"); }
-    if (open) { while (GetCharPressed() != 0) {} } // (the key that opened it types nothing)
+    if (open) { while (GetCharPressed() != 0) {} scrollToEnd = true; } // (the key that opened it types nothing; the history opens at its newest)
 }
 
 void CommandLine_Draw() {
@@ -106,27 +116,42 @@ void CommandLine_Draw() {
         return;
     }
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(20 * s, io.DisplaySize.y - 160 * s));
+    ImGui::SetNextWindowPos(ImVec2(20 * s, io.DisplaySize.y - 80 * s), ImGuiCond_Always, ImVec2(0.0f, 1.0f)); // (its bottom: it grows upward with the history)
     ImGui::SetNextWindowSize(ImVec2(std::min(760.0f * s, io.DisplaySize.x - 40 * s), 0.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::Begin("##cmdline", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     ImGui::SetWindowFontScale(GameUI_HudScale() / GameUI_Scale()); // (#925: the style's fonts are at the menus' 2x)
     const bool joined = gNetClient && gNetClient->state == NetClient::State::Joined;
+    if (!joined && !history.empty()) { // (#1563) the history, scrollable (the wheel, or drag its bar)
+        const float h = std::min(320.0f * s, io.DisplaySize.y * 0.5f);
+        ImGui::BeginChild("##cmdhistory", ImVec2(0.0f, h), true);
+        for (const Entry& e : history) {
+            if (e.typed) ImGui::TextDisabled("%s", e.text.c_str());
+            else { ImGui::PushTextWrapPos(0.0f); ImGui::TextUnformatted(e.text.c_str()); ImGui::PopTextWrapPos(); }
+        }
+        if (scrollToEnd) { ImGui::SetScrollHereY(1.0f); scrollToEnd = false; }
+        ImGui::EndChild();
+    }
     ImGui::TextDisabled(joined ? "Say something, or a /command (Enter sends, Esc closes)" : "A /command (Enter runs it, Esc closes; /help lists them)");
     if (focusNext) { ImGui::SetKeyboardFocusHere(); focusNext = false; }
     ImGui::SetNextItemWidth(-1.0f);
     const bool sent = ImGui::InputText("##cmd", text, sizeof(text), ImGuiInputTextFlags_EnterReturnsTrue);
-    if (sent) {
-        const std::string line = text;
-        open = false;
-        if (!line.empty()) {
-            if (joined) NetClient_SendChat(*gNetClient, line); // (the server answers commands it allows, and says chat to everyone)
-            else if (line[0] == '/') { lastReply = CommandLine_Run(line); replyUntil = GetTime() + 6.0; }
-            else { lastReply = "Nobody else is here: lines starting with / are commands (/help)"; replyUntil = GetTime() + 5.0; }
-        }
-    }
+    if (sent) CommandLine_Submit(text);
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) open = false;
     ImGui::End();
 }
+
+void CommandLine_Submit(const std::string& line) {
+    open = false;
+    if (line.empty()) return;
+    const bool joined = gNetClient && gNetClient->state == NetClient::State::Joined;
+    if (joined) { NetClient_SendChat(*gNetClient, line); return; } // (the server answers commands it allows, and says chat to everyone)
+    if (line[0] == '/') { lastReply = CommandLine_Run(line); replyUntil = GetTime() + 6.0; }
+    else { lastReply = "Nobody else is here: lines starting with / are commands (/help)"; replyUntil = GetTime() + 5.0; }
+    Remember(line, true); // (#1563)
+    if (!lastReply.empty()) Remember(lastReply, false);
+}
+int CommandLine_HistoryCount() { return (int)history.size(); }
+std::string CommandLine_HistoryLine(int k) { return k >= 0 && k < (int)history.size() ? history[k].text : std::string(); }
 
 void CommandLine_TestOpen(const char* t) { open = true; focusNext = true; snprintf(text, sizeof(text), "%s", t ? t : ""); }
