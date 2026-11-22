@@ -108,11 +108,17 @@ namespace {
         }
         return true;
     }
-    // (#1449 T1) Hold a composed tool: the copy with that head (as a player picks it on the hotbar)
-    bool Hold(const std::string& cls, const std::string& headMaterial) {
+    // (#1449 T1) Hold a composed tool: the copy with that head (as a player picks it on the hotbar). KeepPickaxe re-crafts
+    // that head's tool when it wears out.
+    std::string heldClass, heldMaterial;
+    int CopyCell(const std::string& cls, const std::string& headMaterial) {
         const auto& g = inventory.grid();
-        for (int i = 0; i < Inventory::kCells; ++i)
-            if (g[i].id == cls && Composed_HeadOf(cls, g[i].data) == headMaterial) { inventory.preferred = i; terrainTool.heldTool = cls; return true; }
+        for (int i = 0; i < Inventory::kCells; ++i) if (g[i].id == cls && Composed_HeadOf(cls, g[i].data) == headMaterial) return i;
+        return -1;
+    }
+    bool Hold(const std::string& cls, const std::string& headMaterial) {
+        const int i = CopyCell(cls, headMaterial);
+        if (i >= 0) { inventory.preferred = i; terrainTool.heldTool = heldClass = cls; heldMaterial = headMaterial; return true; }
         printf("bench: progression: no %s with a %s head to hold\n", cls.c_str(), headMaterial.c_str());
         failed = 1;
         return false;
@@ -196,6 +202,15 @@ namespace {
     // pickaxe out before the MV ladder; without one the digs failed silently and used up the ore samples).
     std::string lastPickaxe;
     bool KeepPickaxe() {
+        if (!heldMaterial.empty() && terrainTool.heldTool == heldClass) { // (#1449 T1) a composed copy: count() never sees it
+            if (CopyCell(heldClass, heldMaterial) >= 0) return Hold(heldClass, heldMaterial);
+            const ComposedClass* c = Composed_Class(heldClass);
+            std::string part = c ? c->headPart : std::string();
+            for (char& ch : part) if (ch == ' ') ch = '_';
+            if (!Craft(heldClass, 1, heldMaterial + "_" + part)) return false;
+            printf("bench: progression: crafted a new %s %s (the last one wore out)\n", heldMaterial.c_str(), heldClass.c_str());
+            return Hold(heldClass, heldMaterial);
+        }
         if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) > 0) { lastPickaxe = terrainTool.heldTool; return true; }
         if (lastPickaxe.empty() || !Craft(lastPickaxe, 1)) return false;
         printf("bench: progression: crafted a new %s (the last one wore out)\n", lastPickaxe.c_str());
