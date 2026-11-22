@@ -10468,6 +10468,7 @@ int main(int argc, char** argv)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
                     // camera and the floating origin do (a server runs every player this way).
                     player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
+                    player.doubleTapFly = terrainTool.creative; // (#1562) and a double-tap of Space (not for benches: they jump on their own)
                     RenderOriginScope frame(world, player.position);
                     if (gJoinSynced && gJoin.state == NetClient::State::Joined) NetClient_Step(gJoin, world, player, moveIn); // --join: send, predict, reconcile (#327)
                     else if (joinAddr.empty()) player.update(world, moveIn, simDt); // (a client waits for its first state)
