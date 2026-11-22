@@ -89,6 +89,17 @@ bool Composed_Load(const char* classesPath, const char* materialsPath) {
 bool Composed_Is(const std::string& id) { EnsureLoaded(); return gClasses.count(id) > 0; }
 const ComposedClass* Composed_Class(const std::string& id) { EnsureLoaded(); auto it = gClasses.find(id); return it == gClasses.end() ? nullptr : &it->second; }
 const PartMaterial* Composed_Material(const std::string& id) { EnsureLoaded(); auto it = gMaterials.find(id); return it == gMaterials.end() ? nullptr : &it->second; }
+std::vector<std::string> Composed_MaterialIds() {
+    EnsureLoaded();
+    std::vector<std::string> ids;
+    for (const auto& kv : gMaterials) ids.push_back(kv.first);
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+std::string Composed_HeadOf(const std::string& id, const std::string& data) {
+    if (data.empty() || !Composed_Is(id)) return std::string();
+    return ItemData::Get(data, "h");
+}
 
 std::string Composed_MakeData(const std::string& head, const std::string& handle, const std::string& binding, int qualityPct) {
     std::string d;
@@ -97,6 +108,48 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
     d = ItemData::Set(d, "b", binding.empty() ? DefaultBinding(head) : binding);
     if (qualityPct != 100) d = ItemData::SetInt(d, "q", qualityPct);
     return d;
+}
+
+bool Composed_IsGem(const std::string& id) { return id == "ruby" || id == "sapphire" || id == "emerald" || id == "amethyst" || id == "quartz"; }
+
+std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem) {
+    if (!Composed_IsGem(gem)) return {};
+    const ComposedStats s = Composed_Stats(cls, data);
+    if (!s.valid || (int)s.gems.size() >= s.sockets) return {};
+    std::string j;
+    for (const std::string& g : s.gems) j += (j.empty() ? "" : ",") + g; // (the gems it really holds: drops any junk in j=)
+    j += (j.empty() ? "" : ",") + gem;
+    return ItemData::Set(data, "j", j);
+}
+
+std::string Composed_GemText(const std::string& id) { // (#1219, combat doc: GUESS effects)
+    if (id == "ruby") return "Ruby (burns)";
+    if (id == "sapphire") return "Sapphire (chills)";
+    if (id == "emerald") return "Emerald (+25% durability)";
+    if (id == "amethyst") return "Amethyst (shocks)";
+    if (id == "quartz") return "Quartz (+50% poise damage)";
+    return id;
+}
+
+std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct) {
+    const ComposedClass* c = Composed_Class(cls);
+    if (!c) return {};
+    std::string headPart = c->headPart;
+    for (char& ch : headPart) if (ch == ' ') ch = '_';
+    std::string head, handle, binding;
+    auto materialOf = [](const std::string& id, const std::string& part) -> std::string { // "<material>_<part>" with a known material
+        if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
+        const std::string m = id.substr(0, id.size() - part.size() - 1);
+        return Composed_Material(m) ? m : std::string();
+    };
+    for (const std::string& id : ingredients) {
+        std::string m;
+        if (head.empty() && !(m = materialOf(id, headPart)).empty()) head = m;
+        else if (handle.empty() && !(m = materialOf(id, "handle")).empty()) handle = m;
+        else if (binding.empty() && !(m = materialOf(id, "binding")).empty()) binding = m;
+    }
+    if (head.empty()) return {};
+    return Composed_MakeData(head, handle, binding, qualityPct);
 }
 
 ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
@@ -123,6 +176,17 @@ ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
     s.digSpeed = head->tier > 0 ? std::clamp(head->hardness / (float)head->tier, 0.5f, 1.5f) : 1.0f;
     s.weight = 0.4f * head->density + 0.3f * (handle ? handle->density : 0.7f) + 0.05f * (binding ? binding->density : 0.3f);
     s.sockets = std::max(head->sockets, binding ? binding->sockets : 0);
+    { // (#1219) gems set in its sockets: "j=ruby,sapphire", no more than it has sockets; an emerald: x1.25 durability (GUESS)
+        const std::string j = ItemData::Get(data, "j");
+        size_t a = 0;
+        while (a < j.size() && (int)s.gems.size() < s.sockets) {
+            size_t b = j.find(',', a); if (b == std::string::npos) b = j.size();
+            const std::string g = j.substr(a, b - a);
+            if (Composed_IsGem(g)) s.gems.push_back(g);
+            a = b + 1;
+        }
+        for (const std::string& g : s.gems) if (g == "emerald") s.durability = (int)std::lround(s.durability * 1.25f);
+    }
     std::string noun = c->noun;
     std::string mat = head->name;
     s.name = mat + " " + noun;
@@ -162,6 +226,33 @@ int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUs
         (void)old;
     }
     return n;
+}
+
+std::string Composed_DisplayName(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id) || data.empty()) return std::string();
+    const ComposedStats s = Composed_Stats(id, data);
+    return s.valid ? s.name : std::string();
+}
+
+std::string Composed_PartsText(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id) || data.empty()) return std::string();
+    const ComposedStats s = Composed_Stats(id, data);
+    if (!s.valid) return std::string();
+    auto nameOf = [](const std::string& m) { const PartMaterial* p = Composed_Material(m); return p ? p->name : m; };
+    std::string t = "Head: " + nameOf(s.head) + "   Handle: " + nameOf(s.handle.empty() ? "wood" : s.handle) +
+                    "   Binding: " + nameOf(s.binding.empty() ? std::string("fibre") : s.binding);
+    char buf[160];
+    if (s.tool.type != ToolType::Hands) { snprintf(buf, sizeof buf, "\nTier %d (%s)", s.tool.tier, ToolTierName(s.tool.tier)); t += buf; }
+    snprintf(buf, sizeof buf, "\nDurability %d / %d", std::max(0, s.durability - s.wear), s.durability); t += buf;
+    if (s.quality != 1.0f) { snprintf(buf, sizeof buf, "   Quality %+.0f%%", (s.quality - 1.0f) * 100.0f); t += buf; }
+    if (s.sockets > 0) {
+        snprintf(buf, sizeof buf, "   Sockets %d/%d", (int)s.gems.size(), s.sockets); t += buf; // (#1219) set / free
+        if (!s.gems.empty()) {
+            t += "\nGems:";
+            for (const std::string& g : s.gems) t += " " + Composed_GemText(g);
+        }
+    }
+    return t;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
@@ -237,6 +328,43 @@ TEST(Composed, ConvertInventoryMovesOldToolsAndTheirWear) {
     EXPECT_EQ(ToolDurabilityOf("tool_axe", Composed_MakeData("iron")), 400);
     EXPECT_EQ(ToolDurabilityOf("stone_axe", ""), 150) << "old ids still answer as before";
     EXPECT_EQ(Composed_ConvertInventory(inv, &wear), 0) << "converting again does nothing";
+}
+
+TEST(Composed, AssemblyFromPartItems) {
+    ASSERT_TRUE(Composed_Load());
+    const std::string d = Composed_FromParts("tool_pickaxe", { "bronze_pick_head", "oak_planks", "wood_handle", "leather_binding" });
+    EXPECT_EQ(ItemData::Get(d, "h"), "bronze");
+    EXPECT_EQ(ItemData::Get(d, "g"), "wood");
+    EXPECT_EQ(ItemData::Get(d, "b"), "leather");
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "steel_pick_head" }), Composed_MakeData("steel")) << "missing parts: the head's defaults";
+    EXPECT_EQ(ItemData::Get(Composed_FromParts("weapon_sword", { "steel_blade", "bone_handle" }), "g"), "bone");
+    EXPECT_EQ(ItemData::Get(Composed_FromParts("weapon_spear", { "flint_spearhead" }), "h"), "flint");
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "bronze_blade", "wood_handle" }), "") << "a sword's blade is no pick head";
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "unobtainium_pick_head" }), "") << "an unknown material";
+    EXPECT_EQ(Composed_FromParts("stone", { "bronze_pick_head" }), "") << "not a class";
+    EXPECT_EQ(ItemData::GetInt(Composed_FromParts("tool_axe", { "iron_axe_head" }, 106), "q", 100), 106) << "the anvil's quality";
+}
+
+TEST(Composed, NamesAndPartsForTheUi) {
+    ASSERT_TRUE(Composed_Load());
+    const std::string d = ItemData::SetInt(Composed_MakeData("bronze", {}, {}, 105), "w", 40);
+    EXPECT_EQ(Composed_DisplayName("tool_pickaxe", d), "Bronze pickaxe");
+    EXPECT_EQ(Composed_DisplayName("tool_pickaxe", ""), "") << "no record: the item table's name";
+    EXPECT_EQ(Composed_DisplayName("stone", "h=bronze"), "") << "not a class";
+    // (#1449) the icon's head: from the copy's record, only for a class
+    EXPECT_EQ(Composed_HeadOf("tool_pickaxe", d), "bronze");
+    EXPECT_EQ(Composed_HeadOf("tool_pickaxe", ""), "");
+    EXPECT_EQ(Composed_HeadOf("stone", "h=bronze"), "");
+    const std::vector<std::string> mats = Composed_MaterialIds();
+    EXPECT_TRUE(std::is_sorted(mats.begin(), mats.end()));
+    EXPECT_NE(std::find(mats.begin(), mats.end(), "steel"), mats.end());
+    const std::string t =Composed_PartsText("tool_pickaxe", d);
+    EXPECT_NE(t.find("Head: Bronze"), std::string::npos) << t;
+    EXPECT_NE(t.find("Binding: Leather"), std::string::npos) << t;
+    EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;
+    EXPECT_NE(t.find("Durability 380 / 420"), std::string::npos) << t; // 400 x 1.05 quality, 40 used
+    EXPECT_NE(t.find("Quality +5%"), std::string::npos) << t;
+    EXPECT_NE(t.find("Sockets 0/1"), std::string::npos) << t; // (#1219: set / sockets)
 }
 
 TEST(Composed, UnknownsAreNotValid) {

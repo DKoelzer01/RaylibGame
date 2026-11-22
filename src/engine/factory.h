@@ -49,6 +49,7 @@ struct MachineView {             // published per machine each tick
     std::vector<std::pair<std::string, int>> inSlots, outSlots; // per slot ("", 0 when empty); chests use inSlots
     std::vector<int> inCenti;                                   // (#1102) per input slot, a fraction more (hundredths): a chest's 0.4 dirt
     std::vector<std::string> inData;                            // (#1446 2b) per input slot, an item's own record ("" plain)
+    std::vector<std::string> outData;                           // (#1446 2c) per output slot, likewise (a composed item a machine made)
     bool hasFuelSlot = false;       // fuel-burning machines and generators (#194)
     std::pair<std::string, int> fuelSlot;
     int water = 0, waterMax = 0;    // litres in its tank (boilers, #229)

@@ -1,4 +1,5 @@
 #include "inventory.h"
+#include "composed.h"
 #include "utils/logger.h"
 #include "world.h"
 #include "voxel.h"
@@ -420,12 +421,22 @@ bool Inventory::canCraft(const Recipe& r) const {
     // The output must fit (after the inputs are taken out), or crafting would destroy ingredients.
     Inventory after = *this;
     for (auto& in : r.inputs) after.removeAmount(in.first, in.second);
+    if (Composed_Is(r.output)) { // (#1449) one empty cell a copy
+        int empty = 0; for (int k = 0; k < kGrid; ++k) empty += after.slots[k].empty() ? 1 : 0;
+        return empty >= std::max(1, r.outputCount);
+    }
     return after.room(r.output) >= (int64_t)r.outputCount * 100;
 }
 
 bool Inventory::craft(const Recipe& r) {
     if (!canCraft(r)) return false;
     for (auto& in : r.inputs) removeAmount(in.first, in.second);
+    if (Composed_Is(r.output)) { // (#1449) the assembly hook: the parts consumed become the copy's record
+        std::vector<std::string> parts;
+        for (auto& in : r.inputs) parts.push_back(in.first);
+        const std::string data = Composed_FromParts(r.output, parts);
+        if (!data.empty()) { for (int k = 0; k < std::max(1, r.outputCount); ++k) addInstance(r.output, data); return true; }
+    }
     addAmount(r.output, r.outputCount);
     return true;
 }
@@ -631,6 +642,30 @@ TEST_F(InventoryTest, SortMergesTheGridAndKeepsAverageHeat) {
     EXPECT_NEAR(inv.grid()[1].heat, 0.25f, 1e-6f);
     EXPECT_TRUE(inv.grid()[2].empty());
     EXPECT_EQ(inv.grid()[Inventory::kGrid].id, "dirt");
+}
+
+// (#1219) Weapons from recipes.txt: hafting a head makes one composed copy whose record names the head's material; every
+// weapon recipe names a head the class takes (so none crafts a plain, partless weapon).
+TEST_F(InventoryTest, HaftingAHeadMakesAComposedWeapon) {
+    ASSERT_TRUE(Composed_Load());
+    const Recipe* sword = nullptr;
+    for (const Recipe& r : itemDB.recipes()) {
+        if (r.output.rfind("weapon_", 0) != 0) continue;
+        std::vector<std::string> parts; for (const auto& in : r.inputs) parts.push_back(in.first);
+        const std::string d = Composed_FromParts(r.output, parts);
+        EXPECT_TRUE(Composed_Stats(r.output, d).valid) << r.output << " from " << (parts.empty() ? std::string("?") : parts[0]);
+        for (const auto& in : r.inputs) EXPECT_TRUE(itemDB.find(in.first) || IsWildcardItem(in.first)) << in.first << " is an item";
+        if (r.output == "weapon_sword" && !r.inputs.empty() && r.inputs[0].first == "bronze_blade") sword = &r;
+    }
+    ASSERT_NE(sword, nullptr) << "a bronze sword recipe";
+    Inventory inv;
+    for (const auto& in : sword->inputs) inv.add(ItemMatches(in.first, "oak_planks") ? "oak_planks" : in.first, in.second);
+    ASSERT_TRUE(inv.craft(*sword));
+    EXPECT_EQ(inv.countInstances("weapon_sword"), 1);
+    EXPECT_EQ(inv.count("weapon_sword"), 0) << "no plain sword";
+    EXPECT_EQ(inv.count("bronze_blade"), 0) << "the blades went into it";
+    const int cell = inv.findInstance("weapon_sword", Composed_MakeData("bronze"));
+    EXPECT_GE(cell, 0) << "a bronze head, the default handle and binding";
 }
 
 TEST_F(InventoryTest, CraftNeedsRoomForTheOutput) {

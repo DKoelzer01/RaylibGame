@@ -8,6 +8,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 #include "tools.h"
 
 struct PartMaterial {
@@ -32,6 +33,7 @@ struct ComposedStats {
     float digSpeed = 1.0f;         // against its tier's usual (1 for the default parts)
     float weight = 0.0f;           // kg
     int sockets = 0;
+    std::vector<std::string> gems; // (#1219) set in its sockets ("j="), at most sockets
     float quality = 1.0f;          // the anvil's quality (q %, 90-110)
     int wear = 0;                  // strokes used (w)
     std::string name;              // "Bronze pickaxe"
@@ -41,9 +43,22 @@ bool Composed_Load(const char* classesPath = "resources/data/composed_classes.tx
 bool Composed_Is(const std::string& id);                    // a composed class
 const ComposedClass* Composed_Class(const std::string& id);
 const PartMaterial* Composed_Material(const std::string& id);
+std::vector<std::string> Composed_MaterialIds(); // every part material, sorted (#1449: one icon per class and head)
+std::string Composed_HeadOf(const std::string& id, const std::string& data); // a composed copy's head material, or ""
 ComposedStats Composed_Stats(const std::string& id, const std::string& data);
 // The record for a new item: head, handle and binding materials ("" handle or binding: the head's default), quality %.
 std::string Composed_MakeData(const std::string& head, const std::string& handle = {}, const std::string& binding = {}, int qualityPct = 100);
+// (#1449) The assembly hook: the record for a class made from part items, as a grid or anvil recipe consumes them. A part item
+// is named <material>_<part>: the class's head part with '_' for spaces (bronze_pick_head, steel_blade, flint_spearhead), or
+// handle / binding (wood_handle, leather_binding); the material is a part_materials.txt row. Other ingredients are ignored.
+// A missing handle or binding takes the head's default; no head: "" (the recipe is wrong: the item stays plain).
+std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct = 100);
+// (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
+bool Composed_IsGem(const std::string& id);
+std::string Composed_GemText(const std::string& id);
+// (#1219, user 2026-11-22: a gem dropped onto a weapon in the inventory) The copy's record with that gem set in a free
+// socket; "" if it isn't a gem, the item isn't a valid composed copy, or every socket is taken.
+std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
 class Inventory;
@@ -51,5 +66,9 @@ class Inventory;
 // class with the default parts (one item per cell). wearUsed (the old per-id wear, may be null): each id's wear moves into
 // the first copy converted, and its entry goes. Only classes the item table knows are converted. Returns how many.
 int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed);
+// (#1449 part 3) What the UI shows for an item: a composed copy's name from its head ("Bronze pickaxe"); "" for anything else
+// (the caller shows the item table's name). Its parts in a few lines (head, handle, binding, quality, sockets, wear).
+std::string Composed_DisplayName(const std::string& id, const std::string& data);
+std::string Composed_PartsText(const std::string& id, const std::string& data);
 
 #endif

@@ -13,7 +13,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -546,6 +546,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
         case NetMsg::Damage: { MsgDamage m; return NetRead(r, m); }
         case NetMsg::CreatureFx: { MsgCreatureFx m; return NetRead(r, m); }
+        case NetMsg::SetGem: { MsgSetGem m; return NetRead(r, m); }
         case NetMsg::Vitals: { MsgVitals m; return NetRead(r, m); }
         case NetMsg::UseItem: { MsgUseItem m; return NetRead(r, m); }
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
@@ -727,6 +728,8 @@ bool NetProto_Test() {
             check(RoundTrip(a, b, &s) && b.graves.size() == 1 && b.graves[0].dropped && b.graves[0].items.size() == 2 && b.graves[0].items[1] == "oak_log", "graves: a dropped pile"); samples.push_back(s);
             MsgDropItems da{ "stone", 250 }, db; std::vector<uint8_t> s2;
             check(RoundTrip(da, db, &s2) && db.item == "stone" && db.centi == 250, "drop items"); samples.push_back(s2);
+            { MsgSetGem a{ "weapon_sword", "h=steel;g=wood;b=iron;w=3", "ruby" }, b; std::vector<uint8_t> s; // (#1219)
+              check(RoundTrip(a, b, &s) && b.item == a.item && b.data == a.data && b.gem == "ruby", "set gem"); samples.push_back(s); }
             MsgCreativeGive ca{ "diamond", 64 }, cb; std::vector<uint8_t> s3;
             check(RoundTrip(ca, cb, &s3) && cb.item == "diamond" && cb.count == 64, "creative give"); samples.push_back(s3);
         }
@@ -764,6 +767,8 @@ bool NetProto_Test() {
         { // (#1446 2b) a slot's record rides along, sparse
             MsgMachineView a = va2, b; a.view.inSlots = { { "iron_ore", 3 }, { "tool_pickaxe", 1 }, { "", 0 } }; a.view.inData = { "", "head=bronze;w=4", "" }; std::vector<uint8_t> s;
             check(RoundTrip(a, b, &s) && b.view.inData.size() == 3 && b.view.inData[0].empty() && b.view.inData[1] == "head=bronze;w=4" && b.view.inData[2].empty(), "machine view: slot data"); samples.push_back(s);
+            MsgMachineView o = a, ob; o.view.outSlots = { { "", 0 }, { "weapon_sword", 1 } }; o.view.outData = { "", "h=steel;q=106" }; std::vector<uint8_t> so; // (#1446 2c)
+            check(RoundTrip(o, ob, &so) && ob.view.outData.size() == 2 && ob.view.outData[0].empty() && ob.view.outData[1] == "h=steel;q=106" && ob.view.inData[1] == "head=bronze;w=4", "machine view: output data"); samples.push_back(so);
         }
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
@@ -947,6 +952,8 @@ bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = 
 // (#865, #866) drops and creative items
 void NetWrite(NetWriter& w, const MsgDropItems& m) { Id(w, NetMsg::DropItems); w.str(m.item.substr(0, 64)); w.vari(m.centi); w.str(m.data.substr(0, 255)); }
 bool NetRead(NetReader& r, MsgDropItems& m) { m.item = r.str(64); m.centi = r.vari(); m.data = r.str(255); return Done(r) && !m.item.empty() && m.centi > 0 && m.centi <= 100000000 && ItemData::Valid(m.data) && (m.data.empty() || m.centi == 100); }
+void NetWrite(NetWriter& w, const MsgSetGem& m) { Id(w, NetMsg::SetGem); w.str(m.item.substr(0, 64)); w.str(m.data.substr(0, 255)); w.str(m.gem.substr(0, 64)); } // (#1219)
+bool NetRead(NetReader& r, MsgSetGem& m) { m.item = r.str(64); m.data = r.str(255); m.gem = r.str(64); if (!ItemData::Valid(m.data)) r.ok = false; return Done(r); }
 void NetWrite(NetWriter& w, const MsgCreativeGive& m) { Id(w, NetMsg::CreativeGive); w.str(m.item.substr(0, 64)); w.varu(m.count); }
 bool NetRead(NetReader& r, MsgCreativeGive& m) { m.item = r.str(64); m.count = (uint32_t)std::min<uint64_t>(r.varu(), 1000000); return Done(r); }
 
@@ -988,6 +995,11 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
         w.varu(n);
         for (size_t i = 0; i < v.inData.size() && i < kMaxViewSlots; ++i) if (!v.inData[i].empty()) { w.varu(i); w.str(v.inData[i].substr(0, 255)); }
     }
+    { // (#1446 2c) the output slots' records, the same way
+        size_t n = 0; for (size_t i = 0; i < v.outData.size() && i < kMaxViewSlots; ++i) n += v.outData[i].empty() ? 0 : 1;
+        w.varu(n);
+        for (size_t i = 0; i < v.outData.size() && i < kMaxViewSlots; ++i) if (!v.outData[i].empty()) { w.varu(i); w.str(v.outData[i].substr(0, 255)); }
+    }
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -1005,6 +1017,12 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
         const uint64_t n = r.varu();
         if (n > kMaxViewSlots) r.ok = false;
         for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.inData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.inData[(size_t)i] = std::move(d); }
+    }
+    { // (#1446 2c) the output slots' records
+        v.outData.assign(v.outSlots.size(), std::string());
+        const uint64_t n = r.varu();
+        if (n > kMaxViewSlots) r.ok = false;
+        for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.outData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.outData[(size_t)i] = std::move(d); }
     }
     return Done(r);
 }

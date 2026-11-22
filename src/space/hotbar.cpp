@@ -1,10 +1,12 @@
 #include "hotbar.h"
+#include "melee.h"
 #include "machinetiers.h"
 #include "uipalette.h"
 #include "playersession.h"
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
 #include "toolwear.h"
+#include "composed.h"
 #include "buildtool.h"
 #include "itemicons.h"
 #include "gameui.h"
@@ -110,7 +112,7 @@ namespace {
             terrainTool.heldTool = id;
             return;
         }
-        if (KindOf(id) == ItemKind::Tool && ToolOf(id).type != ToolType::Hands) {
+        if (KindOf(id) == ItemKind::Tool && (ToolOf(id).type != ToolType::Hands || Weapon_ClassOf(id) != WeaponClass::Tools)) { // (#1219) a weapon goes in the hand too (it digs as hands)
             if (inventory.held(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
@@ -258,9 +260,10 @@ static void DrawOffHand(int x, int y, int size, float sc) {
     DrawText(PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)), x + (int)(4 * sc), y + (int)(3 * sc), (int)(12 * sc), Fade(Color{ 224, 169, 64, 255 }, 0.85f));
     if (s.empty()) { const char* t = "off hand"; const int fs = (int)(11 * sc); DrawText(t, x + (size - MeasureText(t, fs)) / 2, y + size - fs - (int)(6 * sc), fs, Fade(RAYWHITE, 0.45f)); return; }
     const float is = (float)size - 28.0f * sc;
-    if (ItemIcons_Has(s.id)) ItemIcons_Draw(s.id, { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
+    if (ItemIcons_Has(s.id)) ItemIcons_Draw(ItemIcons_Key(s.id, s.data), { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
     if (KindOf(s.id) != ItemKind::Tool) { const char* n = TextFormat("%d", (int)s.amount()); DrawText(n, x + size - (int)(4 * sc) - MeasureText(n, (int)(14 * sc)), y + (int)(3 * sc), (int)(14 * sc), RAYWHITE); }
     std::string name = ShortName(s.id);
+    if (s.hasData()) { const std::string cn = Composed_DisplayName(s.id, s.data); if (!cn.empty()) name = cn; } // (#1219)
     int fs = (int)(12 * sc);
     while (name.size() > 1 && MeasureText(name.c_str(), fs) > size - 4) name.pop_back();
     DrawText(name.c_str(), x + (size - MeasureText(name.c_str(), fs)) / 2, y + size - fs - (int)(6 * sc), fs, RAYWHITE);
@@ -290,16 +293,20 @@ void Hotbar_DrawHUD(bool piloting) {
             }
             const ItemDef* d = itemDB.find(id);
             const float is = (float)size - 28.0f * sc; // the painted icon (itemicons.h), between the slot number and the name
-            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
+            if (ItemIcons_Has(id)) ItemIcons_Draw(ItemIcons_Key(id, inventory.grid()[Inventory::kGrid + i].data), { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), (int)(14 * sc)), y0 + (int)(3 * sc), (int)(14 * sc), RAYWHITE);
-            const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
+            // a worn tool: a bar along the bottom, green to red; (#1449) a composed copy: its own wear, from its record
+            const InvSlot& cellNow = inventory.grid()[Inventory::kGrid + i];
+            const ComposedStats own = cellNow.hasData() ? Composed_Stats(cellNow.id, cellNow.data) : ComposedStats{};
+            const float left = own.valid && own.durability > 0 ? 1.0f - (float)own.wear / (float)own.durability : ToolWear_Left(id);
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
                 DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, UiPalette_Lerp(left));
             }
         }
         std::string name = ShortName(id);
+        { const InvSlot& own = inventory.grid()[Inventory::kGrid + i]; const std::string cn = own.hasData() ? Composed_DisplayName(own.id, own.data) : std::string(); if (!cn.empty()) name = cn; } // (#1219) "Bronze sword", as the inventory names it
         // (#925 follow-up) As the inventory's names: never cut mid-word. One line, shrunk to 70% at most; else two lines split at
         // the space nearest the middle; a single long word shrinks to fit (raylib's font has a 10 px floor).
         const int fs0 = (int)(12 * sc), room = size - 4;

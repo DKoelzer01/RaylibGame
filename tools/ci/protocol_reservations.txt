@@ -11,3 +11,5 @@
 44 | ladder          | #1271 | the ladder rework (assembler mode, recipe pick in MachineView)
 45 | ladder          | #1446 | item instance data in inventory deltas, drops, graves
 46 | ladder          | #1446 | item instance data in chest and machine slots
+47 | ladder          | #1446 | item instance data in machine output slots (anvil quality, T2)
+48 | ladder          | #1219 | SetGem: a gem from the inventory set in a weapon's socket

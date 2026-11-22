@@ -55,6 +55,7 @@
 #include <functional>
 #include "gamesave.h"
 #include "playerrecord.h"
+#include "melee.h"
 #include <cstdio>
 #include <set>
 #include <sstream>
@@ -233,6 +234,7 @@ namespace {
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
     void FlushInstanceDeltas(); // (below, #1446)
     ToolSpec RemoteToolOf(uint32_t session, const std::string& held); // (below, #1449)
+    std::string RemoteHeldData(uint32_t session, const std::string& held); // (below, #1219)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     template <class M> void SendToJoined(const M& m); // (below)
     // ---- #334 animals ----
@@ -329,7 +331,7 @@ namespace {
     int itemsUsed = 0;
     int gravesMade = 0; // (#804)
     int crafts = 0; // (#338) recipes crafted for players
-    int dropsMade = 0, creativeGives = 0, creativeRefused = 0; // (#865, #866)
+    int dropsMade = 0, creativeGives = 0, creativeRefused = 0, setGems = 0, setGemsRefused = 0; // (#865, #866; #1219)
     // ---- Graves (#804; the user's rules on #337, 2026-11-18) ----
     // A remote player's death leaves what death_drops says (by difficulty, keep, or a grave owned by that player); walking up
     // to a grave takes what that player may (Combat_CanLoot); every client gets the list when it changes; the owners' teams
@@ -926,11 +928,14 @@ namespace {
             return;
         }
         std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-        const ToolSpec t = RemoteToolOf(session, held);
-        const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
+        const std::string heldData = RemoteHeldData(session, held);
+        // (#1509) The hit as the client's game makes it (animals.cpp MeleeFrame): its weapon's damage, type, poise and set
+        // gems, through the typed path (resistances, poise, status). A light hit: heavy and from-behind don't come with the
+        // request yet (a protocol change).
+        const DamageEvent ev = Weapon_HitEvent(held, heldData);
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
-        if (Animals_HitNet(netId, damage, drops)) {
+        if (Animals_HitNetEvent(netId, ev, drops)) {
             TeamEvent(session, "count", "slain"); // (#338) a kill counts for the hunter's team
             // The drops into the hunter's inventory as the server keeps it, and the change to its client in one go (UI/UX's pattern).
             Remote& rm = rit->second;
@@ -1529,12 +1534,16 @@ namespace {
     // in order, once a tick; an offline player's journal is dropped (their client gets their record on the next join).
     // (#1449) A remote player's tool by its loadout id: a composed class takes its parts from that player's own copy (the
     // first held: the loadout names only the id), never from gToolDataOf (the server's local player).
-    ToolSpec RemoteToolOf(uint32_t session, const std::string& held) {
-        if (!Composed_Is(held)) return ToolOf(held);
+    std::string RemoteHeldData(uint32_t session, const std::string& held) { // (#1219) the record of that player's held composed copy
+        if (!Composed_Is(held)) return {};
         auto rit = remotes.find(session);
         if (rit != remotes.end())
-            for (const InvSlot& c : rit->second.inventory.grid()) if (c.id == held && c.hasData()) return ToolOf(held, c.data);
-        return ToolOf(held, std::string());
+            for (const InvSlot& c : rit->second.inventory.grid()) if (c.id == held && c.hasData()) return c.data;
+        return {};
+    }
+    ToolSpec RemoteToolOf(uint32_t session, const std::string& held) {
+        if (!Composed_Is(held)) return ToolOf(held);
+        return ToolOf(held, RemoteHeldData(session, held));
     }
     void FlushInstanceDeltas() {
         for (auto& [session, r] : remotes) {
@@ -2058,6 +2067,22 @@ namespace {
                 rit->second.skillsDirty = true; rit->second.skillsSentAt = -1e9; // (the new state at once)
                 return;
             }
+            case NetMsg::SetGem: { // (#1219) a gem from the inventory the server keeps, set in that composed copy's free socket
+                MsgSetGem q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                auto rit = remotes.find(it->second.session);
+                if (rit == remotes.end()) return;
+                Inventory& inv = rit->second.inventory;
+                const int cell = inv.findInstance(q.item, q.data);
+                const std::string set = cell >= 0 ? Composed_SetGem(q.item, q.data, q.gem) : std::string();
+                if (set.empty() || inv.count(q.gem) < 1) { ++setGemsRefused; SendMsg(m.conn, MsgChat{ 0, "That gem can't be set there" }); return; }
+                const auto before = AllAmounts(inv);
+                inv.remove(q.gem, 1);
+                inv.setInstanceData(cell, set); // (journalled: the client's copy changes through its delta)
+                ++setGems;
+                SendChangedItems(m.conn, inv, before);
+                return;
+            }
             case NetMsg::CreativeGive: { // (#866) a creative player's Catalog: free items (or "" clears its inventory); refused otherwise
                 MsgCreativeGive q;
                 if (!it->second.joined || !NetRead(r, q)) return;
@@ -2467,6 +2492,14 @@ bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (t
     auto it = remotes.find(session);
     if (it == remotes.end()) return false;
     return count >= 0 ? (it->second.inventory.add(item, count), true) : it->second.inventory.remove(item, -count);
+}
+bool Host_TestGiveInstance(uint32_t session, const std::string& item, const std::string& data) { // (#1219 tests) journalled: the client hears it
+    auto it = remotes.find(session);
+    return it != remotes.end() && it->second.inventory.addInstance(item, data) >= 0;
+}
+bool Host_HasInstance(uint32_t session, const std::string& item, const std::string& data) {
+    auto it = remotes.find(session);
+    return it != remotes.end() && it->second.inventory.findInstance(item, data) >= 0;
 }
 bool Host_ForgetPlayers() {
     for (const Session& s : sessions) if (s.online) return false;

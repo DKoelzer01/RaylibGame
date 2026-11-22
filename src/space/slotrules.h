@@ -37,6 +37,9 @@ struct SlotGrid {
     virtual void moveOut(int i, int64_t centi) = 0;                   // to the other side (shift-click, the wheel down)
     virtual void pullIn(int i, int64_t centi) = 0;                    // that item from the other side into i (the wheel up)
     virtual void swapCell(int i, int cell) {}                          // with the player's inventory cell (1-0, the off hand)
+    // (#1219) A click holding another item: the grid may combine it with slot i (a gem set into a weapon's socket) instead of
+    // the swap; true if it did (held changed as it used it up).
+    virtual bool combine(int i, InvSlot& held) { return false; }
     virtual void drop(int i, int64_t centi) {}                         // on the ground at the feet (Q)
     virtual bool infinite() const { return false; }                   // the Catalog: takes are free, a put deletes the stack
     // Creative middle-click: a full stack of slot i's item onto the empty hand (a joined game asks the server: it arrives later)

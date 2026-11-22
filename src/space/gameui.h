@@ -29,6 +29,8 @@ void GameUI_TierBanner(int tier);              // (#226) a tier reached: its ban
 #include <functional>
 // (#866) Set while joined (main.cpp): creative items from the server (the Catalog, a creative middle-click; "" clears the inventory).
 inline std::function<void(const std::string& item, int count)> gCreativeGive;
+// (#1219) Joined: set a gem in the copy of `item` whose record is `data` (the server checks and answers with inventory deltas).
+inline std::function<void(const std::string& item, const std::string& data, const std::string& gem)> gSetGemRequest;
 void GameUI_OpenDatabase(const std::string& itemId); // (#826) the database pop-up, at an item's page ("" where it was)
 bool GameUI_DatabaseOpen();
 void GameUI_Draw(Scene& world);  // inside rlImGuiBegin()/rlImGuiEnd()
@@ -36,6 +38,9 @@ void GameUI_DrawHUD(Scene& world); // plain raylib 2D HUD (status, toasts)
 void GameUI_Toast(const char* text);
 void GameUI_InitPickupFeed(); // #208: "+N item" lines in the bottom right for everything that enters the inventory
 void GameUI_InstallKeyHints(); // (#827) the key hints line (the terrain tool's hook): bindings, size, fade
+void GameUI_TestHover(int cell); // (#1449) scenarios: show that inventory cell as hovered (its tooltip); -1 = off
+struct InvSlot;
+InvSlot GameUI_TestClickHolding(const InvSlot& held, int cell); // (#1219 tests) a left click on an inventory cell holding that stack; the cursor after
 bool GameUI_TestCursorStack();  // --test-inv-cursor (#192): pick up, put down, halves, ones, merge, swap, quick-move, return
 bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int part, int partType); // --test-container-cursor (#192)
 // A machine's or chest's screen (RMB on it): its slots in the inventory window's right column.

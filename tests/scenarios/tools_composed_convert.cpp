@@ -2,7 +2,8 @@
 // On the sandbox: the player holds a stone pickaxe, axe and hoe, the pickaxe 20 strokes worn (the old per-id wear); the world
 // is saved and loaded back. Then: the inventory holds tool_pickaxe, tool_axe and tool_hoe with stone heads, the pickaxe's
 // record carries w=20 and the old per-id wear is gone; six dig strokes with it in hand raise its own wear to 26, and its wear
-// bar reads below full. (Chopping and tilling read the same ToolOf hook; trees aren't on the sandbox.)
+// bar reads below full. Last, a bronze and a steel pickaxe join it in the open inventory: each copy's icon is its class
+// with its own head's colour (ItemIcons_Key). (Chopping and tilling read the same ToolOf hook; trees aren't on the sandbox.)
 #include "scenario.h"
 #include "composed.h"
 #include "inventory.h"
@@ -13,6 +14,8 @@
 #include "tools.h"
 #include "toolwear.h"
 #include "hotbar.h"
+#include "gameui.h"
+#include "itemicons.h"
 #include "skills.h"
 #include "world.h"
 #include <raymath.h>
@@ -86,6 +89,29 @@ SCENARIO("tools/composed-convert") {
         if (cell >= 0) c.eq("its wear after six strokes", ItemData::GetInt(inventory.grid()[cell].data, "w", 0), 26);
         c.lt("its wear bar (left)", ToolWear_Left("tool_pickaxe"), 1.0);
         c.keepCapture("composed tools after a load (#1449): the held pickaxe digging");
+        return true;
+    });
+    s.step("the inventory: names from the head, the pickaxe's parts tooltip", 6.0, [](ScenarioCtx& c) {
+        static bool opened = false;
+        const int cell = CellOf("tool_pickaxe");
+        if (!opened) {
+            opened = true;
+            // (#1449) each copy's icon shows its head: a bronze and a steel pickaxe next to the stone one
+            inventory.addInstance("tool_pickaxe", Composed_MakeData("bronze"));
+            inventory.addInstance("tool_pickaxe", Composed_MakeData("steel"));
+            GameUI_ShowTab("Suit"); GameUI_TestHover(cell);
+        }
+        c.check("the window is open", GameUI_InventoryOpen());
+        if (c.t < 2.5) return false; // (held a moment for the recording)
+        std::string keys;
+        for (int i = 0; i < Inventory::kCells; ++i) {
+            const InvSlot& s = inventory.grid()[i];
+            if (s.id == "tool_pickaxe") keys += ItemIcons_Key(s.id, s.data) + " ";
+        }
+        for (const char* k : { "tool_pickaxe@stone", "tool_pickaxe@bronze", "tool_pickaxe@steel" })
+            c.check(TextFormat("an icon per head: %s", k), keys.find(k) != std::string::npos, keys);
+        c.keepCapture("composed pickaxes with stone, bronze and steel heads, each icon in its head's colour (#1449)");
+        GameUI_TestHover(-1);
         return true;
     });
 }

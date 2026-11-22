@@ -1,5 +1,9 @@
 // Combat step 2 (#1216): see melee.h.
 #include "melee.h"
+#include "composed.h"
+#include "tools.h"
+#include "itemdata.h"
+#include "combat.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -36,6 +40,56 @@ WeaponClass Weapon_ClassOf(const std::string& id) {
     if (has("mace") || has("hammer") || has("club")) return WeaponClass::Mace;
     if (has("spear")) return WeaponClass::Spear;
     return WeaponClass::Tools;
+}
+
+float Weapon_TimeScale(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id)) return 1.0f;
+    const ComposedStats s = Composed_Stats(id, data), ref = Composed_Stats(id, Composed_MakeData("iron"));
+    if (!s.valid || !ref.valid || ref.weight <= 0.0f) return 1.0f;
+    return std::clamp(powf(s.weight / ref.weight, 0.35f), 0.85f, 1.2f); // GUESS: the exponent and the clamp (#1219)
+}
+
+WeaponSpec Weapon_SpecOf(const std::string& id, const std::string& data) {
+    WeaponSpec w = Weapon_Spec(Weapon_ClassOf(id));
+    const float k = Weapon_TimeScale(id, data);
+    w.windUp *= k; w.hit *= k; w.recovery *= k;
+    return w;
+}
+
+GemEffect Weapon_GemEffect(const std::string& id, const std::string& data) {
+    GemEffect g;
+    if (!Composed_Is(id)) return g;
+    const ComposedStats s = Composed_Stats(id, data);
+    for (const std::string& gem : s.gems) {
+        if (g.status == StatusKind::None) { // the first elemental gem sets the hit's effect (GUESS)
+            if (gem == "ruby") g.status = StatusKind::Burn;
+            else if (gem == "sapphire") g.status = StatusKind::Chill;
+            else if (gem == "amethyst") g.status = StatusKind::Shock;
+        }
+        if (gem == "quartz") g.poiseScale *= 1.5f; // GUESS
+    }
+    return g;
+}
+
+DamageEvent Weapon_HitEvent(const std::string& id, const std::string& data) {
+    DamageEvent e;
+    e.amount = Weapon_BaseDamage(id, data);
+    e.kind = DamageKind::Melee;
+    e.type = Weapon_TypeOf(id);
+    e.poise = Weapon_SpecOf(id, data).poise;
+    const GemEffect g = Weapon_GemEffect(id, data);
+    if (g.status != StatusKind::None) e.status = g.status;
+    e.poise *= g.poiseScale;
+    return e;
+}
+
+float Weapon_BaseDamage(const std::string& id, const std::string& data) {
+    if (Composed_Is(id)) { // (#1219) a composed copy: from its head (3 + 3 x hardness) and quality
+        const ComposedStats s = Composed_Stats(id, data);
+        if (s.valid) return s.damage;
+    }
+    const ToolSpec t = ToolOf(id, data);
+    return t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
 }
 
 DamageType Weapon_TypeOf(const std::string& id) {
@@ -293,6 +347,78 @@ TEST(Melee, WeaponClasses) {
     EXPECT_EQ(Weapon_ClassOf("flint_knife"), WeaponClass::Knife);
     EXPECT_EQ(Weapon_ClassOf("war_hammer"), WeaponClass::Mace);
     EXPECT_EQ(Weapon_ClassOf("wooden_spear"), WeaponClass::Spear);
+    // (#1219) the composed classes
+    EXPECT_EQ(Weapon_ClassOf("weapon_knife"), WeaponClass::Knife);
+    EXPECT_EQ(Weapon_ClassOf("weapon_sword"), WeaponClass::Sword);
+    EXPECT_EQ(Weapon_ClassOf("weapon_greatsword"), WeaponClass::TwoHanded);
+    EXPECT_EQ(Weapon_ClassOf("weapon_mace"), WeaponClass::Mace);
+    EXPECT_EQ(Weapon_ClassOf("weapon_spear"), WeaponClass::Spear);
+    EXPECT_EQ(Weapon_ClassOf("tool_axe"), WeaponClass::Axe);
+    EXPECT_EQ(Weapon_ClassOf("tool_pickaxe"), WeaponClass::Tools);
+}
+
+TEST(Melee, AHeavierHeadSwingsSlower) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    EXPECT_FLOAT_EQ(Weapon_TimeScale("weapon_sword", Composed_MakeData("iron")), 1.0f) << "iron is the reference";
+    EXPECT_FLOAT_EQ(Weapon_TimeScale("stone_pickaxe", ""), 1.0f) << "not composed";
+    const float bronze = Weapon_TimeScale("weapon_sword", Composed_MakeData("bronze")), titanium = Weapon_TimeScale("weapon_sword", Composed_MakeData("titanium"));
+    const float stone = Weapon_TimeScale("weapon_sword", Composed_MakeData("stone"));
+    EXPECT_GT(bronze, 1.0f) << "bronze is denser than iron";
+    EXPECT_LT(titanium, 1.0f) << "titanium is light";
+    EXPECT_GE(stone, 0.85f) << "clamped";
+    EXPECT_LE(bronze, 1.2f);
+    const WeaponSpec base = Weapon_Spec(WeaponClass::Sword), b = Weapon_SpecOf("weapon_sword", Composed_MakeData("bronze"));
+    EXPECT_FLOAT_EQ(b.windUp, base.windUp * bronze);
+    EXPECT_FLOAT_EQ(b.recovery, base.recovery * bronze);
+    EXPECT_FLOAT_EQ(b.reach, base.reach) << "reach stays the class's";
+    EXPECT_FLOAT_EQ(Weapon_SpecOf("", "").windUp, Weapon_Spec(WeaponClass::Tools).windUp) << "hands as before";
+}
+
+TEST(Melee, SetGemsAddTheirEffects) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    const std::string steel = Composed_MakeData("steel"); // two sockets
+    EXPECT_EQ(Composed_Stats("weapon_sword", steel).sockets, 2);
+    const std::string two = ItemData::Set(steel, "j", "ruby,quartz");
+    const GemEffect g = Weapon_GemEffect("weapon_sword", two);
+    EXPECT_EQ(g.status, StatusKind::Burn);
+    EXPECT_FLOAT_EQ(g.poiseScale, 1.5f);
+    EXPECT_EQ(Weapon_GemEffect("weapon_sword", ItemData::Set(steel, "j", "sapphire,amethyst")).status, StatusKind::Chill) << "the first elemental gem";
+    EXPECT_EQ(Weapon_GemEffect("weapon_sword", steel).status, StatusKind::None) << "no gems";
+    // No more gems than sockets: bronze has one; an unknown gem is ignored.
+    const ComposedStats b = Composed_Stats("weapon_sword", ItemData::Set(Composed_MakeData("bronze"), "j", "ruby,sapphire"));
+    ASSERT_EQ(b.gems.size(), 1u);
+    EXPECT_EQ(b.gems[0], "ruby");
+    EXPECT_TRUE(Composed_Stats("weapon_sword", ItemData::Set(steel, "j", "diamond")).gems.empty());
+    // An emerald: +25% durability; the tooltip lists the gems.
+    const int plain = Composed_Stats("weapon_sword", steel).durability;
+    EXPECT_EQ(Composed_Stats("weapon_sword", ItemData::Set(steel, "j", "emerald")).durability, (int)std::lround(plain * 1.25f));
+    const std::string t = Composed_PartsText("weapon_sword", two);
+    EXPECT_NE(t.find("Sockets 2/2"), std::string::npos) << t;
+    EXPECT_NE(t.find("Ruby (burns)"), std::string::npos) << t;
+}
+
+TEST(Melee, AGemSetsInAFreeSocketOnly) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    const std::string bronze = Composed_MakeData("bronze"); // one socket
+    const std::string one = Composed_SetGem("weapon_sword", bronze, "ruby");
+    EXPECT_EQ(ItemData::Get(one, "j"), "ruby");
+    EXPECT_EQ(Composed_SetGem("weapon_sword", one, "sapphire"), "") << "its one socket is taken";
+    EXPECT_EQ(Composed_SetGem("weapon_sword", bronze, "stone"), "") << "not a gem";
+    EXPECT_EQ(Composed_SetGem("weapon_sword", Composed_MakeData("iron"), "ruby"), "") << "iron has no socket";
+    EXPECT_EQ(Composed_SetGem("stone", bronze, "ruby"), "") << "not a composed class";
+    const std::string steel = Composed_SetGem("weapon_sword", Composed_SetGem("weapon_sword", Composed_MakeData("steel"), "quartz"), "emerald");
+    EXPECT_EQ(ItemData::Get(steel, "j"), "quartz,emerald") << "two sockets, in order";
+    EXPECT_EQ(ItemData::Get(Composed_SetGem("weapon_sword", ItemData::Set(Composed_MakeData("steel"), "j", "junk"), "ruby"), "j"), "ruby") << "junk in j= is dropped";
+}
+
+TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("", ""), 2.0f) << "hands";
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_sword", Composed_MakeData("bronze")), 9.0f);  // 3 + 3 x 2.0
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_sword", Composed_MakeData("steel")), 12.0f);  // 3 + 3 x 3.0
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_knife", Composed_MakeData("flint")), 6.6f);   // 3 + 3 x 1.2
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("tool_pickaxe", Composed_MakeData("stone")), 6.0f) << "the same as an old stone pickaxe (3 + 3 x tier 1)";
+    EXPECT_NEAR(Weapon_BaseDamage("weapon_sword", Composed_MakeData("steel", {}, {}, 110)), 13.2f, 1e-4f) << "quality";
 }
 
 TEST(Melee, SoftTurnClosesOnTheTarget) {

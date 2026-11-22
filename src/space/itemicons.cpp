@@ -1,6 +1,7 @@
 #include "itemicons.h"
 #include "inventory.h"
 #include "buildtool.h"
+#include "composed.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -453,6 +454,47 @@ void Tool(Canvas& cv, ToolKind t, C3 head, C3 handle) {
     }
     cv.paint(R(h), Lin(head, 0.4f), 1.6f);
 }
+// (#1219) Weapons, leaning as the tools do: the head in its colour on a wooden grip.
+enum class WeaponKind { Knife, Sword, Greatsword, Spear, Mace };
+void WeaponIcon(Canvas& cv, WeaponKind k, C3 head) {
+    const float ang = 0.72f;
+    auto R = [&](Sdf s) { return Rot(s, 32, 32, ang); };
+    switch (k) {
+    case WeaponKind::Knife:
+        cv.paint(R(Capsule(32, 58, 32, 42, 3.2f)), Lin(kWood));
+        cv.paint(R(Box(32, 41, 7, 1.6f)), Lin(head * 0.7f));
+        cv.paint(R(Poly({ { 29, 40 }, { 35, 40 }, { 34, 22 }, { 32, 16 }, { 30, 22 } })), Lin(head, 0.4f), 1.4f);
+        break;
+    case WeaponKind::Sword:
+    case WeaponKind::Greatsword: {
+        const bool big = k == WeaponKind::Greatsword;
+        const float w = big ? 4.2f : 3.2f, guard = big ? 11.0f : 9.0f;
+        cv.paint(R(Capsule(32, 60, 32, 48, 3.0f)), Lin(kWood));
+        cv.paint(R(Box(32, 47, guard, 2.0f)), Lin(head * 0.7f));
+        cv.paint(R(Poly({ { 32 - w, 45 }, { 32 + w, 45 }, { 32 + w, 10 }, { 32, 3 }, { 32 - w, 10 } })), Lin(head, 0.4f), 1.4f);
+        cv.line(32, 44, 32, 9, 0.6f, kWhite, 0.25f); // the fuller
+        break;
+    }
+    case WeaponKind::Spear:
+        cv.paint(R(Capsule(32, 62, 32, 16, 2.4f)), Lin(kWood));
+        cv.paint(R(Poly({ { 27, 18 }, { 37, 18 }, { 32, 2 } })), Lin(head, 0.4f), 1.4f);
+        break;
+    case WeaponKind::Mace:
+        cv.paint(R(Capsule(32, 60, 32, 22, 3.0f)), Lin(kWood));
+        cv.paint(R(Circle(32, 16, 10)), Round(head, 29, 12, 11), 1.4f);
+        for (int s = 0; s < 4; ++s) { const float a = s * 1.5708f; cv.paint(R(Circle(32 + 10 * cosf(a), 16 + 10 * sinf(a), 2.6f)), Flat(head * 0.75f)); }
+        break;
+    }
+}
+// (#1219) A weapon head on its own: a blade, a spearhead or a mace head (rough: darker, no shine).
+void WeaponHeadIcon(Canvas& cv, WeaponKind k, C3 c, bool rough) {
+    const C3 col = rough ? c * 0.8f : c;
+    if (k == WeaponKind::Spear) cv.paint(Rot(Poly({ { 22, 50 }, { 42, 50 }, { 32, 10 } }), 32, 32, 0.6f), Lin(col, 0.4f), 1.6f);
+    else if (k == WeaponKind::Mace) { cv.paint(Circle(32, 32, 16), Round(col, 27, 26, 18), 1.6f); for (int s = 0; s < 6; ++s) { const float a = s * 1.0472f; cv.paint(Circle(32 + 16 * cosf(a), 32 + 16 * sinf(a), 3.5f), Flat(col * 0.75f)); } }
+    else cv.paint(Rot(Poly({ { 27, 56 }, { 37, 56 }, { 37, 16 }, { 32, 6 }, { 27, 16 } }), 32, 32, 0.72f), Lin(col, 0.4f), 1.6f);
+    if (!rough) cv.shine(26, 24, 5, 1.5f, 0.4f);
+}
+
 void Shears(Canvas& cv) {
     cv.paint(Rot(Poly({ { 30, 32 }, { 34, 32 }, { 50, 6 }, { 46, 6 } }), 32, 32, 0.25f), Lin(kSteel));
     cv.paint(Rot(Poly({ { 30, 32 }, { 34, 32 }, { 18, 6 }, { 14, 6 } }), 32, 32, -0.25f), Lin(kSteel * 0.9f));
@@ -543,6 +585,16 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (ends("_pickaxe") || ends("_shovel") || ends("_axe") || ends("_hoe")) {
         const ToolKind t = ends("_pickaxe") ? ToolKind::Pickaxe : ends("_shovel") ? ToolKind::Shovel : ends("_axe") ? ToolKind::Axe : ToolKind::Hoe;
         Tool(cv, t, c, starts("titanium") || starts("steel") ? C3{ 0.3f, 0.3f, 0.34f } : kWood);
+        return;
+    }
+    // (#1219) Composed weapons and their heads
+    if (starts("weapon_")) {
+        const WeaponKind k = ends("_knife") ? WeaponKind::Knife : ends("_greatsword") ? WeaponKind::Greatsword : ends("_sword") ? WeaponKind::Sword : ends("_spear") ? WeaponKind::Spear : WeaponKind::Mace;
+        WeaponIcon(cv, k, c);
+        return;
+    }
+    if (ends("_blade") || ends("_spearhead") || ends("_mace_head")) {
+        WeaponHeadIcon(cv, ends("_spearhead") ? WeaponKind::Spear : ends("_mace_head") ? WeaponKind::Mace : WeaponKind::Sword, c, starts("rough_"));
         return;
     }
     if (id == "campfire") { Campfire(cv); return; }
@@ -659,7 +711,24 @@ std::unordered_map<std::string, int> cellOf;
 
 void ItemIcons_Init() {
     ItemIcons_Unload();
-    const auto& items = itemDB.items();
+    // Every item's own icon, then (#1449 part 3) one per composed class and head material, keyed "<class>@<material>":
+    // the same picture with the head in the material's colour, so each copy shows its head (ItemIcons_Key).
+    std::vector<ItemDef> items = itemDB.items();
+    std::vector<std::string> keys;
+    for (const ItemDef& d : items) keys.push_back(d.id);
+    const size_t base = items.size();
+    const std::vector<std::string> mats = Composed_MaterialIds();
+    for (size_t i = 0; i < base; ++i) {
+        if (!Composed_Is(items[i].id)) continue;
+        for (const std::string& m : mats) {
+            const PartMaterial* pm = Composed_Material(m);
+            if (!pm) continue;
+            ItemDef v = items[i];
+            v.color = Color{ pm->r, pm->g, pm->b, 255 };
+            items.push_back(v);
+            keys.push_back(items[i].id + "@" + m);
+        }
+    }
     const int n = (int)items.size();
     if (n == 0) return;
     const int rows = (n + kCols - 1) / kCols;
@@ -672,7 +741,7 @@ void ItemIcons_Init() {
         pool.emplace_back([&, t] {
             for (int i = t; i < n; i += threads) {
                 Canvas cv;
-                cv.seed = (int)std::hash<std::string>{}(items[i].id) & 0x7FFF;
+                cv.seed = (int)std::hash<std::string>{}(keys[i]) & 0x7FFF;
                 PaintItem(cv, items[i]);
                 const int ox = (i % kCols) * kPx, oy = (i / kCols) * kPx;
                 for (int y = 0; y < kPx; ++y)
@@ -685,7 +754,7 @@ void ItemIcons_Init() {
             }
         });
     for (auto& th : pool) th.join();
-    for (int i = 0; i < n; ++i) cellOf[items[i].id] = i;
+    for (int i = 0; i < n; ++i) cellOf[keys[i]] = i;
     atlas = LoadTextureFromImage(atlasImage);
     GenTextureMipmaps(&atlas);
     SetTextureFilter(atlas, TEXTURE_FILTER_TRILINEAR);
@@ -700,6 +769,12 @@ void ItemIcons_Unload() {
 }
 
 bool ItemIcons_Has(const std::string& id) { return atlas.id > 0 && cellOf.count(id) > 0; }
+std::string ItemIcons_Key(const std::string& id, const std::string& data) {
+    const std::string head = Composed_HeadOf(id, data);
+    if (head.empty()) return id;
+    std::string key = id + "@" + head;
+    return cellOf.count(key) ? key : id;
+}
 Texture2D ItemIcons_Texture() { return atlas; }
 
 Rectangle ItemIcons_Source(const std::string& id) {

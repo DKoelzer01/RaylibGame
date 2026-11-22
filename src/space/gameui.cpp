@@ -11,6 +11,7 @@
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "composed.h"
 #include "questtree.h"
 #include "researchtab.h"
 #include "tometab.h" // (#1251)
@@ -49,6 +50,7 @@
 #include <raymath.h>
 
 namespace {
+    int gTestHoverCell = -1; // (#1449) GameUI_TestHover: a cell shown as hovered (its tooltip), for scenarios
     bool inventoryOpen = false;
     std::string toast;
     double toastUntil = 0.0;
@@ -332,6 +334,29 @@ struct PlayerGrid : SlotGrid {
         if (c.centi <= 0) c = InvSlot{};
         return k;
     }
+    // (#1219, user 2026-11-22) A gem dropped onto a weapon with a free socket is set in it (one gem used). Joined: the server
+    // sets it in the inventory it keeps and takes the gem from there, so the held gems go back into the inventory first (the
+    // server knows no cursor) and its changes come back as inventory deltas.
+    bool combine(int i, InvSlot& held) override {
+        const InvSlot& c = inventory.grid()[i];
+        if (c.empty() || !c.hasData() || held.centi < 100) return false;
+        const std::string set = Composed_SetGem(c.id, c.data, held.id);
+        if (set.empty()) return false;
+        const std::string gem = held.id, name = Composed_DisplayName(c.id, c.data);
+        if (gSetGemRequest) {
+            inventory.addAmount(held.id, held.amount(), held.heat);
+            held = InvSlot{};
+            gSetGemRequest(c.id, c.data, gem);
+        } else {
+            inventory.setInstanceData(i, set);
+            held.centi -= 100;
+            if (held.centi <= 0) held = InvSlot{};
+        }
+        const ItemDef* gd = itemDB.find(gem);
+        GameUI_Toast(TextFormat("%s set in the %s", gd ? gd->name.c_str() : gem.c_str(), name.c_str()));
+        Audio_Play(Sfx::Craft, 0.5f, 1.3f);
+        return true;
+    }
     // To the open container (machines hold whole units), else between the grid and the hotbar (the off hand: to the grid).
     void moveOut(int i, int64_t centi) override {
         InvSlot& c = inventory.grid()[i];
@@ -592,6 +617,17 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
 }
 
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data);
+void GameUI_TestHover(int cell) { gTestHoverCell = cell; }
+
+// (#1219 tests) A left click on inventory cell `cell` holding `held` on the cursor, through the slot rules; the cursor after it.
+InvSlot GameUI_TestClickHolding(const InvSlot& held, int cell) {
+    cursorStack = held;
+    CellClick(cell, false, false);
+    const InvSlot after = cursorStack;
+    if (!cursorStack.empty()) ReturnCursorStack();
+    return after;
+}
+
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();
     auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
@@ -656,23 +692,30 @@ static void DrawCell(int i, float cw, float cell) {
     if (ImGui::IsItemClicked()) OpenIfAlt(grid[i].id); // (#826; the rules skip alt-clicks)
     NoteHover(&playerGrid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
     if (ImGui::IsItemClicked(ImGuiMouseButton_Middle) && !terrainTool.creative) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577; creative: a full stack, the rules)
-    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) || i == gTestHoverCell; // (#1449) a scenario shows a cell's tooltip
     const InvSlot& s = grid[i];
     const ImVec2 q(p.x + cw, p.y + cell);
     dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
     DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
     if (!s.empty()) {
         const ItemDef* d = itemDB.find(s.id);
-        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
-        CellName(dl, p, q, d ? d->name : s.id, hover);
+        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, ItemIcons_Key(s.id, s.data));
+        const std::string own = Composed_DisplayName(s.id, s.data); // (#1449) "Bronze pickaxe" from its head
+        CellName(dl, p, q, !own.empty() ? own : d ? d->name : s.id, hover);
         if (KindOf(s.id) != ItemKind::Tool) {
             const std::string amt = AmountText(s);
             CellCount(dl, p, q, amt.c_str()); // (#891: at the cell's size)
         }
-        if (hover && cursorStack.empty())
-            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
-                              KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
-                              GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        if (hover && cursorStack.empty()) {
+            const std::string parts = Composed_PartsText(s.id, s.data); // (#1449) its own parts, quality, sockets, wear
+            if (!parts.empty())
+                ImGui::SetTooltip("%s  (%s)\n%s\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot)", own.c_str(), KindName(KindOf(s.id)), parts.c_str(),
+                                  d ? d->description.c_str() : "", GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+            else
+                ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
+                                  KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
+                                  GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        }
     }
     DrawDragShare(dl, &playerGrid, i, p, q);
     if (hotbar) CellText(dl, CellFontSize(cell), ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));
@@ -705,7 +748,7 @@ static void DrawGrid(float cell = 54.0f) {
         if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
-        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
+        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, ItemIcons_Key(binned.id, binned.data), true);
         const float fs = CellFontSize(bin); // (#1161: the cells' label size: the window's font ran out of a small cell)
         const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Bin");
         dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
@@ -737,7 +780,7 @@ static void DrawGrid(float cell = 54.0f) {
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
         DrawGlow(fg, ImVec2(m.x - 17.0f * GameUI_Scale(), m.y - 17.0f * GameUI_Scale()), ImVec2(m.x + 17.0f * GameUI_Scale(), m.y + 17.0f * GameUI_Scale()), Item_Glow(cursorStack)); // (#580)
-        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, cursorStack.id); } // (#891: at the interface scale)
+        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, ItemIcons_Key(cursorStack.id, cursorStack.data)); } // (#891: at the interface scale)
         if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 10.0f * GameUI_Scale(), m.y + 6.0f * GameUI_Scale()), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
     }
 }
@@ -1095,18 +1138,20 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b) containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b)
+    containerOut.slots = v.outSlots; containerOut.datas = v.outData; containerFuel.slots = { v.fuelSlot }; // (#1499; #1446 2c)
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
 
-static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr) { // fracs (#1102): a chest's fractions // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
+static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int which, int cols, bool hot = false, const std::vector<int>* fracs = nullptr, const std::vector<std::string>* datas = nullptr) { // fracs (#1102): a chest's fractions; datas (#1446): each slot's record // which: 0 inputs, 1 outputs, 2 fuel; hot: its items glow (#580)
     const bool output = which == 1;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float gap = 4.0f, cell = std::min(54.0f * GameUI_Scale(), (ImGui::GetContentRegionAvail().x - (cols - 1) * gap) / (float)cols); // (#891: at the scale, fitting the column)
     ContainerGrid& grid = ContainerPart(which);
     grid.slots = slots; // (this frame's view: what the rules see)
     grid.fracs = fracs ? *fracs : std::vector<int>{};
+    grid.datas = datas ? *datas : std::vector<std::string>{}; // (#1446 2c) the drawn screen too, not only SlotClick: an item with data takes as one
     for (int i = 0; i < (int)slots.size(); ++i) {
         if (i % cols != 0) ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i + which * 1000);
@@ -1119,7 +1164,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         if (!here.empty()) DrawGlow(dl, p, q, Item_GlowOf(here.id, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
         if (!here.empty()) {
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, here.id);
+            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, ItemIcons_Key(here.id, here.data));
             const ItemDef* d = itemDB.find(here.id);
             CellName(dl, p, q, d ? d->name : here.id, hover);
             // the amount as the player inventory shows it: "12", "2.5", "0.4"
@@ -1165,7 +1210,7 @@ static void DrawContainer() {
     else if (v.energy > 0 && container.type != PartType::Chest) ImGui::Text("Fuel / charge: %d", v.energy);
     const bool chest = container.type == PartType::Chest;
     ImGui::TextUnformatted(chest ? "Storage" : "Input");
-    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti); // a chest lines up with the player's grid (#495)
+    DrawSlots(v.inSlots, 0, chest ? Inventory::kCols : 4, false, &v.inCenti, &v.inData); // a chest lines up with the player's grid (#495)
     if (v.hasFuelSlot) { // #194: fuel has its own slot (a recipe input that is also fuel is never burnt)
         ImGui::TextUnformatted("Fuel");
         DrawSlots({ v.fuelSlot }, 2, 1);
@@ -1247,7 +1292,7 @@ static void DrawContainer() {
     }
     if (!chest) {
         ImGui::TextUnformatted("Output");
-        DrawSlots(v.outSlots, 1, 4, v.hotOutputs);
+        DrawSlots(v.outSlots, 1, 4, v.hotOutputs, nullptr, &v.outData);
     }
     ImGui::Spacing();
     if (ImGui::Button("Put in all (I)") || PlayerInput_BindingPressed(Act::Insert)) {

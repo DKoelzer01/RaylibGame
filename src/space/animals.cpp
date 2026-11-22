@@ -1740,6 +1740,7 @@ int gMeleeShocks = 0, gMeleeStaggers = 0, gMeleeDodges = 0;
 uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
 Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
 WeaponClass gMeleeClass = WeaponClass::Tools;
+WeaponSpec gMeleeSpec = Weapon_Spec(WeaponClass::Tools); // (#1219) this swing's spec (the held copy's timing)
 int gMeleeHits = 0;                 // hits landed (tests)
 
 
@@ -1777,8 +1778,11 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
     const double now = SimTime();
     const float dt = gMeleeClock < 0.0 ? 0.0f : (float)std::clamp(now - gMeleeClock, 0.0, 0.1);
     gMeleeClock = now;
-    if (gMelee.phase == MeleePhase::Idle) gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
-    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    if (gMelee.phase == MeleePhase::Idle) { // (#1219) the held copy's own timing: its weight against its class's iron one
+        gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
+        gMeleeSpec = Weapon_SpecOf(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string());
+    }
+    const WeaponSpec& w = gMeleeSpec;
     const bool live = here && !player.flyMode && in.enabled && !buildTool.active && !survival.dead;
     if (!here || survival.dead || player.flyMode) { gMelee = MeleeState{}; gLockNet = 0; gLockScreen = { -1.0f, -1.0f }; return; }
     const Vector3 eye = here->toLocal(world.camera.position);
@@ -1847,8 +1851,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         if (Shielded(world, *here, eye, at)) continue; // terrain or a part takes the blow
         hits.push_back({ (int)i, at });
     }
-    const ToolSpec t = ToolOf(terrainTool.heldTool);
-    const float base = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier; // today's damage by tool (weapons: #1219)
+    const float base = Weapon_BaseDamage(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string()); // (#1219) a composed copy: from its head
     std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.i > y.i; }); // a kill removes it: high first
     for (const Hit& h : hits) {
         const Animal& a = animals[h.i];
@@ -1859,6 +1862,9 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         e.type = Weapon_TypeOf(terrainTool.heldTool);
         e.heavy = gMelee.heavy;
         e.poise = Melee_Poise(gMelee, w);
+        { const GemEffect ge = Weapon_GemEffect(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string()); // (#1219) set gems
+          if (ge.status != StatusKind::None) e.status = ge.status;
+          e.poise *= ge.poiseScale; }
         e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
         { const CreatureSpec* fs = Creature_Spec(species[a.species].id); // (#1227) at its face: within its shield's arc of its facing
           e.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(eye, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
@@ -1877,7 +1883,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
 
 bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
     if (!Combat2_On() || gMelee.phase == MeleePhase::Idle) return false;
-    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    const WeaponSpec& w = gMeleeSpec; // (#1219) the pose follows the swing's own timing
     phase = (int)gMelee.phase;
     back = gMelee.chain == 1;
     charge = gMelee.heavy ? 1.0f : 0.0f;
@@ -2295,9 +2301,15 @@ void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64
 }
 
 bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops) {
+    DamageEvent e; e.amount = damage; e.kind = DamageKind::Melee;
+    return Animals_HitNetEvent(netId, e, drops, true);
+}
+bool Animals_HitNetEvent(uint64_t netId, const DamageEvent& e, std::vector<std::pair<std::string, int>>& drops, bool raw, float* dealtOut) {
     const int i = Animals_FindNet(netId);
     if (i < 0) return false;
     Animal& a = animals[i];
+    const float damage = raw ? e.amount : TypedAmount(a, e); // (#1509) a client's hit as a local one: resistances, poise, its effect
+    if (dealtOut) *dealtOut = damage;
     a.health -= damage;
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
