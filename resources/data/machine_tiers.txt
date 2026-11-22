@@ -23,3 +23,16 @@ centrifuge       | LV | LV MV HV
 lv_assembler     | LV | LV MV HV | MV:mv_assembler HV:hv_assembler
 electrolyzer     | MV | MV HV
 chemical_reactor | MV | MV HV
+compressor       | LV | LV MV HV
+cutter           | LV | LV MV HV
+#
+# successor | machine | its LV successor   (#1427 L7e) the steam and rotation era's machines stay; from LV on an electric
+# machine (and its tiers) does their job. Shown on their screens and Help pages.
+successor | millstone | macerator
+successor | mechanical_press | compressor
+successor | mechanical_saw | cutter
+successor | kiln | furnace
+successor | bloomery | furnace
+successor | coke_oven | furnace
+successor | steam_assembler | lv_assembler
+successor | steam_lab | lv_lab

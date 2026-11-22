@@ -1174,6 +1174,10 @@ static void DrawContainer() {
         if (!burning && !fuel) { ImGui::EndDisabled(); ImGui::SameLine(); ImGui::TextDisabled("needs fuel"); }
         else if (!burning && v.fire == kFireOut) { ImGui::SameLine(); ImGui::TextDisabled("put out: lights again with something to cook"); }
     }
+    if (const PartType next = MachineTiers_Successor(container.type); next != PartType::Count) { // (#1427 L7e) its job from LV on
+        const ItemDef* d = itemDB.find(PartCostItem(next));
+        ImGui::TextDisabled("From LV on, the %s does this job (and has tiers).", d ? d->name.c_str() : PartName(next));
+    }
     if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch; disassembly comes with #1427
         if (ImGui::RadioButton("Assemble", v.mode == 0) && v.mode != 0) MachineAct_SetMode(container.body, container.plot, container.part, 0);
         ImGui::SameLine();

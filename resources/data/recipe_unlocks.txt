@@ -21,3 +21,9 @@ centrifuge_hv | tier 6
 hv_assembler  | tier 6
 electrolyzer_hv | tier 6
 chemical_reactor_hv | tier 6
+compressor    | tier 4
+cutter        | tier 4
+compressor_mv | tier 5
+cutter_mv     | tier 5
+compressor_hv | tier 6
+cutter_hv     | tier 6

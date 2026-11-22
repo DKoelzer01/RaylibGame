@@ -25,6 +25,8 @@ Color MachineTiers_Color(int tier);                 // (L7d) its tint for machin
 const MachineOverclock& MachineTiers_Overclock();
 
 // Families: is this part type tiered, its first tier, its highest variant step (0: only its base).
+// (L7e) The electric machine doing an older machine's job from LV on (machine_tiers.txt's successor lines), or Count.
+PartType MachineTiers_Successor(PartType t);
 bool MachineTiers_Tiered(PartType t);
 int MachineTiers_First(PartType t);                // -1 if not tiered
 int MachineTiers_MaxStep(PartType t);              // 0 if not tiered

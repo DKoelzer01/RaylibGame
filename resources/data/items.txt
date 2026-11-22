@@ -280,3 +280,5 @@ bronze_axe       | Bronze axe       | tool | 205,145, 70 | Cast and hammered: fe
 steam_assembler  | Steam assembler  | 20  | 170,140, 90 | Makes steam research packs from iron plates, cogwheels and coal, driven by a shaft: the real route for the research (by hand is slow).
 ruin_schematic   | Ruin schematic   | 20  | 200,180,130 | A machine drawing from a ruin. Hand it in at a lab: it stands in for a tier milestone's find.
 lv_assembler     | LV assembler     | 20  | 120,150,190 | LV (32 V): assembles basic circuits and LV and MV research packs, faster than by hand and without you. Its screen switches it to disassembly (coming with tiered machines).
+compressor       | Compressor       | 20  | 120,125,135 | LV (32 V): presses ingots into plates, faster than the mechanical press and without a shaft.
+cutter           | Cutter           | 20  | 140,120, 95 | LV (32 V): saws logs into planks, faster than the mechanical saw and without a shaft.

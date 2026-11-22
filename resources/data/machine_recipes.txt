@@ -146,3 +146,25 @@ lv_assembler     | lv_pack 2          | steel_plate 1, copper_wire 2, vacuum_tub
 lv_assembler     | mv_pack 2          | basic_circuit 2, steel_plate 1, iron_crushed 3 | 300 | 24 | MV
 lv_assembler     | hv_pack 2          | aluminium_plate 2, gold_ingot 1, iron_purified 2 | 400 | 96 | HV
 lv_assembler     | rocket_pack 1      | titanium_alloy_plate 1, advanced_circuit 1, rocket_fuel 1 | 600 | 128 | HV
+# (#1427 L7e) From LV on, each job of the steam and rotation era has an electric machine (and its tiers):
+# the compressor presses plates, the cutter saws planks; the macerator grinds the millstone's flour and gravel;
+# the electric furnace smelts the kiln's ores and bronze, fires bricks and bakes coke.
+compressor       | iron_plate 1       | iron_ingot 1              | 60  | 8
+compressor       | bronze_plate 1     | bronze_ingot 1            | 60  | 8
+compressor       | copper_plate 1     | copper_ingot 1            | 60  | 8
+compressor       | tin_plate 1        | tin_ingot 1               | 60  | 8
+compressor       | steel_plate 1      | steel_ingot 1             | 100 | 12
+compressor       | aluminium_plate 1  | aluminium_ingot 1         | 80  | 24 | MV
+compressor       | titanium_plate 1   | titanium_ingot 1          | 120 | 96 | HV
+cutter           | oak_planks 6       | oak_log 1                 | 50  | 4
+cutter           | birch_planks 6     | birch_log 1               | 50  | 4
+cutter           | pine_planks 6      | pine_log 1                | 50  | 4
+cutter           | maple_planks 6     | maple_log 1               | 50  | 4
+cutter           | spruce_planks 6    | spruce_log 1              | 50  | 4
+macerator       | flour 1            | grain 1                   | 100 | 4
+macerator       | sand 1             | gravel 1                  | 80  | 4
+furnace         | copper_ingot 1     | copper_ore 1              | 120 | 8
+furnace         | tin_ingot 1        | tin_ore 1                 | 120 | 8
+furnace         | bronze_ingot 4     | copper_ingot 3, tin_ingot 1 | 200 | 12
+furnace         | brick 2            | clay 1                    | 120 | 8
+furnace         | coke 1             | coal 2                    | 200 | 12
