@@ -44,9 +44,14 @@ BodyPose Frames_Pose(const Planetoid& b) {
         p.vel = q.vel + DVec3{ -inPlane.z * w, 0.0, inPlane.x * w };
         p.acc = q.acc - inPlane * (w * w);
     } else {
-        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept; no acceleration
-        // known here (a station falls freely: its frame feels ~0, F5 takes the orbit's).
+        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept. A free-falling
+        // one (freeFall: stations) accelerates as its code moves it (freeFallAcc), so anything in its frame feels only the
+        // difference, not the fall a second time (Plan 11 F5, #1457: stations as Fixed(station) frames).
         p.vel = DVec3{ b.linearVelocity.x, b.linearVelocity.y, b.linearVelocity.z };
+        // Its own code's acceleration, not this file's gravity model: a station flies a two-body Kepler orbit, and the
+        // all-bodies model differs from it (Luna's pull, the inside model): 1.4 m of drift in 30 s beside one
+        // (rocket/station-hold), since a framed rocket is drawn at the station's real place plus its offset.
+        if (b.freeFall) p.acc = b.freeFallAcc;
     }
     return p;
 }
@@ -136,7 +141,7 @@ FrameRef Frames_Choose(const std::vector<Planetoid*>& bodies, const DVec3& pg, F
     const Planetoid* best = nullptr;
     double bestSoi = kInf * 10.0, bestGap = kInf;
     for (const Planetoid* b : bodies) {
-        if (!b || b->vehicle || b->netId == 0) continue;
+        if (!b || (b->vehicle && !b->freeFall) || b->netId == 0) continue; // a flying rocket isn't a frame; a station (also a vehicle body, EmptyField) is (F5)
         const double d = (pg - b->worldPos).length();
         const double soi = Frames_Soi(*b);
         const double reach = soi >= kInf ? kInf : soi * (b->netId == current.body ? 1.03 : 0.97);
@@ -259,5 +264,25 @@ TEST(FramesCore, ChooseFramesWithHysteresis) {
     const DVec3 edge{ 560000.0 + soi * 1.01, 0.0, 0.0 };
     EXPECT_EQ(Frames_Choose(bodies, edge, FrameRef{ 0x9006, FrameKind::Centred }).body, 0x9006u);
     EXPECT_EQ(Frames_Choose(bodies, edge, tc).body, 0x9005u);
+}
+
+// (Plan 11 F5, #1457) A station: an Asteroid-kind body of 4 m with no gravity of its own, 45 km over a Terra-like root.
+// A point 20 m from it, coming from Centred(Terra), belongs in Fixed(station) (its SOI is 10 x 4 m); and as a free
+// faller its frame accelerates with the gravity at its centre.
+TEST(FramesCore, StationFrameAndFreeFall) {
+    auto terra = Body("terra", 0x9101, { 0.0, 0.0, 0.0 }, 60000.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.1f, 0.0f }, BodyKind::Planet);
+    auto st = Body("station", 0x9102, { 0.0, 105000.0, 0.0 }, 4.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
+    st->surfaceGravity = 0.0f;
+    st->freeFall = true;
+    st->vehicle = true; // as in the game: stations are EmptyField bodies, which the constructor marks as vehicles
+    st->freeFallAcc = Frames_GravityGlobal({ terra.get() }, st->worldPos); // (set by station.cpp from its orbit in the game)
+    const std::vector<Planetoid*> bodies{ terra.get(), st.get() };
+    const DVec3 p{ 0.0, 105000.0, 20.0 };
+    const FrameRef pick = Frames_Choose(bodies, p, FrameRef{ 0x9101, FrameKind::Centred });
+    EXPECT_EQ(pick.body, 0x9102u);
+    EXPECT_EQ((int)pick.kind, (int)FrameKind::Fixed);
+    const DVec3 g = st->freeFallAcc;
+    EXPECT_GT(g.length(), 1.0); // ~1.9 m/s^2 at 105 km
+    EXPECT_LT(Dist(Frames_Pose(*st).acc, g), 1e-9);
 }
 #endif
