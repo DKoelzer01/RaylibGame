@@ -29,6 +29,7 @@ SCENARIO("player/double-tap-fly") {
     s.step("settle on the ground, creative", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("1 s of play, an idle world, on the ground");
         terrainTool.creative = true;
+        gScenarioInput = true; // (the scripted Space is used: scenarios are benches, which take no input otherwise)
         player.flyMode = false;
         if (c.T < 1.0 || !WorldIdle() || !player.grounded) return false;
         f0 = c.frame + 5;
@@ -59,6 +60,7 @@ SCENARIO("player/double-tap-fly") {
         if (!Taps(c, f0, 2) || c.frame < f0 + 20) return false;
         c.check("survival: a double-tap doesn't fly", !player.flyMode);
         gFakeHeld &= ~kSpace;
+        gScenarioInput = false;
         return true;
     });
 }
