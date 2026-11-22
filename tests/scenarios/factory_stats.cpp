@@ -65,6 +65,10 @@ SCENARIO("factory/stats") {
         const FactoryStatsView v = PlotView();
         const StatLine* sand = Line(v, "sand");
         c.waitingFor(TextFormat("sand made %lld / 20", sand ? sand->made : 0LL));
+        // (#1406) The last craft at 1x: the EU check reads a one-minute window (1200 ticks) that must still hold all 1000
+        // ticks of work when it is read. At 20x the frames between the last craft and the check spent 400 ticks a second,
+        // and a slow machine (the runner) let the first 5 ticks slide out: 3980 EU, not 4000.
+        if (sand && sand->made >= 18) Factory::SetSpeed(1);
         return sand && sand->made >= 20 && Factory::View(c.body->id, plot->id, mac).status != MachineStatus::Working;
     });
     s.step("the counts match what happened", 10.0, [](ScenarioCtx& c) {
