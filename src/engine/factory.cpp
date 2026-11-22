@@ -3,6 +3,7 @@
 #include "plots.h"
 #include "machinetiers.h"
 #include "composed.h"
+#include "itemdata.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "utils/logger.h"
@@ -3198,10 +3199,15 @@ TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     ASSERT_TRUE(Composed_Load());
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
     const size_t nRecipes = tables.recipes.size();
-    Recipe r; r.machine = PartType::LvAssembler; r.ticks = 20; r.eu = 1;
+    decltype(tables.recipes)::value_type r; r.machine = PartType::LvAssembler; r.ticks = 20; r.eu = 1;
     r.in = { Stack{ tables.item("bronze_pick_head"), 1 }, Stack{ tables.item("wood_handle"), 1 } };
     r.out = { Stack{ tables.item("tool_pickaxe"), 1 } };
+    r.tier = MachineTiers_Tiered(r.machine) ? MachineTiers_First(r.machine) : MachineTiers_ForVolts(Def(r.machine).volts); // (as LoadRecipes sets it)
     tables.recipes.push_back(r);
+    recipesOf[(int)r.machine].push_back((int)nRecipes); // (the caches LoadRecipes builds)
+    std::vector<uint8_t>& wants = wantsOf[(int)r.machine];
+    std::vector<int> wanted;
+    for (const Stack& s : r.in) { if (s.item >= (int)wants.size()) wants.resize(s.item + 1, 0); if (!wants[s.item]) wanted.push_back(s.item); wants[s.item] = 1; }
     const LayoutMsg L = OracleLayout(7, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 }, { PartType::Chest, 6, 0 } }, Row(3, 7, 2), Row(0, 4, -1));
     ApplyLayout(L);
     PlotSim* ps = FindPlot(9, 7);
@@ -3250,6 +3256,8 @@ TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     std::vector<std::string> loaded; for (int i = 0; i < kSlots; ++i) if (!back.out[i].data.empty()) loaded.push_back(back.out[i].data);
     EXPECT_EQ(loaded, recs) << "the save keeps each copy's record";
     tables.recipes.resize(nRecipes);
+    recipesOf[(int)r.machine].pop_back();
+    for (int item : wanted) wants[item] = 0;
     plots.clear(); plotIndexDirty = true; pendingStates.clear();
 }
 
