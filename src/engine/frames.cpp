@@ -138,7 +138,7 @@ FrameRef Frames_Choose(const std::vector<Planetoid*>& bodies, const DVec3& pg, F
     const Planetoid* best = nullptr;
     double bestSoi = kInf * 10.0, bestGap = kInf;
     for (const Planetoid* b : bodies) {
-        if (!b || b->vehicle || b->netId == 0) continue;
+        if (!b || (b->vehicle && !b->freeFall) || b->netId == 0) continue; // a flying rocket isn't a frame; a station (also a vehicle body, EmptyField) is (F5)
         const double d = (pg - b->worldPos).length();
         const double soi = Frames_Soi(*b);
         const double reach = soi >= kInf ? kInf : soi * (b->netId == current.body ? 1.03 : 0.97);
@@ -271,6 +271,7 @@ TEST(FramesCore, StationFrameAndFreeFall) {
     auto st = Body("station", 0x9102, { 0.0, 105000.0, 0.0 }, 4.0f, { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f }, BodyKind::Asteroid);
     st->surfaceGravity = 0.0f;
     st->freeFall = true;
+    st->vehicle = true; // as in the game: stations are EmptyField bodies, which the constructor marks as vehicles
     const std::vector<Planetoid*> bodies{ terra.get(), st.get() };
     const DVec3 p{ 0.0, 105000.0, 20.0 };
     const FrameRef pick = Frames_Choose(bodies, p, FrameRef{ 0x9101, FrameKind::Centred });
