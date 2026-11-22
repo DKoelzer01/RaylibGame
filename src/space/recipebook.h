@@ -32,6 +32,7 @@ bool Crafting_Request(int index, int count = 1);
 bool Crafting_RequestRecursive(int index, int count);
 inline std::function<void(int index, const std::string& output, int count, bool useChests, bool recursive)> gCraftRequest; // useChests (#854): what the inventory lacks, from the chests near the player
 bool RecipeBook_Discovered(const std::string& item);
+int RecipeBook_UnlockTier(const std::string& output); // (#1427 L7c) its recipe_unlocks "tier N": N; else -1
 // Search: a recipe matches when its output's name or id, or any ingredient's, contains the words.
 bool RecipeBook_Matches(const Recipe& r, const std::string& lowerQuery);
 // Once a second: toasts "New recipes: ..." for recipes that became known (not on the first check).

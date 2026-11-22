@@ -36,6 +36,7 @@
 #include "itemicons.h"
 #include "plots.h"
 #include "machinetiers.h"
+#include "disassembly.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
 #include "menus.h"
@@ -174,7 +175,10 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
 
 // Whether a container takes an item from the inventory: a chest takes every item (#568: tools and machines too; tool
 // wear is kept per item kind, not per stack, so nothing is lost), a machine what it burns or processes.
-static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
+static bool ContainerTakes(const std::string& id) { // (#1427 L7c) an assembler set to disassemble: what it takes apart
+    const int mode = container.type == PartType::LvAssembler ? Factory::View(container.body, container.plot, container.part).mode : 0;
+    return Factory::Accepts(container.type, id, mode);
+}
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
 void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests and tutorials)
     databaseOpen = false; // (a named screen: the pop-up only when asked for, below)
@@ -1224,11 +1228,30 @@ static void DrawContainer() {
         const ItemDef* d = itemDB.find(PartCostItem(next));
         ImGui::TextDisabled("From LV on, the %s does this job (and has tiers).", d ? d->name.c_str() : PartName(next));
     }
-    if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch; disassembly comes with #1427
+    if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch
         if (ImGui::RadioButton("Assemble", v.mode == 0) && v.mode != 0) MachineAct_SetMode(container.body, container.plot, container.part, 0);
         ImGui::SameLine();
         if (ImGui::RadioButton("Disassemble", v.mode == 1) && v.mode != 1) MachineAct_SetMode(container.body, container.plot, container.part, 1);
-        if (v.mode == 1) ImGui::TextDisabled("Disassembly is not built yet: the assembler waits (#1427)");
+        if (v.mode == 1) { // (#1427 L7c) what it gives back for each input, at its tier's yield
+            ImGui::PushTextWrapPos(0.0f); // (the panel is narrow at small windows: wrap, never clip)
+            ImGui::TextDisabled("Takes an item apart into what its recipe used (a tool or weapon: its parts' materials), at a yield by the item's tier against this assembler's.");
+            const int myTier = ContainerTier();
+            for (size_t i = 0; i < v.inSlots.size(); ++i) {
+                const std::string& id = v.inSlots[i].first;
+                if (id.empty() || v.inSlots[i].second <= 0) continue;
+                DisassemblyEntry e;
+                const std::string data = i < v.inData.size() ? v.inData[i] : std::string();
+                const bool ok = !data.empty() ? Disassembly_Composed(id, data, e) : Disassembly_Find(id) ? (e = *Disassembly_Find(id), true) : false;
+                const ItemDef* d = itemDB.find(id);
+                const char* name = d ? d->name.c_str() : id.c_str();
+                if (!ok) { ImGui::Text("%s: can't be taken apart", name); continue; }
+                const int y = MachineTiers_YieldPercent(std::max(0, myTier), e.tier);
+                if (y <= 0) ImGui::Text("%s: too advanced for this assembler (0%%)", name);
+                else if (e.keepPct < 100) ImGui::Text("%s: %d%% back (worn, %d%% left)", name, y * e.keepPct / 100, e.keepPct);
+                else ImGui::Text("%s: %d%% back", name, y);
+            }
+            ImGui::PopTextWrapPos();
+        }
     }
     { // (#1271 L6c) a machine of several recipes: what it makes ("Any": the first its inputs allow)
         // (#1427 L7d) each output with its recipe's tier: one above the machine's can't run here; one under it is overclocked

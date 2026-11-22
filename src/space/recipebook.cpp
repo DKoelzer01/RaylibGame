@@ -40,6 +40,12 @@ namespace {
     std::string Lower(std::string s) { for (char& c : s) c = (char)tolower((unsigned char)c); return s; }
 }
 
+int RecipeBook_UnlockTier(const std::string& output) {
+    Load();
+    auto it = unlocks.find(output);
+    return it != unlocks.end() && it->second.kind == "tier" ? atoi(it->second.target.c_str()) : -1;
+}
+
 bool RecipeBook_Discovered(const std::string& item) { return inventory.obtainedTotal(item) > 0.0 || inventory.count(item) > 0; }
 
 bool RecipeBook_Known(const Recipe& r) {

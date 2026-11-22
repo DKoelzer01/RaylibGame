@@ -1,0 +1,33 @@
+# Disassembly (#1427 L7c): an assembler set to Disassemble takes an item apart.
+# - A made item gives back its recipe's direct inputs (one recipe level down: the first hand or assembler recipe making it),
+#   at the yield of its tier against the assembler's (machine_tiers.txt's yield line). Raw inputs (items no hand or
+#   assembler recipe makes) come back as amount x yield, the fraction carried in the assembler; made inputs (components)
+#   are a chance per unit. It takes the forward recipe's time and EU, overclocked by the assembler's tier.
+# - A composed tool or weapon gives back the raw materials of its parts (the user, 2026-11-22), from the part lines below.
+# - An item's tier: its recipe_unlocks tier or its research node's tier, else its ingredients' highest (ladder tiers).
+#
+# lv_ladder_tier | the ladder tier of LV: an item of ladder tier T has voltage tier T - this (tier 3 is one under LV)
+lv_ladder_tier | 4
+# hand | ticks | EU a tick: a hand recipe's time and power taken apart (hand recipes have none of their own). GUESS
+hand | 100 | 8
+# wildcard | the item a recipe's wildcard input comes back as
+wildcard | any_planks | oak_planks
+wildcard | any_log    | oak_log
+wildcard | any_stone  | stone
+# exclude | item: never taken. exclude_suffix | end of an id: never taken (research packs). Fluids and foods never are.
+exclude_suffix | _pack
+exclude | water
+#
+# part | material | ladder tier | head | handle | binding: what one part of a composed item gives back at 100% ("-": nothing).
+# GUESS amounts, from the old per-material tool recipes (stone pickaxe: 4 stone, 2 planks, 2 fibre; iron: 3 ingots, 2 planks);
+# T1's part recipes will replace them. Flint and bone have no item yet: their heads give stone.
+part | stone    | 0 | stone 4          | -                | -
+part | flint    | 0 | stone 3          | -                | -
+part | bone     | 0 | stone 3          | -                | -
+part | wood     | 0 | oak_planks 3     | oak_planks 2     | -
+part | fibre    | 0 | -                | -                | fibre 2
+part | leather  | 1 | -                | hide 2           | hide 1
+part | bronze   | 1 | bronze_ingot 2   | bronze_ingot 1   | bronze_ingot 1
+part | iron     | 2 | iron_ingot 3     | iron_ingot 1     | iron_ingot 1
+part | steel    | 3 | steel_ingot 3    | steel_ingot 1    | steel_ingot 1
+part | titanium | 6 | titanium_ingot 3 | titanium_ingot 1 | titanium_ingot 1

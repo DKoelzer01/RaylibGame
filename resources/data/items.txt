@@ -97,6 +97,23 @@ tool_pickaxe     | Pickaxe          | tool | 160,155,150 | Its head sets what it
 tool_shovel      | Shovel           | tool | 160,145,125 | Digs dirt, sand, gravel and snow; a harder head digs wider and faster.
 tool_axe         | Axe              | tool | 160,135,115 | Fells trees, and fights as an axe; a harder head fells faster.
 tool_hoe         | Hoe              | tool | 160,150,130 | Tills soil into farmland (RMB); an iron or better head tills a wider patch.
+# (#1449 T1) Tool heads: <material>_<part>; hafted (Tab) they make the class item with that head (bronze ones: below).
+stone_pick_head       | Stone pick head       | 64 | 140,135,130 | Knapped stone. Haft it (Tab) with planks and fibre into a pickaxe.
+stone_shovel_head     | Stone shovel head     | 64 | 140,135,130 | Knapped stone. Haft it (Tab) with planks and fibre into a shovel.
+stone_axe_head        | Stone axe head        | 64 | 140,135,130 | Knapped stone. Haft it (Tab) with planks and fibre into an axe.
+stone_hoe_head        | Stone hoe head        | 64 | 140,135,130 | Knapped stone. Haft it (Tab) with planks and fibre into a hoe.
+iron_pick_head        | Iron pick head        | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into a pickaxe that mines bauxite too.
+iron_shovel_head      | Iron shovel head      | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into a wider, faster shovel.
+iron_axe_head         | Iron axe head         | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into an axe.
+iron_hoe_head         | Iron hoe head         | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into a hoe that tills a wide patch.
+steel_pick_head       | Steel pick head       | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a pickaxe that mines ilmenite too.
+steel_shovel_head     | Steel shovel head     | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a shovel.
+steel_axe_head        | Steel axe head        | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into an axe.
+steel_hoe_head        | Steel hoe head        | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a hoe.
+titanium_pick_head    | Titanium pick head    | 64 | 205,180,215 | Haft it (Tab) on a steel rod: the biggest bite.
+titanium_shovel_head  | Titanium shovel head  | 64 | 205,180,215 | Haft it (Tab) on a steel rod: the widest shovel.
+titanium_axe_head     | Titanium axe head     | 64 | 205,180,215 | Haft it (Tab) on a steel rod.
+titanium_hoe_head     | Titanium hoe head     | 64 | 205,180,215 | Haft it (Tab) on a steel rod.
 # (#1219) Composed weapons: one item per class; the head's material sets the damage (3 + 3 x hardness), durability and
 # sockets (part_materials.txt). Made at the grid from a head part and planks (Composed_FromParts reads the head).
 weapon_knife      | Knife      | tool | 170,165,160 | Quick light cuts (slash); the shortest reach.
