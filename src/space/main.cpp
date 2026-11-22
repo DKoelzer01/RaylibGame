@@ -10331,6 +10331,7 @@ int main(int argc, char** argv)
         }
         // The game window (#821): Tab (or E on foot, when not looking at a cockpit to board) opens and closes it at its last
         // screen; C and K open Crafting and Skills on foot (in a rocket they roll and dock). All rebindable in Settings.
+        CommandLine_SetWorld(gameState == 1 ? &world : nullptr); // (#1584) scenarios run commands too: they are benches, which never open the line
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen()) CommandLine_Update(world); // (#823) Enter or /: the command line
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;

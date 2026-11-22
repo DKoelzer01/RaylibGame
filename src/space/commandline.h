@@ -11,6 +11,7 @@ class Scene;
 
 bool CommandLine_Open();                    // the line is open (gameplay keys don't apply)
 void CommandLine_Update(Scene& world);      // per frame (before ImGui): opens on its key
+void CommandLine_SetWorld(Scene* world);    // (#1584) the world the commands act in, every frame (benches and scenarios too)
 void CommandLine_Draw();                    // inside ImGui
 // Runs a command line as typed (with or without the "/"): the reply ("" none). Single player's commands.
 std::string CommandLine_Run(const std::string& line);
