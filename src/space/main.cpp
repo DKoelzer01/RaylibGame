@@ -30,6 +30,7 @@
 #include "laddermigrate.h"
 #include "ores.h"
 #include "orefamilies.h"
+#include "oreveins.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1838,6 +1839,52 @@ int main(int argc, char** argv)
             if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
             const float Rc = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 0.0f; // (#1465) large caverns within this range too
             CaveIslands_Measure(*pf, p->seed, R, true, Rc); // (caveislands.cpp; the caves/islands scenario checks it, #1465)
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is the single if after it)
+        if (std::string(argv[i]) == "--ore-slices" && i + 1 < argc) {
+            // (#1467) The vein shapes, to look at: the nearest deposit of each family within R m of the start (cells
+            // searched to 400 m down), cut through its centre level and upright, 56 m across at 4 px a metre, each ore in
+            // its ores.txt colour over grey rock. One row per family into bench_ore_slices.png (order printed).
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: ore slices: no planet\n"); return 1; }
+            const Vector3 home = Vector3Scale(pf->findSpawnDir(p->seed), pf->radius);
+            const auto& fams = OreFamilies_All();
+            std::vector<VeinDeposit> best(fams.size());
+            std::vector<float> bestD(fams.size(), 1e30f);
+            const int n = (int)ceilf(R / kVeinCell), hx = (int)floorf(home.x / kVeinCell), hy = (int)floorf(home.y / kVeinCell), hz = (int)floorf(home.z / kVeinCell);
+            for (int z = hz - n; z <= hz + n; ++z) for (int y = hy - n; y <= hy + n; ++y) for (int x = hx - n; x <= hx + n; ++x) {
+                const VeinDeposit d = pf->depositOf(x, y, z);
+                if (!d.exists) continue;
+                const float dist = Vector3Distance(d.centre, home);
+                const float depth = pf->radius + pf->elevation(Vector3Normalize(d.centre)) - Vector3Length(d.centre);
+                if (dist > R || depth < 5.0f || depth > 400.0f || dist >= bestD[d.family]) continue;
+                bestD[d.family] = dist; best[d.family] = d;
+            }
+            constexpr int kPx = 224; // 56 m at 4 px a metre
+            Image img = GenImageColor(2 * kPx + 8, (int)fams.size() * (kPx + 8), Color{ 20, 20, 24, 255 });
+            for (size_t f = 0; f < fams.size(); ++f) {
+                if (bestD[f] > 1e29f) { printf("bench: ore slices: row %zu %-20s none within %.0f m\n", f, fams[f].id.c_str(), R); continue; }
+                const VeinDeposit& d = best[f];
+                const Vector3 up = Vector3Normalize(d.centre), e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(up, e1);
+                printf("bench: ore slices: row %zu %-20s %-9s size %.1f m, %.0f m away (left level, right upright)\n", f, fams[f].id.c_str(), OreFamilies_ShapeName(d.shape), d.size, bestD[f]);
+                for (int side = 0; side < 2; ++side)
+                    for (int py = 0; py < kPx; ++py) for (int px = 0; px < kPx; ++px) {
+                        const float u = (px - kPx / 2) / 4.0f, v = (kPx / 2 - py) / 4.0f;
+                        const Vector3 q = Vector3Add(d.centre, Vector3Add(Vector3Scale(e1, u), Vector3Scale(side == 0 ? e2 : up, v)));
+                        const float depth = pf->radius + pf->elevation(Vector3Normalize(q)) - Vector3Length(q);
+                        const int k = depth > 0.0f ? pf->oreKind(q, depth) : -1;
+                        Color c = depth <= 0.0f ? Color{ 120, 160, 200, 255 } : Color{ 95, 95, 100, 255 }; // sky, rock
+                        if (const OreDef* o = k >= 0 ? Ores_Get(k) : nullptr)
+                            c = { (unsigned char)(255 * powf(o->colour[0], 1 / 2.2f)), (unsigned char)(255 * powf(o->colour[1], 1 / 2.2f)), (unsigned char)(255 * powf(o->colour[2], 1 / 2.2f)), 255 };
+                        ImageDrawPixel(&img, side * (kPx + 8) + px, (int)f * (kPx + 8) + py, c);
+                    }
+            }
+            ExportImage(img, "bench_ore_slices.png");
+            UnloadImage(img);
+            printf("bench: ore slices: bench_ore_slices.png\n");
             return 0;
         }
     for (int i = 1; i < argc; ++i)
