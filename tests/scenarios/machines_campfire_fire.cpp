@@ -97,6 +97,7 @@ SCENARIO("machines/campfire-fire") {
         const Vector3 up = Vector3Normalize(at), side = Vector3Normalize(Vector3CrossProduct(up, { 0.0f, 0.0f, 1.0f }));
         if (phase == 0) { // fuel for it; the player 2.5 m off it, on foot (the first step's camera flew it)
             Factory::InsertFuel(c.body->id, plotId, fire, "coal", 2);
+            gScenarioInput = true; // (the scripted E is used: scenarios are benches, which take no input otherwise)
             player.flyMode = false;
             player.placeAt(c.world, *c.body, c.body->toWorld(Vector3Add(Vector3Scale(up, Vector3Length(at)), Vector3Scale(side, 2.5f))));
             phase = 1; f0 = c.frame;
@@ -110,14 +111,16 @@ SCENARIO("machines/campfire-fire") {
             if (f > 60 && player.grounded && BuildTool_AimingCampfire()) { phase = 2; f0 = c.frame; }
             return false;
         }
-        if (f < 2) { gFakeHeld |= kE; return false; } // E down for two frames, then up
+        static bool aimedWhileDown = false;
+        if (f < 2) { gFakeHeld |= kE; aimedWhileDown = BuildTool_AimingCampfire(); return false; } // E down for two frames, then up
         gFakeHeld &= ~kE;
         if (f < 30) return false;
         const MachineView v = ViewNow(c);
         if (phase == 2) c.check("E lit it", v.status == MachineStatus::Working, MachineStatusName(v.status));
         else c.check("E again put it out", v.status != MachineStatus::Working && v.fire == kFireOut, MachineStatusName(v.status));
-        c.check(phase == 2 ? "the game window stayed shut (E lit)" : "the game window stayed shut (E put out)", !GameUI_InventoryOpen());
-        if (phase == 3) return true;
+        // (the game window's own E handler is off in benches, so it can't open here: what it skips on is checked instead)
+        c.check(phase == 2 ? "E down with the campfire aimed: the window's E skips (lit)" : "E down with the campfire aimed: the window's E skips (out)", aimedWhileDown);
+        if (phase == 3) { gScenarioInput = false; return true; }
         phase = 3; f0 = c.frame;
         return false;
     });
