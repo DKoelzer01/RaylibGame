@@ -51,6 +51,7 @@
 #include "buildtool.h"
 #include "recorder.h"
 #include "scenario.h"
+#include "cliptelemetry.h"
 #include "slideshow.h"
 #include "bugreport.h"
 #include "progression_test.h"
@@ -2621,6 +2622,7 @@ int main(int argc, char** argv)
                    ws.preloadNodes, GetTime() - preloadT0, TerrainArena_Stats().vertices / 1048576.0, ws.nodes);
             preloadT0 = -1.0;
         }
+        if (bench && loading) Scenario_Loading(); // (#1422) a run held in a loading screen still beats and times out
         if (bench && !loading) { // scripted tests wait out the loading screen (a half-built world is no game state)
             if (benchStart < 0.0 && preloadT0 >= 0.0) {
                 // --preload-spawn: the timed window starts after the spawn preload, as play does
@@ -6651,7 +6653,20 @@ int main(int argc, char** argv)
                     } else {
                         const Vector3 up = Vector3Normalize(mouthAt);
                         const float r = kMouthDist[mouthPhase - 1];
-                        const Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        Vector3 eye = Vector3Add(mouthAt, Vector3Add(Vector3Scale(mouthOut, r), Vector3Scale(up, 4.0f + 0.35f * r)));
+                        // (#1428) Where the ground rises away from the mouth the eye lands inside a hill: back faces culled, the view saw
+                        // through the rock to the land beyond, and the cave passages in it as black tubes (their far walls, unlit). Lifted
+                        // along up until it and 2 m above it are open air (at most 300 m), once per view.
+                        {
+                            static int liftedFor = -1; static float lift = 0.0f;
+                            if (liftedFor != mouthPhase) {
+                                liftedFor = mouthPhase; lift = 0.0f;
+                                while (lift < 300.0f && (p->densityAt(Vector3Add(eye, Vector3Scale(up, lift))) >= ISO_LEVEL ||
+                                                         p->densityAt(Vector3Add(eye, Vector3Scale(up, lift + 2.0f))) >= ISO_LEVEL)) lift += 2.0f;
+                                if (lift > 0.0f) printf("bench: cave mouth: the %d m view's eye was inside the ground: lifted %.0f m\n", (int)r, lift);
+                            }
+                            eye = Vector3Add(eye, Vector3Scale(up, lift));
+                        }
                         world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(Vector3Add(mouthAt, Vector3Scale(up, -3.0f))); world.camera.up = p->dirToWorld(up);
                         player.position = world.renderOrigin + world.camera.position;
                         if (t > 4.0 && WorldIdle()) {
@@ -11076,6 +11091,8 @@ int main(int argc, char** argv)
                 world.camera.target = p->toWorld(plot->toBody(at));
                 world.camera.up = p->dirToWorld(plot->up);
                 BuildTool_Update(world, PlayerInput::None(), true);
+                if (red) // into the cube placed at f == 1, wherever placing settled it (#1432: aiming slides out now)
+                    for (const Part& q : plot->parts) if (q.type == PartType::Cube) { BuildTool_BenchAimAt(*plot, q.origin); break; }
                 if (f == 38) { TakeScreenshot("bench_preview.png"); printf("bench: shot: bench_preview.png (a slope on the ground)\n"); }
                 if (f == 78) { TakeScreenshot("bench_preview_red.png"); printf("bench: shot: bench_preview_red.png (into the block)\n"); shotPreview = false; }
             }
@@ -13841,6 +13858,8 @@ int main(int argc, char** argv)
                     gAvatars.push_back(a);
                 }
                 { const double d0 = GetTime(); world.drawScene(gameState); if (benchMeasuring) benchDrawMs += (GetTime() - d0) * 1000.0; }
+                ClipTelemetry_Frame(world, SimTime(), GetFrameTime()); // (#1442) the camera that drew this frame, in solid?
+                if (Recorder_Active()) ClipTelemetry_DrawTag();       // a recorded frame says so ("CLIPPED")
                 player.recordFly(world); // after the fly camera's input (in drawScene): the pose to carry next frame
                 if (!noHud && !gHeadless) Viewmodel_Draw(world);   // the hands, over the world
                 if (Recorder_WantsFrame(false)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // --record-hud 0: before the UI

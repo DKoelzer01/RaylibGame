@@ -499,6 +499,7 @@ long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 std::atomic<long long> pourDroppedUnits{ 0 }; // fill units pours found no room for, even widened (#766)
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
+std::atomic<long long> diagTicks{ 0 }, diagDispatches{ 0 }, diagFlowReads{ 0 }; // (#1407) for Stats: ticks, GPU dispatches, flux reads
 int slotsUsed = 0;                    // GPU slots held now (stats, #675)
 int G_Capacity();                     // the GPU brick pool (below)
 constexpr long long kSlotKeepTicks = 80; // 2 s of ticks: a brick away from awake water keeps its slot this long (#675)
@@ -1283,6 +1284,7 @@ void RunJob() {
         st.pinnedFaces = pinnedFaces;
         st.filmFlips = filmFlips;
         st.gpuSlots = slotsUsed; st.gpuCapacity = G_Capacity(); st.slotReleases = slotReleases;
+        st.ticks = diagTicks.load(); st.dispatches = diagDispatches.load(); st.flowReads = diagFlowReads.load();
         st.dbg[0] = dbgDown; st.dbg[1] = dbgSide; st.dbg[2] = dbgSrc; st.dbg[3] = dbgLevel; dbgDown = dbgSide = dbgSrc = dbgLevel = 0;
         st.settled = (int)settledTotal;
         pubStats = st;
@@ -1472,6 +1474,7 @@ void GpuUploadBrick(const Brick& b) {
 // division by the diameter under-read 3x with quarter-metre cells), smoothed over ~0.5 s; the buffer is cleared for the next dispatch.
 void GpuFlowRead() {
     if (G.fluxBlocks <= 0 || G.watchCells.empty()) return;
+    ++diagFlowReads;
     std::vector<int> fx((size_t)G.fluxBlocks * kCellsPerBrick * 4);
     G.flux.download(fx.data(), (unsigned)(fx.size() * 4));
     const float perSecond = WaterField::CellVolume() / (255.0f * (float)kTickSeconds * (float)std::max(1, speed.load())); // fill units a tick -> m^3/s
@@ -1677,6 +1680,7 @@ void GpuReadback() {
 }
 
 void GpuTick(int n) {
+    ++diagDispatches;
     G.sinkOn = false;
     for (auto& s : sites) for (const Site::Release& r : s->releases) G.sinkOn = G.sinkOn || r.piece >= 0;
     static int sinkTick = 0;
@@ -2413,6 +2417,7 @@ void Fluid::Update(Scene& world, float dt) {
         if (++lsTicks % 40 == 0) { printf("fluid lockstep: %lld waits, %.1f s waited in all\n", lsTicks, waited); fflush(stdout); }
     }
     accum = std::min(accum - kTickSeconds, 0.1);
+    ++diagTicks;
     UpdatePartSnaps(world); // build parts placed or removed: refresh the water there (#391)
     bool work;
     { std::lock_guard<std::mutex> c(cmdMx); work = !commands.empty(); }

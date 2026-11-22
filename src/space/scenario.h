@@ -103,6 +103,9 @@ struct ScenarioDef {
     bool legacyDrives = false;
     std::vector<std::string> shots;           // (legacyDrives) the files to compare, e.g. "bench_graves.png"; empty: all new
     double shotTolerance = 3.0;               // (legacyDrives) % of differing pixels allowed
+    // (#1442) Every scenario reports camera_inside_solid_frames / player_inside_solid_frames (cliptelemetry.h); with this
+    // set, a frame with the camera or the player inside solid ground or a built cube turns a PASS into a FAIL.
+    bool expectNoClip = false;
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }
@@ -123,6 +126,7 @@ struct ScenarioRegistrar { ScenarioRegistrar(const char* name, const char* file,
 void Scenario_PrepareArgs(int& argc, char**& argv);
 void Scenario_Setup();
 bool Scenario_Frame(Scene& world);
+void Scenario_Loading(); // (#1422) each frame of a loading screen: heartbeats and the wall backstop for a run held there
 void Scenario_Shutdown();
 bool Scenario_Active();
 // (#1216) A scenario drives gameplay input with scripted holds (gFakeHeld): the bench run takes gameplay input while it is set

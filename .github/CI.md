@@ -18,7 +18,8 @@ machine, which only the PC has.
 - **Static checks** (seconds, `tools/ci/static_checks.sh`): NetMsg ids unique and 1..255; a PR that adds, removes or
   renumbers a NetMsg or bumps `kNetProtocol` says so in the job summary (a NetMsg change without a bump is a warning);
   erosion bake code changed without a `kErosionBakeVersion` bump is a warning; a new `gh project` command in `tools/` is
-  an error. It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
+  an error; a `kNetProtocol` not reserved in `tools/ci/protocol_reservations.txt` (or one marked "(unused)") is an error
+  (#1480). It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
   skips them.
 - **Windows build + unit tests (w64devkit)**: w64devkit 2.0.0 (GCC 14.2, the shipping toolchain, SHA-256 pinned),
   MinGW Makefiles, `-DENABLE_GNS=ON`, targets `game` and `game_tests`, then `game_tests.exe` from the repo root.
@@ -55,6 +56,8 @@ curl, libssl-dev, libegl1) plus ccache, the NVIDIA container runtime with `NVIDI
 `flock` for the whole job (`tools/ci/selfhosted_env.sh`); ccache is shared. A job's log starts with its runner, the
 volume's device and inode, and its slot. (Before, concurrent jobs shared one `out/` and `run/` and overwrote each
 other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
+After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
+`tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 

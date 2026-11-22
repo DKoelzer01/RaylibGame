@@ -13,6 +13,8 @@
 #   4. renderOrigin (the drawing-only floating origin, Plan 11 #1412) used more in a file than tools/ci/render_origin_baseline.txt
 #      records, or in a new file: a warning (simulation reads body-local doubles). --render-origin-baseline rewrites it.
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
+#   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
+#      two branches can't ship the same number for different wire formats.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
@@ -179,7 +181,7 @@ fi
 # 5. (#1367) Every scenario runs on the self-hosted runner exactly once: its tags match one of the workflow's two
 #    `--scenario tag:...` lists (parts 1 and 2 of the headless scenarios), not both - unless it carries a local-only tag
 #    (rendering, timing and looks belong on the PC). A new tag in neither list would silently never run there: an error.
-LOCAL_ONLY_TAGS="perf visual fx light"
+LOCAL_ONLY_TAGS="perf visual fx light local" # local: needs the PC's real-time rates (fluid tests the runner can't keep up with, #1447)
 WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
@@ -207,6 +209,29 @@ else
         fi
     done
     sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
+fi
+
+# ---- 6. kNetProtocol is reserved (#1480) ----
+# Each wire-format change takes the next number from tools/ci/protocol_reservations.txt ("<n> | <branch> | <issue> | <what>",
+# reserved in the PR before the bump). A number missing there, or marked "(unused)", is an error: two branches that bumped
+# independently would both claim it, and a client of one would join a server of the other with a different format.
+RES=tools/ci/protocol_reservations.txt
+proto=$(grep -oE 'kNetProtocol = [0-9]+' "$NETPROTO" | head -1 | grep -oE '[0-9]+$')
+if [ -z "$proto" ]; then
+    echo "::error file=$NETPROTO::static check 6: kNetProtocol not found"; errors=$((errors + 1))
+elif [ ! -f "$RES" ]; then
+    echo "::error file=$RES::static check 6: the protocol reservation list is missing"; errors=$((errors + 1))
+else
+    line=$(tr -d '\r' < "$RES" | grep -E "^${proto}[[:space:]]*\|" | head -1)
+    if [ -z "$line" ]; then
+        echo "::error file=$NETPROTO::kNetProtocol $proto is not reserved in $RES: add a line \"$proto | <branch> | #<issue> | <what>\" (#1480)"
+        errors=$((errors + 1))
+    elif echo "$line" | grep -q "(unused)"; then
+        echo "::error file=$NETPROTO::kNetProtocol $proto is marked (unused) in $RES: reserve the next free number instead (#1480)"
+        errors=$((errors + 1))
+    else
+        sum ""; sum "**kNetProtocol $proto** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+    fi
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
