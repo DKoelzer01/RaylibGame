@@ -1609,7 +1609,7 @@ int main(int argc, char** argv)
         gJoin.syncHold = false; // the bodies exist now: the sync's messages (held since the Welcome) are handled next update
         // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
         gAnimalsReplicated = true; Animals_Reset();
-        gAnimalHitRequest = [](uint64_t netId) { NetClient_HitAnimal(gJoin, netId); };
+        gAnimalHitRequest = [](uint64_t netId, int flags) { NetClient_HitAnimal(gJoin, netId, flags); }; // (#1509) flags
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gDropRequest = [](const std::string& item, int64_t centi, const std::string& data) { NetClient_DropItems(gJoin, item, centi, data); }; // (#865; #1446 data)

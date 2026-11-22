@@ -905,7 +905,7 @@ namespace {
         };
     }
     uint32_t ConnOf(uint32_t session) { for (const Session& s : sessions) if (s.id == session && s.online) return s.conn; return 0; }
-    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId, int action = 0) {
+    void OnAnimalHit(Scene& world, uint32_t session, uint64_t netId, int action = 0, int flags = 0) { // flags (#1509): 1 heavy, 2 from behind
         auto rit = remotes.find(session);
         uint64_t body = 0; Vector3 at{}; double scale = 1.0;
         const int i = Animals_FindNet(netId);
@@ -931,7 +931,7 @@ namespace {
         // (#1509) The hit as the client's game makes it (animals.cpp MeleeFrame): its weapon's damage, type, poise and set
         // gems, through the typed path (resistances, poise, status). A light hit: heavy and from-behind don't come with the
         // request yet (a protocol change).
-        const DamageEvent ev = Weapon_HitEvent(held, heldData);
+        const DamageEvent ev = Weapon_HitEvent(held, heldData, (flags & 1) != 0, (flags & 2) != 0); // (#1509) heavy, from behind (the client's word: its own swing and aim)
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
         if (Animals_HitNetEvent(netId, ev, drops)) {
@@ -2204,7 +2204,7 @@ namespace {
             case NetMsg::AnimalHit: { // (#334) a swing at an animal: checked and applied here
                 MsgAnimalHit h;
                 if (!it->second.joined || !NetRead(r, h)) return;
-                OnAnimalHit(world, it->second.session, h.netId, h.action);
+                OnAnimalHit(world, it->second.session, h.netId, h.action, h.flags);
                 return;
             }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone

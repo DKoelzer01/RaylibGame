@@ -808,9 +808,9 @@ int NetSync_ScatterStrokes(Scene& world, int strokes, uint32_t seed) {
     return (int)edits.size();
 }
 
-void NetClient_HitAnimal(NetClient& c, uint64_t netId) {
+void NetClient_HitAnimal(NetClient& c, uint64_t netId, int flags) {
     if (c.state != NetClient::State::Joined || !netId) return;
-    SendMsg(c, MsgAnimalHit{ netId });
+    SendMsg(c, MsgAnimalHit{ netId, 0, (uint8_t)(flags & 3) });
 }
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action) {
     if (c.state != NetClient::State::Joined || !netId || action < 1 || action > 2) return;
