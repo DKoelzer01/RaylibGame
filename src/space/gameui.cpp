@@ -49,6 +49,7 @@
 #include <raymath.h>
 
 namespace {
+    int gTestHoverCell = -1; // (#1449) GameUI_TestHover: a cell shown as hovered (its tooltip), for scenarios
     bool inventoryOpen = false;
     std::string toast;
     double toastUntil = 0.0;
@@ -589,6 +590,8 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
 }
 
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data);
+void GameUI_TestHover(int cell) { gTestHoverCell = cell; }
+
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();
     auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
@@ -653,7 +656,7 @@ static void DrawCell(int i, float cw, float cell) {
     if (ImGui::IsItemClicked()) OpenIfAlt(grid[i].id); // (#826; the rules skip alt-clicks)
     NoteHover(&playerGrid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
     if (ImGui::IsItemClicked(ImGuiMouseButton_Middle) && !terrainTool.creative) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577; creative: a full stack, the rules)
-    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) || i == gTestHoverCell; // (#1449) a scenario shows a cell's tooltip
     const InvSlot& s = grid[i];
     const ImVec2 q(p.x + cw, p.y + cell);
     dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
