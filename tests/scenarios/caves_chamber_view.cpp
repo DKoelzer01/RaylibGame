@@ -45,6 +45,7 @@ SCENARIO("caves/chamber-view") {
             const Vector3 dir = Vector3Add(Vector3Scale(S.e1, cosf(a)), Vector3Scale(S.e2, sinf(a)));
             const Vector3 eye = Vector3Add(S.at, Vector3Scale(S.up, 3.0f));
             c.camera(eye, Vector3Add(eye, Vector3Add(Vector3Scale(dir, 20.0f), Vector3Scale(S.up, 4.0f))), S.up); // a little up: the upper walls
+            if (c.t > 1.5) c.grab("look" + std::to_string(k)); // (#1071) a slideshow picture, when asked for
             return c.t > 2.0;
         });
     }

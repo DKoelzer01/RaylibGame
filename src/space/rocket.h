@@ -18,6 +18,7 @@
 // to that ground's grid); a hard one breaks the landing legs, a harder one the engines too (damage,
 // not destruction). E leaves the cockpit once landed. Saves keep a rocket in flight.
 
+#include "frames.h"
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -101,5 +102,10 @@ int Rocket_LoadFuel(Plot& plot, int items);    // from the inventory; returns it
 void Rocket_Save(FILE* f);                     // game save extras
 bool Rocket_LoadLine(const char* tok, FILE* f);  // true if it consumed a rocket line
 void Rocket_Reset();                           // a new world / load
+// Tests (Plan 11 F5, #1457): the flying rocket's global state (centre of mass, velocity) and its frame; setting the
+// state places it there (a teleport: on the frame path the frame state is re-seeded from it). False unless flying.
+bool Rocket_TestState(DVec3& com, Vector3& vel, FrameRef* frame = nullptr);
+bool Rocket_TestSetState(const DVec3& com, const Vector3& vel);
+double Rocket_TestStationGap(); // the nearest station part from the flying rocket's centre of mass (m; -1: none)
 
 #endif
