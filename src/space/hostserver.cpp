@@ -2450,6 +2450,7 @@ bool Host_SetCreative(const std::string& name, bool on) {
         if (it == remotes.end()) return false;
         it->second.creative = on;
         it->second.player.flyAllowed = on; // (#781: flying only for creative players, whom ops set)
+        it->second.player.doubleTapFly = on; // (#1562) as the client predicts it
         if (!on) it->second.player.flyMode = false;
         lastVitals = 0; // (its client hears at once, with the next vitals)
         return true;

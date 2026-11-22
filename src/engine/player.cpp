@@ -60,7 +60,15 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     // world terms then, so the frame path converts it again instead of restoring the last flight's stored frame velocity.
     movedOutside = (position - lastEndPosition).length() > 1e-6;
     if (movedOutside) { fxActive = false; airVelBody = 0; viewBody = 0; }
-    if ((in.hit(Act::Fly) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
+    // (#1562) In creative, a double-tap of Space toggles flying as F does: the first tap still jumps (or, in flight, rises); a
+    // second within kDoubleTapFly toggles; a third starts a new pair.
+    bool doubleTap = false;
+    sinceJumpTap += dt;
+    if (in.hit(Act::Jump)) {
+        doubleTap = doubleTapFly && flyAllowed && sinceJumpTap < kDoubleTapFly;
+        sinceJumpTap = doubleTap ? 1e9f : 0.0f;
+    }
+    if (((in.hit(Act::Fly) || doubleTap) && (flyAllowed || flyMode)) || (flyMode && !flyAllowed)) { // out of creative: F only lands (#531)
         flyMode = !flyMode;
         velocity = { 0, 0, 0 };
         if (!flyMode) {
