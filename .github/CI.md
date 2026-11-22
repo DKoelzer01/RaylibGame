@@ -55,6 +55,8 @@ curl, libssl-dev, libegl1) plus ccache, the NVIDIA container runtime with `NVIDI
 `flock` for the whole job (`tools/ci/selfhosted_env.sh`); ccache is shared. A job's log starts with its runner, the
 volume's device and inode, and its slot. (Before, concurrent jobs shared one `out/` and `run/` and overwrote each
 other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
+After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
+`tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 
