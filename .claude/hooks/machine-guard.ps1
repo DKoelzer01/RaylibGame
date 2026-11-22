@@ -21,7 +21,7 @@ try {
     $builds = $cmd -match '(?i)cmake(\.exe)?"?\s+--build'
     if (-not ($runs -or $builds)) { exit 0 }
 
-    $slot = Join-Path $env:CLAUDE_PROJECT_DIR 'tools/slot.sh'
+    $slot = Join-Path $PSScriptRoot '../../tools/slot.sh' # this checkout's slot tool (CLAUDE_PROJECT_DIR may not be the worktree)
     if (-not (Test-Path $slot)) { exit 0 }  # an older checkout without the tool: don't enforce
     $bash = 'C:\Program Files\Git\bin\bash.exe'
     if (-not (Test-Path $bash)) { exit 0 }
