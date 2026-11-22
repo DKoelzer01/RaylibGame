@@ -3,7 +3,11 @@
 // nor cooks; put out with fuel and given a log, it lights by itself and cooks (as before). Coal is the fuel (a fuel only),
 // oak logs the food (a log is fuel too, but the fuel slot already holds coal, so it goes to the inputs).
 #include "scenario.h"
+#include "buildtool.h"
 #include "factory.h"
+#include "gameui.h"
+#include "player.h"
+#include "playerinput.h"
 #include "plots.h"
 #include "world.h"
 #include <raymath.h>
@@ -80,5 +84,44 @@ SCENARIO("machines/campfire-fire") {
         c.eq("charcoal made in all", Out(b, "charcoal"), 2);
         c.check("lit by itself, it goes out when done", b.status != MachineStatus::Working, MachineStatusName(b.status));
         return true;
+    });
+    // (#1103, playtest 2026-11-22: "cannot toggle from outside with E, just opens inventory") E on the campfire, through the
+    // real input path, from the player on foot looking at it: it lights, the game window stays shut; E again puts it out.
+    s.step("E on the campfire lights it, E again puts it out (no game window)", 20.0, [](ScenarioCtx& c) {
+        static int phase = 0;
+        static long f0 = 0;
+        constexpr uint64_t kE = 1ull << (int)Act::Use;
+        Plot* plot = c.body->plots ? c.body->plots->byId(plotId) : nullptr;
+        if (!plot) { c.check("the campfire's plot", false); return true; }
+        const Vector3 at = plot->toBody({ 0.5f, 0.3f, 0.5f });
+        const Vector3 up = Vector3Normalize(at), side = Vector3Normalize(Vector3CrossProduct(up, { 0.0f, 0.0f, 1.0f }));
+        if (phase == 0) { // fuel for it; the player 2.5 m off it, on foot (the first step's camera flew it)
+            Factory::InsertFuel(c.body->id, plotId, fire, "coal", 2);
+            gScenarioInput = true; // (the scripted E is used: scenarios are benches, which take no input otherwise)
+            player.flyMode = false;
+            player.placeAt(c.world, *c.body, c.body->toWorld(Vector3Add(Vector3Scale(up, Vector3Length(at)), Vector3Scale(side, 2.5f))));
+            phase = 1; f0 = c.frame;
+            return false;
+        }
+        const Vector3 eye = Vector3Add(c.body->toLocal((player.position - c.world.renderOrigin).toFloat()), Vector3Scale(up, 1.6f));
+        player.forward = c.body->dirToWorld(Vector3Normalize(Vector3Subtract(at, eye)));
+        const long f = c.frame - f0;
+        if (phase == 1) {
+            c.waitingFor("on the ground, the campfire aimed");
+            if (f > 60 && player.grounded && BuildTool_AimingCampfire()) { phase = 2; f0 = c.frame; }
+            return false;
+        }
+        static bool aimedWhileDown = false;
+        if (f < 2) { gFakeHeld |= kE; aimedWhileDown = BuildTool_AimingCampfire(); return false; } // E down for two frames, then up
+        gFakeHeld &= ~kE;
+        if (f < 30) return false;
+        const MachineView v = ViewNow(c);
+        if (phase == 2) c.check("E lit it", v.status == MachineStatus::Working, MachineStatusName(v.status));
+        else c.check("E again put it out", v.status != MachineStatus::Working && v.fire == kFireOut, MachineStatusName(v.status));
+        // (the game window's own E handler is off in benches, so it can't open here: what it skips on is checked instead)
+        c.check(phase == 2 ? "E down with the campfire aimed: the window's E skips (lit)" : "E down with the campfire aimed: the window's E skips (out)", aimedWhileDown);
+        if (phase == 3) { gScenarioInput = false; return true; }
+        phase = 3; f0 = c.frame;
+        return false;
     });
 }
