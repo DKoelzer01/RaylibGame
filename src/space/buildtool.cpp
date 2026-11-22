@@ -1,5 +1,6 @@
 #include "profiler.h"
 #include "machinemodels.h"
+#include "machinetiers.h"
 #include "machineact.h"
 #include "buildtool.h"
 #include "researchgate.h"
@@ -56,6 +57,7 @@ namespace {
 
 bool IsMachineItem(const std::string& id) {
     for (int t = 0; t < (int)PartType::Count; ++t) if (id == PartCostItem((PartType)t) && IsMachine((PartType)t)) return true;
+    { PartType vt; int vs = 0; if (MachineTiers_ItemPart(id, vt, vs)) return true; } // (#1427 L7a) a tiered variant
     return false;
 }
 
@@ -184,7 +186,11 @@ static void RefreshLocalClaims() {
     Claims_SetMirror(list);
 }
 
-bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge) {
+bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& placed, bool charge) {
+    // (#1427 L7a) a machine's material is its variant's step (0 for untiered ones: the shape material the build tool last held
+    // never rides along)
+    Part part = placed;
+    if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type));
     if (part.type == PartType::Farmland) { GameUI_Toast("Farmland is tilled ground now: till soil with a shovel or hoe (RMB)"); return false; } // (#1085)
     if (!plot.canPlace(part)) return false;
     const PartType t = part.type;
@@ -218,6 +224,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
         GameUI_Toast(TextFormat("Claimed the land %.0f m across around the banner (the map shows it)", kClaimBannerAcross[ClaimBannerTier(t)]));
     }
     if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) QuestBook_NotePlaced(PartCostItem(part.type));
+    if (IsMachine(part.type) && part.material > 0) QuestBook_NotePlaced(item); // (#1427) a variant counts as its base and as itself
     return true;
 }
 
@@ -347,7 +354,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     Vector3 dir, ld; DVec3 lo;
     player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     aim.body = body;
-    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
+    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)(IsMachine((PartType)buildTool.part) ? buildTool.variant : buildTool.material) }; // (#1427: a machine's variant)
 
     // Nearest part face along the ray, and the terrain.
     float bestPart = buildTool.reach;
@@ -603,7 +610,7 @@ void BuildTool_DrawHUD() {
     const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2;
     DrawLine(cx - 8, cy, cx + 8, cy, RAYWHITE);
     DrawLine(cx, cy - 8, cx, cy + 8, RAYWHITE);
-    const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)buildTool.material };
+    const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)(IsMachine(t) ? buildTool.variant : buildTool.material) };
     const char* item = PartItem(p);
     const char* label = IsShape(t) ? TextFormat("%s %s", GetBuildMaterial(buildTool.material).name, PartName(t)) : PartName(t);
     const char* line = TextFormat("BUILD  %s  (%d %s, have %d)", label, PartCostCount(t), item, inventory.count(item));

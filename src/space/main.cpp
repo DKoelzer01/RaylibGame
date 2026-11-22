@@ -34,6 +34,7 @@
 #include "terraintool.h"
 #include "player.h"
 #include "inventory.h"
+#include "machinetiers.h"
 #include "gameui.h"
 #include "helpmanual.h"
 #include "gamesave.h"
@@ -1356,6 +1357,7 @@ int main(int argc, char** argv)
     if (!bench) Audio_Init();
     CreatureSounds_Init(); // (#1246) creature calls through the creature framework's hook (nothing without audio v2)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
+    itemDB.loadExtraText(MachineTiers_ItemsText()); // (#1427 L7a) the tiered machines' variant items (machine_tiers.txt)
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
@@ -5302,6 +5304,7 @@ int main(int argc, char** argv)
                         { // (#1192) the Research tab at tier 3: a node done, two queued, one partly researched
                             ResearchState& rs = Research_Team(ResearchTab_Team());
                             rs.done = { "steam_power", "wire_drawing" }; rs.queue = { "vacuum_tube", "steelmaking" }; rs.progress["vacuum_tube"] = 12;
+                            rs.milestoneDone = { { 3, 0 }, { 3, 3 } }; // (#1271) the ladder: tier 3's milestone half met (the steel plates handed in, the working lab build)
                         }
                         GameUI_ShowTab("Research");
                         benchShotTabs = 31; frames = 0;

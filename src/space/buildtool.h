@@ -23,6 +23,7 @@ struct BuildToolState {
     bool orientManual = false; // #196: R/V pressed: the orientation sticks; otherwise parts face the player automatically
     int autoPart = -1;          // the part the automatic facing was last reset for (another part: automatic again)
     int material = 0;       // BuildMaterial index for shapes
+    int variant = 0;        // (#1427 L7a) a machine item's variant step (its Part::material)
     float reach = 8.0f;
 };
 extern BuildToolState& buildTool; // the local PlayerSession's (#313)

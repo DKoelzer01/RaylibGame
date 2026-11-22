@@ -1,12 +1,15 @@
 #include "plots.h"
 #include "gpumem.h"
 #include "worldtypes.h"
+#include "machinetiers.h"
 
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
 #include <array>
 #include <map>
+#include <mutex>
+#include <string>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -252,7 +255,18 @@ int BuildMaterialForItem(const char* item) {
     for (int i = 0; i < BuildMaterialCount(); ++i) if (strcmp(kBuildMaterials[i].item, item) == 0) return i;
     return -1;
 }
-const char* PartItem(const Part& p) { return IsShape(p.type) ? GetBuildMaterial(p.material).item : PartCostItem(p.type); }
+const char* PartItem(const Part& p) {
+    if (IsShape(p.type)) return GetBuildMaterial(p.material).item;
+    if (p.material > 0 && IsMachine(p.type)) { // (#1427 L7a) a tiered machine's variant: its step in the material
+        static std::mutex m;
+        static std::map<std::pair<int, int>, std::string> names; // (nodes never move: the pointers stay good)
+        std::lock_guard<std::mutex> lock(m);
+        auto it = names.find({ (int)p.type, (int)p.material });
+        if (it == names.end()) it = names.emplace(std::make_pair((int)p.type, (int)p.material), MachineTiers_VariantItem(p.type, p.material)).first;
+        if (!it->second.empty()) return it->second.c_str();
+    }
+    return PartCostItem(p.type);
+}
 static Color PartColor(PartType t) {
     switch (t) {
 
