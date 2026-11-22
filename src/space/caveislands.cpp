@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace {
@@ -97,7 +98,8 @@ CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, b
         for (size_t ci = 0; ci < caverns.size(); ++ci) {
             const float r = radii[ci];
             const int hx = 2 * (int)ceilf(0.95f * r), hy = 2 * (int)ceilf(0.5f * (0.4f * r * 1.82f + 12.0f));
-            const BoxResult b = MeasureBox(pf, caverns[ci], hx, hy, 2, nullptr, nullptr);
+            static const int step = getenv("RAYLIBGAME_ISLANDS_CAVERN_STEP") ? std::max(1, atoi(getenv("RAYLIBGAME_ISLANDS_CAVERN_STEP"))) : 2; // (1: exact, slow)
+            const BoxResult b = MeasureBox(pf, caverns[ci], hx, hy, step, nullptr, nullptr);
             out.cavernPieces += b.pieces; out.cavernVolume += b.volume;
             if (print) {
                 const Vector3 up = Vector3Normalize(caverns[ci]);

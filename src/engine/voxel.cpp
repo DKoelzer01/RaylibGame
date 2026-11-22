@@ -1318,16 +1318,17 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         auto onFloor = [&](float dist, float ang, float h) {
             return Vector3Add(c, Vector3Add(Vector3Add(Vector3Scale(hd, dist * cosf(ang)), Vector3Scale(sd, dist * sinf(ang))), Vector3Scale(up, h)));
         };
+        static const bool cavernSolids = !(getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS") && getenv("RAYLIBGAME_CAVE_CHAMBER_SOLIDS")[0] == '0'); // (isolation, as chambers)
         const int boulders = 8 + (int)(12.0f * Ug(g));
         for (int i = 0; i < boulders; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.75f * r * sqrtf(Ug(g)), br = 3.0f + 7.0f * Ug(g);
             const Vector3 bc = onFloor(dist, ang, floorH - 0.35f * br);
-            add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, (int)CaveKind::Solid);
+            if (cavernSolids) add(Vector3Subtract(bc, Vector3Scale(sd, 0.3f)), Vector3Add(bc, Vector3Scale(sd, 0.3f)), br, br, 0.6f, (int)CaveKind::Solid);
         }
         const int pillars = 3 + (int)(9.0f * Ug(g));
         for (int i = 0; i < pillars; ++i) {
             const float ang = 2.0f * PI * Ug(g), dist = 0.6f * r * sqrtf(Ug(g)), pr = 3.0f + 5.0f * Ug(g);
-            add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), pr, pr, 1.0f, (int)CaveKind::Solid);
+            if (cavernSolids) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), pr, pr, 1.0f, (int)CaveKind::Solid);
         }
     };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
