@@ -9,12 +9,14 @@
 #include "disassembly.h"
 #include "factory.h"
 #include "gameui.h"
+#include "itemdata.h"
 #include "machineact.h"
 #include "machinetiers.h"
 #include "plots.h"
 #include "terraintool.h"
 #include "world.h"
 #include <raymath.h>
+#include <chrono>
 #include <string>
 
 namespace {
@@ -104,6 +106,42 @@ SCENARIO("factory/disassembly") {
         if (left > 0 || ingots == 0 || c.t < 1.5) return false;
         c.eq("its iron head: 3 ingots (iron is two tiers under LV: 100%)", ingots, 3);
         c.eq("its wood handle: 2 planks", Count(v.outSlots, "oak_planks"), 2);
-        return c.eq("its fibre binding: 2 fibre", Count(v.outSlots, "fibre"), 2);
+        c.eq("its fibre binding: 2 fibre", Count(v.outSlots, "fibre"), 2);
+        Factory::Extract(bodyId, plot->id, asmPart);
+        return true;
+    });
+    // (#1524) Everything at once: the circuits' parts and the pickaxe's don't fit 4 output slots, so it waits (OutputFull)
+    // until they are taken. This timing lost the sim clock's wakeup (every few frames a 30 s WaitTicks): the wall check and
+    // the scenario's wall timeout catch it. The pickaxe is half worn: half its raw materials back (user, 2026-11-22).
+    s.step("circuits and a half-worn pickaxe at once: it fills its outputs, waits, then finishes", 30.0, [](ScenarioCtx& c) {
+        static int phase = 0;
+        static std::chrono::steady_clock::time_point wall0;
+        Factory::Sync(c.world);
+        MachineView v = View();
+        if (phase == 0) {
+            if (!v.outSlots.empty() && (Count(v.outSlots, "iron_ingot") > 0 || Count(v.outSlots, "fibre") > 0)) return false; // (the extract first)
+            const std::string fresh = Composed_MakeData("iron");
+            const int dur = Composed_Stats("tool_pickaxe", fresh).durability;
+            Factory::Insert(bodyId, plot->id, asmPart, "basic_circuit", 2);
+            Factory::Insert(bodyId, plot->id, asmPart, "tool_pickaxe", 1, 0, 0, ItemData::SetInt(fresh, "w", dur / 2));
+            wall0 = std::chrono::steady_clock::now();
+            phase = 1;
+            return false;
+        }
+        int left = 0; for (const auto& s : v.inSlots) left += s.second;
+        c.waitingFor(TextFormat("phase %d, status %s, inputs left %d, %d/%d", phase, MachineStatusName(v.status), left, v.progress, v.duration));
+        if (phase == 1) {
+            if (v.status != MachineStatus::OutputFull || c.t < 1.5) return false; // (held a moment for the recording: the worn line)
+            c.check("it waits with the pickaxe still in", left > 0);
+            Factory::Extract(bodyId, plot->id, asmPart);
+            phase = 2;
+            return false;
+        }
+        if (left > 0 || Count(v.outSlots, "fibre") == 0) return false;
+        c.eq("half its 3 ingots: 1 whole (the half carried)", Count(v.outSlots, "iron_ingot"), 1);
+        c.eq("half its 2 planks", Count(v.outSlots, "oak_planks"), 1);
+        c.eq("half its 2 fibre", Count(v.outSlots, "fibre"), 1);
+        const double wallS = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+        return c.check(TextFormat("no sim-clock stall (%.1f s wall, a lost wakeup costs 30 s)", wallS), wallS < 15.0);
     });
 }

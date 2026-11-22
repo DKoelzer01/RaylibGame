@@ -1201,6 +1201,7 @@ static void DrawContainer() {
                 if (!ok) { ImGui::Text("%s: can't be taken apart", name); continue; }
                 const int y = MachineTiers_YieldPercent(std::max(0, myTier), e.tier);
                 if (y <= 0) ImGui::Text("%s: too advanced for this assembler (0%%)", name);
+                else if (e.keepPct < 100) ImGui::Text("%s: %d%% back (worn: %d%% of %d%%)", name, y * e.keepPct / 100, e.keepPct, y);
                 else ImGui::Text("%s: %d%% back", name, y);
             }
         }

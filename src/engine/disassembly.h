@@ -25,6 +25,7 @@ struct DisassemblyEntry {
     int tier = 0;          // voltage tier
     int outCount = 1;      // items one craft of the forward recipe makes: each taken gives back parts / outCount
     int ticks = 0, eu = 0; // the forward recipe's (before overclocking)
+    int keepPct = 100;     // a worn tool or weapon: its durability left (user, 2026-11-22); scales the yield
     std::vector<DisassemblyPart> parts;
 };
 
@@ -40,11 +41,12 @@ std::vector<std::string> Disassembly_Items();                       // every ite
 inline std::function<int(const std::string& item)> gDisassemblyLadderTier;
 int Disassembly_ItemTier(const std::string& item);                  // voltage tier (raw items: their ladder tier, else the lowest)
 // A composed item (class id and record) as an entry: its parts' raw materials at 100%, its tier the parts' highest, a
-// hand recipe's time. False if it is not one or gives nothing.
+// hand recipe's time, keepPct its durability left (a half-worn pickaxe gives back half). False if it is not one or gives
+// nothing.
 bool Disassembly_Composed(const std::string& cls, const std::string& data, DisassemblyEntry& out);
 bool Disassembly_Excluded(const std::string& item); // the file's excludes and the game's (foods: gDisassemblyExclude)
 inline std::function<bool(const std::string& item)> gDisassemblyExclude;
-// The parts of one item taken at `yieldPct`: raw parts as hundredths (count x yield / outCount, rounded down), components
+// The parts of one item taken at `yieldPct` (times e.keepPct / 100): raw parts as hundredths (count x yield / outCount, rounded down), components
 // as rolls: `rolls` units each kept with chance yield / (100 x outCount). rng: a 32-bit state stepped per roll.
 struct DisassemblyGive { std::string item; int centi = 0; };
 void Disassembly_Give(const DisassemblyEntry& e, int yieldPct, uint32_t& rng, std::vector<DisassemblyGive>& out);

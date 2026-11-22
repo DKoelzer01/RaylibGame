@@ -174,6 +174,8 @@ bool Disassembly_Composed(const std::string& cls, const std::string& data, Disas
         if (same != out.parts.end()) same->count += p.count; else out.parts.push_back(p);
     }
     out.tier = ladder - lvLadder;
+    // Worn: the durability left, rounded down (a tool one stroke from breaking gives back almost nothing)
+    if (st.durability > 0) out.keepPct = (int)std::clamp((long long)(st.durability - st.wear) * 100 / st.durability, 0LL, 100LL);
     return !out.parts.empty();
 }
 
@@ -185,6 +187,7 @@ uint32_t Disassembly_Next(uint32_t& rng) {
 
 void Disassembly_Give(const DisassemblyEntry& e, int yieldPct, uint32_t& rng, std::vector<DisassemblyGive>& out) {
     out.clear();
+    yieldPct = yieldPct * std::clamp(e.keepPct, 0, 100) / 100;
     if (yieldPct <= 0) return;
     const int per = 100 * std::max(1, e.outCount);
     for (const DisassemblyPart& p : e.parts) {
@@ -327,5 +330,27 @@ TEST(Disassembly, AComposedToolGivesItsPartsRawMaterials) {
     ASSERT_TRUE(Disassembly_Composed("tool_pickaxe", Composed_MakeData("steel"), e));
     EXPECT_EQ(e.tier, -1) << "steel: ladder tier 3";
     EXPECT_FALSE(Disassembly_Composed("iron_ingot", "", e)) << "not a composed item";
+}
+
+// (user, 2026-11-22) A worn tool gives back the tier yield times its durability left: a half-worn iron pickaxe at 100%
+// yield gives half the ingots a new one does.
+TEST(Disassembly, AWornToolGivesBackItsDurabilityLeft) {
+    ASSERT_TRUE(Composed_Load());
+    ASSERT_TRUE(Disassembly_LoadText(kTestData));
+    const std::string fresh = Composed_MakeData("iron");
+    const int dur = Composed_Stats("tool_pickaxe", fresh).durability;
+    ASSERT_GT(dur, 0);
+    DisassemblyEntry e;
+    ASSERT_TRUE(Disassembly_Composed("tool_pickaxe", fresh, e));
+    EXPECT_EQ(e.keepPct, 100) << "new";
+    auto ingotsAt = [&](const DisassemblyEntry& en, int yield) { uint32_t rng = 1; std::vector<DisassemblyGive> g; Disassembly_Give(en, yield, rng, g); for (const auto& x : g) if (x.item == "iron_ingot") return x.centi; return 0; };
+    EXPECT_EQ(ingotsAt(e, 100), 300) << "3 ingots";
+    ASSERT_TRUE(Disassembly_Composed("tool_pickaxe", ItemData::SetInt(fresh, "w", dur / 2), e));
+    EXPECT_NEAR(e.keepPct, 50, 1) << "half its strokes used";
+    EXPECT_NEAR(ingotsAt(e, 100), 150, 3) << "half the ingots";
+    EXPECT_NEAR(ingotsAt(e, 50), 75, 3) << "half of a 50% yield";
+    ASSERT_TRUE(Disassembly_Composed("tool_pickaxe", ItemData::SetInt(fresh, "w", dur), e));
+    EXPECT_EQ(e.keepPct, 0) << "worn out";
+    EXPECT_EQ(ingotsAt(e, 100), 0);
 }
 #endif
