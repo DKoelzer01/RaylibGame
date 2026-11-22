@@ -1091,7 +1091,8 @@ static ContainerGrid& ContainerPart(int which) { return which == 1 ? containerOu
 // (the tests: as a click on the screen, with the slots as the view has them now)
 static void SlotClick(int i, int which, bool right, bool shift, int) {
     const MachineView v = Factory::View(container.body, container.plot, container.part);
-    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b) containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot };
+    containerIn.slots = v.inSlots; containerIn.fracs = v.inCenti; containerIn.datas = v.inData; // (#1446 2b)
+    containerOut.slots = v.outSlots; containerFuel.slots = { v.fuelSlot }; // (#1499: 2b's comment had swallowed this line)
     SlotRules_SetGrids({ &playerGrid, &containerIn, &containerOut, &containerFuel });
     RulesClick(&ContainerPart(which), i, right, shift);
 }
