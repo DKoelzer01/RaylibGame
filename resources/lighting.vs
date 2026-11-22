@@ -43,7 +43,7 @@ centroid out float fragSky;  // 1 = open to the sky, 0 = buried (scales sunlight
 centroid out float fragOcclusion; // #132 (centroid: as fragSky)
 out vec2 fragCanopy;       // planets: distant forest canopy cover (x) and latitude (y)
 flat out float fragClimate; // planets: the packed climate (2 + temperature step + moisture), per triangle (#254)
-out float fragOreKind;     // planets: which ore (1 + kind) / 8, 0 none
+out float fragOreKind;     // planets: which ore (1 + kind) / 256, 0 none (#1466)
 out float fragMacro;       // slow (70-250 m) brightness variation for the planet palette (per vertex: #183)
 flat out vec3 fragClipMax;
 flat out float fragLodFade;  // #243: the LOD cross-fade (arena record clip.w; lighting.fs)

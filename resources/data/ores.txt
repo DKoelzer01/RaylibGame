@@ -1,0 +1,15 @@
+# Ore kinds (#1466, the underground plan #1465): what PlanetField::oreKind places and the terrain shader draws.
+# The row order is the kind index (the mesher sends it to the shader as (kind + 1) / 256: up to 255 kinds).
+#   item:      the item mining it gives (items.txt)
+#   colour:    the mineral's colour in the stone, linear 0-1 (lighting.fs ore block)
+#   pattern:   how the mineral shows (lighting.fs): veins, veins_crust, speckle, seams, nodules, crystals
+#   min_depth: m under the original surface before deposits of it appear
+#   deposit:   its share of the 96 m deposit cells' blobs; deposits roll in `roll` order (lowest first), the last takes the rest
+#   pocket:    its share of the scattered pockets (row order, the last with a share takes the rest)
+# id       | item         | colour            | pattern     | min_depth | deposit | roll | pocket
+iron       | iron_ore     | 0.58, 0.27, 0.08  | veins       | 4         | 0.22    | 1    | 0.35
+copper     | copper_ore   | 0.10, 0.42, 0.30  | veins_crust | 4         | 0.20    | 2    | 0.25
+tin        | tin_ore      | 0.62, 0.62, 0.64  | speckle     | 4         | 0.12    | 3    | 0.15
+coal       | coal         | 0.03, 0.03, 0.035 | seams       | 4         | 0.22    | 0    | 0.25
+bauxite    | bauxite_ore  | 0.62, 0.22, 0.16  | nodules     | 20        | 0.14    | 4    | 0
+ilmenite   | ilmenite_ore | 0.13, 0.08, 0.16  | crystals    | 60        | 0.10    | 5    | 0

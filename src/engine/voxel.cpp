@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <cstring>
 #include "voxel.h"
+#include "ores.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
@@ -3561,11 +3562,11 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 }
                 if (roofOpen < 1.0f) out.occlusion[v] = std::max(out.occlusion[v], 1.0f - roofOpen); // (#908) also with RAYLIBGAME_AO=0
                 if (m == VoxelMaterial::Ore) {
-                    // Which ore (the shader colours each kind): 1 + kind, over 8.
+                    // Which ore (the shader's ore table, ores.txt): 1 + kind, over 256 (#1466: was over 8, at most 7 kinds).
                     if (const auto* pfo = dynamic_cast<const PlanetField*>(&field)) {
                         const float dl = Vector3Length(p);
                         const int k = dl > 1.0f ? pfo->oreKind(p, pfo->radius + (hinted ? gElev : pfo->elevation(Vector3Scale(p, 1.0f / dl), (float)stride)) - dl) : -1;
-                        out.tangents[v * 4 + 2] = (k + 1) / 8.0f;
+                        out.tangents[v * 4 + 2] = (k + 1) / 256.0f;
                     }
                 }
                 if (planetLife) { // under overhangs too: there was no climate where the sky was hidden, so no tint (#254)
@@ -3648,17 +3649,18 @@ namespace {
         d.exists = true;
         d.centre = { (cx + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cy + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cz + 0.25f + 0.5f * OreUnit(h)) * kDepositCell };
         d.radius = 3.5f + 5.5f * OreUnit(h); // 7-18 m across
-        const float r = OreUnit(h);          // coal 22%, iron 22%, copper 20%, tin 12%, bauxite 14%, ilmenite 10%
-        d.kind = r < 0.22f ? 3 : r < 0.44f ? 0 : r < 0.64f ? 1 : r < 0.76f ? 2 : r < 0.90f ? 4 : 5;
+        d.kind = Ores_DepositKind(OreUnit(h)); // (#1466) ores.txt: each kind's share of the deposits, in its roll order
+        if (d.kind < 0) d.exists = false;
         return d;
     }
-    float MinDepth(int kind) { return kind == 4 ? 20.0f : kind == 5 ? 60.0f : 4.0f; }
+    float MinDepth(int kind) { const OreDef* o = Ores_Get(kind); return o ? o->minDepth : 1e30f; }
 }
 
 const char* PlanetField::OreKindName(int kind) {
-    static const char* names[kOreKindCount] = { "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore" };
-    return kind >= 0 && kind < kOreKindCount ? names[kind] : nullptr;
+    const OreDef* o = Ores_Get(kind); // (#1466) ores.txt
+    return o ? o->item.c_str() : nullptr;
 }
+int PlanetField::OreKindCount() { return Ores_Count(); }
 
 int PlanetField::oreKind(Vector3 p, float depth) const {
     if (moon || depth < 3.0f) return -1;
@@ -3675,8 +3677,7 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
     const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f) - 0.08f * (gen.resources - 1.0f); // #504: richer, more pockets
     if (pocket > threshold) {
         uint32_t h = OreHash((int)floorf(p.x / 8.0f), (int)floorf(p.y / 8.0f), (int)floorf(p.z / 8.0f), oreSeed ^ 0x5eedu);
-        const float r = OreUnit(h);
-        return r < 0.35f ? 0 : r < 0.60f ? 1 : r < 0.75f ? 2 : 3; // iron, copper, tin, and coal (the seams near the surface)
+        return Ores_PocketKind(OreUnit(h)); // (#1466) ores.txt: the pocket shares (today iron, copper, tin and coal)
     }
     return -1;
 }
