@@ -274,10 +274,14 @@ void Viewmodel_Draw(Scene& world) {
         const WeaponClass wc = Weapon_ClassOf(held);
         const Matrix grip = MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), local({ 0, 0.09f, -0.07f }, { -14, 0, 10 }));
         auto onGrip = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), grip); };
+        // (#1587, playtest: "you slap enemies with the back of a sword") The swing is mostly a pitch (40 deg back to 50 down) with
+        // some yaw across: an upright blade facing the view swept its flat forward. Turned about its length so the edge leads
+        // the chop (70, not 90: the swing also crosses sideways, and edge-on from behind it read as a line). GUESS: judged in a capture.
+        constexpr float kEdgeTurn = 70.0f;
         switch (wc) {
             case WeaponClass::Spear:
                 Box(onGrip({ 0, 0.12f, 0 }), { 0.024f, 0.62f, 0.024f }, wood, light);
-                Box(onGrip({ 0, 0.47f, 0 }, { 0, 0, 0 }), { 0.05f, 0.12f, 0.012f }, head, light);
+                Box(onGrip({ 0, 0.47f, 0 }, { 0, kEdgeTurn, 0 }), { 0.05f, 0.12f, 0.012f }, head, light); // (#1587) its edge leads
                 break;
             case WeaponClass::Mace:
                 Box(onGrip({ 0, 0, 0 }), { 0.03f, 0.36f, 0.03f }, wood, light);
@@ -287,8 +291,8 @@ void Viewmodel_Draw(Scene& world) {
                 const float len = wc == WeaponClass::Knife ? 0.16f : wc == WeaponClass::TwoHanded ? 0.62f : 0.46f;
                 const float w = wc == WeaponClass::TwoHanded ? 0.06f : 0.045f;
                 Box(onGrip({ 0, -0.04f, 0 }), { 0.03f, 0.12f, 0.03f }, wood, light);
-                Box(onGrip({ 0, 0.025f, 0 }), { wc == WeaponClass::Knife ? 0.06f : 0.13f, 0.02f, 0.03f }, Color{ (unsigned char)(head.r * 0.7f), (unsigned char)(head.g * 0.7f), (unsigned char)(head.b * 0.7f), 255 }, light);
-                Box(onGrip({ 0, 0.035f + len * 0.5f, 0 }), { w, len, 0.012f }, head, light);
+                Box(onGrip({ 0, 0.025f, 0 }, { 0, kEdgeTurn, 0 }), { wc == WeaponClass::Knife ? 0.06f : 0.13f, 0.02f, 0.03f }, Color{ (unsigned char)(head.r * 0.7f), (unsigned char)(head.g * 0.7f), (unsigned char)(head.b * 0.7f), 255 }, light);
+                Box(onGrip({ 0, 0.035f + len * 0.5f, 0 }, { 0, kEdgeTurn, 0 }), { w, len, 0.012f }, head, light); // (#1587) its edge leads
                 break;
             }
         }
