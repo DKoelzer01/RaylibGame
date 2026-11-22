@@ -846,9 +846,9 @@ void NetClient_CreativeGive(NetClient& c, const std::string& item, int count) { 
     MsgCreativeGive q; q.item = item; q.count = (uint32_t)std::max(0, count);
     SendMsg(c, q);
 }
-void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which) { // (#332)
+void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which, const std::string& data) { // (#332; #1446 data)
     if (c.state != NetClient::State::Joined || part < 0) return;
-    MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item;
+    MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item; a.data = data;
     a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
     SendMsg(c, a);
 }
