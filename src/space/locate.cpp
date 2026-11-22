@@ -93,7 +93,7 @@ const char* Locate_CompassPoint(float bearing) {
 }
 
 std::string Locate_FeatureList() {
-    return "cave, hillside, sinkhole, resurgence, chamber, karst, tube, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, biome:<name>";
+    return "cave, hillside, sinkhole, resurgence, chamber, karst, tube, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, ore, ore:<kind>, biome:<name>";
 }
 
 bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& featureIn, int n, std::vector<LocateHit>& out, std::string& why) {
@@ -150,6 +150,45 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
                 add(Ground(*pf, d), "pond");
             }
         }
+    } else if (feature == "ore" || feature.rfind("ore:", 0) == 0) {
+        // Ore deposits (#207: one blob per 96 m cell in about a third of them): the cells under the ground round the
+        // player, 5-100 m down; a deposit counts when its centre is under the surface. ore:<kind> = iron, copper, tin,
+        // coal, bauxite, ilmenite.
+        int want = -1;
+        if (feature.size() > 4) {
+            const std::string name = feature.substr(4);
+            for (int k = 0; k < PlanetField::kOreKindCount; ++k) {
+                const std::string id = PlanetField::OreKindName(k);
+                if (id == name || id == name + "_ore") want = k;
+            }
+            if (want < 0) {
+                why = "Unknown ore '" + name + "': ";
+                for (int k = 0; k < PlanetField::kOreKindCount; ++k) {
+                    std::string id = PlanetField::OreKindName(k);
+                    if (id.size() > 4 && id.compare(id.size() - 4, 4, "_ore") == 0) id.resize(id.size() - 4);
+                    why += (k ? ", " : "") + id;
+                }
+                return false;
+            }
+        }
+        std::vector<Vector3> centres;
+        GridSearch(*pf, home, 96.0f, 1500.0f, 0.0f, 1, [&](Vector3 d) {
+            const float ground = pf->radius + pf->elevation(d);
+            for (float depth = 5.0f; depth <= 100.0f; depth += 47.5f) {
+                Vector3 c; float r; int kind;
+                if (!pf->depositAt(Vector3Scale(d, ground - depth), c, r, kind) || (want >= 0 && kind != want)) continue;
+                const float down = pf->radius + pf->elevation(Vector3Normalize(c)) - Vector3Length(c);
+                if (down < 2.0f) continue; // (in the air, or barely under: no ore there)
+                bool seen = false;
+                for (const Vector3& o : centres) if (Vector3Distance(o, c) < 1.0f) { seen = true; break; }
+                if (seen) continue;
+                centres.push_back(c);
+                char what[96];
+                snprintf(what, sizeof what, "%s deposit, ~%.0f m across, %.0f m down", PlanetField::OreKindName(kind), 2.0f * r, down);
+                add(Ground(*pf, Vector3Normalize(c)), what);
+            }
+            return false; // (the deposits are collected above; the grid only walks the ground)
+        });
     } else if (feature.rfind("biome:", 0) == 0 || feature.rfind("biome ", 0) == 0) {
         const std::string name = feature.substr(6);
         int b = -1;

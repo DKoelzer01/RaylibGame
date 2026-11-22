@@ -40,7 +40,7 @@ SCENARIO("world/locate") {
         terrainTool.creative = true; // (the commands are creative's)
         Player& p = LocalSession().player;
         const Vector3 from = p.nearest->toLocalD(p.position).toFloat();
-        const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert" };
+        const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert", "ore", "ore:iron" };
         const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
         for (const char* f : common) {
             std::vector<LocateHit> hits; std::string why;
