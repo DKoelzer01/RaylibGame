@@ -1692,7 +1692,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--probe-films") {
             // #249: thin near-iso films over the ground. An 81 x 81 m square at the start (1 m apart): each column from 3 m
             // over the surface down to 1 m under it in 5 cm steps; a solid layer above an air gap counts as a film.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (pf) {
                 const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1721,7 +1721,7 @@ int main(int argc, char** argv)
             // Digging is what the preview shows: 40 digs (straight down, the tools' radii 0.35-0.85 m, sunk
             // half a radius as the tool does) at random spots; the ground each one removes is compared with
             // the previewed sphere (both within the ground before), sampled every 5 cm: intersection over union.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (pf) {
                 const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1774,7 +1774,7 @@ int main(int argc, char** argv)
             // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
             // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
             const float R = (float)atof(argv[i + 1]);
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1795,7 +1795,7 @@ int main(int argc, char** argv)
             // box's boundary are the surrounding rock, any other solid component floats. Prints each chamber's floating
             // components, their volume and the largest, and the totals.
             const float R = (float)atof(argv[i + 1]);
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1867,7 +1867,7 @@ int main(int argc, char** argv)
             // (refactors must leave it unchanged).
             const float R = (float)atof(argv[i + 1]);
             const float D = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 80.0f; // depth of the window (m)
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1926,7 +1926,7 @@ int main(int argc, char** argv)
             // Plan 6 step 3 (#146): the GPU port of the height map (resources/compute/terrain.glsl) against
             // PlanetField::elevationBase over 1M points: random directions (half near the start, half anywhere)
             // and footprints 0-1024 m. Gate: every height within 1e-4 m.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             ComputeProgram prog;
             if (!pf || !prog.load("resources/compute/terrain_test.comp")) { printf("bench: terrain gpu: no planet or shader -> FAIL\n"); return 1; }
