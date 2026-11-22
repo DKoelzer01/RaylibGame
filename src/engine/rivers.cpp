@@ -414,8 +414,11 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
     // The nearest piece - unless the point lies inside more than one channel (a tributary running beside the main river
     // in one canyon, two reaches across a bend): then the lowest of those levels, as the higher water would spill into the
     // lower one (on the strata's cliff bands the nearest one rose 8 m walking down the longest river).
-    Hit inside;
-    inside.level = 1e30f;
+    // Only a piece's span counts for that: a point in its round end cap (past a joint) belongs to the neighbour whose span
+    // holds it. With valley-wide rivers a 19 m cap reached up the next piece and its joint level stood as a step across
+    // the water (#637). Caps still hold points no span does (the outside of a bend, a head, a mouth).
+    Hit inside, insideCap;
+    inside.level = insideCap.level = 1e30f;
     auto fill = [&](Hit& h, const Piece& pc, float d, float t, int i) {
         h.dist = d;
         h.level = pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb; // a waterfall steps (#540)
@@ -442,10 +445,12 @@ RiverNetwork::Hit RiverNetwork::nearest(Vector3 dir, float reach) const {
         if (d < pc.wa + (pc.wb - pc.wa) * t) {
             Hit h;
             fill(h, pc, d, t, i);
-            if (h.level < inside.level) inside = h;
+            Hit& best = t > 0.0f && t < 1.0f ? inside : insideCap;
+            if (h.level < best.level) best = h;
         }
     }
     if (inside.level < 1e29f) hit = inside;
+    else if (insideCap.level < 1e29f) hit = insideCap;
     hit.found = hit.dist < reach;
     return hit;
 }
@@ -744,10 +749,14 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
             });
         for (auto& th : pool) th.join();
     }
+    auto discOf = [&](int k) { return std::min(3.0f + 4.0f * sOf(k), 30.0f); };
     auto widthOf = [&](int k) { // half width: the discharge's, or the valley floor's share when wider
-        const float disc = std::min(3.0f + 4.0f * sOf(k), 30.0f), valley = std::min(0.8f * floorHalf[k], 30.0f) * params.valleyFill;
-        return std::max(1.0f, std::max(disc, valley) * headRamp(area[k]));
+        const float valley = std::min(0.8f * floorHalf[k], 30.0f) * params.valleyFill;
+        return std::max(1.0f, std::max(discOf(k), valley) * headRamp(area[k]));
     };
+    // The bank hold's half width: the discharge's alone, so the levels don't move with the valley fill (#637: sampling the
+    // banks at the filled width read other ground and stepped neighbouring pieces' levels apart by up to 1 m).
+    auto discWidthOf = [&](int k) { return std::max(1.0f, discOf(k) * headRamp(area[k])); };
     auto depthOf = [&](int k) { return std::max(0.5f, std::min(1.0f + 0.7f * sOf(k), 6.0f) * headRamp(area[k])); };
     // Banks (#640): the bake's level stood over the real ground beside a third of the rivers (the runtime adds detail the
     // bake's 50 m cells average away), and the water ended there as a wall. Each node's level is held 0.3 m under the bank
@@ -767,7 +776,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
                     const Vector3 along = Vector3Length(Vector3Subtract(Q, P)) > 1.0f ? Vector3Normalize(Vector3Subtract(Q, P))
                                          : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                     const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
-                    const float half = widthOf(k);
+                    const float half = discWidthOf(k);
                     float cap = 1e30f;
                     const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
                     for (int a = 0; a < 2; ++a)
