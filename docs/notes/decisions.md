@@ -124,13 +124,19 @@ Rulings 2026-11-19 to 2026-11-21 (user)
 - Weapons (#1219): per-item instance data first (#1446: parts, quality, sockets, wear on unstackable items), then the
   weapons. **All tools are composed items too** (#1449): one item per class (tool_pickaxe...), with head/handle/binding
   materials, anvil quality, sockets and wear on the copy; mining tier from the head material. Disassembling a composed
-  item gives back its parts at the tier yield. Factory slots (#1446 step 2b): chests carry items with data for players;
+  item gives back the **raw materials** its parts were made of (ingots, planks...), scaled by the tier yield - not the
+  parts (user, 2026-11-22). Factory slots (#1446 step 2b): chests carry items with data for players;
   belts, inserters and machines refuse them, except an assembler in Disassemble mode.
 - Machines with several recipes get a recipe picker ("Makes": Any or one output), saved per machine (L6c, #1459).
 - Underground plan (#1465, after the ladder and Plan 11): metals at full GregTech scale (+1-2 magic metals), real-ish
   geology with vein families, ruins from two eras (a lost colony; an older native civilisation), lava as a simulated
   fluid (lava + water -> obsidian), hazards = gas pockets, heat with depth, flooding (no cave-ins). Owners split:
-  caves/structures/ore generation Lighting, lava/aquifers Water, metals Progression.
+  ore kinds/vein families/caves/gems Lighting, structures (#1468) and hazards (#1472) UI/UX, lava/aquifers Water,
+  metals Progression.
+- 2026-11-22: ore patterns per kind for colour vision (#1464) as shown; dry river channels (#1438): fade detail and
+  rock features inside channels, after Plan 11 F5, together with wider rivers sized to their valleys + a water-cycle
+  slider (#637); the ladder merges into m84 after L7 and composed tools T1 (combat 5-8 continues on m84); stations
+  become Fixed(station) frames in F5 (with a free-fall term); the asteroid ship's flight moves to frames in F8.
 - Coordination (#1476): the machine slot is self-serve through tools/slot.sh with hooks; CLAUDE.md holds core rules
   only; auto-merge on "CI ok"; known runner failures listed; protocol numbers reserved in a file.
 
