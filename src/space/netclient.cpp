@@ -38,6 +38,20 @@
 #include <vector>
 #include <set>
 
+// The server's inventory is the truth: ours follows its deltas. Plain items by amount (hundredths); an item with its own
+// record (#1446) one at a time: +1 into a free cell, -1 the cell holding exactly that record, 0 that record rewritten.
+void ApplyInventoryDelta(Inventory& inv, const MsgInventoryDelta& d) {
+    if (d.data.empty()) {
+        if (d.amount > 0.0) inv.addAmount(d.item, d.amount); else inv.removeAmount(d.item, -d.amount);
+        return;
+    }
+    if (d.amount > 0.0) { ++inv.muted; inv.addInstance(d.item, d.data); --inv.muted; return; } // (the pickup feed: from the server's own)
+    const int cell = inv.findInstance(d.item, d.data);
+    if (cell < 0) return; // not here (a client that joined after it changed): nothing to follow
+    if (d.amount < 0.0) inv.takeInstance(cell);
+    else inv.setInstanceData(cell, d.newData);
+}
+
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
 
 namespace {
@@ -149,8 +163,8 @@ namespace {
                 MsgInventoryDelta d;
                 if (c.state != NetClient::State::Joined || !NetRead(r, d)) return;
                 ++c.inventoryDeltas;
-                if (c.inventory) { if (d.amount > 0.0) c.inventory->addAmount(d.item, d.amount); else c.inventory->removeAmount(d.item, -d.amount); }
-                else c.pendingInventory.push_back({ d.item, d.amount }); // (#803) before the game attached its inventory: kept for then
+                if (c.inventory) ApplyInventoryDelta(*c.inventory, d);
+                else c.pendingInventory.push_back(d); // (#803) before the game attached its inventory: kept for then
                 return;
             }
             case NetMsg::PlotEdit: { // (#330) in the server's order; a host in this process already changed the world
@@ -443,7 +457,7 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 void NetClient_Update(NetClient& c) {
     if (c.state == NetClient::State::Idle || c.state == NetClient::State::Rejected || c.state == NetClient::State::Closed) return;
     if (c.inventory && !c.pendingInventory.empty()) { // (#803) deltas that arrived before the inventory was attached
-        for (const auto& [item, amount] : c.pendingInventory) { if (amount > 0.0) c.inventory->addAmount(item, amount); else c.inventory->removeAmount(item, -amount); }
+        for (const MsgInventoryDelta& d : c.pendingInventory) ApplyInventoryDelta(*c.inventory, d);
         c.pendingInventory.clear();
     }
     if (!c.syncHold && !c.syncHeld.empty()) { // (#776) the world is ready now: the sync's messages held so far, in order
@@ -822,9 +836,9 @@ void NetClient_SkillSpend(NetClient& c, const std::string& perk) { // (#920)
     MsgSkillSpend q; q.perk = perk;
     SendMsg(c, q);
 }
-void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi) { // (#865)
+void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi, const std::string& data) { // (#865; #1446 data)
     if (c.state != NetClient::State::Joined || item.empty() || centi <= 0) return;
-    MsgDropItems q; q.item = item; q.centi = centi;
+    MsgDropItems q; q.item = item; q.centi = data.empty() ? centi : 100; q.data = data;
     SendMsg(c, q);
 }
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count) { // (#866)
@@ -843,3 +857,32 @@ void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_
     MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.x = ground.x; a.y = ground.y; a.z = ground.z; a.seed = seed;
     SendMsg(c, a);
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1446): a client follows the server's items with their own data ----
+#include "unit_helpers.h"
+
+TEST(NetClientInventory, ReplayingTheServersJournalGivesTheSameItems) {
+    UnitTest::EnsureItemDB();
+    Inventory server; server.journal = true;
+    Inventory client;
+    const int a = server.addInstance("stone_pickaxe", "h=flint;w=0");
+    server.addInstance("stone_pickaxe", "h=granite;w=5");
+    server.setInstanceData(a, "h=flint;w=9");
+    server.takeInstance(server.findInstance("stone_pickaxe", "h=granite;w=5"));
+    server.addInstance("iron_ingot", "q=104");
+    for (const Inventory::InstanceChange& ch : server.instanceLog)
+        ApplyInventoryDelta(client, MsgInventoryDelta{ ch.id, (double)ch.sign, ch.data, ch.newData });
+    EXPECT_EQ(client.countInstances("stone_pickaxe"), 1);
+    EXPECT_GE(client.findInstance("stone_pickaxe", "h=flint;w=9"), 0) << "the wear update followed";
+    EXPECT_LT(client.findInstance("stone_pickaxe", "h=granite;w=5"), 0) << "the taken one went";
+    EXPECT_GE(client.findInstance("iron_ingot", "q=104"), 0);
+    // Plain deltas keep working beside them.
+    ApplyInventoryDelta(client, MsgInventoryDelta{ "iron_ingot", 3.0, {}, {} });
+    EXPECT_EQ(client.count("iron_ingot"), 3);
+    EXPECT_EQ(client.countInstances("iron_ingot"), 1);
+    // A change to an item the client never heard of: nothing happens.
+    ApplyInventoryDelta(client, MsgInventoryDelta{ "stone_pickaxe", -1.0, "h=nothing", {} });
+    EXPECT_EQ(client.countInstances("stone_pickaxe"), 1);
+}
+#endif

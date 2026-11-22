@@ -230,7 +230,8 @@ bool Combat_OnDeathFor(Inventory& inv, ToolWearState* wear, const Player& p, con
             if (cells[i].empty()) continue;
             if (i == Inventory::kOffHand) g.offHand = (int)g.items.size();
             g.items.push_back(cells[i]);
-            cells[i] = InvSlot{};
+            if (cells[i].hasData()) inv.takeInstance(i); // (#1446) logged for a remote player's client, record kept in the grave
+            else cells[i] = InvSlot{};
         }
         if (g.items.empty()) return false;
         g.id = (uint32_t)++graveCounter;
@@ -291,7 +292,19 @@ bool Combat_PickUpGravesFor(const std::string& body, const DVec3& me, Inventory&
         std::vector<InvSlot> left;
         for (size_t i = 0; i < g.items.size(); ++i) {
             const InvSlot& it = g.items[i];
-            if ((int)i == g.offHand && cells[Inventory::kOffHand].empty()) { cells[Inventory::kOffHand] = it; moved = true; continue; }
+            if ((int)i == g.offHand && cells[Inventory::kOffHand].empty()) {
+                cells[Inventory::kOffHand] = it; moved = true;
+                if (it.hasData() && inv.journal) inv.instanceLog.push_back({ it.id, +1, it.data, {} }); // (#1446)
+                continue;
+            }
+            if (it.hasData()) { // (#1446) that one item back, record and all; no room: it stays in the grave
+                if (!g.dropped) ++inv.muted;
+                const int cell = inv.addInstance(it.id, it.data, it.heat);
+                if (!g.dropped) --inv.muted;
+                inv.overflowed = false;
+                if (cell >= 0) moved = true; else left.push_back(it);
+                continue;
+            }
             if (!g.dropped) ++inv.muted; // a grave: no pickup feed line per stack (a dropped pile shows them)
             const double rest = inv.addAmount(it.id, it.amount());
             if (!g.dropped) --inv.muted;
@@ -457,7 +470,7 @@ bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
     if (gNetRole == NetRole::Client) { // (#865) the server drops it from the inventory it keeps; its delta takes it from ours
         if (!gDropRequest) return false;
         ++s.inventory.muted; s.inventory.addAmount(stack.id, stack.amount(), stack.heat); --s.inventory.muted; // (back first, as MachineAct_Insert)
-        gDropRequest(stack.id, stack.centi);
+        gDropRequest(stack.id, stack.centi, stack.data);
         return true;
     }
     return Combat_DropFor(s.player.nearest->name, s.player.nearest->toLocalD(s.player.position), stack, std::string()); // (at the feet)
