@@ -42,7 +42,4 @@ int OreVeins_Member(const VeinDeposit& d, Vector3 p);
 uint32_t OreVeins_Hash(int x, int y, int z, uint32_t seed);
 float OreVeins_Unit(uint32_t& h); // the old deposit's LCG step: uniform [0, 1)
 
-// (#1548) The underground region at a body-local point ("none" until the region map lands).
-inline std::function<std::string(Vector3 p)> gOreRegionOf;
-
 #endif

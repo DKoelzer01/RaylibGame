@@ -5,6 +5,7 @@
 #include "voxel.h"
 #include "ores.h"
 #include "oreveins.h"
+#include "underground.h"
 #include "cavekinds.h"
 #include "envflag.h"
 #include "utils/logger.h"
@@ -3726,7 +3727,7 @@ VeinDeposit PlanetField::depositOf(int cx, int cy, int cz) const {
         s.depth = radius + elev - r;
         s.rock = RockName(rockTypeAt(c));
         s.biome = BiomeName(biomeAt(dir, elev));
-        s.region = gOreRegionOf ? gOreRegionOf(c) : std::string("none");
+        s.region = UndergroundRegion_Name(Underground_RegionAt(*this, c)); // (#1548) the underground region map
         return s;
     });
     cache.emplace(key, d);
