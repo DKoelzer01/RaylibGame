@@ -25,6 +25,7 @@
 #include "headless.h"
 #include "hostserver.h"
 #include "composed.h"
+#include "laddermigrate.h"
 #include "ores.h"
 #include "orefamilies.h"
 #include "joininfo.h"
@@ -5129,7 +5130,7 @@ int main(int argc, char** argv)
                         return out;
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
-                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "bitterroot", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
                                                    "ice", "regolith", "telescope", "map", "basic_suit",
                                                    "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
                                                    "quartz", "amethyst", "ruby", "sapphire", "emerald" };
@@ -5171,6 +5172,17 @@ int main(int argc, char** argv)
                             char prod[64] = {}, tool[64] = {};
                             if (sscanf(c[9].c_str(), "%63s %63s", prod, tool) >= 1 && strcmp(prod, "-") != 0) { Rule u; u.out = { prod }; if (tool[0] && strcmp(tool, "-") != 0) u.in = { tool }; u.machine = "#tool"; rules.push_back(u); }
                             for (const std::string& d : ids(c[7])) used.insert(d);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/creatures.txt", "r")) { // (#1549) rare drops: rare=item:count:chance,...
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#') continue;
+                            const char* r = strstr(buf, "rare=");
+                            if (!r) continue;
+                            std::string list(r + 5);
+                            list = list.substr(0, list.find_first_of(" \t\r\n"));
+                            for (const std::string& e : split(list, ',')) { const std::string id = e.substr(0, e.find(':')); if (!id.empty()) have.insert(id); }
                         }
                         fclose(f);
                     }
@@ -5218,8 +5230,12 @@ int main(int argc, char** argv)
                     used.insert("retraining_manual");
                     used.insert("lantern"); // (#836) held for its light, never spent
                     std::vector<std::string> missing, unused;
+                    // (#1549) machines the ladder retired (#1272: forge hammer, alloy smelter, steam macerator): their items
+                    // exist only as old saves' refunds, never made
+                    std::set<std::string> retired;
+                    for (int t = 0; t < 256; ++t) if (LadderMigrate_IsRemovedMachine(t)) if (const char* it = PartCostItem((PartType)t)) retired.insert(it);
                     for (const ItemDef& d : itemDB.items()) {
-                        if (!have.count(d.id)) missing.push_back(d.id);
+                        if (!have.count(d.id) && !retired.count(d.id)) missing.push_back(d.id);
                         const bool consumed = used.count(d.id) || BuildMaterialForItem(d.id.c_str()) >= 0 || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
                                               ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
                         if (!consumed) unused.push_back(d.id);
@@ -5230,7 +5246,8 @@ int main(int argc, char** argv)
                     for (const auto& m : unused) printf(" %s", m.c_str());
                     // #214: ores only go into smelting and ore processing; every product is made from ingots (plates, wire...).
                     static const char* kOreMachines[] = { "kiln", "electric_furnace", "steam_macerator", "macerator", "arc_furnace", "blast_furnace",
-                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge" };
+                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge",
+                                                          "millstone", "bloomery" }; // (#1271 L2-L3, #1549) the ladder's early ore crushing and smelting
                     std::vector<std::string> oreUses;
                     for (const Rule& u : rules)
                         for (const std::string& in : u.in) {
