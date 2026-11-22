@@ -14,21 +14,36 @@
 
 namespace {
 // The camera at the player's eyes, looking at the ground 2 m ahead (side: metres to the right); the tool's aim from it.
+// (#1176) From a pose taken once, body-local: the player turns to the camera's view, so building each aim from the
+// player's facing turned it further with every sideways look - the stroke and the check 3.8-8.3 m apart.
 bool Aim(ScenarioCtx& c, float side, Vector3& local) {
+    static bool taken = false;
+    static Vector3 feetL{}, upL{}, fwdL{};
     Player& p = LocalSession().player;
-    const Vector3 feet = (p.position - c.world.renderOrigin).toFloat();
-    const Vector3 up = Vector3Normalize(p.up);
-    Vector3 fwd = Vector3Subtract(p.forward, Vector3Scale(up, Vector3DotProduct(p.forward, up)));
-    fwd = Vector3Length(fwd) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })) : Vector3Normalize(fwd);
-    c.world.camera.position = Vector3Add(feet, Vector3Scale(up, 1.6f));
-    c.world.camera.target = Vector3Add(Vector3Add(feet, Vector3Scale(fwd, 2.0f)), Vector3Scale(Vector3Normalize(Vector3CrossProduct(fwd, up)), side));
-    c.world.camera.up = up;
+    Planetoid* b = c.body;
+    if (!taken) {
+        taken = true;
+        feetL = b->toLocal((p.position - c.world.renderOrigin).toFloat());
+        upL = Vector3Normalize(feetL);
+        const Vector3 f = b->dirToLocal(p.forward);
+        fwdL = Vector3Subtract(f, Vector3Scale(upL, Vector3DotProduct(f, upL)));
+        fwdL = Vector3Length(fwdL) < 1e-3f ? Vector3Normalize(Vector3CrossProduct(upL, { 0, 0, 1 })) : Vector3Normalize(fwdL);
+    }
+    const Vector3 rightL = Vector3Normalize(Vector3CrossProduct(fwdL, upL));
+    c.world.camera.position = b->toWorld(Vector3Add(feetL, Vector3Scale(upL, 1.6f)));
+    c.world.camera.target = b->toWorld(Vector3Add(Vector3Add(feetL, Vector3Scale(fwdL, 2.0f)), Vector3Scale(rightL, side)));
+    c.world.camera.up = b->dirToWorld(upL);
     TerrainTool_Update(c.world, PlayerInput::None(), true);
     Planetoid* body = nullptr; Vector3 n{};
     return TerrainTool_LastHit(body, local, n);
 }
 // RMB held for one update with `held` in hand (the caller waited out the cooldown): what the player's RMB does there.
 void Rmb(ScenarioCtx& c, const char* held) {
+    // In hand as a player has it (#1176): carried (the terrain tool uses a tool only while it is in the inventory) and
+    // nothing else held (holdingItem, left on by the hotbar's start selection, blocks every RMB). Setting heldTool alone
+    // worked only while the sandbox's starting kit happened to carry these tools.
+    if (inventory.count(held) <= 0) inventory.add(held, 1);
+    terrainTool.holdingItem = false;
     terrainTool.heldTool = held;
     PlayerInput in; in.hold(Act::Secondary);
     TerrainTool_Update(c.world, in, true);
