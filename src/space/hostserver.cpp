@@ -555,6 +555,16 @@ namespace {
         ++machineActions;
         switch (a.action) {
             case 1: case 3: case 8: { // one item into the machine (or its fuel slot; 8: one storage slot of a chest, #862)
+                if (!a.data.empty()) { // (#1446 2b) exactly that item with its record: a chest slot, or a machine (the factory refuses all
+                                       // but an assembler set to disassemble, and sends it back to this player through gFactoryDeliver)
+                    if (a.action == 3) { refuse("It doesn't take that"); return; }
+                    const int cell = inv.findInstance(a.item, a.data);
+                    if (cell < 0) { refuse("You don't have that"); return; }
+                    const InvSlot one = inv.takeInstance(cell); // (journalled: the client sees it go)
+                    if (a.action == 8) Factory::InsertSlot(b->id, plot->id, a.part, one.id, 1, a.slot, session, 0, one.data);
+                    else Factory::Insert(b->id, plot->id, a.part, one.id, 1, session, 0, one.data);
+                    break;
+                }
                 const int n = std::min<int>(a.count, inv.count(a.item));
                 const std::vector<std::string> fuels = a.action == 3 ? Factory::FuelsOf(type) : std::vector<std::string>{};
                 const bool takes = a.action == 3 ? std::find(fuels.begin(), fuels.end(), a.item) != fuels.end() : Factory::Accepts(type, a.item);
@@ -2210,9 +2220,10 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat, const std::string& data) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
+        if (!data.empty()) { rit->second.inventory.addInstance(item, data, heat); return; } // (#1446) one item with its record: the journal tells its client
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
         rit->second.inventory.addAmount(item, count, heat);
         if (const uint32_t conn = ConnOf(to)) SendInventoryDeltas(conn, rit->second.inventory, before);
