@@ -4,6 +4,7 @@
 #include <cstring>
 #include "voxel.h"
 #include "ores.h"
+#include "cavekinds.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
@@ -1972,9 +1973,10 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float hhx = hx - s[8] * hv, hhy = hy - s[9] * hv, hhz = hz - s[10] * hv;
         const float hs = hhx * s[20] + hhy * s[21] + hhz * s[22];
         const float r = s[3] + (s[7] - s[3]) * t;
-        const float kind = s[15];
-        const bool mouth = kind > 0.5f && kind < 1.5f, hall = kind > 2.5f; // kinds: 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
-        if (kind > 1.5f && kind < 2.5f) { // solid inside: a rubble apron, the lip over a mouth, a chamber's boulder or column
+        const int ki = CaveKind_Index(s[15]); // (#1465) the kind's row (cavekinds.h): 0 passage, 1 mouth, 2 solid, 3 chamber (#1058)
+        const CaveKindDef& K = kCaveKinds[ki];
+        const bool hall = K.scaleToPassage == 1; // (the env A/B switches below name chambers)
+        if (K.solid == 1) { // solid inside: a rubble apron, the lip over a mouth, a chamber's boulder or column
             const float va = hv / s[11];                                  // squashed: aprons 0.35, the lip over a mouth 0.2
             const float la2 = hhx * hhx + hhy * hhy + hhz * hhz + va * va;
             const float la = sqrtf(la2);
@@ -1982,7 +1984,7 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
             solid = std::max(solid, rr - la);
             continue;
         }
-        const float bk = mouth ? 0.4f : 0.2f;                       // the large-scale term: mouths' noise-cut outline
+        const float bk = K.outline;                                 // the large-scale term (mouths: a noise-cut outline)
         const float rough = 1.0f + bk * big;
         // (#1116) A chamber's swell (+-30% over ~10 m) and outline term at a passage's size: on a 30 m hall they moved the wall
         // +-9 m within 10 m and folded it back along rays (floating shells on the upper walls; --cave-islands 800 at seed 42:
@@ -2001,14 +2003,14 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
         const float pk = hv > 0.0f && pocketsTest ? pocket : 0.0f;
         const float vfac = s[11] * (1.0f + 0.5f * pk);                    // roof pockets
         const float hp = hs - shift * rw;
-        const float hvT = mouth ? hv - 0.5f * hp : hv;              // mouths: taller on one side
+        const float hvT = K.lopsided == 1 ? hv - 0.5f * hp : hv;    // mouths: taller on one side
         const float v2 = hvT / vfac;
         const float l2 = std::max(0.0f, hhx * hhx + hhy * hhy + hhz * hhz - hs * hs + hp * hp) + v2 * v2;
         const float len = sqrtf(l2);
-        const float rubble = mouth ? 0.35f * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
-        const float levK = mouth ? 0.45f : lev;                      // mouths: a predictable, level floor (no tilt), so
-        const float tiltK = mouth || hall ? 0.0f : tilt;                     //   the opening meets the ground and stays open
-        const float flo = hall ? 0.4f * r : levK * rw;                     // chambers: a level floor 0.4 r down, so boulders sit on it
+        const float rubble = K.rubble > 0.0f ? K.rubble * std::max(0.0f, rub) : 0.0f; // mouths: rubble mounds on the floor (<= ~0.3 m)
+        const float levK = K.fixedLevel >= 0.0f ? K.fixedLevel : lev;      // mouths: a predictable, level floor (no tilt), so
+        const float tiltK = K.tilt == 1 ? tilt : 0.0f;                     //   the opening meets the ground and stays open
+        const float flo = K.floorR > 0.0f ? K.floorR * r : levK * rw;      // chambers: a level floor 0.4 r down, so boulders sit on it
         static const bool floorTest = !(getenv("RAYLIBGAME_CAVE_FLOORCUT") && getenv("RAYLIBGAME_CAVE_FLOORCUT")[0] == '0'); // (#1116 isolation, CPU only)
         const float floorCut = !floorTest && hall ? -1e9f : (0.0f - hv) - flo * s[11] + 0.5f * tiltK * hp + rubble;
         // (#1022, user) Heavy, jagged 3D noise grows the wall inward: none inside half the bore (a clear core; the floor
@@ -2039,8 +2041,9 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
                 static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 4.0f; // (#1116: 8 -> 4 m, floating 1500 -> 722 m^3 with the swell fix; the env is CPU only, tuning)
-                const float ra = hall ? std::min(rw, hallRa) : rw;            // chambers: outcrops at most passage-sized (else tens of metres)
-                intrude = (mouth ? 0.65f : 0.55f) * ra * fade * wn;
+                const float cap = K.outcropCap > 0.0f && hall ? hallRa : K.outcropCap; // (the env tunes chambers' cap, CPU only)
+                const float ra = cap > 0.0f ? std::min(rw, cap) : rw;          // chambers: outcrops at most passage-sized (else tens of metres)
+                intrude = K.intrude * ra * fade * wn;
             }
         }
         m = std::min(m, std::max(len - rw + intrude, floorCut));
