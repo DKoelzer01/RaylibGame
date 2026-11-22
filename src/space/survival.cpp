@@ -124,7 +124,7 @@ void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, floa
     // (#919) Athletics XP: a real drop (over 6 m/s: ~3 m on Terra) landed without harm, at most one every 10 s (no hopping).
     static double lastSoft = -1e9;
     if (local && damage <= kGrace && impactSpeed > 6.0f && SimTime() - lastSoft > 10.0 && gSkillEvent) { lastSoft = SimTime(); gSkillEvent("soft_landing", 1.0, Vector3{}); }
-    if (damage <= kGrace || survival.dead) return;
+    if (damage <= kGrace || survival.dead || survival.invulnerable) return; // (#1561: creative)
     survival.health -= damage;
     survival.lastHarm = "fall";
     survival.lastFallSpeed = impactSpeed;
@@ -209,13 +209,19 @@ bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vecto
 
 // #337: one player's survival step - the local player (Survival_Update), or a remote one a server simulates (local false: no
 // UI, sounds, quests, rocket or ship; the weather and temperature at that player). Single player runs exactly as before.
-void Survival_Update(Scene& world, float dt, const PlayerInput& in) { Survival_StepFor(world, dt, in, survival, player, inventory, Potion_Suit(Potion_Local(), Suit_Stats()), true); } // (#1254) potions: water breathing, cold resistance
+void Survival_Update(Scene& world, float dt, const PlayerInput& in) {
+    survival.invulnerable = LocalSession().terrainTool.creative; // (#1561) creative: no damage, no death (a server sets its players')
+    Survival_StepFor(world, dt, in, survival, player, inventory, Potion_Suit(Potion_Local(), Suit_Stats()), true); // (#1254) potions: water breathing, cold resistance
+}
 void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalState& survival, Player& player, Inventory& inventory, const SuitStats& stats, bool local) {
     (void)inventory;
     if (survival.dead) {
         if (SimTime() - survival.deathTime > 3.0) Survival_RespawnFor(world, survival, player, local);
         return;
     }
+    // (#1561) Creative: whatever this step would take (vacuum, suffocation, hunger, heat, cold, a ship's crash) it gives back,
+    // and the player never dies; hits and falls already pass by (Combat_DamageFor, Survival_OnLandingFor).
+    const float health0 = std::max(survival.health, 1.0f);
     const Vector3 pr = (player.position - world.renderOrigin).toFloat();
     survival.breathable = false;
     survival.underwater = false;
@@ -316,6 +322,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
     }
     // (#337) a client process's player dies only when the server says (Vitals): its own drains here just keep the bars moving
     // between the server's numbers, and never cost the inventory it mirrors.
+    if (survival.invulnerable) survival.health = std::max(survival.health, health0); // (#1561) creative: nothing taken, no death
     if (local && gNetRole == NetRole::Client) survival.health = std::max(survival.health, 0.0f);
     else if (survival.health <= 0.0f) {
         survival.health = 0.0f;
