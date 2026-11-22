@@ -1,4 +1,6 @@
 #!/bin/bash
+# busybox (w64devkit on PATH) is not bash: re-run under Git's bash (#1477)
+if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe" "/c/Program Files/Git/bin/bash.exe" "/usr/bin/bash"; do [ -x "$b" ] && exec "$b" "$0" "$@"; done; echo "needs bash" >&2; exit 2; fi
 # Search for an existing issue, then (with --create) file a new one (#1476). REST only, except gh issue create.
 #   file_issue.sh search "<keywords>"
 #   file_issue.sh create "<title>" <body-file> [--labels a,b] [--parent N]

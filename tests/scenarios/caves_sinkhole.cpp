@@ -44,6 +44,7 @@ SCENARIO("caves/sinkhole") {
         c.waitingFor("the terrain there built (an idle world), then 2 s");
         static double idleAt = -1.0;
         if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) { idleAt = c.t; c.cue(); }
+        if (idleAt >= 0.0 && c.t > idleAt + 1.5) c.grab("above"); // (#1071) a slideshow picture, when asked for
         return idleAt >= 0.0 && c.t > idleAt + 2.0;
     });
     s.step("done", 1.0, [](ScenarioCtx& c) {
