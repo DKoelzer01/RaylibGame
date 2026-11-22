@@ -8175,7 +8175,17 @@ int main(int argc, char** argv)
                                         if (pf->waterSourceAt(q).kind || (benchFlowSea && eq < ws.level - 0.2f)) continue;
                                         // (#1504) from the sea, at least 5 m of open water first: a shore 2 m out put the trench's end in the sea's
                                         // reach at once (flooded in 0.1 s, never asleep), where the 21 m of the old pick ran a real channel
-                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 5.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
+                                        // (#1512) from the sea, the cut must run into dry, low land: ground 0.3-4 m over the water from the
+                                        // shore to 4 m past the shaft. A shore climbing ~1 m a metre made the channel a tunnel and buried the
+                                        // camera in the hill; a sand spit with sea behind it flooded the shaft from the far side at once (a
+                                        // "pass" in 0.2 s).
+                                        bool open = true;
+                                        if (benchFlowSea)
+                                            for (float u = s + 2.0f; u <= s + 18.0f && open; u += 2.0f) {
+                                                const float e = pf->elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(o, u / pf->radius))));
+                                                open = e > ws.level + 0.3f && e < ws.level + 4.0f;
+                                            }
+                                        if (open && eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 5.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
                                         break;
                                     }
                                 }
@@ -8213,7 +8223,11 @@ int main(int argc, char** argv)
                         }
                     } else if (flowPhase == 1) {
                         const Vector3 up = Vector3Normalize(flowEnd);
-                        const Vector3 eye = Vector3Add(Vector3Add(flowEnd, Vector3Scale(up, 9.0f)), Vector3Scale(flowOut, 9.0f));
+                        Vector3 eye = Vector3Add(Vector3Add(flowEnd, Vector3Scale(up, 9.0f)), Vector3Scale(flowOut, 9.0f));
+                        { // never inside the ground (#1512: a steep shore put the eye in the hill)
+                            const Vector3 ed = Vector3Normalize(eye);
+                            eye = Vector3Scale(ed, std::max(Vector3Length(eye), pf->radius + pf->elevation(ed) + 6.0f));
+                        }
                         world.camera.position = p->toWorld(eye);
                         world.camera.target = p->toWorld(Vector3Subtract(flowEnd, Vector3Scale(flowOut, 6.0f)));
                         world.camera.up = p->dirToWorld(up);
