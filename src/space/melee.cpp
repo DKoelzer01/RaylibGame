@@ -1,5 +1,7 @@
 // Combat step 2 (#1216): see melee.h.
 #include "melee.h"
+#include "composed.h"
+#include "tools.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -36,6 +38,15 @@ WeaponClass Weapon_ClassOf(const std::string& id) {
     if (has("mace") || has("hammer") || has("club")) return WeaponClass::Mace;
     if (has("spear")) return WeaponClass::Spear;
     return WeaponClass::Tools;
+}
+
+float Weapon_BaseDamage(const std::string& id, const std::string& data) {
+    if (Composed_Is(id)) { // (#1219) a composed copy: from its head (3 + 3 x hardness) and quality
+        const ComposedStats s = Composed_Stats(id, data);
+        if (s.valid) return s.damage;
+    }
+    const ToolSpec t = ToolOf(id, data);
+    return t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
 }
 
 DamageType Weapon_TypeOf(const std::string& id) {
@@ -293,6 +304,24 @@ TEST(Melee, WeaponClasses) {
     EXPECT_EQ(Weapon_ClassOf("flint_knife"), WeaponClass::Knife);
     EXPECT_EQ(Weapon_ClassOf("war_hammer"), WeaponClass::Mace);
     EXPECT_EQ(Weapon_ClassOf("wooden_spear"), WeaponClass::Spear);
+    // (#1219) the composed classes
+    EXPECT_EQ(Weapon_ClassOf("weapon_knife"), WeaponClass::Knife);
+    EXPECT_EQ(Weapon_ClassOf("weapon_sword"), WeaponClass::Sword);
+    EXPECT_EQ(Weapon_ClassOf("weapon_greatsword"), WeaponClass::TwoHanded);
+    EXPECT_EQ(Weapon_ClassOf("weapon_mace"), WeaponClass::Mace);
+    EXPECT_EQ(Weapon_ClassOf("weapon_spear"), WeaponClass::Spear);
+    EXPECT_EQ(Weapon_ClassOf("tool_axe"), WeaponClass::Axe);
+    EXPECT_EQ(Weapon_ClassOf("tool_pickaxe"), WeaponClass::Tools);
+}
+
+TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("", ""), 2.0f) << "hands";
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_sword", Composed_MakeData("bronze")), 9.0f);  // 3 + 3 x 2.0
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_sword", Composed_MakeData("steel")), 12.0f);  // 3 + 3 x 3.0
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("weapon_knife", Composed_MakeData("flint")), 6.6f);   // 3 + 3 x 1.2
+    EXPECT_FLOAT_EQ(Weapon_BaseDamage("tool_pickaxe", Composed_MakeData("stone")), 6.0f) << "the same as an old stone pickaxe (3 + 3 x tier 1)";
+    EXPECT_NEAR(Weapon_BaseDamage("weapon_sword", Composed_MakeData("steel", {}, {}, 110)), 13.2f, 1e-4f) << "quality";
 }
 
 TEST(Melee, SoftTurnClosesOnTheTarget) {

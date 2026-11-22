@@ -1847,8 +1847,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         if (Shielded(world, *here, eye, at)) continue; // terrain or a part takes the blow
         hits.push_back({ (int)i, at });
     }
-    const ToolSpec t = ToolOf(terrainTool.heldTool);
-    const float base = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier; // today's damage by tool (weapons: #1219)
+    const float base = Weapon_BaseDamage(terrainTool.heldTool, gToolDataOf ? gToolDataOf(terrainTool.heldTool) : std::string()); // (#1219) a composed copy: from its head
     std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.i > y.i; }); // a kill removes it: high first
     for (const Hit& h : hits) {
         const Animal& a = animals[h.i];
