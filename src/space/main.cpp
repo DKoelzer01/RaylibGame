@@ -23,6 +23,7 @@
 #include "gamerng.h"
 #include "headless.h"
 #include "hostserver.h"
+#include "composed.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -12917,13 +12918,15 @@ int main(int argc, char** argv)
             static double t0 = -1.0, stepAt = 0.0;
             static bool given = false, refused = false, dropped = false, heard = false, keptByDropper = false, takenByOther = false;
             static bool plainRefused = false, recursiveMade = false; // (#946)
+            static bool swordHeard = false, gemSet = false, gemSeen = false; // (#1219)
+            static Inventory plainInv; // (#1219) plain's copy of the inventory the server keeps (InventoryDelta)
             static double apart = -1.0;
             static int plainGraves0 = 0, circuitRecipe = -1;
             if (t0 < 0.0) t0 = GetTime();
             for (NetClient* c : { &maker, &plain }) NetClient_Update(*c);
             const uint32_t ms = maker.welcome.session, ps = plain.welcome.session;
             auto pileOf = [](const std::string& owner) { for (const GraveInfo& g : Combat_GraveList()) if (g.dropped && g.owner == owner) return true; return false; };
-            if (step == 0) { NetClient_Connect(maker, TextFormat("127.0.0.1:%d", hostPort), "maker"); NetClient_Connect(plain, TextFormat("127.0.0.1:%d", hostPort), "plain"); step = 1; }
+            if (step == 0) { plain.inventory = &plainInv; NetClient_Connect(maker, TextFormat("127.0.0.1:%d", hostPort), "maker"); NetClient_Connect(plain, TextFormat("127.0.0.1:%d", hostPort), "plain"); step = 1; }
             else if (step == 1 && maker.state == NetClient::State::Joined && plain.state == NetClient::State::Joined && Host_SetCreative("maker", true)) {
                 NetClient_CreativeGive(maker, "stone", 20); NetClient_CreativeGive(plain, "stone", 20); stepAt = GetTime(); step = 2;
             } else if (step == 2 && ((Host_ItemCount(ms, "stone") == 20 && Host_CreativeRefused() >= 1) || GetTime() - stepAt > 5.0)) {
@@ -12957,10 +12960,26 @@ int main(int argc, char** argv)
             } else if (step == 7 && (Host_ItemCount(ps, "basic_circuit") == 1 || GetTime() - stepAt > 5.0)) {
                 recursiveMade = Host_ItemCount(ps, "basic_circuit") == 1 && Host_ItemCount(ps, "copper_ingot") == 0 && Host_ItemCount(ps, "glass") == 0 &&
                                 Host_ItemCount(ps, "steel_plate") == 0 && Host_ItemCount(ps, "copper_wire") == 0 && Host_ItemCount(ps, "vacuum_tube") == 0;
-                step = 8;
+                // (#1219) Setting a gem: plain gets a bronze sword (one socket) and two rubies on the server; once its client
+                // has heard of the sword, it asks to set a ruby in it (SetGem).
+                Host_TestGiveInstance(ps, "weapon_sword", Composed_MakeData("bronze")); Host_TestGive(ps, "ruby", 2);
+                stepAt = GetTime(); step = 8;
+            } else if (step == 8 && (plainInv.findInstance("weapon_sword", Composed_MakeData("bronze")) >= 0 || GetTime() - stepAt > 5.0)) {
+                swordHeard = plainInv.findInstance("weapon_sword", Composed_MakeData("bronze")) >= 0;
+                NetClient_SetGem(plain, "weapon_sword", Composed_MakeData("bronze"), "ruby");
+                stepAt = GetTime(); step = 9;
+            } else if (step == 9) {
+                const std::string set = Composed_SetGem("weapon_sword", Composed_MakeData("bronze"), "ruby");
+                if ((Host_HasInstance(ps, "weapon_sword", set) && plainInv.findInstance("weapon_sword", set) >= 0) || GetTime() - stepAt > 5.0) {
+                    gemSet = Host_HasInstance(ps, "weapon_sword", set) && Host_ItemCount(ps, "ruby") == 1 && !Host_HasInstance(ps, "weapon_sword", Composed_MakeData("bronze"));
+                    gemSeen = plainInv.findInstance("weapon_sword", set) >= 0;
+                    step = 10;
+                }
             }
-            if (step == 8 || GetTime() - t0 > 60.0) {
-                const bool ok = given && refused && dropped && heard && keptByDropper && takenByOther && plainRefused && recursiveMade;
+            if (step == 10 || GetTime() - t0 > 60.0) {
+                const bool ok = given && refused && dropped && heard && keptByDropper && takenByOther && plainRefused && recursiveMade && swordHeard && gemSet && gemSeen;
+                printf("bench: joined items (#1219): the client heard of its composed sword %d, its SetGem set the ruby on the server (one ruby used) %d, "
+                       "and the client's copy changed with it %d\n", swordHeard, gemSet, gemSeen);
                 printf("bench: joined items (#946): a plain craft request for a circuit from raw materials refused %d, a recursive one planned and made on the server %d\n",
                        plainRefused, recursiveMade);
                 printf("bench: joined items (#865, #866): creative give reached the server %d, a survival player's refused %d; drop made a pile and left the server's "

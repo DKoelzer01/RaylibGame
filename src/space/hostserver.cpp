@@ -2492,6 +2492,14 @@ bool Host_TestGive(uint32_t session, const std::string& item, int count) { // (t
     if (it == remotes.end()) return false;
     return count >= 0 ? (it->second.inventory.add(item, count), true) : it->second.inventory.remove(item, -count);
 }
+bool Host_TestGiveInstance(uint32_t session, const std::string& item, const std::string& data) { // (#1219 tests) journalled: the client hears it
+    auto it = remotes.find(session);
+    return it != remotes.end() && it->second.inventory.addInstance(item, data) >= 0;
+}
+bool Host_HasInstance(uint32_t session, const std::string& item, const std::string& data) {
+    auto it = remotes.find(session);
+    return it != remotes.end() && it->second.inventory.findInstance(item, data) >= 0;
+}
 bool Host_ForgetPlayers() {
     for (const Session& s : sessions) if (s.online) return false;
     sessions.clear(); remotes.clear();
