@@ -69,7 +69,10 @@ SCENARIO("factory/stats") {
     });
     s.step("the counts match what happened", 10.0, [](ScenarioCtx& c) {
         Factory::Extract(c.body->id, plot->id, mac);
-        Factory::WaitTicks(2);
+        // (#1406) A full factory second before reading: the minute window sums finished one-second buckets only, so the
+        // work in the second the last craft ended in was left out when read 2 ticks later (3980 or 3960 EU on the runner,
+        // depending on where in its second the craft ended; 4000 here only when the frames happened to let it close).
+        Factory::WaitTicks(kTicksPerSecond + 2);
         Factory::Sync(c.world);
         const FactoryStatsView v = PlotView();
         const long long ticksB = Factory::Stats().ticks;
