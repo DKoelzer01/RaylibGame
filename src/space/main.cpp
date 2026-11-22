@@ -8170,10 +8170,12 @@ int main(int argc, char** argv)
                                     for (float s = 2.0f; s <= 25.0f; s += 1.0f) {
                                         const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(o, s / pf->radius)));
                                         const float eq = pf->elevation(q);
-                                        if (pf->waterSourceAt(q).kind) continue;
-                                        // (#1504) from the sea, at least 10 m of open water first: a shore 2 m out put the trench's end in the sea's
+                                        // (#1504) the sea is water too: waterSourceAt reports rivers, lakes and ponds, never the sea, so from a sea
+                                        // point the walk stopped 2 m out (the old pick's 21 m came from a river mouth's water in the way)
+                                        if (pf->waterSourceAt(q).kind || (benchFlowSea && eq < ws.level - 0.2f)) continue;
+                                        // (#1504) from the sea, at least 5 m of open water first: a shore 2 m out put the trench's end in the sea's
                                         // reach at once (flooded in 0.1 s, never asleep), where the 21 m of the old pick ran a real channel
-                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 10.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
+                                        if (eq > ws.level + 0.3f && eq < ws.level + 4.0f && (!benchFlowSea || s >= 5.0f)) { best = dist; flowDir = d; flowOut = o; flowLevel = ws.level; flowStart = s; }
                                         break;
                                     }
                                 }
