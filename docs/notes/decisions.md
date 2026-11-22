@@ -124,7 +124,8 @@ Rulings 2026-11-19 to 2026-11-21 (user)
 - Weapons (#1219): per-item instance data first (#1446: parts, quality, sockets, wear on unstackable items), then the
   weapons. **All tools are composed items too** (#1449): one item per class (tool_pickaxe...), with head/handle/binding
   materials, anvil quality, sockets and wear on the copy; mining tier from the head material. Disassembling a composed
-  item gives back its parts at the tier yield. Factory slots (#1446 step 2b): chests carry items with data for players;
+  item gives back the **raw materials its parts were made of** (ingots, planks...), scaled by the tier yield, not the
+  parts (user, 2026-11-22; L7c). Factory slots (#1446 step 2b): chests carry items with data for players;
   belts, inserters and machines refuse them, except an assembler in Disassemble mode.
 - Machines with several recipes get a recipe picker ("Makes": Any or one output), saved per machine (L6c, #1459).
 - Underground plan (#1465, after the ladder and Plan 11): metals at full GregTech scale (+1-2 magic metals), real-ish
