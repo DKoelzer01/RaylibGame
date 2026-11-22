@@ -11,3 +11,4 @@ factory/stats                          | #1406 | the EU window on the slow runne
 farm/till-rmb                          | #1176 | no RMB stroke runs on the runner (#1178)
 fluid/flow-meter                       | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
 fluid/pond                             | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
+bench: flow: reached the channel end   | #1512 | --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)

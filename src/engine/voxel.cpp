@@ -880,6 +880,9 @@ const RiverNetwork* PlanetField::rivers() const {
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
+            // (#637) Rivers fill their worn valley floors from a water cycle of 1 up; at 0.5 only the discharge width (narrow streams).
+            // RAYLIBGAME_RIVER_VALLEY=0: off (A/B).
+            rp.valleyFill = !(getenv("RAYLIBGAME_RIVER_VALLEY") && getenv("RAYLIBGAME_RIVER_VALLEY")[0] == '0') ? std::clamp((gen.waterCycle - 0.5f) / 0.5f, 0.0f, 1.0f) : 0.0f;
             if (!EnvFlag("RAYLIBGAME_RIVER_BANKS_OLD")) rp.bankHeight = [this](Vector3 d) { return riverBankHeight(d); }; // #640 (A/B: =1 off)
             // #903: the biomes' regional reshaping (swamps pulled ~24 m down) moves the water with the ground; at a coarse
             // footprint only the regional part counts (dunes are bumps the channel cuts through). A/B: =1 the old levels.

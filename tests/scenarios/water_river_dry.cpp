@@ -8,10 +8,13 @@
 #include "scenario.h"
 #include "rivers.h"
 #include "voxel.h"
+#include "watersurface.h"
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -58,6 +61,7 @@ SCENARIO("water/river-dry") {
         const Vector3 ax = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), ay = Vector3CrossProduct(ax, home);
         const float R = c.field->radius;
         int river = 0, dryMap = 0, drySurf = 0, thin = 0;
+        double sumHalf = 0.0; float maxHalf = 0.0f; // (#637) the rivers' widths at the sampled points
         int dryBand[3] = {}; // dry over the real ground, by where across the channel: the centre (d < 0.5 half), the middle, the edge (> 0.85)
         double sumUnder = 0.0;
         const RiverNetwork* net = c.field->rivers();
@@ -75,6 +79,7 @@ SCENARIO("water/river-dry") {
                 const PlanetField::WaterSource ws = c.field->waterSourceAt(dir);
                 if (ws.kind != 1) continue;
                 ++river;
+                if (net) { const RiverNetwork::Hit hw = net->nearest(dir, 60.0f); if (hw.found) { sumHalf += hw.halfWidth; maxHalf = std::max(maxHalf, hw.halfWidth); } } // (#637)
                 const float hm = c.field->elevation(dir);
                 const float depthMap = ws.level - hm;              // water over the height map (m)
                 if (depthMap <= 0.0f) ++dryMap;
@@ -126,10 +131,41 @@ SCENARIO("water/river-dry") {
         for (size_t k = 0; k < dry.size() && k < 8; ++k)
             c.note(TextFormat("dry river point %.0f m from the start: the level %.2f m under the ground, %.2f of the half-width (%.1f m) from the centre line%s, lat %.4f lon %.4f, river %.0f m wide along x",
                               dry[k].dist, dry[k].under, dry[k].across, dry[k].half, dry[k].inLake ? " (an in-lake piece)" : "", dry[k].lat, dry[k].lon, dry[k].width));
+        c.note(TextFormat("river half-widths at those points: mean %.1f m, widest %.1f m (#637)", river ? sumHalf / river : 0.0, maxHalf));
+        c.metric("mean river half-width", river ? sumHalf / river : 0.0, "m", false);
         c.metric("river points", river, "", false);
         c.metric("dry over the real ground", drySurf, "points");
         c.metric("dry over the height map", dryMap, "points");
         c.metric("under one cell of water", thin, "points");
+        // RAYLIBGAME_RIVER_PROBE="lat lon" (degrees, the HUD's and --spawn-latlon's convention): everything about one point,
+        // for a place someone saw (#637: UI/UX's slide, a dry crease where waterSourceAt says river).
+        // Several points: "lat lon; lat lon; ...".
+        if (const char* all = getenv("RAYLIBGAME_RIVER_PROBE"))
+          for (const char* pr = all; pr && *pr; pr = strchr(pr, ';') ? strchr(pr, ';') + 1 : nullptr) {
+            float la = 0.0f, lo = 0.0f;
+            if (sscanf(pr, " %f %f", &la, &lo) == 2) {
+                la *= DEG2RAD; lo *= DEG2RAD;
+                const Vector3 dir = { cosf(la) * cosf(lo), sinf(la), cosf(la) * sinf(lo) };
+                const PlanetField::WaterSource ws = c.field->waterSourceAt(dir);
+                const RiverNetwork::Hit rh = net ? net->nearest(dir, 60.0f) : RiverNetwork::Hit{};
+                const bool inLake = rh.piece >= 0 && rh.piece < (int)pieceInLake.size() && pieceInLake[rh.piece];
+                const float hm = c.field->elevation(dir), surf = SurfaceAt(c, dir, hm);
+                c.note(TextFormat("probe %.5f %.5f: water kind %d at level %.2f m; nearest river %s: %.1f m from its centre line, half width %.1f m, depth %.1f m%s; "
+                                  "ground before rivers %.2f m, height map %.2f m, real surface %.2f m; channel weight %.2f",
+                                  la * RAD2DEG, lo * RAD2DEG, ws.kind, ws.level, rh.found ? "found" : "none", rh.dist, rh.halfWidth, rh.depth, inLake ? " (an in-lake piece)" : "",
+                                  c.field->elevationBase(dir), hm, surf, c.field->riverChannel(dir)));
+                // The drawn water (#637's slab: a quad on dry ground at one level of detail): per chunk sample spacing, the
+                // level the water mesh takes from the surface map, the mesh rule's level and the ground at that spacing.
+                std::string lods;
+                for (float st = 0.5f; st <= 32.0f; st *= 2.0f) {
+                    WaterSurface::Reader rd(*c.field, st);
+                    const float wm = c.field->waterElevationMesh(dir, st);
+                    lods += TextFormat(" [%g m: drawn %.2f, mesh %s, ground %.2f]", st, rd.drawLevel(dir),
+                                       wm == PlanetField::kNoWater ? "-" : TextFormat("%.2f", wm), c.field->elevation(dir, st));
+                }
+                c.note(TextFormat("probe %.5f %.5f by spacing:%s", la * RAD2DEG, lo * RAD2DEG, lods.c_str()));
+            }
+        }
         return true;
     });
 }
