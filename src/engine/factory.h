@@ -170,7 +170,7 @@ namespace Factory {
     bool TakesWater(PartType type);
     // Every machine recipe (machine_recipes.txt) by item id, for the in-game database (#354). ticks/eu: 20 ticks a
     // second; generators list their fuels as one-input recipes with eu = EU per tick produced.
-    struct RecipeInfo { PartType machine; std::vector<std::pair<std::string, int>> in, out; int ticks = 0, eu = 0; };
+    struct RecipeInfo { PartType machine; std::vector<std::pair<std::string, int>> in, out; int ticks = 0, eu = 0, tier = -1; }; // tier (#1427): its voltage tier (machine_tiers.txt)
     std::vector<RecipeInfo> RecipeList();
     std::vector<std::string> FuelsOf(PartType type); // item ids a machine burns (machines.txt)
     void Extract(uint64_t bodyId, uint32_t plotId, int part, uint32_t to = 0); // to (#332): the outputs to that player (0: this game)

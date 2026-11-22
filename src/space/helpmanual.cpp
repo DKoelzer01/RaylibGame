@@ -1,6 +1,7 @@
 #include "helpmanual.h"
 #include "structures.h"
 #include "inventory.h"
+#include "machinetiers.h"
 #include "factory.h"
 #include "plots.h"
 #include "itemicons.h"
@@ -151,13 +152,26 @@ namespace {
             if (!any) { Heading("Fuel for"); any = true; }
             Link(MachineItem((PartType)t), 0, uid++);
         }
-        const PartType m = MachineOfItem(id);
+        PartType m = MachineOfItem(id);
+        int step = 0;
+        { PartType vt; int vs = 0; if (MachineTiers_ItemPart(id, vt, vs)) { m = vt; step = vs; } } // (#1427 L7d) a tiered variant
         if (m != PartType::Count) { // a machine: what it makes and burns
+            const int myTier = MachineTiers_Tiered(m) ? MachineTiers_PartTier(m, step, 0) : -1;
+            if (myTier >= 0) { // (#1427 L7d) its tiers, each its own item
+                Heading("Tiers");
+                ImGui::TextWrapped("%s (%d V). Runs its tier's recipes and every one below; those under its tier are overclocked "
+                                   "(x%d speed for x%d EU a tick per tier).", MachineTiers_Name(myTier), MachineTiers_Volts(myTier),
+                                   MachineTiers_Overclock().speed, MachineTiers_Overclock().eu);
+                for (int s = 0; s <= MachineTiers_MaxStep(m); ++s) { if (s) ImGui::SameLine(); Link(MachineTiers_VariantItem(m, s), 0, uid++); }
+            }
             any = false;
             for (const auto& r : mr) {
                 if (r.machine != m) continue;
                 if (!any) { Heading("Recipes in this machine"); any = true; }
-                ImGui::TextDisabled("(%.1f s%s)", r.ticks / 20.0f, r.eu > 0 ? TextFormat(", %d EU/t", r.eu) : "");
+                const int steps = myTier >= 0 && r.tier >= 0 ? MachineTiers_Steps(myTier, r.tier) : 0;
+                if (steps < 0) ImGui::TextDisabled("(%s: a %s machine or better)", MachineTiers_Name(r.tier), MachineTiers_Name(r.tier));
+                else ImGui::TextDisabled("(%.1f s%s%s)", MachineTiers_Ticks(r.ticks, steps) / 20.0f, r.eu > 0 ? TextFormat(", %d EU/t", MachineTiers_Eu(r.eu, steps)) : "",
+                                         steps > 0 ? ", overclocked" : "");
                 ImGui::SameLine();
                 RecipeLine(r.in, r.out, uid);
             }

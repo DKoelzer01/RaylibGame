@@ -2237,7 +2237,7 @@ std::vector<Factory::RecipeInfo> Factory::RecipeList() {
     std::vector<RecipeInfo> out;
     for (const auto& r : tables.recipes) { // (the factory's own recipe type: "Recipe" alone is ambiguous with the hand recipes here)
         RecipeInfo ri;
-        ri.machine = r.machine; ri.ticks = r.ticks; ri.eu = r.eu;
+        ri.machine = r.machine; ri.ticks = r.ticks; ri.eu = r.eu; ri.tier = r.tier; // (#1427 L7d: tier)
         for (const Stack& s : r.in) ri.in.push_back({ tables.name(s.item), s.count });
         for (const Stack& s : r.out) ri.out.push_back({ tables.name(s.item), s.count });
         out.push_back(std::move(ri));

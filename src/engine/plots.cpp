@@ -868,6 +868,10 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const Part& pp = parts[ref.part];
         if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
+        if (!IsShape(pp.type) && pp.material > 0 && IsMachine(pp.type)) { // (#1427 L7d) a tiered variant: tinted toward its tier's colour
+            const Color tc = MachineTiers_Color(MachineTiers_PartTier(pp.type, pp.material, 0));
+            color = { (unsigned char)((color.r + tc.r) / 2), (unsigned char)((color.g + tc.g) / 2), (unsigned char)((color.b + tc.b) / 2), color.a };
+        }
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };

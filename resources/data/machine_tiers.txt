@@ -1,11 +1,11 @@
 # Tiered machines (#1427, ladder L7a): voltage tiers, overclocking, machine families, disassembly yields (L7c).
 #
-# tier | name | volts             a voltage tier, numbered from 0 in this order
-tier | LV | 32
-tier | MV | 128
-tier | HV | 512
-tier | EV | 2048
-tier | IV | 8192
+# tier | name | volts | colour r,g,b     a voltage tier, numbered from 0 in this order; its colour tints its machines (L7d)
+tier | LV | 32   | 200,200,205
+tier | MV | 128  | 230,150,60
+tier | HV | 512  | 90,140,230
+tier | EV | 2048 | 150,90,210
+tier | IV | 8192 | 230,80,90
 #
 # overclock | speed x | EU x | cap   per tier a recipe is under its machine: time / speed, EU a tick x EU (cap 0: no cap)
 overclock | 2 | 3 | 0
