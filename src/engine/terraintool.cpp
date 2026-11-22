@@ -512,7 +512,7 @@ static float MiningRadius() {
 void TerrainTool_ScaleYield(DigYield& got, float oreMul, float stoneMul) {
     for (auto& kv : got.items) {
         bool ore = false;
-        for (int k = 0; k < PlanetField::kOreKindCount && !ore; ++k) if (const char* o = PlanetField::OreKindName(k); o && kv.first == o) ore = true;
+        for (int k = 0; k < PlanetField::OreKindCount() && !ore; ++k) if (const char* o = PlanetField::OreKindName(k); o && kv.first == o) ore = true;
         const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
         if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
     }
@@ -586,7 +586,7 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
         const char* s = seeds[GameRng_Int(0, 2)];
         if (itemDB.find(s)) out.seed = s;
     }
-    if (!softOnly) for (int k = 0; k < PlanetField::kOreKindCount; ++k)
+    if (!softOnly) for (int k = 0; k < PlanetField::OreKindCount(); ++k)
         if (const char* oreName = PlanetField::OreKindName(k); oreName && got.count(oreName)) { out.ore = true; break; }
     return out;
 }

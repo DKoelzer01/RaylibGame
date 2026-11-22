@@ -733,13 +733,13 @@ static void RequestNode(Planetoid& p, const NodeKey& key, float priority) {
             const auto t0 = std::chrono::steady_clock::now();
             GpuBlockJob job;
             job.block = ChunkBlockOf(key);
-            // (#1058) Counted for cost checks: blocks on the GPU, and those the cave-segment limit (32) sends to the CPU path.
+            // (#1058) Counted for cost checks: blocks on the GPU, and those the cave-segment limit (kGpuCaveSegsMax) sends to the CPU path.
             static std::atomic<int> gCaveGpuBlocks{ 0 }, gCaveCpuBlocks{ 0 };
-            static const bool caveCountReport = (atexit([] { printf("bench: cave blocks: %d on the GPU, %d over the 32-segment limit (CPU path)\n", gCaveGpuBlocks.load(), gCaveCpuBlocks.load()); }), true);
+            static const bool caveCountReport = (atexit([] { printf("bench: cave blocks: %d on the GPU, %d over the %d-segment limit (CPU path)\n", gCaveGpuBlocks.load(), gCaveCpuBlocks.load(), PlanetField::kGpuCaveSegsMax); }), true);
             (void)caveCountReport;
             const bool prepOk = pf->prepareBlock(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.grid) &&
                                 pf->blockIslands(job.block.origin, job.block.stride, job.block.E, job.islands, 64);
-            const bool caveOk = prepOk && pf->blockCaveSegs(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.caveSegs, 32);
+            const bool caveOk = prepOk && pf->blockCaveSegs(job.block.origin, job.block.stride, job.block.E, job.block.footprint, job.caveSegs, PlanetField::kGpuCaveSegsMax);
             if (caveOk) ++gCaveGpuBlocks; else if (prepOk) ++gCaveCpuBlocks;
             if (caveOk) { // (#615) else the CPU path
                 const float prepMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();

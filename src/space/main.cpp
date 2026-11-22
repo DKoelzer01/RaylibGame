@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <array>
 #include "terrainarena.h"
+#include "caveislands.h"
 #include "underground.h"
 #include "envflag.h"
 #include "mainmenu.h"
@@ -25,6 +26,9 @@
 #include "headless.h"
 #include "hostserver.h"
 #include "composed.h"
+#include "laddermigrate.h"
+#include "ores.h"
+#include "orefamilies.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1693,7 +1697,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--probe-films") {
             // #249: thin near-iso films over the ground. An 81 x 81 m square at the start (1 m apart): each column from 3 m
             // over the surface down to 1 m under it in 5 cm steps; a solid layer above an air gap counts as a film.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (pf) {
                 const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1722,7 +1726,7 @@ int main(int argc, char** argv)
             // Digging is what the preview shows: 40 digs (straight down, the tools' radii 0.35-0.85 m, sunk
             // half a radius as the tool does) at random spots; the ground each one removes is compared with
             // the previewed sphere (both within the ground before), sampled every 5 cm: intersection over union.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (pf) {
                 const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1775,7 +1779,7 @@ int main(int argc, char** argv)
             // (#1115) Only the entrance count of --cave-stats (whose column scan takes minutes at R 1000): entrances within R m
             // of the start, per km^2, and the nearest one. RAYLIBGAME_CAVE_MOUTH_SEARCH=0: the old random tries.
             const float R = (float)atof(argv[i + 1]);
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave mouths: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1827,67 +1831,10 @@ int main(int argc, char** argv)
             // box's boundary are the surrounding rock, any other solid component floats. Prints each chamber's floating
             // components, their volume and the largest, and the totals.
             const float R = (float)atof(argv[i + 1]);
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
-            const Vector3 home = pf->findSpawnDir(p->seed);
-            std::vector<Vector3> chambers;
-            pf->caveMouthsList(home, R, 3, chambers);
-            const int NX = 101, NY = 57, NZ = 101;                          // x, z across; y up
-            long long totIslands = 0, totVol = 0;
-            long long gIslandH[8] = {}, gIslandR[8] = {}; // (#1116) floating volume (m^3) by its mean height and distance from the chamber centre
-            const auto t0 = std::chrono::steady_clock::now();
-            for (size_t ci = 0; ci < chambers.size(); ++ci) {
-                const Vector3 c = chambers[ci], up = Vector3Normalize(c);
-                const Vector3 e1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })), e2 = Vector3CrossProduct(up, e1);
-                std::vector<uint8_t> solid((size_t)NX * NY * NZ), seen((size_t)NX * NY * NZ, 0);
-                auto idx = [&](int x, int y, int z) { return ((size_t)y * NZ + z) * NX + x; };
-                for (int y = 0; y < NY; ++y)
-                    for (int z = 0; z < NZ; ++z)
-                        for (int x = 0; x < NX; ++x) {
-                            const Vector3 q = Vector3Add(c, Vector3Add(Vector3Scale(e1, x - 50.0f), Vector3Add(Vector3Scale(up, y - 28.0f), Vector3Scale(e2, z - 50.0f))));
-                            solid[idx(x, y, z)] = pf->baseDensity(q) >= ISO_LEVEL;
-                        }
-                std::vector<int> stack;
-                double sumY = 0.0, sumR = 0.0; // (#1116) the last flooded component's summed height (m from the centre) and distance across
-                auto flood = [&](int sx, int sy, int sz) {                  // marks one solid component, returns its size
-                    long long n = 0;
-                    stack.clear(); stack.push_back((int)idx(sx, sy, sz)); seen[idx(sx, sy, sz)] = 1;
-                    while (!stack.empty()) {
-                        const int k = stack.back(); stack.pop_back(); ++n;
-                        { const int px = k % NX, pz = (k / NX) % NZ, py = k / (NX * NZ); sumY += py - 28.0; sumR += sqrt((px - 50.0) * (px - 50.0) + (pz - 50.0) * (pz - 50.0)); } // (#1116) where it is
-                        const int x = k % NX, z = (k / NX) % NZ, y = k / (NX * NZ);
-                        const int nb[6][3] = { { x - 1, y, z }, { x + 1, y, z }, { x, y - 1, z }, { x, y + 1, z }, { x, y, z - 1 }, { x, y, z + 1 } };
-                        for (const auto& b : nb) {
-                            if (b[0] < 0 || b[1] < 0 || b[2] < 0 || b[0] >= NX || b[1] >= NY || b[2] >= NZ) continue;
-                            const size_t j = idx(b[0], b[1], b[2]);
-                            if (solid[j] && !seen[j]) { seen[j] = 1; stack.push_back((int)j); }
-                        }
-                    }
-                    return n;
-                };
-                for (int y = 0; y < NY; ++y)                                // the surrounding rock: from every boundary cell
-                    for (int z = 0; z < NZ; ++z)
-                        for (int x = 0; x < NX; ++x)
-                            if ((x == 0 || y == 0 || z == 0 || x == NX - 1 || y == NY - 1 || z == NZ - 1) && solid[idx(x, y, z)] && !seen[idx(x, y, z)]) flood(x, y, z);
-                long long islands = 0, vol = 0, largest = 0;
-                for (int y = 0; y < NY; ++y)
-                    for (int z = 0; z < NZ; ++z)
-                        for (int x = 0; x < NX; ++x)
-                            if (solid[idx(x, y, z)] && !seen[idx(x, y, z)]) {
-                                sumY = sumR = 0.0;
-                                const long long n = flood(x, y, z); ++islands; vol += n; largest = std::max(largest, n);
-                                const double my = sumY / n, mr = sumR / n; // (#1116) bins: height -28..+28 m in 8, distance 0..71 m in 8
-                                gIslandH[std::clamp((int)((my + 28.0) / 7.0), 0, 7)] += n; gIslandR[std::clamp((int)(mr / 9.0), 0, 7)] += n;
-                            }
-                totIslands += islands; totVol += vol;
-                const float depth = pf->radius + pf->elevation(up) - Vector3Length(c);
-                printf("bench: cave islands: chamber %zu (%.0f m down): %lld floating pieces, %lld m^3, largest %lld m^3\n", ci, depth, islands, vol, largest);
-            }
-            const float secs = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
-            printf("bench: cave islands: %zu chambers within %.0f m: %lld floating pieces, %lld m^3 in all (%.1f s)\n", chambers.size(), R, totIslands, totVol, secs);
-            printf("bench: cave islands: floating m^3 by height from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %+d..%+d:%lld", -28 + 7 * b, -21 + 7 * b, gIslandH[b]); printf("\n");
-            printf("bench: cave islands: floating m^3 by distance across from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %d..%d:%lld", 9 * b, 9 * b + 9, gIslandR[b]); printf("\n");
+            CaveIslands_Measure(*pf, p->seed, R, true); // (caveislands.cpp; the caves/islands scenario checks it, #1465)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
@@ -1899,7 +1846,7 @@ int main(int argc, char** argv)
             // (refactors must leave it unchanged).
             const float R = (float)atof(argv[i + 1]);
             const float D = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 80.0f; // depth of the window (m)
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave stats: no planet\n"); return 1; }
             const Vector3 home = pf->findSpawnDir(p->seed);
@@ -1958,7 +1905,7 @@ int main(int argc, char** argv)
             // Plan 6 step 3 (#146): the GPU port of the height map (resources/compute/terrain.glsl) against
             // PlanetField::elevationBase over 1M points: random directions (half near the start, half anywhere)
             // and footprints 0-1024 m. Gate: every height within 1e-4 m.
-            Planetoid* p = dynamic_cast<Planetoid*>(world.objects[0].get());
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             ComputeProgram prog;
             if (!pf || !prog.load("resources/compute/terrain_test.comp")) { printf("bench: terrain gpu: no planet or shader -> FAIL\n"); return 1; }
@@ -2026,7 +1973,7 @@ int main(int argc, char** argv)
                 const Vector3 o = Vector3AddValue(Vector3Scale(d, r), -0.5f * stride * (E - 1));
                 const float fp = std::max(stride, 1.0f);
                 PlanetField::BlockGrid g;
-                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, 32)) { ++skipped; continue; }
+                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, PlanetField::kGpuCaveSegsMax)) { ++skipped; continue; }
                 const double c1 = GetTime();
                 pf->sampleBlock(o, stride, E, fp, g, cpuB.data());
                 cpuBlockMs += (GetTime() - c1) * 1000.0;
@@ -5215,10 +5162,15 @@ int main(int argc, char** argv)
                         return out;
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
-                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
-                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
+                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "bitterroot", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                                                   "ice", "regolith", "telescope", "map", "basic_suit",
                                                    "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
                                                    "quartz", "amethyst", "ruby", "sapphire", "emerald" };
+                    // (#1467) The ores the world places: ores.txt kinds with a deposit or pocket share of their own, and
+                    // every member of an ore family (ore_families.txt)
+                    for (const OreDef& o : Ores_All()) if (o.deposit > 0.0f || o.pocket > 0.0f) have.insert(o.item);
+                    for (const OreFamily& fam : OreFamilies_All())
+                        for (const OreFamilyMember& m : fam.members) if (const OreDef* o = Ores_Get(m.kind)) have.insert(o->item);
                     std::set<std::string> used;
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
@@ -5226,6 +5178,8 @@ int main(int argc, char** argv)
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log", "any_stone" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
+                    // (#1449 T1) an old per-material tool (stone_shovel) is its class with that head now: had with the class
+                    for (const ItemDef& d : itemDB.items()) { std::string cls, data; if (Composed_FromLegacy(d.id, cls, data)) { Rule u; u.in = { cls }; u.out = { d.id }; rules.push_back(u); } }
                     // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
                     { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
                     { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
@@ -5250,6 +5204,17 @@ int main(int argc, char** argv)
                             char prod[64] = {}, tool[64] = {};
                             if (sscanf(c[9].c_str(), "%63s %63s", prod, tool) >= 1 && strcmp(prod, "-") != 0) { Rule u; u.out = { prod }; if (tool[0] && strcmp(tool, "-") != 0) u.in = { tool }; u.machine = "#tool"; rules.push_back(u); }
                             for (const std::string& d : ids(c[7])) used.insert(d);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/creatures.txt", "r")) { // (#1549) rare drops: rare=item:count:chance,...
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#') continue;
+                            const char* r = strstr(buf, "rare=");
+                            if (!r) continue;
+                            std::string list(r + 5);
+                            list = list.substr(0, list.find_first_of(" \t\r\n"));
+                            for (const std::string& e : split(list, ',')) { const std::string id = e.substr(0, e.find(':')); if (!id.empty()) have.insert(id); }
                         }
                         fclose(f);
                     }
@@ -5297,8 +5262,12 @@ int main(int argc, char** argv)
                     used.insert("retraining_manual");
                     used.insert("lantern"); // (#836) held for its light, never spent
                     std::vector<std::string> missing, unused;
+                    // (#1549) machines the ladder retired (#1272: forge hammer, alloy smelter, steam macerator): their items
+                    // exist only as old saves' refunds, never made
+                    std::set<std::string> retired;
+                    for (int t = 0; t < 256; ++t) if (LadderMigrate_IsRemovedMachine(t)) if (const char* it = PartCostItem((PartType)t)) retired.insert(it);
                     for (const ItemDef& d : itemDB.items()) {
-                        if (!have.count(d.id)) missing.push_back(d.id);
+                        if (!have.count(d.id) && !retired.count(d.id)) missing.push_back(d.id);
                         const bool consumed = used.count(d.id) || BuildMaterialForItem(d.id.c_str()) >= 0 || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
                                               ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
                         if (!consumed) unused.push_back(d.id);
@@ -5309,7 +5278,8 @@ int main(int argc, char** argv)
                     for (const auto& m : unused) printf(" %s", m.c_str());
                     // #214: ores only go into smelting and ore processing; every product is made from ingots (plates, wire...).
                     static const char* kOreMachines[] = { "kiln", "electric_furnace", "steam_macerator", "macerator", "arc_furnace", "blast_furnace",
-                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge" };
+                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge",
+                                                          "millstone", "bloomery" }; // (#1271 L2-L3, #1549) the ladder's early ore crushing and smelting
                     std::vector<std::string> oreUses;
                     for (const Rule& u : rules)
                         for (const std::string& in : u.in) {

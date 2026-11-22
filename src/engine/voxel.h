@@ -238,12 +238,12 @@ public:
     // Whether inland water may lie within `extent` metres of a direction (cheap; meshing skips the
     // per-sample work elsewhere).
     bool inlandWaterNear(Vector3 dir, float extent, float footprint = 0.0f) const;
-    // Ore at a point `depth` m under the original surface: an index into kOreKinds, or -1.
+    // Ore at a point `depth` m under the original surface: a kind (a row of resources/data/ores.txt, ores.h), or -1.
     //   Deposits: a 96 m grid; about a third of its cells hold one lumpy blob 7-18 m across of a single
     //   kind (coal, iron, copper, tin; bauxite below 20 m, ilmenite below 60 m) - a find worth mining.
     //   Scattered: small pockets of the common ores (iron, copper, tin) and coal everywhere, most near the surface.
-    static constexpr int kOreKindCount = 6;
-    static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
+    static int OreKindCount();                  // (#1466) the kinds in ores.txt
+    static const char* OreKindName(int kind);   // its item ("iron_ore", ...), from ores.txt; nullptr outside it
     int oreKind(Vector3 p, float depth) const;
     int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
     // The ore deposit whose cell holds p (#207: a vein mined out): its centre, radius (the blob reaches ~1.35x it with its
@@ -343,6 +343,7 @@ public:
     // when more than maxSegs (the GPU's cap: the block takes the CPU path). RAYLIBGAME_CAVES=1: graph tunnels instead of
     // the noise tunnels (and their #549 mouths); 0 (the default until natural mouths, step 3) keeps today's caves.
     bool blockCaveSegs(Vector3 origin, float stride, int S, float footprint, std::vector<float>& out, int maxSegs) const;
+    static constexpr int kGpuCaveSegsMax = 64;  // (#1465) a block with more cave segments takes the CPU path (was 32: ~15% of cave blocks over it)
     static bool CavesGraph();
     // (#615 step 3) The nearest hillside cave mouth to a direction within range (m): its axis point at the slope face and the
     // outward (downhill) direction, body-local. Tests and captures.
