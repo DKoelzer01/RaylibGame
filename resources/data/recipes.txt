@@ -58,21 +58,13 @@ guidance_computer 1 = advanced_circuit 3, gold_ingot 1
 landing_leg 1     = aluminium_plate 2, steel_plate 2
 heat_shield_tile 4 = clay 4, titanium_alloy_plate 1
 # Hand tools (#1449 T1): one item per class (tool_pickaxe, ...), its head's material in its record (Composed_FromParts).
-# A head is made first (stone knapped by hand, metal ones filed from ingots; bronze ones cast and hammered, below), then
-# hafted. Each head plus its hafting costs what the old tool recipe did. Stone ones come from gravel (stones turn up when
-# digging dirt).
+# A head is made first (stone knapped by hand; bronze cast in the kiln and finished at the anvil; iron and steel forged at
+# the anvil, machine_recipes.txt; titanium filed by hand), then hafted. Each head plus its hafting costs what the old tool
+# recipe did. Stone ones come from gravel (stones turn up when digging dirt).
 stone_pick_head 1     = any_stone 4
 stone_shovel_head 1   = any_stone 2
 stone_axe_head 1      = any_stone 3
 stone_hoe_head 1      = any_stone 2
-iron_pick_head 1      = iron_ingot 3
-iron_shovel_head 1    = iron_ingot 2
-iron_axe_head 1       = iron_ingot 3
-iron_hoe_head 1       = iron_ingot 2
-steel_pick_head 1     = steel_ingot 3
-steel_shovel_head 1   = steel_ingot 2
-steel_axe_head 1      = steel_ingot 3
-steel_hoe_head 1      = steel_ingot 2
 titanium_pick_head 1  = titanium_ingot 3
 titanium_shovel_head 1 = titanium_ingot 2
 titanium_axe_head 1   = titanium_ingot 3

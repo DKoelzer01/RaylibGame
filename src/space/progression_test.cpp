@@ -33,6 +33,7 @@
 #include <functional>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -659,8 +660,20 @@ namespace {
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
         add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
         add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
-        // Bauxite needs an iron pickaxe, ilmenite a steel one.
-        add("craft iron and steel pickaxes; mine bauxite and ilmenite", [] {
+        // Bauxite needs an iron pickaxe, ilmenite a steel one. (#1449 T2) Their heads are forged at the anvil: the head picked
+        // on its screen (iron ingots also make blades and mace heads there), then struck.
+        auto forge = [](const char* head, const char* ingot, int n) {
+            return [=] {
+                static std::set<std::string> fed;
+                if (!fed.count(head)) { fed.insert(head); Factory::SetPick(body->id, plot->id, parts["anvil"], head); Give("anvil", ingot, n); }
+                Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
+                return Collect("anvil", head, 1);
+            };
+        };
+        add("forge an iron pick head at the anvil", forge("iron_pick_head", "iron_ingot", 3));
+        add("forge a steel pick head at the anvil", forge("steel_pick_head", "steel_ingot", 3));
+        add("haft iron and steel pickaxes; mine bauxite and ilmenite", [] {
+            Factory::SetPick(body->id, plot->id, parts["anvil"], ""); // (back to any)
             if (!Craft("tool_pickaxe", 1, "iron_pick_head") || !Hold("tool_pickaxe", "iron")) return false;
             if (!MineOre("bauxite_ore", 14)) return false;
             if (!Craft("tool_pickaxe", 1, "steel_pick_head") || !Hold("tool_pickaxe", "steel")) return false;
