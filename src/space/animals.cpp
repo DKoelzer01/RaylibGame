@@ -957,7 +957,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
     f.caveSpansNear(lo, hi, spans);
     f.caveEntrancesNear(Vector3SubtractValue(lo, 20.0f), Vector3AddValue(hi, 20.0f), ents);
     std::vector<SpawnSite> sites;
-    int nSolid = 0, nNoFloor = 0, nNear = 0, nClaim = 0, nFar = 0;
+    int nSolid = 0, nNoFloor = 0, nNear = 0, nClaim = 0, nFar = 0, nSky = 0;
     for (const PlanetField::CaveSpan& sp : spans) {
         if (sp.kind == 2) continue; // rubble is solid
         const float len = Vector3Distance(sp.a, sp.b);
@@ -983,13 +983,20 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             const Vector3 dir = Vector3Normalize(floor);
             s.depth = f.radius + f.elevation(dir) - Vector3Length(floor);
             for (const PlanetField::CaveEntrance& e : ents) if (Vector3Distance(e.at, floor) < 20.0f) { s.nearMouth = true; break; }
-            s.light = s.nearMouth ? 0.5f : s.depth < 4.0f ? 0.6f : 0.0f;
+            // (#1592) Under rock? The depth is the smooth field surface over the floor, so a span through an outcrop, an eroded
+            // valley or an opened roof put "deep" sites on open ground: lurkers on an Alpine outcrop, slimes on the grass,
+            // the Lost Miner walking the surface by day. Up from the floor in 2 m steps to 80 m: no rock, open sky.
+            s.openSky = true;
+            for (float h = 2.0f; h <= 80.0f; h += 2.0f)
+                if (body.densityAt(Vector3Add(floor, Vector3Scale(up, h))) >= ISO_LEVEL) { s.openSky = false; break; }
+            if (s.openSky) ++nSky;
+            s.light = s.nearMouth ? 0.5f : s.depth < 4.0f || s.openSky ? 0.6f : 0.0f;
             s.wet = f.caveWetColumn(dir, f.elevation(dir)) > 0.3f; // (#1226) wet karst: by the cave water, the sumps
             sites.push_back(s);
         }
     }
     caveSites = (int)sites.size();
-    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites);
+    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d (%d under open sky)\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites, nSky);
     if (sites.empty()) return;
     const int nestSi = SpeciesIndex("creature_nest");
     const double now = SimTime();

@@ -381,7 +381,7 @@ bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s) {
     if (s.light > c.darkMax + 1e-4f) return false;
     if (c.wet && !s.wet) return false;                             // (#1226) by the cave water only
     switch (c.habitat) {
-        case Habitat::Cave: return !s.nearMouth && (s.kind == 0 || s.kind == 3 || s.kind == 4);
+        case Habitat::Cave: return !s.nearMouth && !s.openSky && (s.kind == 0 || s.kind == 3 || s.kind == 4); // (#1592) under rock
         case Habitat::Mouth: return s.nearMouth;                    // scavengers: by the entrances (decided)
         default: return false;                                     // the surface and night ones spawn as herds and hunters do; dungeons later
     }
@@ -549,6 +549,8 @@ TEST(Creatures, SpawnFitsAndDue) {
     s.depth = 20.0f; s.light = 0.5f; EXPECT_FALSE(Spawn_Fits(c, s)); // too light
     s.light = 0.0f; s.nearMouth = true; EXPECT_FALSE(Spawn_Fits(c, s)); // a cave dweller keeps off the entrances
     s.nearMouth = false; s.kind = 2; EXPECT_FALSE(Spawn_Fits(c, s));   // rubble
+    s.kind = 0; s.openSky = true; EXPECT_FALSE(Spawn_Fits(c, s));       // (#1592) open sky over it: not a cave, however deep the field says
+    s.openSky = false;
     CreatureSpec m; ASSERT_TRUE(Creatures_ParseLine("scav | scavenger | habitat=mouth depth=0-30", m, &err)) << err;
     SpawnSite mouth; mouth.kind = 1; mouth.depth = 3.0f; mouth.nearMouth = true;
     EXPECT_TRUE(Spawn_Fits(m, mouth));
