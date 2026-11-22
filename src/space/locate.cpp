@@ -2,6 +2,7 @@
 #include "ambience.h"
 #include "structures.h"
 #include "voxel.h"
+#include "ores.h"
 #include "world.h"
 
 #include <raymath.h>
@@ -157,14 +158,14 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
         int want = -1;
         if (feature.size() > 4) {
             const std::string name = feature.substr(4);
-            for (int k = 0; k < PlanetField::kOreKindCount; ++k) {
-                const std::string id = PlanetField::OreKindName(k);
+            for (int k = 0; k < Ores_Count(); ++k) {
+                const char* idc = PlanetField::OreKindName(k); if (!idc) continue; const std::string id = idc;
                 if (id == name || id == name + "_ore") want = k;
             }
             if (want < 0) {
                 why = "Unknown ore '" + name + "': ";
-                for (int k = 0; k < PlanetField::kOreKindCount; ++k) {
-                    std::string id = PlanetField::OreKindName(k);
+                for (int k = 0; k < Ores_Count(); ++k) {
+                    const char* idc2 = PlanetField::OreKindName(k); if (!idc2) continue; std::string id = idc2;
                     if (id.size() > 4 && id.compare(id.size() - 4, 4, "_ore") == 0) id.resize(id.size() - 4);
                     why += (k ? ", " : "") + id;
                 }
