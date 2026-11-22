@@ -704,9 +704,10 @@ namespace {
             return Craft("macerator", 1) && Craft("ore_washer", 1) && Craft("centrifuge", 1) && Craft("water_pump", 1) && Craft("generator", 1) && Craft("cable", 16);
         });
         add("place and wire the LV ore line", [] {
-            if (!Place("macerator", PartType::Macerator, { 0, 0, 12 }) || !Place("ore_washer", PartType::OreWasher, { 3, 0, 12 }) || !Place("centrifuge", PartType::Centrifuge, { 6, 0, 12 }) ||
-                !Place("water_pump", PartType::WaterPump, { 9, 0, 12 }) || !Place("generator2", PartType::Generator, { 12, 0, 12 })) return false;
-            if (!Cables(11, 0, 13)) return false;
+            // (row 24: row 12 holds the tier 1-2 workshop since the ladder's anvil, #1271 L2; a second macerator stood on it)
+            if (!Place("macerator", PartType::Macerator, { 0, 0, 24 }) || !Place("ore_washer", PartType::OreWasher, { 3, 0, 24 }) || !Place("centrifuge", PartType::Centrifuge, { 6, 0, 24 }) ||
+                !Place("water_pump", PartType::WaterPump, { 9, 0, 24 }) || !Place("generator2", PartType::Generator, { 12, 0, 24 })) return false;
+            if (!Cables(23, 0, 13)) return false;
             Give("generator2", "coal", 12);
             return true;
         });
