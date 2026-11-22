@@ -5,6 +5,7 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "frames.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -80,6 +81,10 @@ namespace {
         b->worldPos = parent->worldPos + r;
         b->linearVelocity = Vector3Add(parent->linearVelocity, v.toFloat());
         b->rotation = s.rotation;
+        // (Plan 11 F5, #1457) The acceleration this orbit gives it, for its Fixed(station) frame: the parent's pull (two-body,
+        // as State moves it) plus the parent's own acceleration (zero for a root body).
+        const double rl = r.length();
+        b->freeFallAcc = Frames_Pose(*parent).acc - r * (s.mu / std::max(rl * rl * rl, 1.0));
     }
 
     Vector3 EulerFromQuat(Quaternion q) {
@@ -100,6 +105,7 @@ Planetoid* Station_Create(Scene& world, Planetoid& parent, DVec3 pos, Vector3 ve
     if (!Elements(s, pos - parent.worldPos, DVec3(Vector3Subtract(vel, parent.linearVelocity)), WorldTime())) return nullptr;
     auto body = std::make_unique<Planetoid>("station", pos, std::make_shared<EmptyField>(extent), extent);
     body->netId = NetId_Allocate(NetKind::Station); // stable, saved (#317)
+    body->freeFall = true; // (Plan 11 F5) a Fixed(station) frame falls with it
     body->parent = &world.rootObject;
     body->plots = std::make_unique<PlotSet>();
     s.body = body->id;
@@ -200,6 +206,7 @@ bool Station_LoadLine(const char* tok, FILE* f) {
     if (!Elements(s, DVec3(rx, ry, rz), DVec3(vx, vy, vz), WorldTime())) return true;
     auto body = std::make_unique<Planetoid>("station", par->worldPos + DVec3(rx, ry, rz), std::make_shared<EmptyField>(extent), extent);
     body->netId = NetId_Allocate(NetKind::Station); // a save from before #317; its "station_id" line replaces it
+    body->freeFall = true; // (Plan 11 F5) a Fixed(station) frame falls with it
     body->parent = &world->rootObject;
     body->plots = std::move(plots);
     s.body = body->id;
