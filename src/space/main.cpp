@@ -25,6 +25,9 @@
 #include "headless.h"
 #include "hostserver.h"
 #include "composed.h"
+#include "laddermigrate.h"
+#include "ores.h"
+#include "orefamilies.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1939,7 +1942,7 @@ int main(int argc, char** argv)
                 const Vector3 o = Vector3AddValue(Vector3Scale(d, r), -0.5f * stride * (E - 1));
                 const float fp = std::max(stride, 1.0f);
                 PlanetField::BlockGrid g;
-                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, 32)) { ++skipped; continue; }
+                if (!pf->prepareBlock(o, stride, E, fp, g) || !pf->blockIslands(o, stride, E, isl, 64) || !pf->blockCaveSegs(o, stride, E, fp, cav, PlanetField::kGpuCaveSegsMax)) { ++skipped; continue; }
                 const double c1 = GetTime();
                 pf->sampleBlock(o, stride, E, fp, g, cpuB.data());
                 cpuBlockMs += (GetTime() - c1) * 1000.0;
@@ -5128,10 +5131,15 @@ int main(int argc, char** argv)
                         return out;
                     };
                     auto ids = [&](const std::string& list) { std::vector<std::string> out; for (const std::string& e : split(list, ',')) { char id[64] = {}; if (e != "-" && sscanf(e.c_str(), "%63s", id) == 1) out.push_back(id); } return out; };
-                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
-                                                   "ice", "regolith", "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore", "telescope", "map", "basic_suit",
+                    std::set<std::string> have = { "anorthite", "nickel_iron_ore", "platinum_ore", "iridium_ore", "maple_log", "spruce_log", "fibre", "berries", "bitterroot", "grain_seeds", "root_seeds", "flax_seeds", "dirt", "gravel", "stone", "sand", "clay",
+                                                   "ice", "regolith", "telescope", "map", "basic_suit",
                                                    "oak_log", "birch_log", "pine_log", "granite", "basalt", "sandstone", "limestone", "marble",
                                                    "quartz", "amethyst", "ruby", "sapphire", "emerald" };
+                    // (#1467) The ores the world places: ores.txt kinds with a deposit or pocket share of their own, and
+                    // every member of an ore family (ore_families.txt)
+                    for (const OreDef& o : Ores_All()) if (o.deposit > 0.0f || o.pocket > 0.0f) have.insert(o.item);
+                    for (const OreFamily& fam : OreFamilies_All())
+                        for (const OreFamilyMember& m : fam.members) if (const OreDef* o = Ores_Get(m.kind)) have.insert(o->item);
                     std::set<std::string> used;
                     struct Rule { std::string machine; std::vector<std::string> in, out; };
                     std::vector<Rule> rules;
@@ -5139,6 +5147,8 @@ int main(int argc, char** argv)
                     for (const ItemDef& d : itemDB.items()) // wildcards: any planks (any log) is had once one kind is
                         for (const char* w : { "any_planks", "any_log", "any_stone" }) if (d.id != w && ItemMatches(w, d.id)) { Rule u; u.in = { d.id }; u.out = { w }; rules.push_back(u); }
                     { Rule u; u.in = { "bucket" }; u.out = { "water_bucket" }; rules.push_back(u); } // scooping water
+                    // (#1449 T1) an old per-material tool (stone_shovel) is its class with that head now: had with the class
+                    for (const ItemDef& d : itemDB.items()) { std::string cls, data; if (Composed_FromLegacy(d.id, cls, data)) { Rule u; u.in = { cls }; u.out = { d.id }; rules.push_back(u); } }
                     // Plan 5 biome resources: oil seeps (a bucket), desert scrub, jungle trees, swamp digging.
                     { Rule u; u.in = { "bucket" }; u.out = { "crude_oil" }; rules.push_back(u); }
                     { Rule u; u.in = {}; u.out = { "cactus", "rubber", "peat" }; rules.push_back(u); }
@@ -5163,6 +5173,17 @@ int main(int argc, char** argv)
                             char prod[64] = {}, tool[64] = {};
                             if (sscanf(c[9].c_str(), "%63s %63s", prod, tool) >= 1 && strcmp(prod, "-") != 0) { Rule u; u.out = { prod }; if (tool[0] && strcmp(tool, "-") != 0) u.in = { tool }; u.machine = "#tool"; rules.push_back(u); }
                             for (const std::string& d : ids(c[7])) used.insert(d);
+                        }
+                        fclose(f);
+                    }
+                    if (FILE* f = fopen("resources/data/creatures.txt", "r")) { // (#1549) rare drops: rare=item:count:chance,...
+                        while (fgets(buf, sizeof buf, f)) {
+                            if (buf[0] == '#') continue;
+                            const char* r = strstr(buf, "rare=");
+                            if (!r) continue;
+                            std::string list(r + 5);
+                            list = list.substr(0, list.find_first_of(" \t\r\n"));
+                            for (const std::string& e : split(list, ',')) { const std::string id = e.substr(0, e.find(':')); if (!id.empty()) have.insert(id); }
                         }
                         fclose(f);
                     }
@@ -5210,8 +5231,12 @@ int main(int argc, char** argv)
                     used.insert("retraining_manual");
                     used.insert("lantern"); // (#836) held for its light, never spent
                     std::vector<std::string> missing, unused;
+                    // (#1549) machines the ladder retired (#1272: forge hammer, alloy smelter, steam macerator): their items
+                    // exist only as old saves' refunds, never made
+                    std::set<std::string> retired;
+                    for (int t = 0; t < 256; ++t) if (LadderMigrate_IsRemovedMachine(t)) if (const char* it = PartCostItem((PartType)t)) retired.insert(it);
                     for (const ItemDef& d : itemDB.items()) {
-                        if (!have.count(d.id)) missing.push_back(d.id);
+                        if (!have.count(d.id) && !retired.count(d.id)) missing.push_back(d.id);
                         const bool consumed = used.count(d.id) || BuildMaterialForItem(d.id.c_str()) >= 0 || Survival_IsFood(d.id) || Survival_IsUsable(d.id) || Suit_IsSuit(d.id) || Suit_IsModule(d.id) ||
                                               ToolOf(d.id).type != ToolType::Hands || KindOf(d.id) == ItemKind::Block || KindOf(d.id) == ItemKind::Tool;
                         if (!consumed) unused.push_back(d.id);
@@ -5222,7 +5247,8 @@ int main(int argc, char** argv)
                     for (const auto& m : unused) printf(" %s", m.c_str());
                     // #214: ores only go into smelting and ore processing; every product is made from ingots (plates, wire...).
                     static const char* kOreMachines[] = { "kiln", "electric_furnace", "steam_macerator", "macerator", "arc_furnace", "blast_furnace",
-                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge" };
+                                                          "electrolyzer", "chemical_reactor", "ore_washer", "thermal_centrifuge",
+                                                          "millstone", "bloomery" }; // (#1271 L2-L3, #1549) the ladder's early ore crushing and smelting
                     std::vector<std::string> oreUses;
                     for (const Rule& u : rules)
                         for (const std::string& in : u.in) {
