@@ -12,6 +12,7 @@
 #include <array>
 #include "terrainarena.h"
 #include "caveislands.h"
+#include "underground.h"
 #include "envflag.h"
 #include "mainmenu.h"
 #include "world.h"
@@ -1790,6 +1791,37 @@ int main(int argc, char** argv)
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             printf("bench: cave mouths: %d entrances within %.0f m of the start (%.2f per km^2); nearest %.0f m (%.0f ms)\n",
                    mouths, R, mouths / (3.14159265f * R * R * 1e-6f), nearM, ms);
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is a single braceless if)
+        if (std::string(argv[i]) == "--underground-regions" && i + 1 < argc) {
+            // (#1547) The underground region map around the start: every 256 m cave cell within R m (across) at 40, 120, 250
+            // and 400 m under the surface; the share of each region, overall and by depth.
+            const float R = (float)atof(argv[i + 1]);
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: underground regions: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            const float depths[4] = { 40.0f, 120.0f, 250.0f, 400.0f };
+            int counts[4][(int)UndergroundRegion::Count] = {}, total[(int)UndergroundRegion::Count] = {}, n = 0;
+            for (int d = 0; d < 4; ++d)
+                for (float a = -R; a <= R; a += 256.0f)
+                    for (float b = -R; b <= R; b += 256.0f) {
+                        if (a * a + b * b > R * R) continue;
+                        const Vector3 dir = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                        const Vector3 q = Vector3Scale(dir, pf->radius + pf->elevation(dir) - depths[d]);
+                        const int r = (int)Underground_RegionAt(*pf, q);
+                        ++counts[d][r]; ++total[r]; if (d == 0) ++n;
+                    }
+            printf("bench: underground regions: %d cells a depth within %.0f m:", n, R);
+            for (int r = 0; r < (int)UndergroundRegion::Count; ++r) printf(" %s %.1f%%", UndergroundRegion_Name((UndergroundRegion)r), 100.0 * total[r] / std::max(1, 4 * n));
+            printf("\n");
+            for (int d = 0; d < 4; ++d) {
+                printf("bench: underground regions: %.0f m down:", depths[d]);
+                for (int r = 0; r < (int)UndergroundRegion::Count; ++r) printf(" %s %d", UndergroundRegion_Name((UndergroundRegion)r), counts[d][r]);
+                printf("\n");
+            }
             return 0;
         }
     for (int i = 1; i < argc; ++i)
