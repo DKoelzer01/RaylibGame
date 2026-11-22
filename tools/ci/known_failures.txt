@@ -7,5 +7,4 @@ parity fluid/                          | #968  | CPU vs GPU fluid paths part by 
 bench: half:                           | #968  | the exact-halfway rounding check (diagnostic)
 factory/stats                          | #1406 | the EU window on the slow runner (fix in review)
 farm/till-rmb                          | #1176 | no RMB stroke runs on the runner (#1178)
-craft/recursive-circuit                | #1531 | ladder: circuits are machine-made (L6c), so CraftPlan won't hand-plan them
 fluid/flow-meter|fluid/pond            | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
