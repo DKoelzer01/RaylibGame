@@ -17,5 +17,9 @@ std::string CommandLine_Run(const std::string& line);
 // Game mode (#823): creative (build, craft and place for free; the Catalog screen) or survival. Set by /gamemode.
 void GameMode_SetCreative(bool on);
 void CommandLine_TestOpen(const char* text); // tests: open the line with this typed
+void CommandLine_Submit(const std::string& line); // what Enter does with the line (closes it; runs or sends it)
+// (#1563) Single player's history (typed lines and their answers, the oldest first; up to 200), shown above the open line.
+int CommandLine_HistoryCount();
+std::string CommandLine_HistoryLine(int k);
 
 #endif
