@@ -70,6 +70,7 @@
 #include "dungeontraps.h"
 #include "playerrecord.h"
 #include "commandline.h"
+#include "locate.h"
 #include "research.h"
 #include "researchtab.h"
 #include "researchlabs.h"
@@ -2213,7 +2214,7 @@ int main(int argc, char** argv)
                 Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
                 if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
             });
-            Host_SetChatHandler([](uint32_t session, const std::string& name, const std::string& text) {
+            Host_SetChatHandler([&world](uint32_t session, const std::string& name, const std::string& text) {
                 if (text[0] != '/') { printf("chat: %s: %s\n", name.c_str(), text.c_str()); Host_Say(text, session, 0); return; }
                 const std::string line = text.substr(1);
                 std::string reply;
@@ -2232,7 +2233,20 @@ int main(int argc, char** argv)
                         else if (!Host_SetCreative(target, creative)) reply = target + " is not online";
                         else { reply = target + ": " + (creative ? "creative" : "survival"); Admin_Audit(name + ": " + line); }
                     }
-                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list, gamemode)";
+                    else if (cmd == "locate" || cmd == "tp") { // (#1171) ops: find a feature / go somewhere, from where they stand
+                        uint64_t bodyId = 0; DVec3 local{};
+                        Planetoid* body = Host_PlayerLocal(world, session, bodyId, local) ? Planetoid::findNet((NetId)bodyId) : nullptr;
+                        std::vector<std::string> args;
+                        { std::istringstream a(line); std::string w; a >> w; while (a >> w) args.push_back(w); }
+                        if (!body) reply = "Not in the world yet";
+                        else if (cmd == "locate") reply = Locate_LocateCommand(*body, local.toFloat(), args);
+                        else {
+                            Vector3 feet{}; bool hover = false;
+                            if (Locate_TpTarget(*body, local.toFloat(), args, feet, hover, reply) && !Host_TeleportPlayer(world, session, bodyId, DVec3(feet), hover)) reply = "Couldn't move you there";
+                            Admin_Audit(name + ": " + line + " -> " + reply);
+                        }
+                    }
+                    else reply = "unknown command (ops: op, deop, ops, ban, unban, banip, unbanip, bans, whitelist, kick, say, list, gamemode, locate, tp)";
                 }
                 if (!reply.empty()) Host_Say(reply, 0, session);
             });
