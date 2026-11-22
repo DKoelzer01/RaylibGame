@@ -45,10 +45,13 @@ BodyPose Frames_Pose(const Planetoid& b) {
         p.acc = q.acc - inPlane * (w * w);
     } else {
         // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept. A free-falling
-        // one (freeFall: stations) accelerates with the gravity at its centre, so anything in its frame feels only the
-        // difference (the tide), not the fall a second time (Plan 11 F5, #1457: stations as Fixed(station) frames).
+        // one (freeFall: stations) accelerates as its code moves it (freeFallAcc), so anything in its frame feels only the
+        // difference, not the fall a second time (Plan 11 F5, #1457: stations as Fixed(station) frames).
         p.vel = DVec3{ b.linearVelocity.x, b.linearVelocity.y, b.linearVelocity.z };
-        if (b.freeFall) p.acc = Frames_GravityGlobal(Planetoid::All(), p.centre);
+        // Its own code's acceleration, not this file's gravity model: a station flies a two-body Kepler orbit, and the
+        // all-bodies model differs from it (Luna's pull, the inside model): 1.4 m of drift in 30 s beside one
+        // (rocket/station-hold), since a framed rocket is drawn at the station's real place plus its offset.
+        if (b.freeFall) p.acc = b.freeFallAcc;
     }
     return p;
 }
@@ -272,12 +275,13 @@ TEST(FramesCore, StationFrameAndFreeFall) {
     st->surfaceGravity = 0.0f;
     st->freeFall = true;
     st->vehicle = true; // as in the game: stations are EmptyField bodies, which the constructor marks as vehicles
+    st->freeFallAcc = Frames_GravityGlobal({ terra.get() }, st->worldPos); // (set by station.cpp from its orbit in the game)
     const std::vector<Planetoid*> bodies{ terra.get(), st.get() };
     const DVec3 p{ 0.0, 105000.0, 20.0 };
     const FrameRef pick = Frames_Choose(bodies, p, FrameRef{ 0x9101, FrameKind::Centred });
     EXPECT_EQ(pick.body, 0x9102u);
     EXPECT_EQ((int)pick.kind, (int)FrameKind::Fixed);
-    const DVec3 g = Frames_GravityGlobal(bodies, st->worldPos);
+    const DVec3 g = st->freeFallAcc;
     EXPECT_GT(g.length(), 1.0); // ~1.9 m/s^2 at 105 km
     EXPECT_LT(Dist(Frames_Pose(*st).acc, g), 1e-9);
 }

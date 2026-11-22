@@ -5,6 +5,7 @@
 #include "voxel.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "frames.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -80,6 +81,10 @@ namespace {
         b->worldPos = parent->worldPos + r;
         b->linearVelocity = Vector3Add(parent->linearVelocity, v.toFloat());
         b->rotation = s.rotation;
+        // (Plan 11 F5, #1457) The acceleration this orbit gives it, for its Fixed(station) frame: the parent's pull (two-body,
+        // as State moves it) plus the parent's own acceleration (zero for a root body).
+        const double rl = r.length();
+        b->freeFallAcc = Frames_Pose(*parent).acc - r * (s.mu / std::max(rl * rl * rl, 1.0));
     }
 
     Vector3 EulerFromQuat(Quaternion q) {

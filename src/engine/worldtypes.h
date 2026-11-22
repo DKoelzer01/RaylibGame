@@ -131,6 +131,7 @@ public:
     Planetoid(std::string name, DVec3 worldPos, std::shared_ptr<const EmptyField> empty, float radius);
     bool vehicle = false;                                // a flying rocket: saved by the rocket code, not as a body
     bool freeFall = false;                               // moved by other code on a free orbit (stations): its frame falls with gravity (Plan 11 F5)
+    DVec3 freeFallAcc{};                                 // (freeFall) its acceleration, set by the code that moves it (stations: their Kepler orbit)
     virtual ~Planetoid();
 
     void draw(const RenderContext& ctx) override;
