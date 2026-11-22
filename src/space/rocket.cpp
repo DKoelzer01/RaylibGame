@@ -537,10 +537,11 @@ namespace {
         if (Frames_On()) { // (Plan 11 F5, #1457) the flight in its body frame, in doubles
             const std::vector<Planetoid*>& bodies = Planetoid::All();
             const bool moved = !rfValid || (com - rfCom).length() > 1e-6 || Vector3Distance(vel, rfVel) > 1e-4f;
-            if (moved) { // launched, bounced, loaded or placed by a test: start from the global state
-                const FrameRef to = Frames_Choose(bodies, com, rfValid ? rf.frame : FrameRef{});
-                rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
-            }
+            // Launched, bounced, loaded or placed by a test: that state belongs to the step's start, but advanceBodies has
+            // already moved the bodies to its end, so converting it now puts it a step of the frame body's motion off (7.5 m
+            // entering a station's frame, rocket/station-hold). This step flies the global path; the frame state is
+            // seeded after it (below), at the instant the bodies are at.
+            if (moved) rfValid = false;
             if (rfValid) {
                 const Planetoid* fb = Planetoid::findNet(rf.frame.body);
                 const BodyPose pose = Frames_Pose(*fb);
@@ -603,6 +604,12 @@ namespace {
         maxTemperature = std::max(maxTemperature, temperature);
         vel = Vector3Add(vel, Vector3Scale(Vector3Add(g, Vector3Scale(force, 1.0f / std::max(mass, 1.0f))), h));
         com = com + DVec3(Vector3Scale(vel, h));
+        }
+        if (Frames_On() && !framed && stepEnd) { // (F5) the frame state from the global one, both at the step's end
+            const std::vector<Planetoid*> bodies = Planetoid::All();
+            const FrameRef to = Frames_Choose(bodies, com, FrameRef{});
+            rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
+            rfCom = com; rfVel = vel;
         }
         const float w = Vector3Length(angVel);
         if (w > 1e-7f) rot = QuaternionNormalize(QuaternionMultiply(QuaternionFromAxisAngle(Vector3Scale(angVel, 1.0f / w), w * h), rot));
