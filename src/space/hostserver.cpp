@@ -862,6 +862,10 @@ namespace {
                 if (Animals_Count() > before) { net = Animals_NetId(Animals_Count() - 1); printf("host: creature: a thornback (%llu) by session %u\n", (unsigned long long)net, t.session); }
                 spawnedAt = now; lastHit = now;
             }
+            // (#1421) The test is the creature's replication, not the players' survival: while it lives, neither test player
+            // goes below half health. On the runner a ram threw bob into the air and the hit killed him; he spent the
+            // creature's whole life on the respawn screen and never saw it.
+            if (net && !fell) for (auto& kv : remotes) kv.second.survival.health = std::max(kv.second.survival.health, 50.0f);
             if (net && !fell && spawnedAt >= 0.0 && now - spawnedAt > 6.0 && now - lastHit >= 1.0) {
                 lastHit = now;
                 const int i = Animals_FindNet(net);
