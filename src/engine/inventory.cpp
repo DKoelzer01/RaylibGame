@@ -644,6 +644,30 @@ TEST_F(InventoryTest, SortMergesTheGridAndKeepsAverageHeat) {
     EXPECT_EQ(inv.grid()[Inventory::kGrid].id, "dirt");
 }
 
+// (#1219) Weapons from recipes.txt: hafting a head makes one composed copy whose record names the head's material; every
+// weapon recipe names a head the class takes (so none crafts a plain, partless weapon).
+TEST_F(InventoryTest, HaftingAHeadMakesAComposedWeapon) {
+    ASSERT_TRUE(Composed_Load());
+    const Recipe* sword = nullptr;
+    for (const Recipe& r : itemDB.recipes()) {
+        if (r.output.rfind("weapon_", 0) != 0) continue;
+        std::vector<std::string> parts; for (const auto& in : r.inputs) parts.push_back(in.first);
+        const std::string d = Composed_FromParts(r.output, parts);
+        EXPECT_TRUE(Composed_Stats(r.output, d).valid) << r.output << " from " << (parts.empty() ? std::string("?") : parts[0]);
+        for (const auto& in : r.inputs) EXPECT_TRUE(itemDB.find(in.first) || IsWildcardItem(in.first)) << in.first << " is an item";
+        if (r.output == "weapon_sword" && !r.inputs.empty() && r.inputs[0].first == "bronze_blade") sword = &r;
+    }
+    ASSERT_NE(sword, nullptr) << "a bronze sword recipe";
+    Inventory inv;
+    for (const auto& in : sword->inputs) inv.add(ItemMatches(in.first, "oak_planks") ? "oak_planks" : in.first, in.second);
+    ASSERT_TRUE(inv.craft(*sword));
+    EXPECT_EQ(inv.countInstances("weapon_sword"), 1);
+    EXPECT_EQ(inv.count("weapon_sword"), 0) << "no plain sword";
+    EXPECT_EQ(inv.count("bronze_blade"), 0) << "the blades went into it";
+    const int cell = inv.findInstance("weapon_sword", Composed_MakeData("bronze"));
+    EXPECT_GE(cell, 0) << "a bronze head, the default handle and binding";
+}
+
 TEST_F(InventoryTest, CraftNeedsRoomForTheOutput) {
     const Recipe* planks = nullptr;
     for (const Recipe& r : itemDB.recipes()) if (r.output == "oak_planks" && r.inputs.size() == 1 && ItemMatches(r.inputs[0].first, "oak_log")) planks = &r;

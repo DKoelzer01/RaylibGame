@@ -137,6 +137,19 @@ kiln             | rough_bronze_axe_head 1  | bronze_ingot 2, fired_mould 1 | 30
 anvil            | iron_ingot 1       | iron_bloom 1              | 120 | 0
 anvil            | bronze_pick_head 1 | rough_bronze_pick_head 1  | 80  | 0
 anvil            | bronze_axe_head 1  | rough_bronze_axe_head 1   | 80  | 0
+# (#1219) weapon heads: bronze cast in a fired mould and finished at the anvil; iron and steel forged at the anvil
+kiln             | rough_bronze_blade 1     | bronze_ingot 1, fired_mould 1 | 300 | 0
+kiln             | rough_bronze_spearhead 1 | bronze_ingot 1, fired_mould 1 | 300 | 0
+kiln             | rough_bronze_mace_head 1 | bronze_ingot 2, fired_mould 1 | 300 | 0
+anvil            | bronze_blade 1     | rough_bronze_blade 1      | 80  | 0
+anvil            | bronze_spearhead 1 | rough_bronze_spearhead 1  | 80  | 0
+anvil            | bronze_mace_head 1 | rough_bronze_mace_head 1  | 80  | 0
+anvil            | iron_blade 1       | iron_ingot 1              | 120 | 0
+anvil            | iron_spearhead 1   | iron_ingot 1              | 120 | 0
+anvil            | iron_mace_head 1   | iron_ingot 2              | 120 | 0
+anvil            | steel_blade 1      | steel_ingot 1             | 160 | 0
+anvil            | steel_spearhead 1  | steel_ingot 1             | 160 | 0
+anvil            | steel_mace_head 1  | steel_ingot 2             | 160 | 0
 mechanical_press | iron_ingot 1       | iron_bloom 1              | 100 | 0
 # (#1271 L6b-2) the steam assembler makes steam packs (twice as fast as by hand, and without you)
 steam_assembler  | steam_pack 1       | iron_plate 1, cogwheel 1, coal 1 | 100 | 0

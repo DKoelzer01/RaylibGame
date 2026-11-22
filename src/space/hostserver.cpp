@@ -55,6 +55,7 @@
 #include <functional>
 #include "gamesave.h"
 #include "playerrecord.h"
+#include "melee.h"
 #include <cstdio>
 #include <set>
 #include <sstream>
@@ -233,6 +234,7 @@ namespace {
     void SendInventoryDeltas(uint32_t conn, const Inventory& inv, const std::map<std::string, double>& before); // (below)
     void FlushInstanceDeltas(); // (below, #1446)
     ToolSpec RemoteToolOf(uint32_t session, const std::string& held); // (below, #1449)
+    std::string RemoteHeldData(uint32_t session, const std::string& held); // (below, #1219)
     template <class M> void SendMsg(uint32_t conn, const M& m); // (below)
     template <class M> void SendToJoined(const M& m); // (below)
     // ---- #334 animals ----
@@ -925,8 +927,7 @@ namespace {
             return;
         }
         std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
-        const ToolSpec t = RemoteToolOf(session, held);
-        const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
+        const float damage = Weapon_BaseDamage(held, RemoteHeldData(session, held)); // (#1219) a composed copy: from its head
         std::vector<std::pair<std::string, int>> drops;
         ++animalHits;
         if (Animals_HitNet(netId, damage, drops)) {
@@ -1528,12 +1529,16 @@ namespace {
     // in order, once a tick; an offline player's journal is dropped (their client gets their record on the next join).
     // (#1449) A remote player's tool by its loadout id: a composed class takes its parts from that player's own copy (the
     // first held: the loadout names only the id), never from gToolDataOf (the server's local player).
-    ToolSpec RemoteToolOf(uint32_t session, const std::string& held) {
-        if (!Composed_Is(held)) return ToolOf(held);
+    std::string RemoteHeldData(uint32_t session, const std::string& held) { // (#1219) the record of that player's held composed copy
+        if (!Composed_Is(held)) return {};
         auto rit = remotes.find(session);
         if (rit != remotes.end())
-            for (const InvSlot& c : rit->second.inventory.grid()) if (c.id == held && c.hasData()) return ToolOf(held, c.data);
-        return ToolOf(held, std::string());
+            for (const InvSlot& c : rit->second.inventory.grid()) if (c.id == held && c.hasData()) return c.data;
+        return {};
+    }
+    ToolSpec RemoteToolOf(uint32_t session, const std::string& held) {
+        if (!Composed_Is(held)) return ToolOf(held);
+        return ToolOf(held, RemoteHeldData(session, held));
     }
     void FlushInstanceDeltas() {
         for (auto& [session, r] : remotes) {

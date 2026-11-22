@@ -84,6 +84,7 @@ void PlayerInput_BeginFrame() {
     f.look.x += gFakeLook.x; f.look.y += gFakeLook.y; // --play-load turning (#509)
     f.wheel = GetMouseWheelMove();
     for (int i = 0; i < 10; ++i) if (!PlayerInput_KeyBlocked(kSlotKeys[i]) && IsKeyPressed(kSlotKeys[i])) { f.slot = i; break; }
+    if (gFakeSlot >= 0 && gFakeSlot < 10) { f.slot = gFakeSlot; gFakeSlot = -1; } // (#1219) a scripted hotbar key
     frameIn = f;
     // The step's input: held state is current; edges, motion and wheel add up until a step takes them.
     stepIn.enabled = true;

@@ -62,6 +62,7 @@ bool PlayerInput_KeyBlocked(int code); // a keyboard binding code while text foc
 const PlayerInput& PlayerInput_Frame();
 inline Vector2 gFakeLook = { 0.0f, 0.0f }; // added to the mouse motion every frame (--play-load turning, #509)
 inline uint64_t gFakeHeld = 0; // actions held as if their keys were down (bit = 1 << Act; --play-load walking, #509)
+inline int gFakeSlot = -1;    // (#1219 tests) a hotbar key 0..9 pressed once (the next frame takes it, then -1)
 const PlayerInput& PlayerInput_Step();
 // `in` when enabled, else PlayerInput::None() (the old inputEnabled flags).
 inline const PlayerInput& PlayerInput_If(bool enabled, const PlayerInput& in) { return enabled ? in : PlayerInput::None(); }

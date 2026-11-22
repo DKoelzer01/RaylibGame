@@ -47,6 +47,9 @@ const WeaponSpec& Weapon_Spec(WeaponClass c);
 // their id; anything else (hands, pickaxe, shovel, hoe) is Tools.
 WeaponClass Weapon_ClassOf(const std::string& itemId);
 DamageType Weapon_TypeOf(const std::string& itemId); // the class's type; a pickaxe pierces
+// (#1219) A light hit's base damage with this item: a composed copy's from its parts (data: its record); otherwise hands 2,
+// a tool 3 + 3 x tier (as before).
+float Weapon_BaseDamage(const std::string& itemId, const std::string& data);
 
 enum class MeleePhase : uint8_t { Idle, WindUp, Hit, Recovery };
 
