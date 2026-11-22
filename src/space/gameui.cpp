@@ -1123,16 +1123,15 @@ static void DrawContainer() {
         const Part* p = ContainerPart();
         const ItemDef* d = p && IsMachine(p->type) && p->material > 0 ? itemDB.find(PartItem(*p)) : nullptr;
         ImGui::Text("%s", d ? d->name.c_str() : PartName(container.type));
-        if (const int t = ContainerTier(); t >= 0) {
-            const Color c = MachineTiers_Color(t);
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f), "%s %d V", MachineTiers_Name(t), MachineTiers_Volts(t));
-        }
     }
     ImGui::SameLine();
     if (v.valid) ImGui::TextColored(v.status == MachineStatus::Working ? ImVec4(0.5f, 0.9f, 0.5f, 1.0f) : ImVec4(0.9f, 0.8f, 0.5f, 1.0f), "  %s", MachineStatusName(v.status));
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60.0f);
     if (ImGui::Button("Close")) { container.open = false; return; }
+    if (const int t = ContainerTier(); t >= 0) { // (#1427 L7d) its tier and voltage on a line of their own (the title row: name, status, Close)
+        const Color c = MachineTiers_Color(t);
+        ImGui::TextColored(ImVec4(c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, 1.0f), "%s, %d V", MachineTiers_Name(t), MachineTiers_Volts(t));
+    }
     ImGui::Separator();
     if (!v.valid) { ImGui::TextDisabled("..."); return; }
     if (v.duration > 0) ImGui::ProgressBar((float)v.progress / (float)v.duration, ImVec2(300.0f, 0.0f), TextFormat("%d%%", 100 * v.progress / v.duration));
