@@ -465,6 +465,10 @@ int main(int argc, char** argv)
             setvbuf(stdout, nullptr, _IONBF, 0); break; }
     Log_Open("log.txt");
     Log_SetThreadName("main");
+    Log_SetBuild(kGameVersion); // (#1526) in every crash entry (and logged with the pid); minidumps go to saves/logs
+    Log_InstallConsoleStop();   // (#1527) Ctrl+C / a script's timeout: a line and an immediate end, no fatal box (--server installs its own)
+    for (int i = 1; i + 1 < argc; ++i)
+        if (!strcmp(argv[i], "--test-crash")) { Log_TestCrash(argv[i + 1]); return 1; } // (#1526) the crash entries in log.txt
     // --log-level LEVEL (#514): before anything logs. It wins over settings.txt's log_level.
     for (int i = 1; i + 1 < argc; ++i)
         if (std::string(argv[i]) == "--log-level") {
