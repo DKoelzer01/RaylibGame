@@ -425,17 +425,9 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
-        {   // A part bigger than a cell grows from its origin, which could reach back into the block
-            // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
-            std::vector<std::pair<Int3, CellShape>> fp;
-            Plot::Footprint(aim.part, fp);
-            int behind = 0;
-            for (const auto& c : fp) {
-                const int d = (c.first.x - hitCell.x) * hitFace.x + (c.first.y - hitCell.y) * hitFace.y + (c.first.z - hitCell.z) * hitFace.z;
-                behind = std::max(behind, 1 - d);
-            }
-            aim.part.origin = { aim.part.origin.x + hitFace.x * behind, aim.part.origin.y + hitFace.y * behind, aim.part.origin.z + hitFace.z * behind };
-        }
+        // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a
+        // cell off it: flush against the aimed face, every cell in front of it (#1574: it slid only outward).
+        aim.part.origin = Plot::FlushAgainstFace(aim.part, hitCell, hitFace);
         aim.removePlot = hitPlot;
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
