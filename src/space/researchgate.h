@@ -59,6 +59,7 @@ struct TierMilestone { int tier = 0; std::vector<MilestoneLine> lines; };
 bool ResearchGate_LoadMilestonesText(const std::string& text, std::string& error);
 bool ResearchGate_LoadMilestones(const char* path = "resources/data/tiers.txt");
 void ResearchGate_InstallTierGate(); // (#1271 L6b-2) the game: tiers 3-7 close on their milestone too (gQuestTierGate)
+void ResearchGate_InstallDisassembly(); // (#1427 L7c) the game: items' ladder tiers and food excluded, for the disassembly index (before the factory loads)
 const TierMilestone* ResearchGate_Milestone(int tier); // nullptr: none (tiers 0-2 end on tasks)
 // Checks: tiers 3-7 each have a milestone with at least one delivery, one build and one find; known build kinds and find
 // ids; counts, rates and windows over zero; no milestone outside tiers 3-7. The problems, one a line ("" none).

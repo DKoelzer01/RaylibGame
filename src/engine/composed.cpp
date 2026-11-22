@@ -89,6 +89,17 @@ bool Composed_Load(const char* classesPath, const char* materialsPath) {
 bool Composed_Is(const std::string& id) { EnsureLoaded(); return gClasses.count(id) > 0; }
 const ComposedClass* Composed_Class(const std::string& id) { EnsureLoaded(); auto it = gClasses.find(id); return it == gClasses.end() ? nullptr : &it->second; }
 const PartMaterial* Composed_Material(const std::string& id) { EnsureLoaded(); auto it = gMaterials.find(id); return it == gMaterials.end() ? nullptr : &it->second; }
+std::vector<std::string> Composed_MaterialIds() {
+    EnsureLoaded();
+    std::vector<std::string> ids;
+    for (const auto& kv : gMaterials) ids.push_back(kv.first);
+    std::sort(ids.begin(), ids.end());
+    return ids;
+}
+std::string Composed_HeadOf(const std::string& id, const std::string& data) {
+    if (data.empty() || !Composed_Is(id)) return std::string();
+    return ItemData::Get(data, "h");
+}
 
 std::string Composed_MakeData(const std::string& head, const std::string& handle, const std::string& binding, int qualityPct) {
     std::string d;
@@ -193,6 +204,17 @@ bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string
     cls = c;
     data = Composed_MakeData(mat);
     return true;
+}
+
+std::string Composed_LegacyId(const std::string& cls, const std::string& data) {
+    if (cls.rfind("tool_", 0) != 0 || !Composed_Is(cls)) return {};
+    const std::string head = ItemData::Get(data, "h");
+    // The old tools' materials: stone, bronze (pickaxe and axe only), iron, steel, titanium
+    static const char* kOld[] = { "stone", "bronze", "iron", "steel", "titanium" };
+    if (std::find(std::begin(kOld), std::end(kOld), head) == std::end(kOld)) return {};
+    const std::string type = cls.substr(5);
+    if (head == "bronze" && type != "pickaxe" && type != "axe") return {};
+    return head + "_" + type;
 }
 
 int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed) {
@@ -340,7 +362,14 @@ TEST(Composed, NamesAndPartsForTheUi) {
     EXPECT_EQ(Composed_DisplayName("tool_pickaxe", d), "Bronze pickaxe");
     EXPECT_EQ(Composed_DisplayName("tool_pickaxe", ""), "") << "no record: the item table's name";
     EXPECT_EQ(Composed_DisplayName("stone", "h=bronze"), "") << "not a class";
-    const std::string t = Composed_PartsText("tool_pickaxe", d);
+    // (#1449) the icon's head: from the copy's record, only for a class
+    EXPECT_EQ(Composed_HeadOf("tool_pickaxe", d), "bronze");
+    EXPECT_EQ(Composed_HeadOf("tool_pickaxe", ""), "");
+    EXPECT_EQ(Composed_HeadOf("stone", "h=bronze"), "");
+    const std::vector<std::string> mats = Composed_MaterialIds();
+    EXPECT_TRUE(std::is_sorted(mats.begin(), mats.end()));
+    EXPECT_NE(std::find(mats.begin(), mats.end(), "steel"), mats.end());
+    const std::string t =Composed_PartsText("tool_pickaxe", d);
     EXPECT_NE(t.find("Head: Bronze"), std::string::npos) << t;
     EXPECT_NE(t.find("Binding: Leather"), std::string::npos) << t;
     EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;

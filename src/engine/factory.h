@@ -196,8 +196,9 @@ namespace Factory {
     std::vector<std::pair<std::string, int>> ChestContents(uint64_t bodyId, uint32_t plotId, int part);
     // Tests: put items straight into a machine (fuel, ore) before it runs.
     void Seed(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
-    // Whether a machine type takes an item (recipe input, fuel, or a chest).
-    bool Accepts(PartType type, const std::string& item);
+    // Whether a machine type takes an item (recipe input, fuel, or a chest). mode 1: an assembler set to disassemble, which
+    // takes what it can take apart (#1427 L7c).
+    bool Accepts(PartType type, const std::string& item, int mode = 0);
     void Advance(float simDt);                       // one simulation step (#315): grants the ticks it owes (20 Hz x speed)
     void WaitTicks(int n);                           // run n more ticks now and block until they have
     void SetSpeed(int multiplier);                   // tests: run the 20 Hz clock this many times faster

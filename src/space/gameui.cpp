@@ -36,6 +36,7 @@
 #include "itemicons.h"
 #include "plots.h"
 #include "machinetiers.h"
+#include "disassembly.h"
 #include "worldtypes.h"
 #include "helpmanual.h"
 #include "menus.h"
@@ -174,7 +175,10 @@ static void DrawItemIcon(ImDrawList* dl, ImVec2 p, float size, const std::string
 
 // Whether a container takes an item from the inventory: a chest takes every item (#568: tools and machines too; tool
 // wear is kept per item kind, not per stack, so nothing is lost), a machine what it burns or processes.
-static bool ContainerTakes(const std::string& id) { return Factory::Accepts(container.type, id); }
+static bool ContainerTakes(const std::string& id) { // (#1427 L7c) an assembler set to disassemble: what it takes apart
+    const int mode = container.type == PartType::LvAssembler ? Factory::View(container.body, container.plot, container.part).mode : 0;
+    return Factory::Accepts(container.type, id, mode);
+}
 static Scene* uiWorld = nullptr; // the world the window was last drawn for (nearby chests)
 void GameUI_ShowTab(const char* tab) { // (the older tab names, from the tests and tutorials)
     databaseOpen = false; // (a named screen: the pop-up only when asked for, below)
@@ -696,7 +700,7 @@ static void DrawCell(int i, float cw, float cell) {
     DrawGlow(dl, p, q, Item_Glow(grid[i])); // hot or radiant (#580)
     if (!s.empty()) {
         const ItemDef* d = itemDB.find(s.id);
-        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
+        DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, ItemIcons_Key(s.id, s.data));
         const std::string own = Composed_DisplayName(s.id, s.data); // (#1449) "Bronze pickaxe" from its head
         CellName(dl, p, q, !own.empty() ? own : d ? d->name : s.id, hover);
         if (KindOf(s.id) != ItemKind::Tool) {
@@ -745,7 +749,7 @@ static void DrawGrid(float cell = 54.0f) {
         if (ImGui::InvisibleButton("bin", ImVec2(bin, bin))) BinClick();
         const bool hover = ImGui::IsItemHovered();
         dl->AddRectFilled(p, q, IM_COL32(48, 26, 26, 220), 4.0f);
-        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, binned.id, true);
+        if (!binned.empty()) DrawItemIcon(dl, ImVec2(p.x + bin * 0.18f, p.y + bin * 0.1f), bin * 0.64f, ItemIcons_Key(binned.id, binned.data), true);
         const float fs = CellFontSize(bin); // (#1161: the cells' label size: the window's font ran out of a small cell)
         const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, "Bin");
         dl->AddText(ImGui::GetFont(), fs, ImVec2(p.x + (bin - sz.x) * 0.5f, q.y - sz.y - 2.0f), IM_COL32(220, 160, 150, 255), "Bin");
@@ -777,7 +781,7 @@ static void DrawGrid(float cell = 54.0f) {
         ImDrawList* fg = ImGui::GetForegroundDrawList();
         const ImVec2 m = ImGui::GetMousePos();
         DrawGlow(fg, ImVec2(m.x - 17.0f * GameUI_Scale(), m.y - 17.0f * GameUI_Scale()), ImVec2(m.x + 17.0f * GameUI_Scale(), m.y + 17.0f * GameUI_Scale()), Item_Glow(cursorStack)); // (#580)
-        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, cursorStack.id); } // (#891: at the interface scale)
+        { const float hs = 30.0f * GameUI_Scale(); DrawItemIcon(fg, ImVec2(m.x - hs * 0.5f, m.y - hs * 0.5f), hs, ItemIcons_Key(cursorStack.id, cursorStack.data)); } // (#891: at the interface scale)
         if (KindOf(cursorStack.id) != ItemKind::Tool) fg->AddText(ImVec2(m.x + 10.0f * GameUI_Scale(), m.y + 6.0f * GameUI_Scale()), IM_COL32(255, 255, 255, 255), AmountText(cursorStack).c_str());
     }
 }
@@ -1161,7 +1165,7 @@ static void DrawSlots(const std::vector<std::pair<std::string, int>>& slots, int
         dl->AddRectFilled(p, q, which == 2 ? IM_COL32(52, 30, 20, 220) : output ? IM_COL32(40, 36, 28, 220) : IM_COL32(30, 32, 36, 220), 4.0f);
         if (!here.empty()) DrawGlow(dl, p, q, Item_GlowOf(here.id, hot ? 1.0f : 0.0f)); // fresh out of a furnace, or radiant (#580)
         if (!here.empty()) {
-            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, here.id);
+            DrawItemIcon(dl, ImVec2(p.x + cell * 0.18f, p.y), cell * 0.64f, ItemIcons_Key(here.id, here.data));
             const ItemDef* d = itemDB.find(here.id);
             CellName(dl, p, q, d ? d->name : here.id, hover);
             // the amount as the player inventory shows it: "12", "2.5", "0.4"
@@ -1224,11 +1228,30 @@ static void DrawContainer() {
         const ItemDef* d = itemDB.find(PartCostItem(next));
         ImGui::TextDisabled("From LV on, the %s does this job (and has tiers).", d ? d->name.c_str() : PartName(next));
     }
-    if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch; disassembly comes with #1427
+    if (container.type == PartType::LvAssembler) { // (#1271 L6c) the mode switch
         if (ImGui::RadioButton("Assemble", v.mode == 0) && v.mode != 0) MachineAct_SetMode(container.body, container.plot, container.part, 0);
         ImGui::SameLine();
         if (ImGui::RadioButton("Disassemble", v.mode == 1) && v.mode != 1) MachineAct_SetMode(container.body, container.plot, container.part, 1);
-        if (v.mode == 1) ImGui::TextDisabled("Disassembly is not built yet: the assembler waits (#1427)");
+        if (v.mode == 1) { // (#1427 L7c) what it gives back for each input, at its tier's yield
+            ImGui::PushTextWrapPos(0.0f); // (the panel is narrow at small windows: wrap, never clip)
+            ImGui::TextDisabled("Takes an item apart into what its recipe used (a tool or weapon: its parts' materials), at a yield by the item's tier against this assembler's.");
+            const int myTier = ContainerTier();
+            for (size_t i = 0; i < v.inSlots.size(); ++i) {
+                const std::string& id = v.inSlots[i].first;
+                if (id.empty() || v.inSlots[i].second <= 0) continue;
+                DisassemblyEntry e;
+                const std::string data = i < v.inData.size() ? v.inData[i] : std::string();
+                const bool ok = !data.empty() ? Disassembly_Composed(id, data, e) : Disassembly_Find(id) ? (e = *Disassembly_Find(id), true) : false;
+                const ItemDef* d = itemDB.find(id);
+                const char* name = d ? d->name.c_str() : id.c_str();
+                if (!ok) { ImGui::Text("%s: can't be taken apart", name); continue; }
+                const int y = MachineTiers_YieldPercent(std::max(0, myTier), e.tier);
+                if (y <= 0) ImGui::Text("%s: too advanced for this assembler (0%%)", name);
+                else if (e.keepPct < 100) ImGui::Text("%s: %d%% back (worn, %d%% left)", name, y * e.keepPct / 100, e.keepPct);
+                else ImGui::Text("%s: %d%% back", name, y);
+            }
+            ImGui::PopTextWrapPos();
+        }
     }
     { // (#1271 L6c) a machine of several recipes: what it makes ("Any": the first its inputs allow)
         // (#1427 L7d) each output with its recipe's tier: one above the machine's can't run here; one under it is overclocked

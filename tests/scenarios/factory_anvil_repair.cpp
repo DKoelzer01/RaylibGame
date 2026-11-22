@@ -28,7 +28,7 @@ int SwordCell() { for (int i = 0; i < Inventory::kCells; ++i) if (inventory.grid
 }
 
 SCENARIO("factory/anvil-repair") {
-    s.tags = { "factory", "combat" };
+    s.tags = { "factory" }; // (one runner step: a scenario matching two runs twice)
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };
     s.timeout = 60.0;

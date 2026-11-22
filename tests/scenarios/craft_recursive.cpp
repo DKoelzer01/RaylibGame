@@ -7,6 +7,8 @@
 #include "gameui.h"
 #include "inventory.h"
 #include "playersession.h"
+#include "research.h"
+#include "researchtab.h"
 #include "terraintool.h"
 
 SCENARIO("craft/recursive-circuit") {
@@ -20,7 +22,9 @@ SCENARIO("craft/recursive-circuit") {
         const auto& recipes = itemDB.recipes();
         for (size_t i = 0; i < recipes.size(); ++i) if (recipes[i].output == "basic_circuit") circuit = (int)i;
         if (!c.check("the basic circuit recipe exists", circuit >= 0)) return true;
-        // Known recipes: their ingredients have been held once (RecipeBook_Discovered).
+        // Known recipes: their ingredients have been held once (RecipeBook_Discovered), and (#1531, the ladder) their research
+        // is done: a player at tier 4 hand-crafts circuits (the LV assembler is another way, not the only one; user, 2026-11-22).
+        for (const char* node : { "wire_drawing", "vacuum_tube", "basic_circuits" }) Research_Team(ResearchTab_Team()).done.insert(node);
         for (const char* id : { "copper_wire", "vacuum_tube" }) { inventory.add(id, 1); inventory.remove(id, 1); }
         inventory.add("copper_ingot", 4); inventory.add("glass", 2); inventory.add("steel_plate", 3);
         GameUI_ShowScreen(GameScreen::Crafting);

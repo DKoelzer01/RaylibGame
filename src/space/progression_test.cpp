@@ -17,6 +17,7 @@
 #include "animals.h"
 #include "farming.h"
 #include "tools.h"
+#include "composed.h"
 #include "navigation.h"
 #include "suit.h"
 #include "rotationplot.h"
@@ -32,6 +33,7 @@
 #include <functional>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,13 +80,17 @@ namespace {
             if (rc.inputs.size() == 1 && ItemMatches("any_log", rc.inputs[0].first) && inventory.count(rc.inputs[0].first) > 0) return inventory.craft(rc);
         return false;
     }
-    bool Craft(const std::string& item, int want) {
+    // `head`: a composed tool's recipe by its head part (tool_pickaxe from iron_pick_head); a composed item makes `want` new
+    // copies (count() never sees items with records).
+    bool Craft(const std::string& item, int want, const std::string& head = {}) {
         Stash();
         const Recipe* r = nullptr;
-        for (const Recipe& rc : itemDB.recipes()) if (rc.output == item) { r = &rc; break; }
-        if (!r) { printf("bench: progression: no recipe for %s\n", item.c_str()); failed = 1; return false; }
+        for (const Recipe& rc : itemDB.recipes())
+            if (rc.output == item && (head.empty() || std::any_of(rc.inputs.begin(), rc.inputs.end(), [&](const auto& in) { return in.first == head; }))) { r = &rc; break; }
+        if (!r) { printf("bench: progression: no recipe for %s %s\n", item.c_str(), head.c_str()); failed = 1; return false; }
+        const bool composed = Composed_Is(item);
         // Like a player: craft missing hand-craftable ingredients first (wire for cables, ...).
-        while (inventory.count(item) < want) {
+        for (int made = 0; composed ? made < want : inventory.count(item) < want; ++made) {
             for (const auto& in : r->inputs) {
                 // Wildcard planks: saw whichever logs are carried.
                 while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
@@ -101,6 +107,21 @@ namespace {
             }
         }
         return true;
+    }
+    // (#1449 T1) Hold a composed tool: the copy with that head (as a player picks it on the hotbar). KeepPickaxe re-crafts
+    // that head's tool when it wears out.
+    std::string heldClass, heldMaterial;
+    int CopyCell(const std::string& cls, const std::string& headMaterial) {
+        const auto& g = inventory.grid();
+        for (int i = 0; i < Inventory::kCells; ++i) if (g[i].id == cls && Composed_HeadOf(cls, g[i].data) == headMaterial) return i;
+        return -1;
+    }
+    bool Hold(const std::string& cls, const std::string& headMaterial) {
+        const int i = CopyCell(cls, headMaterial);
+        if (i >= 0) { inventory.preferred = i; terrainTool.heldTool = heldClass = cls; heldMaterial = headMaterial; return true; }
+        printf("bench: progression: no %s with a %s head to hold\n", cls.c_str(), headMaterial.c_str());
+        failed = 1;
+        return false;
     }
     // Dig points around the start at a depth until `want` of an item are held.
     bool DigFor(const std::string& item, int want, float depth) {
@@ -181,6 +202,15 @@ namespace {
     // pickaxe out before the MV ladder; without one the digs failed silently and used up the ore samples).
     std::string lastPickaxe;
     bool KeepPickaxe() {
+        if (!heldMaterial.empty() && terrainTool.heldTool == heldClass) { // (#1449 T1) a composed copy: count() never sees it
+            if (CopyCell(heldClass, heldMaterial) >= 0) return Hold(heldClass, heldMaterial);
+            const ComposedClass* c = Composed_Class(heldClass);
+            std::string part = c ? c->headPart : std::string();
+            for (char& ch : part) if (ch == ' ') ch = '_';
+            if (!Craft(heldClass, 1, heldMaterial + "_" + part)) return false;
+            printf("bench: progression: crafted a new %s %s (the last one wore out)\n", heldMaterial.c_str(), heldClass.c_str());
+            return Hold(heldClass, heldMaterial);
+        }
         if (!terrainTool.heldTool.empty() && inventory.count(terrainTool.heldTool) > 0) { lastPickaxe = terrainTool.heldTool; return true; }
         if (lastPickaxe.empty() || !Craft(lastPickaxe, 1)) return false;
         printf("bench: progression: crafted a new %s (the last one wore out)\n", lastPickaxe.c_str());
@@ -293,9 +323,7 @@ namespace {
         add("harvest bushes for fibre, pick up loose stones; craft and hold a stone pickaxe", [] {
             while (inventory.count("fibre") < 2) if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
             while (inventory.count("stone") < 4) if (!TerrainTool_HarvestNearest(*body, home, false, true)) return false;
-            if (!Craft("stone_pickaxe", 1)) return false;
-            terrainTool.heldTool = "stone_pickaxe";
-            return true;
+            return Craft("tool_pickaxe", 1, "stone_pick_head") && Hold("tool_pickaxe", "stone"); // (#1449 T1) head first, then hafted
         });
         add("dig 90 stone (any rock, #587)", [] { return DigFor("any_stone", 90, 5.0f); });
         add("dig 44 clay (#206: found, not crafted); craft a crucible mould and a campfire", [] { return DigClay(44) && Craft("crucible_mold", 1) && Craft("campfire", 1); });
@@ -338,7 +366,7 @@ namespace {
             static bool fed = false;
             if (!fed) { fed = true; Give("anvil", "rough_bronze_pick_head", 1); }
             Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
-            return Collect("anvil", "bronze_pick_head", 1) && Craft("bronze_pickaxe", 1);
+            return Collect("anvil", "bronze_pick_head", 1) && Craft("tool_pickaxe", 1, "bronze_pick_head") && Hold("tool_pickaxe", "bronze");
         });
         // Tier 2 (#1271): charcoal, a bloomery, ingots at the anvil; a windmill turns a press.
         add("burn 198 logs into charcoal in the campfire (coal under them)", [] {
@@ -647,13 +675,23 @@ namespace {
         add("smelt 145 copper in the kiln", Run("kiln", { { "copper_ore", 145 }, { "coal", 29 } }, "copper_ingot", 145));
         add("bake 172 coke", Run("coke_oven", { { "coal", 344 } }, "coke", 172));
         add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
-        // Bauxite needs an iron pickaxe, ilmenite a steel one.
-        add("craft iron and steel pickaxes; mine bauxite and ilmenite", [] {
-            if (!Craft("iron_pickaxe", 1)) return false;
-            terrainTool.heldTool = "iron_pickaxe";
+        // Bauxite needs an iron pickaxe, ilmenite a steel one. (#1449 T2) Their heads are forged at the anvil: the head picked
+        // on its screen (iron ingots also make blades and mace heads there), then struck.
+        auto forge = [](const char* head, const char* ingot, int n) {
+            return [=] {
+                static std::set<std::string> fed;
+                if (!fed.count(head)) { fed.insert(head); Factory::SetPick(body->id, plot->id, parts["anvil"], head); Give("anvil", ingot, n); }
+                Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
+                return Collect("anvil", head, 1);
+            };
+        };
+        add("forge an iron pick head at the anvil", forge("iron_pick_head", "iron_ingot", 3));
+        add("forge a steel pick head at the anvil", forge("steel_pick_head", "steel_ingot", 3));
+        add("haft iron and steel pickaxes; mine bauxite and ilmenite", [] {
+            Factory::SetPick(body->id, plot->id, parts["anvil"], ""); // (back to any)
+            if (!Craft("tool_pickaxe", 1, "iron_pick_head") || !Hold("tool_pickaxe", "iron")) return false;
             if (!MineOre("bauxite_ore", 14)) return false;
-            if (!Craft("steel_pickaxe", 1)) return false;
-            terrainTool.heldTool = "steel_pickaxe";
+            if (!Craft("tool_pickaxe", 1, "steel_pick_head") || !Hold("tool_pickaxe", "steel")) return false;
             return MineOre("ilmenite_ore", 4);
         });
         add("fuel the boiler again", [] { Give("boiler", "coal", 20); return true; });
@@ -666,9 +704,10 @@ namespace {
             return Craft("macerator", 1) && Craft("ore_washer", 1) && Craft("centrifuge", 1) && Craft("water_pump", 1) && Craft("generator", 1) && Craft("cable", 16);
         });
         add("place and wire the LV ore line", [] {
-            if (!Place("macerator", PartType::Macerator, { 0, 0, 12 }) || !Place("ore_washer", PartType::OreWasher, { 3, 0, 12 }) || !Place("centrifuge", PartType::Centrifuge, { 6, 0, 12 }) ||
-                !Place("water_pump", PartType::WaterPump, { 9, 0, 12 }) || !Place("generator2", PartType::Generator, { 12, 0, 12 })) return false;
-            if (!Cables(11, 0, 13)) return false;
+            // (row 24: row 12 holds the tier 1-2 workshop since the ladder's anvil, #1271 L2; a second macerator stood on it)
+            if (!Place("macerator", PartType::Macerator, { 0, 0, 24 }) || !Place("ore_washer", PartType::OreWasher, { 3, 0, 24 }) || !Place("centrifuge", PartType::Centrifuge, { 6, 0, 24 }) ||
+                !Place("water_pump", PartType::WaterPump, { 9, 0, 24 }) || !Place("generator2", PartType::Generator, { 12, 0, 24 })) return false;
+            if (!Cables(23, 0, 13)) return false;
             Give("generator2", "coal", 12);
             return true;
         });

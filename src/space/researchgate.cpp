@@ -7,6 +7,8 @@
 #include "inventory.h"
 #include "gameui.h"
 #include "survival.h"
+#include "recipebook.h"
+#include "disassembly.h"
 #include <algorithm>
 
 #include <cstdio>
@@ -180,6 +182,16 @@ bool ResearchGate_LoadMilestonesText(const std::string& text, std::string& error
     }
     milestones = std::move(out);
     return true;
+}
+
+void ResearchGate_InstallDisassembly() { // (#1427 L7c) an item's ladder tier for the disassembly yield; foods are never taken apart
+    gDisassemblyLadderTier = [](const std::string& item) {
+        int t = RecipeBook_UnlockTier(item);
+        if (t < 0) if (const ResearchNode* n = ResearchGate_NodeForRecipe(item)) t = n->tier;
+        if (t < 0) if (const ResearchNode* n = ResearchGate_NodeForMachineItem(item)) t = n->tier;
+        return t;
+    };
+    gDisassemblyExclude = [](const std::string& item) { return Survival_IsFood(item); };
 }
 
 void ResearchGate_InstallTierGate() { // (#1271 L6b-2) tiers 3-7 close on their research milestone as well as their tasks (the gate on)

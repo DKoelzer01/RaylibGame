@@ -260,7 +260,7 @@ static void DrawOffHand(int x, int y, int size, float sc) {
     DrawText(PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse)), x + (int)(4 * sc), y + (int)(3 * sc), (int)(12 * sc), Fade(Color{ 224, 169, 64, 255 }, 0.85f));
     if (s.empty()) { const char* t = "off hand"; const int fs = (int)(11 * sc); DrawText(t, x + (size - MeasureText(t, fs)) / 2, y + size - fs - (int)(6 * sc), fs, Fade(RAYWHITE, 0.45f)); return; }
     const float is = (float)size - 28.0f * sc;
-    if (ItemIcons_Has(s.id)) ItemIcons_Draw(s.id, { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
+    if (ItemIcons_Has(s.id)) ItemIcons_Draw(ItemIcons_Key(s.id, s.data), { x + (size - is) * 0.5f, (float)y + 8.0f * sc, is, is });
     if (KindOf(s.id) != ItemKind::Tool) { const char* n = TextFormat("%d", (int)s.amount()); DrawText(n, x + size - (int)(4 * sc) - MeasureText(n, (int)(14 * sc)), y + (int)(3 * sc), (int)(14 * sc), RAYWHITE); }
     std::string name = ShortName(s.id);
     if (s.hasData()) { const std::string cn = Composed_DisplayName(s.id, s.data); if (!cn.empty()) name = cn; } // (#1219)
@@ -293,7 +293,7 @@ void Hotbar_DrawHUD(bool piloting) {
             }
             const ItemDef* d = itemDB.find(id);
             const float is = (float)size - 28.0f * sc; // the painted icon (itemicons.h), between the slot number and the name
-            if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
+            if (ItemIcons_Has(id)) ItemIcons_Draw(ItemIcons_Key(id, inventory.grid()[Inventory::kGrid + i].data), { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), (int)(14 * sc)), y0 + (int)(3 * sc), (int)(14 * sc), RAYWHITE);
             // a worn tool: a bar along the bottom, green to red; (#1449) a composed copy: its own wear, from its record
