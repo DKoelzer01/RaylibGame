@@ -53,9 +53,11 @@ void main()
         wl -= up * dot(wl, up);
         float speed = length(wl);
         vec3 wdir = speed > 1e-3 ? wl / speed : t0;
-        float amp = 0.02 + 0.006 * speed;
-        sway = (t0 * sin(time * (0.9 + 0.05 * speed) + h * 30.0) + b0 * sin(time * (0.7 + 0.04 * speed) + h * 17.0)) * amp * max(v.y, 0.0) * leaf;
-        float lean = 0.05 * clamp((speed - 8.0) / 12.0, 0.0, 1.5) * (1.0 + 0.35 * sin(time * (1.2 + 0.05 * speed) + h * 9.0));
+        // (#1083) Fixed sway rates (a rate growing with the speed sped the cycle up in wind and jerked the phase at every
+        // gust); the wind sets only the size, capped so storms stay subtle.
+        float amp = min(0.02 + 0.004 * speed, 0.06);
+        sway = (t0 * sin(time * 0.9 + h * 30.0) + b0 * sin(time * 0.7 + h * 17.0)) * amp * max(v.y, 0.0) * leaf;
+        float lean = 0.05 * clamp((speed - 8.0) / 12.0, 0.0, 1.2) * (1.0 + 0.35 * sin(time * 1.2 + h * 9.0));
         sway += wdir * lean * max(v.y, 0.0) * max(v.y, 0.0);
     } else {
         sway = (t0 * sin(time * 0.9 + h * 30.0) + b0 * sin(time * 0.7 + h * 17.0)) * 0.04 * max(v.y, 0.0) * leaf;

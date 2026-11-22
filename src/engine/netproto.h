@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 33; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920)
+constexpr uint32_t kNetProtocol = 43; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -66,6 +66,8 @@ enum class NetMsg : uint8_t {
     CreativeGive = 43,  // client -> server (#866): creative items into the inventory the server keeps ("" clears it)
     SkillState = 44,    // server -> client (#920): the player's skills (XP and perks) as the save's lines, when they change
     SkillSpend = 45,    // client -> server (#920): spend a point on a perk (the server checks it and answers with SkillState)
+    CreatureFx = 46,    // server -> client (#1343, #1364): creature projectiles launched and ended, and creature events (calls, telegraphs,
+                        // hurt, death) near the client, for its own flights and sounds
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -220,13 +222,18 @@ struct MsgMachineAction { uint64_t body = 0; uint32_t plot = 0; int32_t part = -
 struct MsgMachineView { uint64_t body = 0; uint32_t plot = 0; int32_t part = -1; MachineView view; };
 struct MsgMachineStates { uint64_t body = 0; uint32_t plot = 0; std::vector<int32_t> working; };
 struct MsgTeamState { // #604: at most 16 members
-    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f; };
+    struct Member { std::string name; bool online = false, owner = false, you = false; float health = 0.0f;
+                    uint32_t session = 0;  // (#828) online: theirs (where they are: the avatars); 0 offline
+                    uint32_t lastSeen = 0; // (#828) offline: seconds since they left (0: not known)
+    };
     int32_t team = 0; std::string name; std::vector<Member> members; std::string invite; // invite: the team inviting us ("" none)
+    int claimBudget = 0; std::vector<std::string> allies; // (#828) claims the team may hold; the teams it lets into its claims
 };
 // (#335) plants and farming
-struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; uint32_t plot = 0; int32_t part = -1; std::string seed; }; // 1 fell (plant), 2 sow (plot, part, seed), 3 harvest (plot, part)
+// 1 fell (plant), 2 sow (x y z: the body-local ground, seed), 3 harvest (x y z: the crop's ground) (#1085: crops by position)
+struct MsgPlantAction { uint8_t action = 0; uint64_t body = 0; uint64_t plant = 0; float x = 0, y = 0, z = 0; std::string seed; };
 struct MsgPlants { uint64_t body = 0; uint32_t session = 0; std::vector<std::pair<uint64_t, double>> removed; }; // session: who felled them (0: the join's list)
-struct NetFarmField { uint32_t plot = 0; int32_t part = -1; std::string crop; float growth = 0.0f; };
+struct NetFarmField { float x = 0, y = 0, z = 0; std::string crop; float growth = 0.0f; }; // x y z: body-local, the crop's ground (#1085)
 struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
 struct MsgDropItems { std::string item; int64_t centi = 0; };        // #865: hundredths of a unit
 struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" = clear the inventory
@@ -240,6 +247,16 @@ struct MsgGraves { // #804 (at most 256: the nearest matter, and a world with mo
     std::vector<Entry> graves;
 };
 struct MsgDamage { float amount = 0.0f; uint8_t kind = 0; bool hasSource = false; uint64_t body = 0; DVec3 local{}; float knockback = 0.0f; uint64_t sourceId = 0; };
+// (#1343, #1364) What a client needs to see and hear creatures: shots launched (it flies them itself: start, velocity, kind 0 stone,
+// 1 spear, 2 dart), shots ended (hit or stopped), and creature events (CreatureEvent: 0 idle, 1 alert, 2 telegraph, 3 hurt, 4
+// death; the creature, its species index, where). Sent each tick there is any, unreliable (lost ones only cost a sound or a flight).
+struct MsgCreatureFx {
+    struct Shot { uint32_t id = 0; uint64_t body = 0; DVec3 pos{}; Vector3 vel{}; uint8_t kind = 0; uint64_t owner = 0; };
+    struct Event { uint64_t netId = 0; uint8_t kind = 0; uint8_t species = 0; uint64_t body = 0; DVec3 pos{}; };
+    std::vector<Shot> shots;
+    std::vector<uint32_t> ended;
+    std::vector<Event> events;
+};
 struct MsgShower { double start = 0.0, end = 0.0; uint32_t id = 0; }; // world seconds; id 0 none (events.h)
 
 struct MsgRoster { struct Entry { uint32_t session = 0; std::string name; }; std::vector<Entry> players; }; // everyone online
@@ -251,7 +268,7 @@ struct MsgTerrainEdit {
     uint64_t body = 0;               // NetId
     DVec3 center{};                  // body-local
     float radius = 0.0f;
-    uint8_t flags = 0;               // bit 0 carve, 1 fill, 2 box, 3 soft only
+    uint8_t flags = 0;               // bit 0 carve, 1 fill, 2 box, 3 soft only, 4 till (#1085)
     float hx = 0, hy = 0, hz = 0;    // box half extents (box only), along the body axes of ax/ay/az
     float ax[3] = { 1, 0, 0 }, ay[3] = { 0, 1, 0 };
     int8_t paint = -1;
@@ -262,7 +279,7 @@ struct MsgTerrainEdit {
 // player's loadout and its dig rule, the stroke rate, the cost) and applies it in its order, credits or charges that
 // player's inventory (InventoryDelta to them), and sends the TerrainEdit to everyone (the asker too: it applies there,
 // so every client gets the same edits in the same order). Refused: EditRefused to the asker, nothing changes.
-enum class NetEditKind : uint8_t { Dig = 0, Place = 1, Count };
+enum class NetEditKind : uint8_t { Dig = 0, Place = 1, Till = 2, Count }; // Till (#1085): paint soil farmland (a shovel or hoe)
 struct MsgEditRequest {
     uint32_t seq = 0;                // the client's request number (echoed in the TerrainEdit or the refusal)
     NetEditKind kind = NetEditKind::Dig;
@@ -369,6 +386,8 @@ bool NetRead(NetReader& r, MsgAnimals& m);
 void NetWrite(NetWriter& w, const MsgAnimalHit& m);
 bool NetRead(NetReader& r, MsgAnimalHit& m);
 void NetWrite(NetWriter& w, const MsgDamage& m);
+void NetWrite(NetWriter& w, const MsgCreatureFx& m);
+bool NetRead(NetReader& r, MsgCreatureFx& m);
 bool NetRead(NetReader& r, MsgDamage& m);
 void NetWrite(NetWriter& w, const MsgVitals& m);
 bool NetRead(NetReader& r, MsgVitals& m);

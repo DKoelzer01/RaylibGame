@@ -1,4 +1,5 @@
 #include "hotbar.h"
+#include "uipalette.h"
 #include "playersession.h"
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
@@ -113,7 +114,7 @@ namespace {
             terrainTool.heldTool = id;
             return;
         }
-        if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // loose ground (gravel, sand): in hand, RMB places it
+        if (TerrainTool_IsFiller(id) && BuildMaterialForItem(id.c_str()) < 0) { // ground (loose fillers and raw stone, #1098): in hand, RMB places it
             if (inventory.count(id) <= 0) { GameUI_Toast(TextFormat("No %s", ShortName(id))); Audio_Play(Sfx::Error, 0.3f); return; }
             take();
             buildTool.active = false;
@@ -191,6 +192,15 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     static int lastSlot = -1;
     static std::string lastId;
     if (buildTool.active && cur.empty() && lastSlot == H().selected && !lastId.empty()) buildTool.active = false;
+    // (#1158) The same for a tool, bucket or ground in hand: when its stack leaves the selected slot (the last one placed
+    // while more waits in the grid, or moved to the grid or a chest) or another item takes the slot, the hand follows the
+    // slot - what is there now if it is held that way, else bare hands. (A tool a test put in hand with no slot is left be.)
+    if (lastSlot == H().selected && cur != lastId && !lastId.empty() && terrainTool.heldTool == lastId) {
+        const bool heldLikeThat = !cur.empty() && inventory.count(cur) > 0 &&
+            ((KindOf(cur) == ItemKind::Tool && ToolOf(cur).type != ToolType::Hands) || cur == "bucket" || cur == "water_bucket" ||
+             cur == "fishing_rod" || (TerrainTool_IsFiller(cur) && BuildMaterialForItem(cur.c_str()) < 0));
+        terrainTool.heldTool = heldLikeThat ? cur : std::string();
+    }
     lastSlot = H().selected; lastId = cur;
     // (#534) An item with no use from the hand (not a tool, filler, block or part) stays in hand too: just held.
     auto plainHeldId = [](const std::string& id) {
@@ -281,7 +291,7 @@ void Hotbar_DrawHUD(bool piloting) {
             const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
-                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, ColorLerp(RED, GREEN, left));
+                DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, UiPalette_Lerp(left));
             }
         }
         std::string name = ShortName(id);
@@ -335,10 +345,10 @@ void Hotbar_Unbind(const std::string&) {
 }
 
 bool Hotbar_PlaceTorch() {
-    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (a placed torch never burns out; fibre
-    // torches burn too fast to set down). It goes into the cell just off the surface, on the nearest plot.
+    // A torch in hand (#218): RMB stands one where the crosshair meets the ground (torches never burn out, #1093; fibre
+    // torches are too flimsy to stand). It goes into the cell just off the surface, on the nearest plot.
     const std::string id = CellId(H().selected);
-    if (id == "fibre_torch") { GameUI_Toast("Fibre torches burn too fast to set down: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
+    if (id == "fibre_torch") { GameUI_Toast("A fibre torch is too flimsy to stand: craft a torch"); Audio_Play(Sfx::Error, 0.3f); return false; }
     if ((id != "torch" && id != "snare") || inventory.count(id) <= 0) return false;
     Planetoid* body = nullptr; Vector3 local{}, n{};
     if (!TerrainTool_LastHit(body, local, n) || !body) return false;
@@ -354,3 +364,43 @@ bool Hotbar_PlaceTorch() {
     Audio_Play(Sfx::Build, 0.5f, 1.3f);
     return true;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1158): the hand follows the selected slot ----
+#include "unit_helpers.h"
+
+// Dirt in the selected slot, more in the grid: the slot's stack placed out (or moved away) leaves bare hands, not dirt still
+// in hand over an empty slot; a shovel moved into the slot is taken in hand; a tool a test set with no slot item stays.
+TEST(Hotbar, TheHandFollowsTheSelectedSlotWhenItsStackLeaves) {
+    UnitTest::EnsureItemDB();
+    inventory.clear();
+    Hotbar_Reset();
+    Scene& world = UnitTest::FieldOnlyScene();
+    Hotbar_Update(world, PlayerInput::None(), false); // (its first call resets the bindings: get that out of the way)
+    const int slot = 2, cell = Inventory::kGrid + slot;
+    inventory.grid()[cell] = InvSlot{ "dirt", 500 };
+    inventory.grid()[0] = InvSlot{ "dirt", 1000 };     // more dirt in the grid
+    Hotbar_Press(slot, false);
+    Hotbar_Update(world, PlayerInput::None(), false);
+    ASSERT_EQ(terrainTool.heldTool, "dirt");
+    inventory.grid()[cell] = InvSlot{};                 // the last of the slot placed (or moved to the grid)
+    Hotbar_Update(world, PlayerInput::None(), false);
+    EXPECT_EQ(terrainTool.heldTool, "") << "an empty selected slot is bare hands, though dirt is still carried";
+    inventory.grid()[cell] = InvSlot{ "stone_shovel", 100 }; // a shovel dragged into the selected slot
+    Hotbar_Update(world, PlayerInput::None(), false);
+    EXPECT_EQ(terrainTool.heldTool, "") << "(nothing was in hand to follow: the next selection takes it)";
+    Hotbar_Press(slot, false);
+    Hotbar_Update(world, PlayerInput::None(), false);
+    ASSERT_EQ(terrainTool.heldTool, "stone_shovel");
+    inventory.grid()[cell] = InvSlot{ "dirt", 300 };    // swapped for dirt in the inventory screen
+    Hotbar_Update(world, PlayerInput::None(), false);
+    EXPECT_EQ(terrainTool.heldTool, "dirt") << "the hand takes what the slot holds now";
+    inventory.grid()[cell] = InvSlot{};
+    Hotbar_Update(world, PlayerInput::None(), false);
+    terrainTool.heldTool = "stone_pickaxe";            // a bench puts a tool in hand with no slot item
+    inventory.grid()[1] = InvSlot{ "stone_pickaxe", 100 };
+    Hotbar_Update(world, PlayerInput::None(), false);
+    EXPECT_EQ(terrainTool.heldTool, "stone_pickaxe") << "a tool set with no slot change is left be";
+    inventory.clear(); terrainTool.heldTool.clear();
+}
+#endif

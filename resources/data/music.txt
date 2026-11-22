@@ -1,0 +1,13 @@
+# Music (#1245, audio plan #1003 step 10; user decision 2026-11-19: rare calm pieces, with a slider).
+# Pieces play one at a time, rarely: the first a few minutes into a session, then one every 10-20 minutes, chosen to suit
+# where the player is. Silence is part of the design. A file resources/audio/<name>.ogg (or .mp3/.flac) is a real piece
+# (streamed, played once through); without one, the procedural pad of that name plays for about 90 s and fades out.
+# piece  <name>  <places...>   places: day night cave space sea high, a biome (forest, jungle, desert, ...), or any
+piece    music_pad_day    day forest meadow jungle savanna sea any
+piece    music_pad_night  night forest meadow taiga tundra swamp sea any
+piece    music_pad_cave   cave
+piece    music_pad_space  space high
+# Layers: danger fades in under a threat (Music_SetDanger); discovery and achievement are short stings.
+layer    danger       music_danger
+layer    discovery    music_discovery
+layer    achievement  music_achievement

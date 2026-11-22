@@ -36,7 +36,9 @@ namespace {
     PlantHit plantHit{};
     Planetoid* plantBody = nullptr;
     uint64_t chopId = 0;
-    int chopHits = 0;
+    // (#1094) The share of the aimed plant already cut (0..1): each swing adds 1 / the swings the tool in hand would take,
+    // so switching tools changes only what the next swings add (as a hit count over the tool's total, the bar jumped).
+    float chopWork = 0.0f;
     // The tool in hand and what it does to the aimed material.
     ToolSpec tool;
     DigRule rule;
@@ -67,7 +69,7 @@ namespace {
         if (!hasPlant || !plantBody || !plantBody->trees) return false;
         const Plant& p = plantHit.plant;
         if (p.id == pendingFell && GetTime() < pendingFellUntil) return false;
-        if (p.id != chopId) { chopId = p.id; chopHits = 0; }
+        if (p.id != chopId) { chopId = p.id; chopWork = 0.0f; }
         Audio_Play(Sfx::Dig, 0.45f, p.tree() ? 0.6f : 1.4f);
         ++terrainTool.swings;
         {   // Chips off the trunk (leaves off a bush, grit off a stone).
@@ -77,7 +79,8 @@ namespace {
             chips.count = 6; chips.size = p.tree() ? 0.06f : 0.05f; chips.life = 1.4f; chips.speed = 2.5f; chips.spread = 0.8f;
             Particles_Emit(*plantBody, Vector3Add(p.base, Vector3Scale(p.up, p.tree() ? std::min(1.2f, p.height * 0.3f) : p.height * 0.5f)), chips);
         }
-        if (++chopHits < HitsToFell(p)) return false;
+        chopWork += 1.0f / (float)HitsToFell(p);
+        if (chopWork < 1.0f - 1e-4f) return false; // (the slack: n swings of 1/n each make 1 despite rounding)
         if (!p.stone()) {
             // It comes down: a burst of leaves from the crown.
             ParticleBurst leaves;
@@ -89,7 +92,7 @@ namespace {
             gPlantRequest(*plantBody, p.id);
             pendingFell = p.id; pendingFellUntil = GetTime() + 1.5; // (no new swings at it while the answer is on its way)
             gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
-            chopId = 0; chopHits = 0; hasPlant = false;
+            chopId = 0; chopWork = 0.0f; hasPlant = false;
             return true;
         }
         plantBody->trees->remove(p.id);
@@ -103,7 +106,7 @@ namespace {
             else gSkillEvent(p.stone() ? "loose_stone" : "bush", 1.0, p.base);
         }
         gPrimaryLatch.consume(); // (#895) it came down: the held swing is used up
-        chopId = 0; chopHits = 0;
+        chopId = 0; chopWork = 0.0f;
         hasPlant = false;
         return true;
     }
@@ -129,7 +132,8 @@ namespace {
 static bool PartInFront(Scene& world, Vector3 dir, const TerrainHit& h) {
     const Planetoid* body = h.planetoid;
     if (!body || !body->plots) return false;
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    const DVec3 lo = body->toLocalRenderD(world.camera.position, world.renderOrigin); // (#1277) double into the plots
+    const Vector3 ld = body->dirToLocal(dir);
     for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, h.distance / std::max(body->scale, 1e-6f), c, f, d)) return true;
@@ -217,15 +221,15 @@ bool TerrainTool_Bucket(Scene& world) {
 
 static int FillerMaterial(const std::string& item); // below
 static bool HitOre();
-static bool PickOnRock(); // (#883: below)
+static void SetToolSphere(const Scene& world); // (#1089) below
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    hasHit = RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
+    hasHit = !terrainTool.noAim && RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
     hasPlant = false;
     plantBody = player.nearest;
     if (plantBody && plantBody->trees && !player.flyMode) {
-        const Vector3 lo = plantBody->toLocal(world.camera.position), ld = plantBody->dirToLocal(dir);
+        const Vector3 lo = plantBody->toLocalRenderD(world.camera.position, world.renderOrigin).toFloat(), ld = plantBody->dirToLocal(dir); // (#1277)
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);
     }
@@ -236,6 +240,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
         hitItem = ItemAt(*hit.planetoid, hit.local, hit.material);
         rule = DigRuleFor(tool, hit.material, hitItem.c_str());
     }
+    SetToolSphere(world);
 
     if (!in.enabled) { digging = adding = false; return; }
 
@@ -273,7 +278,13 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     if (bucket && in.hit(Act::Secondary)) TerrainTool_Bucket(world);
 
     digging = gPrimaryLatch.allows(in.down(Act::Primary)); // (#895: not after a break, until the button is pressed again)
-    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
+    // (#1098, the user) RMB places ground only with a terrain material in hand (dirt, sand, clay, gravel, regolith, raw stone:
+    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. Creative and
+    // the terraform tool place freely.
+    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.creative || terrainTool.terraform;
+    // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
+    const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
+    adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
     // exactly the cooldown (terrainTool.swingTime), and the HUD bar under the crosshair shows it.
@@ -310,18 +321,42 @@ static int FillerMaterial(const std::string& item) {
     return -1;
 }
 
+// (#1097) What a soft placing blob costs: 2 of the filler a m^3 of ground it adds (the lattice points it raises from air to
+// solid), as a sphere fill pays (FillCost) and as digging gives back. A flat item a stroke made more ground than digging it
+// back cost: a loop that made something from nothing.
+float TerrainTool_PlaceCost(const Planetoid& p, const TerrainEdit& e) {
+    const float r = e.radius;
+    int added = 0;
+    const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize);
+    const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize);
+    const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize);
+    for (int z = z0; z <= z1; ++z)
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const Vector3 q = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+                const float dist = Vector3Distance(q, e.center);
+                if (dist >= r) continue;
+                const float d = p.densityAt(q);
+                if (d >= ISO_LEVEL) continue;
+                const float t = 1.0f - dist / r; // TerrainDeltas::apply's soft brush
+                if (d + e.strength * t * t * (3.0f - 2.0f * t) >= ISO_LEVEL) ++added;
+            }
+    const float s = p.scale;
+    return added * kVoxelSize * kVoxelSize * kVoxelSize * s * s * s * 2.0f;
+}
+
 // Building consumes bulk material: the filler in hand when there is one (it is what gets placed),
-// else the best one carried. `paint` = the material the placed ground is made of.
-static bool PayFiller(int& paint) {
+// else the best one carried. `paint` = the material the placed ground is made of; `cost` = items (#1097: by volume).
+static bool PayFiller(int& paint, float cost) {
     const std::string& held = terrainTool.heldTool;
-    if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.remove(held, 1))) { paint = FillerMaterial(held); return true; }
+    if (FillerMaterial(held) >= 0 && (terrainTool.creative || inventory.removeAmount(held, cost))) { paint = FillerMaterial(held); return true; }
     // (#836) A block stack in the off hand: RMB places it while the main hand holds a tool.
     const std::string off = inventory.offHand().id;
-    if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.remove(off, 1))) { paint = FillerMaterial(off); return true; }
+    if (FillerMaterial(off) >= 0 && (terrainTool.creative || inventory.removeAmount(off, cost))) { paint = FillerMaterial(off); return true; }
     if (terrainTool.creative) { paint = -1; return true; }
-    static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-    for (const char* f : fillers) if (inventory.remove(f, 1)) { paint = FillerMaterial(f); return true; }
-    Toast("Need stone, dirt, regolith, gravel, sand or concrete to build");
+    // (#1098) no longer "the best one carried": only what is in hand (or the off hand) is placed
+    Toast(FillerMaterial(held) >= 0 || FillerMaterial(off) >= 0 ? TextFormat("Need %.1f of it for this", cost)
+                                                                 : "Hold dirt, sand, clay, gravel or stone to place ground");
     Audio_Play(Sfx::Error, 0.5f);
     return false;
 }
@@ -427,7 +462,7 @@ static bool BrushStroke(bool digging) {
         ++terrainTool.swings;
     } else {
         int paint = -1;
-        if (!PayFiller(paint)) return false;
+        if (!PayFiller(paint, 1.0f)) return false;
         Audio_Play(Sfx::Build, 0.6f);
     }
     TerrainEdit e;
@@ -444,7 +479,6 @@ static bool BrushStroke(bool digging) {
 // Rock and ore under the crosshair (skills: Mining's perks act on a pickaxe there, #883).
 static bool HitRock() { return hasHit && (hit.material == VoxelMaterial::Rock || (hit.material >= VoxelMaterial::Granite && hit.material <= VoxelMaterial::Marble)); }
 static bool HitOre() { return hasHit && hit.material == VoxelMaterial::Ore; }
-static bool PickOnRock() { return tool.type == ToolType::Pickaxe && (HitRock() || HitOre()); }
 int SkillScaled(int n, const char* stat, const std::function<float(const char*)>& by) {
     const double v = n * (double)(by ? by(stat) : SkillStat(stat));
     const int whole = (int)std::floor(v);
@@ -469,7 +503,7 @@ static DigPerkScale AimedPerks() {
 }
 float TerrainTool_StrokeRate() {
     if (terrainTool.terraform) return terrainTool.strokesPerSecond;
-    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate;
+    return std::max(rule.strokesPerSecond, 2.0f) * AimedPerks().rate * (gTerrainStrokeScale ? gTerrainStrokeScale() : 1.0f); // (#1254) mining haste
 }
 static float MiningRadius() {
     const float r = rule.radius > 0.0f ? rule.radius : DigRuleFor(tool, VoxelMaterial::Regolith, nullptr).radius;
@@ -482,6 +516,8 @@ void TerrainTool_ScaleYield(DigYield& got, float oreMul, float stoneMul) {
         const bool kind = kv.first == "granite" || kv.first == "basalt" || kv.first == "limestone" || kv.first == "marble" || kv.first == "sandstone";
         if (ore) kv.second *= oreMul; else if (kind) kv.second *= stoneMul;
     }
+    for (const auto& kv : got.placed) got.items[kv.first] += kv.second; // (#1097) placed ground: what it cost, unscaled
+    got.placed.clear();
 }
 
 // Where a dig's sphere sits: half its radius into the ground along the view (or straight down), so
@@ -522,6 +558,13 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
                 if (d < ISO_LEVEL || !p.field->editable(q)) continue;
                 const VoxelMaterial m = p.materialAt(q, surfN);
                 if (softOnly && !IsSoft(m)) continue;
+                // (#1097) Placed ground gives back at most what it cost (2 of its filler a m^3, as a fill pays) and nothing more:
+                // no stones in placed dirt, no stone kinds, peat, gems or seeds, no perks. Placing and digging it back can't
+                // make anything.
+                if (const int pm = p.edits ? p.edits->placedAt(q) : -1; pm >= 0) {
+                    out.placed[ItemAt(p, q, (VoxelMaterial)pm)] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
+                    continue;
+                }
                 const char* item = ItemAt(p, q, m);
                 got[item] += cell * 2.0f;
                 if (!stoneKindAt && m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) stoneKindAt = item; // #587: a stratum's rock hosts its gem
@@ -536,6 +579,7 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     if (stoneKindAt) { // rock now and then holds a gem: quartz anywhere, and the gem of its stone kind (M22)
         const char* gem = GameRng_Int(0, 29999) < 10 * gemBoost ? GemForStone(stoneKindAt) : GameRng_Int(0, 29999) < 16 * gemBoost ? "quartz" : nullptr; // rare: 1 in 3000 strokes a gem, 1 in 1900 quartz (veins later)
         if (gem && itemDB.find(gem)) out.gem = gem;
+        else if (gRockFind) if (const char* find = gRockFind(p, hitLocal); find && itemDB.find(find)) out.gem = find; // (#1250) a resonant crystal on a ley line
     }
     if (grass && GameRng_Int(0, 99) < 6) { // grass now and then turns up a seed
         static const char* seeds[3] = { "grain_seeds", "root_seeds", "flax_seeds" };
@@ -562,6 +606,7 @@ static Color DustColor(VoxelMaterial m) {
         case VoxelMaterial::Pebbles: return { 136, 126, 112, 255 };
         case VoxelMaterial::Silt: return { 150, 132, 104, 255 };
         case VoxelMaterial::Mud: return { 84, 64, 44, 255 };
+        case VoxelMaterial::Farmland: return { 96, 70, 46, 255 };   // tilled dirt (#1085)
         case VoxelMaterial::Granite: return { 168, 146, 140, 255 };
         case VoxelMaterial::Basalt: return { 62, 62, 68, 255 };
         case VoxelMaterial::Sandstone: return { 212, 182, 132, 255 };
@@ -643,34 +688,15 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
-    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsSoft(hit.material) && terrainTool.till) {
-        // A shovel or a hoe tills soft ground into farmland (no soil placed); an iron or better hoe
-        // tills the 3x3 metres around the aimed square at once.
-        bool any = terrainTool.till(p, hit.local);
-        if (tool.type == ToolType::Hoe && tool.tier >= 2) {
-            const Vector3 up = Vector3Normalize(hit.local);
-            Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
-            east = Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(east);
-            const Vector3 north = Vector3CrossProduct(up, east);
-            for (int a = -1; a <= 1; ++a)
-                for (int b = -1; b <= 1; ++b) {
-                    if (a == 0 && b == 0) continue;
-                    const Vector3 d = Vector3Normalize(Vector3Add(hit.local, Vector3Add(Vector3Scale(east, (float)a), Vector3Scale(north, (float)b))));
-                    // The real ground in that column (the density surface, as the aimed square): the height map is off it
-                    // on eroded and 3D terrain, and those squares were missed (#496). Searched 1.5 m either side of the aimed
-                    // square's height, from above; none in reach: no square there.
-                    const float r0 = Vector3Length(hit.local);
-                    Vector3 at{};
-                    bool found = false;
-                    for (float r = r0 + 1.5f; r >= r0 - 1.5f && !found; r -= 0.1f)
-                        if (p.densityAt(Vector3Scale(d, r)) >= ISO_LEVEL) { at = Vector3Scale(d, r); found = true; }
-                    if (!found) continue;
-                    any = terrainTool.till(p, at) || any;
-                }
-        }
-        if (any) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
+    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsTillable(hit.material) && terrainTool.till) {
+        // A shovel or a hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
+        // placed). The brush is the tool's (TillRadius: an iron or better hoe tills a wide patch at once).
+        if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
     }
+    // (#1098, #1085) Past the till, RMB places ground only with a ground item in hand or in the off hand: a shovel or hoe on
+    // ground that doesn't till (rock) places nothing.
+    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.creative) return false;
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         TerrainEdit e{};
@@ -678,19 +704,20 @@ bool TerrainTool_Stroke(bool dig) {
         e.strength = 0.6f;
         const Vector3 localNormal = Vector3Normalize(Vector3Subtract(p.toLocal(Vector3Add(hit.point, hit.normal)), hit.local));
         e.center = Vector3Add(hit.local, Vector3Scale(localNormal, 0.3f * e.radius));
-        if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler (the one in hand, else the best carried)
+        const float cost = TerrainTool_PlaceCost(p, e); // (#1097) by the ground it adds
+        if (cost < 0.05f) { Toast("Already solid there"); return false; }
+        if (gTerrainToolNetEdit) { // joined (#329): the server charges the filler in hand (#1098: never the best carried)
             std::string pay = FillerMaterial(terrainTool.heldTool) >= 0 ? terrainTool.heldTool : std::string();
             if (pay.empty() && FillerMaterial(inventory.offHand().id) >= 0) pay = inventory.offHand().id; // (#836) the off hand's stack next
-            static const char* fillers[] = { "concrete", "stone", "dirt", "regolith", "gravel", "sand" };
-            for (const char* f : fillers) if (pay.empty() && inventory.count(f) > 0) pay = f;
-            if (pay.empty() || inventory.count(pay) <= 0) { Toast("Need stone, dirt, regolith, gravel, sand or concrete to build"); Audio_Play(Sfx::Error, 0.5f); return false; }
+            if (pay.empty()) { Toast("Hold dirt, sand, clay, gravel or stone to place ground"); Audio_Play(Sfx::Error, 0.5f); return false; }
+            if (inventory.amount(pay) < cost) { Toast(TextFormat("Need %.1f of it for this", cost)); Audio_Play(Sfx::Error, 0.5f); return false; }
             gTerrainToolNetEdit(p, false, hit.local, e.center, e.radius, pay);
             StrokeParticles(p, hit.local, hit.material, false);
             Audio_Play(Sfx::Build, 0.6f);
             return true;
         }
         int paint = -1;
-        if (!PayFiller(paint)) return false;
+        if (!PayFiller(paint, cost)) return false;
         e.paint = paint;
         StrokeParticles(p, hit.local, hit.material, false);
         ApplyTerrainEdit(p, e);
@@ -737,6 +764,28 @@ bool TerrainTool_Stroke(bool dig) {
     return true;
 }
 
+// (#1089, user 2026-11-20) The dig / fill preview: the terrain shader draws where the sphere that will be carved or filled
+// cuts the ground (a line on the real surface, over bumps, ledges and cave walls, and a faint tint inside), from this hint
+// set every update. Not while terraforming (its wire sphere), aiming at a plant, or with the camera in the sphere.
+// RAYLIBGAME_DIG_PREVIEW=ring: the old outline ring (#533 / #705) and fill wire sphere instead.
+static bool RingPreview() { static const bool ring = getenv("RAYLIBGAME_DIG_PREVIEW") && strcmp(getenv("RAYLIBGAME_DIG_PREVIEW"), "ring") == 0; return ring; }
+static void SetToolSphere(const Scene& world) {
+    gToolSphere.body = nullptr;
+    if (RingPreview() || !hasHit || hasPlant || terrainTool.terraform || !hit.planetoid) return;
+    Planetoid& p = *hit.planetoid;
+    if (terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0 && !digging) {
+        const float r = terrainTool.fillRadius / p.scale;
+        const Vector3 c = FillCentre(p, r);
+        if (Vector3Distance(p.toWorld(c), world.camera.position) < terrainTool.fillRadius * 1.05f) return;
+        gToolSphere = { &p, c, terrainTool.fillRadius, adding ? Color{ 120, 255, 160, 210 } : Color{ 120, 220, 255, 200 }, GetTime() };
+        return;
+    }
+    const float R = MiningRadius();
+    const Vector3 c = DigCentre(R);
+    if (Vector3Distance(p.toWorld(c), world.camera.position) < R * 1.05f) return;
+    gToolSphere = { &p, c, R, !rule.can ? Color{ 255, 80, 60, 220 } : digging ? Color{ 255, 220, 120, 220 } : Color{ 120, 220, 255, 200 }, GetTime() };
+}
+
 void TerrainTool_Draw3D() {
     if (!hasHit || hasPlant) return;
     if (terrainTool.terraform) {
@@ -745,6 +794,7 @@ void TerrainTool_Draw3D() {
         DrawSphereWires(hit.point, terrainTool.brushRadius, 8, 12, c);
         return;
     }
+    if (!RingPreview()) return; // (#1089) the terrain shader draws the preview
     if (terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0 && !digging) { // #228: the sphere it will add
         Planetoid& p = *hit.planetoid;
         const float r = terrainTool.fillRadius / p.scale;
@@ -802,8 +852,8 @@ void TerrainTool_DrawHUD() {
             what = std::string(kSize[std::clamp(SizeClassOfVariant(p.variant), 0, 3)]) + " " + species;
         }
         DrawText(TextFormat("%s  %.1f m   LMB %s (%s)", what.c_str(), plantHit.distance, p.tree() ? "chop" : p.stone() ? "pick up" : "harvest", held.c_str()), ox, oy1, fsL, RAYWHITE);
-        if (chopId == p.id && chopHits > 0) {
-            const float f = (float)chopHits / HitsToFell(p);
+        if (chopId == p.id && chopWork > 0.0f) {
+            const float f = std::min(chopWork, 1.0f);
             DrawRectangle(ox, oy2, (int)(120 * hs), (int)(6 * hs), Fade(BLACK, 0.5f));
             DrawRectangle(ox, oy2, (int)(120 * hs * f), (int)(6 * hs), ORANGE);
         }
@@ -883,7 +933,11 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const char* seed = ((p.id >> 1) & 1) == 0 ? seeds[(p.id >> 2) % 3] : nullptr;
         if (seed && !itemDB.find(seed)) seed = nullptr;
         if (seed) add(seed, 1);
-        d.toast = TextFormat("+2 fibre%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "");
+        // (#1374) Bitterroot, the poison cure: under one bush in 4, one in 2 in wet country (swamp, jungle).
+        const bool wet = biome == Biome::Swamp || biome == Biome::Jungle;
+        const bool root = ((p.id >> 5) & (wet ? 1u : 3u)) == 0 && itemDB.find("bitterroot");
+        if (root) add("bitterroot", 1);
+        d.toast = TextFormat("+2 fibre%s%s%s", berries ? "  +1 berries" : "", seed ? "  +1 seeds" : "", root ? "  +1 bitterroot" : "");
     }
     return d;
 }
@@ -902,9 +956,16 @@ void TerrainTool_PlantRemoved(Planetoid& body, uint64_t id, double when, bool mi
     if (id == pendingFell) pendingFell = 0;
     body.trees->remove(id, when);
 }
+float TerrainTool_ChopProgress() { return hasPlant && chopId == plantHit.plant.id ? std::min(chopWork, 1.0f) : 0.0f; }
 bool TerrainTool_AimingPlant(uint64_t* id) {
     if (hasPlant && id) *id = plantHit.plant.id;
     return hasPlant;
+}
+bool TerrainTool_AimedGround(Planetoid** body, Vector3* local) {
+    if (!hasHit || !hit.planetoid) return false;
+    if (body) *body = hit.planetoid;
+    if (local) *local = hit.local;
+    return true;
 }
 
 // Scripted gathering (tests): dig at a body-local point with the held tool's rules (one item of
@@ -1009,6 +1070,6 @@ bool TerrainTool_TestFillOffHand() {
 // The world is going (#902): the last hit and the plant under the crosshair point into its bodies - drawing goes on while the
 // next world loads, and TerrainTool_Draw3D drew the old hit on a freed planet.
 void TerrainTool_ForgetWorld() {
-    hit = TerrainHit{}; hasHit = false; digging = adding = false;
-    hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopHits = 0;
+    hit = TerrainHit{}; hasHit = false; digging = adding = false; gToolSphere = ToolSphereHint{}; // (#1089: never a freed body)
+    hasPlant = false; plantHit = PlantHit{}; plantBody = nullptr; chopId = 0; chopWork = 0.0f;
 }

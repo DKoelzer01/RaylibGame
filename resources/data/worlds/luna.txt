@@ -1,0 +1,18 @@
+# Luna, Terra's moon (Plan 13 step 2, #1274). What it is and what it is like there; bodies.txt holds its orbit and spin.
+# Keys are described in src/engine/worldprofile.h. A body without a file gets its kind's default (moon = these values,
+# except radius and gravity, which a bodies.txt line then has to give).
+
+radius    10000
+gravity   auto                # 9.81 * 10 / 100 = 0.98 m/s^2
+terrain   airless             # cratered regolith, no water, one cold biome
+newworld  no
+erosion   no
+foliage   no
+palette   scene
+air       none
+sky       none
+biomes    Polar
+resources regolith anorthite helium3  # tier 9 today (tiers.txt: helium-3 from regolith in the centrifuge); Plan 13 step 4, #1276
+hazards   vacuum              # the pressure-seal suit module (#1004)
+creatures none                # #1329 (the user, 2026-11-21): no night hunter on the moon
+about     Terra's grey moon: craters and regolith under a black sky, 10 km in radius, low gravity.

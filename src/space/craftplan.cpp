@@ -38,26 +38,56 @@ struct Planner {
                 if (ItemMatches(want, recipes[k].output) && known(k) && std::find(visiting.begin(), visiting.end(), k) == visiting.end())
                     cands.push_back(k);
         std::stable_sort(cands.begin(), cands.end(), [&](int a, int b) { return (recipes[a].output == want) > (recipes[b].output == want); });
+        // (#1150) A group (any_planks) may come from several recipes (oak planks from oak logs, birch from birch...): each
+        // candidate makes what it can and the rest goes to the next. One recipe for all of it failed with 3 oak + 3 birch logs.
         for (int k : cands) {
-            const Recipe& r = recipes[k];
-            const int out = std::max(1, r.outputCount), runs = (qty + out - 1) / out;
-            const auto have0 = have; const size_t steps0 = plan.steps.size(); const auto left0 = plan.leftover;
-            visiting.push_back(k);
-            bool ok = true;
-            for (const auto& [in, n] : r.inputs) ok = Need(in, n * runs, depth + 1) && ok;
-            visiting.pop_back();
-            if (ok) {
-                plan.steps.push_back({ k, runs });
-                if (runs * out > qty) { have[r.output] += runs * out - qty; plan.leftover[r.output] += runs * out - qty; }
-                return true;
-            }
-            have = have0; plan.steps.resize(steps0); plan.leftover = left0; // (its shortfalls stay: they say what is missing)
+            if (qty <= 0) break;
+            const int out = std::max(1, recipes[k].outputCount), runs = (qty + out - 1) / out;
+            if (TryRuns(k, runs, qty, depth)) { qty = 0; break; }
+            int lo = 0, hi = runs - 1; // the most runs it can make (fewer runs never need more)
+            while (lo < hi) { const int mid = lo + (hi - lo + 1) / 2; if (Probe(k, mid, depth)) lo = mid; else hi = mid - 1; }
+            if (lo > 0 && TryRuns(k, lo, qty, depth)) qty -= lo * out;
         }
+        if (qty <= 0) return true;
         if (cands.empty()) {
             plan.missing[want] += qty;
             if (MachineMakes(want)) plan.machineOnly.insert(want);
+        } else {
+            Shortfalls(cands[0], qty, depth); // what the rest lacks, as its first recipe would need it
         }
         return false;
+    }
+    // `runs` of recipe k toward `qty` wanted: kept when every input is found (a surplus goes to the leftovers), else undone.
+    bool TryRuns(int k, int runs, int qty, int depth) {
+        const Recipe& r = recipes[k];
+        const int out = std::max(1, r.outputCount);
+        const auto have0 = have; const size_t steps0 = plan.steps.size(); const auto left0 = plan.leftover;
+        const auto miss0 = plan.missing; const auto mach0 = plan.machineOnly;
+        visiting.push_back(k);
+        bool ok = true;
+        for (const auto& [in, n] : r.inputs) ok = Need(in, n * runs, depth + 1) && ok;
+        visiting.pop_back();
+        if (ok) {
+            plan.steps.push_back({ k, runs });
+            if (runs * out > qty) { have[r.output] += runs * out - qty; plan.leftover[r.output] += runs * out - qty; }
+            return true;
+        }
+        have = have0; plan.steps.resize(steps0); plan.leftover = left0; plan.missing = miss0; plan.machineOnly = mach0;
+        return false;
+    }
+    bool Probe(int k, int runs, int depth) { // could it make `runs`? (nothing kept)
+        const auto have0 = have; const CraftPlan plan0 = plan;
+        const bool ok = TryRuns(k, runs, runs * std::max(1, recipes[k].outputCount), depth);
+        have = have0; plan = plan0;
+        return ok;
+    }
+    void Shortfalls(int k, int qty, int depth) { // record what `qty` more by recipe k lacks (only missing / machineOnly kept)
+        const auto have0 = have; const size_t steps0 = plan.steps.size(); const auto left0 = plan.leftover;
+        const int out = std::max(1, recipes[k].outputCount), runs = (qty + out - 1) / out;
+        visiting.push_back(k);
+        for (const auto& [in, n] : recipes[k].inputs) Need(in, n * runs, depth + 1);
+        visiting.pop_back();
+        have = have0; plan.steps.resize(steps0); plan.leftover = left0;
     }
 };
 }
@@ -196,5 +226,45 @@ TEST(CraftPlan, GroupsMatchAnyMember) {
     const auto rs = TestRecipes();
     const CraftPlan p = CraftPlan_Make(rs, kAllKnown, { { "birch_log", 2 } }, 4, 2);
     EXPECT_TRUE(p.ok);
+}
+
+// (#1150, the user: 3 kinds of log, and crafting used only the first kind, then failed)
+namespace {
+std::vector<Recipe> WoodRecipes() {
+    auto R = [](const char* out, int n, std::vector<std::pair<std::string, int>> in) { Recipe r; r.output = out; r.outputCount = n; r.inputs = std::move(in); return r; };
+    return {
+        R("oak_planks", 4, { { "oak_log", 1 } }),     // 0: planks per kind of wood, as recipes.txt
+        R("birch_planks", 4, { { "birch_log", 1 } }), // 1
+        R("pine_planks", 4, { { "pine_log", 1 } }),   // 2
+        R("raft", 1, { { "any_log", 6 } }),           // 3: a group, carried in three kinds
+        R("chest", 1, { { "any_planks", 8 } }),       // 4: a group made by several recipes
+    };
+}
+}
+
+TEST(CraftPlan, AGroupIngredientSumsEveryKindCarried) {
+    const auto rs = WoodRecipes();
+    const std::map<std::string, int> logs{ { "oak_log", 3 }, { "birch_log", 3 }, { "pine_log", 3 } };
+    const CraftPlan p = CraftPlan_Make(rs, kAllKnown, logs, 3, 1);
+    ASSERT_TRUE(p.ok) << "6 logs from 3 oak + 3 birch + 3 pine";
+    EXPECT_EQ(CraftPlan_Max(rs, kAllKnown, logs, 3, 10), 1) << "9 logs: one raft (6 each)";
+}
+
+TEST(CraftPlan, AGroupIngredientIsMadeBySeveralRecipes) {
+    const auto rs = WoodRecipes();
+    // 8 planks: no one kind of log makes them (1 oak + 1 birch), both together do.
+    const CraftPlan p = CraftPlan_Make(rs, kAllKnown, { { "oak_log", 1 }, { "birch_log", 1 } }, 4, 1);
+    ASSERT_TRUE(p.ok);
+    int oak = 0, birch = 0;
+    for (const CraftStep& s : p.steps) { if (s.recipe == 0) oak += s.times; if (s.recipe == 1) birch += s.times; }
+    EXPECT_EQ(oak, 1); EXPECT_EQ(birch, 1);
+    ASSERT_FALSE(p.steps.empty());
+    EXPECT_EQ(p.steps.back().recipe, 4) << "the chest last";
+    // 3 + 2 + 1 logs make 24 planks: 3 chests; the planner uses every kind.
+    EXPECT_EQ(CraftPlan_Max(rs, kAllKnown, { { "oak_log", 3 }, { "birch_log", 2 }, { "pine_log", 1 } }, 4, 10), 3);
+    // Short: one log, 4 planks of 8; what is missing is named.
+    const CraftPlan q = CraftPlan_Make(rs, kAllKnown, { { "oak_log", 1 } }, 4, 1);
+    EXPECT_FALSE(q.ok);
+    EXPECT_FALSE(q.missing.empty());
 }
 #endif

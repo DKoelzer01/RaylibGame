@@ -130,7 +130,7 @@ namespace {
                 if (!p) return;
                 TerrainEdit e{};
                 e.center = t.center.toFloat(); e.radius = t.radius; e.strength = t.strength; e.paint = t.paint;
-                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0;
+                e.carve = (t.flags & 1) != 0; e.fill = (t.flags & 2) != 0; e.box = (t.flags & 4) != 0; e.softOnly = (t.flags & 8) != 0; e.till = (t.flags & 16) != 0;
                 if (e.box) {
                     e.half = { t.hx, t.hy, t.hz };
                     e.ax = { t.ax[0], t.ax[1], t.ax[2] }; e.ay = { t.ay[0], t.ay[1], t.ay[2] };
@@ -267,6 +267,13 @@ namespace {
                 Animals_ApplyNet(in, am.removed);
                 return;
             }
+            case NetMsg::CreatureFx: { // (#1343, #1364) the server's creature shots (flown here) and creature events (heard here)
+                MsgCreatureFx fx;
+                if (c.state != NetClient::State::Joined || !NetRead(r, fx)) return;
+                ++c.creatureFxMsgs;
+                if (gAnimalsReplicated) Animals_ApplyFx(fx);
+                return;
+            }
             case NetMsg::Damage: { // (#334 slice 2) a hit on our player (an animal's bite): the damage here (shield, health), the shove the server's
                 MsgDamage dm;
                 if (c.state != NetClient::State::Joined || !NetRead(r, dm)) return;
@@ -371,6 +378,7 @@ namespace {
                 MsgVitals v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
                 c.vitals = v; ++c.vitalsMsgs;
+                if (v.flags & 1) c.respawnGraceUntil = GetTime() + 3.0; // (#828) dead: the respawn teleport that follows is no prediction miss
                 if (gNetRole != NetRole::Client) return; // (a host's in-process test client: not the host's own player)
                 SurvivalState& sv = LocalSession().survival;
                 sv.health = v.health; sv.food = v.food; sv.oxygen = v.oxygen; sv.power = v.power; sv.temperature = v.temperature;
@@ -519,7 +527,7 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
         if (body && !c.history.empty() && c.history.front().tick == c.own.ackInput) {
             const DVec3 d = c.history.front().local - c.own.local;
             c.lastError = d.length();
-            c.worstError = std::max(c.worstError, c.lastError);
+            if (GetTime() >= c.respawnGraceUntil) c.worstError = std::max(c.worstError, c.lastError); // (#828: not around a death's respawn)
             c.history.pop_front(); // acknowledged
             if (c.lastError > kReconcileError) {
                 ++c.corrections;
@@ -830,8 +838,8 @@ void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, in
     a.count = (uint16_t)std::clamp(count, 0, 65535); a.slot = (uint8_t)std::clamp(slot, 0, 255); a.which = (uint8_t)std::clamp(which, 0, 2);
     SendMsg(c, a);
 }
-void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed) { // (#335)
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed) { // (#335; #1085: the ground)
     if (c.state != NetClient::State::Joined) return;
-    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.plot = plot; a.part = part; a.seed = seed;
+    MsgPlantAction a; a.action = (uint8_t)action; a.body = bodyNetId; a.plant = plant; a.x = ground.x; a.y = ground.y; a.z = ground.z; a.seed = seed;
     SendMsg(c, a);
 }

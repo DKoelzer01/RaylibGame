@@ -34,6 +34,8 @@ struct BodyDef {
     BodyKind kind = BodyKind::Asteroid;
     std::string name;
     float radius = 50.0f;
+    bool hasRadius = false;           // radius= was on the line (#1298: planets and moons without it take their world file's)
+    bool hasGravity = false;          // gravity= was on the line (auto counts)
     bool hasPosition = false;
     Vector3 position = { 0, 0, 0 };
     std::string orbitParent;          // empty: use position
@@ -60,7 +62,10 @@ const char* BodyKindName(BodyKind kind);
 // Parses one definition line (no comment or blank handling). On failure returns false and sets error.
 bool ParseBodyDef(const std::string& line, BodyDef& out, std::string& error);
 std::string FormatBodyDef(const BodyDef& def);          // round-trips through ParseBodyDef
-bool LoadSystemDef(const std::string& path, SystemDef& out); // logs errors with line numbers
+// Logs errors with line numbers. A planet or moon line without radius= / gravity= takes them from its world file
+// (resources/data/worlds/<name>.txt, worldprofile.h, #1298); the result is the same SystemDef (and the same
+// FormatBodyDef lines for saves and joining players) as a line that gave them.
+bool LoadSystemDef(const std::string& path, SystemDef& out);
 // The system the hard-coded generator used to make, from its old settings (old saves, fallback).
 SystemDef LegacySystemDef(int count, int size, float systemRadius, float maxSpin, Vector3 first);
 float AutoSurfaceGravity(BodyKind kind, float radius);

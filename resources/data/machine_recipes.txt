@@ -94,3 +94,43 @@ mass_driver     | launched_capsule 1 | cargo_capsule 1           | 200 | 1024
 refinery        | rocket_fuel 6      | crude_oil 2               | 200 | 64
 chemical_reactor | polyethylene 2    | crude_oil 1               | 200 | 30
 chemical_reactor | polyethylene 1    | rubber 2                  | 200 | 30
+# Research (#1193): a lab turns one of each pack up to a tier into a research unit of that tier, for its team's queued
+# node (the game takes the units out and counts them; they never reach an inventory). A lab only runs the recipe of its
+# team's queue head (its variant, set by the game). LV labs: tiers 3-4; MV: 3-5; HV: 3-7 (Rocketry packs need it).
+lv_lab          | research_t3 1      | steam_pack 1              | 200 | 8
+lv_lab          | research_t4 1      | steam_pack 1, lv_pack 1   | 300 | 8
+mv_lab          | research_t3 1      | steam_pack 1              | 200 | 32
+mv_lab          | research_t4 1      | steam_pack 1, lv_pack 1   | 300 | 32
+mv_lab          | research_t5 1      | steam_pack 1, lv_pack 1, mv_pack 1 | 400 | 32
+hv_lab          | research_t3 1      | steam_pack 1              | 200 | 96
+hv_lab          | research_t4 1      | steam_pack 1, lv_pack 1   | 300 | 96
+hv_lab          | research_t5 1      | steam_pack 1, lv_pack 1, mv_pack 1 | 400 | 96
+hv_lab          | research_t6 1      | steam_pack 1, lv_pack 1, mv_pack 1, hv_pack 1 | 500 | 96
+hv_lab          | research_t7 1      | steam_pack 1, lv_pack 1, mv_pack 1, hv_pack 1, rocket_pack 1 | 600 | 96
+# (#1269) Rotation machines: ticks at their rated 32 RPM; faster or slower with the shaft, nothing under 16 RPM.
+millstone        | flour 1            | grain 2                   | 100 | 0
+millstone        | gravel 1           | stone 1                   | 100 | 0
+millstone        | sand 1             | gravel 1                  | 100 | 0
+millstone        | iron_crushed 1     | iron_ore 1                | 200 | 0
+millstone        | copper_crushed 1   | copper_ore 1              | 200 | 0
+millstone        | tin_crushed 1      | tin_ore 1                 | 200 | 0
+mechanical_saw   | oak_planks 6       | oak_log 1                 | 100 | 0
+mechanical_saw   | birch_planks 6     | birch_log 1               | 100 | 0
+mechanical_saw   | pine_planks 6      | pine_log 1                | 100 | 0
+mechanical_saw   | maple_planks 6     | maple_log 1               | 100 | 0
+mechanical_saw   | spruce_planks 6    | spruce_log 1              | 100 | 0
+mechanical_press | iron_plate 1       | iron_ingot 1              | 100 | 0
+mechanical_press | bronze_plate 1     | bronze_ingot 1            | 100 | 0
+mechanical_press | copper_plate 1     | copper_ingot 1            | 100 | 0
+mechanical_press | tin_plate 1        | tin_ingot 1               | 100 | 0
+
+# Magic (#1252): the mana siphon fills an empty jar with its node's kind (the game sets which: jar_none idles it), 30 s a jar.
+mana_siphon     | jar_earth 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_water 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_fire 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_air 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_aether 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_frost 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_storm 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_shard 1 | mana_jar 1 | 600 | 0
+mana_siphon     | jar_rot 1 | mana_jar 1 | 600 | 0

@@ -52,7 +52,7 @@ void Trapping_Update(Scene& world) {
     Planetoid* body = player.nearest;
     if (!body || !body->plots) return;
     const auto* pf = dynamic_cast<const PlanetField*>(body->field.get());
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
     const double now = WorldTime();
     for (auto& plot : body->plots->plots) {
         if (Vector3Distance(plot->toBody({ 0, 0, 0 }), me) > 300.0f) continue;

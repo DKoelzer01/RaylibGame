@@ -189,6 +189,14 @@ void main()
     vec3 ln = normalize(fragLocalNormal);
     vec3 an = abs(ln);
     vec2 uv = (an.x > an.y && an.x > an.z) ? fragLocal.zy : (an.y > an.z ? fragLocal.xz : fragLocal.xy);
+    if (pat == 17) { // (#1105) a ladder: on its upright faces two rails along the 0.5 m cell's sides and a rung every 25 cm, the
+                     // wall showing between them; the wood is the planks'
+        if (an.y < 0.5) {
+            float fx = fract(uv.x / 0.5), fy = fract(uv.y / 0.25);
+            if (fx > 0.12 && fx < 0.88 && (fy < 0.42 || fy > 0.58)) discard;
+        }
+        pat = 6;
+    }
     float aa = max(max(fwidth(uv.x), fwidth(uv.y)), 1e-5);
     float spec, emit;
     vec3 albedo = surface(pat, base, uv, ln, aa, spec, emit);

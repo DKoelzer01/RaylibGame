@@ -9,6 +9,8 @@
 #include <mutex>
 #include <exception>
 #include <new>
+#include <csignal>
+#include <string>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
@@ -72,6 +74,15 @@ namespace {
                                  : "The game hit a fatal error and has to close. The details are in log.txt.", "RaylibGame", MB_OK | MB_ICONERROR);
         std::abort();
     }
+    // (#1153) abort() (a failed assert or IM_ASSERT: its message goes to stderr) ended the game with no line here and no
+    // Windows error event: it looked like a clean exit. Now it leaves a line and the error box.
+    void OnAbort(int) {
+        if (gFile) { fprintf(gFile, "FATAL abort() (a failed assertion? its message went to stderr) (commit %.0f MB)\n", CommitMB()); fflush(gFile); }
+        fprintf(stderr, "FATAL abort()\n");
+        MessageBoxA(nullptr, "The game hit a fatal error and has to close. The details are in log.txt.", "RaylibGame", MB_OK | MB_ICONERROR);
+        signal(SIGABRT, SIG_DFL);
+        std::_Exit(3);
+    }
 #elif RAYLIBGAME_LOGGING
     // Linux (#792): the same on a crash signal, then the default action (core dump / exit status) runs.
     void FlushOnCrash(int sig) {
@@ -105,11 +116,19 @@ void Log_Open(const char* path) {
 #if RAYLIBGAME_LOGGING
     std::lock_guard<std::mutex> lock(gMutex);
     if (gFile) fclose(gFile);
+    { // (#1153) the last session's log is kept as <name>.prev<ext> (log.prev.txt): a failure, then a new start, kept nothing
+        const std::string p = path;
+        const size_t dot = p.find_last_of('.'), slash = p.find_last_of("/\\");
+        const std::string prev = dot != std::string::npos && (slash == std::string::npos || dot > slash) ? p.substr(0, dot) + ".prev" + p.substr(dot) : p + ".prev";
+        std::remove(prev.c_str());
+        std::rename(path, prev.c_str());
+    }
     gFile = fopen(path, "w");
     if (gFile) setvbuf(gFile, nullptr, _IOFBF, 1 << 16);
 #ifdef _WIN32
     SetUnhandledExceptionFilter(FlushOnCrash);
     std::set_terminate(OnTerminate);
+    signal(SIGABRT, OnAbort);
 #else
     for (int sig : { SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT }) signal(sig, FlushOnCrash);
 #endif

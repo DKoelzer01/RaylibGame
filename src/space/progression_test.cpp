@@ -16,6 +16,7 @@
 #include "worldtypes.h"
 #include "animals.h"
 #include "farming.h"
+#include "tools.h"
 #include "navigation.h"
 #include "suit.h"
 
@@ -360,12 +361,24 @@ namespace {
         add("till a field and plant seeds from the bushes", [] {
             while (inventory.count("grain_seeds") + inventory.count("root_seeds") + inventory.count("flax_seeds") < 1)
                 if (!TerrainTool_HarvestNearest(*body, home, false)) return false;
-            const Vector3 g = Surface(Offset(-20.0f, 10.0f));
+            // (#1085) a till paints the ground's surface band: the real ground in that column (the density surface, from 3 m over
+            // the height map down; the mesh strays from the height map), not the height map's point
+            const Vector3 col = Offset(-20.0f, 10.0f);
+            auto ground = [&] {
+                Vector3 g = Surface(col);
+                for (float r = Vector3Length(g) + 3.0f, r0 = Vector3Length(g) - 3.0f; r > r0; r -= 0.05f)
+                    if (body->densityAt(Vector3Scale(col, r)) >= ISO_LEVEL) { g = Vector3Scale(col, r); break; }
+                return g;
+            };
+            Vector3 g = ground();
+            if (!IsTillable(body->materialAt(g))) { // frozen ground or rock: a cold start places dirt and tills that
+                TerrainEdit fill{}; fill.fill = true; fill.radius = 1.0f; fill.paint = (int)VoxelMaterial::Regolith;
+                fill.center = Vector3Add(g, Vector3Scale(col, 0.3f));
+                ApplyTerrainEdit(*body, fill);
+                g = ground();
+            }
             if (!Farm_Till(*scene, *body, g)) { printf("bench: progression: could not till\n"); failed = 1; return false; }
-            for (auto& pl : body->plots->plots)
-                for (int i = (int)pl->parts.size() - 1; i >= 0; --i)
-                    if (pl->parts[i].type == PartType::Farmland && Farm_Plant(*body, *pl, i, "")) return QuestBook_CountOf("plant") >= 1.0;
-            return false;
+            return Farm_Plant(*body, g, "") && QuestBook_CountOf("plant") >= 1.0; // (#1085) on the tilled ground itself
         });
         add("water the field: a bucket of water poured beside it", [] {
             // The bucket's pour (TerrainTool_Bucket counts "pour" through the game's hook), done directly:
@@ -616,7 +629,7 @@ int Progression_Update(Scene& world, bool fullLadder, bool evLadder) {
         inventory.clear();
         QuestBook_SetTier(0);
         Factory::SetSpeed(60);
-        home = body->toLocal((player.position - world.renderOrigin).toFloat());
+        home = body->toLocalOf(player.position, world.renderOrigin);
         if (!body->plots) body->plots = std::make_unique<PlotSet>();
         // The workshop: a plot on the ground a few metres ahead.
         const Vector3 up = Vector3Normalize(home);

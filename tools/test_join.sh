@@ -19,6 +19,9 @@ if [ -n "${WORLDGEN:-}" ]; then
     echo "test_join: host world-gen settings: $(tr '\n' ' ' < "$tmp/host.sav.worldgen")"
 fi
 sandbox=""; [ "${SANDBOX:-0}" = "1" ] && sandbox="--sandbox"
+# (#1223/#1224) A creature on the brain: the host spawns a thornback by the first player, it bites, the host wears it down;
+# both clients must see its health fall and its death (CREATURE=0: off).
+export RAYLIBGAME_JOIN_CREATURE="${CREATURE:-1}"
 "$exe" --host "$tmp/host.sav" --seed 42 $sandbox --bench 600 --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 until grep -q "listening on port" "$tmp/host.log" 2>/dev/null || ! kill -0 "$hp" 2>/dev/null || [ $SECONDS -gt 300 ]; do sleep 1; done
@@ -32,12 +35,15 @@ echo "test_join: host up after ${SECONDS} s ($tmp)"
 # outran the clients' 600 s on the deweyserver runner (#1028).
 if [ -f "$tmp/host.sav.erosion" ]; then
     mkdir -p saves
-    for n in alice bob; do cp "$tmp/host.sav.erosion" "saves/client_$n.sav.erosion"; done
+    for n in alice bob; do mkdir -p saves/mp_cache; cp "$tmp/host.sav.erosion" "saves/mp_cache/client_$n.sav.erosion"; done
 fi
 cpids=()
 for n in alice bob; do
     shot=""; [ "$n" = bob ] && shot="bench_join_bob.png" # bob turns to alice and takes a picture (in the working directory)
-    RAYLIBGAME_JOIN_SHOT="$shot" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_JOIN_OTHERS=1 RAYLIBGAME_JOIN_LINGER=20 \
+    # (#828) TEAM=1 (default): alice invites bob into her team and leaves early (they walk together in the first 8 s), so bob
+    # sees her "last seen" in his usual 20 s (staying longer left him to the creature: a death's respawn failed his prediction)
+    linger=20; [ "${TEAM:-1}" = 1 ] && [ "$n" = alice ] && linger=5
+    RAYLIBGAME_JOIN_SHOT="$shot" RAYLIBGAME_NET_LAG_MS="$lag" RAYLIBGAME_JOIN_OTHERS=1 RAYLIBGAME_JOIN_LINGER=$linger RAYLIBGAME_JOIN_TEAM="${TEAM:-1}" \
         timeout 600 "$exe" --join "127.0.0.1:$port" --name "$n" --bench 3 --test-join > "$tmp/$n.log" 2>&1 &
     cpids+=($!)
 done
@@ -46,6 +52,9 @@ sleep 1
 kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 grep -h "^join:\|^bench: join" "$tmp/alice.log" "$tmp/bob.log"
 grep -h "joined as session\|left" "$tmp/host.log" | sed 's/^/host: /'
+grep -h "^host: creature" "$tmp/host.log"
+grep -h "^join: creature" "$tmp/alice.log" "$tmp/bob.log"
+if [ "${CREATURE:-1}" = "1" ] && ! grep -q "^host: creature: fell (bites on players [1-9]" "$tmp/host.log"; then echo "test_join: the creature bit nobody (the host counts its bites) -> FAIL"; fail_bite=1; fi
 pass=$(cat "$tmp/alice.log" "$tmp/bob.log" | grep "^bench: join" | grep -c "PASS"); fail=$((2 - pass))
 echo "=== test_join: $pass PASS, $fail FAIL (logs in $tmp)"
-[ "$fail" -eq 0 ]
+[ "$fail" -eq 0 ] && [ -z "${fail_bite:-}" ]

@@ -1,4 +1,5 @@
 #include "structures.h"
+#include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
 #include "factory.h"
 #include "inventory.h"
@@ -216,13 +217,13 @@ Int3 TurnedCell(Int3 c, int quarters) { for (int k = 0; k < (quarters & 3); ++k)
 
 // The biome's stone (#164: biome materials): sandstone in the dry south, granite in the cold, limestone in the wet.
 int BiomeStone(int mat, Biome b) {
-    static const int stone = BuildMaterialForItem("stone");
+    static const int stone = BuildMaterialForItem("stone_brick");
     if (mat != stone) return mat;
     const char* m = nullptr;
     switch (b) {
-        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone"; break;
-        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite"; break;
-        case Biome::Jungle: case Biome::Swamp: m = "limestone"; break;
+        case Biome::Desert: case Biome::Badlands: case Biome::Savanna: m = "sandstone_brick"; break;
+        case Biome::Tundra: case Biome::Alpine: case Biome::Taiga: case Biome::Polar: m = "granite_brick"; break;
+        case Biome::Jungle: case Biome::Swamp: m = "limestone_brick"; break;
         default: break;
     }
     const int r = m ? BuildMaterialForItem(m) : -1;
@@ -707,7 +708,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             }
         job.parts.push_back({ p, table });
     }
-    lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone"), biome) };
+    lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone_brick"), biome) };
     uint32_t dh = Hash((uint64_t)site.seed ^ 0xd0d0ull);
     if (S.dungeon > 0.0f && DungeonsOn() && !noDungeons && (forceDungeon || Unit(dh) < S.dungeon)) // a dungeon under it (#719)
         PlanDungeon(job, body, pf, *plot, lastDungeonArgs.floorY, lastDungeonArgs.half, site.seed, lastDungeonArgs.stone);
@@ -728,6 +729,17 @@ void FillLoot(Planetoid& body, const PendingLoot& L) {
     for (const LootEntry& e : it->second) {
         if (Unit(h) > e.chance) continue;
         const int n = e.lo + (int)(Unit(h) * (e.hi - e.lo + 1));
+        if (n > 0 && MagicDiscovery_IsPage(e.item)) { // (#1250) a First Sight page only lies near a ley line (magic items come last: the rolls before stay)
+            Vector3 at{};
+            bool placed = false;
+            if (body.plots) for (auto& p : body.plots->plots)
+                if (p->id == L.plot && L.part >= 0 && L.part < (int)p->parts.size()) {
+                    const Int3 o = p->parts[L.part].origin;
+                    at = p->toBody({ (o.x + 1) * kCellSize, (o.y + 1) * kCellSize, (o.z + 1) * kCellSize });
+                    placed = true;
+                }
+            if (!placed || !MagicDiscovery_LootAllowed(body, at, e.item)) continue;
+        }
         if (n > 0) Factory::Insert(body.id, L.plot, L.part, e.item, std::min(n, e.hi));
     }
 }
@@ -812,7 +824,7 @@ void Structures_Update(Scene& world) {
     if (sets.empty()) return;
     Planetoid* body = player.nearest;
     const bool onFoot = body && !player.flyMode;
-    const Vector3 me = body ? body->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    const Vector3 me = body ? body->toLocalOf(player.position, world.renderOrigin) : Vector3{};
     // Only the authority generates (#164 design, MP): a client gets the structures as plot and terrain edits. It builds
     // round the local player and every interest centre (#318: a server's players).
     if (Net_IsAuthority()) {

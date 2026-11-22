@@ -6,6 +6,8 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "SimplexNoise.h"
+#include "menus.h"    // settings.reduceFlashing (#1162)
+#include "soundscape.h" // (#1241) thunder
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -31,7 +33,8 @@ namespace {
     WeatherState here;            // smoothed at the player
     int forced = -1;
     double lastFlash = 0.0, nextFlash = 0.0, thunderAt = -1.0;
-    float flash = 0.0f;           // lightning overlay 0..1
+    float flash = 0.0f;           // lightning now 0..1 (#1162: lights the sky, Scene::lightning)
+    float flashAz = 0.0f, flashEl = 0.3f; // the strike: around the player's horizon and how high (radians)
 
     Planetoid* StartBody(Scene& world) { return world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); }
 
@@ -108,9 +111,10 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     Planetoid* p = StartBody(world);
     WeatherState target;
     if (p && player.nearest == p) {
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         if (Vector3Length(local) > 1.0f) target = Weather_At(world, Vector3Normalize(local), WorldTime());
     }
+    { static const int envForce = getenv("RAYLIBGAME_WEATHER_FORCE") ? atoi(getenv("RAYLIBGAME_WEATHER_FORCE")) : -1; if (envForce >= 0) forced = envForce; } // (#1083 captures) 0 clear .. 3 storm (WeatherKind)
     if (forced >= 0) {
         target.kind = (WeatherKind)forced;
         target.cloud = forced == 0 ? 0.1f : forced == 1 ? 0.55f : forced == 5 ? 0.4f : forced == 3 ? 0.95f : 0.75f;
@@ -133,7 +137,7 @@ void Weather_Update(Scene& world, float dt, float realDt) {
     world.cloudDrift = Vector3Add(world.cloudDrift, Vector3Scale(here.wind, -dt * 3.0f)); // clouds move with the wind (a little faster than at the ground)
     // The wind field (#650): this mean wind, storminess (rain a little, storms fully) and the daily cycle at the player.
     if (p && player.nearest == p) {
-        const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+        const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
         const float len = Vector3Length(local);
         static float stormEased = 0.0f;
         const float stormTarget = here.kind == WeatherKind::Storm ? 1.0f : here.kind == WeatherKind::Rain ? 0.3f : 0.0f;
@@ -145,17 +149,54 @@ void Weather_Update(Scene& world, float dt, float realDt) {
         const float kSurfaceWind = Wind_Old888() ? 1.0f : 0.45f; // (RAYLIBGAME_WIND_888=0: the old full wind)
         Wind_SetFrame(p, local, Vector3Scale(here.wind, kSurfaceWind), stormEased, daily, realDt >= 0.0f ? realDt : dt);
     } else Wind_SetFrame(nullptr, {}, {}, 0.0f, 1.0f, realDt >= 0.0f ? realDt : dt);
-    // Lightning in a storm: a flash every 6-20 s, thunder a moment later.
-    if (here.kind == WeatherKind::Storm) {
+    // Lightning in a storm: a flash every 6-20 s, thunder a moment later. (#1162) It lights the sky and the clouds toward the
+    // strike (atmosphere.fs) and lifts the open-sky ambient briefly (scene.cpp; fragSky keeps caves and interiors dark), with
+    // a return stroke's second flicker; it no longer whites out the screen (a 55% overlay, user: "They should light up the
+    // sky, not the whole screen"). Reduce flashing (settings): one soft glow, about a third as bright.
+    if (here.kind == WeatherKind::Storm && p) { // (also with no nearest body set: the fly camera)
         if (GameClock() > nextFlash) {
-            flash = 1.0f;
             lastFlash = GameClock();
-            nextFlash = GameClock() + 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0;
+            static const double fixedPeriod = getenv("RAYLIBGAME_LIGHTNING_PERIOD") ? atof(getenv("RAYLIBGAME_LIGHTNING_PERIOD")) : 0.0; // captures: a flash every N s
+            nextFlash = GameClock() + (fixedPeriod > 0.0 ? fixedPeriod : 6.0 + 14.0 * (double)GetRandomValue(0, 1000) / 1000.0);
             thunderAt = GameClock() + 0.6 + 1.8 * (double)GetRandomValue(0, 1000) / 1000.0;
+            const float az = 6.2831853f * GetRandomValue(0, 1000) / 1000.0f;            // somewhere around the horizon,
+            const float el = 0.17f + 0.45f * GetRandomValue(0, 1000) / 1000.0f;          // 10-36 degrees up
+            flashAz = az; flashEl = el;
         }
     }
-    if (thunderAt > 0.0 && GameClock() > thunderAt) { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); thunderAt = -1.0; }
-    flash = std::max(0.0f, flash - dt * 3.0f);
+    if (thunderAt > 0.0 && GameClock() > thunderAt) {
+        if (Audio_V2()) Soundscape_Thunder(world, (float)(thunderAt - lastFlash)); // (#1241) a rumble from the strike's side
+        else { Audio_Play(Sfx::Dig, 1.0f, 0.25f); Audio_Play(Sfx::Build, 0.7f, 0.2f); }
+        thunderAt = -1.0;
+    }
+    {
+        const float ts = (float)(GameClock() - lastFlash);
+        float e = 0.0f;
+        if (lastFlash > 0.0 && ts >= 0.0f && ts < 2.0f) {
+            static const bool reduceEnv = getenv("RAYLIBGAME_REDUCE_FLASHING") && getenv("RAYLIBGAME_REDUCE_FLASHING")[0] == '1'; // captures (benches skip settings.txt)
+            if (settings.reduceFlashing || reduceEnv) e = 0.35f * std::min(1.0f, ts / 0.15f) * expf(-std::max(0.0f, ts - 0.15f) * 2.5f); // eased in and out
+            else {
+                e = expf(-ts * 12.0f);                                                    // the stroke
+                if (ts > 0.14f) e = std::max(e, 0.75f * expf(-(ts - 0.14f) * 9.0f));     // the return stroke
+            }
+        }
+        // Captures: RAYLIBGAME_LIGHTNING_HOLD=1 holds a flash at full strength (the recorder's frames rarely land on one).
+        static const bool hold = getenv("RAYLIBGAME_LIGHTNING_HOLD") && getenv("RAYLIBGAME_LIGHTNING_HOLD")[0] == '1';
+        if (hold && here.kind == WeatherKind::Storm) e = 1.0f;
+        flash = e;
+        world.lightning = e;
+        if (p && e > 0.0f) {
+            const Vector3 local = p->toLocal(world.camera.position);
+            const float d = Vector3Length(local);
+            if (d > 1.0f) {
+                const Vector3 up = Vector3Scale(local, 1.0f / d);
+                const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 t2 = Vector3CrossProduct(up, t1);
+                const Vector3 dl = Vector3Add(Vector3Scale(up, sinf(flashEl)), Vector3Scale(Vector3Add(Vector3Scale(t1, cosf(flashAz)), Vector3Scale(t2, sinf(flashAz))), cosf(flashEl)));
+                world.lightningDir = Vector3Normalize(p->dirToWorld(dl));
+            }
+        }
+    }
 }
 
 void Weather_Draw3D(Scene& world) {
@@ -163,7 +204,7 @@ void Weather_Draw3D(Scene& world) {
     Planetoid* p = StartBody(world);
     if (!p || player.nearest != p) return;
     const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
-    const Vector3 local = p->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 local = p->toLocalOf(player.position, world.renderOrigin);
     const float d = Vector3Length(local);
     if (!pf || d < 1.0f) return;
     const Vector3 up = Vector3Scale(local, 1.0f / d);
@@ -219,5 +260,5 @@ void Weather_Draw3D(Scene& world) {
 }
 
 void Weather_DrawHUD() {
-    if (flash > 0.0f) DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), Fade(WHITE, 0.55f * flash));
+    // (#1162) Nothing: lightning lights the sky and the open ground in the 3D scene instead of a white overlay.
 }

@@ -63,6 +63,7 @@ struct NetClient {
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, PlayerStateQ>>> snapHistory;
     int snapshots = 0, snapUndecodable = 0;
     int animalMsgs = 0;                          // (#334) animal snapshots heard
+    int creatureFxMsgs = 0;                      // (#1343, #1364) creature shot and event messages heard
     int damageTaken = 0; float lastDamage = 0.0f; bool lastDamageBlocked = false; // (#334) hits on our player from the server
     MsgVitals vitals; int vitalsMsgs = 0;        // (#337) our player's survival as the server last said
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
@@ -74,6 +75,7 @@ struct NetClient {
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)
     int skillStates = 0;                         // (#920) SkillState messages heard
     double worstError = 0.0, lastError = 0.0;    // m: the prediction against the server at the acknowledged input
+    double respawnGraceUntil = -1.0;             // (#828) dead, or just respawned: the server moved us (not a miss); errors are not counted
     std::map<uint32_t, std::deque<MsgPlayerState>> others; // other sessions' recent states (newest last)
     std::map<uint32_t, double> viewTicks;        // per other player: the step of theirs drawn now (NetClient_Update)
     // Who is playing and what they hold (#750)
@@ -171,7 +173,7 @@ void NetClient_SkillSpend(NetClient& c, const std::string& perk);               
 void NetClient_DropItems(NetClient& c, const std::string& item, int64_t centi);        // (#865) a pile at the feet, made by the server
 void NetClient_CreativeGive(NetClient& c, const std::string& item, int count);         // (#866) creative items ("" clears the inventory)
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which); // (#332)
-void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, uint32_t plot, int part, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest
+void NetClient_PlantAction(NetClient& c, int action, uint64_t bodyNetId, uint64_t plant, Vector3 ground, const std::string& seed); // (#335) 1 fell, 2 sow, 3 harvest (#1085: at the body-local ground)
 const char* NetClient_StateName(NetClient::State s);
 
 #endif

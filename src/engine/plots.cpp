@@ -61,6 +61,10 @@ const char* PartName(PartType t) {
         case PartType::ArcFurnace: return "arc furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision assembler";
+        case PartType::LvLab: return "LV lab"; case PartType::MvLab: return "MV lab"; case PartType::HvLab: return "HV lab"; // (#1193)
+        case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
+        case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -77,6 +81,17 @@ const char* PartName(PartType t) {
         case PartType::Gate: return "gate";
         case PartType::Cabin: return "cabin";
         case PartType::StationCore: return "station_core";
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand crank";
+        case PartType::StressGauge: return "stress gauge";
+        case PartType::Millstone: return "millstone";
+        case PartType::Saw: return "mechanical saw";
+        case PartType::Press: return "mechanical press";
+        case PartType::WaterWheel: return "water wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
         default: return "?";
     }
 }
@@ -115,8 +130,15 @@ const char* PartMachineName(PartType t) {
         case PartType::ArcFurnace: return "arc_furnace";
         case PartType::Refinery: return "refinery";
         case PartType::PrecisionAssembler: return "precision_assembler";
+        case PartType::LvLab: return "lv_lab"; case PartType::MvLab: return "mv_lab"; case PartType::HvLab: return "hv_lab"; // (#1193)
+        case PartType::ResearchTable: return "research_table"; case PartType::ManaSiphon: return "mana_siphon"; case PartType::ManaDynamo: return "mana_dynamo"; // (#1252)
+        case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence_tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
+        case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
+        case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
+        case PartType::Saw: return "mechanical_saw";
+        case PartType::Press: return "mechanical_press";
         default: return nullptr;
     }
 }
@@ -146,17 +168,27 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
+        case PartType::Shaft: return "shaft"; // (#1269)
+        case PartType::Cogwheel: return "cogwheel";
+        case PartType::LargeCogwheel: return "large_cogwheel";
+        case PartType::Gearbox: return "gearbox";
+        case PartType::HandCrank: return "hand_crank";
+        case PartType::StressGauge: return "stress_gauge";
+        case PartType::WaterWheel: return "water_wheel"; // (#1270)
+        case PartType::Windmill: return "windmill";
         default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
     }
 }
 
 namespace {
+    // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
+    // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
         { "concrete", "Concrete", { 168, 166, 158, 255 } },
-        { "stone", "Stone", { 122, 122, 128, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
-        { "dirt", "Packed dirt", { 120, 90, 60, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was "dirt" (loose ground is terrain only); old parts become stone brick
         { "heat_shield_tile", "Heat shield", { 45, 42, 40, 255 } },  // survives re-entry on a rocket's leading face
         // Building variety (M21): planks from each tree species, stone kinds from the ground, kiln bricks.
         { "oak_planks", "Oak", { 158, 112, 66, 255 } },
@@ -164,11 +196,11 @@ namespace {
         { "pine_planks", "Pine", { 176, 132, 82, 255 } },
         { "maple_planks", "Maple", { 182, 104, 78, 255 } },
         { "spruce_planks", "Spruce", { 112, 82, 58, 255 } },
-        { "granite", "Granite", { 168, 146, 140, 255 } },
-        { "basalt", "Basalt", { 62, 62, 68, 255 } },
-        { "sandstone", "Sandstone", { 212, 182, 132, 255 } },
-        { "limestone", "Limestone", { 206, 202, 186, 255 } },
-        { "marble", "Marble", { 236, 234, 230, 255 } },
+        { "granite_brick", "Granite brick", { 168, 146, 140, 255 } },
+        { "basalt_brick", "Basalt brick", { 62, 62, 68, 255 } },
+        { "sandstone_brick", "Sandstone brick", { 212, 182, 132, 255 } },
+        { "limestone_brick", "Limestone brick", { 206, 202, 186, 255 } },
+        { "marble_brick", "Marble brick", { 236, 234, 230, 255 } },
         { "brick", "Brick", { 158, 74, 52, 255 } },
         // Decoration (M22): plaster in eight dye colours, stained glass, lamps, polished gems.
         { "white_plaster", "White plaster", { 236, 234, 226, 255 } },
@@ -195,7 +227,7 @@ namespace {
         { "maple_log", "Maple log", { 110, 64, 50, 255 } },
         { "pine_log", "Pine log", { 104, 74, 50, 255 } },
         { "spruce_log", "Spruce log", { 70, 52, 40, 255 } },
-        { "clay", "Clay", { 170, 120, 95, 255 } },
+        { "brick", "Brick", { 158, 74, 52, 255 } }, // #1098: was "clay" (terrain only); old parts become fired brick
         { "ice", "Ice", { 176, 214, 240, 255 } },
         { "coal", "Coal", { 36, 36, 40, 255 } },
     };
@@ -244,6 +276,10 @@ static Color PartColor(PartType t) {
         case PartType::ArcFurnace: return { 90, 90, 110, 255 };
         case PartType::Refinery: return { 140, 110, 160, 255 };
         case PartType::PrecisionAssembler: return { 100, 140, 180, 255 };
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: return { 210, 210, 200, 255 }; // (#1193) a white research lab
+        case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
+        case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
+        case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -260,6 +296,10 @@ static Color PartColor(PartType t) {
         case PartType::Gate: return { 165, 120, 70, 255 };
         case PartType::Cabin: return { 200, 205, 215, 255 };
         case PartType::StationCore: return { 230, 220, 120, 255 };
+        case PartType::Gearbox: return { 150, 112, 70, 255 };     // (#1269) a wooden casing
+        case PartType::StressGauge: return { 160, 120, 76, 255 };
+        case PartType::Millstone: return { 140, 138, 132, 255 };
+        case PartType::Saw: case PartType::Press: return { 146, 108, 68, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -267,7 +307,7 @@ static Color PartColor(PartType t) {
 // Surface pattern of a part (parts.fs draws it procedurally; the id rides in the vertex colour's alpha).
 enum PartPattern : unsigned char {
     PatConcrete = 0, PatStone, PatMetal, PatGlass, PatDirt, PatTiles, PatPlanks, PatPolished, PatBrick, PatPlaster,
-    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble,
+    PatGem, PatLog, PatClay, PatIce, PatCoal, PatLamp, PatMarble, PatLadder, // PatLadder (#1105): rails and rungs, the rest cut away (parts.fs)
     PatMachine = 20, PatConveyor, PatCable, PatFarmland, PatHull
 };
 static unsigned char PartPatternOf(const Part& p) {
@@ -279,14 +319,13 @@ static unsigned char PartPatternOf(const Part& p) {
         if (ends("_plaster")) return PatPlaster;
         if (ends("_glass") || item == "glass") return PatGlass;
         if (ends("_block")) return PatGem;
-        if (item == "stone") return PatStone;
+        if (item == "stone_brick") return PatStone;
         if (item == "iron_plate") return PatMetal;
-        if (item == "dirt") return PatDirt;
         if (item == "heat_shield_tile") return PatTiles;
         if (item == "brick") return PatBrick;
-        if (item == "marble" || item == "limestone") return PatMarble;
-        if (item == "granite" || item == "basalt" || item == "sandstone") return PatPolished;
-        if (item == "clay") return PatClay;
+        // #1098: dressed stone keeps each rock's old look (dirt and clay parts became stone brick and brick)
+        if (item == "marble_brick" || item == "limestone_brick") return PatMarble;
+        if (item == "granite_brick" || item == "basalt_brick" || item == "sandstone_brick") return PatPolished;
         if (item == "ice") return PatIce;
         if (item == "coal") return PatCoal;
         if (item == "lamp") return PatLamp;
@@ -303,10 +342,13 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
+        case PartType::Ladder: return PatLadder; // (#1105)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
+        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: return PatPlanks; // (#1269) wooden frames
+        case PartType::Millstone: return PatStone;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
 }
@@ -318,7 +360,18 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     CellShape full;
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
+        case PartType::Gearbox: case PartType::StressGauge: // (#1269)
             out.push_back({ { 0, 0, 0 }, full }); break;
+        case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::WaterWheel: { // (#1270) 1.5 m across, one cell thick: 3 x 3 cells (rows of x, then y), its hub the middle one (index 4)
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f;
+            for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) out.push_back({ { x, y, 0 }, s });
+            break;
+        }
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
@@ -326,6 +379,10 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::OreWasher: case PartType::Centrifuge: case PartType::WaterPump: case PartType::MvGenerator: case PartType::Electrolyzer:
         case PartType::ChemicalReactor: case PartType::Miner: case PartType::HvGenerator: case PartType::ArcFurnace: case PartType::Refinery:
         case PartType::PrecisionAssembler: case PartType::FusionReactor: case PartType::MassDriver: case PartType::HandPump: case PartType::Meteorite:
+        case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: // (#1193)
+        case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
+        case PartType::Distillery: case PartType::EssenceTank: case PartType::Cauldron: // (#1254)
+        case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
             for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) out.push_back({ { x, y, z }, full });
             break;
         case PartType::Campfire: { // #552: a 1 m square ash bed 12 cm deep (it was a 1 m brick cube); machinemodels draws the stones and logs
@@ -357,6 +414,11 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         }
         case PartType::Panel: { // half the cell's thickness, against one face
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.5f;
+            out.push_back({ { 0, 0, 0 }, s });
+            break;
+        }
+        case PartType::Ladder: { // (#1105) a frame 15% of the cell deep against one face (as Panel, thinner); its rungs are the pattern
+            CellShape s; s.full = false; s.planes = 1; s.n[0] = { 1, 0, 0 }; s.d[0] = 0.15f;
             out.push_back({ { 0, 0, 0 }, s });
             break;
         }
@@ -449,8 +511,9 @@ int RotateOrientation(int index, int axis) {
 // Plot geometry
 // ---------------------------------------------------------------------------------------------
 
-Vector3 Plot::toPlot(Vector3 b) const {
-    const DVec3 d = DVec3(b) - origin;
+Vector3 Plot::toPlot(Vector3 b) const { return toPlot(DVec3(b)); }
+Vector3 Plot::toPlot(const DVec3& b) const {
+    const DVec3 d = b - origin;
     const Vector3 v = { (float)d.x, (float)d.y, (float)d.z };
     return { Vector3DotProduct(v, east), Vector3DotProduct(v, up), Vector3DotProduct(v, north) };
 }
@@ -755,6 +818,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const CellRef& ref = cells.at(c);
         const CellShape& shape = ref.shape;
         const Part& pp = parts[ref.part];
+        if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
@@ -882,6 +946,22 @@ static Vector3 ClosestInCell(Vector3 q, Int3 c, const CellShape& s) {
     return p;
 }
 
+bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#1105) the sphere overlaps a cell of such a part
+    if (cells.empty()) return false;
+    const Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
+    const float rc = r / kCellSize;
+    for (int z = (int)floorf(p.z - rc); z <= (int)floorf(p.z + rc); ++z)
+        for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
+            for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
+                auto it = cells.find({ x, y, z });
+                if (it == cells.end() || parts[it->second.part].type != type) continue;
+                // the whole cell counts (standing in front of a ladder is touching it), not just its frame
+                const Vector3 q = { std::clamp(p.x, (float)x, x + 1.0f), std::clamp(p.y, (float)y, y + 1.0f), std::clamp(p.z, (float)z, z + 1.0f) };
+                if (Vector3Distance(p, q) < rc) return true;
+            }
+    return false;
+}
+
 bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const {
     if (cells.empty()) return false;
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
@@ -897,7 +977,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate) continue; // people pass a gate
+                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate, and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);
@@ -920,6 +1000,9 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
 }
 
 bool Plot::raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
+    return raycast(DVec3(o), d, maxDist, cell, faceNormal, dist); // (bit-identical: toPlot widened the float anyway)
+}
+bool Plot::raycast(const DVec3& o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const {
     if (cells.empty()) return false;
     // DDA through the cell grid in plot space.
     Vector3 p = Vector3Scale(toPlot(o), 1.0f / kCellSize);
@@ -1088,3 +1171,31 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
         if (it->get() == plot) { std::unique_ptr<Plot> p = std::move(*it); plots.erase(it); return p; }
     return nullptr;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1098): stone buildings need bricks; loose ground and raw stone are terrain only ----
+#include "unit_helpers.h"
+
+TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+        EXPECT_LT(BuildMaterialForItem(m), 0) << m;
+    for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
+                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+        EXPECT_GE(BuildMaterialForItem(m), 0) << m;
+}
+
+TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
+    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
+    EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("brick"), 16);
+    // Each dressed stone keeps its rock's look.
+    auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };
+    EXPECT_EQ(pat("stone_brick"), PatStone);
+    EXPECT_EQ(pat("marble_brick"), PatMarble);
+    EXPECT_EQ(pat("granite_brick"), PatPolished);
+    EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
+}
+#endif

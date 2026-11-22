@@ -132,14 +132,22 @@ namespace Fluid {
         int gpuSlots = 0, gpuCapacity = 0; // GPU bricks holding a slot now / the pool (#675: ~230 KB a brick)
         int steadyBricks = 0;             // awake in steady flow (#674: running, read back once a second)
         long long slotReleases = 0;       // slots given back by sleeping bricks since the start (#675)
+        long long ticks = 0, dispatches = 0, flowReads = 0; // (#1407 diagnostics) ticks started by Update, GpuTick calls, flux readbacks for watches
     };
     Stats GetStats();
     bool GpuMode(); // the step runs on compute shaders (else the CPU kernel, #654)
     void WaitIdle();            // tests: until no step job is running
     void SetSpeed(int steps);   // tests: steps per tick (1 = 20 Hz real time)
     bool Asleep();              // every brick asleep and nothing queued
+    int HeadAt(const Planetoid& body, Vector3 local); // tests (#1168, CPU mode): the stored pressure head of the cell there (-1: none)
+    // Tests (#1168): m^3 of water in the simulation's own bricks (not the drawn snapshot) whose cell centres lie in a box:
+    // centre, unit axes, half extents (m), body-local.
+    double VolumeIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half);
+    // Tests (#1168): m^3 the simulation's cells in the same kind of box can hold (open cells, less their ground share).
+    double CapacityIn(const Planetoid& body, Vector3 centre, Vector3 ax, Vector3 ay, Vector3 az, Vector3 half);
     std::string DebugCell(const Planetoid& body, Vector3 local); // tests: "fill N flags SRTD"
     std::string DebugAwake();   // tests (#935): pending and awake bricks by state
+    bool SteadyAt(const Planetoid& body, Vector3 local); // tests (#1131): the brick holding that point is in steady flow (#674)
 }
 
 #endif

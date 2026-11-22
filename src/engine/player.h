@@ -3,6 +3,7 @@
 
 #include <raylib.h>
 #include "dvec3.h"
+#include "frames.h"
 #include <cstdint>
 #include <algorithm>
 
@@ -29,6 +30,14 @@ struct Player {
     bool flyAllowed = true;           // F works (#531: creative mode only; the game sets it each frame); off: leaves fly mode
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
+    // (#1105) Ladders: touching one (the capsule overlaps a ladder's cell) turns gravity off; W climbs, S descends, nothing
+    // holds; Space pushes off. climbInput / climbJump are this frame's input, set by update() for the physics steps.
+    bool onLadder = false;
+    float climbInput = 0.0f;          // +1 W, -1 S, 0 holds
+    bool climbJump = false;
+    float ladderCooldown = 0.0f;      // s after pushing off before a ladder catches again
+    static constexpr float kClimbSpeed = 2.0f;     // m/s up or down a ladder
+    static constexpr float kLadderPushOff = 3.0f;  // m/s away from it (and 2 up) on Space
     // Flight pack (#163): H toggles hover - height held, no drift; Space/Ctrl climb/descend, Shift boosts. It runs
     // on suit power (survival drains it, hoverPowered off at zero) and switches itself on in a fast fall.
     bool canHover = false, hovering = false, hoverPowered = true;
@@ -45,6 +54,14 @@ struct Player {
     float lastContactDot = 0.0f;      // debug: dot(contact normal, up) of the last collision
     float impactSpeed = 0.0f;         // hardest collision speed this frame (any contact: tests, launches)
     float landingSpeed = 0.0f;        // speed into the floor at touchdown this frame (fall damage, #263)
+    // Plan 11 F2a (#667, #1146): with RAYLIBGAME_FRAMES=1, the player's state in its body frame (body NetId, Fixed below
+    // the line, Centred above; double position and the frame velocity: in Fixed the speed against the ground, airborne
+    // too), refreshed at the end of every update. Observed only for now (tests, net); F2b makes it the state physics runs on.
+    FramePos frame{};
+    // (F3, #1277) The velocity against the ground of the body the player is near, for readers (HUD, perf log, benches):
+    // on the frame path that is the velocity itself, airborne too; else airborne velocities are world-frame and take the
+    // surface's motion out (grounded ones are surface-relative already). Fly mode has no nearest: the nearest body is found.
+    Vector3 groundVelocity(Scene& world) const;
     Vector3 groundNormal = { 0, 1, 0 }; // contact normal while grounded
     bool inWater = false;             // the body's middle is in water (swimming: buoyancy, drag, Space/Ctrl swim)
     Vector3 riverCurrent{ 0, 0, 0 };  // in a river: its current (world m/s, #361): carries a swimmer, pushes a wader
@@ -77,6 +94,10 @@ struct Player {
     float postureEye(Posture p) const { return p == Posture::Prone ? kProneEye : p == Posture::Crouch ? kCrouchEye : standEye; }
     bool roomAbove(Scene& world, float toHeight) const; // nothing solid between the capsule's top now and toHeight
     float walkSpeed = 6.0f;
+    float statusSpeed = 1.0f;         // (#1215) status effects on the walk: chilled 0.7, frozen 0 (Combat_Step sets it)
+    // (#1218) A dodge under way (Combat_Step starts it): a fixed step along dodgeDir (world, level) for dodgeLeft s.
+    Vector3 dodgeDir = { 0, 0, 0 };
+    float dodgeLeft = 0.0f, dodgeSpeed = 0.0f;
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
     // you off it like a jump does (grounded velocity is overwritten by walking each step); in the air it adds.
@@ -118,6 +139,12 @@ struct Player {
     // they were on, so walking looks smooth while the simulation steps at 60 Hz. `position` when nothing to blend.
     DVec3 renderPosition(float alpha) const;
     void applyToCamera(Scene& world) const;  // camera at the eye (renderPosition), looking along forward
+    // (F4, #1412) the eye applyToCamera last placed the camera at, in absolute world doubles (the camera's float rounds it).
+    // Aim rays start here with RAYLIBGAME_FRAMES=1 (AimOrigin): a still player's aim then holds still.
+    mutable DVec3 lastEyeD{};
+    // The aim ray for a body: its body-local double origin and body-local direction. With the switch on, the eye above in
+    // double and `forward`; off (or flying), the render camera as before. dirWorld: the same direction in world axes.
+    void aimRay(const Scene& world, const Planetoid& body, DVec3& originLocal, Vector3& dirLocal, Vector3& dirWorld) const;
     mutable float lastEyePush = 0.0f;         // how far applyToCamera pushed the eye out of the terrain last frame (m; #255 tests)
     mutable float eyeDrop = 0.0f;              // how far the eye is lowered toward the head sphere's centre to keep it out of the terrain (#255)
     // Fly mode follows the reference body (the nearest whose sphere of influence holds the camera):
@@ -139,6 +166,7 @@ private:
     Planetoid* groundBody = nullptr;
     uint64_t groundId = 0;            // validates groundBody (bodies can be destroyed, e.g. world regen)
 
+    void updateFrame(Scene& world);
     Quaternion groundRotPrev = { 0, 0, 0, 1 }; // ground body's rotation at the end of last update
     DVec3 lastEndPosition{};                    // where update() left us (detects outside moves)
     // Airborne near a body: carried with its motion each frame and moved by velocity relative to its
@@ -147,6 +175,16 @@ private:
     Planetoid* airBody = nullptr;
     uint64_t airId = 0;
     DVec3 airLocal{};
+    // Plan 11 F2b (#1146): the frame path is in use (RAYLIBGAME_FRAMES=1, a Fixed frame of the nearest body), and an
+    // airborne frame velocity kept in that body's axes between updates (direction, length, the body's runtime id).
+    bool fxActive = false;
+    bool movedOutside = false; // (F2d) moved from outside since the last update (spawn, placeAt, respawn, load)
+    double viewR[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } }; // F2c: the frame body's rotation at the end of the last update
+    uint64_t viewBody = 0;                                            // its runtime id (0: no view carry yet)
+    Vector3 frameGravity(Scene& world, Vector3 feet) const; // the frame's acceleration (felt gravity + spin forces), world axes
+    Vector3 airVelDir{};
+    float airVelLen = 0.0f;
+    uint64_t airVelBody = 0;
     // Airborne near an orbiting body we move in its free-falling frame: its velocity at the end of
     // last frame (its change is added to ours), and whether this frame uses felt gravity.
     Vector3 airFrameVel{};
@@ -157,6 +195,11 @@ private:
     Vector3 flyLocalFwd{}, flyLocalUp{};
     DVec3 flyCarried{};               // the carried camera in double (float render space rounds it)
     bool flyCarriedValid = false;
+    // (Plan 11 F4, #1412, RAYLIBGAME_FRAMES=1) beyond 2 radii the camera's frame is centred on its body (it moves with it,
+    // without its spin): the camera as a double offset from the body's centre, not a float delta added to a float camera
+    // every frame (which accumulated rounding as drift).
+    DVec3 flyOffset{};
+    uint64_t flyBodyIdPrev = 0;       // the body flyOffset was kept against
     void stepPhysics(Scene& world, float dt, Vector3 wishMove, bool jetUp, bool jetDown);
     float jumpBuffer = 0.0f; // seconds a jump press stays pending
     float coyote = 0.0f;     // seconds a jump is still allowed after leaving the ground

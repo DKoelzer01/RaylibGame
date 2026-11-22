@@ -45,6 +45,9 @@ struct Light {
 uniform Light lights[MAX_LIGHTS];
 uniform vec4 ambient;
 uniform int debugSky;        // RAYLIBGAME_SHOW_SKY=1: draw fragSky as grey (red = the #898 cave-mouth floor range, 0.55-0.65)
+uniform int bounceOn;         // (#898) the sunlit ground's bounce onto walls (RAYLIBGAME_BOUNCE=0: off)
+uniform vec4 toolSphere;     // (#1089) the dig / fill sphere: render-space centre, radius (w = 0: none)
+uniform vec4 toolSphereColor;
 uniform vec3 viewPos;
 uniform int palette;            // 0 = space materials, 1 = fantasy, 2 = planet (texture layers)
 uniform vec4 sunOccluder;       // planet: render-space centre + radius of a sphere that blocks the sun (w = 0: none)
@@ -281,14 +284,15 @@ void main()
         float ctemp, cmoist;
         bool hasClimate = decodeClimate(ctemp, cmoist);
         // material id -> texture layer: stone, dirt, ice, ore (stone, rusted), sand, gravel, grass, snow, clay (#206),
-        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595)
-        const int kMaterials = 17;
-        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0);
-        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45);
+        // then the rock strata (#587): granite, basalt, sandstone, limestone, marble, then pebbles, silt, mud (#595), then
+        // farmland (#1085: tilled dirt, the dirt layer with furrows below)
+        const int kMaterials = 18;
+        const float layerOf[kMaterials] = float[kMaterials](6.0, 0.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 0.0);
+        const float roughOf[kMaterials] = float[kMaterials](0.75, 0.95, 0.15, 0.35, 0.9, 0.85, 0.95, 0.7, 0.6, 0.65, 0.75, 0.85, 0.75, 0.45, 0.7, 0.9, 0.45, 0.95);
         // Strength of the (asteroid rock) normal map per material: rocky ones only; on grass, dirt and
         // sand its craters read as the asteroid texture showing through.
-        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4); // detail normal strength
-        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
+        const float bumpOf[kMaterials] = float[kMaterials](1.0, 0.8, 0.6, 1.0, 0.7, 1.0, 0.7, 0.5, 0.6, 1.0, 1.0, 0.8, 0.8, 0.5, 1.0, 0.5, 0.4, 0.5); // detail normal strength
+        const float shinyOf[kMaterials] = float[kMaterials](0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.25, 0.15, 0.1, 0.0, 0.05, 0.4, 0.2, 0.0, 0.45, 0.0); // ice, ore, a little snow, wet clay, polished-ish marble, wet stones and mud
         vec3 a = vec3(0.0);
         float r = 0.0, aoSum = 0.0, shiny = 0.0;
         // Detail maps fade out by ~120 m (mips flatten them before that; #183: sampling them out to 280 m cost 0.2 ms)
@@ -351,13 +355,43 @@ void main()
                 int kind = int(fragOreKind * 8.0 + 0.5) - 1;
                 vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
                              : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
-                // Veins: thin warped bands of the mineral through the rock, plus crystal glints between them.
+                // Each kind also has its own pattern (#1433): iron and bauxite, coal and ilmenite are close in colour for
+                // everyone (and copper and bauxite for red-green colour blindness), so the shape tells them apart:
+                // iron thin veins, copper veins with green crust patches, tin a fine speckle, coal broad dull seams,
+                // bauxite round nodules, ilmenite dense metallic glints.
                 float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
                 float vp = dot(fragTexPos, vec3(0.37, 0.81, 0.45)) * 1.4 + vnoise(fragTexPos * 0.7) * 1.8;
                 float vein = smoothstep(0.16, 0.04, abs(fract(vp) - 0.5));
                 float glint = step(0.94, hash3(floor(fragTexPos * 7.0)));
-                c = mix(c * 0.6, mineral, 0.2 + 0.35 * fleck + 0.45 * vein);
-                c += mineral * glint * 0.6;
+                float amount = 0.2 + 0.35 * fleck; // the mineral's share
+                if (kind == 0) amount += 0.45 * vein;                                                   // iron: veins
+                else if (kind == 1) amount += 0.45 * vein + 0.5 * smoothstep(0.55, 0.68, vnoise(fragTexPos * 1.3)); // copper: + crust
+                else if (kind == 2) { amount = 0.2 + 0.45 * step(0.8, hash3(floor(fragTexPos * 12.0))); glint = 0.0; } // tin: speckle
+                else if (kind == 3) { // coal: broad layered seams, dull (no glints)
+                    float seam = smoothstep(0.30, 0.18, abs(fract(fragTexPos.y * 0.9 + vnoise(fragTexPos * 0.3) * 0.5) - 0.5));
+                    amount = 0.15 + 0.8 * seam; glint = 0.0;
+                } else if (kind == 4) { // bauxite: round nodules (pisoliths) a few cm to a hand across
+                    vec3 q = fragTexPos * 1.8;
+                    vec3 cell = floor(q);
+                    vec3 o = vec3(hash3(cell), hash3(cell + 17.0), hash3(cell + 31.0)) * 0.4 - 0.2;
+                    float nodule = smoothstep(0.32, 0.24, length(fract(q) - 0.5 - o));
+                    amount = 0.18 + 0.75 * nodule;
+                } else if (kind == 5) { // ilmenite: dense small metallic crystals
+                    glint = 0.5 * step(0.86, hash3(floor(fragTexPos * 9.0)));
+                    amount += 0.3 + 0.2 * vein; // the dark mineral as the ground, the crystals on it
+                }
+                c = mix(c * 0.6, mineral, clamp(amount, 0.0, 1.0));
+                c += (kind == 5 ? vec3(0.55, 0.55, 0.6) : mineral * 0.6) * glint; // ilmenite's crystals shine steel-grey
+            }
+            if (i == 17) {
+                // Farmland (#1085): darker turned soil in furrows every 25 cm (the old farmland part's pattern, parts.fs).
+                // Tilling is a free brush, so the furrows follow a body axis across the ground: the coordinate of the
+                // triplanar projection's widest-facing plane that is not the up-most axis (fragTexPos repeats in whole
+                // texture periods, a multiple of 25 cm, so the stripes have no chunk seams).
+                vec3 an = abs(localNormal);
+                float along = an.y >= an.x && an.y >= an.z ? fragTexPos.x : an.x >= an.z ? fragTexPos.z : fragTexPos.x;
+                float f = abs(fract(along / 0.25) - 0.5) * 2.0;
+                c *= vec3(0.78, 0.72, 0.68) * (0.65 + 0.45 * f);
             }
             a += c * wi;
             vec2 ra = vec2(roughOf[i], 1.0);
@@ -467,6 +501,18 @@ void main()
         }
         direct += (albedo * NdotL + spec) * lights[i].color.rgb * shadow * atten;
     }
+    // (#898) Bounce: the sunlit ground reflects light onto what faces sideways or down - a pit's or shaft's walls, a cliff's
+    // shaded face (user: "light that behaves like light"; a hand-dug shaft's walls read near black at noon: they faced
+    // no sun and took only the sky's small ambient). The ground's irradiance x ~0.25 albedo x how far the surface faces
+    // down (0 up, 0.5 sideways, 1 down) x the sun's height; only where the sky term says open ground, a pit or a shaft
+    // (fragSky >= ~0.85 there: #1067's open column), so caves and cave mouths (<= ~0.6) stay dark. bounceOn 0: off (A/B).
+    if (bounceOn != 0 && lights[0].enabled != 0 && hemiOn()) {
+        vec3 l0 = normalize(lights[0].position - lights[0].target);
+        float sunUp = max(dot(ambientUp, l0), 0.0);
+        float facingDown = 0.5 - 0.5 * dot(normal, ambientUp);
+        float open = smoothstep(0.55, 0.85, fragSky);
+        direct += albedo * lights[0].color.rgb * (0.25 * sunUp * facingDown * open);
+    }
     direct += albedo * localLights(fragPosition, normal); // lamps, campfires, glowing machines (#139)
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
@@ -489,5 +535,14 @@ void main()
     float fog = 1.0 - exp(-fogDensity * fogDist);
     color = mix(color, SkyPhysFog(fragPosition, viewPos, fogColor), clamp(fog, 0.0, 1.0));
     finalColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)), 1.0); // linear -> sRGB
+    // (#1089) The dig / fill preview: where the sphere cuts the terrain, a line on the real surface (over bumps, ledges and
+    // cave walls, depth-tested by the terrain itself) and a faint tint inside. Only the planet terrain draws it.
+    if (toolSphere.w > 0.0 && palette == 2) {
+        float sd = length(fragPosition - toolSphere.xyz) - toolSphere.w;
+        float fw = max(fwidth(sd), 1e-4);
+        float line = 1.0 - smoothstep(0.75 * fw, 2.0 * fw, abs(sd));
+        float inside = sd < 0.0 ? 0.18 : 0.0;
+        finalColor.rgb = mix(finalColor.rgb, toolSphereColor.rgb, max(line * toolSphereColor.a, inside * toolSphereColor.a));
+    }
     if (debugSky == 1) finalColor = vec4(fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, abs(fragSky - 0.6) < 0.05 ? 0.0 : fragSky, 1.0);
 }

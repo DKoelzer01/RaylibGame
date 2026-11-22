@@ -12,7 +12,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Bye: return "bye"; case NetMsg::Ping: return "ping"; case NetMsg::Pong: return "pong";
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
-        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend";
+        case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx";
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -284,7 +284,7 @@ bool NetRead(NetReader& r, MsgTerrainEdit& m) {
     m.strength = r.f32();
     const uint64_t s = r.varu();
     m.session = (uint32_t)s; m.seq = r.u32();
-    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x0F) || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
+    if (m.radius < 0.0f || m.radius > 64.0f || (m.flags & ~0x1F) /* 16: a till (#1085, #1365) */ || !(std::fabs(m.strength) <= 4.0f) || s > 0xFFFFFFFFull) r.ok = false; // a dig is metres, not a planet
     return Done(r);
 }
 
@@ -542,6 +542,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Animals: { MsgAnimals m; return NetRead(r, m); }
         case NetMsg::AnimalHit: { MsgAnimalHit m; return NetRead(r, m); }
         case NetMsg::Damage: { MsgDamage m; return NetRead(r, m); }
+        case NetMsg::CreatureFx: { MsgCreatureFx m; return NetRead(r, m); }
         case NetMsg::Vitals: { MsgVitals m; return NetRead(r, m); }
         case NetMsg::UseItem: { MsgUseItem m; return NetRead(r, m); }
         case NetMsg::BedUse: { MsgBedUse m; return NetRead(r, m); }
@@ -699,6 +700,15 @@ bool NetProto_Test() {
         check(RoundTrip(h, hb, &s2) && hb.netId == h.netId && hb.action == 2, "animal hit"); samples.push_back(s2);
         MsgDamage dm{ 8.0f, 2, true, 1, DVec3{ 10.0, 60000.0, -3.0 }, 3.0f, 0x2000000000000005ull }, db; std::vector<uint8_t> s3;
         check(RoundTrip(dm, db, &s3) && db.amount == 8.0f && db.kind == 2 && db.hasSource && db.knockback == 3.0f && db.sourceId == dm.sourceId && fabs(db.local.y - 60000.0) < 0.001, "damage"); samples.push_back(s3);
+        { // (#1343, #1364) creature shots and events
+            MsgCreatureFx fa, fb; std::vector<uint8_t> sf;
+            fa.shots.push_back({ 7u, 2ull, DVec3(1.5, 60000.25, -3.0), { 12.0f, 4.5f, -1.0f }, 2, 99ull });
+            fa.ended = { 5u, 6u };
+            fa.events.push_back({ 1234ull, 2, 9, 2ull, DVec3(0.5, 60001.0, 2.0) });
+            check(RoundTrip(fa, fb, &sf) && fb.shots.size() == 1 && fb.shots[0].id == 7u && fb.shots[0].kind == 2 && fb.shots[0].vel.y == 4.5f && fb.shots[0].owner == 99ull &&
+                  fabs(fb.shots[0].pos.y - 60000.25) < 0.001 && fb.ended == fa.ended && fb.events.size() == 1 && fb.events[0].netId == 1234ull && fb.events[0].kind == 2 && fb.events[0].species == 9, "creature fx");
+            samples.push_back(sf);
+        }
         MsgVitals va{ 72.5f, 40.25f, 99.0f, 0.0f, -3.5f, 1 | 8, 3 }, vb; std::vector<uint8_t> s4;
         check(RoundTrip(va, vb, &s4) && fabs(vb.health - 72.5f) < 0.006f && fabs(vb.food - 40.25f) < 0.006f && vb.temperature == -3.5f && vb.flags == 9 && vb.deaths == 3, "vitals"); samples.push_back(s4);
         MsgUseItem ua{ "berries" }, ub; std::vector<uint8_t> s5;
@@ -721,9 +731,11 @@ bool NetProto_Test() {
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
             a.team = 3; a.name = "alice's_team"; a.invite = "bob's_team";
-            a.members = { { "alice", true, true, true, 87.5f }, { "carol", false, false, false, 0.0f } };
+            a.members = { { "alice", true, true, true, 87.5f, 7, 0 }, { "carol", false, false, false, 0.0f, 0, 172800 } };
+            a.claimBudget = 5; a.allies = { "dave's_team" }; // (#828)
             check(RoundTrip(a, b, &s) && b.team == 3 && b.name == a.name && b.invite == a.invite && b.members.size() == 2 && b.members[0].owner && b.members[0].you &&
-                  b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online, "team state");
+                  b.members[0].online && fabsf(b.members[0].health - 87.5f) < 0.01f && b.members[1].name == "carol" && !b.members[1].online &&
+                  b.members[0].session == 7 && b.members[1].lastSeen == 172800 && b.claimBudget == 5 && b.allies.size() == 1 && b.allies[0] == "dave's_team", "team state");
             samples.push_back(s);
         }
         MsgCraftRequest ca{ 12, "oak_planks", 5, true, true }, cb; std::vector<uint8_t> s9;
@@ -735,20 +747,20 @@ bool NetProto_Test() {
             check(RoundTrip(a, b, &s) && b.action == 8 && b.item == "stone" && b.count == 12 && b.slot == 31, "machine action: into a slot"); samples.push_back(s);
         }
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
-        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.valid = true;
+        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.valid = true;
         std::vector<uint8_t> s11;
         check(RoundTrip(va2, vb2, &s11) && vb2.view.status == MachineStatus::Working && vb2.view.progress == 40 && vb2.view.inSlots.size() == 2 && vb2.view.inSlots[0].first == "iron_ore"
-              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.valid, "machine view"); samples.push_back(s11);
+              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.valid, "machine view"); samples.push_back(s11);
         MsgMachineStates sa{ 9, 2, { 3, 5, 8 } }, sb; std::vector<uint8_t> s12;
         check(RoundTrip(sa, sb, &s12) && sb.working.size() == 3 && sb.working[2] == 8, "machine states"); samples.push_back(s12);
-        MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 9, 4, "grain_seeds" }, pb; std::vector<uint8_t> s13;
-        check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.plot == 9 && pb.part == 4 && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
+        MsgPlantAction pa{ 2, 0x2000000000000003ull, 0x0102030405060708ull, 12.25f, 60001.5f, -3.75f, "grain_seeds" }, pb; std::vector<uint8_t> s13;
+        check(RoundTrip(pa, pb, &s13) && pb.action == 2 && pb.body == pa.body && pb.plant == pa.plant && pb.x == 12.25f && pb.y == 60001.5f && pb.z == -3.75f && pb.seed == "grain_seeds", "plant action"); samples.push_back(s13);
         MsgPlants la{ 5, 3, { { 0xFFEEDDCCBBAA9988ull, 12345.25 }, { 7, 0.5 } } }, lb; std::vector<uint8_t> s14;
         check(RoundTrip(la, lb, &s14) && lb.body == 5 && lb.session == 3 && lb.removed.size() == 2 && lb.removed[0].first == 0xFFEEDDCCBBAA9988ull && lb.removed[0].second == 12345.25, "plants"); samples.push_back(s14);
         MsgClaims ka, kb; NetClaim kc; kc.id = 7; kc.team = 3; kc.teamName = "rangers"; kc.colour = 0x3C8CE0u; kc.body = 0x2000000000000001ull; kc.centre[0] = 1.5f; kc.centre[1] = 60000.25f; kc.radius = 400.0f; kc.flags = 2; ka.claims.push_back(kc); std::vector<uint8_t> s16;
         check(RoundTrip(ka, kb, &s16) && kb.claims.size() == 1 && kb.claims[0].teamName == "rangers" && kb.claims[0].colour == 0x3C8CE0u && kb.claims[0].body == kc.body && kb.claims[0].centre[1] == 60000.25f && kb.claims[0].radius == 400.0f && kb.claims[0].flags == 2, "claims"); samples.push_back(s16);
-        MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 11, 3, "grain", 0.5f }, { 11, 4, "roots", 1.0f } }; std::vector<uint8_t> s15;
-        check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].part == 3, "farm fields"); samples.push_back(s15);
+        MsgFarmFields fa, fb; fa.body = 5; fa.fields = { { 1.5f, 60000.25f, -2.0f, "grain", 0.5f }, { 2.0f, 60000.3f, -2.0f, "roots", 1.0f } }; std::vector<uint8_t> s15;
+        check(RoundTrip(fa, fb, &s15) && fb.fields.size() == 2 && fb.fields[1].crop == "roots" && fb.fields[1].growth == 1.0f && fabsf(fb.fields[0].growth - 0.5f) < 1e-4f && fb.fields[0].y == 60000.25f, "farm fields"); samples.push_back(s15);
     }
     { MsgRoster a, b; a.players = { { 1, "alice" }, { 7, "bob" } }; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.players.size() == 2 && b.players[1].session == 7 && b.players[1].name == "bob", "roster"); samples.push_back(s); }
     { MsgSkillState a{ "skill_xp mining 2478.5\nperk quick_pick 2\n" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.text == a.text, "skill state (#920)"); samples.push_back(s); }
@@ -815,6 +827,46 @@ bool NetRead(NetReader& r, MsgAnimals& m) {
 }
 void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); w.u8(m.action); }
 bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); m.action = r.u8(); if (m.action > 2) r.ok = false; return Done(r); }
+// (#1343, #1364) Creature shots and events.
+void NetWrite(NetWriter& w, const MsgCreatureFx& m) {
+    Id(w, NetMsg::CreatureFx);
+    const size_t ns = std::min<size_t>(m.shots.size(), 64), ne = std::min<size_t>(m.ended.size(), 64), nv = std::min<size_t>(m.events.size(), 64);
+    w.varu(ns);
+    for (size_t i = 0; i < ns; ++i) {
+        const MsgCreatureFx::Shot& s = m.shots[i];
+        w.u32(s.id); w.varu(s.body); w.pos(s.pos); w.f32(s.vel.x); w.f32(s.vel.y); w.f32(s.vel.z); w.u8(s.kind); w.varu(s.owner);
+    }
+    w.varu(ne);
+    for (size_t i = 0; i < ne; ++i) w.u32(m.ended[i]);
+    w.varu(nv);
+    for (size_t i = 0; i < nv; ++i) {
+        const MsgCreatureFx::Event& e = m.events[i];
+        w.varu(e.netId); w.u8(e.kind); w.u8(e.species); w.varu(e.body); w.pos(e.pos);
+    }
+}
+bool NetRead(NetReader& r, MsgCreatureFx& m) {
+    m.shots.clear(); m.ended.clear(); m.events.clear();
+    const uint64_t ns = r.varu();
+    if (ns > 64) r.ok = false;
+    for (uint64_t i = 0; i < ns && r.ok; ++i) {
+        MsgCreatureFx::Shot s;
+        s.id = r.u32(); s.body = r.varu(); s.pos = r.pos(); s.vel.x = r.f32(); s.vel.y = r.f32(); s.vel.z = r.f32(); s.kind = r.u8(); s.owner = r.varu();
+        if (s.kind > 2 || !(std::fabs(s.vel.x) < 200.0f && std::fabs(s.vel.y) < 200.0f && std::fabs(s.vel.z) < 200.0f)) r.ok = false;
+        m.shots.push_back(s);
+    }
+    const uint64_t ne = r.varu();
+    if (ne > 64) r.ok = false;
+    for (uint64_t i = 0; i < ne && r.ok; ++i) m.ended.push_back(r.u32());
+    const uint64_t nv = r.varu();
+    if (nv > 64) r.ok = false;
+    for (uint64_t i = 0; i < nv && r.ok; ++i) {
+        MsgCreatureFx::Event e;
+        e.netId = r.varu(); e.kind = r.u8(); e.species = r.u8(); e.body = r.varu(); e.pos = r.pos();
+        if (e.kind > 4) r.ok = false;
+        m.events.push_back(e);
+    }
+    return Done(r);
+}
 void NetWrite(NetWriter& w, const MsgDamage& m) {
     Id(w, NetMsg::Damage);
     w.f32(m.amount); w.u8(m.kind); w.boolean(m.hasSource); w.varu(m.body); w.pos(m.local); w.f32(m.knockback); w.varu(m.sourceId);
@@ -890,7 +942,7 @@ void NetWrite(NetWriter& w, const MsgMachineAction& m) {
 }
 bool NetRead(NetReader& r, MsgMachineAction& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari(); m.action = r.u8(); m.item = r.str(64); m.count = r.u16(); m.slot = r.u8(); m.which = r.u8();
-    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 9 || m.which > 2) r.ok = false; // (8, 9: #862)
+    if (part < 0 || part > 1000000 || m.action < 1 || m.action > 10 || m.which > 2) r.ok = false; // (8, 9: #862; 10: a campfire, #1103 - widen with each new action, #1365)
     m.part = (int32_t)part;
     return Done(r);
 }
@@ -915,7 +967,7 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
     w.str(v.input.substr(0, 128)); w.str(v.output.substr(0, 128));
     WriteSlots(w, v.inSlots); WriteSlots(w, v.outSlots);
     w.boolean(v.hasFuelSlot); w.str(v.fuelSlot.first.substr(0, 64)); w.vari(v.fuelSlot.second);
-    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.valid);
+    w.vari(v.water); w.vari(v.waterMax); w.vari(v.heat); w.vari(v.heatMax); w.boolean(v.hotOutputs); w.boolean(v.canLight); w.u8(v.fire); w.boolean(v.valid);
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -927,7 +979,7 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
     v.input = r.str(128); v.output = r.str(128);
     ReadSlots(r, v.inSlots); ReadSlots(r, v.outSlots);
     v.hasFuelSlot = r.boolean(); v.fuelSlot.first = r.str(64); v.fuelSlot.second = (int)r.vari();
-    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.valid = r.boolean();
+    v.water = (int)r.vari(); v.waterMax = (int)r.vari(); v.heat = (int)r.vari(); v.heatMax = (int)r.vari(); v.hotOutputs = r.boolean(); v.canLight = r.boolean(); v.fire = r.u8(); v.valid = r.boolean();
     return Done(r);
 }
 void NetWrite(NetWriter& w, const MsgMachineStates& m) {
@@ -947,12 +999,11 @@ bool NetRead(NetReader& r, MsgMachineStates& m) {
 
 // ---- Plants and farming (#335) ----
 void NetWrite(NetWriter& w, const MsgPlantAction& m) {
-    Id(w, NetMsg::PlantAction); w.u8(m.action); w.varu(m.body); w.u64(m.plant); w.u32(m.plot); w.vari(m.part); w.str(m.seed.substr(0, 64));
+    Id(w, NetMsg::PlantAction); w.u8(m.action); w.varu(m.body); w.u64(m.plant); w.f32(m.x); w.f32(m.y); w.f32(m.z); w.str(m.seed.substr(0, 64));
 }
 bool NetRead(NetReader& r, MsgPlantAction& m) {
-    m.action = r.u8(); m.body = r.varu(); m.plant = r.u64(); m.plot = r.u32(); const int64_t part = r.vari(); m.seed = r.str(64);
-    if (m.action < 1 || m.action > 3 || part < -1 || part > 1000000) r.ok = false;
-    m.part = (int32_t)part;
+    m.action = r.u8(); m.body = r.varu(); m.plant = r.u64(); m.x = r.f32(); m.y = r.f32(); m.z = r.f32(); m.seed = r.str(64);
+    if (m.action < 1 || m.action > 3 || !std::isfinite(m.x) || !std::isfinite(m.y) || !std::isfinite(m.z)) r.ok = false;
     return Done(r);
 }
 namespace { constexpr size_t kMaxPlantsPerMsg = 4096, kMaxFarmFields = 4096; }
@@ -976,7 +1027,7 @@ void NetWrite(NetWriter& w, const MsgFarmFields& m) {
     w.varu(n);
     for (size_t i = 0; i < n; ++i) {
         const NetFarmField& f = m.fields[i];
-        w.u32(f.plot); w.vari(f.part); w.str(f.crop.substr(0, 64)); w.u16((uint16_t)lroundf(std::clamp(f.growth, 0.0f, 1.0f) * 65535.0f));
+        w.f32(f.x); w.f32(f.y); w.f32(f.z); w.str(f.crop.substr(0, 64)); w.u16((uint16_t)lroundf(std::clamp(f.growth, 0.0f, 1.0f) * 65535.0f));
     }
 }
 bool NetRead(NetReader& r, MsgFarmFields& m) {
@@ -985,9 +1036,8 @@ bool NetRead(NetReader& r, MsgFarmFields& m) {
     if (n > kMaxFarmFields) { r.ok = false; return false; }
     m.fields.clear();
     for (uint64_t i = 0; i < n && r.ok; ++i) {
-        NetFarmField f; f.plot = r.u32(); const int64_t part = r.vari(); f.crop = r.str(64); f.growth = r.u16() / 65535.0f;
-        if (part < 0 || part > 1000000 || f.crop.empty()) r.ok = false;
-        f.part = (int32_t)part;
+        NetFarmField f; f.x = r.f32(); f.y = r.f32(); f.z = r.f32(); f.crop = r.str(64); f.growth = r.u16() / 65535.0f;
+        if (!std::isfinite(f.x) || !std::isfinite(f.y) || !std::isfinite(f.z) || f.crop.empty()) r.ok = false;
         m.fields.push_back(std::move(f));
     }
     return Done(r);
@@ -1000,7 +1050,12 @@ void NetWrite(NetWriter& w, const MsgTeamState& m) {
     for (size_t i = 0; i < n; ++i) {
         const MsgTeamState::Member& x = m.members[i];
         w.str(x.name.substr(0, 32)); w.u8((uint8_t)((x.online ? 1 : 0) | (x.owner ? 2 : 0) | (x.you ? 4 : 0))); w.f32(x.health);
+        w.varu(x.session); w.varu(x.lastSeen); // (#828)
     }
+    w.u8((uint8_t)std::clamp(m.claimBudget, 0, 255)); // (#828)
+    const size_t a = std::min<size_t>(m.allies.size(), 16);
+    w.u8((uint8_t)a);
+    for (size_t i = 0; i < a; ++i) w.str(m.allies[i].substr(0, 40));
 }
 bool NetRead(NetReader& r, MsgTeamState& m) {
     m.team = (int32_t)r.u32(); m.name = r.str(40); m.invite = r.str(40);
@@ -1010,8 +1065,16 @@ bool NetRead(NetReader& r, MsgTeamState& m) {
     for (int i = 0; i < n && r.ok; ++i) {
         MsgTeamState::Member x; x.name = r.str(32);
         const uint8_t f = r.u8(); x.online = f & 1; x.owner = f & 2; x.you = f & 4; x.health = r.f32();
+        const uint64_t ses = r.varu(), seen = r.varu(); // (#828)
+        if (ses > 0xFFFFFFFFull || seen > 0xFFFFFFFFull) r.ok = false;
+        x.session = (uint32_t)ses; x.lastSeen = (uint32_t)seen;
         m.members.push_back(x);
     }
+    m.claimBudget = r.u8();
+    const int a = r.u8();
+    if (a > 16) return false;
+    m.allies.clear();
+    for (int i = 0; i < a && r.ok; ++i) m.allies.push_back(r.str(40));
     return Done(r);
 }
 
@@ -1121,5 +1184,28 @@ TEST(NetProto, BitFlipsNeverCrash) {
         ParseAny(m);
     }
     SUCCEED();
+}
+
+// (#1365) The largest value each sender writes must read back: a read range left at an older maximum drops the message on
+// the receiving side without a trace (a till's flag 16 on every client; a campfire's machine action 10 on the server).
+// Widen a range here and in its NetRead together when a new flag, kind or action is added.
+TEST(NetProto, TheLargestValueEachSenderWritesReadsBack) {
+    MsgTerrainEdit till; till.body = 1; till.center = { 10.0, 60000.0, -2.0 }; till.radius = 0.6f; till.flags = 16; till.session = 2; till.seq = 1;
+    MsgTerrainEdit tillBack;
+    EXPECT_TRUE(RoundTrip(till, tillBack)) << "a till (flag 16, #1085) reaches the clients";
+    EXPECT_EQ(tillBack.flags, 16);
+    MsgTerrainEdit all = till; all.flags = 1 | 2 | 4 | 8 | 16; all.hx = all.hy = all.hz = 0.5f; all.ax[0] = 1.0f; all.ay[1] = 1.0f;
+    EXPECT_TRUE(RoundTrip(all, tillBack)) << "every edit flag at once";
+    MsgTerrainEdit beyond = till; beyond.flags = 32;
+    EXPECT_FALSE(RoundTrip(beyond, tillBack)) << "a flag nobody sends is still refused";
+    MsgMachineAction fire; fire.body = 1; fire.plot = 3; fire.part = 0; fire.action = 10; fire.count = 1;
+    MsgMachineAction fireBack;
+    EXPECT_TRUE(RoundTrip(fire, fireBack)) << "a campfire's light / put out (action 10, #1103) reaches the server";
+    EXPECT_EQ(fireBack.action, 10);
+    MsgMachineAction past = fire; past.action = 11;
+    EXPECT_FALSE(RoundTrip(past, fireBack));
+    MsgEditRequest q; q.seq = 1; q.kind = NetEditKind::Till; q.body = 1; q.hit = q.center = { 10.0, 60000.0, -2.0 }; q.radius = 0.6f;
+    MsgEditRequest qBack;
+    EXPECT_TRUE(RoundTrip(q, qBack)) << "the till request (kind Till) reaches the server";
 }
 #endif
