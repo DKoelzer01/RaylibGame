@@ -11,6 +11,7 @@
 #include "survival.h"
 #include "suit.h"
 #include "toolwear.h"
+#include "composed.h"
 #include "questtree.h"
 #include "researchtab.h"
 #include "tometab.h" // (#1251)
@@ -48,6 +49,7 @@
 #include <raymath.h>
 
 namespace {
+    int gTestHoverCell = -1; // (#1449) GameUI_TestHover: a cell shown as hovered (its tooltip), for scenarios
     bool inventoryOpen = false;
     std::string toast;
     double toastUntil = 0.0;
@@ -588,6 +590,8 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
 }
 
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data);
+void GameUI_TestHover(int cell) { gTestHoverCell = cell; }
+
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();
     auto amt = [&](int i, const char* id) { return !g[i].empty() && g[i].id == id ? g[i].centi / 100 : (int64_t)0; };
@@ -652,7 +656,7 @@ static void DrawCell(int i, float cw, float cell) {
     if (ImGui::IsItemClicked()) OpenIfAlt(grid[i].id); // (#826; the rules skip alt-clicks)
     NoteHover(&playerGrid, i); // clicks, drags, keys and the wheel: the item rules (#862), once a frame in GameUI_Draw
     if (ImGui::IsItemClicked(ImGuiMouseButton_Middle) && !terrainTool.creative) { ReturnCursorStack(); inventory.sort(); } // as the Sort button (#577; creative: a full stack, the rules)
-    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    const bool hover = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) || i == gTestHoverCell; // (#1449) a scenario shows a cell's tooltip
     const InvSlot& s = grid[i];
     const ImVec2 q(p.x + cw, p.y + cell);
     dl->AddRectFilled(p, q, IM_COL32(30, 32, 36, 220), 4.0f);
@@ -660,15 +664,22 @@ static void DrawCell(int i, float cw, float cell) {
     if (!s.empty()) {
         const ItemDef* d = itemDB.find(s.id);
         DrawItemIcon(dl, ImVec2(p.x + (cw - cell * 0.64f) * 0.5f, p.y), cell * 0.64f, s.id);
-        CellName(dl, p, q, d ? d->name : s.id, hover);
+        const std::string own = Composed_DisplayName(s.id, s.data); // (#1449) "Bronze pickaxe" from its head
+        CellName(dl, p, q, !own.empty() ? own : d ? d->name : s.id, hover);
         if (KindOf(s.id) != ItemKind::Tool) {
             const std::string amt = AmountText(s);
             CellCount(dl, p, q, amt.c_str()); // (#891: at the cell's size)
         }
-        if (hover && cursorStack.empty())
-            ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
-                              KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
-                              GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        if (hover && cursorStack.empty()) {
+            const std::string parts = Composed_PartsText(s.id, s.data); // (#1449) its own parts, quality, sockets, wear
+            if (!parts.empty())
+                ImGui::SetTooltip("%s  (%s)\n%s\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot)", own.c_str(), KindName(KindOf(s.id)), parts.c_str(),
+                                  d ? d->description.c_str() : "", GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+            else
+                ImGui::SetTooltip("%s  (%s)\n%.2f of %d per slot\n%s\n(Shift+click: %s; 1-0: swap with that hotbar slot; wheel: move one)", d ? d->name.c_str() : s.id.c_str(),
+                                  KindName(KindOf(s.id)), s.amount(), StackLimit(s.id), d ? d->description.c_str() : "",
+                                  GameUI_ContainerOpen() ? TextFormat("into the %s", PartName(container.type)) : i < Inventory::kGrid ? "to the hotbar" : "to the grid");
+        }
     }
     DrawDragShare(dl, &playerGrid, i, p, q);
     if (hotbar) CellText(dl, CellFontSize(cell), ImVec2(p.x + 3, p.y + 1), IM_COL32(150, 150, 150, 255), TextFormat("%d", (i - Inventory::kGrid + 1) % 10));

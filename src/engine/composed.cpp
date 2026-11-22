@@ -164,6 +164,27 @@ int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUs
     return n;
 }
 
+std::string Composed_DisplayName(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id) || data.empty()) return std::string();
+    const ComposedStats s = Composed_Stats(id, data);
+    return s.valid ? s.name : std::string();
+}
+
+std::string Composed_PartsText(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id) || data.empty()) return std::string();
+    const ComposedStats s = Composed_Stats(id, data);
+    if (!s.valid) return std::string();
+    auto nameOf = [](const std::string& m) { const PartMaterial* p = Composed_Material(m); return p ? p->name : m; };
+    std::string t = "Head: " + nameOf(s.head) + "   Handle: " + nameOf(s.handle.empty() ? "wood" : s.handle) +
+                    "   Binding: " + nameOf(s.binding.empty() ? std::string("fibre") : s.binding);
+    char buf[160];
+    if (s.tool.type != ToolType::Hands) { snprintf(buf, sizeof buf, "\nTier %d (%s)", s.tool.tier, ToolTierName(s.tool.tier)); t += buf; }
+    snprintf(buf, sizeof buf, "\nDurability %d / %d", std::max(0, s.durability - s.wear), s.durability); t += buf;
+    if (s.quality != 1.0f) { snprintf(buf, sizeof buf, "   Quality %+.0f%%", (s.quality - 1.0f) * 100.0f); t += buf; }
+    if (s.sockets > 0) { snprintf(buf, sizeof buf, "   Sockets %d", s.sockets); t += buf; }
+    return t;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1449): composed items' stats from their parts ----
 #include "unit_helpers.h"
@@ -237,6 +258,21 @@ TEST(Composed, ConvertInventoryMovesOldToolsAndTheirWear) {
     EXPECT_EQ(ToolDurabilityOf("tool_axe", Composed_MakeData("iron")), 400);
     EXPECT_EQ(ToolDurabilityOf("stone_axe", ""), 150) << "old ids still answer as before";
     EXPECT_EQ(Composed_ConvertInventory(inv, &wear), 0) << "converting again does nothing";
+}
+
+TEST(Composed, NamesAndPartsForTheUi) {
+    ASSERT_TRUE(Composed_Load());
+    const std::string d = ItemData::SetInt(Composed_MakeData("bronze", {}, {}, 105), "w", 40);
+    EXPECT_EQ(Composed_DisplayName("tool_pickaxe", d), "Bronze pickaxe");
+    EXPECT_EQ(Composed_DisplayName("tool_pickaxe", ""), "") << "no record: the item table's name";
+    EXPECT_EQ(Composed_DisplayName("stone", "h=bronze"), "") << "not a class";
+    const std::string t = Composed_PartsText("tool_pickaxe", d);
+    EXPECT_NE(t.find("Head: Bronze"), std::string::npos) << t;
+    EXPECT_NE(t.find("Binding: Leather"), std::string::npos) << t;
+    EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;
+    EXPECT_NE(t.find("Durability 380 / 420"), std::string::npos) << t; // 400 x 1.05 quality, 40 used
+    EXPECT_NE(t.find("Quality +5%"), std::string::npos) << t;
+    EXPECT_NE(t.find("Sockets 1"), std::string::npos) << t;
 }
 
 TEST(Composed, UnknownsAreNotValid) {

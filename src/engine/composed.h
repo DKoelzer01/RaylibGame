@@ -51,5 +51,9 @@ class Inventory;
 // class with the default parts (one item per cell). wearUsed (the old per-id wear, may be null): each id's wear moves into
 // the first copy converted, and its entry goes. Only classes the item table knows are converted. Returns how many.
 int Composed_ConvertInventory(Inventory& inv, std::map<std::string, int>* wearUsed);
+// (#1449 part 3) What the UI shows for an item: a composed copy's name from its head ("Bronze pickaxe"); "" for anything else
+// (the caller shows the item table's name). Its parts in a few lines (head, handle, binding, quality, sockets, wear).
+std::string Composed_DisplayName(const std::string& id, const std::string& data);
+std::string Composed_PartsText(const std::string& id, const std::string& data);
 
 #endif
