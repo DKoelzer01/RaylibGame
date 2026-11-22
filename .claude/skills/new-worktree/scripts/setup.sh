@@ -1,4 +1,6 @@
 #!/bin/bash
+# busybox (w64devkit on PATH) is not bash: re-run under Git's bash (#1477)
+if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe" "/c/Program Files/Git/bin/bash.exe" "/usr/bin/bash"; do [ -x "$b" ] && exec "$b" "$0" "$@"; done; echo "needs bash" >&2; exit 2; fi
 # Sets up this worktree's agent build (#1482): copies the gitignored CMakeUserPresets.json from the main checkout,
 # configures build/check with its own GAME_OUTPUT_DIR (never the user's root game.exe), retries once when the first
 # configure fails on the antivirus scan of a.exe, then builds game and game_tests at low priority with -j 4.

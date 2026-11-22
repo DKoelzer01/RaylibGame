@@ -1,4 +1,6 @@
 #!/bin/bash
+# busybox (w64devkit on PATH) is not bash: re-run under Git's bash (#1477)
+if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe" "/c/Program Files/Git/bin/bash.exe" "/usr/bin/bash"; do [ -x "$b" ] && exec "$b" "$0" "$@"; done; echo "needs bash" >&2; exit 2; fi
 # The PC's machine slot (#1477): one session runs the game, tests, benches or captures at a time.
 # State lives in the main checkout, shared by every worktree: .machine-lock (who holds the machine) and
 # .machine-queue (who waits). A session is named by its worktree folder (override with SLOT_NAME).

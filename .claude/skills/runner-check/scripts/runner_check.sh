@@ -1,4 +1,6 @@
 #!/bin/bash
+# busybox (w64devkit on PATH) is not bash: re-run under Git's bash (#1477)
+if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe" "/c/Program Files/Git/bin/bash.exe" "/usr/bin/bash"; do [ -x "$b" ] && exec "$b" "$0" "$@"; done; echo "needs bash" >&2; exit 2; fi
 # Runs (or finds) the self-hosted workflow for a branch, waits for it with a deadline, and lists its failures,
 # each marked "known (#N)" from tools/ci/known_failures.txt or "NEW" (#1482).
 #   runner_check.sh <branch> [--dispatch] [--regression]     or     runner_check.sh --run <run id>
