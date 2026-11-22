@@ -16,7 +16,7 @@ struct BoxResult { long long pieces = 0, volume = 0, largest = 0; };
 // The density on a grid of `step` m over a box +-hx across (both ways) and +-hy up around c (local frame); solid cells
 // connected (6-neighbour) to the box's boundary are the surrounding rock, any other solid component floats. Volumes in
 // m^3 (cells x step^3). hb / db (optional): m^3 by mean height (-28..+28 m, 8 bins) and distance across (0..72 m, 8 bins).
-BoxResult MeasureBox(const PlanetField& pf, Vector3 c, int hx, int hy, int step, long long* hb, long long* db) {
+BoxResult MeasureBox(const PlanetField& pf, Vector3 c, int hx, int hy, int step, long long* hb, long long* db, double binH = 7.0, double binR = 9.0) {
     BoxResult out;
     const int NX = 2 * hx / step + 1, NY = 2 * hy / step + 1, NZ = NX;   // x, z across; y up
     const Vector3 up = Vector3Normalize(c);
@@ -63,9 +63,9 @@ BoxResult MeasureBox(const PlanetField& pf, Vector3 c, int hx, int hy, int step,
                     sumY = sumR = 0.0;
                     const long long n = flood(x, y, z), v = n * cell;
                     ++out.pieces; out.volume += v; out.largest = std::max(out.largest, v);
-                    const double my = sumY / n, mr = sumR / n; // bins: height -28..+28 m in 8, distance 0..71 m in 8
-                    if (hb) hb[std::clamp((int)((my + 28.0) / 7.0), 0, 7)] += v;
-                    if (db) db[std::clamp((int)(mr / 9.0), 0, 7)] += v;
+                    const double my = sumY / n, mr = sumR / n; // bins: height -4..+4 binH in 8, distance 0..8 binR in 8
+                    if (hb) hb[std::clamp((int)((my + 4.0 * binH) / binH), 0, 7)] += v;
+                    if (db) db[std::clamp((int)(mr / binR), 0, 7)] += v;
                 }
     return out;
 }
@@ -99,13 +99,15 @@ CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, b
             const float r = radii[ci];
             const int hx = 2 * (int)ceilf(0.95f * r), hy = 2 * (int)ceilf(0.5f * (0.4f * r * 1.82f + 12.0f));
             static const int step = getenv("RAYLIBGAME_ISLANDS_CAVERN_STEP") ? std::max(1, atoi(getenv("RAYLIBGAME_ISLANDS_CAVERN_STEP"))) : 2; // (1: exact, slow)
-            const BoxResult b = MeasureBox(pf, caverns[ci], hx, hy, step, nullptr, nullptr);
+            long long hb[8] = {}, db[8] = {};
+            const BoxResult b = MeasureBox(pf, caverns[ci], hx, hy, step, hb, db, 0.1 * r, 0.125 * r);
             out.cavernPieces += b.pieces; out.cavernVolume += b.volume;
             if (print) {
                 const Vector3 up = Vector3Normalize(caverns[ci]);
                 const float depth = pf.radius + pf.elevation(up) - Vector3Length(caverns[ci]);
                 const float away = Vector3Distance(Vector3Scale(up, pf.radius), Vector3Scale(home, pf.radius));
                 printf("bench: cave islands: cavern %zu (r %.0f m, %.0f m down, %.0f m away): %lld floating pieces, %lld m^3, largest %lld m^3\n", ci, r, depth, away, b.pieces, b.volume, b.largest);
+                printf("bench: cave islands: cavern %zu m^3 by height (x0.1 r from the centre, -0.4..+0.4 r):", ci); for (int k = 0; k < 8; ++k) printf(" %lld", hb[k]); printf("; by distance across (x0.125 r, 0..r):"); for (int k = 0; k < 8; ++k) printf(" %lld", db[k]); printf("\n");
             }
         }
     }
