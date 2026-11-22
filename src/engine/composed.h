@@ -61,6 +61,10 @@ std::string Composed_GemText(const std::string& id);
 std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
+// (#1449 T1) The reverse: a tool class's copy as the old id its head makes it ("tool_pickaxe" with a bronze head:
+// "bronze_pickaxe"), so quests and tasks naming old tools ("get stone_pickaxe 1") count it. "" for weapons, a head that
+// had no old tool (flint, bone) or not a composed tool.
+std::string Composed_LegacyId(const std::string& cls, const std::string& data);
 class Inventory;
 // (#1449) The single conversion point for old tools: every cell holding an old per-material tool (stone_pickaxe ...) becomes its
 // class with the default parts (one item per cell). wearUsed (the old per-id wear, may be null): each id's wear moves into
