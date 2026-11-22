@@ -71,12 +71,14 @@ GemEffect Weapon_GemEffect(const std::string& id, const std::string& data) {
     return g;
 }
 
-DamageEvent Weapon_HitEvent(const std::string& id, const std::string& data) {
+DamageEvent Weapon_HitEvent(const std::string& id, const std::string& data, bool heavy, bool fromBehind) {
     DamageEvent e;
-    e.amount = Weapon_BaseDamage(id, data);
+    e.amount = Weapon_BaseDamage(id, data) * (heavy ? MeleeTune::kHeavyDamage : 1.0f); // (#1509) as Melee_Damage / Melee_Poise do
     e.kind = DamageKind::Melee;
     e.type = Weapon_TypeOf(id);
-    e.poise = Weapon_SpecOf(id, data).poise;
+    e.poise = Weapon_SpecOf(id, data).poise * (heavy ? MeleeTune::kHeavyPoise : 1.0f);
+    e.heavy = heavy;
+    e.fromBehind = fromBehind;
     const GemEffect g = Weapon_GemEffect(id, data);
     if (g.status != StatusKind::None) e.status = g.status;
     e.poise *= g.poiseScale;
@@ -409,6 +411,19 @@ TEST(Melee, AGemSetsInAFreeSocketOnly) { // (#1219)
     const std::string steel = Composed_SetGem("weapon_sword", Composed_SetGem("weapon_sword", Composed_MakeData("steel"), "quartz"), "emerald");
     EXPECT_EQ(ItemData::Get(steel, "j"), "quartz,emerald") << "two sockets, in order";
     EXPECT_EQ(ItemData::Get(Composed_SetGem("weapon_sword", ItemData::Set(Composed_MakeData("steel"), "j", "junk"), "ruby"), "j"), "ruby") << "junk in j= is dropped";
+}
+
+TEST(Melee, TheServersHitEventCarriesHeavyAndFromBehind) { // (#1509)
+    ASSERT_TRUE(Composed_Load());
+    const std::string d = Composed_MakeData("bronze");
+    const DamageEvent light = Weapon_HitEvent("weapon_sword", d), heavy = Weapon_HitEvent("weapon_sword", d, true, true);
+    EXPECT_FLOAT_EQ(light.amount, 9.0f);
+    EXPECT_FALSE(light.heavy);
+    EXPECT_FLOAT_EQ(heavy.amount, 9.0f * MeleeTune::kHeavyDamage) << "as a local heavy (Melee_Damage)";
+    EXPECT_FLOAT_EQ(heavy.poise, light.poise * MeleeTune::kHeavyPoise);
+    EXPECT_TRUE(heavy.heavy);
+    EXPECT_TRUE(heavy.fromBehind);
+    EXPECT_EQ(heavy.type, DamageType::Slash) << "a heavy slash (or one from behind) bleeds: Status_FromHit reads the flags";
 }
 
 TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)

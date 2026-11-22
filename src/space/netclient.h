@@ -164,7 +164,7 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here does), handle messages, ping, time out
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
-void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
+void NetClient_HitAnimal(NetClient& c, uint64_t netId, int flags = 0); // (#334) a swing at an animal: the server checks and applies it; flags (#1509): 1 heavy, 2 from behind
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy
 void NetClient_UseBed(NetClient& c, const std::string& body, uint32_t plot, const int cell[3]); // (#800) make that bed my spawn

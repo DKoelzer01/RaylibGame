@@ -1871,7 +1871,7 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         survival.lastDealtAt = now;
         ++gMeleeHits;
         Noise_Emit(here->id, eye, NoiseTune::kHit, simClock, kPlayerPercept); // (#1224) combat is loud
-        if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId); } // (#334) a client: the server decides
+        if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId, (e.heavy ? 1 : 0) | (e.fromBehind ? 2 : 0)); } // (#334) a client: the server decides
         else {
             const CreatureSpec* hs = Creature_Spec(species[animals[h.i].species].id);
             if (hs && hs->corrode > 0 && ToolOf(terrainTool.heldTool).type != ToolType::Hands) ToolWear_OnStroke(terrainTool.heldTool, std::max(1, hs->corrode / 3)); // (#1226) a tool that strikes an ooze corrodes
@@ -1960,7 +1960,7 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
                 survival.stamina -= cost;
                 survival.staminaUsedAt = SimTime();
                 ++terrainTool.swings;
-                if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(animals[aimed].netId); } // (#334) a client: the server decides
+                if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(animals[aimed].netId, 0); } // (#334) a client: the server decides
                 else Animals_Hit(aimed, t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier);
             }
         } else if (in.hit(Act::Insert) && gAnimalsReplicated) {

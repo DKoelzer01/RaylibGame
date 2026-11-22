@@ -107,7 +107,7 @@ int Animals_PennedCount();                                   // near the player,
 // last heard, dropping any not heard of for 3 s. A client's swing at an animal is a request (gAnimalHitRequest); the server
 // checks it, applies the damage, and credits the drops to that player.
 inline bool gAnimalsReplicated = false;
-inline std::function<void(uint64_t netId)> gAnimalHitRequest;
+inline std::function<void(uint64_t netId, int flags)> gAnimalHitRequest; // flags (#1509): 1 heavy, 2 from behind
 // A client's feed (action 1) and take-the-product (2: shear, milk, eggs) go to the server too (slice 2).
 inline std::function<void(uint64_t netId, int action)> gAnimalUseRequest;
 // The server's other players, for the animals to mind (slice 2): flee, follow their food, hunt, bite. The host lists them each

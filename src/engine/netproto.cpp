@@ -701,8 +701,8 @@ bool NetProto_Test() {
         check(RoundTrip(a, b, &s) && b.tick == 77 && b.entries.size() == 1 && b.entries[0].netId == a.entries[0].netId && b.entries[0].species == 3 &&
               fabs(b.entries[0].pos.y - a.entries[0].pos.y) < 0.001 && fabs(b.entries[0].health - 17.5f) < 0.06f && b.entries[0].flags == 3 && b.removed == a.removed, "animals");
         samples.push_back(s);
-        MsgAnimalHit h{ 0x2000000000000005ull, 2 }, hb; std::vector<uint8_t> s2;
-        check(RoundTrip(h, hb, &s2) && hb.netId == h.netId && hb.action == 2, "animal hit"); samples.push_back(s2);
+        MsgAnimalHit h{ 0x2000000000000005ull, 0, 3 }, hb; std::vector<uint8_t> s2; // (#1509) a heavy hit from behind
+        check(RoundTrip(h, hb, &s2) && hb.netId == h.netId && hb.action == 0 && hb.flags == 3, "animal hit (flags)"); samples.push_back(s2);
         MsgDamage dm{ 8.0f, 2, true, 1, DVec3{ 10.0, 60000.0, -3.0 }, 3.0f, 0x2000000000000005ull }, db; std::vector<uint8_t> s3;
         check(RoundTrip(dm, db, &s3) && db.amount == 8.0f && db.kind == 2 && db.hasSource && db.knockback == 3.0f && db.sourceId == dm.sourceId && fabs(db.local.y - 60000.0) < 0.001, "damage"); samples.push_back(s3);
         { // (#1343, #1364) creature shots and events
@@ -844,8 +844,8 @@ bool NetRead(NetReader& r, MsgAnimals& m) {
     for (uint64_t i = 0; i < k && r.ok; ++i) m.removed.push_back(r.varu());
     return Done(r);
 }
-void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); w.u8(m.action); }
-bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); m.action = r.u8(); if (m.action > 2) r.ok = false; return Done(r); }
+void NetWrite(NetWriter& w, const MsgAnimalHit& m) { Id(w, NetMsg::AnimalHit); w.varu(m.netId); w.u8(m.action); w.u8(m.flags); } // (#1509) flags
+bool NetRead(NetReader& r, MsgAnimalHit& m) { m.netId = r.varu(); m.action = r.u8(); m.flags = r.u8(); if (m.action > 2 || m.flags > 3) r.ok = false; return Done(r); } // (#1509)
 // (#1343, #1364) Creature shots and events.
 void NetWrite(NetWriter& w, const MsgCreatureFx& m) {
     Id(w, NetMsg::CreatureFx);
