@@ -1,4 +1,5 @@
 #include "inventory.h"
+#include "composed.h"
 #include "utils/logger.h"
 #include "world.h"
 #include "voxel.h"
@@ -420,12 +421,22 @@ bool Inventory::canCraft(const Recipe& r) const {
     // The output must fit (after the inputs are taken out), or crafting would destroy ingredients.
     Inventory after = *this;
     for (auto& in : r.inputs) after.removeAmount(in.first, in.second);
+    if (Composed_Is(r.output)) { // (#1449) one empty cell a copy
+        int empty = 0; for (int k = 0; k < kGrid; ++k) empty += after.slots[k].empty() ? 1 : 0;
+        return empty >= std::max(1, r.outputCount);
+    }
     return after.room(r.output) >= (int64_t)r.outputCount * 100;
 }
 
 bool Inventory::craft(const Recipe& r) {
     if (!canCraft(r)) return false;
     for (auto& in : r.inputs) removeAmount(in.first, in.second);
+    if (Composed_Is(r.output)) { // (#1449) the assembly hook: the parts consumed become the copy's record
+        std::vector<std::string> parts;
+        for (auto& in : r.inputs) parts.push_back(in.first);
+        const std::string data = Composed_FromParts(r.output, parts);
+        if (!data.empty()) { for (int k = 0; k < std::max(1, r.outputCount); ++k) addInstance(r.output, data); return true; }
+    }
     addAmount(r.output, r.outputCount);
     return true;
 }

@@ -2,6 +2,8 @@
 #include "inventory.h"
 #include "plots.h"
 #include "machinetiers.h"
+#include "composed.h"
+#include "itemdata.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "utils/logger.h"
@@ -282,7 +284,8 @@ struct Machine {
     uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     uint8_t mode = 0;                       // (#1271 L6c) an assembler: 0 assembles, 1 disassembles (#1427; until then it idles)
     int pick = -1;                          // (#1271 L6c) the recipe output a player chose for a machine of several recipes (-1: any)
-    int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
+    int quality = 100;                      // (#1446 2c) the craft in progress' quality % for a composed output (T2: the anvil's bar sets it; back to 100 after)
+    int recipe = -1, progress = 0;         // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
     int tier = 0;                           // (#1427 L7a) its voltage tier (machine_tiers.txt: 0 LV, 1 MV ...; -1 under LV), from its part
@@ -825,7 +828,12 @@ void ApplyLayout(const LayoutMsg& L) {
                 const int c = (int)a, centi = (int)lround((a - c) * 100.0); AddItems(m.in.data(), InSlots(m), item, c); if (centi > 0) AddCenti(m.in.data(), InSlots(m), item, std::min(centi, 99)); // (#1102) "2.50": a fraction
             }
             const int nout = num();
-            for (int j = 0; j < nout && k + 1 < s.size(); ++j) { const int item = tables.item(s[k]); const int c = atoi(s[k + 1].c_str()); k += 2; AddItems(m.out, kSlots, item, c); }
+            for (int j = 0; j < nout && k + 1 < s.size(); ++j) {
+                const std::string tok = s[k]; const size_t bar = tok.find('|'); // (#1446 2c) "name|record" in an output too
+                const int item = tables.item(bar == std::string::npos ? tok : tok.substr(0, bar)); const int c = atoi(s[k + 1].c_str()); k += 2;
+                if (bar != std::string::npos) { for (int q = 0; q < kSlots; ++q) if (m.out[q].count <= 0) { m.out[q] = Stack{}; m.out[q].item = item; m.out[q].count = 1; m.out[q].data = tok.substr(bar + 1); break; } continue; }
+                AddItems(m.out, kSlots, item, c);
+            }
             // Then tagged extras: "f item count" (the fuel slot), "w litres", "h heat".
             while (k < s.size()) {
                 const std::string tag = s[k++];
@@ -1083,8 +1091,24 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             Stack trial[kSlots];
             std::copy(m.out, m.out + kSlots, trial);
             bool fits = true;
-            for (const Stack& s : r.out) if (AddItems(trial, kSlots, s.item, s.count) > 0) { fits = false; break; }
+            for (const Stack& s : r.out) {
+                if (Composed_Is(tables.name(s.item))) { // (#1446 2c) a composed output: one copy an empty slot, its record from the parts used
+                    std::vector<std::string> parts; for (const Stack& p : r.in) parts.push_back(tables.name(p.item));
+                    const std::string data = Composed_FromParts(tables.name(s.item), parts, m.quality);
+                    if (!data.empty()) {
+                        for (int u = 0; u < std::max(1, s.count) && fits; ++u) {
+                            int q = 0; while (q < kSlots && trial[q].count > 0) ++q;
+                            if (q == kSlots) { fits = false; break; }
+                            trial[q] = Stack{}; trial[q].item = s.item; trial[q].count = 1; trial[q].data = data;
+                        }
+                        if (!fits) break;
+                        continue;
+                    }
+                }
+                if (AddItems(trial, kSlots, s.item, s.count) > 0) { fits = false; break; }
+            }
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
+            m.quality = 100; // (#1446 2c) used
             for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
             for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
@@ -1119,7 +1143,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 Stack* from = chest ? src.in.data() : src.out;
                 const int fromN = chest ? kChestSlots : kSlots;
                 for (int i = 0; i < fromN && !moved; ++i) {
-                    if (from[i].count <= 0) continue;
+                    if (from[i].count <= 0 || !Plain(from[i])) continue; // (#1446) conveyors never move an item with data (TakeItems skips it: it would copy)
                     const int item = from[i].item;
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
@@ -1559,7 +1583,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.input = list(m.in.data(), InSlots(m));
     v.output = list(m.out, kSlots);
     for (int i = 0; i < InSlots(m); ++i) { v.inSlots.push_back({ !Empty(m.in[i]) ? tables.name(m.in[i].item) : std::string(), m.in[i].count }); v.inCenti.push_back(m.in[i].centi); v.inData.push_back(m.in[i].data); } // (#1102; #1446 data)
-    if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count });
+    if (m.type != PartType::Chest) for (int i = 0; i < kSlots; ++i) { v.outSlots.push_back({ m.out[i].count > 0 ? tables.name(m.out[i].item) : std::string(), m.out[i].count }); v.outData.push_back(m.out[i].count > 0 ? m.out[i].data : std::string()); } // (#1446 2c)
     if (Def(m.type).power == Power::Rotation) { // (#1269)
         v.rotation = true;
         v.rpm = (float)std::abs(ps.rot.SpeedMilli(part)) / 1000.0f;
@@ -2290,7 +2314,7 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             for (int i = 0; i < InSlots(m); ++i) if (!Empty(m.in[i])) { if (!m.in[i].data.empty()) fprintf(f, " %s|%s 1", tables.name(m.in[i].item).c_str(), m.in[i].data.c_str()); /* (#1446) its record */ else if (m.in[i].centi > 0) fprintf(f, " %s %d.%02d", tables.name(m.in[i].item).c_str(), m.in[i].count, m.in[i].centi); else fprintf(f, " %s %d", tables.name(m.in[i].item).c_str(), m.in[i].count); } // (#1102) a fraction: "2.50"
             int nout = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) ++nout;
             fprintf(f, " %d", nout);
-            for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) fprintf(f, " %s %d", tables.name(m.out[i].item).c_str(), m.out[i].count);
+            for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) { if (!m.out[i].data.empty()) fprintf(f, " %s|%s 1", tables.name(m.out[i].item).c_str(), m.out[i].data.c_str()); /* (#1446 2c) */ else fprintf(f, " %s %d", tables.name(m.out[i].item).c_str(), m.out[i].count); }
             if (m.fuel.count > 0) fprintf(f, " f %s %d", tables.name(m.fuel.item).c_str(), m.fuel.count);
             if (m.water > 0) fprintf(f, " w %d", m.water);
             if (m.heat > 0) fprintf(f, " h %d", m.heat);
@@ -3167,6 +3191,76 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
 }
 // (#1271 L6c) The LV assembler: on a generator's power it assembles basic circuits from their parts; switched to
 // disassembly (#1427 to come) it waits, and switched back it goes on.
+// (#1446 step 2c) A machine making a composed class: each copy lands in an output slot of its own with its record built from
+// the parts used and the machine's quality (T2's anvil sets it), never merged; plain counts don't see it; the save keeps it.
+// (#1498) A conveyor never moves an item with data out of a chest (it used to copy it).
+TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
+    LoadRecipes();
+    ASSERT_TRUE(Composed_Load());
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const size_t nRecipes = tables.recipes.size();
+    decltype(tables.recipes)::value_type r; r.machine = PartType::LvAssembler; r.ticks = 20; r.eu = 1;
+    r.in = { Stack{ tables.item("bronze_pick_head"), 1 }, Stack{ tables.item("wood_handle"), 1 } };
+    r.out = { Stack{ tables.item("tool_pickaxe"), 1 } };
+    r.tier = MachineTiers_Tiered(r.machine) ? MachineTiers_First(r.machine) : MachineTiers_ForVolts(Def(r.machine).volts); // (as LoadRecipes sets it)
+    tables.recipes.push_back(r);
+    recipesOf[(int)r.machine].push_back((int)nRecipes); // (the caches LoadRecipes builds)
+    std::vector<uint8_t>& wants = wantsOf[(int)r.machine];
+    std::vector<int> wanted;
+    for (const Stack& s : r.in) { if (s.item >= (int)wants.size()) wants.resize(s.item + 1, 0); if (!wants[s.item]) wanted.push_back(s.item); wants[s.item] = 1; }
+    const LayoutMsg L = OracleLayout(7, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 }, { PartType::Chest, 6, 0 } }, Row(3, 7, 2), Row(0, 4, -1));
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(9, 7);
+    ASSERT_TRUE(ps);
+    Machine& gen = ps->machines[ps->byPart.at(0)];
+    Machine& asm1 = ps->machines[ps->byPart.at(1)];
+    Machine& chest = ps->machines[ps->byPart.at(2)];
+    int b = 0;
+    InsertInto(gen, tables.item("coal"), 16, true, b);
+    // (#1498) a pick head with a record in the chest: the conveyor would offer it to the assembler (which takes pick heads)
+    chest.in[0] = Stack{}; chest.in[0].item = tables.item("bronze_pick_head"); chest.in[0].count = 1; chest.in[0].data = "h=bronze;w=3";
+    InsertInto(asm1, tables.item("bronze_pick_head"), 2, false, b);
+    InsertInto(asm1, tables.item("wood_handle"), 2, false, b);
+    asm1.pick = tables.item("tool_pickaxe"); asm1.quality = 106;
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 200; ++t) TickPlot(*ps, 1, made, active);
+    std::vector<std::string> recs;
+    for (int i = 0; i < kSlots; ++i) if (asm1.out[i].count > 0 && asm1.out[i].item == tables.item("tool_pickaxe")) { EXPECT_EQ(asm1.out[i].count, 1) << "one copy a slot"; recs.push_back(asm1.out[i].data); }
+    ASSERT_EQ(recs.size(), 2u) << "two crafts, two copies";
+    EXPECT_EQ(ItemData::Get(recs[0], "h"), "bronze");
+    EXPECT_EQ(ItemData::Get(recs[0], "g"), "wood");
+    EXPECT_EQ(ItemData::GetInt(recs[0], "q", 100), 106) << "the first craft's quality";
+    EXPECT_EQ(ItemData::GetInt(recs[1], "q", 100), 100) << "quality is used once";
+    EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("tool_pickaxe")), 0) << "plain counts never see a copy";
+    EXPECT_EQ(chest.in[0].data, "h=bronze;w=3") << "the chest keeps its pick head with a record";
+    EXPECT_EQ(chest.in[0].count, 1);
+    EXPECT_EQ(CountItems(asm1.in.data(), InSlots(asm1), tables.item("bronze_pick_head")), 0) << "no plain copy reached the assembler (#1498)";
+    // The view and the save
+    MachineView v; FillView(*ps, 1, v);
+    int withData = 0; for (const std::string& d : v.outData) withData += d.empty() ? 0 : 1;
+    EXPECT_EQ(withData, 2);
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_outdata_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(L);
+    ps = FindPlot(9, 7);
+    ASSERT_TRUE(ps);
+    const Machine& back = ps->machines[ps->byPart.at(1)];
+    std::vector<std::string> loaded; for (int i = 0; i < kSlots; ++i) if (!back.out[i].data.empty()) loaded.push_back(back.out[i].data);
+    EXPECT_EQ(loaded, recs) << "the save keeps each copy's record";
+    tables.recipes.resize(nRecipes);
+    recipesOf[(int)r.machine].pop_back();
+    for (int item : wanted) wants[item] = 0;
+    plots.clear(); plotIndexDirty = true; pendingStates.clear();
+}
+
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     LoadRecipes();
     plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();

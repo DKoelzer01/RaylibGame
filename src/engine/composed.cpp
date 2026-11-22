@@ -99,6 +99,27 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
     return d;
 }
 
+std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct) {
+    const ComposedClass* c = Composed_Class(cls);
+    if (!c) return {};
+    std::string headPart = c->headPart;
+    for (char& ch : headPart) if (ch == ' ') ch = '_';
+    std::string head, handle, binding;
+    auto materialOf = [](const std::string& id, const std::string& part) -> std::string { // "<material>_<part>" with a known material
+        if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
+        const std::string m = id.substr(0, id.size() - part.size() - 1);
+        return Composed_Material(m) ? m : std::string();
+    };
+    for (const std::string& id : ingredients) {
+        std::string m;
+        if (head.empty() && !(m = materialOf(id, headPart)).empty()) head = m;
+        else if (handle.empty() && !(m = materialOf(id, "handle")).empty()) handle = m;
+        else if (binding.empty() && !(m = materialOf(id, "binding")).empty()) binding = m;
+    }
+    if (head.empty()) return {};
+    return Composed_MakeData(head, handle, binding, qualityPct);
+}
+
 ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
     ComposedStats s;
     const ComposedClass* c = Composed_Class(id);
@@ -258,6 +279,21 @@ TEST(Composed, ConvertInventoryMovesOldToolsAndTheirWear) {
     EXPECT_EQ(ToolDurabilityOf("tool_axe", Composed_MakeData("iron")), 400);
     EXPECT_EQ(ToolDurabilityOf("stone_axe", ""), 150) << "old ids still answer as before";
     EXPECT_EQ(Composed_ConvertInventory(inv, &wear), 0) << "converting again does nothing";
+}
+
+TEST(Composed, AssemblyFromPartItems) {
+    ASSERT_TRUE(Composed_Load());
+    const std::string d = Composed_FromParts("tool_pickaxe", { "bronze_pick_head", "oak_planks", "wood_handle", "leather_binding" });
+    EXPECT_EQ(ItemData::Get(d, "h"), "bronze");
+    EXPECT_EQ(ItemData::Get(d, "g"), "wood");
+    EXPECT_EQ(ItemData::Get(d, "b"), "leather");
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "steel_pick_head" }), Composed_MakeData("steel")) << "missing parts: the head's defaults";
+    EXPECT_EQ(ItemData::Get(Composed_FromParts("weapon_sword", { "steel_blade", "bone_handle" }), "g"), "bone");
+    EXPECT_EQ(ItemData::Get(Composed_FromParts("weapon_spear", { "flint_spearhead" }), "h"), "flint");
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "bronze_blade", "wood_handle" }), "") << "a sword's blade is no pick head";
+    EXPECT_EQ(Composed_FromParts("tool_pickaxe", { "unobtainium_pick_head" }), "") << "an unknown material";
+    EXPECT_EQ(Composed_FromParts("stone", { "bronze_pick_head" }), "") << "not a class";
+    EXPECT_EQ(ItemData::GetInt(Composed_FromParts("tool_axe", { "iron_axe_head" }, 106), "q", 100), 106) << "the anvil's quality";
 }
 
 TEST(Composed, NamesAndPartsForTheUi) {
