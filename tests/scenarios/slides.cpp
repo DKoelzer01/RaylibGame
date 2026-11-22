@@ -12,6 +12,9 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
 #include <string>
 
 namespace {
@@ -31,6 +34,27 @@ void View(ScenarioDef& s, const std::string& name, std::function<bool(ScenarioCt
         c.waitingFor("the terrain at the view built (an idle world)");
         if (c.t < 4.0 || (!WorldIdle() && c.t < 30.0)) return false;
         c.grab(name);
+        // RAYLIBGAME_SLIDE_PROBE="side0:0.43,0.60 side1:0.41,0.82 ...": where pixels of a view (fractions of the frame) land
+        // on the ground, as lat/lon (asin y, atan2(z, x)) and height - to find a thing seen in a picture (#637).
+        static std::set<std::string> probed;
+        if (const char* pr = getenv("RAYLIBGAME_SLIDE_PROBE"); pr && probed.insert(name).second) {
+            std::string all = pr;
+            for (size_t i = 0; i < all.size();) {
+                const size_t j = all.find(' ', i);
+                const std::string tok = all.substr(i, j == std::string::npos ? std::string::npos : j - i);
+                i = j == std::string::npos ? all.size() : j + 1;
+                const size_t colon = tok.find(':');
+                float fx = 0.0f, fy = 0.0f;
+                if (colon == std::string::npos || tok.substr(0, colon) != name || sscanf(tok.c_str() + colon + 1, "%f,%f", &fx, &fy) != 2) continue;
+                const Ray ray = GetScreenToWorldRay({ fx * GetScreenWidth(), fy * GetScreenHeight() }, c.world.camera);
+                TerrainHit h;
+                if (!RaycastTerrain(c.world, ray, 3000.0f, h) || h.planetoid != c.body) { c.note(TextFormat("probe %s: no ground", tok.c_str())); continue; }
+                const Vector3 d = Vector3Normalize(h.local);
+                c.note(TextFormat("probe %s: lat %.5f lon %.5f, %.1f m over the radius, %.0f m from the eye, water kind %d", tok.c_str(),
+                                  asinf(d.y) * RAD2DEG, atan2f(d.z, d.x) * RAD2DEG, Vector3Length(h.local) - c.field->radius, h.distance,
+                                  c.field->waterSourceAt(d).kind));
+            }
+        }
         return c.t > 4.5;
     });
 }
@@ -62,6 +86,18 @@ struct Tube { bool found = false; Vector3 at{}, up{}, out{}; } T;
 SCENARIO("slides/river-valley") {
     Common(s);
     s.step("the nearest river", 1.0, [](ScenarioCtx& c) {
+        // RAYLIBGAME_SLIDE_RIVER_AT="lat lon" (degrees; lat = asin y, lon = atan2(z, x), as the note below prints): that
+        // point instead of the search (a before/after of one reach, #637).
+        if (const char* at = getenv("RAYLIBGAME_SLIDE_RIVER_AT")) {
+            float la = 0.0f, lo = 0.0f;
+            if (sscanf(at, "%f %f", &la, &lo) == 2) {
+                const float a = la * DEG2RAD, b = lo * DEG2RAD;
+                const Vector3 d = { cosf(a) * cosf(b), sinf(a), cosf(a) * sinf(b) };
+                R.found = true; R.up = d; R.at = Vector3Scale(d, c.field->radius + c.field->elevation(d));
+                c.note(TextFormat("river point given: lat %.5f lon %.5f, water kind %d", la, lo, c.field->waterSourceAt(d).kind));
+                return true;
+            }
+        }
         const Vector3 home = c.field->findSpawnDir(c.body->seed);
         const Vector3 k1 = Tangent(home), k2 = Vector3CrossProduct(home, k1);
         for (float r = 200.0f; r <= 8000.0f && !R.found; r += 100.0f)
