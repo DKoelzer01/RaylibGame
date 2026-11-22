@@ -539,10 +539,6 @@ namespace {
             if (moved) { // launched, bounced, loaded or placed by a test: start from the global state
                 const FrameRef to = Frames_Choose(bodies, com, rfValid ? rf.frame : FrameRef{});
                 rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
-            } else { // the line or an SOI crossed: the same state, re-expressed (no jump in the global path)
-                const FrameRef to = Frames_Choose(bodies, com, rf.frame);
-                FramePos n;
-                if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
             }
             if (rfValid) {
                 const Planetoid* fb = Planetoid::findNet(rf.frame.body);
@@ -570,6 +566,13 @@ namespace {
                 rf.pos = rf.pos + rf.vel * (double)h;
                 DVec3 vg;
                 if (Frames_ToGlobal(rf, com, vg)) vel = vg.toFloat();
+                // The line or an SOI crossed: the same state, re-expressed. Here, after the step, where the state and the
+                // bodies' poses are at the same instant: advanceBodies moves the bodies to the step's end before the
+                // rocket steps, so a switch at the step's start converted last step's global position with this step's
+                // poses (a frame of the new body's motion: 16 m entering Luna's SOI at 5x warp, rocket/soi-trip).
+                const FrameRef to = Frames_Choose(bodies, com, rf.frame);
+                FramePos n;
+                if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
                 rfCom = com; rfVel = vel;
                 framed = true;
             }

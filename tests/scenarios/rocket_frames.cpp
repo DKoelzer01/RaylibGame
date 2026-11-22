@@ -26,10 +26,12 @@ struct RState {
     double t0 = 0.0;
     Planetoid* terra = nullptr; Planetoid* luna = nullptr;
     double rMin = 1e30, rMax = 0.0, period = 0.0;
-    DVec3 c1{}, c2{}; int have = 0;        // the last two global positions (second differences)
+    DVec3 c1{}, c2{}, dd1{}; int have = 0; // the last two global positions and the last second difference
     FrameRef lastFrame{};
-    int switches = 0, frames = 0;
+    int switches = 0, frames = 0; bool afterSwitch = false;
     double worstSwitch = 0.0, worstSmooth = 0.0, closest = 1e30;
+    // Orbit drift: the radius range over the first orbit and over the last.
+    double firstMin = 1e30, firstMax = 0.0, lastMin = 1e30, lastMax = 0.0, doneMin = 0.0, doneMax = 0.0; int lastOrbit = -1;
     bool inLuna = false, leftLuna = false;
 };
 RState S;
@@ -79,14 +81,21 @@ void Common(ScenarioDef& s) {
     });
 }
 
-// Each frame: the second difference of the global path, and frame switches.
+// Each frame, the jump in the global path: the change of its second difference from the frame before (the third
+// difference). A smooth path's second difference is a dt^2 (2-4 mm a frame at 5x warp), but it changes only by its jerk
+// dt^3; a one-frame jump j shows as j here. Measured at frame switches (gated) and elsewhere (reported).
 void Track(ScenarioCtx& c, const DVec3& com, const FrameRef& f) {
-    if (S.have >= 2) {
-        const double dd = (com - S.c1 * 2.0 + S.c2).length();
-        if (f != S.lastFrame) { ++S.switches; S.worstSwitch = std::max(S.worstSwitch, dd); }
-        else S.worstSmooth = std::max(S.worstSmooth, dd);
-    }
-    S.c2 = S.c1; S.c1 = com; S.have = std::min(S.have + 1, 2);
+    const bool switched = S.have >= 1 && f != S.lastFrame;
+    if (switched) ++S.switches;
+    if (S.have >= 3) {
+        const DVec3 dd = com - S.c1 * 2.0 + S.c2;
+        const double jump = (dd - S.dd1).length();
+        if (switched || S.afterSwitch) S.worstSwitch = std::max(S.worstSwitch, jump); // a jump shows on two frames
+        else S.worstSmooth = std::max(S.worstSmooth, jump);
+        S.dd1 = dd;
+    } else if (S.have == 2) S.dd1 = com - S.c1 * 2.0 + S.c2;
+    S.afterSwitch = switched;
+    S.c2 = S.c1; S.c1 = com; S.have = std::min(S.have + 1, 3);
     S.lastFrame = f;
     ++S.frames;
     (void)c;
@@ -110,16 +119,28 @@ static void OrbitClosure(ScenarioDef& s) {
         }
         DVec3 com; Vector3 vel; FrameRef f;
         if (!Rocket_TestState(com, vel, &f)) { c.fail("the rocket stopped flying (crashed or landed)"); return true; }
-        if (c.T - S.t0 > 1.0) { const double d = (com - t.worldPos).length(); S.rMin = std::min(S.rMin, d); S.rMax = std::max(S.rMax, d); }
         Track(c, com, f);
         const double orbits = (c.T - S.t0) * Rocket_Warp() / S.period;
+        if (c.T - S.t0 > 1.0) {
+            const double d = (com - t.worldPos).length();
+            S.rMin = std::min(S.rMin, d); S.rMax = std::max(S.rMax, d);
+            const int k = (int)orbits;
+            if (k == 0) { S.firstMin = std::min(S.firstMin, d); S.firstMax = std::max(S.firstMax, d); }
+            if (k != S.lastOrbit) { if (S.lastOrbit >= 0) { S.doneMin = S.lastMin; S.doneMax = S.lastMax; } S.lastOrbit = k; S.lastMin = 1e30; S.lastMax = 0.0; } // doneMin/Max: the last whole orbit
+            S.lastMin = std::min(S.lastMin, d); S.lastMax = std::max(S.lastMax, d);
+        }
         c.waitingFor(TextFormat("10 orbits (%.1f so far)", orbits));
         if (orbits < 10.0) return false;
         Rocket_SetWarp(0);
         c.note(TextFormat("%.1f orbits of %.0f s at %.0f km: distance from the centre %.1f-%.1f m (band %.2f m); %d frame switches (%s)",
                           orbits, S.period, (r - R) / 1000.0, S.rMin, S.rMax, S.rMax - S.rMin, S.switches, Frames_On() ? "frames on" : "frames off"));
-        c.metric("radius band", S.rMax - S.rMin, "m");
-        c.lt("the orbit's radius band after 10 orbits (m)", S.rMax - S.rMin, 10.0);
+        // The start isn't exactly circular (the other bodies pull, the ring), so the band is reported; the gate is the drift:
+        // the 10th orbit's lowest and highest points against the first's.
+        const double drift = std::max(fabs(S.doneMin - S.firstMin), fabs(S.doneMax - S.firstMax));
+        c.note(TextFormat("first orbit %.1f-%.1f m, last %.1f-%.1f m from the centre: drift %.2f m", S.firstMin, S.firstMax, S.doneMin, S.doneMax, drift));
+        c.metric("radius band", S.rMax - S.rMin, "m", true);
+        c.metric("orbit drift over 10 orbits", drift, "m");
+        c.lt("the orbit's drift over 10 orbits (m)", drift, 10.0);
         return true;
     });
 }
@@ -151,13 +172,13 @@ static void SoiTrip(ScenarioDef& s) {
         c.waitingFor(TextFormat("through Luna's SOI and out (%.0f km from it)", d / 1000.0));
         if (!S.leftLuna && c.T - S.t0 < 280.0) return false;
         Rocket_SetWarp(0);
-        c.note(TextFormat("closest %.1f km (Luna R %.1f km, SOI %.1f km); %d frame switches; the path's second difference: worst %.4f mm at a switch, %.4f mm elsewhere (%s)",
+        c.note(TextFormat("closest %.1f km (Luna R %.1f km, SOI %.1f km); %d frame switches; the path's jump (third difference): worst %.4f mm at a switch, %.4f mm elsewhere (%s)",
                           S.closest / 1000.0, Rm / 1000.0, soi / 1000.0, S.switches, S.worstSwitch * 1000.0, S.worstSmooth * 1000.0, Frames_On() ? "frames on" : "frames off"));
         c.metric("worst jump at a switch", S.worstSwitch * 1000.0, "mm");
         c.check("entered Luna's SOI and left it", S.inLuna && S.leftLuna);
         if (Frames_On()) {
             c.check("the frame switched entering and leaving", S.switches >= 2, TextFormat("%d switches", S.switches));
-            c.lt("the global path's jump at a frame switch (m)", S.worstSwitch, 0.001 + S.worstSmooth);
+            c.lt("the global path's jump at a frame switch (m)", S.worstSwitch, 0.001);
         }
         return true;
     });
