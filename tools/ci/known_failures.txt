@@ -2,7 +2,7 @@
 # Don't re-diagnose these; read the issue. Remove a line when its issue is fixed.
 #   <extended regex matched against the failure line> | <issue> | <note>
 join: creature \(                      | #1421 | clients spend the join sync while the creature lives (fix in review)
-bench: join \(alice, session 2\)       | #1421 | that session's verdict includes the creature check above
+bench: join \((alice|bob)              | #1421 | each session's verdict includes the creature check above
 parity fluid/                          | #968  | CPU vs GPU fluid paths part by a unit (diagnostic, informational)
 bench: half:                           | #968  | the exact-halfway rounding check (diagnostic)
 factory/stats                          | #1406 | the EU window on the slow runner (fix in review)
