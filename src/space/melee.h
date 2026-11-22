@@ -50,6 +50,11 @@ DamageType Weapon_TypeOf(const std::string& itemId); // the class's type; a pick
 // (#1219) A light hit's base damage with this item: a composed copy's from its parts (data: its record); otherwise hands 2,
 // a tool 3 + 3 x tier (as before).
 float Weapon_BaseDamage(const std::string& itemId, const std::string& data);
+// (#1219, combat doc: the head sets the weight, the weight the speed) A composed copy's swing times against its class's with an
+// iron head and the default parts: (weight / that weight)^0.35, 0.85-1.2 (GUESS); 1 for anything else. Weapon_SpecOf: the
+// class's spec with its wind-up, hit window and recovery scaled by it (reach, arc and costs stay the class's).
+float Weapon_TimeScale(const std::string& itemId, const std::string& data);
+WeaponSpec Weapon_SpecOf(const std::string& itemId, const std::string& data);
 
 enum class MeleePhase : uint8_t { Idle, WindUp, Hit, Recovery };
 

@@ -120,7 +120,7 @@ SCENARIO("combat/weapons-composed") {
         if (S.hpAtHit < 0 && Animals_MeleeHits() > S.hits0) S.hpAtHit = Animals_HealthOf(Idx()); // the hit's own damage (a slash bleeds on after it)
         if (S.tIdle < 0 || c.t < 1.5) { c.waitingFor("the sword's swing to finish"); return false; }
         c.check("the swing started", S.tStart >= 0);
-        c.near("sword light wind-up (s)", S.tHit - S.tStart, Weapon_Spec(WeaponClass::Sword).windUp, 1.5 / 60.0);
+        c.near("bronze sword light wind-up (s): the class's x its weight's time scale", S.tHit - S.tStart, Weapon_SpecOf("weapon_sword", inventory.grid()[S.cell].data).windUp, 1.5 / 60.0);
         c.eq("one hit", Animals_MeleeHits() - S.hits0, 1);
         c.near("light hit with a bronze sword (on the hit's frame)", S.hp0 - S.hpAtHit, 9.0, 1e-3);
         c.check("then the slash bleeds", S.hp0 - Animals_HealthOf(Idx()) > 9.0 + 0.1f,

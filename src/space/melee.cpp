@@ -40,6 +40,20 @@ WeaponClass Weapon_ClassOf(const std::string& id) {
     return WeaponClass::Tools;
 }
 
+float Weapon_TimeScale(const std::string& id, const std::string& data) {
+    if (!Composed_Is(id)) return 1.0f;
+    const ComposedStats s = Composed_Stats(id, data), ref = Composed_Stats(id, Composed_MakeData("iron"));
+    if (!s.valid || !ref.valid || ref.weight <= 0.0f) return 1.0f;
+    return std::clamp(powf(s.weight / ref.weight, 0.35f), 0.85f, 1.2f); // GUESS: the exponent and the clamp (#1219)
+}
+
+WeaponSpec Weapon_SpecOf(const std::string& id, const std::string& data) {
+    WeaponSpec w = Weapon_Spec(Weapon_ClassOf(id));
+    const float k = Weapon_TimeScale(id, data);
+    w.windUp *= k; w.hit *= k; w.recovery *= k;
+    return w;
+}
+
 float Weapon_BaseDamage(const std::string& id, const std::string& data) {
     if (Composed_Is(id)) { // (#1219) a composed copy: from its head (3 + 3 x hardness) and quality
         const ComposedStats s = Composed_Stats(id, data);
@@ -312,6 +326,23 @@ TEST(Melee, WeaponClasses) {
     EXPECT_EQ(Weapon_ClassOf("weapon_spear"), WeaponClass::Spear);
     EXPECT_EQ(Weapon_ClassOf("tool_axe"), WeaponClass::Axe);
     EXPECT_EQ(Weapon_ClassOf("tool_pickaxe"), WeaponClass::Tools);
+}
+
+TEST(Melee, AHeavierHeadSwingsSlower) { // (#1219)
+    ASSERT_TRUE(Composed_Load());
+    EXPECT_FLOAT_EQ(Weapon_TimeScale("weapon_sword", Composed_MakeData("iron")), 1.0f) << "iron is the reference";
+    EXPECT_FLOAT_EQ(Weapon_TimeScale("stone_pickaxe", ""), 1.0f) << "not composed";
+    const float bronze = Weapon_TimeScale("weapon_sword", Composed_MakeData("bronze")), titanium = Weapon_TimeScale("weapon_sword", Composed_MakeData("titanium"));
+    const float stone = Weapon_TimeScale("weapon_sword", Composed_MakeData("stone"));
+    EXPECT_GT(bronze, 1.0f) << "bronze is denser than iron";
+    EXPECT_LT(titanium, 1.0f) << "titanium is light";
+    EXPECT_GE(stone, 0.85f) << "clamped";
+    EXPECT_LE(bronze, 1.2f);
+    const WeaponSpec base = Weapon_Spec(WeaponClass::Sword), b = Weapon_SpecOf("weapon_sword", Composed_MakeData("bronze"));
+    EXPECT_FLOAT_EQ(b.windUp, base.windUp * bronze);
+    EXPECT_FLOAT_EQ(b.recovery, base.recovery * bronze);
+    EXPECT_FLOAT_EQ(b.reach, base.reach) << "reach stays the class's";
+    EXPECT_FLOAT_EQ(Weapon_SpecOf("", "").windUp, Weapon_Spec(WeaponClass::Tools).windUp) << "hands as before";
 }
 
 TEST(Melee, ComposedDamageComesFromTheHead) { // (#1219)
