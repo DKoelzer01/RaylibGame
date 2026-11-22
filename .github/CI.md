@@ -18,7 +18,8 @@ machine, which only the PC has.
 - **Static checks** (seconds, `tools/ci/static_checks.sh`): NetMsg ids unique and 1..255; a PR that adds, removes or
   renumbers a NetMsg or bumps `kNetProtocol` says so in the job summary (a NetMsg change without a bump is a warning);
   erosion bake code changed without a `kErosionBakeVersion` bump is a warning; a new `gh project` command in `tools/` is
-  an error. It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
+  an error; a `kNetProtocol` not reserved in `tools/ci/protocol_reservations.txt` (or one marked "(unused)") is an error
+  (#1480). It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
   skips them.
 - **Windows build + unit tests (w64devkit)**: w64devkit 2.0.0 (GCC 14.2, the shipping toolchain, SHA-256 pinned),
   MinGW Makefiles, `-DENABLE_GNS=ON`, targets `game` and `game_tests`, then `game_tests.exe` from the repo root.
