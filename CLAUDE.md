@@ -42,7 +42,11 @@ a behaviour the user decided), `plans.md` (every plan doc and its history), `boa
   checks) - don't rerun unit tests locally to check a PR; the **deweyserver runner** (`gh workflow run selfhosted.yml -r
   <branch>`: GPU bit-exactness, headless scenarios, server/join tests, the headless regression half); **this PC** for
   rendering, UI, camera feel, timing, the local regression half and playtest builds. Read CI with REST, wait with a deadline.
-- Known runner failures are listed in `tools/ci/known_failures.txt` with their issues: don't re-diagnose those.
+- Runner results: the deweyserver MCP `ci_summary(run|branch)` (failures tagged known/NEW, no log download) and
+  `scenario_history(name)` (recent results, pass rate); the `runner-check` skill starts or waits for a run. Known
+  failures are listed in `tools/ci/known_failures.txt` with their issues: don't re-diagnose those.
+- Skills: `capture` (record and look), `runner-check`, `new-worktree`, `file-issue`; coordinator: `merge-pr`,
+  `playtest-build`, `morning-report`.
 - **Every test batch has a hard 15-minute limit** (`timeout 900 bash -c '...'`, per-test timeouts inside, every wait
   loop with its own deadline). Check each run 15-45 s after starting it.
 - Light tests per change: the benches/scenarios for the feature and its neighbours. New tests are scenarios
@@ -101,9 +105,9 @@ a behaviour the user decided), `plans.md` (every plan doc and its history), `boa
   `fixed in open PR` and close by hand once the fix reaches **develop** (never on playtest alone; a playtest confirmation
   before that swaps `needs playtest` for `playtest confirmed`). Playtest findings are issues; deferred ones carry `deferred`.
 - Exempt: answering a question, read-only investigation, triage.
-- **Board** (project 5, every open issue with Status, Priority, Size, Kind): feature sessions never run `gh project`
-  (it exhausted the GraphQL budget, #582) - REST for issues, and put board changes in your report; the coordinator
-  applies them (`docs/notes/board.md`). Status: Backlog -> Ready -> In progress -> In review -> Done (in develop).
+- **Board** (project 5, every open issue with Status, Priority, Size, Kind): never run `gh project` (it exhausted the
+  GraphQL budget, #582). Set fields with the deweyserver MCP `board_set(issue, status, priority, size, kind)` (one
+  batched call); `board_get(issue)` reads them. If the tool reports no token, put "#N -> fields" in your report. Status: Backlog -> Ready -> In progress -> In review -> Done (in develop).
   Priority P0 now / P1 next / P2 later / P3 someday - don't raise one yourself, propose it. Size XS < 1 h, S half a
   session, M a session, L 2-3, XL a milestone. Kind: Feature, Bug, Performance, Tracking.
 

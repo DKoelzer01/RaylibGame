@@ -6,6 +6,11 @@ argument-hint: "<branch> [--dispatch] [--regression]   or   --run <run id>"
 
 # Runner check
 
+**Cheapest first:** for a finished run, call the deweyserver MCP tool `ci_summary(run=<id>)` or `ci_summary(branch=...)`:
+it reads the runner's saved summary (no log download) and tags failures the same way. `scenario_history(name)` shows a
+scenario's recent results and pass rate - check it before treating a failure as new. Use the script below to start a
+run, to wait for one, or for runs saved before 2026-11-22.
+
 Run it in the background (it waits up to 60 min for the run to finish):
 
 ```bash
