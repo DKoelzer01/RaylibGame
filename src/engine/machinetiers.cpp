@@ -57,8 +57,7 @@ void Parse(std::istream& in) {
         if (c[0] == "successor" && c.size() >= 3) { // (L7e)
             PartType a = PartType::Count, b = PartType::Count;
             for (int t = 0; t < (int)PartType::Count; ++t) { const char* m = PartMachineName((PartType)t); if (m && c[1] == m) a = (PartType)t; if (m && c[2] == m) b = (PartType)t; }
-            if (a != PartType::Count && b != PartType::Count) successors.push_back({ a, b }); else printf("machine_tiers: skipped \"%s\"
-", line.c_str());
+            if (a != PartType::Count && b != PartType::Count) successors.push_back({ a, b }); else printf("machine_tiers: skipped \"%s\"\n", line.c_str());
             continue;
         }
         if (c.size() < 3) continue;
