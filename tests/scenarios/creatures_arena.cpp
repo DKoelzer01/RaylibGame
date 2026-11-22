@@ -56,6 +56,7 @@ void Build(ScenarioDef& s, bool old) {
         return true;
     });
     s.step("it charges and rams", 12.0, [](ScenarioCtx& c) {
+        if (c.t > 0.8) c.grab("charge"); // (#1071) a slideshow picture, when asked for: it comes at you
         if (survival.health < S.health0 - 0.5f) {
             if (S.firstHit < 0) { S.firstHit = c.t; c.near("a ram: 8 at normal", S.health0 - survival.health, 8.0, 0.6); S.health0 = survival.health; }
             else if (S.secondHit < 0) { S.secondHit = c.t; S.health0 = survival.health; }

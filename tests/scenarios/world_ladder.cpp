@@ -103,6 +103,7 @@ SCENARIO("world/ladder") {
         static bool started = false;
         if (!started) { started = true; t0 = c.t; h0 = Height(c); }
         Hold(kW);
+        if (Height(c) > 2.5) c.grab("climbing"); // (#1071) a slideshow picture, when asked for
         if (Height(c) < 4.0) return false;
         c.between("climb speed (m/s)", (Height(c) - h0) / std::max(0.1, c.t - t0), 1.5, 2.5);
         Hold(0); t0 = c.t; h0 = Height(c);

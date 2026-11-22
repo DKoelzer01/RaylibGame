@@ -246,7 +246,7 @@ namespace {
     long long lastAnimals = 0;
     std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
     std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
-    int animalHits = 0, animalHitsRefused = 0;
+    int animalHits = 0, animalHitsRefused = 0, animalHitsRewound = 0; // (rewound: #1108, allowed only by the rewind)
     bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
         Planetoid* b = r.player.nearest;
         if (!b) return false;
@@ -324,6 +324,7 @@ namespace {
     // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kHitRewind = 0.2;   // (#1108) s: how far back a hit may be checked (the combat design's cap, #1002)
     constexpr double kAnimalHitCooldown = 0.25; // s
     // (#337) each player's survival numbers to that player, 5 a second (its HUD; its own simulation fills in between)
     constexpr int kVitalsEvery = 12; // sim steps
@@ -866,14 +867,29 @@ namespace {
             const Planetoid* b = rit->second.player.nearest;
             gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
         }
-        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been online for
+        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
         // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
         // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
+        // (#1421) "Playing": each has walked 3 m from where it first stood - the test's players walk once their loading screens
+        // are gone. Online was not enough (on the runner the join sync took 35-67 s), nor were inputs (they flow during the ~20 s
+        // spawn-area loading screen after the sync): the creature lived and fell before the clients were in the world.
         static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
         if (joinCreature) {
             static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
+            static std::unordered_map<uint32_t, Vector3> firstAt; static std::unordered_set<uint32_t> walked;
             const double now = GetTime();
-            if (gAnimalTargets.size() >= 2 && bothAt < 0.0) { bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false); }
+            for (const auto& kv : remotes) {
+                uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+                if (kv.second.lastQueued == 0 || !RemoteLocal(kv.second, body, at, scale)) continue;
+                auto it = firstAt.find(kv.first);
+                if (it == firstAt.end()) firstAt[kv.first] = at;
+                else if (Vector3Distance(it->second, at) * (float)scale > 3.0f) walked.insert(kv.first);
+            }
+            const int playing = (int)walked.size();
+            if (playing >= 2 && gAnimalTargets.size() >= 2 && bothAt < 0.0) {
+                bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false);
+                printf("host: creature: both players in the world\n");
+            }
             if (bothAt >= 0.0 && spawnedAt < 0.0 && now - bothAt > 3.0 && !gAnimalTargets.empty()) {
                 const AnimalTarget& t = gAnimalTargets[0];
                 Planetoid* b = Planetoid::findNet(t.body);
@@ -884,6 +900,10 @@ namespace {
                 if (Animals_Count() > before) { net = Animals_NetId(Animals_Count() - 1); printf("host: creature: a thornback (%llu) by session %u\n", (unsigned long long)net, t.session); }
                 spawnedAt = now; lastHit = now;
             }
+            // (#1421) The test is the creature's replication, not the players' survival: while it lives, neither test player
+            // goes below half health. On the runner a ram threw bob into the air and the hit killed him; he spent the
+            // creature's whole life on the respawn screen and never saw it.
+            if (net && !fell) for (auto& kv : remotes) kv.second.survival.health = std::max(kv.second.survival.health, 50.0f);
             if (net && !fell && spawnedAt >= 0.0 && now - spawnedAt > 6.0 && now - lastHit >= 1.0) {
                 lastHit = now;
                 const int i = Animals_FindNet(net);
@@ -912,7 +932,12 @@ namespace {
         const int i = Animals_FindNet(netId);
         if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
         const Planetoid* b = rit->second.player.nearest;
-        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        if (!b || Animals_Body(i) != b->name) { ++animalHitsRefused; return; }
+        // (#1108) lag compensation: within reach of where the animal was in the last kHitRewind (the player swung at what
+        // they saw: a round trip and their interpolation behind); a fleeing animal's hits were refused at the edge of reach
+        const float nowD = Vector3Distance(Animals_Position(i), at) * (float)scale, rewD = Animals_HitDistance(i, at, kHitRewind) * (float)scale;
+        if (rewD > kAnimalReach) { ++animalHitsRefused; return; }
+        if (nowD > kAnimalReach) ++animalHitsRewound; // (allowed only by the rewind)
         if (ClaimBlocks(session, b, Animals_Position(i))) { ++animalHitsRefused; if (const uint32_t conn = ConnOf(session)) SendMsg(conn, MsgChat{ 0, ClaimRefusal(b, Animals_Position(i)) + ": its animals are theirs" }); return; } // (#343)
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }

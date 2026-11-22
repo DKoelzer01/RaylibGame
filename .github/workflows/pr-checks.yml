@@ -180,6 +180,9 @@ jobs:
           key: ccache-windows-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
       - name: Unit tests (game_tests)
         run: ./build/ci/bin/game_tests.exe --gtest_brief=1 # from the repo root: some tests read resources/
+      - name: Crash entries in log.txt (#1526, #1527)
+        timeout-minutes: 3
+        run: bash tools/test_crash_log.sh build/ci/bin/game.exe
 
   linux:
     name: Linux build + unit tests (headless server, GNS)
@@ -254,6 +257,9 @@ jobs:
           key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
       - name: Unit tests (game_tests)
         run: ./build/ci/bin/game_tests --gtest_brief=1 # from the repo root: some tests read resources/
+      - name: Crash entries in log.txt (#1526, #1527)
+        timeout-minutes: 3
+        run: bash tools/test_crash_log.sh build/ci/bin/game
       - name: Dedicated server smoke test (null GL, sandbox world)
         timeout-minutes: 5
         run: EXE="$PWD/build/ci/bin/game" RAYLIBGAME_NO_GL=1 bash tools/test_server.sh

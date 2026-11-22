@@ -34,6 +34,11 @@ on:
         default: "0"
         type: choice
         options: ["0", "1"]
+      extra_scenarios:
+        description: "Also run these scenarios after the headless parts (comma-separated names or tag:X, e.g. fluid/flow-meter; #1447)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -116,6 +121,15 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
           rm -rf "$RUN/scenarios" "$RUN/join-logs"
           mkdir -p "$RUN/join-logs"
+          # (#1447) The GPU's state every 5 s for the whole job (performance state, clocks, utilisation, memory, the
+          # processes on it): the runner's fluid step ran ~35x slower than the PC's, and the GPU is shared by three runners.
+          if command -v nvidia-smi > /dev/null; then
+            nohup bash -c 'while :; do echo "$(date -u +%H:%M:%S),$(nvidia-smi --query-gpu=pstate,clocks.gr,clocks.max.gr,clocks.mem,utilization.gpu,memory.used,temperature.gpu,power.draw --format=csv,noheader,nounits 2>&1 | head -1),$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | wc -l)"; sleep 5; done' \
+              > "$RUN/gpu-samples.csv" 2>&1 &
+            echo $! > "$RUN/gpu-sampler.pid"
+          else
+            echo "no nvidia-smi in the container" > "$RUN/gpu-samples.csv"
+          fi
       - name: GPU context (EGL on the NVIDIA runtime)
         id: gpu
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.changes.outputs.gpu != 'false' }}
@@ -142,14 +156,14 @@ jobs:
         run: |
           # The shader's half rounding (packHalf2x16, the stored face flows) against the CPU kernel's, 1M floats (#968).
           set +e
-          timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- timeout 300 "$OUT/bin/game" --seed 42 --bench 1 --sandbox --test-half > half.log 2>&1
           grep -E "^bench: half" half.log || true
           echo "half rounding: $(grep -E '^bench: half: [0-9]+ floats' half.log | sed -E 's/^bench: half: //')" >> "$GITHUB_STEP_SUMMARY"
           # fluid/flow run twice in lockstep (GPU, then FLUID_CPU=1), a hash of every brick's cells each tick, compared (#968).
-          "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
           # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
-          "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
           grep -E "^scenario: parity" parity-pressure.log || true
@@ -169,7 +183,7 @@ jobs:
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           set +e
-          "$OUT/bin/game" --scenario tag:fluid,tag:frames,tag:factory --scenario-no-record --scenario-out "$RUN/scenarios/part1" \
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:fluid,tag:frames,tag:factory --scenario-no-record --scenario-out "$RUN/scenarios/part1" \
             > scenarios-1.log 2>&1
           rc=$?
           set -e
@@ -185,21 +199,60 @@ jobs:
           RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
         run: |
           set +e
-          "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
             > scenarios-2.log 2>&1
           rc=$?
           set -e
           grep -E "^scenario: " scenarios-2.log | grep -vE "heartbeat|waiting" | tail -80 || true
           echo "scenarios part 2: exit $rc" >> "$GITHUB_STEP_SUMMARY"
           exit $rc
+      - name: Extra scenarios (the dispatch input extra_scenarios, #1447)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.extra_scenarios != '' }}
+        timeout-minutes: 90 # (up to 45 min waiting for the GPU to itself: tools/ci/gpu_lock.sh)
+        working-directory: ${{ env.RUN }}
+        env:
+          RAYLIBGAME_TIMING_GATES: "0"
+          EXTRA: ${{ inputs.extra_scenarios }}
+        run: |
+          # Scenarios that are local-only (timing) can be measured here on request; their start and end times line up with
+          # the GPU samples (gpu-samples.csv). Labels only: a failure here doesn't fail the job.
+          echo "extra scenarios start: $(date -u +%H:%M:%S)" | tee -a "$GITHUB_STEP_SUMMARY"
+          set +e
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" exclusive 2700 -- "$OUT/bin/game" --scenario "$EXTRA" --scenario-no-record --scenario-out "$RUN/scenarios/extra" > scenarios-extra.log 2>&1
+          set -e
+          echo "extra scenarios end: $(date -u +%H:%M:%S)" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E "^scenario: [a-z0-9_/-]+ -> " scenarios-extra.log | tee -a "$GITHUB_STEP_SUMMARY" || true
       - name: Dedicated server and multiplayer (test_server.sh, test_join.sh)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 20
         env:
           TMPDIR: ${{ env.RUN }}/join-logs # the scripts' mktemp -d folders (host and client logs) land in the uploaded results
         run: |
-          EXE="$OUT/bin/game" bash tools/test_server.sh
-          EXE="$OUT/bin/game" bash tools/test_join.sh
+          EXE="$OUT/bin/game" bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/test_server.sh
+          EXE="$OUT/bin/game" bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/test_join.sh
+      - name: Failures, known or NEW (#1479)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
+        # summary (the runner-check skill's matching). Labels only: the steps above carry the verdicts.
+        run: |
+          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
+            "$RUN/half.log" "$RUN/terrain-gpu.log" "$RUN/join-logs"
+      - name: GPU state over the job (#1447)
+        if: ${{ !cancelled() }}
+        run: |
+          [ -f "$RUN/gpu-sampler.pid" ] && kill "$(cat "$RUN/gpu-sampler.pid")" 2> /dev/null || true
+          f="$RUN/gpu-samples.csv"
+          [ -s "$f" ] || exit 0
+          # time, pstate, clock MHz, max clock MHz, memory clock MHz, utilisation %, memory MiB, temperature, power W, processes
+          {
+            echo ""; echo "### GPU over the job (#1447): $(wc -l < "$f") samples, every 5 s"
+            echo '```'
+            awk -F', *' 'NF >= 9 { n++; p[$2]++; u += $6; c += $3; if ($6 > 90) busy++; if ($10 > m) m = $10 }
+                          END { if (!n) { print "no samples"; exit }
+                                printf "clock %.0f MHz mean (max %s); utilisation %.0f%% mean, >90%% in %d of %d samples; up to %d processes\n", c/n, $4, u/n, busy, n, m
+                                for (s in p) printf "  %s: %d samples\n", s, p[s] }' "$f"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Save the run summary for the deweyserver MCP tools (ci_summary, scenario_history; #1476)
         if: ${{ !cancelled() }}
         run: bash tools/ci/save_summary.sh gpu
@@ -212,6 +265,7 @@ jobs:
             ${{ env.RUN }}/scenarios/
             ${{ env.RUN }}/terrain-gpu.log
             ${{ env.RUN }}/scenarios-*.log
+            ${{ env.RUN }}/gpu-samples.csv
             ${{ env.RUN }}/join-logs/**/*.log
           retention-days: 7
           if-no-files-found: ignore
@@ -261,7 +315,7 @@ jobs:
           set +e
           start=$SECONDS
           for s in $SETS; do
-            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
+            RUNDIR="$RUN" EXE="$OUT/bin/game" EXE_GNS="$OUT/bin/game" GNS=1 bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- bash tools/regression.sh "$s" --only headless --shard "$SHARD/4"
           done 2>&1 | tee "$log"
           {
             echo "## Regression --only headless, shard $SHARD/4 ($SETS, $RAYLIBGAME_VERSION)"

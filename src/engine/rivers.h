@@ -33,6 +33,7 @@ public:
         float maxReach = 300.0f;        // m: the valley carving's reach from a centreline (the index covers it)
         float lakeDepth = 6.0f;         // m: a filled depression deeper than this holds water (a lake, or with the bake a pond)
         std::function<float(Vector3)> runoff; // optional (#637): water per km^2 drained at a place, x the default (moisture x the water cycle)
+        float valleyFill = 1.0f;        // (#637) 0..1: how much of its worn valley floor a river fills (0: the discharge width alone; the water cycle sets it)
         // optional (bake-native, #903): how far the runtime moves the bake's ground at a place of bake height h (m: biomes'
         // regional reshaping after the bake, e.g. swamps pulled down to a floor 2-5 m over the sea). Levels move with it.
         std::function<float(Vector3 dir, float h)> regionalShift;
