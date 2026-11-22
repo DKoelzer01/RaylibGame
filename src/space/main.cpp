@@ -8146,7 +8146,10 @@ int main(int argc, char** argv)
                                 if (dist >= best) continue;
                                 const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, e / pf->radius), Vector3Scale(t2, n / pf->radius))));
                                 PlanetField::WaterSource ws;
-                                if (benchFlowSea) { ws.kind = 4; ws.level = 0.0f; if (pf->elevation(d) > -1.5f) continue; } // the sea, 1.5 m+ deep (#190)
+                                if (benchFlowSea) { ws.kind = 4; ws.level = 0.0f; if (pf->elevation(d) > -1.5f) continue; // the sea, 1.5 m+ deep (#190)
+                                    // ...clear of rivers (#1504): a trench from a river mouth to the sea is a diversion, running forever by
+                                    // design; this test is about the sea. Valley-wide rivers (#637) put one on seed 42's first pick.
+                                    if (pf->rivers() && pf->rivers()->nearest(d, 120.0f).found) continue; }
                                 else {
                                     ws = pf->waterSourceAt(d);
                                     if (!ws.kind || ws.kind == 3 || ws.level <= 2.0f || pf->elevation(d) > ws.level - 1.5f) continue;
