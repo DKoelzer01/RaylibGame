@@ -970,15 +970,21 @@ static int JobEu(const Machine& m) {
 // An assembler set to disassemble, one step: the first input it can take apart starts a job (the forward recipe's time and EU,
 // overclocked); a finished job takes one item and gives back its parts at the tier yield, raw parts as hundredths carried in
 // the machine, components rolled per unit. Every output must fit, or it waits (nothing rolled or taken).
+// The first input it can take apart starts a job: its slot, time and EU. False: none.
+static bool DisStartJob(Machine& m, DisassemblyEntry& e) {
+    for (int si = 0; si < InSlots(m); ++si)
+        if (DisEntryOf(m.in[si], e) && MachineTiers_YieldPercent(m.tier, e.tier) > 0) {
+            const int st = DisSteps(m, e);
+            m.disSlot = si; m.progress = 0; m.disTicks = MachineTiers_Ticks(e.ticks, st); m.disEu = MachineTiers_Eu(e.eu, st);
+            return true;
+        }
+    return false;
+}
 static void DisassembleStep(PlotSim& ps, Machine& m, int dt, long long& made, int& active) {
     DisassemblyEntry e;
     if (m.disSlot >= 0 && (m.disSlot >= InSlots(m) || !DisEntryOf(m.in[m.disSlot], e))) { m.disSlot = -1; m.progress = 0; } // taken out meanwhile
-    if (m.disSlot < 0) {
-        for (int si = 0; si < InSlots(m) && m.disSlot < 0; ++si)
-            if (DisEntryOf(m.in[si], e) && MachineTiers_YieldPercent(m.tier, e.tier) > 0) { m.disSlot = si; m.progress = 0; m.disTicks = 0; }
-        if (m.disSlot < 0) { m.status = MachineStatus::Idle; m.asleep = true; return; } // nothing it takes apart: until items change
-    }
-    if (m.disTicks <= 0) { const int st = DisSteps(m, e); m.disTicks = MachineTiers_Ticks(e.ticks, st); m.disEu = MachineTiers_Eu(e.eu, st); } // (also after a load)
+    if (m.disSlot < 0 && !DisStartJob(m, e)) { m.status = MachineStatus::Idle; m.asleep = true; return; } // nothing it takes apart: until items change
+    if (m.disTicks <= 0) { const int st = DisSteps(m, e); m.disTicks = MachineTiers_Ticks(e.ticks, st); m.disEu = MachineTiers_Eu(e.eu, st); } // (after a load)
     if (m.progress < m.disTicks) {
         if (m.powerNet < 0) { m.status = MachineStatus::NoPower; return; }
         if (VoltsOf(m) < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; return; }
@@ -1015,6 +1021,8 @@ static void DisassembleStep(PlotSim& ps, Machine& m, int dt, long long& made, in
     m.disCarry = std::move(carry);
     m.disRng = rng;
     m.disSlot = -1; m.progress = 0; m.disTicks = 0; m.euCarry = 0;
+    // The next job now, so the next power split counts its demand (else one tick of "no power" between jobs)
+    DisStartJob(m, e);
     m.dirty = true;
 }
 
@@ -3338,7 +3346,9 @@ TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
     int ticks = 160;
     for (const auto& r : tables.recipes) if (r.machine == PartType::LvAssembler && !r.out.empty() && r.out[0].item == circuit) { ticks = r.ticks; break; }
     long long made = 0; int active = 0;
-    for (int t = 0; t < ticks + ticks / 2; ++t) TickPlot(*ps, 1, made, active);
+    int noPower = 0;
+    for (int t = 0; t < ticks + ticks / 2; ++t) { TickPlot(*ps, 1, made, active); if (t > 0 && M(1).status == MachineStatus::NoPower) ++noPower; }
+    EXPECT_EQ(noPower, 0) << "powered all along: no \"no power\" tick between one job and the next";
     EXPECT_EQ(CountItems(M(1).in.data(), kSlots, circuit), 2) << "one circuit in one forward recipe's time";
     EXPECT_EQ(M(1).disSlot, 0) << "the second one under way";
     EXPECT_EQ(M(1).disCarry[steel], 50) << "half a steel plate carried";
