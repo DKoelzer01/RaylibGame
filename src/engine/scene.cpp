@@ -2,6 +2,7 @@
 #include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
+#include "ores.h"
 #include "gputimer.h"
 #include "utils/logger.h"
 #include "profiler.h"
@@ -288,6 +289,14 @@ void Scene::applyLightingShader() {
     { const int unit = kTerrainDetailUnit; const int loc = GetShaderLocation(s, "terrainDetail"); if (loc >= 0) SetShaderValue(s, loc, &unit, SHADER_UNIFORM_INT); }
     const Vector3 noClip = { 1e30f, 1e30f, 1e30f }; // default for anything that is not a chunk
     SetShaderValue(s, locChunkClip, &noClip, SHADER_UNIFORM_VEC3);
+    { // (#1466) the ore table: each kind's mineral colour and pattern (ores.txt)
+        float colours[3 * kOresMax]; int patterns[kOresMax];
+        Ores_ShaderTable(colours, patterns);
+        const int count = Ores_Count();
+        if (const int loc = GetShaderLocation(s, "oreColour"); loc >= 0) SetShaderValueV(s, loc, colours, SHADER_UNIFORM_VEC3, kOresMax);
+        if (const int loc = GetShaderLocation(s, "orePattern"); loc >= 0) SetShaderValueV(s, loc, patterns, SHADER_UNIFORM_INT, kOresMax);
+        if (const int loc = GetShaderLocation(s, "oreCount"); loc >= 0) SetShaderValue(s, loc, &count, SHADER_UNIFORM_INT);
+    }
 
     const int res = SHADOW_MAP_SIZE;
     SetShaderValue(s, locShadowRes, &res, SHADER_UNIFORM_INT);
