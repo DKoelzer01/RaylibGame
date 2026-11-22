@@ -3,6 +3,7 @@
 #include "composed.h"
 #include "tools.h"
 #include "itemdata.h"
+#include "combat.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -68,6 +69,18 @@ GemEffect Weapon_GemEffect(const std::string& id, const std::string& data) {
         if (gem == "quartz") g.poiseScale *= 1.5f; // GUESS
     }
     return g;
+}
+
+DamageEvent Weapon_HitEvent(const std::string& id, const std::string& data) {
+    DamageEvent e;
+    e.amount = Weapon_BaseDamage(id, data);
+    e.kind = DamageKind::Melee;
+    e.type = Weapon_TypeOf(id);
+    e.poise = Weapon_SpecOf(id, data).poise;
+    const GemEffect g = Weapon_GemEffect(id, data);
+    if (g.status != StatusKind::None) e.status = g.status;
+    e.poise *= g.poiseScale;
+    return e;
 }
 
 float Weapon_BaseDamage(const std::string& id, const std::string& data) {

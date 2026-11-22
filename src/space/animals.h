@@ -129,6 +129,8 @@ void Animals_CollectNet(Scene& world, std::vector<AnimalNet>& out);             
 void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64_t>& removed); // a client: states heard, and removals
 int Animals_FindNet(uint64_t netId);                                                      // index, -1 none
 bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::string, int>>& drops); // the server; true if it fell (drops filled)
+// (#1509) The same with a typed hit (resistances, poise, its status effect, as a local hit); raw: e.amount as it is (the old path).
+bool Animals_HitNetEvent(uint64_t netId, const struct DamageEvent& e, std::vector<std::pair<std::string, int>>& drops, bool raw = false, float* dealtOut = nullptr);
 float Animals_HealthOf(int index);
 
 #endif

@@ -14,6 +14,7 @@
 #include "itemdata.h"
 #include "melee.h"
 #include "damage.h"
+#include "combat.h"
 #include "player.h"
 #include "playerinput.h"
 #include "terraintool.h"
@@ -154,6 +155,26 @@ SCENARIO("combat/weapons-composed") {
         const StatusState* st = Animals_Status(Idx());
         c.check("it burns", st && st->burn > 0.0f, st ? "burn " + std::to_string(st->burn) : std::string("gone"));
         gScenarioInput = false;
+        return true;
+    });
+    // (#1509) A client's hit on the server: the event the server builds from the session's held copy, through the typed net
+    // path. A sapphire instead of the ruby: the dummy chills, and the damage is the sword's (as a local hit's).
+    s.step("a client's hit on the server keeps its effect", 3.0, [](ScenarioCtx& c) {
+        Pin();
+        const int cell = SwordCell();
+        if (!c.check("the sword", cell >= 0)) { c.fail("no sword"); return true; }
+        const std::string d = ItemData::Set(inventory.grid()[cell].data, "j", "sapphire");
+        const DamageEvent ev = Weapon_HitEvent("weapon_sword", d);
+        c.check("the event chills", ev.status == StatusKind::Chill);
+        c.near("the event's damage", ev.amount, 9.0, 1e-3);
+        std::vector<std::pair<std::string, int>> drops;
+        const float hp = Animals_HealthOf(Idx());
+        float dealt = 0.0f;
+        Animals_HitNetEvent(S.net, ev, drops, false, &dealt);
+        const StatusState* st = Animals_Status(Idx());
+        c.check("the dummy chills", st && st->chill > 0.0f, st ? "chill " + std::to_string(st->chill) : std::string("gone"));
+        c.near("the health it took", hp - Animals_HealthOf(Idx()), dealt, 1e-3);
+        c.check("typed damage", dealt > 0.0f, "dealt " + std::to_string(dealt));
         return true;
     });
 }
