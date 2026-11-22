@@ -15,6 +15,8 @@
 #include "strata.h"
 #include "worldgenparams.h"
 
+struct VeinDeposit; // oreveins.h (#1467)
+
 extern const int CHUNK_SIZE;          // cells per chunk edge (samples per edge = CHUNK_SIZE + 1)
 // The finest terrain cell (body-local units, metres on planets): the edit lattice spacing and the
 // octree's level-0 stride. 0.25 m makes the dig spheres the tools show (0.35-1.2 m) exactly what is
@@ -245,10 +247,12 @@ public:
     static int OreKindCount();                  // (#1466) the kinds in ores.txt
     static const char* OreKindName(int kind);   // its item ("iron_ore", ...), from ores.txt; nullptr outside it
     int oreKind(Vector3 p, float depth) const;
-    int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
-    // The ore deposit whose cell holds p (#207: a vein mined out): its centre, radius (the blob reaches ~1.35x it with its
-    // lumpiness) and kind; false if the cell has none.
+    int depositNear(Vector3 p, float reach) const; // the main ore kind of a deposit within `reach` m, or -1 (miners)
+    // The ore deposit whose cell holds p (#207: a vein mined out): its centre, the radius its shape fits in (a blob reaches
+    // ~1.35x it with its lumpiness) and its family's main ore; false if the cell has none.
     bool depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const;
+    const char* depositFamilyAt(Vector3 p) const; // (#1467) its vein family's id (ore_families.txt), nullptr if none
+    VeinDeposit depositOf(int cx, int cy, int cz) const; // (#1467) a 96 m cell's deposit (oreveins.h), cached per thread
     // The kind of stone that rock is here (M21, building variety): an item id - marble in rare deep
     // pockets, basalt deep down and under the sea, granite in the mountains, sandstone on low coastal
     // land, limestone elsewhere (in broad regions).

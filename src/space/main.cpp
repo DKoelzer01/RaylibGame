@@ -1,6 +1,7 @@
 #include <functional>
 #include <set>
 #include <map>
+#include <tuple>
 #include <cstring>
 #include <raylib.h>
 #include <string>
@@ -1806,6 +1807,41 @@ int main(int argc, char** argv)
             return 0;
         }
     for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--ore-stats" && i + 1 < argc) {
+            // (#1467) The ores within R m of the start: columns every 4 m, samples every 1 m from 3 m to D m (default 200)
+            // under the surface. Ore samples per kind, and the deposits per vein family (each 96 m cell counted once).
+            const float R = (float)atof(argv[i + 1]);
+            const float D = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 200.0f;
+            Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+            const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
+            if (!pf) { printf("bench: ore stats: no planet\n"); return 1; }
+            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
+            std::vector<long long> perKind(PlanetField::OreKindCount(), 0);
+            std::map<std::string, int> perFamily;
+            std::set<std::tuple<int, int, int>> cells;
+            long long samples = 0;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (float a = -R; a <= R; a += 4.0f)
+                for (float b = -R; b <= R; b += 4.0f) {
+                    if (a * a + b * b > R * R) continue;
+                    const Vector3 dir = Vector3Normalize(Vector3Add(home, Vector3Add(Vector3Scale(t1, a / pf->radius), Vector3Scale(t2, b / pf->radius))));
+                    const float surface = pf->radius + pf->elevation(dir);
+                    for (float d = 3.0f; d <= D; d += 1.0f) {
+                        const Vector3 q = Vector3Scale(dir, surface - d);
+                        ++samples;
+                        const int k = pf->oreKind(q, d);
+                        if (k >= 0 && k < (int)perKind.size()) ++perKind[k];
+                        const std::tuple<int, int, int> c{ (int)floorf(q.x / 96.0f), (int)floorf(q.y / 96.0f), (int)floorf(q.z / 96.0f) };
+                        if (cells.insert(c).second) if (const char* fam = pf->depositFamilyAt(q)) ++perFamily[fam];
+                    }
+                }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            printf("bench: ore stats: R %.0f m, depth 3-%.0f m: %lld samples, %zu deposit cells, %.0f ms\n", R, D, samples, cells.size(), ms);
+            for (int k = 0; k < (int)perKind.size(); ++k) printf("bench: ore stats: kind %-16s %8lld samples\n", PlanetField::OreKindName(k), perKind[k]);
+            for (const auto& [fam, n] : perFamily) printf("bench: ore stats: family %-20s %4d deposits\n", fam.c_str(), n);
+            return 0;
+        }
         if (std::string(argv[i]) == "--cave-stats" && i + 1 < argc) {
             // (#615 step 1) The caves within R m of the start: columns every 2 m, samples every 0.5 m from 14 m over the
             // surface to 80 m down, at the finest footprint. Counts open cave samples by kind (tunnel, cavern), the columns a
