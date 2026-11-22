@@ -238,12 +238,12 @@ public:
     // Whether inland water may lie within `extent` metres of a direction (cheap; meshing skips the
     // per-sample work elsewhere).
     bool inlandWaterNear(Vector3 dir, float extent, float footprint = 0.0f) const;
-    // Ore at a point `depth` m under the original surface: an index into kOreKinds, or -1.
+    // Ore at a point `depth` m under the original surface: a kind (a row of resources/data/ores.txt, ores.h), or -1.
     //   Deposits: a 96 m grid; about a third of its cells hold one lumpy blob 7-18 m across of a single
     //   kind (coal, iron, copper, tin; bauxite below 20 m, ilmenite below 60 m) - a find worth mining.
     //   Scattered: small pockets of the common ores (iron, copper, tin) and coal everywhere, most near the surface.
-    static constexpr int kOreKindCount = 6;
-    static const char* OreKindName(int kind);   // "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore"
+    static int OreKindCount();                  // (#1466) the kinds in ores.txt
+    static const char* OreKindName(int kind);   // its item ("iron_ore", ...), from ores.txt; nullptr outside it
     int oreKind(Vector3 p, float depth) const;
     int depositNear(Vector3 p, float reach) const; // the kind of a deposit within `reach` m, or -1 (miners)
     // The ore deposit whose cell holds p (#207: a vein mined out): its centre, radius (the blob reaches ~1.35x it with its

@@ -12,7 +12,12 @@ centroid in float fragSky;       // 1 = open to the sky, 0 = buried (caves, deep
 centroid in float fragOcclusion; // short-range ambient occlusion (#132): 0 open .. 1 enclosed
 in vec2 fragCanopy;     // planets: forest canopy cover and latitude (painted in beyond the real trees)
 flat in float fragClimate; // the packed climate, per triangle (#254: interpolated, it striped the biome tints)
-in float fragOreKind;   // planets: which ore, (1 + kind) / 8 (0 none)
+in float fragOreKind;   // planets: which ore, (1 + kind) / 256 (0 none)
+// (#1466) The ore table (ores.txt, Ores_ShaderTable): each kind's mineral colour and pattern (0-5, the ore block below).
+const int kOres = 64;   // ores.h kOresMax
+uniform vec3 oreColour[kOres];
+uniform int orePattern[kOres];
+uniform int oreCount;
 in float fragMacro;     // planets: slow brightness / warmth variation (70-250 m), per vertex (lighting.vs)
 
 // Material maps: bound by DrawMesh to the units of the matching raylib material slots.
@@ -350,38 +355,39 @@ void main()
             vec3 c = cs[k];
             if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
             if (i == 3) {
-                // Ore: flecks of the mineral's colour in the stone, by kind (iron rust, copper green,
-                // tin pale, coal black, bauxite red, ilmenite dark violet).
-                int kind = int(fragOreKind * 8.0 + 0.5) - 1;
-                vec3 mineral = kind == 1 ? vec3(0.10, 0.42, 0.30) : kind == 2 ? vec3(0.62, 0.62, 0.64) : kind == 3 ? vec3(0.03, 0.03, 0.035)
-                             : kind == 4 ? vec3(0.62, 0.22, 0.16) : kind == 5 ? vec3(0.13, 0.08, 0.16) : vec3(0.58, 0.27, 0.08);
-                // Each kind also has its own pattern (#1433): iron and bauxite, coal and ilmenite are close in colour for
-                // everyone (and copper and bauxite for red-green colour blindness), so the shape tells them apart:
-                // iron thin veins, copper veins with green crust patches, tin a fine speckle, coal broad dull seams,
-                // bauxite round nodules, ilmenite dense metallic glints.
+                // Ore: flecks of the mineral's colour in the stone, by kind: its colour and pattern from the ore table
+                // (#1466, ores.txt: iron rust, copper green, tin pale, coal black, bauxite red, ilmenite dark violet).
+                int kind = int(fragOreKind * 256.0 + 0.5) - 1;
+                bool known = kind >= 0 && kind < oreCount;
+                vec3 mineral = oreColour[known ? kind : 0]; // (no kind: the first's colour, no pattern of its own)
+                int pat = known ? orePattern[kind] : -1;
+                // Each pattern (#1433): iron and bauxite, coal and ilmenite are close in colour for everyone (and copper
+                // and bauxite for red-green colour blindness), so the shape tells them apart: 0 veins (iron), 1 veins with
+                // green crust patches (copper), 2 a fine speckle (tin), 3 broad dull seams (coal), 4 round nodules
+                // (bauxite), 5 dense metallic glints (ilmenite).
                 float fleck = smoothstep(0.30, 0.55, dot(c, vec3(0.333)) + 0.15 * sin(dot(fragTexPos, vec3(7.1, 5.3, 6.7))));
                 float vp = dot(fragTexPos, vec3(0.37, 0.81, 0.45)) * 1.4 + vnoise(fragTexPos * 0.7) * 1.8;
                 float vein = smoothstep(0.16, 0.04, abs(fract(vp) - 0.5));
                 float glint = step(0.94, hash3(floor(fragTexPos * 7.0)));
                 float amount = 0.2 + 0.35 * fleck; // the mineral's share
-                if (kind == 0) amount += 0.45 * vein;                                                   // iron: veins
-                else if (kind == 1) amount += 0.45 * vein + 0.5 * smoothstep(0.55, 0.68, vnoise(fragTexPos * 1.3)); // copper: + crust
-                else if (kind == 2) { amount = 0.2 + 0.45 * step(0.8, hash3(floor(fragTexPos * 12.0))); glint = 0.0; } // tin: speckle
-                else if (kind == 3) { // coal: broad layered seams, dull (no glints)
+                if (pat == 0) amount += 0.45 * vein;                                                   // iron: veins
+                else if (pat == 1) amount += 0.45 * vein + 0.5 * smoothstep(0.55, 0.68, vnoise(fragTexPos * 1.3)); // copper: + crust
+                else if (pat == 2) { amount = 0.2 + 0.45 * step(0.8, hash3(floor(fragTexPos * 12.0))); glint = 0.0; } // tin: speckle
+                else if (pat == 3) { // coal: broad layered seams, dull (no glints)
                     float seam = smoothstep(0.30, 0.18, abs(fract(fragTexPos.y * 0.9 + vnoise(fragTexPos * 0.3) * 0.5) - 0.5));
                     amount = 0.15 + 0.8 * seam; glint = 0.0;
-                } else if (kind == 4) { // bauxite: round nodules (pisoliths) a few cm to a hand across
+                } else if (pat == 4) { // bauxite: round nodules (pisoliths) a few cm to a hand across
                     vec3 q = fragTexPos * 1.8;
                     vec3 cell = floor(q);
                     vec3 o = vec3(hash3(cell), hash3(cell + 17.0), hash3(cell + 31.0)) * 0.4 - 0.2;
                     float nodule = smoothstep(0.32, 0.24, length(fract(q) - 0.5 - o));
                     amount = 0.18 + 0.75 * nodule;
-                } else if (kind == 5) { // ilmenite: dense small metallic crystals
+                } else if (pat == 5) { // ilmenite: dense small metallic crystals
                     glint = 0.5 * step(0.86, hash3(floor(fragTexPos * 9.0)));
                     amount += 0.3 + 0.2 * vein; // the dark mineral as the ground, the crystals on it
                 }
                 c = mix(c * 0.6, mineral, clamp(amount, 0.0, 1.0));
-                c += (kind == 5 ? vec3(0.55, 0.55, 0.6) : mineral * 0.6) * glint; // ilmenite's crystals shine steel-grey
+                c += (pat == 5 ? vec3(0.55, 0.55, 0.6) : mineral * 0.6) * glint; // crystals (ilmenite) shine steel-grey
             }
             if (i == 17) {
                 // Farmland (#1085): darker turned soil in furrows every 25 cm (the old farmland part's pattern, parts.fs).
