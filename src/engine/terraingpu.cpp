@@ -155,7 +155,7 @@ namespace {
             blocks.push_back(b);
             for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];
-                const float v[8] = { g.h[k], c.mask, c.f, c.wet, 0.0f, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland
+                const float v[8] = { g.h[k], c.mask, c.f, c.wet, c.river, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland; (#1438) second x: river channel
                 grid.insert(grid.end(), v, v + 8);
             }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
