@@ -2658,8 +2658,10 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
     // Bare rock is its stratum's (#587): granite, basalt, sandstone, limestone, marble, or plain (soft) rock.
     auto rockHere = [&] { return RockMaterialOf(rockTypeAt(p)); };
     if (depth < -15.0f) return Vector3DotProduct(normal, up) > 0.35f ? VoxelMaterial::Grass : rockHere(); // floating islands: turf on top, rock beneath
-    // Outcrops and boulders are bare rock (snow still caps them up high, below).
-    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return rockHere();
+    // (#1591) How far up a volcano this is (0 off one, 1 at the vent); only the surface asks
+    const float vw = depth < 2.5f + slack && gen.volcanoes ? volcanoWeight(p) : 0.0f;
+    // Outcrops and boulders are bare rock (snow still caps them up high, below); a volcano's upper cone has its own ground.
+    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && vw <= 0.5f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return rockHere();
     if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
@@ -2679,7 +2681,6 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         const float ragged = 45.0f * climate.fractal(2, p.x * 25.0f, p.y * 25.0f, p.z * 25.0f);
         // (#1591) A volcano's heat keeps its upper cone bare: the snow line climbs toward the vent (w 0 at the foot, 1 at the
         // vent), so the cone stands dark above a snowy skirt. GUESS values.
-        const float vw = gen.volcanoes ? volcanoWeight(p) : 0.0f;
         const float snowLine = 1050.0f + 150.0f * wobble - 120.0f * shade + std::min(300.0f, 900.0f * slope) + ragged
                              + 3000.0f * std::clamp((vw - 0.4f) / 0.4f, 0.0f, 1.0f);
         if (lat > 0.93f + 0.03f * wobble) return VoxelMaterial::Ice;                                         // polar cap
@@ -4004,7 +4005,7 @@ TEST(Voxel, AVolcanoHasAshAndLavaNotSnow) {
             EXPECT_NE(m, VoxelMaterial::Ice) << "w " << w;
         }
         if (w > 0.94f) lavaOrAsh += (m == VoxelMaterial::Lava || m == VoxelMaterial::Ash || m == VoxelMaterial::Basalt);
-        else if (w > 0.78f) EXPECT_TRUE(m == VoxelMaterial::Ash || m == VoxelMaterial::Lava) << "near the vent: ash (w " << w << ")";
+        else if (w > 0.78f) EXPECT_TRUE(m == VoxelMaterial::Ash || m == VoxelMaterial::Lava) << "near the vent: ash (w " << w << ", got " << VoxelMaterialName(m) << ")";
         else if (w > 0.55f && (m == VoxelMaterial::Basalt || m == VoxelMaterial::Ash)) ++flank;
     }
     EXPECT_GT(upper, 5);
