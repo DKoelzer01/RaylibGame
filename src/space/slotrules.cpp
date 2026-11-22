@@ -41,7 +41,7 @@ namespace {
     void ClickHeld(SlotGrid* g, int i) {
         const InvSlot at = g->at(i);
         if (at.empty() || at.id == held->id || g->infinite()) PutHeld(g, i, held->centi);
-        else Swap(g, i);
+        else if (!g->combine(i, *held)) Swap(g, i); // (#1219) a gem onto a weapon with a free socket: set, else swap
     }
     // Double-click: every stack of the held item onto the hand, up to a full stack; partial stacks first, as Minecraft does.
     void Gather() {

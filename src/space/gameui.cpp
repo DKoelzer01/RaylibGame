@@ -330,6 +330,29 @@ struct PlayerGrid : SlotGrid {
         if (c.centi <= 0) c = InvSlot{};
         return k;
     }
+    // (#1219, user 2026-11-22) A gem dropped onto a weapon with a free socket is set in it (one gem used). Joined: the server
+    // sets it in the inventory it keeps and takes the gem from there, so the held gems go back into the inventory first (the
+    // server knows no cursor) and its changes come back as inventory deltas.
+    bool combine(int i, InvSlot& held) override {
+        const InvSlot& c = inventory.grid()[i];
+        if (c.empty() || !c.hasData() || held.centi < 100) return false;
+        const std::string set = Composed_SetGem(c.id, c.data, held.id);
+        if (set.empty()) return false;
+        const std::string gem = held.id, name = Composed_DisplayName(c.id, c.data);
+        if (gSetGemRequest) {
+            inventory.addAmount(held.id, held.amount(), held.heat);
+            held = InvSlot{};
+            gSetGemRequest(c.id, c.data, gem);
+        } else {
+            inventory.setInstanceData(i, set);
+            held.centi -= 100;
+            if (held.centi <= 0) held = InvSlot{};
+        }
+        const ItemDef* gd = itemDB.find(gem);
+        GameUI_Toast(TextFormat("%s set in the %s", gd ? gd->name.c_str() : gem.c_str(), name.c_str()));
+        Audio_Play(Sfx::Craft, 0.5f, 1.3f);
+        return true;
+    }
     // To the open container (machines hold whole units), else between the grid and the hotbar (the off hand: to the grid).
     void moveOut(int i, int64_t centi) override {
         InvSlot& c = inventory.grid()[i];
@@ -591,6 +614,15 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
 
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data);
 void GameUI_TestHover(int cell) { gTestHoverCell = cell; }
+
+// (#1219 tests) A left click on inventory cell `cell` holding `held` on the cursor, through the slot rules; the cursor after it.
+InvSlot GameUI_TestClickHolding(const InvSlot& held, int cell) {
+    cursorStack = held;
+    CellClick(cell, false, false);
+    const InvSlot after = cursorStack;
+    if (!cursorStack.empty()) ReturnCursorStack();
+    return after;
+}
 
 bool GameUI_TestCursorStack() {
     auto& g = inventory.grid();

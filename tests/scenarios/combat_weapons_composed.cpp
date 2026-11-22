@@ -177,4 +177,23 @@ SCENARIO("combat/weapons-composed") {
         c.check("typed damage", dealt > 0.0f, "dealt " + std::to_string(dealt));
         return true;
     });
+    // (#1219, user 2026-11-22) Setting a gem in the inventory: a steel sword (two sockets) and three emeralds on the cursor,
+    // clicked onto it through the slot rules: one is set each click; with both sockets taken, the third click swaps instead.
+    s.step("emeralds dropped onto a steel sword: set, then swap when full", 3.0, [](ScenarioCtx& c) {
+        const int before = inventory.countInstances("weapon_sword");
+        const int cell = inventory.addInstance("weapon_sword", Composed_MakeData("steel"));
+        if (!c.check("a steel sword", cell >= 0 && inventory.countInstances("weapon_sword") == before + 1)) { c.fail("no room"); return true; }
+        const int durability = Composed_Stats("weapon_sword", inventory.grid()[cell].data).durability;
+        InvSlot held; held.id = "emerald"; held.centi = 300;
+        held = GameUI_TestClickHolding(held, cell);
+        c.eq("first click: one emerald used", (int)(held.centi / 100), 2);
+        held = GameUI_TestClickHolding(held, cell);
+        c.eq("second click: another", (int)(held.centi / 100), 1);
+        const ComposedStats s = Composed_Stats("weapon_sword", inventory.grid()[cell].data);
+        c.eq("two gems set", (int)s.gems.size(), 2);
+        c.eq("each emerald +25% durability", s.durability, (int)std::lround(std::lround(durability * 1.25f) * 1.25f));
+        const InvSlot after = GameUI_TestClickHolding(held, cell);
+        c.check("full: the third click swaps (the sword onto the cursor)", after.id == "weapon_sword", "cursor " + after.id);
+        return true;
+    });
 }

@@ -54,6 +54,9 @@ std::string Composed_FromParts(const std::string& cls, const std::vector<std::st
 // (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
 bool Composed_IsGem(const std::string& id);
 std::string Composed_GemText(const std::string& id);
+// (#1219, user 2026-11-22: a gem dropped onto a weapon in the inventory) The copy's record with that gem set in a free
+// socket; "" if it isn't a gem, the item isn't a valid composed copy, or every socket is taken.
+std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
 class Inventory;

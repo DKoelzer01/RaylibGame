@@ -101,6 +101,16 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
 
 bool Composed_IsGem(const std::string& id) { return id == "ruby" || id == "sapphire" || id == "emerald" || id == "amethyst" || id == "quartz"; }
 
+std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem) {
+    if (!Composed_IsGem(gem)) return {};
+    const ComposedStats s = Composed_Stats(cls, data);
+    if (!s.valid || (int)s.gems.size() >= s.sockets) return {};
+    std::string j;
+    for (const std::string& g : s.gems) j += (j.empty() ? "" : ",") + g; // (the gems it really holds: drops any junk in j=)
+    j += (j.empty() ? "" : ",") + gem;
+    return ItemData::Set(data, "j", j);
+}
+
 std::string Composed_GemText(const std::string& id) { // (#1219, combat doc: GUESS effects)
     if (id == "ruby") return "Ruby (burns)";
     if (id == "sapphire") return "Sapphire (chills)";

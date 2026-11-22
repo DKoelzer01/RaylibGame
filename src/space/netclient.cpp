@@ -846,6 +846,11 @@ void NetClient_CreativeGive(NetClient& c, const std::string& item, int count) { 
     MsgCreativeGive q; q.item = item; q.count = (uint32_t)std::max(0, count);
     SendMsg(c, q);
 }
+void NetClient_SetGem(NetClient& c, const std::string& item, const std::string& data, const std::string& gem) { // (#1219)
+    if (c.state != NetClient::State::Joined) return;
+    MsgSetGem q; q.item = item; q.data = data; q.gem = gem;
+    SendMsg(c, q);
+}
 void NetClient_MachineAction(NetClient& c, uint64_t bodyNetId, uint32_t plot, int part, int action, const std::string& item, int count, int slot, int which, const std::string& data) { // (#332; #1446 data)
     if (c.state != NetClient::State::Joined || part < 0) return;
     MsgMachineAction a; a.body = bodyNetId; a.plot = plot; a.part = part; a.action = (uint8_t)action; a.item = item; a.data = data;

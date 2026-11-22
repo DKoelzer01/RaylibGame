@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 47; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c)
+constexpr uint32_t kNetProtocol = 48; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c); 48: SetGem, a gem set in a composed copy (#1219)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -68,6 +68,7 @@ enum class NetMsg : uint8_t {
     SkillSpend = 45,    // client -> server (#920): spend a point on a perk (the server checks it and answers with SkillState)
     CreatureFx = 46,    // server -> client (#1343, #1364): creature projectiles launched and ended, and creature events (calls, telegraphs,
                         // hurt, death) near the client, for its own flights and sounds
+    SetGem = 47,        // client -> server (#1219): set a gem from the inventory in a free socket of one composed copy (item + record)
     Count
 };
 const char* NetMsgName(NetMsg m);
@@ -237,6 +238,7 @@ struct NetFarmField { float x = 0, y = 0, z = 0; std::string crop; float growth 
 struct MsgFarmFields { uint64_t body = 0; std::vector<NetFarmField> fields; }; // every field on the body near the client (the full list: replaces)
 struct MsgDropItems { std::string item; int64_t centi = 0; std::string data; }; // #865: hundredths of a unit; data (#1446): that one item (centi 100)
 struct MsgCreativeGive { std::string item; uint32_t count = 0; };   // #866: "" = clear the inventory
+struct MsgSetGem { std::string item, data, gem; };                  // #1219: the copy (its class and record) and the gem to set
 struct NetClaim { uint32_t id = 0; int32_t team = 0; std::string teamName; uint32_t colour = 0; uint64_t body = 0; float centre[3] = {}; float radius = 0.0f; uint8_t flags = 0; }; // flags: 1 ours, 2 we may build there (ours or an ally's)
 struct MsgClaims { std::vector<NetClaim> claims; }; // (#343) every claim (the full list: replaces)
 struct MsgSkillState { std::string text; }; // (#920) Skills_SaveText of the player's skills (the whole state: replaces the client's)
@@ -420,6 +422,8 @@ void NetWrite(NetWriter& w, const MsgDropItems& m);
 bool NetRead(NetReader& r, MsgDropItems& m);
 void NetWrite(NetWriter& w, const MsgCreativeGive& m);
 bool NetRead(NetReader& r, MsgCreativeGive& m);
+void NetWrite(NetWriter& w, const MsgSetGem& m);
+bool NetRead(NetReader& r, MsgSetGem& m);
 void NetWrite(NetWriter& w, const MsgClaims& m);
 bool NetRead(NetReader& r, MsgClaims& m);
 void NetWrite(NetWriter& w, const MsgSkillState& m);
