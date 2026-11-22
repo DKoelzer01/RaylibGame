@@ -18,6 +18,7 @@
 #include "terraintool.h"
 #include "buildtool.h"
 #include "plots.h"
+#include "machinetiers.h"
 #include "factory.h"
 #include "gamerng.h"
 #include "tools.h"
@@ -1668,7 +1669,8 @@ namespace {
             SendToJoined(out);
             if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
-            const Part part = ToPart(q.part);
+            Part part = ToPart(q.part);
+            if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type)); // (#1427 L7a) a machine's variant step
             if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
@@ -1715,7 +1717,7 @@ namespace {
                 for (const Session& s : sessions) if (s.id == session) TellTeam(team, TextFormat("%s raised a claim banner: claim #%u, %.0f m across", s.name.c_str(), bannerClaim, kClaimBannerAcross[ClaimBannerTier(part.type)]));
             }
             if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
-            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part;
+            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part; out.part.material = part.material;
             SendToJoined(out);
         }
         rm.partTokens -= 1.0;

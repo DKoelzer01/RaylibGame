@@ -1,6 +1,7 @@
 #include "factory.h"
 #include "inventory.h"
 #include "plots.h"
+#include "machinetiers.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "utils/logger.h"
@@ -69,6 +70,7 @@ struct Recipe {
     PartType machine;
     std::vector<Stack> in, out;
     int ticks = 0, eu = 0;   // generators: ticks of burn per fuel item, EU per tick produced
+    int tier = -1;           // (#1427 L7a) its voltage tier (machine_recipes.txt's sixth column; else its machine's first)
 };
 
 struct Tables {
@@ -212,6 +214,7 @@ void LoadRecipes() {
         parseStacks(cols[2], r.in);
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
+        if (cols.size() >= 6 && !cols[5].empty()) r.tier = MachineTiers_ByName(cols[5]); // (#1427 L7a)
         tables.recipes.push_back(r);
     }
     if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
@@ -228,6 +231,9 @@ void LoadRecipes() {
             tables.recipes.push_back(r);
         }
     }
+    // (#1427 L7a) A recipe with no tier is its machine's first: a tiered family's first tier, else its machines.txt voltage's.
+    for (Recipe& r : tables.recipes)
+        if (r.tier < 0) r.tier = MachineTiers_Tiered(r.machine) ? MachineTiers_First(r.machine) : MachineTiers_ForVolts(Def(r.machine).volts);
     // (#1207) Per machine type: its recipes in file order, and which items they take (a recipe start and Accepts looked
     // through every recipe of every machine, each tick).
     for (size_t ri = 0; ri < tables.recipes.size(); ++ri) {
@@ -278,7 +284,7 @@ struct Machine {
     int recipe = -1, progress = 0;          // generators use progress as the banked-fire tick counter
     int energy = 0;                         // battery charge / generator fuel ticks left
     int fuelEU = 0;                         // generator: EU per tick of the current fuel
-    int tier = kTierLV;
+    int tier = 0;                           // (#1427 L7a) its voltage tier (machine_tiers.txt: 0 LV, 1 MV ...; -1 under LV), from its part
     int variant = -1;                       // item id: a miner only makes the ore of the deposit under it
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
@@ -288,6 +294,12 @@ struct Machine {
     int bellows = -1;                       // (#1271 L2) a bloomery or blast furnace: the bellows touching it (blowing while its shaft turns), else -1
     int strike = 0;                         // (#1271 L2) a manual machine (the anvil): ticks of work a player's strikes have put in, not yet used
 };
+// (#1427 L7a) A recipe in a machine: overclocked by the tiers it is under the machine (machine_tiers.txt), its time down
+// and its EU a tick up; and the voltage a machine takes (a tiered variant's, else machines.txt's).
+static int StepsOf(const Machine& m, const Recipe& r) { return std::max(0, MachineTiers_Steps(m.tier, r.tier)); }
+static int TicksOf(const Machine& m, const Recipe& r) { return MachineTiers_Ticks(r.ticks, StepsOf(m, r)); }
+static int EuOf(const Machine& m, const Recipe& r) { return MachineTiers_Eu(r.eu, StepsOf(m, r)); }
+static int VoltsOf(const Machine& m) { const int v = Def(m.type).volts; return MachineTiers_Tiered(m.type) ? std::max(v, MachineTiers_Volts(m.tier)) : v; }
 
 struct Net {
     std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
@@ -368,7 +380,7 @@ void RotateNearBuckets(PlotSim& ps, long long t) {
 // craft nearly done before the window began counted whole, and the summary made more than the full sim.
 int CapOf(const Machine& m, int r, int n, int r0, int p0, long long window) {
     if (r < 0 || r >= (int)tables.recipes.size() || window <= 0) return 0;
-    const long long R = std::max(1, tables.recipes[r].ticks);
+    const long long R = std::max(1, TicksOf(m, tables.recipes[r])); // (#1427 L7a) overclocked, as its progress counts
     long long work = (long long)n * R + (m.recipe == r ? m.progress : 0) - (r0 == r ? p0 : 0);
     if (work < 0) work = 0;
     return (int)(work * kCapTicks / (R * window));
@@ -463,6 +475,7 @@ struct LayoutMsg {
     std::vector<std::pair<int, PartType>> machines;      // part index, type
     std::vector<std::vector<Int3>> machineCells;
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
+    std::vector<int> machineTier;                          // (#1427 L7a) per machine: its voltage tier (a tiered machine's variant)
     std::vector<Int3> conveyors, cables;
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
     std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
@@ -792,6 +805,7 @@ void ApplyLayout(const LayoutMsg& L) {
         m.dirty = true; m.asleep = false; // (#1214) a new layout: everything looks again
         m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
+        m.tier = i < L.machineTier.size() ? L.machineTier[i] : MachineTiers_PartTier(type, 0, Def(type).volts); // (#1427 L7a)
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -914,10 +928,10 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 batteryAvail += std::min(m.energy, kBatteryRate * dt);
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
             } else if (def.power == Power::Eu) {
-                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                if (m.recipe >= 0) demand += (long long)tables.recipes[m.recipe].eu * dt;
+                if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (m.recipe >= 0) demand += (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
             } else if (def.power == Power::Motor) { // (#1271 L3) a motor draws while its shaft network has work
-                if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (ps.rot.NetHasLoad(m.part)) demand += (long long)Rotation::kMotorEuPerTick * dt;
             }
         }
@@ -946,11 +960,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Eu && m.recipe >= 0 && def.volts >= net.voltage) {
-                const long long need = (long long)tables.recipes[m.recipe].eu * dt;
+            if (def.power == Power::Eu && m.recipe >= 0 && VoltsOf(m) >= net.voltage) {
+                const long long need = (long long)EuOf(m, tables.recipes[m.recipe]) * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
-            } else if (def.power == Power::Motor && def.volts >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
+            } else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
                 const long long need = (long long)Rotation::kMotorEuPerTick * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received);
@@ -1003,7 +1017,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.mode == 1) { m.status = MachineStatus::Idle; continue; } // (#1271 L6c) set to disassemble: #1427 brings it
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
-                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
+                return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && MachineTiers_Steps(m.tier, r.tier) >= 0 && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
             };
             // Left to right as the slots are shown (#195): the first stack that some recipe can use picks it; the file
             // order chose before, so a stack further right could go first.
@@ -1029,20 +1043,21 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (m.recipe < 0) { m.status = MachineStatus::Idle; m.asleep = true; continue; } // asleep until items arrive (#1214: really now)
         }
         const Recipe& r = tables.recipes[m.recipe];
-        if (m.progress < r.ticks) {
+        const int rTicks = TicksOf(m, r), rEu = EuOf(m, r); // (#1427 L7a) overclocked under its machine's tier
+        if (m.progress < rTicks) {
             int ticks = 0;
             if (def.power == Power::Eu) {
                 if (m.powerNet < 0) { m.status = MachineStatus::NoPower; continue; }
-                if (def.volts < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
+                if (VoltsOf(m) < ps.powerNets[m.powerNet].voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 // (#1266) the EU under one tick's worth waits for the next step (an overloaded net slows its machines, it does not
                 // stall them: a 5-of-8 EU share made 0 ticks every tick near the player)
-                if (r.eu > 0) { const int eu = m.received + m.euCarry; ticks = eu / r.eu; m.euCarry = eu % r.eu; } else ticks = dt;
+                if (rEu > 0) { const int eu = m.received + m.euCarry; ticks = eu / rEu; m.euCarry = eu % rEu; } else ticks = dt;
             } else if (def.power == Power::Manual) { // (#1271 L2) as far as the player's strikes go
-                ticks = std::min(m.strike, r.ticks - m.progress);
+                ticks = std::min(m.strike, rTicks - m.progress);
                 m.strike -= ticks;
                 if (ticks == 0) { m.status = MachineStatus::Idle; continue; }
             } else if (def.power == Power::Fuel) {
-                ticks = BurnFuel(m, def, std::min(dt + BellowsTicks(ps, m, dt), r.ticks - m.progress)); // (#1271 L2) bellows: up to twice as fast
+                ticks = BurnFuel(m, def, std::min(dt + BellowsTicks(ps, m, dt), rTicks - m.progress)); // (#1271 L2) bellows: up to twice as fast
             } else if (def.power == Power::Rotation) { // (#1269) at the shaft's speed: permille of a tick per tick, carried over
                 const int rate = ps.rot.ProgressPermille(m.part), acc = m.rotAcc + rate * dt;
                 ticks = acc / 1000; m.rotAcc = acc % 1000;
@@ -1050,11 +1065,11 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             } else {
                 ticks = dt + BellowsTicks(ps, m, dt); // runs by itself (coke oven, bloomery; #1271 L2: with bellows up to twice as fast)
             }
-            m.progress = std::min(r.ticks, m.progress + ticks);
+            m.progress = std::min(rTicks, m.progress + ticks);
             m.status = ticks > 0 ? MachineStatus::Working : def.power == Power::Fuel ? MachineStatus::NoFuel : MachineStatus::NoPower;
             if (ticks > 0) ++active;
         }
-        if (m.progress >= r.ticks) {
+        if (m.progress >= rTicks) {
             // Finish only if every output fits.
             Stack trial[kSlots];
             std::copy(m.out, m.out + kSlots, trial);
@@ -1279,13 +1294,13 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             for (const auto& [recipe, cap] : m.capPerWindow) {
                 if (cap <= 0) continue;
                 const Recipe& r = tables.recipes[recipe];
-                SumNode n{ mi, recipe, std::min<long long>((long long)cap * kFix / kCapTicks, kFix / std::max(1, r.ticks)) };
+                SumNode n{ mi, recipe, std::min<long long>((long long)cap * kFix / kCapTicks, kFix / std::max(1, TicksOf(m, r))) };
                 if (def.power == Power::Fuel) {
                     n.fuelItem = m.fuel.count > 0 ? m.fuel.item : -1;
                     for (int f : def.fuels) if (n.fuelItem < 0 && chestStock.count({ netOf(mi), f })) n.fuelItem = f;
                     if (n.fuelItem < 0) continue;
                 }
-                if (def.power == Power::Eu && (m.powerNet < 0 || def.volts < ps.powerNets[m.powerNet].voltage)) continue;
+                if (def.power == Power::Eu && (m.powerNet < 0 || VoltsOf(m) < ps.powerNets[m.powerNet].voltage)) continue;
                 nodes.push_back(n);
             }
         }
@@ -1304,7 +1319,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             // Power: a net's consumers share its generators' supply (the TickPlot rule: everyone slows equally).
             for (size_t pn = 0; pn < ps.powerNets.size(); ++pn) {
                 long long demand = 0, supply = 0;
-                for (const SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) { const Recipe& r = tables.recipes[n.recipe]; demand += n.rate * r.eu * r.ticks; } // (EU a tick while it crafts x the ticks of a craft)
+                for (const SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) { const Recipe& r = tables.recipes[n.recipe]; demand += n.rate * EuOf(ps.machines[n.mi], r) * TicksOf(ps.machines[n.mi], r); } // (EU a tick while it crafts x the ticks of a craft)
                 for (const SumGen& g : gens) if (ps.machines[g.mi].powerNet == (int)pn) supply += Scaled(g.eu, g.scale, kFix);
                 if (demand > supply) for (SumNode& n : nodes) if (ps.machines[n.mi].powerNet == (int)pn && Def(ps.machines[n.mi].type).power == Power::Eu) scaleNode(n, supply, demand);
                 const long long used = std::min(demand, supply);
@@ -1418,7 +1433,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
         for (size_t g = 0; g < gens.size(); ++g) {
             long long eu = 0, euAll = 0, supply = 0;
             const int pn = ps.machines[gens[g].mi].powerNet;
-            for (size_t k = 0; k < nodes.size(); ++k) if (Def(ps.machines[nodes[k].mi].type).power == Power::Eu && ps.machines[nodes[k].mi].powerNet == pn) { const Recipe& r = tables.recipes[nodes[k].recipe]; euAll += crafts[k] * r.eu * r.ticks; }
+            for (size_t k = 0; k < nodes.size(); ++k) if (Def(ps.machines[nodes[k].mi].type).power == Power::Eu && ps.machines[nodes[k].mi].powerNet == pn) { const Recipe& r = tables.recipes[nodes[k].recipe]; euAll += crafts[k] * EuOf(ps.machines[nodes[k].mi], r) * TicksOf(ps.machines[nodes[k].mi], r); }
             for (const SumGen& o : gens) if (ps.machines[o.mi].powerNet == pn) supply += Scaled(o.eu, o.scale, kFix);
             eu = Scaled(euAll, Scaled(gens[g].eu, gens[g].scale, kFix), std::max(1LL, supply));
             const long long per = (long long)std::max(1, Def(ps.machines[gens[g].mi].type).euOut) * fuelOf(gens[g].fuelItem);
@@ -1510,7 +1525,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     const Machine& m = ps.machines[it->second];
     v.valid = true;
     v.status = m.status;
-    if (m.recipe >= 0) { v.progress = m.progress; v.duration = tables.recipes[m.recipe].ticks; }
+    if (m.recipe >= 0) { v.progress = m.progress; v.duration = TicksOf(m, tables.recipes[m.recipe]); }
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
@@ -1865,6 +1880,7 @@ void Factory::Sync(Scene& world) {
                         if ((part.type >= PartType::LvLab && part.type <= PartType::HvLab) || part.type == PartType::SteamLab) variant = "research_none"; // (#1193) idle until the game sets its team's node
                         if (part.type == PartType::ManaSiphon) variant = "jar_none"; // (#1252) idle until the game finds the ley node it stands on
                         L.machineVariant.push_back(variant);
+                        L.machineTier.push_back(MachineTiers_PartTier(part.type, part.material, Def(part.type).volts)); // (#1427 L7a) its variant
                     } else if (part.type == PartType::Conveyor) L.conveyors.push_back(part.origin);
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
                     if (RotationPartMsg rm; RotationPlot_Describe(part, (int)i, rm)) L.rotation.push_back(std::move(rm)); // (#1269)
@@ -3074,6 +3090,43 @@ TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     for (int t = 0; t < packTicks + 40; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("basic_circuit")), 2) << "picked LV packs: no more circuits";
     EXPECT_EQ(CountItems(asm1.out, kSlots, tables.item("lv_pack")), 2) << "one craft of 2 LV packs";
+    plots.clear(); plotIndexDirty = true;
+}
+// (#1427 L7a) Tiers: an MV macerator runs the LV iron recipe overclocked one step (half the time, three times the EU a
+// tick); a recipe a tier above a machine never starts in it.
+TEST(Factory, AHigherTierMachineOverclocksALowerRecipeAndALowerOneRefusesAHigherRecipe) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L = OracleLayout(6, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 } }, {}, Row(0, 7, -1));
+    L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("MV"), MachineTiers_ByName("LV") };
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 6);
+    Machine& gen = ps.machines[ps.byPart.at(0)];
+    Machine& mv = ps.machines[ps.byPart.at(1)];
+    Machine& lv = ps.machines[ps.byPart.at(2)];
+    EXPECT_EQ(mv.tier, 1);
+    EXPECT_EQ(lv.tier, 0);
+    decltype(&tables.recipes[0]) iron = nullptr;
+    for (auto& r : tables.recipes) if (r.machine == PartType::Macerator && !r.in.empty() && r.in[0].item == tables.item("iron_ore")) { iron = &r; break; }
+    ASSERT_NE(iron, nullptr);
+    EXPECT_EQ(iron->tier, 0) << "no tier column: the macerator's first, LV";
+    EXPECT_EQ(TicksOf(mv, *iron), iron->ticks / 2);
+    EXPECT_EQ(EuOf(mv, *iron), iron->eu * 3);
+    EXPECT_EQ(TicksOf(lv, *iron), iron->ticks);
+    int b = 0;
+    InsertInto(gen, tables.item("coal"), 32, true, b);
+    InsertInto(mv, tables.item("iron_ore"), 8, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < iron->ticks + 20; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(mv.out, kSlots, tables.item("iron_crushed")), 2 * iron->out[0].count) << "two crafts in one LV craft's time";
+    // The same recipe made MV: the LV macerator never starts it; the MV one runs it at its own tier (no overclock).
+    const int was = iron->tier;
+    iron->tier = 1;
+    InsertInto(lv, tables.item("iron_ore"), 4, false, b);
+    for (int t = 0; t < iron->ticks + 20; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(lv.out, kSlots, tables.item("iron_crushed")), 0) << "an MV recipe in an LV machine: never";
+    EXPECT_EQ(TicksOf(mv, *iron), iron->ticks) << "at its own tier: no overclock";
+    iron->tier = was;
     plots.clear(); plotIndexDirty = true;
 }
 #endif
