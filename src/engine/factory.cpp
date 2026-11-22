@@ -283,6 +283,7 @@ struct Machine {
     int water = 0, heat = 0;                // boilers (#229): litres in the tank; heat 0..kHeatMax
     uint8_t fire = kFireAuto;               // campfires (#1103): lit or put out by a player, else by itself
     uint8_t mode = 0;                       // (#1271 L6c) an assembler: 0 assembles, 1 disassembles (#1427; until then it idles)
+    uint8_t anvilJob = 0;                   // (#1219) an anvil's job on a composed copy: 1 repair, 2 take a gem out (progress: its work)
     int pick = -1;                          // (#1271 L6c) the recipe output a player chose for a machine of several recipes (-1: any)
     int quality = 100;                      // (#1446 2c) the craft in progress' quality % for a composed output (T2: the anvil's bar sets it; back to 100 after)
     int recipe = -1, progress = 0;         // generators use progress as the banked-fire tick counter
@@ -622,10 +623,19 @@ bool HasFuelSlot(PartType type) { return !Def(type).fuels.empty(); }
 int WaterBucketItem() { static const int id = tables.item("water_bucket"); return id; }
 int BucketItem() { static const int id = tables.item("bucket"); return id; }
 
+// (#1219) A unit an anvil repairs some composed copy with: any stone, or a part material's ingot (bronze_ingot, iron_ingot...).
+bool IsRepairMaterial(int item) {
+    if (item < 0) return false;
+    const std::string n = tables.name(item);
+    if (ItemMatches("any_stone", n)) return true;
+    const size_t at = n.rfind("_ingot");
+    return at != std::string::npos && at + 6 == n.size() && Composed_Material(n.substr(0, at)) != nullptr;
+}
 bool Accepts(PartType type, int item) {
     if (tables.fluid(item)) return false; // (#1254) fluid moves only through pipes and phials (MoveFluids), never as items
     if (Def(type).power == Power::Storage) return true;
     if (Def(type).waterPerTick > 0 && item == WaterBucketItem()) return true;
+    if (type == PartType::Anvil && IsRepairMaterial(item)) return true; // (#1219) a unit to repair a composed copy with
     return IsFuel(Def(type), item) || RecipeWants(type, item);
 }
 
@@ -930,6 +940,56 @@ int BellowsTicks(PlotSim& ps, Machine& m, int dt) {
 }
 
 // One step of dt ticks for a plot.
+// (#1219, user 2026-11-22) The anvil's own jobs on a composed copy in its inputs, hammered as a recipe is (a player's strikes):
+//   repair: with a unit of its head's material beside it (its ingot; any stone for a stone head): its wear down by half its
+//           durability (GUESS, Progression tunes the costs in T2), the unit used;
+//   a gem out: without that material, the last gem set comes out beside it, or breaks (25%, GUESS).
+// The copy (and the gem) go to empty output slots. True if a copy is on it (its job ran, or waits): no recipe this tick.
+constexpr int kAnvilJobTicks = 80;           // two strikes (GUESS)
+constexpr int kGemBreakPercent = 25;         // GUESS
+bool RepairMaterial(const std::string& head, int item) {
+    const std::string n = tables.name(item);
+    if (head == "stone") return ItemMatches("any_stone", n);
+    return n == head + "_ingot" || n == head;
+}
+bool AnvilJob(PlotSim& ps, Machine& m, int& active) {
+    int di = -1;
+    for (int si = 0; si < InSlots(m); ++si) if (m.in[si].count > 0 && !Plain(m.in[si])) { di = si; break; }
+    if (di < 0) { m.anvilJob = 0; return false; }
+    const std::string cls = tables.name(m.in[di].item);
+    const ComposedStats st = Composed_Stats(cls, m.in[di].data);
+    int mi = -1;
+    if (st.valid && st.wear > 0)
+        for (int si = 0; si < InSlots(m); ++si) if (si != di && m.in[si].count > 0 && Plain(m.in[si]) && RepairMaterial(st.head, m.in[si].item)) { mi = si; break; }
+    const int job = mi >= 0 ? 1 : (!st.gems.empty() ? 2 : 0);
+    if (job == 0) { m.anvilJob = 0; m.progress = 0; m.status = MachineStatus::Idle; return true; } // it waits to be taken back
+    if (m.anvilJob != job) { m.anvilJob = (uint8_t)job; m.progress = 0; }
+    const int ticks = std::min(m.strike, kAnvilJobTicks - m.progress);
+    m.strike -= ticks; m.progress += ticks;
+    if (m.progress < kAnvilJobTicks) { m.status = ticks > 0 ? MachineStatus::Working : MachineStatus::Idle; if (ticks > 0) ++active; return true; }
+    int q1 = -1, q2 = -1;
+    for (int q = 0; q < kSlots; ++q) if (m.out[q].count <= 0) { if (q1 < 0) q1 = q; else if (q2 < 0) q2 = q; }
+    if (q1 < 0 || (job == 2 && q2 < 0)) { m.status = MachineStatus::OutputFull; return true; }
+    std::string d = m.in[di].data;
+    if (job == 1) {
+        d = ItemData::SetInt(d, "w", std::max(0, st.wear - st.durability / 2));
+        if (--m.in[mi].count <= 0 && m.in[mi].centi <= 0) m.in[mi] = Stack{};
+    } else {
+        std::string j;
+        for (size_t g = 0; g + 1 < st.gems.size(); ++g) j += (j.empty() ? "" : ",") + st.gems[g];
+        d = ItemData::Set(d, "j", j);
+        // A roll from the plot, the part and the tick (deterministic: tests and replays agree)
+        const uint32_t h = (uint32_t)(ps.plot * 2654435761u) ^ (uint32_t)(m.part * 40503u) ^ (uint32_t)(tickCount.load() * 2246822519u);
+        if ((h >> 7) % 100 >= (uint32_t)kGemBreakPercent) { m.out[q2] = Stack{}; m.out[q2].item = tables.item(st.gems.back()); m.out[q2].count = 1; }
+    }
+    m.out[q1] = Stack{}; m.out[q1].item = m.in[di].item; m.out[q1].count = 1; m.out[q1].data = d;
+    m.in[di] = Stack{};
+    m.anvilJob = 0; m.progress = 0;
+    m.status = MachineStatus::Working; ++active;
+    m.dirty = true;
+    return true;
+}
+
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
     RotationStep(ps, dt); // (#1269)
@@ -1032,6 +1092,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         if (m.recipe >= 0 && !inputsHere(tables.recipes[m.recipe])) { m.recipe = -1; m.progress = 0; }
         if (m.fire == kFireOut) { m.status = MachineStatus::Idle; continue; } // (#1103) put out: no burn, no cooking
         if (m.mode == 1) { m.status = MachineStatus::Idle; continue; } // (#1271 L6c) set to disassemble: #1427 brings it
+        if (m.type == PartType::Anvil && m.recipe < 0 && AnvilJob(ps, m, active)) continue; // (#1219) a composed copy on it: repair / a gem out
         if (m.recipe < 0) {
             auto usable = [&](const Recipe& r) {
                 return r.machine == m.type && (m.variant < 0 || (!r.out.empty() && r.out[0].item == m.variant)) && (m.pick < 0 || (!r.out.empty() && r.out[0].item == m.pick)) && MachineTiers_Steps(m.tier, r.tier) >= 0 && inputsHere(r) && !RecipeLocked(r); // (#1271 L6b) unlocked by research
@@ -1673,6 +1734,8 @@ void SimLoop() {
                     // (#1271 L7c hook) an assembler set to disassemble takes a composed item into an input slot, record intact;
                     // what it gives back is L7c's (Progression). Every other machine and automation path refuses items with data.
                     else if (m.mode == 1 && im.kind != 6) { s = m.in.data(); n = InSlots(m); }
+                    // (#1219, user 2026-11-22) the anvil takes a composed copy to repair it or take a gem out (AnvilJob)
+                    else if (m.type == PartType::Anvil && im.kind != 6 && Composed_Is(tables.name(im.item))) { s = m.in.data(); n = InSlots(m); }
                     if (s) {
                         const int want = im.kind == 9 && m.type == PartType::Chest ? im.amount : -1;
                         for (int i = 0; i < n && !placed; ++i) {
@@ -3187,6 +3250,70 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
     anvil.strike = std::min(anvil.strike + kStrikeTicks, 2 * kStrikeTicks);
     for (int t = 0; t < 60; ++t) TickPlot(ps, 1, made, active);
     EXPECT_EQ(CountItems(anvil.out, kSlots, tables.item("iron_ingot")), 1) << "the third strike: an ingot";
+    plots.clear(); plotIndexDirty = true;
+}
+// (#1219, user 2026-11-22) The anvil's jobs on a composed copy, hammered: with a unit of its head's material, a repair (wear
+// down by half its durability, the unit used); without one, its last gem comes out (or breaks); nothing to do: it waits.
+TEST(Factory, AnAnvilRepairsACopyAndTakesAGemOut) {
+    LoadRecipes();
+    ASSERT_TRUE(Composed_Load());
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 95; L.version = 1;
+    L.machines.push_back({ 0, PartType::Anvil }); L.machineCells.push_back({ { 0, 0, 0 } }); L.machineVariant.push_back("");
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 95);
+    Machine& anvil = ps.machines[0];
+    long long made = 0; int active = 0;
+    auto hammer = [&](int strikes) { for (int s = 0; s < strikes; ++s) { anvil.strike = std::min(anvil.strike + kStrikeTicks, 2 * kStrikeTicks); anvil.dirty = true; /* (as a strike does: it wakes the anvil) */ for (int t = 0; t < 60; ++t) TickPlot(ps, 1, made, active); } };
+    auto outCopy = [&]() -> Stack* { for (int q = 0; q < kSlots; ++q) if (anvil.out[q].count > 0 && !anvil.out[q].data.empty()) return &anvil.out[q]; return nullptr; };
+    EXPECT_TRUE(Accepts(PartType::Anvil, tables.item("bronze_ingot"))) << "a repair unit goes in";
+    EXPECT_TRUE(Accepts(PartType::Anvil, tables.item("stone")));
+    EXPECT_FALSE(Accepts(PartType::Anvil, tables.item("dirt")));
+    // A worn bronze sword with a ruby, and a bronze ingot: repaired first (the ingot is there), the ruby kept.
+    const std::string worn = ItemData::Set(ItemData::SetInt(Composed_MakeData("bronze"), "w", 300), "j", "ruby");
+    const ComposedStats w0 = Composed_Stats("weapon_sword", worn);
+    anvil.in[0] = Stack{}; anvil.in[0].item = tables.item("weapon_sword"); anvil.in[0].count = 1; anvil.in[0].data = worn;
+    int b = 0;
+    InsertInto(anvil, tables.item("bronze_ingot"), 1, false, b);
+    for (int t = 0; t < 100; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(outCopy(), nullptr) << "nobody hammers: nothing";
+    hammer(1);
+    EXPECT_EQ(outCopy(), nullptr) << "one strike: not yet";
+    hammer(1);
+    Stack* r = outCopy();
+    ASSERT_NE(r, nullptr) << "two strikes: repaired";
+    EXPECT_EQ(ItemData::GetInt(r->data, "w", 0), std::max(0, w0.wear - w0.durability / 2)) << "wear down by half its durability";
+    EXPECT_EQ(ItemData::Get(r->data, "j"), "ruby") << "a repair keeps the gem";
+    EXPECT_EQ(CountItems(anvil.in.data(), InSlots(anvil), tables.item("bronze_ingot")), 0) << "the ingot used";
+    // Back on the anvil with no ingot: its ruby comes out (or breaks), the sword without it.
+    const std::string repaired = r->data;
+    *r = Stack{};
+    anvil.in[0] = Stack{}; anvil.in[0].item = tables.item("weapon_sword"); anvil.in[0].count = 1; anvil.in[0].data = repaired;
+    hammer(2);
+    r = outCopy();
+    ASSERT_NE(r, nullptr);
+    EXPECT_EQ(ItemData::Get(r->data, "j"), "") << "the gem is out";
+    const int rubies = CountItems(anvil.out, kSlots, tables.item("ruby"));
+    EXPECT_LE(rubies, 1) << "the ruby back, or broken";
+    // Nothing to do (no wear to mend with no unit, no gem): it waits, no recipe runs.
+    *r = Stack{};
+    anvil.in[0] = Stack{}; anvil.in[0].item = tables.item("weapon_sword"); anvil.in[0].count = 1; anvil.in[0].data = Composed_MakeData("bronze");
+    hammer(2);
+    EXPECT_EQ(outCopy(), nullptr) << "nothing to do: it stays on the anvil";
+    EXPECT_EQ(anvil.in[0].data, Composed_MakeData("bronze"));
+    // Over many removals the break rate is about 25% (GUESS).
+    int broke = 0;
+    for (int k = 0; k < 200; ++k) {
+        for (int q = 0; q < kSlots; ++q) anvil.out[q] = Stack{};
+        anvil.in[0] = Stack{}; anvil.in[0].item = tables.item("weapon_sword"); anvil.in[0].count = 1; anvil.in[0].data = ItemData::Set(Composed_MakeData("bronze"), "j", "ruby");
+        tickCount += 7;
+        hammer(2);
+        broke += CountItems(anvil.out, kSlots, tables.item("ruby")) == 0 ? 1 : 0;
+    }
+    EXPECT_GT(broke, 25);
+    EXPECT_LT(broke, 80) << "about a quarter of 200";
+    tickCount = 0;
     plots.clear(); plotIndexDirty = true;
 }
 // (#1271 L6c) The LV assembler: on a generator's power it assembles basic circuits from their parts; switched to
