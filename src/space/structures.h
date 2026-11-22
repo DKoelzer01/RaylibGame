@@ -41,5 +41,9 @@ int Structures_SitesBuilt();          // tests: sites built by the world placeme
 void Structures_TestFill(Planetoid& body);          // tests: fill every waiting chest now
 int Structures_TestCheck(Planetoid& body, int& items); // tests: how many of those chests hold items (and how many)
 bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, Vector3& at, std::string& set);
+// (#1171 /locate) Every site (built or not) within range of a body-local point, nearest first: on the ground there, its set's
+// name and kind (ruin, camp, wreck, wonder), and whether a dungeon lies under it.
+struct SiteInfo { Vector3 at; std::string set, kind; bool dungeon = false; float distance = 0.0f; };
+int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std::vector<SiteInfo>& out);
 
 #endif
