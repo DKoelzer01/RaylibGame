@@ -8263,6 +8263,24 @@ int main(int argc, char** argv)
                         }
                         if ((flowSleepT >= 0.0 && t > flowSleepT + 1.0) || t > 120.0) {
                             TakeScreenshot("bench_flow_end.png");
+                            if (EnvFlag("FLOWDBG")) {
+                                // Where the water stands at the end (#1512), 4 m cells +-40 m around the channel's end: rows along the
+                                // channel (the pick's sea at the top), columns across it. Simulated water: W over land (ground over the
+                                // sea level), w over ground under it; . ground under the sea level (the generated sea: Classify makes
+                                // any bed under it sea), space dry land, C the channel's end.
+                                const Vector3 up = Vector3Normalize(flowEnd), side = Vector3Normalize(Vector3CrossProduct(up, flowOut));
+                                for (float u = -40.0f; u <= 40.0f; u += 4.0f) {
+                                    std::string row;
+                                    for (float v = -40.0f; v <= 40.0f; v += 4.0f) {
+                                        const Vector3 d = Vector3Normalize(Vector3Add(flowEnd, Vector3Add(Vector3Scale(flowOut, u), Vector3Scale(side, v))));
+                                        const float g = pf->elevation(d);
+                                        bool wet = false;
+                                        for (float h = -2.0f; h <= 1.0f && !wet; h += 0.5f) wet = Fluid::Wet(*p, at(d, flowLevel + h));
+                                        row += (u == 0.0f && v == 0.0f) ? 'C' : wet ? (g > flowLevel ? 'W' : 'w') : (g < flowLevel ? '.' : ' ');
+                                    }
+                                    printf("bench: flow map %+4.0f m |%s|\n", u, row.c_str());
+                                }
+                            }
                             const Fluid::Stats s = Fluid::GetStats();
                             const float caveTop = Fluid::SurfaceAbove(*p, flowCave, 16.0f);
                             // The gate (#627): the worst 1 s rolling mean of the step time (a sustained cost, not one spike); the
