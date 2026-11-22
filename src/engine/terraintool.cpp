@@ -280,9 +280,9 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
 
     digging = gPrimaryLatch.allows(in.down(Act::Primary)); // (#895: not after a break, until the button is pressed again)
     // (#1098, the user) RMB places ground only with a terrain material in hand (dirt, sand, clay, gravel, regolith, raw stone:
-    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. Creative and
-    // the terraform tool place freely.
-    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.creative || terrainTool.terraform;
+    // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. The terraform
+    // tool places freely; creative places for free, but only with ground in hand too (#1577: bare hands or a tool placed).
+    const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.terraform;
     // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
     const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
     adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
@@ -696,8 +696,8 @@ bool TerrainTool_Stroke(bool dig) {
         return false;
     }
     // (#1098, #1085) Past the till, RMB places ground only with a ground item in hand or in the off hand: a shovel or hoe on
-    // ground that doesn't till (rock) places nothing.
-    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.creative) return false;
+    // ground that doesn't till (rock) places nothing; in creative too (#1577: free, but with ground in hand).
+    if (!dig && FillerMaterial(terrainTool.heldTool) < 0 && FillerMaterial(inventory.offHand().id) < 0 && !terrainTool.terraform) return false;
     if (!dig && terrainTool.sphereFill && FillerMaterial(terrainTool.heldTool) >= 0) return FillStroke(p); // #228
     if (!dig) {
         TerrainEdit e{};
