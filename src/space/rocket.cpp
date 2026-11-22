@@ -151,10 +151,8 @@ namespace {
     DVec3 Cross(const DVec3& a, const DVec3& b) { return DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 
     // Orbit about a body: apoapsis / periapsis radii from the state (ap < 0: hyperbolic).
-    void Orbit(const Planetoid& b, const DVec3& p, Vector3 v, double& ra, double& rp) {
-        const DVec3 r = p - b.worldPos;
-        const DVec3 vv = DVec3(Vector3Subtract(v, b.linearVelocity));
-        const double mu = Mu(b), rl = r.length(), v2 = vv.x * vv.x + vv.y * vv.y + vv.z * vv.z;
+    void OrbitRV(double mu, const DVec3& r, const DVec3& vv, double& ra, double& rp) { // r, v relative to the body (non-rotating)
+        const double rl = r.length(), v2 = vv.x * vv.x + vv.y * vv.y + vv.z * vv.z;
         const double energy = 0.5 * v2 - mu / rl;
         const DVec3 h(r.y * vv.z - r.z * vv.y, r.z * vv.x - r.x * vv.z, r.x * vv.y - r.y * vv.x);
         const double h2 = h.x * h.x + h.y * h.y + h.z * h.z;
@@ -163,6 +161,26 @@ namespace {
         const double a = -mu / (2.0 * energy);
         ra = a * (1.0 + e);
         rp = a * (1.0 - e);
+    }
+    void Orbit(const Planetoid& b, const DVec3& p, Vector3 v, double& ra, double& rp) {
+        OrbitRV(Mu(b), p - b.worldPos, DVec3(Vector3Subtract(v, b.linearVelocity)), ra, rp);
+    }
+
+    // (Plan 11 F5, #1457) The body the flying rocket belongs to: its frame's body on the frame path (the SOI rule), else the
+    // strongest pull as before. Its orbit about that body: from the Centred state on the frame path (exact, double), else
+    // from the global state.
+    bool Framed() { return Frames_On() && rfValid && state == RocketState::Flying; }
+    Planetoid* FlightBody(Scene& world) {
+        if (Framed()) if (Planetoid* b = Planetoid::findNet(rf.frame.body)) return b;
+        return Dominant(world, com);
+    }
+    void FlightOrbit(const Planetoid& b, double& ra, double& rp) {
+        FramePos c;
+        if (Framed() && rf.frame.body == b.netId && Frames_Convert(rf, FrameRef{ b.netId, FrameKind::Centred }, c)) {
+            OrbitRV(Mu(b), c.pos, c.vel, ra, rp);
+            return;
+        }
+        Orbit(b, com, vel, ra, rp);
     }
 
     // Euler angles (degrees, MatrixRotateXYZ's convention) of a rotation with local axes ex, ey, ez.
@@ -329,14 +347,14 @@ namespace {
     Autopilot RunAutopilot(Scene& world, const RocketStats& st, float fuel, float h) {
         (void)h;
         Autopilot a{ Up(), throttle, false };
-        Planetoid* b = Dominant(world, com);
+        Planetoid* b = FlightBody(world);
         if (!b) return a;
         const DVec3 r = com - b->worldPos;
         const double rl = r.length();
         const Vector3 up = Vector3Normalize(r.toFloat());
         const Vector3 vin = Vector3Subtract(vel, b->linearVelocity);
         double ra, rp;
-        Orbit(*b, com, vel, ra, rp);
+        FlightOrbit(*b, ra, rp);
         const double R = b->radius * b->scale;
         const double alt = rl - R;
         const Vector3 g = Gravity(world, com);
@@ -455,7 +473,7 @@ namespace {
         const int bursts = (int)pending;
         pending -= (float)bursts;
         Planetoid* v = Vehicle();
-        Planetoid* ground = Dominant(world, com);
+        Planetoid* ground = FlightBody(world);
         if (!v || !ground) return;
         const auto* pf = dynamic_cast<const PlanetField*>(ground->field.get());
         const double alt = (com - ground->worldPos).length() - ground->radius * ground->scale;
@@ -487,7 +505,7 @@ namespace {
     void FlightStep(Scene& world, float h, bool input) {
         Plot* plot = VehiclePlot();
         if (!plot) { state = RocketState::None; return; }
-        const RocketStats st = Rocket_Stats(*plot, Dominant(world, com));
+        const RocketStats st = Rocket_Stats(*plot, FlightBody(world));
         // Controls.
         Autopilot ap{ Up(), throttle, false };
         if (autopilot != RocketAutopilot::Off) { ap = RunAutopilot(world, st, plot->fuel, h); throttle = ap.throttle; }
@@ -842,7 +860,7 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input);
         if (state == RocketState::Flying) {
             SyncVehicle(world);
-            if (Planetoid* b = Dominant(world, com)) { // render interpolation (#315)
+            if (Planetoid* b = FlightBody(world)) { // render interpolation (#315)
                 const DVec3 rel = com - b->worldPos;
                 const bool cont = interpValid && interpBody == b->id && (rel - curRel).length() < 5000.0;
                 prevRel = cont ? curRel : rel; prevRot = cont ? curRot : rot;
@@ -860,7 +878,7 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
     if (warpLevel > 0) {
         bool ok = state == RocketState::Flying && throttle <= 0.0f;
         if (ok) {
-            if (Planetoid* b = Dominant(world, com)) {
+            if (Planetoid* b = FlightBody(world)) {
                 const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
                 const double alt = (com - b->worldPos).length() - b->radius * b->scale;
                 if (pf && !pf->moon && alt < kAirTop) ok = false;
@@ -1196,10 +1214,10 @@ bool Rocket_DeployStation() {
     int core = -1;
     for (int i = 0; i < (int)vp->parts.size(); ++i) if (vp->parts[i].type == PartType::StationCore) core = i;
     if (core < 0) { GameUI_Toast("No station core aboard"); return false; }
-    Planetoid* b = Dominant(world, com);
+    Planetoid* b = FlightBody(world);
     if (!b) return false;
     double ra, rp;
-    Orbit(*b, com, vel, ra, rp);
+    FlightOrbit(*b, ra, rp);
     if (ra < 0.0 || rp - b->radius * b->scale < 30000.0) { GameUI_Toast("Deploy a station from a stable orbit (periapsis above 30 km)"); return false; }
     // The core leaves the rocket where it is: its cells' corner in the vehicle frame, in world space.
     const Part part = vp->parts[core];
