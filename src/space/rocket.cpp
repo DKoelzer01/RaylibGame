@@ -17,6 +17,7 @@ static const PlayerInput* gRocketIn = &PlayerInput::None();
 #include "worldtypes.h"
 #include "ring.h"
 #include "factory.h"
+#include "frames.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -54,6 +55,13 @@ namespace {
     Vector3 vel{};               // world, m/s
     Quaternion rot = { 0, 0, 0, 1 }; // plot-local -> world
     Vector3 angVel{};            // world, rad/s
+    // (Plan 11 F5, #1457) With RAYLIBGAME_FRAMES=1 the flight state lives in a body frame (Fixed below the altitude line,
+    // Centred above, switching at SOIs) in doubles; com and vel above are its global image, written after each step.
+    // Anything else that writes com or vel (launch, a bounce, a load, a test) is picked up: the frame state is re-seeded
+    // when they differ from what the step last wrote.
+    FramePos rf;
+    bool rfValid = false;
+    DVec3 rfCom{}; Vector3 rfVel{}; // com and vel as the frame step last wrote them
     Vector3 comLocal{};          // plot space (m), centre of mass
     float throttle = 0.0f;
     // Time warp (coasting above the air only) and heating (re-entry and fast flight in thick air).
@@ -127,11 +135,25 @@ namespace {
     }
     double Mu(const Planetoid& b) { const double R = b.gravityRadius > 0.0f ? b.gravityRadius : b.radius * b.scale; return b.surfaceGravity * R * R; }
 
+    // (Plan 11 F5, #1457) Directions between the global axes and a frame's: Centred keeps the global axes, Fixed turns
+    // with its body (the pose's R maps body-local into global).
+    DVec3 DirToFrame(const BodyPose& p, FrameKind k, const DVec3& g) {
+        if (k == FrameKind::Centred) return g;
+        return DVec3(p.R[0][0] * g.x + p.R[1][0] * g.y + p.R[2][0] * g.z,
+                     p.R[0][1] * g.x + p.R[1][1] * g.y + p.R[2][1] * g.z,
+                     p.R[0][2] * g.x + p.R[1][2] * g.y + p.R[2][2] * g.z);
+    }
+    DVec3 DirToGlobal(const BodyPose& p, FrameKind k, const DVec3& d) {
+        if (k == FrameKind::Centred) return d;
+        return DVec3(p.R[0][0] * d.x + p.R[0][1] * d.y + p.R[0][2] * d.z,
+                     p.R[1][0] * d.x + p.R[1][1] * d.y + p.R[1][2] * d.z,
+                     p.R[2][0] * d.x + p.R[2][1] * d.y + p.R[2][2] * d.z);
+    }
+    DVec3 Cross(const DVec3& a, const DVec3& b) { return DVec3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
+
     // Orbit about a body: apoapsis / periapsis radii from the state (ap < 0: hyperbolic).
-    void Orbit(const Planetoid& b, const DVec3& p, Vector3 v, double& ra, double& rp) {
-        const DVec3 r = p - b.worldPos;
-        const DVec3 vv = DVec3(Vector3Subtract(v, b.linearVelocity));
-        const double mu = Mu(b), rl = r.length(), v2 = vv.x * vv.x + vv.y * vv.y + vv.z * vv.z;
+    void OrbitRV(double mu, const DVec3& r, const DVec3& vv, double& ra, double& rp) { // r, v relative to the body (non-rotating)
+        const double rl = r.length(), v2 = vv.x * vv.x + vv.y * vv.y + vv.z * vv.z;
         const double energy = 0.5 * v2 - mu / rl;
         const DVec3 h(r.y * vv.z - r.z * vv.y, r.z * vv.x - r.x * vv.z, r.x * vv.y - r.y * vv.x);
         const double h2 = h.x * h.x + h.y * h.y + h.z * h.z;
@@ -140,6 +162,26 @@ namespace {
         const double a = -mu / (2.0 * energy);
         ra = a * (1.0 + e);
         rp = a * (1.0 - e);
+    }
+    void Orbit(const Planetoid& b, const DVec3& p, Vector3 v, double& ra, double& rp) {
+        OrbitRV(Mu(b), p - b.worldPos, DVec3(Vector3Subtract(v, b.linearVelocity)), ra, rp);
+    }
+
+    // (Plan 11 F5, #1457) The body the flying rocket belongs to: its frame's body on the frame path (the SOI rule), else the
+    // strongest pull as before. Its orbit about that body: from the Centred state on the frame path (exact, double), else
+    // from the global state.
+    bool Framed() { return Frames_On() && rfValid && state == RocketState::Flying; }
+    Planetoid* FlightBody(Scene& world) {
+        if (Framed()) if (Planetoid* b = Planetoid::findNet(rf.frame.body)) return b;
+        return Dominant(world, com);
+    }
+    void FlightOrbit(const Planetoid& b, double& ra, double& rp) {
+        FramePos c;
+        if (Framed() && rf.frame.body == b.netId && Frames_Convert(rf, FrameRef{ b.netId, FrameKind::Centred }, c)) {
+            OrbitRV(Mu(b), c.pos, c.vel, ra, rp);
+            return;
+        }
+        Orbit(b, com, vel, ra, rp);
     }
 
     // Euler angles (degrees, MatrixRotateXYZ's convention) of a rotation with local axes ex, ey, ez.
@@ -306,14 +348,14 @@ namespace {
     Autopilot RunAutopilot(Scene& world, const RocketStats& st, float fuel, float h) {
         (void)h;
         Autopilot a{ Up(), throttle, false };
-        Planetoid* b = Dominant(world, com);
+        Planetoid* b = FlightBody(world);
         if (!b) return a;
         const DVec3 r = com - b->worldPos;
         const double rl = r.length();
         const Vector3 up = Vector3Normalize(r.toFloat());
         const Vector3 vin = Vector3Subtract(vel, b->linearVelocity);
         double ra, rp;
-        Orbit(*b, com, vel, ra, rp);
+        FlightOrbit(*b, ra, rp);
         const double R = b->radius * b->scale;
         const double alt = rl - R;
         const Vector3 g = Gravity(world, com);
@@ -432,7 +474,7 @@ namespace {
         const int bursts = (int)pending;
         pending -= (float)bursts;
         Planetoid* v = Vehicle();
-        Planetoid* ground = Dominant(world, com);
+        Planetoid* ground = FlightBody(world);
         if (!v || !ground) return;
         const auto* pf = dynamic_cast<const PlanetField*>(ground->field.get());
         const double alt = (com - ground->worldPos).length() - ground->radius * ground->scale;
@@ -461,10 +503,10 @@ namespace {
         }
     }
 
-    void FlightStep(Scene& world, float h, bool input) {
+    void FlightStep(Scene& world, float h, bool input, bool stepEnd = true) {
         Plot* plot = VehiclePlot();
         if (!plot) { state = RocketState::None; return; }
-        const RocketStats st = Rocket_Stats(*plot, Dominant(world, com));
+        const RocketStats st = Rocket_Stats(*plot, FlightBody(world));
         // Controls.
         Autopilot ap{ Up(), throttle, false };
         if (autopilot != RocketAutopilot::Off) { ap = RunAutopilot(world, st, plot->fuel, h); throttle = ap.throttle; }
@@ -491,6 +533,54 @@ namespace {
         if (thrust > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - thrust / (float)(st.isp * kG0) * h);
         if (thrust > 0.0f) Exhaust(world, *plot, h);
         if (st.leak > 0.0f && plot->fuel > 0.0f) plot->fuel = std::max(0.0f, plot->fuel - st.leak * (float)h); // damaged tanks leak
+        bool framed = false;
+        if (Frames_On()) { // (Plan 11 F5, #1457) the flight in its body frame, in doubles
+            const std::vector<Planetoid*>& bodies = Planetoid::All();
+            const bool moved = !rfValid || (com - rfCom).length() > 1e-6 || Vector3Distance(vel, rfVel) > 1e-4f;
+            if (moved) { // launched, bounced, loaded or placed by a test: start from the global state
+                const FrameRef to = Frames_Choose(bodies, com, rfValid ? rf.frame : FrameRef{});
+                rfValid = to.body != 0 && Frames_FromGlobal(com, DVec3(vel), to, rf);
+            }
+            if (rfValid) {
+                const Planetoid* fb = Planetoid::findNet(rf.frame.body);
+                const BodyPose pose = Frames_Pose(*fb);
+                DVec3 acc = Frames_Acceleration(bodies, rf);
+                const double m = std::max(mass, 1.0f);
+                acc = acc + DirToFrame(pose, rf.frame.kind, DVec3(Up())) * (thrust / m);
+                // The air turns with its body: the wind is the Fixed velocity itself; in Centred (above the line, inside its
+                // hysteresis band) it is the velocity less the body's spin at this point.
+                const auto* pf = dynamic_cast<const PlanetField*>(fb->field.get());
+                const double alt = rf.pos.length() - fb->radius * fb->scale;
+                if (pf && !pf->moon && alt < kAirTop) {
+                    const double rho = kAirDensity * exp(-std::max(0.0, alt) / kAirScaleHeight);
+                    const DVec3 vrel = rf.frame.kind == FrameKind::Fixed ? rf.vel : rf.vel - Cross(pose.omega, rf.pos);
+                    const double v = vrel.length();
+                    const double area = std::max(1.0, (double)plot->cells.size() * kCellSize * kCellSize * 0.25);
+                    acc = acc - vrel * (0.5 * rho * v * 0.8 * area / m);
+                    temperature += (float)((7e-6 * sqrt(rho) * v * v * v - 0.2 * (temperature - 20.0)) * h);
+                    if (temperature > 20.0f && v > 1.0) Heat(*plot, DirToGlobal(pose, rf.frame.kind, vrel * (1.0 / v)).toFloat(), h);
+                } else {
+                    temperature += (float)(-0.2 * (temperature - 20.0) * h);
+                }
+                maxTemperature = std::max(maxTemperature, temperature);
+                rf.vel = rf.vel + acc * (double)h; // semi-implicit Euler, as the global path
+                rf.pos = rf.pos + rf.vel * (double)h;
+                DVec3 vg;
+                if (Frames_ToGlobal(rf, com, vg)) vel = vg.toFloat();
+                // The line or an SOI crossed: the same state, re-expressed - only after the step's last substep, the one
+                // instant where the state and the bodies' poses agree. advanceBodies moves the bodies to the step's end
+                // before the rocket's substeps run, so a switch at the step's start (16 m entering Luna's SOI at 5x warp)
+                // or after an earlier substep (13 m) converted with a pose from another time (rocket/soi-trip).
+                if (stepEnd) {
+                    const FrameRef to = Frames_Choose(bodies, com, rf.frame);
+                    FramePos n;
+                    if (to.body != 0 && to != rf.frame && Frames_Convert(rf, to, n)) rf = n;
+                }
+                rfCom = com; rfVel = vel;
+                framed = true;
+            }
+        }
+        if (!framed) { // the global path (RAYLIBGAME_FRAMES=0)
         const Vector3 g = Gravity(world, com);
         Vector3 force = Vector3Scale(Up(), thrust);
         if (Planetoid* air = Dominant(world, com)) {
@@ -513,6 +603,7 @@ namespace {
         maxTemperature = std::max(maxTemperature, temperature);
         vel = Vector3Add(vel, Vector3Scale(Vector3Add(g, Vector3Scale(force, 1.0f / std::max(mass, 1.0f))), h));
         com = com + DVec3(Vector3Scale(vel, h));
+        }
         const float w = Vector3Length(angVel);
         if (w > 1e-7f) rot = QuaternionNormalize(QuaternionMultiply(QuaternionFromAxisAngle(Vector3Scale(angVel, 1.0f / w), w * h), rot));
         flightTime += h;
@@ -772,10 +863,10 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
         SyncVehicle(world); // the simulated pose again (Rocket_View drew it between steps)
         int steps = std::max(1, (int)ceil(dt / kMaxStep));
         const float h = dt / steps;
-        for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input);
+        for (int i = 0; i < steps && state == RocketState::Flying; ++i) FlightStep(world, h, input, i == steps - 1);
         if (state == RocketState::Flying) {
             SyncVehicle(world);
-            if (Planetoid* b = Dominant(world, com)) { // render interpolation (#315)
+            if (Planetoid* b = FlightBody(world)) { // render interpolation (#315)
                 const DVec3 rel = com - b->worldPos;
                 const bool cont = interpValid && interpBody == b->id && (rel - curRel).length() < 5000.0;
                 prevRel = cont ? curRel : rel; prevRot = cont ? curRot : rot;
@@ -793,7 +884,7 @@ void Rocket_Update(Scene& world, const PlayerInput& in, float dt) {
     if (warpLevel > 0) {
         bool ok = state == RocketState::Flying && throttle <= 0.0f;
         if (ok) {
-            if (Planetoid* b = Dominant(world, com)) {
+            if (Planetoid* b = FlightBody(world)) {
                 const auto* pf = dynamic_cast<const PlanetField*>(b->field.get());
                 const double alt = (com - b->worldPos).length() - b->radius * b->scale;
                 if (pf && !pf->moon && alt < kAirTop) ok = false;
@@ -1129,10 +1220,10 @@ bool Rocket_DeployStation() {
     int core = -1;
     for (int i = 0; i < (int)vp->parts.size(); ++i) if (vp->parts[i].type == PartType::StationCore) core = i;
     if (core < 0) { GameUI_Toast("No station core aboard"); return false; }
-    Planetoid* b = Dominant(world, com);
+    Planetoid* b = FlightBody(world);
     if (!b) return false;
     double ra, rp;
-    Orbit(*b, com, vel, ra, rp);
+    FlightOrbit(*b, ra, rp);
     if (ra < 0.0 || rp - b->radius * b->scale < 30000.0) { GameUI_Toast("Deploy a station from a stable orbit (periapsis above 30 km)"); return false; }
     // The core leaves the rocket where it is: its cells' corner in the vehicle frame, in world space.
     const Part part = vp->parts[core];
@@ -1175,7 +1266,10 @@ bool Rocket_Dock() {
     // The rocket's plot joins the station's body, keeping its attitude.
     const Vector3 ex = Vector3RotateByQuaternion({ 1, 0, 0 }, rot), ey = Vector3RotateByQuaternion({ 0, 1, 0 }, rot), ez = Vector3RotateByQuaternion({ 0, 0, -1 }, rot);
     std::unique_ptr<Plot> plot = veh->plots->release(vp);
-    plot->origin = st->toLocalD(veh->worldPos);
+    // (#1460) From the simulated centre of mass, the inverse of Launch's com = origin + rot comLocal: the vehicle body's
+    // worldPos lagged it by a step, so the undocked rocket reappeared a step of orbital motion away (59 m at x8) and
+    // couldn't dock again.
+    plot->origin = st->toLocalD(com - DVec3(Vector3RotateByQuaternion(comLocal, rot)));
     plot->east = st->dirToLocal(ex);
     plot->up = st->dirToLocal(ey);
     plot->north = st->dirToLocal(ez);
@@ -1232,4 +1326,32 @@ float Rocket_TransferFuel(float kg) {
 bool Rocket_DockedAtStation() {
     Planetoid* body = state == RocketState::OnPad ? PadBody() : nullptr;
     return body && Station_Is(*body);
+}
+
+bool Rocket_TestState(DVec3& c, Vector3& v, FrameRef* frame) {
+    if (state != RocketState::Flying) return false;
+    c = com; v = vel;
+    if (frame) *frame = Framed() ? rf.frame : FrameRef{};
+    return true;
+}
+
+bool Rocket_TestSetState(const DVec3& c, const Vector3& v) {
+    if (state != RocketState::Flying) return false;
+    com = c; vel = v;           // the frame step sees an outside write and re-seeds its state from these
+    angVel = { 0, 0, 0 };
+    throttle = 0.0f;
+    autopilot = RocketAutopilot::Off;
+    flightTime = 2.0;           // past the lift-off grace: contacts count from here
+    interpValid = false;        // a teleport: no interpolation from the old place
+    return true;
+}
+
+double Rocket_TestStationGap() {
+    if (!gWorld || state != RocketState::Flying) return -1.0;
+    Planetoid* st = Station_Nearest(*gWorld, com, 1e9f);
+    if (!st || !st->plots) return -1.0;
+    double nearest = 1e30; // as Rocket_Dock measures it: the station's nearest part from the centre of mass
+    for (const auto& pl : st->plots->plots)
+        for (const auto& kv : pl->cells) nearest = std::min(nearest, (st->toWorldD(DVec3(pl->toBody(CellCentre(kv.first)))) - com).length());
+    return nearest;
 }

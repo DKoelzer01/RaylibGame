@@ -24,6 +24,7 @@
 1 src/space/bugreport.cpp
 3 src/space/buildtool.cpp
 1 src/space/claims.cpp
+1 src/space/cliptelemetry.cpp
 1 src/space/combat.cpp
 6 src/space/dungeontraps.cpp
 4 src/space/events.cpp

@@ -200,6 +200,16 @@ jobs:
         run: |
           EXE="$OUT/bin/game" bash tools/test_server.sh
           EXE="$OUT/bin/game" bash tools/test_join.sh
+      - name: Failures, known or NEW (#1479)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
+        # summary (the runner-check skill's matching). Labels only: the steps above carry the verdicts.
+        run: |
+          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
+            "$RUN/half.log" "$RUN/terrain-gpu.log" "$RUN/join-logs"
+      - name: Save the run summary for the deweyserver MCP tools (ci_summary, scenario_history; #1476)
+        if: ${{ !cancelled() }}
+        run: bash tools/ci/save_summary.sh gpu
       - name: Upload test results
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -272,6 +282,9 @@ jobs:
           if ! grep -q "^=== regression (" "$log"; then echo "::error::the regression did not finish"; exit 1; fi
           if [ "$rc" -ne 0 ]; then echo "::error::new regression failures (not in tools/regression_known.txt): see the job summary"; fi
           exit "$rc"
+      - name: Save the run summary for the deweyserver MCP tools (#1476)
+        if: ${{ !cancelled() }}
+        run: bash tools/ci/save_summary.sh regression-${{ matrix.shard }}
       - name: Upload the regression log
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
