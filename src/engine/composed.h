@@ -8,6 +8,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 #include "tools.h"
 
 struct PartMaterial {
@@ -44,6 +45,11 @@ const PartMaterial* Composed_Material(const std::string& id);
 ComposedStats Composed_Stats(const std::string& id, const std::string& data);
 // The record for a new item: head, handle and binding materials ("" handle or binding: the head's default), quality %.
 std::string Composed_MakeData(const std::string& head, const std::string& handle = {}, const std::string& binding = {}, int qualityPct = 100);
+// (#1449) The assembly hook: the record for a class made from part items, as a grid or anvil recipe consumes them. A part item
+// is named <material>_<part>: the class's head part with '_' for spaces (bronze_pick_head, steel_blade, flint_spearhead), or
+// handle / binding (wood_handle, leather_binding); the material is a part_materials.txt row. Other ingredients are ignored.
+// A missing handle or binding takes the head's default; no head: "" (the recipe is wrong: the item stays plain).
+std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct = 100);
 // An old per-material tool id (stone_pickaxe, bronze_axe, titanium_hoe) as its class and record; false for anything else.
 bool Composed_FromLegacy(const std::string& oldId, std::string& cls, std::string& data);
 class Inventory;
