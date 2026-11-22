@@ -221,6 +221,14 @@ static void StationHold(ScenarioDef& s) {
         c.note(TextFormat("after 30 s: %.3f m apart (from %.1f), the separation changed by up to %.3f m; frame %s(%s) (%s)", sep, sep0, S.rMax,
                           f.kind == FrameKind::Fixed ? "Fixed" : "Centred", f.body == st->netId ? "the station" : f.body == t.netId ? "Terra" : "?",
                           Frames_On() ? "frames on" : "frames off"));
+        { // Which frame the SOI rule gives here, and the station's own numbers (stations as Fixed(station) frames, F5)
+            const std::vector<Planetoid*> all = Planetoid::All(); // (a copy: one vector for begin and end)
+            const FrameRef pick = Frames_Choose(all, com, f);
+            c.note(TextFormat("Frames_Choose here: %s of netId %llu (the station is netId %llu: SOI %.1f m, radius %.1f, kind %d, in All(): %s)",
+                              pick.kind == FrameKind::Fixed ? "Fixed" : "Centred", (unsigned long long)pick.body, (unsigned long long)st->netId,
+                              Frames_Soi(*st), st->radius * st->scale, (int)st->kind,
+                              std::find(all.begin(), all.end(), st) != all.end() ? "yes" : "NO"));
+        }
         c.metric("separation change", S.rMax, "m");
         c.lt("the separation from a free-falling station changed by (m)", S.rMax, 1.0);
         return true;

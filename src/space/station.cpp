@@ -100,6 +100,7 @@ Planetoid* Station_Create(Scene& world, Planetoid& parent, DVec3 pos, Vector3 ve
     if (!Elements(s, pos - parent.worldPos, DVec3(Vector3Subtract(vel, parent.linearVelocity)), WorldTime())) return nullptr;
     auto body = std::make_unique<Planetoid>("station", pos, std::make_shared<EmptyField>(extent), extent);
     body->netId = NetId_Allocate(NetKind::Station); // stable, saved (#317)
+    body->freeFall = true; // (Plan 11 F5) a Fixed(station) frame falls with it
     body->parent = &world.rootObject;
     body->plots = std::make_unique<PlotSet>();
     s.body = body->id;
@@ -200,6 +201,7 @@ bool Station_LoadLine(const char* tok, FILE* f) {
     if (!Elements(s, DVec3(rx, ry, rz), DVec3(vx, vy, vz), WorldTime())) return true;
     auto body = std::make_unique<Planetoid>("station", par->worldPos + DVec3(rx, ry, rz), std::make_shared<EmptyField>(extent), extent);
     body->netId = NetId_Allocate(NetKind::Station); // a save from before #317; its "station_id" line replaces it
+    body->freeFall = true; // (Plan 11 F5) a Fixed(station) frame falls with it
     body->parent = &world->rootObject;
     body->plots = std::move(plots);
     s.body = body->id;

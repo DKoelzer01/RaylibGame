@@ -44,9 +44,11 @@ BodyPose Frames_Pose(const Planetoid& b) {
         p.vel = q.vel + DVec3{ -inPlane.z * w, 0.0, inPlane.x * w };
         p.acc = q.acc - inPlane * (w * w);
     } else {
-        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept; no acceleration
-        // known here (a station falls freely: its frame feels ~0, F5 takes the orbit's).
+        // Root bodies, and bodies moved by other code (stations: Kepler elements): their velocity as kept. A free-falling
+        // one (freeFall: stations) accelerates with the gravity at its centre, so anything in its frame feels only the
+        // difference (the tide), not the fall a second time (Plan 11 F5, #1457: stations as Fixed(station) frames).
         p.vel = DVec3{ b.linearVelocity.x, b.linearVelocity.y, b.linearVelocity.z };
+        if (b.freeFall) p.acc = Frames_GravityGlobal(Planetoid::All(), p.centre);
     }
     return p;
 }
