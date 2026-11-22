@@ -204,4 +204,31 @@ TEST(MachineTiers, OverclockingHalvesTheTimeAndTriplesTheEuPerStep) {
     EXPECT_EQ(MachineTiers_Eu(16, 1), 48);
     EXPECT_EQ(MachineTiers_Eu(16, 2), 144);
 }
+// (#1427 L7b) Every variant item exists (made from the table) and has its own recipe (machine_tier_recipes.txt), which
+// never takes a machine of its family: each tier has its own recipe (the user's decision).
+TEST(MachineTiers, EveryVariantHasItsOwnRecipeAndNoneTakesTheTierBelow) {
+    ItemDB db;
+    ASSERT_TRUE(db.load("resources/data/items.txt", "resources/data/recipes.txt"));
+    ASSERT_TRUE(db.loadExtraText(MachineTiers_ItemsText()));
+    ASSERT_TRUE(db.loadExtra("resources/data/machine_tier_recipes.txt"));
+    int variants = 0;
+    for (int t = 0; t < (int)PartType::Count; ++t) {
+        const PartType type = (PartType)t;
+        for (int step = 1; step <= MachineTiers_MaxStep(type); ++step) {
+            const std::string id = MachineTiers_VariantItem(type, step);
+            ASSERT_FALSE(id.empty());
+            ++variants;
+            EXPECT_NE(db.find(id), nullptr) << id << ": its item";
+            const Recipe* r = nullptr;
+            for (const Recipe& rc : db.recipes()) if (rc.output == id) { r = &rc; break; }
+            ASSERT_NE(r, nullptr) << id << ": its recipe";
+            for (const auto& in : r->inputs) {
+                PartType it = PartType::Count; int is = 0;
+                const bool aMachine = MachineTiers_ItemPart(in.first, it, is) && it == type;
+                EXPECT_FALSE(aMachine) << id << " takes " << in.first << ": a tier's own recipe, never the tier below's machine";
+            }
+        }
+    }
+    EXPECT_EQ(variants, 12) << "MV and HV of the five LV families, HV of the two MV ones";
+}
 #endif

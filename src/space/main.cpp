@@ -1358,6 +1358,7 @@ int main(int argc, char** argv)
     CreatureSounds_Init(); // (#1246) creature calls through the creature framework's hook (nothing without audio v2)
     itemDB.load("resources/data/items.txt", "resources/data/recipes.txt");
     itemDB.loadExtraText(MachineTiers_ItemsText()); // (#1427 L7a) the tiered machines' variant items (machine_tiers.txt)
+    itemDB.loadExtra("resources/data/machine_tier_recipes.txt"); // (#1427 L7b) and their recipes, one per tier
     if (Magic_Enabled()) itemDB.loadExtra("resources/data/magic_items.txt"); // (#1250) magic's items exist only with RAYLIBGAME_MAGIC
     Research_Load(); // (#1030) the research nodes (validated: problems are printed)
     ResearchGate_LoadMilestones(); // (#1271) the tier milestones (tiers.txt); the gate stays off until the ladder's step L6
