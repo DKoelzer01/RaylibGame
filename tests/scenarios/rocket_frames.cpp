@@ -216,6 +216,12 @@ static void StationHold(ScenarioDef& s) {
         Track(c, com, f);
         const double sep = (com - st->worldPos).length();
         S.rMax = std::max(S.rMax, fabs(sep - sep0));
+        { // a jump or a drift? the separation at 1 s and 5 s, and the path's jumps (Track: at frame switches and elsewhere)
+            static bool n1 = false, n5 = false;
+            if (c.T - S.t0 < 0.5) n1 = n5 = false;
+            if (!n1 && c.T - S.t0 >= 1.0) { n1 = true; c.note(TextFormat("at 1 s: %.3f m apart; %d frame switches so far", sep, S.switches)); }
+            if (!n5 && c.T - S.t0 >= 5.0) { n5 = true; c.note(TextFormat("at 5 s: %.3f m apart", sep)); }
+        }
         c.waitingFor(TextFormat("30 s beside the station (%.2f m apart)", sep));
         if (c.T - S.t0 < 30.0) return false;
         c.note(TextFormat("after 30 s: %.3f m apart (from %.1f), the separation changed by up to %.3f m; frame %s(%s) (%s)", sep, sep0, S.rMax,
@@ -229,6 +235,7 @@ static void StationHold(ScenarioDef& s) {
                               Frames_Soi(*st), st->radius * st->scale, (int)st->kind,
                               std::find(all.begin(), all.end(), st) != all.end() ? "yes" : "NO"));
         }
+        c.note(TextFormat("the path's jump (third difference): worst %.4f mm at a frame switch (%d switches), %.4f mm elsewhere", S.worstSwitch * 1000.0, S.switches, S.worstSmooth * 1000.0));
         c.metric("separation change", S.rMax, "m");
         c.lt("the separation from a free-falling station changed by (m)", S.rMax, 1.0);
         return true;
