@@ -51,9 +51,11 @@ std::string LocateCommand(const std::string& cmd, const std::string& line) {
     std::vector<std::string> args;
     while (in >> word) args.push_back(word);
     Player& p = LocalSession().player;
-    if (!gCmdWorld || !p.nearest) return "No world here";
+    // (#1555) the body the player stands on, else (before its first update has set it) the one nearest its feet
+    Planetoid* const onBody = !gCmdWorld ? nullptr : p.nearest ? p.nearest : NearestPlanetoid(*gCmdWorld, (p.position - gCmdWorld->renderOrigin).toFloat());
+    if (!onBody) return "No world here";
     if (!terrainTool.creative) return "/" + cmd + " is for creative mode (/gamemode creative)";
-    Planetoid& body = *p.nearest;
+    Planetoid& body = *onBody;
     const Vector3 from = body.toLocalD(p.position).toFloat();
     if (cmd == "locate") {
         LocateHit nearest;
@@ -93,6 +95,7 @@ std::string CommandLine_Run(const std::string& typed) {
     return "Unknown command: /" + cmd + " (/help lists them)";
 }
 
+void CommandLine_SetWorld(Scene* world) { gCmdWorld = world; }
 void CommandLine_Update(Scene& world) {
     gCmdWorld = &world; // (#1171: /locate and /tp)
     if (open || GameUI_InventoryOpen() || GameUI_TextInputActive()) return;
