@@ -5,6 +5,7 @@
 #include "playerinput.h"
 #include "world.h" // GameFrameTime
 #include "toolwear.h"
+#include "composed.h"
 #include "buildtool.h"
 #include "itemicons.h"
 #include "gameui.h"
@@ -293,7 +294,10 @@ void Hotbar_DrawHUD(bool piloting) {
             if (ItemIcons_Has(id)) ItemIcons_Draw(id, { x + (size - is) * 0.5f, (float)y0 + 8.0f * sc, is, is });
             else if (d) DrawRectangle(x + size / 2 - 9, y0 + 14, 18, 18, d->color);
             if (KindOf(id) != ItemKind::Tool) DrawText(TextFormat("%d", held), x + size - 4 - MeasureText(TextFormat("%d", held), (int)(14 * sc)), y0 + (int)(3 * sc), (int)(14 * sc), RAYWHITE);
-            const float left = ToolWear_Left(id); // a worn tool: a bar along the bottom, green to red
+            // a worn tool: a bar along the bottom, green to red; (#1449) a composed copy: its own wear, from its record
+            const InvSlot& cellNow = inventory.grid()[Inventory::kGrid + i];
+            const ComposedStats own = cellNow.hasData() ? Composed_Stats(cellNow.id, cellNow.data) : ComposedStats{};
+            const float left = own.valid && own.durability > 0 ? 1.0f - (float)own.wear / (float)own.durability : ToolWear_Left(id);
             if (left < 1.0f && held > 0) {
                 DrawRectangle(x + 4, y0 + size - 4, size - 8, 3, Fade(BLACK, 0.6f));
                 DrawRectangle(x + 4, y0 + size - 4, (int)((size - 8) * left), 3, UiPalette_Lerp(left));

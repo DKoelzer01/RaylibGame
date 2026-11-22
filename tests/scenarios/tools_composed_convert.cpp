@@ -13,6 +13,7 @@
 #include "tools.h"
 #include "toolwear.h"
 #include "hotbar.h"
+#include "gameui.h"
 #include "skills.h"
 #include "world.h"
 #include <raymath.h>
@@ -86,6 +87,15 @@ SCENARIO("tools/composed-convert") {
         if (cell >= 0) c.eq("its wear after six strokes", ItemData::GetInt(inventory.grid()[cell].data, "w", 0), 26);
         c.lt("its wear bar (left)", ToolWear_Left("tool_pickaxe"), 1.0);
         c.keepCapture("composed tools after a load (#1449): the held pickaxe digging");
+        return true;
+    });
+    s.step("the inventory: names from the head, the pickaxe's parts tooltip", 6.0, [](ScenarioCtx& c) {
+        static bool opened = false;
+        const int cell = CellOf("tool_pickaxe");
+        if (!opened) { opened = true; GameUI_ShowTab("Suit"); GameUI_TestHover(cell); }
+        c.check("the window is open", GameUI_InventoryOpen());
+        if (c.t < 2.5) return false; // (held a moment for the recording)
+        GameUI_TestHover(-1);
         return true;
     });
 }

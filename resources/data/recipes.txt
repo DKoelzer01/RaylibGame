@@ -207,3 +207,6 @@ bronze_axe 1       = bronze_axe_head 1, any_planks 2
 steam_assembler 1  = iron_plate 4, cogwheel 4, any_planks 8
 # (#1271 L6c) the LV assembler (with tier 4)
 lv_assembler 1     = lv_hull 1, basic_circuit 2, copper_wire 8, steel_plate 2
+# (#1427 L7e) the LV successors of the press and the saw
+compressor 1       = lv_hull 1, basic_circuit 2, steel_plate 4
+cutter 1           = lv_hull 1, basic_circuit 2, steel_plate 2, iron_plate 2
