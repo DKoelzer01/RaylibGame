@@ -113,7 +113,7 @@ static int OldDepositKind(float r) { return r < 0.22f ? 3 : r < 0.44f ? 0 : r < 
 static int OldPocketKind(float r) { return r < 0.35f ? 0 : r < 0.60f ? 1 : r < 0.75f ? 2 : 3; }
 
 TEST(Ores, TheTableHoldsTodaysSixKinds) {
-    ASSERT_EQ(Ores_Count(), 6);
+    ASSERT_GE(Ores_Count(), 6) << "today's six first (#1467 appends the vein families' ores after them)";
     const char* items[] = { "iron_ore", "copper_ore", "tin_ore", "coal", "bauxite_ore", "ilmenite_ore" };
     const float minDepth[] = { 4, 4, 4, 4, 20, 60 };
     for (int k = 0; k < 6; ++k) { EXPECT_EQ(Ores_Get(k)->item, items[k]); EXPECT_EQ(Ores_Get(k)->minDepth, minDepth[k]) << k; }

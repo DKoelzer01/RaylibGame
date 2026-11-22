@@ -17,3 +17,12 @@ bronze     | Bronze   | 205,150,75  | 2    | 2.0      | 16        | 8.8     | 1 
 iron       | Iron     | 175,170,175 | 2    | 2.0      | 16        | 7.9     | 0       | 1.0
 steel      | Steel    | 125,128,140 | 3    | 3.0      | 36        | 7.8     | 2       | 1.0
 titanium   | Titanium | 205,180,215 | 4    | 4.0      | 80        | 4.5     | 2       | 1.0
+# (#1473) The vein families' metals as head materials (no head recipes yet: the chains and the ladder tiers come after the
+# playtest). GUESS, from the real metals: lead and zinc soft (a poor head, a heavy mace); nickel and silver iron-like
+# (silver takes gems well); chromium hard; tungsten the hardest and heaviest.
+lead       | Lead     | 110,110,130 | 1    | 0.6      | 6         | 11.3    | 0       | 0.9
+zinc       | Zinc     | 180,190,195 | 1    | 1.0      | 8         | 7.1     | 0       | 1.0
+nickel     | Nickel   | 200,200,150 | 2    | 2.2      | 18        | 8.9     | 0       | 1.0
+silver     | Silver   | 215,220,225 | 2    | 1.6      | 12        | 10.5    | 2       | 1.0
+chromium   | Chromium | 205,210,220 | 3    | 3.5      | 28        | 7.2     | 1       | 1.0
+tungsten   | Tungsten | 95,95,105   | 4    | 4.5      | 60        | 19.3    | 1       | 1.0
