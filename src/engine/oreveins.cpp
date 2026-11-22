@@ -100,7 +100,7 @@ int OreVeins_Member(const VeinDeposit& d, Vector3 p) {
 #include "unit_helpers.h"
 
 namespace {
-VeinDeposit Test(VeinShape s, float size) {
+VeinDeposit Shaped(VeinShape s, float size) {
     VeinDeposit d;
     d.exists = true; d.centre = { 0, 1000, 0 }; d.shape = s; d.size = size; d.axis = { 0, 1, 0 };
     d.envelope = s == VeinShape::Blob ? size : kVeinReach;
@@ -110,18 +110,18 @@ bool In(const VeinDeposit& d, float x, float y, float z, float n2 = 0.5f) { retu
 }
 
 TEST(OreVeins, EachShapeHoldsItsPointsAndNoneReachesPastItsCell) {
-    const VeinDeposit blob = Test(VeinShape::Blob, 6.0f);
+    const VeinDeposit blob = Shaped(VeinShape::Blob, 6.0f);
     EXPECT_TRUE(In(blob, 5, 0, 0)); EXPECT_FALSE(In(blob, 7, 0, 0));
-    VeinDeposit sheet = Test(VeinShape::Sheet, 4.0f); sheet.axis = { 1, 0, 0 }; // a vertical plane facing x
+    VeinDeposit sheet = Shaped(VeinShape::Sheet, 4.0f); sheet.axis = { 1, 0, 0 }; // a vertical plane facing x
     EXPECT_TRUE(In(sheet, 1.5f, 15, 15)) << "within its thickness, far along the plane";
     EXPECT_FALSE(In(sheet, 3, 0, 0)) << "past half its thickness";
-    const VeinDeposit pipe = Test(VeinShape::Pipe, 5.0f);
+    const VeinDeposit pipe = Shaped(VeinShape::Pipe, 5.0f);
     EXPECT_TRUE(In(pipe, 3, 18, 0)) << "high up its axis";
     EXPECT_FALSE(In(pipe, 8, 0, 0)) << "off the axis";
-    const VeinDeposit seam = Test(VeinShape::Seam, 3.0f);
+    const VeinDeposit seam = Shaped(VeinShape::Seam, 3.0f);
     EXPECT_TRUE(In(seam, 18, 1, 0)) << "far out along the bed";
     EXPECT_FALSE(In(seam, 0, 3, 0)) << "above the bed";
-    const VeinDeposit stock = Test(VeinShape::Stockwork, 8.0f);
+    const VeinDeposit stock = Shaped(VeinShape::Stockwork, 8.0f);
     EXPECT_TRUE(In(stock, 5, 5, 5, 0.02f)) << "on a vein";
     EXPECT_FALSE(In(stock, 5, 5, 5, 0.5f)) << "between veins";
     // Nothing past kVeinReach (so a deposit never crosses into the next cell), whatever the noise
