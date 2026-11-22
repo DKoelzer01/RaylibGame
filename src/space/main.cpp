@@ -1799,7 +1799,8 @@ int main(int argc, char** argv)
             Planetoid* p = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get()); // (no bench world: no planet, not a crash)
             const auto* pf = p ? dynamic_cast<const PlanetField*>(p->field.get()) : nullptr;
             if (!pf) { printf("bench: cave islands: no planet\n"); return 1; }
-            CaveIslands_Measure(*pf, p->seed, R, true); // (caveislands.cpp; the caves/islands scenario checks it, #1465)
+            const float Rc = i + 2 < argc && argv[i + 2][0] != '-' ? (float)atof(argv[i + 2]) : 0.0f; // (#1465) large caverns within this range too
+            CaveIslands_Measure(*pf, p->seed, R, true, Rc); // (caveislands.cpp; the caves/islands scenario checks it, #1465)
             return 0;
         }
     for (int i = 1; i < argc; ++i)

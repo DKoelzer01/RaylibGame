@@ -1312,7 +1312,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             CaveSeg sg; sg.a = a; sg.b = b; sg.ra = ra; sg.rb = rb; sg.flat = fl; sg.up = up; sg.kind = kind; segs->push_back(sg);
         };
         add(Vector3Subtract(c, Vector3Scale(hd, 0.2f * r)), Vector3Add(c, Vector3Scale(hd, 0.2f * r)), r, r, flat, (int)CaveKind::Cavern);
-        CaveMouth cm; cm.at = c; cm.out = up; cm.kind = 3; cm.radius = r; cm.depth = depth; // (a chamber centre for the tests and the islands gate; radius >= 50: a cavern)
+        CaveMouth cm; cm.at = c; cm.out = up; cm.kind = 4; cm.radius = r; cm.depth = depth; // (kind 4: a cavern centre, for the tests and the islands gate)
         data->mouths.push_back(cm);
         const float floorH = -0.4f * r * flat;
         auto onFloor = [&](float dist, float ang, float h) {
@@ -1862,8 +1862,8 @@ bool PlanetField::nearestCaveMouth(Vector3 dir, float range, Vector3& at, Vector
     return found;
 }
 
-void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out) const {
-    out.clear();
+void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector<Vector3>& out, std::vector<float>* radii) const {
+    out.clear(); if (radii) radii->clear();
     if (!CavesGraph() || moon) return;
     const Vector3 s = Vector3Scale(Vector3Normalize(dir), radius);
     const int R = (int)ceilf(range / kCaveCell) + 1;
@@ -1874,7 +1874,7 @@ void PlanetField::caveMouthsList(Vector3 dir, float range, int kind, std::vector
                 const Vector3 cc = { (c0[0] + x + 0.5f) * kCaveCell, (c0[1] + y + 0.5f) * kCaveCell, (c0[2] + z + 0.5f) * kCaveCell };
                 if (fabsf(Vector3Length(cc) - radius) > 2.0f * kCaveCell) continue;
                 for (const CaveMouth& m : CaveCell(*this, fieldSeed, c0[0] + x, c0[1] + y, c0[2] + z)->mouths)
-                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) out.push_back(m.at);
+                    if (m.kind == kind && Vector3Distance(Vector3Scale(Vector3Normalize(m.at), radius), s) <= range) { out.push_back(m.at); if (radii) radii->push_back(m.radius); }
             }
 }
 
