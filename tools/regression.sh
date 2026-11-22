@@ -223,6 +223,7 @@ multiplayer() {
     H --host "$sv" --bench 3 --port 27941 --test-net-dig
     H --host "$sv" --bench 3 --port 27941 --test-net-build
     H --host "$sv" --bench 3 --port 27941 --test-net-sync # (#776) joining a world with many edits: indexed, hashed, rate-bounded
+    H --host "$sv" --bench 3 --port 27941 --test-joined-items # (#865, #866, #946; #1219 SetGem) creative gives, drops, recursive crafts and a gem set through the server
     RAYLIBGAME_NET_LAG_MS=50 RAYLIBGAME_NET_JITTER_MS=10 RAYLIBGAME_NET_LOSS=2 RAYLIBGAME_NET_SEED=1 H --host "$sv" --bench 3 --port 27941 --test-mp-bots 6
     exe="$keep"
     H --seed 42 --bench 3 --test-time-follow
