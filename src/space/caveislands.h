@@ -15,6 +15,8 @@ struct CaveIslands {
     long long byDistance[8] = {};      // m^3 by mean distance across from it: 0..72 m in 8 bins
     int caverns = 0;                   // (#1465) large caverns (centre kind 4) within cavernRange, on a 2 m grid
     long long cavernPieces = 0, cavernVolume = 0;
+    int sheets = 0;                    // (#1465) sheet caves (kind 5) within the same range, 2 m grid
+    long long sheetPieces = 0, sheetVolume = 0;
     float seconds = 0.0f;
 };
 
