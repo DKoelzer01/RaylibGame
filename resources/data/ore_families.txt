@@ -1,0 +1,31 @@
+# Ore vein families (#1467, the underground plan #1465): a deposit is one family, a main ore and its byproducts (real-ish
+# geology, GregTech style). PlanetField picks a family per deposit cell among those whose hosts and depth fit, by rarity x
+# biome x region, then a member per point by weight (orefamilies.h). Format agreed with Lighting (2026-11-22).
+# All numbers GUESS until the playtests.
+#   members: ores.txt ids with weights (floats), the main ore first
+#   hosts:   rock strata it sits in (rock, granite, basalt, sandstone, limestone, marble), or any. Hard: a deposit whose
+#            centre is in another rock skips the family; a cell with no family that fits has no deposit
+#   depth:   min max m under the original surface ("-": no limit)
+#   biomes:  rarity multipliers by surface biome (unlisted x1), or any
+#   regions: rarity multipliers by underground region (#1547: none, karst, volcanic, frozen, crystal, flooded, fungal)
+#   rarity:  its weight among the families that fit a cell
+#   shape:   blob (today's deposits), sheet (a dike or vein plane), pipe (vertical), seam (a flat bed), stockwork (a mesh of
+#            thin veins); extents (sheet span, pipe height, seam length) are fixed per shape in code, inside the 96 m cell
+#   size:    min max m, rolled per deposit: blob or pipe radius, sheet or seam thickness, stockwork vein spacing
+# id               | members                              | hosts                    | depth  | biomes                          | regions                 | rarity | shape     | size
+# Today's six ores, as families
+banded_iron        | iron 7, magnetite 3                  | sandstone limestone rock | 4 -    | any                             | any                     | 1.0    | sheet     | 3 8
+copper_porphyry    | copper 8, gold 1                     | granite rock             | 4 160  | desert 1.5, badlands 1.5        | volcanic 1.5            | 1.0    | stockwork | 6 12
+tin_greisen        | tin 6, wolframite 1                  | granite                  | 4 120  | any                             | crystal 1.5             | 0.6    | sheet     | 2 5
+coal_measures      | coal 1                               | sandstone limestone rock | 4 80   | swamp 2, jungle 1.5, forest 1.2 | flooded 1.3, fungal 1.3 | 1.0    | seam      | 2 4
+bauxite_laterite   | bauxite 1                            | any                      | 20 90  | jungle 2, savanna 1.5           | any                     | 0.6    | blob      | 5 10
+ilmenite_layered   | ilmenite 4, magnetite 2              | basalt rock              | 60 -   | any                             | volcanic 1.5            | 0.5    | seam      | 3 6
+# New: lead-zinc-silver in limestone (Mississippi Valley type), nickel sulfides and chromite in mafic rock, skarn iron,
+# cinnabar near hot springs, tungsten in granite veins, gold in quartz veins
+lead_zinc_silver   | galena 5, sphalerite 4, acanthite 0.5 | limestone marble        | 30 160 | any                             | karst 2                 | 0.6    | stockwork | 6 14
+nickel_sulfide     | pentlandite 5, magnetite 3, copper 2 | basalt rock              | 60 -   | tundra 1.5, taiga 1.3           | volcanic 1.5, frozen 1.3 | 0.4   | blob      | 6 12
+magnetite_skarn    | magnetite 6, copper 2, gold 0.5      | marble limestone         | 20 150 | any                             | volcanic 1.3            | 0.5    | blob      | 5 10
+cinnabar_hotspring | cinnabar 1                           | basalt sandstone         | 15 80  | alpine 1.5, badlands 1.5        | volcanic 3              | 0.3    | stockwork | 4 8
+chromite_podiform  | chromite 6, pentlandite 1            | basalt rock              | 100 -  | any                             | volcanic 1.5            | 0.35   | blob      | 3 7
+wolframite_veins   | wolframite 4, tin 3                  | granite                  | 90 -   | alpine 1.5                      | crystal 2               | 0.3    | sheet     | 1.5 3
+gold_quartz        | gold 3, galena 1, acanthite 1        | granite rock             | 40 -   | alpine 1.5, tundra 1.2          | crystal 1.5             | 0.25   | sheet     | 1 2.5
