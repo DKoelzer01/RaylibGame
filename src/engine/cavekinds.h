@@ -11,7 +11,7 @@
 
 #include <string>
 
-enum class CaveKind : int { Passage = 0, Mouth = 1, Solid = 2, Chamber = 3, Cavern = 4 };
+enum class CaveKind : int { Passage = 0, Mouth = 1, Solid = 2, Chamber = 3, Cavern = 4, Sheet = 5 };
 
 struct CaveKindDef {
     const char* name;
@@ -38,6 +38,10 @@ constexpr CaveKindDef kCaveKinds[] = {
     // (#1465) a large cavern (r 50-150 m, rare and deep): the chamber's rules exactly (swell and outline at a passage's
     // size, a level floor, outcrops capped at 4 m: the floating-rock control), and its roof pockets and wander at that size too
     { "cavern",    0,    0.2f,   0,  0.0f,  -1.0f, 0.4f,  0,   1,    0.55f,  4.0f, 1 },
+    // (#1465) a sheet cave: a wide, low bedding-plane passage (half-width 12-25 m, height x0.12-0.2) in layered rock: a level
+    // floor at the noise level (no tilt: along the bedding), swell, outline, pockets and wander at a passage's size, outcrops
+    // capped at 3 m (they stay in the low roof)
+    { "sheet",     0,    0.2f,   0,  0.0f,  -1.0f, 0.0f,  0,   1,    0.55f,  3.0f, 1 },
 };
 constexpr int kCaveKindCount = (int)(sizeof(kCaveKinds) / sizeof(kCaveKinds[0]));
 

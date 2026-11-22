@@ -110,6 +110,17 @@ CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, b
                 printf("bench: cave islands: cavern %zu m^3 by height (x0.1 r from the centre, -0.4..+0.4 r):", ci); for (int k = 0; k < 8; ++k) printf(" %lld", hb[k]); printf("; by distance across (x0.125 r, 0..r):"); for (int k = 0; k < 8; ++k) printf(" %lld", db[k]); printf("\n");
             }
         }
+        // (#1465) Sheet caves (kind 5, listed at their middles; radius = half their length + their half-width) within the same
+        // range: a box over the whole sheet (1.1 x that across, +-30 m up: low, but it follows the ground's slope), 2 m grid.
+        std::vector<Vector3> sheets;
+        pf.caveMouthsList(home, cavernRange, 5, sheets, &radii);
+        out.sheets = (int)sheets.size();
+        for (size_t si = 0; si < sheets.size(); ++si) {
+            const int hx = 2 * (int)ceilf(0.5f * (1.1f * radii[si] + 6.0f)), hy = 30;
+            const BoxResult b = MeasureBox(pf, sheets[si], hx, hy, 2, nullptr, nullptr);
+            out.sheetPieces += b.pieces; out.sheetVolume += b.volume;
+            if (print) printf("bench: cave islands: sheet %zu (half-extent %.0f m): %lld floating pieces, %lld m^3, largest %lld m^3\n", si, radii[si], b.pieces, b.volume, b.largest);
+        }
     }
     out.seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
     if (print) {
@@ -117,6 +128,7 @@ CaveIslands CaveIslands_Measure(const PlanetField& pf, unsigned seed, float R, b
         printf("bench: cave islands: floating m^3 by height from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %+d..%+d:%lld", -28 + 7 * b, -21 + 7 * b, out.byHeight[b]); printf("\n");
         printf("bench: cave islands: floating m^3 by distance across from the centre (m):"); for (int b = 0; b < 8; ++b) printf(" %d..%d:%lld", 9 * b, 9 * b + 9, out.byDistance[b]); printf("\n");
         if (cavernRange > 0.0f) printf("bench: cave islands: %d caverns within %.0f m: %lld floating pieces, %lld m^3 (2 m grid)\n", out.caverns, cavernRange, out.cavernPieces, out.cavernVolume);
+        if (cavernRange > 0.0f) printf("bench: cave islands: %d sheet caves within %.0f m: %lld floating pieces, %lld m^3 (2 m grid)\n", out.sheets, cavernRange, out.sheetPieces, out.sheetVolume);
     }
     return out;
 }

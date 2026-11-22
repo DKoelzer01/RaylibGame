@@ -5,6 +5,7 @@
 #include "voxel.h"
 #include "ores.h"
 #include "cavekinds.h"
+#include "underground.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
@@ -1201,6 +1202,7 @@ namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 constexpr float kCavernShare = 0.006f;  // (#1465) the share of deep (100 m+) main-passage vertices with a large cavern (GUESS)
+constexpr float kSheetShare = 0.03f;    // (#1465) the share of main-passage vertices 30-120 m down (in layered rock) with a sheet cave (GUESS)
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
 struct CaveMouth { Vector3 at, out; int kind = 0; float radius = 0.0f, depth = 0.0f; }; // radius, depth: shafts (kind 1, #1067) // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
@@ -1331,6 +1333,41 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             if (cavernSolids) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), pr, pr, 1.0f, (int)CaveKind::Solid);
         }
     };
+    // (#1465 cave variety) A sheet cave at a main-passage vertex 30-120 m down in layered rock (sedimentary strata, or a
+    // karst region on the underground map): a wide, low bedding-plane passage, kind 5 (cavekinds.h: a level floor, pockets
+    // and wander at a passage's size, outcrops capped at 3 m), half-width 12-25 m, height x0.12-0.2, running 40-100 m level
+    // (the same depth under the ground at both ends) from the vertex at a random heading. Its own numbers, as caverns; only
+    // where its reach stays inside the cells' gather reach, and its roof 10 m+ under the ground. RAYLIBGAME_CAVE_SHEETS=0: none.
+    static const bool sheetsOn = !(getenv("RAYLIBGAME_CAVE_SHEETS") && getenv("RAYLIBGAME_CAVE_SHEETS")[0] == '0');
+    auto sheet = [&](Vector3 c, Vector3 head, float depth, uint32_t bits) {
+        const Vector3 up = Vector3Normalize(c);
+        const int province = f.strataColumn(up).province;
+        if (province != 0 && province != 3 && Underground_RegionAt(f, c) != UndergroundRegion::Karst) return; // layered rock only
+        std::mt19937 g(bits);
+        std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
+        const float r = 12.0f + 13.0f * Ug(g), flat = 0.12f + 0.08f * Ug(g), L = 40.0f + 60.0f * Ug(g), turn = 2.0f * PI * Ug(g);
+        if (depth - r * flat * 2.3f < 10.0f) return;
+        const Vector3 hd0 = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
+        const Vector3 sd0 = Vector3CrossProduct(up, hd0);
+        const Vector3 hd = Vector3Add(Vector3Scale(hd0, cosf(turn)), Vector3Scale(sd0, sinf(turn)));
+        const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(up, R), Vector3Scale(hd, L)));
+        const float e2 = f.elevation(dir2);
+        if (e2 < 0.0f) return;                                             // not under the sea
+        const Vector3 end = Vector3Scale(dir2, R + e2 - depth);           // level: the same depth under the ground
+        const Vector3 mid = Vector3Scale(Vector3Add(c, end), 0.5f);
+        const float ml = Vector3Length(mid);
+        if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml - r * flat * 2.3f < 10.0f) return; // (the ground between may dip)
+        const Vector3 sp = Vector3Scale(Vector3Normalize(mid), R);
+        for (int a = 0; a < 3; ++a) {
+            const float p = a == 0 ? sp.x : a == 1 ? sp.y : sp.z, lo = a == 0 ? cellLo.x : a == 1 ? cellLo.y : cellLo.z;
+            const float outside = std::max(0.0f, std::max(lo - p, p - (lo + kCaveCell)));
+            if (outside + 0.5f * L + 2.6f * r > kCaveCellReach * kCaveCell - 64.0f) return;
+        }
+        CaveSeg sg; sg.a = c; sg.b = end; sg.ra = r; sg.rb = r; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(c, end)); sg.kind = (int)CaveKind::Sheet;
+        segs->push_back(sg);
+        CaveMouth cm; cm.at = mid; cm.out = sg.up; cm.kind = 5; cm.radius = 0.5f * L + r; cm.depth = depth; // (kind 5: a sheet cave's middle; radius: its half-extent, for the islands gate)
+        data->mouths.push_back(cm);
+    };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
         Vector3 dir = Vector3Normalize(pos);
         const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
@@ -1355,10 +1392,12 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
             if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
-            if (level == 0 && cavernsOn) { // (#1465) a large cavern: its own numbers (no draw from rng: the rest stays as before)
+            if (level == 0) { // (#1465) large caverns and sheet caves: their own numbers (no draw from rng: the rest stays as before)
                 uint32_t h = cellBits ^ (uint32_t)(++vertexNo) * 0x9E3779B1u;
                 h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
-                if (depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+                if (cavernsOn && depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+                const uint32_t hs = h * 0x85ebca6bu ^ 0x5bd1e995u; // a second draw from the same hash
+                if (sheetsOn && depth2 >= 30.0f && depth2 <= 120.0f && ((hs ^ (hs >> 13)) >> 8) * (1.0f / 16777216.0f) < kSheetShare) sheet(pos2, head, depth2, hs);
             }
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
@@ -2101,7 +2140,7 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
                 static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 4.0f; // (#1116: 8 -> 4 m, floating 1500 -> 722 m^3 with the swell fix; the env is CPU only, tuning)
-                const float cap = K.outcropCap > 0.0f && hall ? hallRa : K.outcropCap; // (the env tunes chambers' cap, CPU only)
+                const float cap = ki == (int)CaveKind::Chamber ? hallRa : K.outcropCap; // (the env tunes only chambers' cap, CPU only; its default = the table's 4)
                 const float ra = cap > 0.0f ? std::min(rw, cap) : rw;          // chambers: outcrops at most passage-sized (else tens of metres)
                 intrude = K.intrude * ra * fade * wn;
             }
