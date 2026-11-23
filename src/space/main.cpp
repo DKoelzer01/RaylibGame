@@ -14166,6 +14166,7 @@ int main(int argc, char** argv)
             if (Recorder_WantsFrame(true)) Recorder_Capture(); // the finished frame, HUD included (#375)
             Recorder_DrawIndicator(); // (#1119) after the capture: on screen, never in the recording
             Recorder_FrameDone();
+            GpuTimer_Mark("recorder"); // (#1583) the capture's readback (when recording) apart from the swap and present below
         if (gSoakOn) { // (#348) before the frame-rate wait
             const double workMs = (GetTime() - gFrameWorkStart) * 1000.0, cpuMs = (ThreadCpuSeconds() - gFrameCpuStart) * 1000.0;
             gSoakWorkMs.push_back((float)workMs);
