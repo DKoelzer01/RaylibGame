@@ -100,6 +100,7 @@ struct Part {
     uint8_t material = 0; // shapes: BuildMaterial index
 };
 bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
+inline bool GateLocked(const Part& p) { return p.type == PartType::Gate && p.material == 1; } // (#1641) a vault door (a dungeon_key opens it): solid, where a plain gate is walked through
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
