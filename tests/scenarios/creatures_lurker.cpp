@@ -2,7 +2,7 @@
 //   creatures/arena-lurker (sandbox): blind, it hunts by sound. 12 m from a player who keeps still and crouched (silent), it
 //     stays put; one dig-loud noise at the player and it comes, in bursts, and strikes within a few seconds.
 //   creatures/lurker-ceiling (seed 42, in the nearest chamber): idle under a roof, it climbs onto the ceiling; a player walking
-//     under it is heard, it rattles and drops on them (x1.5, a heavy hit).
+//     right under it (silent: #1224, it feels the steps), it rattles and drops on them (x1.5, a heavy hit).
 #include "scenario.h"
 #include "animals.h"
 #include "creatures.h"
@@ -142,7 +142,8 @@ SCENARIO("creatures/lurker-ceiling") {
             S.drops0 = Animals_LurkerDrops();
             return false;
         }
-        Noise_Emit(c.body->id, FeetLocal(c), NoiseTune::kSprint, Animals_Clock(), kPlayerSource); // running steps under it (a walk only carries ~9 m: it hangs 14 m up)
+        // (#1224) No noise: standing right under it sets it off (it feels the steps). It used to need running steps (a walk
+        // only carries ~9 m and it hangs 14 m up), and in play it never dropped.
         if (Animals_LurkerDrops() == S.drops0) { c.waitingFor("the drop"); return false; }
         c.check("it dropped on the player", true);
         c.near("x1.5: 13.5", S.health0 - survival.health, 13.5, 0.8);

@@ -164,6 +164,7 @@ struct Animal {
     Vector3 hurtFrom{};
     double heardPlayerAt = -1e9; // (#1224) sim time it last heard a player (a blind hunter tracks by this)
     bool clinging = false;       // (#1224) on a cave ceiling (pos), waiting over clingFloor
+    bool dropOnSteps = false;    // (#1224) this drop was set off by prey walking under it (not hunting)
     float dropIn = -1.0f, clingWait = 0.0f; // the drop's telegraph left (s, -1 none); s it has heard prey not under it
     Vector3 clingFloor{};
     uint64_t group = 0;          // (#1225) its group (the first member's net id; 0: alone)
@@ -1380,6 +1381,16 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { float r = -1.0f; for (float h = 0.5f; h <= 20.0f; h += 0.25f) if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { r = h; break; }
                     printf("creature %llu: mood %s, hunting %d, flee %.1f, clinging %d, since bite %.1f, roof %.2f m\n", (unsigned long long)a.netId, Mood_Name(bo.mood), (int)hunting, a.fleeTimer, (int)a.clinging, simClock - a.lastBite, r); }
                 if (a.clinging) {
+                    // (#1224 playtest: "walking under/near doesn't trigger them to drop, no audio cue") It never heard the
+                    // player: it hears from the ceiling (up to 20 m over the floor) and a quiet walk carries a few metres, so
+                    // the drop (and its rattle) never started. Prey right under it (within its drop range sideways, 3 m of the
+                    // floor) now sets it off as well: it feels the steps.
+                    bool preyUnder = false;
+                    if (sameBody && preyIdx < 0) {
+                        const Vector3 d = Vector3Subtract(tgLocal, a.clingFloor);
+                        const float vert = Vector3DotProduct(d, aup);
+                        preyUnder = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, vert))) < cs->dropRange && fabsf(vert) < 3.0f;
+                    }
                     const bool knocked = bi.hurt || (Combat3_On() && Poise_Staggered(a.poise));
                     auto fall = [&]() { a.pos = a.prevPos = a.clingFloor; a.clinging = false; a.dropIn = -1.0f; a.clingWait = 0.0f; };
                     if (knocked) fall();
@@ -1387,8 +1398,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         a.dropIn -= step;
                         if (a.dropIn <= 0.0f) {
                             const Vector3 below = a.clingFloor;
+                            const bool onSteps = a.dropOnSteps; a.dropOnSteps = false;
                             fall();
-                            if (sameBody && hunting && preyIdx < 0) {
+                            if (sameBody && preyIdx < 0 && (hunting || onSteps)) { // (#1224) or set off by steps under it
                                 // It drops onto its prey: within its drop range sideways of where it hung (and not far above or
                                 // below that floor), it lands beside them and the drop hits.
                                 const Vector3 d = Vector3Subtract(tgLocal, below);
@@ -1415,12 +1427,13 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                                 }
                             }
                         }
-                    } else if (hunting && preyIdx < 0) {
+                    } else if ((hunting && preyIdx < 0) || preyUnder) {
                         const Vector3 d = Vector3Subtract(tgLocal, a.clingFloor);
                         const float side = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, Vector3DotProduct(d, aup))));
                         a.clingWait += step;
-                        if (side < cs->dropRange || a.clingWait > 3.0f) {
+                        if (side < cs->dropRange || (hunting && a.clingWait > 3.0f)) {
                             a.dropIn = 0.35f;
+                            a.dropOnSteps = preyUnder && !hunting;
                             FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                             if (tg->session == 0 && side < cs->dropRange) { Audio_Play(Sfx::Error, 0.4f, 1.8f); GameUI_Toast("Something rattles overhead!"); }
                         }
