@@ -879,6 +879,7 @@ struct RingParams {
     int rootLevel = 0;
     Vector3 c{}, cHigh{}, up{};  // centre, the region's highest point (horizon test), the local vertical
     float r = 0;
+    size_t cap = SIZE_MAX;       // (#1603) the most nodes it keeps (the nearest and coarsest first)
 };
 static constexpr float kRingBelow = 8.0f, kRingAbove = 8.0f, kRingBand = 12.0f;
 static constexpr float kRingMaxSpeed = 15.0f; // m/s: faster than running, the ring pauses
@@ -986,6 +987,14 @@ struct PreloadRing {
     Vector3 lastCam = { 1e30f, 1e30f, 1e30f }; double lastTime = 0.0; float speed = 0.0f; // camera speed against the body, smoothed
 };
 static std::unordered_map<uint64_t, PreloadRing> gPreload;
+// (#1603, user: "we should never have that many chunks loaded at once") Residency budgets shared by every body, scaled by the
+// terrain detail as (detail / Medium's 2.5)^2: a finer setting picks ~that many more nodes. The preload ring held ~40 k
+// nodes at Medium, 43 k at High (and ~300 k around a huge ring rock, #1560), uncapped and never evicted; the chunk cache's
+// 8 M vertices / 40 k nodes were per body. GUESS values, measured in the PR.
+constexpr size_t kRingCapMedium = 16000;
+static float DetailScale() { const float k = lodSettings.detailFactor / 2.5f; return k * k; }
+static size_t Residency_RingCap() { return (size_t)(kRingCapMedium * DetailScale()); }
+static std::unordered_map<uint64_t, std::pair<long long, size_t>> gCacheUse; // per body: cached vertices, nodes (its last sweep)
 static std::unordered_map<uint64_t, int> gCachedCount; // per body, from its last LOD update (#295)
 static std::unordered_map<uint64_t, int> gLodUncovered; // (#1418) per body: desired nodes neither ready nor covered by a kept node (gaps)
 
@@ -1204,7 +1213,12 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     const ArenaStats as = TerrainArena_Stats();
     long long arenaUsed = as.vertices;
     const long long arenaLimit = (long long)as.vertexCapacity * 85 / 100;
-    auto over = [&] { return cachedVerts > lodSettings.cacheVertices || cachedCount > (size_t)lodSettings.cacheNodes || (as.vertexCapacity > 0 && arenaUsed > arenaLimit); };
+    // (#1603) One cache budget for all bodies (the others' cached nodes as of their last sweep count against it too).
+    long long othersVerts = 0; size_t othersCount = 0;
+    for (const auto& [id, use] : gCacheUse) if (id != p.id) { othersVerts += use.first; othersCount += use.second; }
+    const long long budgetVerts = (long long)(lodSettings.cacheVertices * DetailScale());
+    const size_t budgetNodes = (size_t)(lodSettings.cacheNodes * DetailScale());
+    auto over = [&] { return cachedVerts + othersVerts > budgetVerts || cachedCount + othersCount > budgetNodes || (as.vertexCapacity > 0 && arenaUsed > arenaLimit); };
     if (!cached.empty() && over()) {
         std::sort(cached.begin(), cached.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         size_t i = 0;
@@ -1222,6 +1236,7 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
         cached.erase(cached.begin(), cached.begin() + (std::ptrdiff_t)i);
     }
     gCachedCount[p.id] = (int)cached.size();
+    gCacheUse[p.id] = { cachedVerts, cached.size() }; // (#1603) its share of the shared budget
     return (int)toRequest.size();
 }
 
@@ -1265,6 +1280,7 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         rp.flat = p.flat; rp.minHeight = p.minHeight; rp.maxHeight = p.maxHeight;
         rp.occluder = p.field->occluderRadius() * p.scale;
         rp.lodFactor = lodSettings.detailFactor; // the walking detail: the ring is paused when moving fast anyway (#297)
+        rp.cap = Residency_RingCap();
         rp.rootLevel = p.rootLevel;
         rp.c = c; rp.r = r;
         const float lc = Vector3Length(c);
@@ -1287,6 +1303,8 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
                 order.push_back({ DistanceToBox(rp.c, lo, Vector3AddValue(lo, k.size())) / (1.0f + k.level), k });
             }
             std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+            if (order.size() > rp.cap) order.resize(rp.cap); // (#1603) capped: the far, fine nodes go first (the order is distance / (1 + level))
+            job->keys.resize(order.size());
             for (size_t i = 0; i < order.size(); ++i) job->keys[i] = order[i].second;
             job->done.store(true);
         }, true);
@@ -1734,6 +1752,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             if (auto* p = dynamic_cast<Planetoid*>(obj.get())) { UpdatePreload(*p, world.camera.position, spare); alive.insert(p->id); }
         for (auto it = gPreload.begin(); it != gPreload.end();) it = alive.count(it->first) ? std::next(it) : gPreload.erase(it);
         for (auto it = gCachedCount.begin(); it != gCachedCount.end();) it = alive.count(it->first) ? std::next(it) : gCachedCount.erase(it);
+        for (auto it = gCacheUse.begin(); it != gCacheUse.end();) it = alive.count(it->first) ? std::next(it) : gCacheUse.erase(it); // (#1603)
         stats.preloadNodes = stats.preloadReady = stats.cachedNodes = 0;
         bool complete = true;
         for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }

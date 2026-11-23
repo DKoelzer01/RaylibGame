@@ -10388,6 +10388,14 @@ int main(int argc, char** argv)
                            ws.requests, ws.built, ws.skippedStale, ws.droppedResults, ws.nodes, pct(0.5), pct(0.95), pct(0.99), over20);
                     printf("bench: preload: %d ring nodes, %d built; cache: %d nodes, %lld evicted; arena %.1f M vertices; LOD cross-fades %lld\n",
                            ws.preloadNodes, ws.preloadReady, ws.cachedNodes, ws.evicted, TerrainArena_Stats().vertices / 1048576.0, ws.lodFades);
+                    { // (#1603) What is resident: nodes, the arena's use and size (72 bytes a vertex with its indices: 12 position +
+                      // 16 attributes + ~6 indices x 2 B... counted from the capacities), the process commit and VRAM.
+                        const ArenaStats a = TerrainArena_Stats();
+                        const double arenaMB = ((double)a.vertexCapacity * (12 + 16) + (double)a.indexCapacity * 2) / 1048576.0;
+                        printf("bench: residency (#1603): %d nodes alive (ring %d, cached %d); arena %.1f / %.1f M vertices, %.1f / %.1f M indices = %.0f MB; commit %.0f MB, VRAM %.0f MB\n",
+                               ws.nodes, ws.preloadNodes, ws.cachedNodes, a.vertices / 1e6, a.vertexCapacity / 1e6, a.indices / 1e6, a.indexCapacity / 1e6, arenaMB,
+                               Profiler_CommitMB(), Profiler_VramUsedMB());
+                    }
                     if (ws.waterBuilds || ws.waterFullBuilds)
                         printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
                                ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);
