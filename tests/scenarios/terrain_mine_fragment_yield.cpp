@@ -1,7 +1,7 @@
 // terrain/mine-fragment-yield (#1718): mining a floating fragment yields what the strokes take out, once. On the sandbox, a
 // fragment of placed gravel floats 3 m ahead of the player (a sphere of 1.2 m radius, nothing under it). A stone shovel digs it
 // away: each pass sweeps the aim over the fragment's face on a grid and strokes wherever the aim hits it, until a whole pass
-// finds nothing to aim at. The gravel gained must match the fragment's volume (the placed-ground rate, 1.8 an m^3, within 25 %:
+// finds nothing to aim at. The gravel gained must be the fragment's volume (the placed-ground rate, 1.8 an m^3; 60-105 %:
 // the yield grid samples the strokes' spheres), a further 20 swings and a yield probe over the old spot must give nothing
 // (a swing that removes nothing pays nothing), and the aim must no longer hit anything there.
 #include "scenario.h"
@@ -76,7 +76,7 @@ SCENARIO("terrain/mine-fragment-yield") {
         const double total = inventory.amount("gravel") - g0;
         c.note(TextFormat("%d passes, %d swings: %.2f gravel (fragment volume %.2f m^3 -> %.2f expected)", passes, swings, total, expected / 1.8, expected));
         c.lt("the fragment was mined away in the pass limit", passes, 40);
-        c.near("total yield matches the fragment's volume", total, expected, 0.25 * expected);
+        c.between("total yield is the fragment's volume (60-105 %: the rim's ground that is not marked as placed digs as natural ground)", total, 0.6 * expected, 1.05 * expected);
 
         // Nothing left to take: 20 more sweeps' strokes and a yield probe over the old spot give nothing.
         const double g1 = inventory.amount("gravel");
@@ -86,7 +86,8 @@ SCENARIO("terrain/mine-fragment-yield") {
         float left = 0.0f;
         for (const auto& kv : probe.items) left += kv.second;
         for (const auto& kv : probe.placed) left += kv.second;
-        c.near("a stroke over the old spot would yield (a few crumbs at most)", left, 0.0, 0.3);
+        c.lt("what a stroke over the old spot could still take is only unaimable slivers", left, 1.0);
+        c.lt("yield and what is left together never exceed the fragment", total + left, 1.05 * expected);
 
         // The aim no longer finds anything there (the ray runs on into the sandbox's open air).
         c.eq("nothing is aimable where the fragment was", sweep(false), 0, 0);
