@@ -399,7 +399,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
-        if (fp.size() <= 1) return;
+        if (fp.size() <= 1) { aim.part.origin = Plot::SingleCellOrigin(aim.part, aim.part.origin); return; } // (#1630) its one cell where aimed, any orientation
         Int3 lo{ INT32_MAX, INT32_MAX, INT32_MAX }, hi{ INT32_MIN, INT32_MIN, INT32_MIN };
         for (const auto& c : fp) {
             lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) };
