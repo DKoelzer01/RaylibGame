@@ -54,7 +54,7 @@ int LaneZ(int l) { return base.z + l * kPitch; }
 }
 
 SCENARIO("build/tile-ledges") {
-    s.tags = { "build", "physics" };
+    s.tags = { "world", "build", "physics" };
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };
     s.timeout = 150.0;

@@ -68,7 +68,7 @@ SCENARIO("build/tile-walk") { BuildTileWalk(s, ScenarioWorld::Sandbox); }
 SCENARIO("build/tile-walk-planet") { BuildTileWalk(s, ScenarioWorld::Planet); }
 
 void BuildTileWalk(ScenarioDef& s, ScenarioWorld world) {
-    s.tags = { "build", "physics" };
+    s.tags = { "world", "build", "physics" };
     s.world = world;
     s.args = { "--day" };
     s.timeout = 120.0;
