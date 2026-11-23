@@ -228,6 +228,7 @@ cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlan
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
 ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
+dungeon_key      | Dungeon key      | 20  | 214,184, 72 | Opens the locked vault door of a dungeon, once. Lies in a chest on the floor above the vault.
 # Research (#1193, #1030): packs (labs turn them into research for the team's queue; hand-crafted slowly, the assembler
 # comes later), the labs, and the labs' research units (counted by the game, never carried).
 steam_pack      | Steam research pack | 999 | 190,150,90  | Research for tier 3 (Steam and steel): put it in a lab.

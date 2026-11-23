@@ -428,6 +428,10 @@ struct DungeonPlan {
     int rooms = 0, floors = 0, doors = 0, plates = 0, darts = 0, vents = 0, shapes = 0; // shapes: a bit per room shape used
     int templateParts = 0, templateRooms = 0;        // (#1641 slice 2) props placed from room templates; rooms that use one
     int theme = 0, lining = 0;                     // (#1641) 0 crypt, 1 colony bunker; the lining's blocks
+    int lockedGates = 0, keyChests = 0, secretRooms = 0; // (#1641 slice 2b) the vault door's locked gates, chests holding its key, secret side rooms
+    Vector3 secretCentre{}, secretWall{};          // the side room (1 m over its floor) and a point in the lining block between it and its room
+    int secretWallMat = -1;                        // that block's material (differs from the room's lining)
+    Vector3 firstHalf{};                           // the first room's half sizes (x, z) for the picture
     Vector3 entrance{}; float floorY = 0.0f, deepest = 0.0f;
     std::vector<Vector3> roomCentres;               // 1 m over each room's floor
     std::vector<std::pair<int, int>> links;
@@ -454,6 +458,8 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f }, { 2.5f, 4.5f }, { 4.5f, 3.5f } }; // half sizes (m)
     constexpr int kTemplateCount = 6;
     uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
+    std::vector<Room> rooms;
+    std::vector<std::pair<int, size_t>> doorGates; // (room index, parts index) of every doorway gate: the deepest room's are locked (#1641)
     std::vector<std::pair<Vector3, Vector3>> cutBoxes; // (#1641) every cut in plot metres (centre, half): the lining leaves them open
     auto box = [&](Vector3 c, Vector3 half) {
         cutBoxes.push_back({ c, half });
@@ -497,7 +503,7 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         // The door: two gates, one over the other, in the wall's plane.
         const uint8_t orient = xWall ? 0 : (uint8_t)RotateOrientation(0, 1);
         const Int3 lo = xWall ? cellOf(wallPos, flr + 0.1f, lat0 + 0.01f) : cellOf(lat0 + 0.01f, flr + 0.1f, wallPos);
-        for (int k = 0; k < 2; ++k) placeAt(PartType::Gate, orient, { lo.x, lo.y + 2 * k, lo.z }, 0, "");
+        for (int k = 0; k < 2; ++k) { doorGates.push_back({ (int)(&r - rooms.data()), parts.size() }); placeAt(PartType::Gate, orient, { lo.x, lo.y + 2 * k, lo.z }, 0, ""); }
         ++lastDungeon.doors;
         const float out = wallPos + sign * kStub;
         return xWall ? Vector3{ out, flr, lat0 + 0.5f } : Vector3{ lat0 + 0.5f, flr, out };
@@ -532,7 +538,6 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     float flr = snap(floorY - kStepDown * steps);
     Vector3 foot = { x0 + kStepRun * steps, flr, 0.0f }; // where this floor's first room starts
     Vector3 footDir = { 1, 0, 0 };
-    std::vector<Room> rooms;
     std::vector<std::pair<int, int>> links;
     const int floors = 2 + (Unit(h) < 0.4f ? 1 : 0);
     int floorsBuilt = 0;
@@ -630,6 +635,15 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     if (floorsBuilt == 0) { lastDungeon = DungeonPlan{}; return; }
     lastDungeon.rooms = (int)rooms.size(); lastDungeon.floors = floorsBuilt;
     lastDungeon.entrance = { x0, floorY, 0.0f }; lastDungeon.floorY = rooms[0].c.y; lastDungeon.links = links;
+    lastDungeon.firstHalf = { rooms[0].hx, 0.0f, rooms[0].hz };
+    // The vault (#1641 slice 2b): the deepest room's own doorway is locked (its two gates, material 1: solid until a dungeon_key
+    // opens them). A lone deepest room reached by stairs alone has no doorway: no vault then. The key room: see keyHere below.
+    const int deepestRoom = (int)rooms.size() - 1;
+    for (const auto& [ri, pi] : doorGates)
+        if (ri == deepestRoom) { parts[pi].first.material = 1; ++lastDungeon.lockedGates; }
+    int keyRoom = lastDungeon.lockedGates > 0 ? 0 : -1; // the last room of the floor above the deepest's (room 0 on one floor)
+    if (lastDungeon.lockedGates > 0 && rooms.back().floor > 0)
+        for (int k = deepestRoom - 1; k >= 0; --k) if (rooms[k].floor == rooms.back().floor - 1) { keyRoom = k; break; }
     // The rooms: carved by shape, a torch each, chests and gas.
     for (size_t i = 0; i < rooms.size(); ++i) {
         const Room& r = rooms[i];
@@ -658,8 +672,12 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         const size_t roomPartsFrom = parts.size(); // the torch, chest and vent go first: template props never take their cells
         parts.push_back({ Part{ PartType::Torch, cellOf(r.c.x + r.hx - 0.4f, rf + 0.1f, r.c.z + r.hz - 0.4f), 0, 0 }, "" });
         const bool deepest = i + 1 == rooms.size(), lastOfFloor = deepest || rooms[i + 1].floor != r.floor;
-        if (lastOfFloor || Unit(h) < 0.4f)
-            parts.push_back({ Part{ PartType::Chest, cellOf(r.c.x - r.hx + 0.6f, rf + 0.1f, r.c.z - 0.5f), 0, 0 }, deepest ? "dungeon_rare" : lastOfFloor ? "ruin_rare" : "ruin_common" });
+        // The vault key (#1641): in the last chest of the floor above the deepest room's, or the first room's chest on a one-floor
+        // dungeon (always there then). Its table is ruin_common's items plus the key.
+        const bool keyHere = (int)i == keyRoom;
+        if (keyHere || lastOfFloor || Unit(h) < 0.4f)
+            parts.push_back({ Part{ PartType::Chest, cellOf(r.c.x - r.hx + 0.6f, rf + 0.1f, r.c.z - 0.5f), 0, 0 }, keyHere ? "dungeon_key" : deepest ? "dungeon_rare" : lastOfFloor ? "ruin_rare" : "ruin_common" });
+        lastDungeon.keyChests += keyHere;
         // Gas in some rooms past the first (more of them deeper); never the deepest, its chest is reward enough.
         if (i > 0 && !deepest && Unit(h) < (r.floor == 0 ? 0.2f : 0.35f)) {
             parts.push_back({ Part{ PartType::GasVent, cellOf(r.c.x + 0.25f, rf + 0.1f, r.c.z + 0.25f), 0, 0 }, "" });
@@ -692,6 +710,41 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             }
         }
     }
+    // A secret side room (#1641 slice 2b): in one room that is neither the first nor the deepest (seeded), a 2 x 2 x 2.5 m
+    // room behind a wall without a door, 1 m of lining between. There is no doorway: the lining blocks in that wall stay (no
+    // decay) in another material than the room's, and the player breaks through. Its cut is not in cutBoxes, or the lining's
+    // skip rule would open that wall. A chest of ruin_rare loot waits inside.
+    struct Secret { bool on = false; int wall = 0; float rf = 0.0f, wallPos = 0.0f, latLow = 0.0f; } sec;
+    if (rooms.size() >= 3) {
+        uint32_t hs = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0x5ec2e7ull); // its own stream: the rest of the plan is unchanged
+        const size_t nCand = rooms.size() - 2; // rooms 1 .. size-2
+        const size_t from = (size_t)(Unit(hs) * nCand) % nCand;
+        const int wFrom = (int)(Unit(hs) * 4.0f) & 3;
+        for (size_t a = 0; a < nCand && !sec.on; ++a) {
+            const Room& r = rooms[1 + (from + a) % nCand];
+            for (int w4 = 0; w4 < 4 && !sec.on; ++w4) {
+                const int wall = (wFrom + w4) & 3;
+                if (r.walls & (1 << wall)) continue; // a door or the stairs
+                const bool xWall = wall < 2;
+                const float sign = (wall & 1) ? -1.0f : 1.0f, span = xWall ? r.hz : r.hx;
+                const float wallPos = xWall ? r.c.x + sign * r.hx : r.c.z + sign * r.hz;
+                const float latLow = (xWall ? r.c.z : r.c.x) - span + floorf(span - 1.0f); // two lining blocks wide, on the lining's grid
+                const float latC = latLow + 1.0f, depthC = wallPos + sign * 2.0f, rf = r.c.y;
+                const Vector3 c = xWall ? Vector3{ depthC, rf + 1.25f, latC } : Vector3{ latC, rf + 1.25f, depthC };
+                bool clear = cover({ c.x, rf + kRoomH + 0.5f, c.z }) >= kCover;
+                for (const auto& [cc, hf] : cutBoxes) // 1 m of rock all round (the lining's thickness)
+                    if (fabsf(cc.x - c.x) < hf.x + 2.0f - 0.01f && fabsf(cc.y - c.y) < hf.y + 2.25f - 0.01f && fabsf(cc.z - c.z) < hf.z + 2.0f - 0.01f) clear = false;
+                if (!clear) continue;
+                box(c, { 1.0f, 1.25f, 1.0f });
+                cutBoxes.pop_back();
+                const Int3 chestLo = cellOf(c.x - 0.5f, rf + 0.1f, c.z - 0.5f);
+                placeAt(PartType::Chest, 0, chestLo, 0, "ruin_rare");
+                sec = { true, wall, rf, wallPos, latLow };
+                lastDungeon.secretRooms = 1;
+                lastDungeon.secretCentre = { c.x, rf + 1.0f, c.z };
+            }
+        }
+    }
     // (#1641 slice 1, the user: "just rooms carved out of the stone") A built lining, by theme: each room walled, floored and
     // roofed with 1 m blocks just outside its cut - a crypt of the biome's stone brick, marble underfoot and plank beams over,
     // or a colony bunker of iron plate under white plaster. A block that would stand in another cut (a doorway, a corridor,
@@ -707,15 +760,32 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
                 if (fabsf(p.x - c.x) < hf.x && fabsf(p.y - c.y) < hf.y && fabsf(p.z - c.z) < hf.z) return true;
             return false;
         };
+        std::unordered_set<Int3> secretLo; // the side room's wall blocks (below)
         auto lay = [&](float x, float y, float z, uint8_t m) { // a 1 m block whose low corner is near (x, y, z), off any cut
             const Int3 lo = cellOf(x, y, z);
             const Vector3 mid = { (lo.x + 1) * kCellSize, (lo.y + 1) * kCellSize, (lo.z + 1) * kCellSize };
             bool open = false;
             for (int k = 0; k < 8 && !open; ++k) open = inCut({ mid.x + (k & 1 ? 0.25f : -0.25f), mid.y + (k & 2 ? 0.25f : -0.25f), mid.z + (k & 4 ? 0.25f : -0.25f) });
+            if (secretLo.count(lo)) return; // the hidden wall's blocks are already down
             if (open || Unit(h) < 0.2f) return;
             parts.push_back({ Part{ PartType::Block, lo, 0, m }, "" });
             ++lastDungeon.lining;
         };
+        if (sec.on) { // the side room's wall: 2 blocks wide, 3 high, whole (no decay), of a different stone than the lining
+            const int alt = std::max(0, BuildMaterialForItem(crypt ? "limestone_brick" : "white_plaster"));
+            const uint8_t m = alt == (int)wallM ? (uint8_t)std::max(0, BuildMaterialForItem("white_plaster")) : (uint8_t)alt; // (a limestone biome's own brick)
+            const bool xWall = sec.wall < 2;
+            const float sign = (sec.wall & 1) ? -1.0f : 1.0f, lowPos = sign > 0.0f ? sec.wallPos : sec.wallPos - 1.0f;
+            for (int row = 0; row < 3; ++row)
+                for (int k = 0; k < 2; ++k) {
+                    const float lat = sec.latLow + (float)k, y = sec.rf + (float)row;
+                    const Int3 lo = xWall ? cellOf(lowPos, y, lat) : cellOf(lat, y, lowPos);
+                    secretLo.insert(lo);
+                    parts.push_back({ Part{ PartType::Block, lo, 0, m }, "" });
+                }
+            lastDungeon.secretWallMat = m;
+            lastDungeon.secretWall = xWall ? Vector3{ sec.wallPos + sign * 0.5f, sec.rf + 0.5f, sec.latLow + 1.0f - 0.25f } : Vector3{ sec.latLow + 1.0f - 0.25f, sec.rf + 0.5f, sec.wallPos + sign * 0.5f };
+        }
         for (const Room& r : rooms) {
             const float rf = r.c.y, x0 = r.c.x - r.hx, x1 = r.c.x + r.hx, z0 = r.c.z - r.hz, z1 = r.c.z + r.hz;
             for (float x = x0; x < x1 - 0.01f; x += 1.0f)
@@ -1276,7 +1346,7 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
         const uint32_t sd = 4242u + 7919u * k;
         BuildJob dry;
         PlanDungeon(dry, body, *pf, *plot, A.floorY, A.half, sd, A.stone);
-        if (lastDungeon.rooms > 0 && lastDungeon.vents > 0 && lastDungeon.darts > 0 && lastDungeon.darts < lastDungeon.plates) { pick = sd; break; }
+        if (lastDungeon.rooms > 0 && lastDungeon.vents > 0 && lastDungeon.darts > 0 && lastDungeon.darts < lastDungeon.plates && lastDungeon.lockedGates == 2 && lastDungeon.secretRooms == 1) { pick = sd; break; }
     }
     BuildJob job;
     job.body = body.id; job.plot = plot->id; job.seed = pick;
@@ -1293,23 +1363,39 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     int gates = 0, plates = 0, vents = 0, blocks = 0;
     for (const Part& p : plot->parts) { gates += p.type == PartType::Gate; plates += p.type == PartType::PressurePlate; vents += p.type == PartType::GasVent; blocks += p.type == PartType::Block; }
     int rare = 0;
+    int keyChests = 0;
     for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "dungeon_rare";
+    for (size_t k = pending0; k < pending.size(); ++k) keyChests += pending[k].table == "dungeon_key";
+    // (#1641 slice 2b) the vault: exactly one locked door pair (2 locked gates); the key chest planned; the secret room planned with its
+    // chest, its middle air, and the lining cell between it and its room a part of the other material.
+    int locked = 0;
+    for (const Part& p : plot->parts) locked += GateLocked(p);
+    const bool secretAir = D.secretRooms == 1 && air(D.secretCentre);
+    const int wallPart = D.secretRooms == 1 ? plot->partAt(plot->cellAt(D.secretWall)) : -1;
+    const bool secretWallOk = wallPart >= 0 && plot->parts[wallPart].type == PartType::Block && (int)plot->parts[wallPart].material == D.secretWallMat;
+    const int chestPart = D.secretRooms == 1 ? plot->partAt(plot->cellAt({ D.secretCentre.x, D.secretCentre.y - 0.6f, D.secretCentre.z })) : -1;
+    const bool secretChest = chestPart >= 0 && plot->parts[chestPart].type == PartType::Chest;
+    const bool vaultOk = D.lockedGates == 2 && locked == 2 && keyChests == 1 && D.keyChests == 1 && D.secretRooms == 1 && secretAir && secretWallOk && secretChest;
     const float depth = D.entrance.y - D.deepest;
     bool ok = D.floors >= 2 && D.floors <= 3 && depth > 18.0f && depth < 31.0f && D.rooms >= 4 && D.rooms <= 12 && roomsOpen == D.rooms &&
                     linksOpen == (int)D.corridorMids.size() && rampOpen == (int)D.rampPoints.size() && !D.stairPoints.empty() && stairsOpen == (int)D.stairPoints.size() &&
                     D.doors == 2 * (int)D.links.size() && gates == 2 * D.doors && plates == D.plates && vents == D.vents && rare == 1 &&
-                    D.lining >= 20 * D.rooms && blocks >= D.lining * 0.9f; // (#1641) lined: ~20+ blocks a room, nearly all placed (overlaps drop a few)
+                    D.lining >= 20 * D.rooms && blocks >= D.lining * 0.9f && vaultOk; // (#1641) lined: ~20+ blocks a room, nearly all placed (overlaps drop a few)
     bool haveTemplates = false; // (#1641 slice 2) data templates for this theme: every room uses one, with props
     for (const Set& T : roomSets) haveTemplates = haveTemplates || T.theme == "any" || T.theme == (D.theme == 0 ? "crypt" : "bunker");
     const bool templatesOk = !haveTemplates || (D.templateRooms == D.rooms && D.templateParts > 0);
     ok = ok && templatesOk;
     printf("bench: dungeon: seed %u: %d floors, %.1f m down at the deepest; %d rooms (%d open, shapes 0x%x), %d corridors (%d open at the middle), ramp open %d/%d, stairs open %d/%d; "
-           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed), templates %d rooms / %d parts -> %s\n",
+           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed), templates %d rooms / %d parts; vault: %d locked gates, %d key chest, secret room %d (air %d, wall block %d, chest %d) -> %s\n",
            pick, D.floors, depth, D.rooms, roomsOpen, D.shapes, (int)D.corridorMids.size(), linksOpen, rampOpen, (int)D.rampPoints.size(), stairsOpen, (int)D.stairPoints.size(),
-           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, D.templateRooms, D.templateParts, ok ? "PASS" : "FAIL");
+           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, D.templateRooms, D.templateParts, locked, keyChests, D.secretRooms, (int)secretAir, (int)secretWallOk, (int)secretChest, ok ? "PASS" : "FAIL");
+    // The picture (#1641): from the first room's middle column (the templates keep it free), 1.6 m over the floor, toward the far
+    // corner (the torch's) at 1 m. A part in the eye's cell moves it half a metre at a time.
     const Vector3 c0 = D.roomCentres[0];
-    eye = plot->toBody({ c0.x - 1.5f, c0.y + 0.6f, c0.z - 1.5f });
-    target = plot->toBody({ c0.x + 3.0f, c0.y - 0.6f, c0.z + 3.0f });
+    Vector3 eyeP = { c0.x, c0.y - 1.0f + 1.6f, c0.z };
+    for (int k = 0; k < 25 && plot->partAt(plot->cellAt(eyeP)) >= 0; ++k) eyeP = { c0.x + 0.5f * (float)(k % 5 - 2), eyeP.y, c0.z + 0.5f * (float)(k / 5 - 2) };
+    eye = plot->toBody(eyeP);
+    target = plot->toBody({ c0.x + D.firstHalf.x - 0.5f, c0.y, c0.z + D.firstHalf.z - 0.5f });
     return ok;
 }
 

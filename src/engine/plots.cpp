@@ -844,6 +844,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const Part& pp = parts[ref.part];
         if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
+        if (GateLocked(pp)) color = { 74, 70, 66, 255 }; // (#1641) a vault door: dark iron
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
@@ -1001,7 +1002,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate, and a ladder (#1105: they climb it)
+                    if (it == cells.end() || (parts[it->second.part].type == PartType::Gate && !GateLocked(parts[it->second.part])) || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate (not a locked one, #1641), and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);

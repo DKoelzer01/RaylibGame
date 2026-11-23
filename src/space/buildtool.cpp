@@ -657,7 +657,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800); shafts (#1269)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]))) { // vault doors (#1641); cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -683,6 +683,24 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         return;
     }
     if (machineAim.part < 0 || !in.enabled) return;
+    if (machineAim.type == PartType::Gate) { // (#1641) a vault door: RMB (outside build mode) or E opens it with a dungeon_key, which it takes
+        if (!((!buildTool.active && in.hit(Act::Secondary)) || in.hit(Act::Use))) return;
+        Planetoid* gb = Planetoid::find(machineAim.body);
+        Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
+        if (!gp || machineAim.part >= (int)gp->parts.size() || !GateLocked(gp->parts[machineAim.part])) return;
+        if (!inventory.remove("dungeon_key", 1)) { GameUI_Toast("Locked: it needs a dungeon key"); Audio_Play(Sfx::Error, 0.5f); return; }
+        const Part g = gp->parts[machineAim.part];
+        for (size_t i = 0; i < gp->parts.size(); ++i) { // both gates of the door (stacked: same column, 2 cells apart)
+            const Part q = gp->parts[i];
+            if (!GateLocked(q) || q.origin.x != g.origin.x || q.origin.z != g.origin.z || abs(q.origin.y - g.origin.y) > 2) continue;
+            gp->remove((int)i);
+            Part open = q; open.material = 0;
+            gp->place(open);
+        }
+        GameUI_Toast("The vault door unlocks");
+        Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
+        return;
+    }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
     if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it
         if (!buildTool.active && in.down(Act::Secondary)) { Factory::Crank(machineAim.body, machineAim.plot, machineAim.part); crankAt = GetTime(); }
@@ -790,6 +808,13 @@ void Machine_DrawHUD() {
         return;
     }
     if (machineAim.part < 0) return;
+    if (machineAim.type == PartType::Gate) { // (#1641) a vault door
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 340, 52, Fade(BLACK, 0.55f));
+        DrawText("vault door: locked", x, y, 20, SKYBLUE);
+        DrawText(inventory.count("dungeon_key") > 0 ? "RMB / E to unlock with your dungeon key" : "it needs a dungeon key", x, y + 24, 16, RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)
