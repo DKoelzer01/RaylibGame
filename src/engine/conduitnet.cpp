@@ -287,8 +287,9 @@ TEST(ConduitNet, TJointSplitsTheRun) {
 }
 
 TEST(ConduitNet, TJointProjectsOntoTheCentreline) {
-    // Run B's end sits one slot off the centreline of the size-2 run A, inside A's slots: it moves onto the centreline.
-    const ConduitGraph g = Conduit_BuildGraph({ NCable(1, 2, { {0, 0, 0}, {40, 0, 0} }), NCable(2, 1, { {20, 0, 20}, {20, 0, 1} }) }, NetCat(), {});
+    // Run B's end sits one slot off the centreline of the size-2 run A, inside A's slots (a size-2 cross-section spans
+    // -1..0 around the centreline): it moves onto the centreline. (B comes from -z, so its end is at z = -1.)
+    const ConduitGraph g = Conduit_BuildGraph({ NCable(1, 2, { {0, 0, 0}, {40, 0, 0} }), NCable(2, 1, { {20, 0, -20}, {20, 0, -1} }) }, NetCat(), {});
     EXPECT_EQ(g.nodes.size(), 4u);
     EXPECT_EQ(g.networks, 1);
     bool found = false;
