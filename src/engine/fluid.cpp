@@ -2314,6 +2314,19 @@ void UpdateRiverFlow() {
             const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
             WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
             RequestRemesh(*body, b.mid, b.radius);
+            // The site bricks already classified on that link took its old flow as their source level: classify them again
+            // (keeping their water) so they follow the new one (#1675). A brick reaches the bounds up to its half diagonal.
+            const float reach = b.radius + 0.5f * 1.7321f * (float)B * WaterField::CellSize();
+            for (auto& s : sites) {
+                if (s->body != bodyId) continue;
+                for (auto& kv : s->bricks) {
+                    Brick* br = kv.second.get();
+                    if (!br->ready) continue;
+                    if (Vector3Distance(s->cellCentre(br->bi * B + B / 2, br->bj * B + B / 2, br->bk * B + B / 2), b.mid) > reach) continue;
+                    br->ready = false; br->keepFill = true;
+                    if (std::find(s->pending.begin(), s->pending.end(), br) == s->pending.end()) s->pending.push_front(br);
+                }
+            }
         }
     }
     static double last = -1.0;
