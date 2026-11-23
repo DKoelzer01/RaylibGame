@@ -176,7 +176,7 @@ const char* PartCostItem(PartType t) {
         case PartType::StressGauge: return "stress_gauge";
         case PartType::WaterWheel: return "water_wheel"; // (#1270)
         case PartType::Windmill: return "windmill";
-        default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
+        default: { const char* m = PartMachineName(t); return m ? m : "stone_brick"; } // shapes: material 0 (#1090: was concrete)
     }
 }
 
@@ -184,7 +184,7 @@ namespace {
     // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
     // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
-        { "concrete", "Concrete", { 168, 166, 158, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1090: was lunacrete ("concrete", gone from the planet); its parts become stone brick
         { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
@@ -300,7 +300,7 @@ static Color PartColor(PartType t) {
         case PartType::StressGauge: return { 160, 120, 76, 255 };
         case PartType::Millstone: return { 140, 138, 132, 255 };
         case PartType::Saw: case PartType::Press: return { 146, 108, 68, 255 };
-        default: return { 168, 166, 158, 255 };                                                          // concrete
+        default: return { 168, 166, 158, 255 };                                                          // plain grey
     }
 }
 
@@ -543,6 +543,13 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
     }
 }
 
+Int3 Plot::SingleCellOrigin(const Part& p, Int3 cell) {
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(p, fp);
+    if (fp.size() != 1) return p.origin;
+    return { p.origin.x + cell.x - fp[0].first.x, p.origin.y + cell.y - fp[0].first.y, p.origin.z + cell.z - fp[0].first.z };
+}
+
 Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
     // The rotation turns cells about the origin cell's corner, so an orientation that flips the face's axis moves every cell
     // one further out (Footprint's off = -1): sliding only outward left such a part a cell away from the face (#1574). Both
@@ -550,6 +557,9 @@ Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(p, fp);
     if (fp.empty()) return p.origin;
+    // (#1630) A single-cell part goes exactly into the cell in front of the aimed face, whatever its orientation: the corner
+    // rotation moves its one cell sideways too (a planks block placed beside the face a quarter-turn on).
+    if (fp.size() == 1) return SingleCellOrigin(p, { hitCell.x + face.x, hitCell.y + face.y, hitCell.z + face.z });
     int nearest = 1 << 30;
     for (const auto& c : fp)
         nearest = std::min(nearest, (c.first.x - hitCell.x) * face.x + (c.first.y - hitCell.y) * face.y + (c.first.z - hitCell.z) * face.z);
@@ -1210,20 +1220,45 @@ TEST(PlotPlacement, MultiCellPartsSitFlushAgainstEveryFace) {
             }
 }
 
+// #1630 (playtest: a planks block placed against the face a quarter-turn from the aimed one, until R was pressed): a single-cell
+// part placed against any face, in any orientation (the automatic facing's or a hand-turned one), takes exactly the cell in
+// front of the aimed face; on the ground (SingleCellOrigin) exactly the aimed cell.
+TEST(PlotPlacement, SingleCellPartsTakeTheAimedCellInAnyOrientation) {
+    const Int3 hit{ 5, 7, -3 };
+    const Int3 faces[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (PartType t : { PartType::Cube, PartType::Ladder, PartType::Panel, PartType::Slab, PartType::Pane, PartType::Conveyor })
+        for (const Int3& f : faces)
+            for (int o = 0; o < 24; ++o) {
+                const Int3 want{ hit.x + f.x, hit.y + f.y, hit.z + f.z };
+                Part p{ t, want, (uint8_t)o, 0 };
+                p.origin = Plot::FlushAgainstFace(p, hit, f);
+                std::vector<std::pair<Int3, CellShape>> fp;
+                Plot::Footprint(p, fp);
+                ASSERT_EQ(fp.size(), 1u);
+                EXPECT_TRUE(fp[0].first == want) << "part " << (int)t << ", face (" << f.x << ", " << f.y << ", " << f.z << "), orientation " << o
+                                                 << ": its cell (" << fp[0].first.x << ", " << fp[0].first.y << ", " << fp[0].first.z << ")";
+                Part g{ t, want, (uint8_t)o, 0 }; // on the ground: the aimed cell itself
+                g.origin = Plot::SingleCellOrigin(g, want);
+                Plot::Footprint(g, fp);
+                EXPECT_TRUE(fp[0].first == want) << "on the ground: part " << (int)t << ", orientation " << o;
+            }
+}
+
 TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
-    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "concrete", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
         EXPECT_LT(BuildMaterialForItem(m), 0) << m;
     for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
-                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+                           "oak_planks", "oak_log", "spruce_log" })
         EXPECT_GE(BuildMaterialForItem(m), 0) << m;
 }
 
 TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
-    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    // Saves store the index: concrete was slot 0 (#1090), raw stone 1, dirt 4, clay 40; they now read as stone brick and brick.
+    EXPECT_STREQ(GetBuildMaterial(0).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
-    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 0); // new parts use the first slot
     EXPECT_EQ(BuildMaterialForItem("brick"), 16);
     // Each dressed stone keeps its rock's look.
     auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };

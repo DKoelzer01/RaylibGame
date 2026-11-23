@@ -10,7 +10,6 @@ iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
 water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
-concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
@@ -94,7 +93,7 @@ titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few 
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
-farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a hoe, RMB).
 grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
 root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
 flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.

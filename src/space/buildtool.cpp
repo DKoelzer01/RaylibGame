@@ -385,7 +385,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
-        if (fp.size() <= 1) return;
+        if (fp.size() <= 1) { aim.part.origin = Plot::SingleCellOrigin(aim.part, aim.part.origin); return; } // (#1630) its one cell where aimed, any orientation
         Int3 lo{ INT32_MAX, INT32_MAX, INT32_MAX }, hi{ INT32_MIN, INT32_MIN, INT32_MIN };
         for (const auto& c : fp) {
             lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) };
@@ -432,6 +432,11 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
+        static const bool stackFacing = !(getenv("RAYLIBGAME_LADDER_STACK_FACING") && getenv("RAYLIBGAME_LADDER_STACK_FACING")[0] == '0'); // (A/B)
+        if (stackFacing && !buildTool.orientManual && aim.part.type == PartType::Ladder && hitFace.y != 0) { // (#1640) stacked on (or under) a ladder: its facing
+            const int on = hitPlot->partAt(hitCell);
+            if (on >= 0 && hitPlot->parts[on].type == PartType::Ladder) { aim.part.orient = hitPlot->parts[on].orient; buildTool.orient = aim.part.orient; }
+        }
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
         // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a

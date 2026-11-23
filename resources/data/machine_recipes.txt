@@ -35,7 +35,6 @@ furnace         | iron_ingot 1     | iron_dust 1               | 100 | 8
 furnace         | copper_ingot 1   | copper_dust 1             | 100 | 8
 furnace         | glass 1          | sand 4                    | 160 | 8
 macerator       | sand 2           | stone 1                   | 100 | 4
-macerator       | gravel 2         | concrete 1                | 100 | 4
 # Milestone 8. LV ore processing: ore -> 2 crushed -> purified (water) -> dust + byproduct -> ingot.
 macerator       | iron_crushed 2     | iron_ore 1                | 150 | 8
 macerator       | copper_crushed 2   | copper_ore 1              | 150 | 8

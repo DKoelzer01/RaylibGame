@@ -181,6 +181,7 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
         int i = 0;
         long long c = 0;
         const bool read = fscanf(f, " %d %63s %lld", &i, id, &c) == 3;
+        if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
         i = Inventory::SavedCell(i, savedCols); // a 9-wide save: its hotbar and off hand move up (#495)
         if (read && i >= 0 && i < Inventory::kCells && c > 0 && itemDB.find(id)) {
             InvSlot& s = t.inv.grid()[i];
@@ -196,7 +197,7 @@ bool ReadPlayerLine(const char* tok, FILE* f, RecordTarget t) {
     if (strcmp(tok, "item") == 0) {
         char id[64] = {};
         int n = 0;
-        if (fscanf(f, " %63s %d", id, &n) == 2) { ++t.inv.muted; t.inv.add(id, n); --t.inv.muted; }
+        if (fscanf(f, " %63s %d", id, &n) == 2) { if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); ++t.inv.muted; t.inv.add(id, n); --t.inv.muted; }
         return true;
     }
     return false;

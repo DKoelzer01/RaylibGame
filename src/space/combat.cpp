@@ -45,7 +45,7 @@ static bool RmbUsedByHand(const PlayerSession& s) {
     if (s.terrainTool.holdingItem || TerrainTool_IsFiller(held) || held == "bucket" || held == "water_bucket") return true;
     if (Hotbar_IsLight(held) || Hotbar_IsPlaceable(held)) return true;
     const ToolType t = ToolOf(held).type;
-    return t == ToolType::Shovel || t == ToolType::Hoe;
+    return t == ToolType::Hoe; // (its RMB tills; #1085: a shovel no longer does)
 }
 
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
@@ -589,6 +589,7 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         char id[64] = {};
         long long c = 0;
         if (fscanf(f, " %63s %lld", id, &c) != 2) return true;
+        if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
         if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
         else if ((int)i == g.offHand) g.offHand = -1;
     }

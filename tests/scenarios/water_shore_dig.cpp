@@ -100,6 +100,21 @@ SCENARIO("water/shore-dig") {
                 c.note(TextFormat("at the waterline, %+.0f m along: ground %.2f m; -0.1 m: %s; +0.1 m: %s", v, c.field->elevation(d),
                                   Fluid::DebugCell(*c.body, At(c, d, -0.1f)).c_str(), Fluid::DebugCell(*c.body, At(c, d, 0.1f)).c_str()));
             }
+            // The cells round each pit, column by column and top to bottom (#1590): shows which cells hold fill (and with what
+            // flags) next to the dug holes, where the stray surface shards hang.
+            for (float u : { 0.5f, 3.0f, 6.0f }) {
+                for (float du = -1.5f; du <= 1.51f; du += 0.5f) {
+                    const Vector3 col = Beach(c, u + du, 0.0f);
+                    std::string row;
+                    for (float h = 1.0f; h >= -2.51f; h -= 0.25f) {
+                        const std::string cell = Fluid::DebugCell(*c.body, At(c, col, h));
+                        int fill = 0; char flags[64] = "";
+                        if (sscanf(cell.c_str(), "fill %d flags %63s", &fill, flags) == 2) row += TextFormat("%d/%s ", fill, flags);
+                        else row += "- ";
+                    }
+                    c.note(TextFormat("pit %.1f col %+.1f: %s ground %.2f", u, du, row.c_str(), c.field->elevation(col)));
+                }
+            }
         }
         c.keepCapture("the look of the dug shore (#1590)");
         return true;

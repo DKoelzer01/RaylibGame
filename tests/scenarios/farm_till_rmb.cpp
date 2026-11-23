@@ -1,13 +1,15 @@
-// farm/till-rmb (#1085 playtest fail): a hoe's or shovel's RMB tills soil into farmland. #1141's rule "RMB places ground
-// only with a ground item in hand" kept the stroke from running with a tool at all, so nothing tilled (--test-farm calls
-// Farm_Till directly and missed it). Through the real input path (TerrainTool_Update, RMB held): a stone hoe and a stone
-// shovel each till the sandbox's natural surface and a patch of placed dirt; a pickaxe (the control) tills and places
-// nothing.
+// farm/till-rmb (#1085 playtest fail): a hoe's RMB tills soil into farmland. #1141's rule "RMB places ground only with a
+// ground item in hand" kept the stroke from running with a tool at all, so nothing tilled (--test-farm calls Farm_Till
+// directly and missed it). Through the real input path (TerrainTool_Update, RMB held): a stone hoe tills the sandbox's
+// natural surface and a patch of placed dirt, its preview the size it tills; a shovel (#1085, the user: it digs, it doesn't
+// till) and a pickaxe till and place nothing.
 #include "scenario.h"
 #include "farming.h"
 #include "playerinput.h"
 #include "playersession.h"
+#include "scene.h"
 #include "terraintool.h"
+#include "tools.h"
 #include "world.h"
 #include <raymath.h>
 #include <string>
@@ -60,9 +62,9 @@ SCENARIO("farm/till-rmb") {
     static double dirt0 = 0.0;
     static Vector3 spot{};
     struct Case { const char* tool; bool placedDirt; bool tills; };
-    static const Case cases[] = { { "stone_hoe", false, true }, { "stone_shovel", false, true }, { "stone_hoe", true, true },
-                                  { "stone_shovel", true, true }, { "stone_pickaxe", false, false } };
-    s.step("RMB with a hoe or shovel tills; with a pickaxe nothing", 40.0, [](ScenarioCtx& c) {
+    static const Case cases[] = { { "stone_hoe", false, true }, { "stone_shovel", false, false }, { "stone_hoe", true, true },
+                                  { "stone_shovel", true, false }, { "stone_pickaxe", false, false } };
+    s.step("RMB with a hoe tills (its preview the size it tills); with a shovel or a pickaxe nothing", 40.0, [](ScenarioCtx& c) {
         if (c.T < 1.0) return false;
         terrainTool.creative = false;
         const int i = stage / 3, phase = stage % 3;
@@ -77,7 +79,12 @@ SCENARIO("farm/till-rmb") {
             return false;
         }
         if (phase == 1) {
+            if (inventory.count(k.tool) <= 0) inventory.add(k.tool, 1); // (in hand for the aim: the preview is the held tool's)
+            terrainTool.holdingItem = false;
+            terrainTool.heldTool = k.tool;
             Aim(c, side, spot);
+            if (k.tills) // (#1085, the user: the hoe's preview showed the dig's size, not the patch it tills)
+                c.near(TextFormat("case %d: the preview is the till's size (m)", i), gToolSphere.radius, TillRadius(ToolOf(k.tool)), 1e-4);
             strokes0 = terrainTool.swings;
             dirt0 = inventory.amount("dirt");
             Rmb(c, k.tool);
@@ -89,8 +96,8 @@ SCENARIO("farm/till-rmb") {
         if (k.tills) {
             c.check(("RMB tills: " + what).c_str(), Farm_Aims(*c.body, spot), TextFormat("strokes %d -> %d", strokes0, terrainTool.swings));
         } else {
-            c.check("RMB with a pickaxe tills nothing (the control)", !Farm_Aims(*c.body, spot));
-            c.eq("RMB with a pickaxe strikes nothing", terrainTool.swings - strokes0, 0);
+            c.check(("RMB tills nothing: " + what).c_str(), !Farm_Aims(*c.body, spot));
+            c.eq(("RMB strikes nothing: " + what).c_str(), terrainTool.swings - strokes0, 0);
         }
         c.eq(("no ground placed or paid: " + what).c_str(), inventory.amount("dirt"), dirt0);
         side += 3.0f;
