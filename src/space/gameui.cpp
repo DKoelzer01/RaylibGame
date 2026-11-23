@@ -526,16 +526,6 @@ struct ContainerGrid : SlotGrid {
         }
     }
 };
-// (#1730) Shift-click of an item with its own record onto the open container: the first free chest slot (a machine routes it).
-static int64_t ContainerPutRecord(const InvSlot& item) {
-    int slot = 0;
-    if (container.type == PartType::Chest) {
-        slot = -1;
-        for (int k = 0; k < containerIn.size() && slot < 0; ++k) if (containerIn.at(k).empty()) slot = k;
-        if (slot < 0) return 0;
-    }
-    return containerIn.put(slot, item, 100);
-}
 // The creative Catalog: every item, free. A take gives a stack; a held stack put on it is deleted (as in Minecraft).
 struct CatalogGrid : SlotGrid {
     std::vector<std::string> ids; // the items shown (the search applied)
@@ -556,6 +546,16 @@ struct CatalogGrid : SlotGrid {
 };
 static PlayerGrid playerGrid;
 static ContainerGrid containerIn(0), containerOut(1), containerFuel(2);
+// (#1730) Shift-click of an item with its own record onto the open container: the first free chest slot (a machine routes it).
+static int64_t ContainerPutRecord(const InvSlot& item) {
+    int slot = 0;
+    if (container.type == PartType::Chest) {
+        slot = -1;
+        for (int k = 0; k < containerIn.size() && slot < 0; ++k) if (containerIn.at(k).empty()) slot = k;
+        if (slot < 0) return 0;
+    }
+    return containerIn.put(slot, item, 100);
+}
 static CatalogGrid catalogGrid;
 // The slot under the mouse this frame (set while the grids are drawn, read once after: GameUI_Draw).
 static SlotGrid* hoverGrid = nullptr;
