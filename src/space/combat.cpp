@@ -45,7 +45,7 @@ static bool RmbUsedByHand(const PlayerSession& s) {
     if (s.terrainTool.holdingItem || TerrainTool_IsFiller(held) || held == "bucket" || held == "water_bucket") return true;
     if (Hotbar_IsLight(held) || Hotbar_IsPlaceable(held)) return true;
     const ToolType t = ToolOf(held).type;
-    return t == ToolType::Shovel || t == ToolType::Hoe;
+    return t == ToolType::Hoe; // (its RMB tills; #1085: a shovel no longer does)
 }
 
 void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
