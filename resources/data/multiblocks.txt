@@ -1,0 +1,32 @@
+# Multiblock structures (#1429) definitions only: the part types come with the multiblock parts PR.
+#
+# casing <part id> tier <n>                       a casing part; a cell asking for a casing accepts any casing of >= tier
+# hatch <part id> kind <kind> tier <n>            a hatch part; kinds: item_in item_out fluid_in fluid_out energy rotation
+#
+# multiblock <id> | <Display name> | tier <n>     ... end
+#   legend <key> controller:<id> | casing:<id> | part:<id> | hatch:<kinds> [casing:<id>] | air | any
+#       (one non-space key; '/', '*', '#' are not allowed. hatch: any hatch of those kinds, or the fallback casing)
+#   hatches <kind> <min>..<max>                   hatch count limits in the formed structure
+#   stretch <min>..<max>                          the layer marked * repeats min..max times (vertically)
+#   layer <row> / <row> / ...  [*]                layers bottom to top; rows north to south; columns west to east;
+#                                                 the controller faces south (+z)
+
+casing bronze_casing tier 3
+casing steel_casing tier 4
+hatch fluid_in_hatch kind fluid_in tier 3
+hatch fluid_out_hatch kind fluid_out tier 3
+
+multiblock large_tank | Large tank | tier 3
+  legend C controller:large_tank_controller
+  legend c casing:bronze_casing
+  legend h hatch:fluid_in,fluid_out casing:bronze_casing
+  legend g part:tank_glass
+  legend . air
+  legend - any
+  hatches fluid_in 1..2
+  hatches fluid_out 1..2
+  stretch 1..6
+  layer ccc / chc / cCc
+  layer ggg / g.g / ggg  *
+  layer ccc / chc / ccc
+end
