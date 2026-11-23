@@ -28,5 +28,9 @@ void MachineAct_Update();                        // once a frame (#854: a joined
 void MachineAct_ExpectOnCursor(const std::string& item, int count);
 int MachineAct_CursorMoves();                    // (#854 tests) cursor takes completed (the items moved onto the cursor)
 
+// (#1684) MsgMachineAction codes for a dungeon's parts (not machines): the host unlocks a vault door (taking a dungeon_key
+// from the requester) or pulls a lever, and sends the part changes to everyone.
+constexpr int kMachineActUnlockVault = 11, kMachineActPullLever = 12;
+
 // Set while joined (main.cpp): body is the local Planetoid id; action as MsgMachineAction.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part, int action, const std::string& item, int count, int slot, int which)> gMachineRequest;
