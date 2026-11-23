@@ -334,3 +334,4 @@ cinnabar_ore    | Cinnabar        | 999 | 170, 35, 35 | Bright red mercury ore n
 chromite_ore    | Chromite        | 999 |  50, 45, 42 | Chromium ore, deep in basalt. An arc furnace with coke reduces it to chromium, for hard steels.
 wolframite_ore  | Wolframite      | 999 |  70, 58, 50 | Tungsten ore in deep granite veins with tin. An arc furnace with coke makes tungsten, the hardest metal.
 gold_ore        | Native gold     | 999 | 230,190, 60 | Gold in quartz veins and copper porphyries. Smelts to gold in a kiln; for circuits and alchemy.
+sulfur      | Sulfur          | 999 | 220,200, 60 | Yellow, from the sulfide ores (galena, sphalerite, acanthite, pentlandite, cinnabar) in a centrifuge. For chemistry later.
