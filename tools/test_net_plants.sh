@@ -1,7 +1,7 @@
 #!/bin/bash
 # Plants and farming on the server (#335). A peaceful --host (crops sown ripe: RAYLIBGAME_FARM_INSTANT) gives every joiner a
-# stone shovel and 2 grain seeds. "feller" fells the nearest bush or tree by request, then tills ground ahead with the
-# shovel (farmland placed by the server, free), sows grain there and harvests it once the server's fields show it ripe;
+# stone hoe and 2 grain seeds. "feller" fells the nearest bush or tree by request, then tills ground ahead with the
+# hoe (farmland placed by the server, free), sows grain there and harvests it once the server's fields show it ripe;
 # "watcher" only looks. Checks: the drops reached the feller by deltas; the plant is gone on both clients (one removal,
 # the same id); the watcher saw the crop come and go (FarmFields); the seeds left and the grain arrived by deltas.
 # EXE: a GNS build (default build/gns/bin/game.exe). PORT (27968). TERRAIN=default: the default (erosion) terrain (#1107: plants
@@ -17,7 +17,7 @@ SECONDS=0
 if [ "${TERRAIN:-}" != default ]; then printf 'erosion 0\n' > "$tmp/host.sav.worldgen"; fi
 . "$here/tools/lib_netmem.sh"
 net_wait_for_memory 12 test_net_plants || exit 0
-RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_shovel 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench $([ "${TERRAIN:-}" = default ] && echo 1200 || echo 600) --port "$port" > "$tmp/host.log" 2>&1 &
+RAYLIBGAME_FARM_INSTANT=1 RAYLIBGAME_HOST_DIFFICULTY=0 RAYLIBGAME_HOST_GIVE="stone_hoe 1,grain_seeds 2" "$exe" --host "$tmp/host.sav" --seed 42 --bench $([ "${TERRAIN:-}" = default ] && echo 1200 || echo 600) --port "$port" > "$tmp/host.log" 2>&1 &
 hp=$!
 stop_host() { # #795: by the Windows PID too, only while it is still our game.exe
     local w; w=$(cat "/proc/$hp/winpid" 2>/dev/null)
