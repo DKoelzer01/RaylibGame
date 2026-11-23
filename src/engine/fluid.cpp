@@ -1392,6 +1392,7 @@ constexpr unsigned kColBytes = 20;                    // the column flow's scrat
 bool GpuInit() {
     if (G.init) return G.ok;
     G.init = true;
+    GpuMemTag gm_("fluid"); // VRAM accounting (#302, #1603: the brick buffers)
     G.ok = Compute_Available() && G.step.load("resources/compute/fluid_step.comp") && G.delta.load("resources/compute/fluid_delta.comp");
     if (G.ok) {
         G.list.create(64 * 4); G.deltas.create(64 * 16); G.inS.create(64 * 4); G.flags.create(64 * 4); G.nbrs.create(64 * 24);

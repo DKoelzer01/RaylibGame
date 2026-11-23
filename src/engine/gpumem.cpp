@@ -6,12 +6,33 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cstring>
+#if defined(_WIN32)
+extern "C" __declspec(dllimport) unsigned short __stdcall RtlCaptureStackBackTrace(unsigned long, unsigned long, void**, unsigned long*); // kernel32
+#elif defined(__GLIBC__)
+#include <execinfo.h>
+#endif
 
 namespace {
+    // (#1603) The return addresses above the GL wrapper, so an untagged allocation names its caller (raylib's rlLoad* and
+    // the game code that called it). Only for "other" allocations, and only with --vram (the wrappers are installed then).
+    void CaptureStack(void* (&out)[6]) {
+#if defined(_WIN32)
+        RtlCaptureStackBackTrace(2, 6, out, nullptr); // skip CaptureStack and Set
+#elif defined(__GLIBC__)
+        void* f[8] = {};
+        const int n = backtrace(f, 8);
+        for (int i = 2; i < n && i < 8; ++i) out[i - 2] = f[i];
+#else
+        (void)out;
+#endif
+    }
     bool active = false;
     const char* currentTag = "other";
     struct Obj {
         const char* tag = "other";
+        void* stack[6] = {}; // (#1603) who allocated an untagged one (return addresses: the GL caller, its callers)
+        char desc[40] = "";
         std::map<int, size_t> parts; // per mip level / cube face (re-specifying one replaces it)
         size_t total() const { size_t s = 0; for (auto& p : parts) s += p.second; return s; }
     };
@@ -67,50 +88,54 @@ namespace {
             default: return 4; // RGBA8, R32F/I, RG16F, depth 24/32, depth-stencil, unknown
         }
     }
-    void Set(std::unordered_map<GLuint, Obj>& m, GLuint id, int part, size_t bytes) {
+    void Set(std::unordered_map<GLuint, Obj>& m, GLuint id, int part, size_t bytes, const char* desc = nullptr) {
         if (!id) id = 0xFFFFFFFFu; // unknown binding: still counted
         Obj& o = m[id];
-        if (o.parts.empty()) o.tag = currentTag;
+        if (o.parts.empty()) { o.tag = currentTag; if (std::strcmp(currentTag, "other") == 0) CaptureStack(o.stack); if (desc) snprintf(o.desc, sizeof(o.desc), "%s", desc); }
         o.parts[part] = bytes;
     }
     void Erase(std::unordered_map<GLuint, Obj>& m, GLsizei n, const GLuint* ids) { for (GLsizei i = 0; i < n; ++i) m.erase(ids[i]); }
 
-    void GLAD_API_PTR wBufferData(GLenum t, GLsizeiptr size, const void* d, GLenum u) { oBufferData(t, size, d, u); Set(buffers, Bound(BufferBinding(t)), 0, (size_t)size); }
-    void GLAD_API_PTR wBufferStorage(GLenum t, GLsizeiptr size, const void* d, GLbitfield f) { oBufferStorage(t, size, d, f); Set(buffers, Bound(BufferBinding(t)), 0, (size_t)size); }
-    void GLAD_API_PTR wNamedBufferStorage(GLuint b, GLsizeiptr size, const void* d, GLbitfield f) { oNamedBufferStorage(b, size, d, f); Set(buffers, b, 0, (size_t)size); }
+    // (#1603) what was made, for the "other" list
+    char gDesc[40];
+    template <typename... A> const char* Desc(const char* f, A... a) { snprintf(gDesc, sizeof(gDesc), f, a...); return gDesc; }
+
+    void GLAD_API_PTR wBufferData(GLenum t, GLsizeiptr size, const void* d, GLenum u) { oBufferData(t, size, d, u); Set(buffers, Bound(BufferBinding(t)), 0, (size_t)size, Desc("buffer 0x%x", t)); }
+    void GLAD_API_PTR wBufferStorage(GLenum t, GLsizeiptr size, const void* d, GLbitfield f) { oBufferStorage(t, size, d, f); Set(buffers, Bound(BufferBinding(t)), 0, (size_t)size, Desc("buffer 0x%x", t)); }
+    void GLAD_API_PTR wNamedBufferStorage(GLuint b, GLsizeiptr size, const void* d, GLbitfield f) { oNamedBufferStorage(b, size, d, f); Set(buffers, b, 0, (size_t)size, "named buffer"); }
     void GLAD_API_PTR wDeleteBuffers(GLsizei n, const GLuint* ids) { Erase(buffers, n, ids); oDeleteBuffers(n, ids); }
     void GLAD_API_PTR wTexImage2D(GLenum t, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint b, GLenum fmt, GLenum type, const void* px) {
         oTexImage2D(t, level, ifmt, w, h, b, fmt, type, px);
         if (t == GL_PROXY_TEXTURE_2D) return;
-        Set(textures, Bound(TextureBinding(t)), level * 8 + Face(t), (size_t)w * h * Bpp((GLenum)ifmt));
+        Set(textures, Bound(TextureBinding(t)), level * 8 + Face(t), (size_t)w * h * Bpp((GLenum)ifmt), Desc("tex2d %dx%d fmt 0x%x", w, h, ifmt));
     }
     void GLAD_API_PTR wTexImage3D(GLenum t, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLsizei dd, GLint b, GLenum fmt, GLenum type, const void* px) {
         oTexImage3D(t, level, ifmt, w, h, dd, b, fmt, type, px);
-        Set(textures, Bound(TextureBinding(t)), level * 8, (size_t)w * h * dd * Bpp((GLenum)ifmt));
+        Set(textures, Bound(TextureBinding(t)), level * 8, (size_t)w * h * dd * Bpp((GLenum)ifmt), Desc("tex3d %dx%dx%d fmt 0x%x", w, h, dd, ifmt));
     }
     void GLAD_API_PTR wTexStorage2D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w, GLsizei h) {
         oTexStorage2D(t, levels, ifmt, w, h);
         size_t s = 0;
         for (int l = 0; l < levels; ++l) s += (size_t)std::max(1, w >> l) * std::max(1, h >> l) * Bpp(ifmt);
-        Set(textures, Bound(TextureBinding(t)), 0, s * (t == GL_TEXTURE_CUBE_MAP ? 6 : 1));
+        Set(textures, Bound(TextureBinding(t)), 0, s * (t == GL_TEXTURE_CUBE_MAP ? 6 : 1), Desc("storage2d %dx%d x%d fmt 0x%x", w, h, levels, ifmt));
     }
     void GLAD_API_PTR wTexStorage3D(GLenum t, GLsizei levels, GLenum ifmt, GLsizei w, GLsizei h, GLsizei dd) {
         oTexStorage3D(t, levels, ifmt, w, h, dd);
         size_t s = 0;
         for (int l = 0; l < levels; ++l) s += (size_t)std::max(1, w >> l) * std::max(1, h >> l) * (t == GL_TEXTURE_3D ? std::max(1, dd >> l) : dd) * Bpp(ifmt);
-        Set(textures, Bound(TextureBinding(t)), 0, s);
+        Set(textures, Bound(TextureBinding(t)), 0, s, Desc("storage3d %dx%dx%d fmt 0x%x", w, h, dd, ifmt));
     }
     void GLAD_API_PTR wTexImage2DMS(GLenum t, GLsizei samples, GLenum ifmt, GLsizei w, GLsizei h, GLboolean fixed) {
         oTexImage2DMS(t, samples, ifmt, w, h, fixed);
-        Set(textures, Bound(TextureBinding(t)), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples));
+        Set(textures, Bound(TextureBinding(t)), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples), Desc("tex2d ms %dx%d fmt 0x%x", w, h, ifmt));
     }
     void GLAD_API_PTR wTexStorage2DMS(GLenum t, GLsizei samples, GLenum ifmt, GLsizei w, GLsizei h, GLboolean fixed) {
         oTexStorage2DMS(t, samples, ifmt, w, h, fixed);
-        Set(textures, Bound(TextureBinding(t)), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples));
+        Set(textures, Bound(TextureBinding(t)), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples), Desc("storage2d ms %dx%d fmt 0x%x", w, h, ifmt));
     }
     void GLAD_API_PTR wCompressed2D(GLenum t, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLint b, GLsizei size, const void* d) {
         oCompressed2D(t, level, ifmt, w, h, b, size, d);
-        Set(textures, Bound(TextureBinding(t)), level * 8 + Face(t), (size_t)size);
+        Set(textures, Bound(TextureBinding(t)), level * 8 + Face(t), (size_t)size, Desc("compressed %dx%d", w, h));
     }
     void GLAD_API_PTR wGenerateMipmap(GLenum t) {
         oGenerateMipmap(t);
@@ -118,10 +143,10 @@ namespace {
         if (it != textures.end()) { const size_t base = it->second.parts.count(0) ? it->second.parts[0] : 0; it->second.parts[1000] = base / 3; } // the chain: ~1/3 more
     }
     void GLAD_API_PTR wDeleteTextures(GLsizei n, const GLuint* ids) { Erase(textures, n, ids); oDeleteTextures(n, ids); }
-    void GLAD_API_PTR wRbStorage(GLenum t, GLenum ifmt, GLsizei w, GLsizei h) { oRbStorage(t, ifmt, w, h); Set(renderbuffers, Bound(GL_RENDERBUFFER_BINDING), 0, (size_t)w * h * Bpp(ifmt)); }
+    void GLAD_API_PTR wRbStorage(GLenum t, GLenum ifmt, GLsizei w, GLsizei h) { oRbStorage(t, ifmt, w, h); Set(renderbuffers, Bound(GL_RENDERBUFFER_BINDING), 0, (size_t)w * h * Bpp(ifmt), Desc("rb %dx%d fmt 0x%x", w, h, ifmt)); }
     void GLAD_API_PTR wRbStorageMS(GLenum t, GLsizei samples, GLenum ifmt, GLsizei w, GLsizei h) {
         oRbStorageMS(t, samples, ifmt, w, h);
-        Set(renderbuffers, Bound(GL_RENDERBUFFER_BINDING), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples));
+        Set(renderbuffers, Bound(GL_RENDERBUFFER_BINDING), 0, (size_t)w * h * Bpp(ifmt) * std::max(1, (int)samples), Desc("rb ms %dx%d fmt 0x%x", w, h, ifmt));
     }
     void GLAD_API_PTR wDeleteRenderbuffers(GLsizei n, const GLuint* ids) { Erase(renderbuffers, n, ids); oDeleteRenderbuffers(n, ids); }
 
@@ -174,6 +199,20 @@ void GpuMem_Report(const char* label) {
     printf("bench: vram (%s): counted %.0f MB in %zu buffers and %zu textures/renderbuffers:", label, GpuMem_Total() / MB, nBuf, nTex);
     for (auto& r : rows) printf(" %s %.1f", r.second.c_str(), r.first / MB);
     printf(" (MB)\n");
+    {   // (#1603) The biggest untagged objects: what they are and who made them (return addresses in the executable; the
+        // anchor is GpuMem_Report's own address, so `nm game.exe` maps one: its address = it - anchor + nm's GpuMem_Report).
+        std::vector<std::pair<size_t, const Obj*>> other;
+        for (auto* m : { &buffers, &textures, &renderbuffers })
+            for (auto& kv : *m) if (std::string(kv.second.tag) == "other") other.push_back({ kv.second.total(), &kv.second });
+        std::sort(other.begin(), other.end(), [](auto& a, auto& b) { return a.first > b.first; });
+        printf("bench: vram (%s): other: %zu objects, anchor %p; the largest:", label, other.size(), (const void*)&GpuMem_Report);
+        for (size_t i = 0; i < other.size() && i < 16; ++i) {
+            printf(" [%.1f MB %s @", other[i].first / MB, other[i].second->desc);
+            for (void* p : other[i].second->stack) if (p) printf(" %p", p);
+            printf("]");
+        }
+        printf("\n");
+    }
     // What the driver says (all processes on the GPU): NVX_gpu_memory_info, else ATI_meminfo.
     GLint total = 0, avail = 0;
     while (glGetError() != GL_NO_ERROR) {}

@@ -95,6 +95,7 @@ namespace {
         if (b.id && b.bytes >= bytes) return;
         size_t cap = std::max<size_t>(b.bytes, 4096);
         while (cap < bytes) cap *= 2;
+        GpuMemTag gm_("terrain gpu"); // VRAM accounting (#302, #1603: the density dispatch slots)
         b.create((unsigned)cap, nullptr, true);
     }
 
