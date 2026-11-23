@@ -1011,13 +1011,8 @@ void RunJob() {
         }
     }
     if (!work.empty()) {
-        std::atomic<int> left{ (int)work.size() - 1 };
-        for (size_t k = 1; k < work.size(); ++k) {
-            Work* w = &work[k];
-            JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
-        }
-        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].faces); // this thread takes one too
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), (int)work.size(), [&work](int k) { Work& w = work[k]; Classify(*w.s, *w.b, *w.ref, w.faces); },
+                      -3.0f, JobTag::Fluid); // this thread takes its share; no hang with one worker (#1671)
         static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         for (Work& w : work) {
             for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
@@ -1229,14 +1224,7 @@ void RunJob() {
     {
         const int n = (int)outs.size();
         const int parts = std::max(1, std::min(n / 64, (int)std::thread::hardware_concurrency()));
-        std::atomic<int> left{ parts - 1 };
-        auto run = [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); };
-        for (int part = 1; part < parts; ++part) {
-            JobSystem::tagNext(JobTag::Fluid);
-            WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-        }
-        run(0);
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), parts, [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); }, -3.0f, JobTag::Fluid); // (#1671)
     }
     for (PubOut& out : outs) {
         const Brick& b = *out.b;
@@ -1629,13 +1617,7 @@ void GpuReadback() {
                     drift[li] = br->settled ? SettleDrift(*br) : 0;
                 }
             };
-            std::atomic<int> left{ parts - 1 };
-            for (int part = 1; part < parts; ++part) {
-                JobSystem::tagNext(JobTag::Fluid);
-                WorldJobs().submit(-3.0f, [&unpack, &left, part] { unpack(part); left.fetch_sub(1); });
-            }
-            unpack(0);
-            while (left.load() > 0) std::this_thread::yield();
+            ParallelParts(WorldJobs(), parts, unpack, -3.0f, JobTag::Fluid); // (#1671)
         }
         for (size_t li = 0; li < G.lastList.size(); ++li) {
             const int slot = G.lastList[li];
@@ -1962,14 +1944,7 @@ FluidKernel::Grid cpuGrid;
 template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
     if (count <= 0) return;
     const int parts = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
-    auto run = [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); };
-    std::atomic<int> left{ parts - 1 };
-    for (int part = 1; part < parts; ++part) {
-        JobSystem::tagNext(JobTag::Fluid);
-        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-    }
-    run(0);
-    while (left.load() > 0) std::this_thread::yield();
+    ParallelParts(WorldJobs(), parts, [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); }, -3.0f, JobTag::Fluid); // (#1671)
 }
 
 void CpuTick(int n) {
@@ -2491,7 +2466,11 @@ void Fluid::Update(Scene& world, float dt) {
     (void)world;
     { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
-    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // (#1672) A step dropped before it starts (unloadWorld's clearQueued) still clears `running`: the guard goes with the
+    // dropped job, or WaitIdle (Reset, Save) spun forever and quit-to-menu or load froze.
+    struct StepGuard { bool ran = false; ~StepGuard() { if (!ran) running = false; } };
+    auto guard = std::make_shared<StepGuard>();
+    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [guard] { RunJob(); guard->ran = true; running = false; });
     // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
     // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
     if (lockstep) WaitIdle();
