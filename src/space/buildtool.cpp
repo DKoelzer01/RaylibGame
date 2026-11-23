@@ -432,6 +432,10 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
+        if (!buildTool.orientManual && aim.part.type == PartType::Ladder && hitFace.y != 0) { // (#1640) stacked on (or under) a ladder: its facing
+            const int on = hitPlot->partAt(hitCell);
+            if (on >= 0 && hitPlot->parts[on].type == PartType::Ladder) { aim.part.orient = hitPlot->parts[on].orient; buildTool.orient = aim.part.orient; }
+        }
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
         // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a
