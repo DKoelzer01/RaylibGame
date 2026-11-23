@@ -1624,7 +1624,7 @@ static void UpdateWater(Scene& world) {
 
 void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
-    GpuTimer_CpuMark("w-before");
+    GpuTimer_Mark("w-before"); // (#1610) GPU too: the pre-draw zone split
     TerrainGpu_SetBackground(kBackgroundPriority, !gPreloadUrgent); // preload-ring blocks: gently, except during the spawn preload
     {   // (#1122) New GPU density batches by the frame time: both slots while frames are quick, one past 7 ms, one every other
         // frame past 12 ms. Fast flight high up (300 m, 250 m/s) asked for a batch in every free slot every frame and the
@@ -1658,7 +1658,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         TerrainGpu_SetLaunchLimit(limit);
     }
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
-    GpuTimer_CpuMark("w-gpu-pump");
+    GpuTimer_Mark("w-gpu-pump"); // (#1610) GPU too: the pre-draw zone split
     // Ring rocks near the camera and near every interest centre (every player, #318) become voxel bodies (and back)
     // before this frame's LOD selection.
     if (!Rings().empty()) {
@@ -1733,7 +1733,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     UpdateWater(world); // simulated water: chunks redraw their water surface (#360)
     gUploadLoopMs += std::chrono::duration<double, std::milli>(w0 - t0).count();
     gWaterUpdMs = std::max(gWaterUpdMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count());
-    GpuTimer_CpuMark("w-uploads");
+    GpuTimer_Mark("w-uploads"); // (#1610) GPU too: the pre-draw zone split
     // LOD after uploads, so this frame's draw list already includes nodes that just finished.
     // Terrain detail (#297): the player's setting, at most fastFactor while the camera moves fast against the nearest
     // body (hysteresis between slowSpeed and fastSpeed). A change re-selects every body; a changed setting also
@@ -1765,7 +1765,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     int viewRequests = 0;
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) viewRequests += UpdateLod(*p, world.camera.position);
-    GpuTimer_CpuMark("w-lod");
+    GpuTimer_Mark("w-lod"); // (#1610) GPU too: the pre-draw zone split
     // Preload rings (#294/#296) get the request budget the view left unused this frame, and only while the build
     // queue is short, so they never hold up what is on screen. During the spawn preload they run at full rate.
     {
@@ -1803,7 +1803,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         }
     }
     TerrainArena_MaybeShrink(); // (#1603) give arena memory back once it has stayed mostly empty
-    GpuTimer_CpuMark("w-preload");
+    GpuTimer_Mark("w-preload"); // (#1610) GPU too: the pre-draw zone split
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) {
             std::vector<Vector3> extra; // other interest centres on this body (#318)
@@ -1812,7 +1812,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             p->trees->update(*p, p->toLocal(world.camera.position));
         }
 
-    GpuTimer_CpuMark("w-trees");
+    GpuTimer_Mark("w-trees"); // (#1610) GPU too: the pre-draw zone split
     stats.queuedJobs = (int)Jobs().queued();
     stats.runningJobs = Jobs().running();
     stats.pendingUploads = (int)pendingUploads.size();
