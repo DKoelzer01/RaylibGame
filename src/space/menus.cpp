@@ -216,8 +216,9 @@ namespace {
         case SettingsTab::Graphics: {
             changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); next();
             // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
-            static const char* detail[] = { "Low", "Medium", "High", "Ultra" };
-            changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 4, settings.terrainDetail); next();
+            // (#1610) "High (lighter)": LOD factor 2.75, ~5% faster than High (GUESS name; for the playtest).
+            static const char* detail[] = { "Low", "Medium", "High (lighter)", "High", "Ultra" };
+            changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 5, settings.terrainDetail); next();
             changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); next();
             changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); next();
             changed |= Toggle({ x, y, w, h }, "Show FPS", settings.showFps); next(); // on every screen (#572)
@@ -375,7 +376,8 @@ void Settings_Load() {
             else if (!strcmp(key, "handbob")) settings.handBob = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "difficulty")) settings.difficulty = std::clamp((int)v, 0, 2);
             else if (!strcmp(key, "xprate")) settings.xpRate = std::clamp((float)v, 0.5f, 5.0f); // (#883)
-            else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
+            else if (!strcmp(key, "terraindetail")) { static const int kOld[] = { 0, 1, 3, 4 }; settings.terrainDetail = kOld[std::clamp((int)v, 0, 3)]; } // (the four-level numbering, before #1610)
+            else if (!strcmp(key, "terraindetail5")) settings.terrainDetail = std::clamp((int)v, 0, 4); // (#1610) five levels (after the old key: it wins)
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
             else if (!strcmp(key, "antialiasing")) settings.antiAliasing = std::clamp((int)v, 0, 3); // (#1610)
@@ -405,7 +407,9 @@ void Settings_Save() {
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
-    fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
+    { static const int kOld[] = { 0, 1, 2, 2, 3 }; // (#1610) older builds read the four levels (High (lighter) -> High)
+      fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", kOld[std::clamp(settings.terrainDetail, 0, 4)], settings.cameraSmoothing, settings.speedVignette ? 1 : 0); } // (terrain detail was never saved, #297)
+    fprintf(f, "terraindetail5 %d\n", settings.terrainDetail); // (#1610) the five levels; after terraindetail, so it wins on load
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
     fprintf(f, "antialiasing %d\n", settings.antiAliasing); // (#1610)
     fprintf(f, "brightness %.2f\n", settings.brightness); // (#1166)
@@ -439,7 +443,7 @@ void Settings_Apply() {
     Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
     UiPalette_Set((ColorVision)std::clamp(settings.colorVision, 0, 2)); // (#1432)
     foliageEnabled = settings.foliage;
-    { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
+    { const float kDetail[] = { 2.0f, 2.5f, 2.75f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 4)]; } // #297; (#1610) 2.75: High (lighter)
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
     if (Headless()) { FramePacer_SetTarget(kSimHz); SetFrameTarget(kSimHz); } // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
     else {
