@@ -2,6 +2,8 @@
 #include <set>
 #include <map>
 #include <tuple>
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <raylib.h>
 #include <string>
@@ -31,6 +33,7 @@
 #include "ores.h"
 #include "orefamilies.h"
 #include "oreveins.h"
+#include "components.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1902,6 +1905,32 @@ int main(int argc, char** argv)
             ExportImage(img, "bench_ore_slices.png");
             UnloadImage(img);
             printf("bench: ore slices: bench_ore_slices.png\n");
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is the single if after it)
+        if (std::string(argv[i]) == "--component-costs") {
+            // (#1614) The cost report (report only, the user's answer to Q4): every machine's raw cost in gathering minutes,
+            // by hand (hand recipes where an item has one) and by the best route (the cheapest of hand and machine recipes),
+            // from the recipes and resources/data/gather.txt. Unknown raw items (no recipe, no time) are listed.
+            CostModel m;
+            { std::ifstream g("resources/data/gather.txt"); std::stringstream ss; ss << g.rdbuf(); m.gatherSeconds = Components_ParseGather(ss.str()); }
+            for (const Recipe& r : itemDB.recipes()) m.recipes.push_back({ true, r.output, r.outputCount, r.inputs });
+            for (const Factory::RecipeInfo& r : Factory::RecipeList())
+                for (const auto& [out, n] : r.out) m.recipes.push_back({ false, out, n, r.in });
+            std::set<std::string> unknownAll;
+            printf("bench: component costs: %-24s %8s %8s\n", "machine", "hand min", "best min");
+            for (int t = 0; t < (int)PartType::Count; ++t) {
+                if (!IsMachine((PartType)t) || LadderMigrate_IsRemovedMachine(t)) continue; // (the retired ones: no recipe by design)
+                const char* item = PartCostItem((PartType)t);
+                if (!item || !itemDB.find(item)) continue;
+                std::vector<std::string> unknown;
+                const double hand = Components_Cost(m, item, CostRoute::Hand, &unknown) / 60.0, best = Components_Cost(m, item, CostRoute::Best, &unknown) / 60.0;
+                for (const std::string& u : unknown) unknownAll.insert(u);
+                printf("bench: component costs: %-24s %8.1f %8.1f\n", item, hand, best);
+            }
+            std::string u;
+            for (const std::string& s : unknownAll) u += " " + s;
+            printf("bench: component costs: raw items with no gathering time (10 s each):%s\n", u.empty() ? " none" : u.c_str());
             return 0;
         }
     for (int i = 1; i < argc; ++i)

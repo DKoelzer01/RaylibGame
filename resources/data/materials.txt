@@ -2,11 +2,11 @@
 # material | Name   | r,g,b       | forms
 # Ore processing from LV: ore -> 2 crushed (macerator) -> purified (ore washer, water) -> dust and a
 # byproduct (centrifuge) -> ingot (electric furnace).
-iron       | Iron       | 165,160,165 | ore crushed purified dust ingot plate rod
+iron       | Iron       | 165,160,165 | ore crushed purified dust ingot plate rod screw spring
 copper     | Copper     | 205,115,65  | ore crushed purified dust ingot plate wire
 tin        | Tin        | 205,205,215 | ore crushed purified dust ingot plate
 bronze     | Bronze     | 205,140,60  | dust ingot plate gear
-steel      | Steel      | 120,122,132 | ingot plate rod gear
+steel      | Steel      | 120,122,132 | ingot plate rod gear screw spring
 nickel     | Nickel     | 200,200,150 | dust ingot plate
 gold       | Gold       | 240,200,60  | ore crushed purified dust ingot
 bauxite    | Bauxite    | 190,110,90  | ore crushed purified dust

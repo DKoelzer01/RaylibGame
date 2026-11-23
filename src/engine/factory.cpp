@@ -3,6 +3,7 @@
 #include "plots.h"
 #include "machinetiers.h"
 #include "ores.h"
+#include "forms.h"
 #include "disassembly.h"
 #include "composed.h"
 #include "itemdata.h"
@@ -223,6 +224,27 @@ void LoadRecipes() {
         if (cols.size() >= 6 && !cols[5].empty()) r.tier = MachineTiers_ByName(cols[5]); // (#1427 L7a)
         tables.recipes.push_back(r);
     }
+    { // (#1614) The form table's machine recipes (forms.txt): every metal's plates in the press and the compressor, ...,
+      // where machine_recipes.txt has none for that machine and output
+        std::set<std::pair<int, int>> have;
+        for (const Recipe& r : tables.recipes) for (const Stack& o : r.out) have.insert({ (int)r.machine, o.item });
+        for (const FormRecipe& f : Forms_All()) {
+            if (f.machine.empty()) continue;
+            Recipe r;
+            r.machine = MachineByName(f.machine);
+            if (r.machine == PartType::Count) continue;
+            const int out = tables.item(f.output);
+            if (out < 0 || have.count({ (int)r.machine, out })) continue;
+            r.out.push_back({ out, f.outCount });
+            bool ok = true;
+            for (const auto& [name, n] : f.inputs) { const int id = tables.item(name); ok = ok && id >= 0; r.in.push_back({ id, n }); }
+            if (!ok) continue;
+            r.ticks = std::max(1, f.ticks);
+            r.eu = std::max(0, f.eu);
+            tables.recipes.push_back(r);
+            have.insert({ (int)r.machine, out });
+        }
+    }
     if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
         std::vector<Factory::RecipeInfo> extra;
         gFactoryExtraRecipes(extra);
@@ -250,7 +272,7 @@ void LoadRecipes() {
     }
     // (#1427 L7c) The disassembly index, from the forward recipes: hand recipes, then the assembler's (one output each)
     std::vector<DisassemblyRecipe> forward;
-    for (const ::Recipe& h : itemDB.recipes()) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 });
+    for (const ::Recipe& h : itemDB.recipes()) if (!h.formShape) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 }); // (#1614: form shapes are raw material to disassembly)
     for (const Recipe& r : tables.recipes) {
         if (r.machine != PartType::LvAssembler || r.out.size() != 1) continue;
         DisassemblyRecipe d{ tables.name(r.out[0].item), r.out[0].count, {}, r.ticks, r.eu };
@@ -3568,6 +3590,34 @@ TEST(Factory, EveryOreKindHasARecipeThatTakesIt) {
 
 // (#1473) The material column's alloys (#1614): each has a machine recipe, made in a machine of its tier or earlier (the
 // kiln is tier 1, the blast furnace tier 3, the arc furnace HV), and the ore chains give every metal they need.
+// (#1614 PR 1, structure: fails CI, unlike the cost report) Every component shape of every metal (a materials.txt form that
+// forms.txt makes) can be made by hand, and where a machine makes it too, the machine takes less metal than the hand.
+TEST(Factory, EveryComponentShapeHasAHandRecipeAndMachinesSaveMetal) {
+    UnitTest::EnsureItemDB();
+    LoadRecipes();
+    int shapes = 0;
+    for (const ItemDef& d : itemDB.items()) {
+        const size_t u = d.id.rfind('_');
+        if (u == std::string::npos) continue;
+        const std::string shape = d.id.substr(u + 1);
+        if (std::find(Forms_Shapes().begin(), Forms_Shapes().end(), shape) == Forms_Shapes().end()) continue;
+        ++shapes;
+        // Its hand recipe, and the ingots (or rods, plates...) one item takes by hand
+        double handPer = -1.0;
+        for (const ::Recipe& r : itemDB.recipes())
+            if (r.output == d.id) { int n = 0; for (const auto& in : r.inputs) n += in.second; handPer = (double)n / std::max(1, r.outputCount); break; }
+        EXPECT_GE(handPer, 0.0) << d.id << ": no hand recipe (every step can be done by hand)";
+        if (handPer < 0.0) continue;
+        for (const auto& r : tables.recipes)
+            for (const Stack& o : r.out) {
+                if (o.item != tables.item(d.id) || o.count < 1) continue;
+                int n = 0; for (const Stack& s : r.in) n += s.count;
+                EXPECT_LT((double)n / o.count, handPer) << d.id << " in machine " << (int)r.machine << ": a machine takes less metal than the hand";
+            }
+    }
+    EXPECT_GT(shapes, 20) << "the metals' plates, rods, wire, gears, screws, springs";
+}
+
 TEST(Factory, EachAlloyOfTheMaterialColumnIsMadeByItsTier) {
     LoadRecipes();
     const struct { const char* alloy; PartType latest; } kAlloys[] = {
