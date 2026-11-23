@@ -172,6 +172,8 @@ struct Animal {
     float dropIn = -1.0f, clingWait = 0.0f; // the drop's telegraph left (s, -1 none); s it has heard prey not under it
     Vector3 clingFloor{};
     uint64_t group = 0;          // (#1225) its group (the first member's net id; 0: alone)
+    double lastDecideAt = -1.0;  // (#1650) simClock of its last brain decision (AI tiers); -1: none yet
+    BrainOut lastBo;             // (#1650) that decision, reused until the next
     bool thrower = false;        // (#1225) the group's thrower: keeps its distance and throws
     double throwWindAt = -1.0, lastThrow = -1e9; // (#1225) a throw winding up since (simClock), the last throw
     std::vector<InvSlot> carried; // (#1225) what a thief took (dropped when it falls)
@@ -199,6 +201,44 @@ struct Animal {
 };
 constexpr double kTrailSeconds = 0.3;
 std::vector<Animal> animals;
+
+// (#1650 slice 2) AI tiers: how often a creature's brain decides, by its distance to the nearest player (GUESS ranges and
+// rates, from the #1650 design: engaged every update, near 5 Hz, far 1 Hz). RAYLIBGAME_AI_TIERS=0: every update (A/B).
+namespace AiTier {
+    constexpr float kEngagedRange = 15.0f, kNearRange = 60.0f; // m
+    constexpr double kNearPeriod = 0.2, kFarPeriod = 1.0;      // s between decisions
+    inline bool On() { static const bool on = !(getenv("RAYLIBGAME_AI_TIERS") && getenv("RAYLIBGAME_AI_TIERS")[0] == '0'); return on; }
+}
+long long gAiReused = 0; // decisions reused (tests)
+// (#1650) Who is near whom: the creatures in 40 m cells (body-local), so perceiving others looks at the 27 cells around a
+// creature instead of every creature (that scan was O(n^2) a frame). Rebuilt once an update, and again after a removal
+// shifted the indices (gAiGridDirty).
+bool gAiGridDirty = true;
+namespace AiGrid {
+    constexpr float kCell = 40.0f;
+    std::unordered_map<uint64_t, std::vector<int>> cells;
+    uint64_t Key(const std::string& body, int x, int y, int z) {
+        return ((uint64_t)(uint32_t)(x & 0x1FFFFF)) | ((uint64_t)(uint32_t)(y & 0x1FFFFF) << 21) | ((uint64_t)(uint32_t)(z & 0x1FFFFF) << 42) ^ (std::hash<std::string>()(body) * 0x9E3779B97F4A7C15ull);
+    }
+    void Build() {
+        for (auto& kv : cells) kv.second.clear();
+        for (size_t i = 0; i < animals.size(); ++i) {
+            const Vector3 p = animals[i].pos;
+            cells[Key(animals[i].body, (int)floorf(p.x / kCell), (int)floorf(p.y / kCell), (int)floorf(p.z / kCell))].push_back((int)i);
+        }
+        if (cells.size() > 4096) { std::unordered_map<uint64_t, std::vector<int>> keep; for (auto& kv : cells) if (!kv.second.empty()) keep.emplace(kv.first, std::move(kv.second)); cells.swap(keep); }
+        gAiGridDirty = false;
+    }
+    template <class F> void Near(const Animal& a, F f) {
+        if (gAiGridDirty) Build();
+        const int cx = (int)floorf(a.pos.x / kCell), cy = (int)floorf(a.pos.y / kCell), cz = (int)floorf(a.pos.z / kCell);
+        for (int dz = -1; dz <= 1; ++dz) for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+            auto it = cells.find(Key(a.body, cx + dx, cy + dy, cz + dz));
+            if (it == cells.end()) continue;
+            for (int j : it->second) if (j < (int)animals.size()) f(j);
+        }
+    }
+}
 constexpr uint64_t kPlayerPercept = kPlayerSource; // (#1223) a player's id among a creature's percepts (| its session)
 int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
 // (#1223) Its faction: its creatures.txt row's; a plain animal is livestock (calm) or wild.
@@ -558,7 +598,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
         inventory.add(st.id, n); got += TextFormat("  +%d %s", n, st.id.c_str());
     }
     if (!dropsTo && !toGround) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
-    animals.erase(animals.begin() + i);
+    animals.erase(animals.begin() + i); gAiGridDirty = true; // (#1650) indices shifted
     if (aimed == i) aimed = -1;
 }
 
@@ -1121,7 +1161,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     simClock += dt; // the attack wind-up and the bite cooldown run on it (#165): tests step animals many times a frame
     LoadSpecies();
     ++frameNo;
-    simulatedNow = 0;
+    simulatedNow = 0; gAiGridDirty = true; // (#1650) positions moved: the grid is rebuilt on its first use this update
     if (gPopulationCleanup && !gAnimalsReplicated) { // (#1633) once after a load: cave creatures from before homes were saved
         gPopulationCleanup = false;                  // (wanderers with no way back) go, and each chunk keeps its cap
         std::map<ChunkId, int> kept;
@@ -1405,7 +1445,17 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         Vector3 huntAt = tgLocal; float huntDist = pdist;
         if (cs) {
             PROFILE_SCOPE("creatures: brain"); // (#1649)
-            BrainInput bi;
+            const Mood before = a.brain.mood;
+            // (#1650 slice 2) AI tiers: engaged (near a player, winding up, attacking, just hit) decide every update as before;
+            // near ones every kNearPeriod, far ones every kFarPeriod, reusing the last decision between (its one-shot events
+            // cleared). The motor below still runs at the creature's step rate.
+            const bool engaged = a.lastDecideAt < 0.0 || pdist < AiTier::kEngagedRange || a.brain.windUpAt >= 0.0 || a.hurtPending ||
+                                 a.brain.mood == Mood::Attack || !AiTier::On();
+            const double period = engaged ? 0.0 : pdist < AiTier::kNearRange ? AiTier::kNearPeriod : AiTier::kFarPeriod;
+            const bool decide = simClock - a.lastDecideAt >= period;
+            BrainInput bi; // (empty between decisions: a hit makes it engaged, so bi.hurt is always fresh)
+            if (decide) {
+            const float brainDt = engaged ? step : (float)std::min(simClock - a.lastDecideAt, 2.0);
             bi.now = simClock;
             bi.health01 = s.health > 0.0f ? a.health / s.health : 1.0f;
             bi.daylight = !dark;
@@ -1423,15 +1473,15 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 p.vulnerable = tg->vulnerable;
                 bi.others.push_back(p);
             }
-            for (size_t j = 0; j < animals.size(); ++j) { // other creatures it has a stance toward, within its sight
-                if (j == i || animals[j].body != a.body) continue;
+            AiGrid::Near(a, [&](int j) { // other creatures it has a stance toward, within its sight (#1650: the 40 m cells around it)
+                if (j == (int)i || animals[j].body != a.body) return;
                 const float d = Vector3Distance(animals[j].pos, a.pos);
-                if (d > std::min(40.0f, cs->sight)) continue;
+                if (d > std::min(40.0f, cs->sight)) return;
                 const int fj = AnimalFaction(animals[j]);
-                if (Factions().stance(cs->factionIdx, fj) == Stance::Neutral) continue;
+                if (Factions().stance(cs->factionIdx, fj) == Stance::Neutral) return;
                 Percept p; p.id = animals[j].netId; p.pos = animals[j].pos; p.dist = d; p.faction = fj; p.seen = Sense_Sees(*cs, d, dark ? 0.0f : 1.0f, true);
                 bi.others.push_back(p);
-            }
+            });
             if (a.hurtPending) { bi.hurt = true; bi.hurtBy = a.hurtBy; bi.hurtFrom = (a.hurtBy & kPlayerPercept) ? tgLocal : a.hurtFrom; a.hurtPending = false; }
             for (const NoiseEvent& n : Noise_Recent(simClock))
                 if (n.body == body->id && n.source != a.netId && Sense_Hears(*cs, Vector3Distance(n.pos, a.pos), n.loudness)) {
@@ -1439,8 +1489,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     if (n.source & kPlayerPercept) a.heardPlayerAt = simClock; // (#1224) the player made it
                 }
             for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
-            const Mood before = a.brain.mood;
-            bo = Brain_Step(a.brain, *cs, bi, step);
+            bo = Brain_Step(a.brain, *cs, bi, brainDt);
+            a.lastBo = bo; a.lastDecideAt = simClock;
+            } else { bo = a.lastBo; bo.windUpStarted = bo.strike = false; ++gAiReused; } // (#1650) between decisions
             if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) FxEvent(a, *cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
             if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
                 printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
