@@ -4,8 +4,9 @@
 // the tuft on the terrain (chunk-local position), sizes it, stands it along the body's local up,
 // turns it by its hash and bends the blade tips in the wind.
 layout(location = 0) in vec3 vertexPosition;   // tuft space: y = 0 root .. 1 tip
-layout(location = 10) in vec4 instPosScale;    // chunk-local position, height (m)
-layout(location = 11) in vec4 instUpHash;      // body-local up, hash in [0, 1)
+layout(location = 10) in vec4 instPosScale;    // chunk-local position, height (m) (half floats, #1603)
+layout(location = 11) in vec4 instUpHash;      // body-local up (unit), hash x 2 - 1 (signed bytes, #1603)
+layout(location = 12) in vec4 instClimate;     // (#1603) x: (temperature step + 1) / 255, 0 none; y: moisture (bytes)
 
 uniform mat4 matModel;     // chunk -> render space (Planetoid::chunkModel)
 uniform mat4 matViewProj;
@@ -26,7 +27,7 @@ void main()
 {
     vec3 root = vec3(matModel * vec4(instPosScale.xyz, 1.0));
     vec3 up = normalize(mat3(matModel) * instUpHash.xyz);
-    float h = instUpHash.w;
+    float h = clamp(instUpHash.w * 0.5 + 0.5, 0.0, 0.999); // (#1603) stored as hash x 2 - 1
     // A tangent frame around up, turned by the hash.
     vec3 ref = abs(up.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
     vec3 t0 = normalize(cross(up, ref));
@@ -69,8 +70,8 @@ void main()
     fragHeight = y;
     fragHash = h;
     fragLatitude = abs(normalize(instUpHash.xyz).y);
-    float cl = length(instUpHash.xyz);
-    fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    float step1 = floor(instClimate.x * 255.0 + 0.5); // (#1603) temperature step + 1, 0: no climate (it rode in the up vector's length)
+    fragClimate = step1 > 0.5 ? vec3((step1 - 1.0) / 62.0 * 70.0 - 30.0, instClimate.y, 1.0) : vec3(0.0); // (#254)
     fragBlade = fract(float(gl_VertexID / 3) * 0.618034 + h * 7.0);
     gl_Position = matViewProj * vec4(p, 1.0);
     // Thin clumps with distance: past 30% of the draw distance drop a growing share of the blades (down to a third by
