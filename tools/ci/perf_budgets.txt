@@ -5,20 +5,21 @@
 # the tag:budget scenarios (3 runs, the median judged). They mean nothing on another PC.
 #
 # How a limit is set: today's runner median, x1.25 for means (frame mean, scene costs) and x1.35 for p95. Generous at
-# first; tighten once a week of numbers is in. A PR may raise a limit in the same diff with a reason.
+# first; tighten once a week of numbers is in. A PR may raise a limit in the same diff with a reason. 0 = not judged.
 # Verdict (tools/ci/perf_budgets.sh): at or under the limit ok; up to 20% over "flag" (a warning only); more than 20%
 # over "over" (blocks, once PERF_BUDGETS_ENFORCE=1; the first week is report-only).
 #
-# PLACEHOLDERS: every limit is 0 = "not judged yet" (reported only), because the first numbers have to be measured on the
-# runner. Replace each 0 with median x factor after the first runner runs of the "Perf budgets" step.
-perf/planet-view frame mean 0
-perf/planet-view frame p95 0
-perf/creatures-60 frame mean 0
-perf/creatures-60 frame p95 0
-perf/creatures-60 animal update mean 0
-perf/water-shore frame mean 0
-perf/water-shore frame p95 0
-perf/water-shore water pass gpu mean 0
-perf/factory-base frame mean 0
-perf/factory-base frame p95 0
-perf/factory-base factory tick mean 0
+# First limits (2026-11-23): the medians of 3 rounds on the deweyserver build sandbox (same machine and GPU as the runner,
+# but without the exclusive lock), times the factors above. GUESS: water-shore's p95 uses x1.6, because the moving camera
+# streams chunks and its p95 ran 13-26 ms over the 3 rounds. Re-set all of them from the runner's first week.
+perf/planet-view frame mean 6.0
+perf/planet-view frame p95 10.0
+perf/creatures-60 frame mean 3.7
+perf/creatures-60 frame p95 4.4
+perf/creatures-60 animal update mean 0.021
+perf/water-shore frame mean 10.4
+perf/water-shore frame p95 30.7
+perf/water-shore water pass gpu mean 0.16
+perf/factory-base frame mean 3.2
+perf/factory-base frame p95 3.8
+perf/factory-base factory tick mean 0.044
