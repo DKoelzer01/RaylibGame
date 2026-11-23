@@ -222,6 +222,36 @@ jobs:
           set -e
           echo "extra scenarios end: $(date -u +%H:%M:%S)" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -E "^scenario: [a-z0-9_/-]+ -> " scenarios-extra.log | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Perf budgets (report-only)
+        # (#1690) The tag:budget scenes 3 times with the GPU to ourselves, the median of each metric against
+        # tools/ci/perf_budgets.txt. Report-only: continue-on-error stays until the user turns blocking on (then drop it and
+        # set PERF_BUDGETS_ENFORCE to 1: a miss over 20% fails the step, up to 20% only warns). Timing gates stay off.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 120 # (up to 30 min waiting for the lock per run, then ~2 min per scene)
+        working-directory: ${{ env.RUN }}
+        env:
+          RAYLIBGAME_TIMING_GATES: "0"
+          PERF_BUDGETS_ENFORCE: "0"
+        run: |
+          set +e
+          dirs=()
+          locked=1
+          for i in 1 2 3; do
+            bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" exclusive 1800 -- "$OUT/bin/game" --scenario tag:budget --scenario-no-record --scenario-out "$RUN/scenarios/budget$i" \
+              > "perf-budget-$i.log" 2> "perf-budget-lock-$i.log"
+            cat "perf-budget-lock-$i.log" >> "perf-budget-$i.log"
+            grep -q "NOT taken" "perf-budget-lock-$i.log" && locked=0
+            dirs+=("$RUN/scenarios/budget$i")
+          done
+          grep -hE "^scenario: " perf-budget-[0-9].log | grep -vE "heartbeat|waiting" | tail -40 || true
+          if [ $locked = 0 ]; then
+            # the GPU stayed busy: the numbers are not clean, so nothing is judged (they are still listed)
+            PERF_BUDGETS_ENFORCE=0 PERF_BUDGETS_NOTE="Not judged: the GPU lock timed out, so these runs shared the GPU." bash "$GITHUB_WORKSPACE/tools/ci/perf_budgets.sh" "${dirs[@]}"
+            exit 0
+          fi
+          PERF_BUDGETS_NOTE="GPU clocks, utilisation and temperature over the job: see the 'GPU over the job' summary below (gpu-samples.csv in the results)." \
+            bash "$GITHUB_WORKSPACE/tools/ci/perf_budgets.sh" "${dirs[@]}"
       - name: Dedicated server and multiplayer (test_server.sh, test_join.sh)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 20
