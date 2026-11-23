@@ -452,7 +452,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
                 if (!solid && kind && kind != 5 && z <= coveredTo && r - hc < level && r > bed - hc) fl |= kDug;
                 uint8_t tg = 0;
-                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc) {
+                // (#1520) A cell an edit changed holds the generated water only if it held it before the edit: the level over
+                // the ORIGINAL ground (the height map's bed) in this cell. A dig beside a river took the sand out of cells
+                // straddling its level, and they turned into river sources up to the level - an infinite source in the hole,
+                // under where the bank had stood over the water ("hidden water voxels in the sand": the hole flooded with no
+                // path to the river). Such space is fed only by flow from the river's own cells; a cell that was river water
+                // (a channel cut into the river's mouth) still fills to the level as its neighbours do, or the water never
+                // sleeps (fluid/flow). Unedited cells are as before.
+                static const bool genOnOriginal = !(getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND") && getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND")[0] == '0'); // A/B: =0 before #1520
+                bool wasWater = true;
+                if (genOnOriginal && kind && ref.edits && r - hc < level && r > bed - hc && fabsf(dc - ref.field->density(c, nullptr)) > 1e-4f)
+                    wasWater = level > std::max(r - hc, bed);
+                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc && wasWater) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - hc)) / cs * 255.0f), 0, 255);
                     if ((int)tg - sh > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {
@@ -3005,9 +3016,10 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
-        uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) continue;
-        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
+        uint8_t f, fl, sh = 0;
+        if (!PubCell(s, local, 0, f, fl, nullptr, &sh)) continue;
+        // shut: the cell's ground share (#454), last so the older "fill N flags X" prefix still parses (#1520)
+        return TextFormat("fill %d flags %s%s%s%s%s shut %d", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "", sh);
     }
     return "no site";
 }
