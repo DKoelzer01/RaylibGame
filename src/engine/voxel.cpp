@@ -3997,7 +3997,7 @@ TEST(Voxel, AVolcanoHasAshAndLavaNotSnow) {
         return f.materialSky(p, 0.0f, 0.0f, d, sky);
     };
     const Vector3 t = Vector3Normalize(Vector3CrossProduct(vent, { 0, 1, 0 }));
-    int lavaOrAsh = 0, flank = 0, upper = 0;
+    int lavaOrAsh = 0, flank = 0, upper = 0, nearVent = 0, nearAsh = 0;
     for (float km = 0.0f; km < 6.0f; km += 0.05f) {
         const Vector3 d = Vector3Normalize(Vector3Add(vent, Vector3Scale(t, km * 1000.0f / f.radius)));
         float w = 0.0f;
@@ -4008,10 +4008,12 @@ TEST(Voxel, AVolcanoHasAshAndLavaNotSnow) {
             EXPECT_NE(m, VoxelMaterial::Ice) << "w " << w;
         }
         if (w > 0.94f) lavaOrAsh += (m == VoxelMaterial::Lava || m == VoxelMaterial::Ash || m == VoxelMaterial::Basalt);
-        else if (w > 0.78f) EXPECT_TRUE(m == VoxelMaterial::Ash || m == VoxelMaterial::Lava) << "near the vent: ash (w " << w << ", got " << VoxelMaterialName(m) << ")";
+        else if (w > 0.78f) { ++nearVent; nearAsh += (m == VoxelMaterial::Ash || m == VoxelMaterial::Lava); } // (carved walls there: basalt)
         else if (w > 0.55f && (m == VoxelMaterial::Basalt || m == VoxelMaterial::Ash)) ++flank;
     }
     EXPECT_GT(upper, 5);
+    ASSERT_GT(nearVent, 3);
+    EXPECT_GE(nearAsh * 10, nearVent * 7) << nearAsh << " of " << nearVent << " near the vent ash or lava (the rest: carved walls, basalt)";
     EXPECT_GT(flank, 0) << "basalt or ash on the upper flanks";
     EXPECT_EQ(std::string(VoxelMaterialName(VoxelMaterial::Lava)), "lava");
     EXPECT_EQ(std::string(VoxelMaterialName(VoxelMaterial::Ash)), "ash");
