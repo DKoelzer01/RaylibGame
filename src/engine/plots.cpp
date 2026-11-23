@@ -579,6 +579,20 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
     }
 }
 
+Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
+    // The rotation turns cells about the origin cell's corner, so an orientation that flips the face's axis moves every cell
+    // one further out (Footprint's off = -1): sliding only outward left such a part a cell away from the face (#1574). Both
+    // ways, then: the nearest cell ends one step in front of the aimed cell.
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(p, fp);
+    if (fp.empty()) return p.origin;
+    int nearest = 1 << 30;
+    for (const auto& c : fp)
+        nearest = std::min(nearest, (c.first.x - hitCell.x) * face.x + (c.first.y - hitCell.y) * face.y + (c.first.z - hitCell.z) * face.z);
+    const int shift = 1 - nearest;
+    return { p.origin.x + face.x * shift, p.origin.y + face.y * shift, p.origin.z + face.z * shift };
+}
+
 void Plot::SplitBeam(const Part& beam, std::vector<Part>& out) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(beam, fp);
@@ -1230,6 +1244,26 @@ std::unique_ptr<Plot> PlotSet::release(Plot* plot) {
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1098): stone buildings need bricks; loose ground and raw stone are terrain only ----
 #include "unit_helpers.h"
+
+// #1574 (playtest: a chest or kiln placed against an S/E/down face landed a cell away): a multi-cell part placed against any
+// of the 6 faces of a block, in each of the 24 orientations, sits flush - every cell in front of the face, the nearest ones
+// touching it - as a 1-cell part does.
+TEST(PlotPlacement, MultiCellPartsSitFlushAgainstEveryFace) {
+    const Int3 hit{ 5, 7, -3 };
+    const Int3 faces[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (PartType t : { PartType::Chest, PartType::Farmland, PartType::Fence, PartType::Cube }) // 2x2x2, 2x1x2, 1x2x2, 1x1x1
+        for (const Int3& f : faces)
+            for (int o = 0; o < 24; ++o) {
+                Part p{ t, { hit.x + f.x, hit.y + f.y, hit.z + f.z }, (uint8_t)o, 0 }; // as the build tool aims: the cell in front
+                p.origin = Plot::FlushAgainstFace(p, hit, f);
+                std::vector<std::pair<Int3, CellShape>> fp;
+                Plot::Footprint(p, fp);
+                int nearest = 1 << 30;
+                for (const auto& c : fp) nearest = std::min(nearest, (c.first.x - hit.x) * f.x + (c.first.y - hit.y) * f.y + (c.first.z - hit.z) * f.z);
+                EXPECT_EQ(nearest, 1) << "part " << (int)t << ", face (" << f.x << ", " << f.y << ", " << f.z << "), orientation " << o
+                                      << ": 1 = flush against the face, 0 or less = inside the block, 2 or more = a gap";
+            }
+}
 
 TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
     for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })

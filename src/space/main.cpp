@@ -10451,11 +10451,12 @@ int main(int argc, char** argv)
         }
         // The game window (#821): Tab (or E on foot, when not looking at a cockpit to board) opens and closes it at its last
         // screen; C and K open Crafting and Skills on foot (in a rocket they roll and dock). All rebindable in Settings.
+        CommandLine_SetWorld(gameState == 1 ? &world : nullptr); // (#1584) scenarios run commands too: they are benches, which never open the line
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen()) CommandLine_Update(world); // (#823) Enter or /: the command line
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
-            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || !Rocket_AimingCockpit())) GameUI_ToggleInventory();
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingCampfire()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it)
             else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
             else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
@@ -10588,6 +10589,7 @@ int main(int argc, char** argv)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
                     // camera and the floating origin do (a server runs every player this way).
                     player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
+                    player.doubleTapFly = terrainTool.creative; // (#1562) and a double-tap of Space (not for benches: they jump on their own)
                     RenderOriginScope frame(world, player.position);
                     if (gJoinSynced && gJoin.state == NetClient::State::Joined) NetClient_Step(gJoin, world, player, moveIn); // --join: send, predict, reconcile (#327)
                     else if (joinAddr.empty()) player.update(world, moveIn, simDt); // (a client waits for its first state)
@@ -11108,6 +11110,9 @@ int main(int argc, char** argv)
         if (gameState == 1 && !loading) Animals_Aim(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // this frame's camera (#222)
         if (gameState == 1 && !loading) MagicSight_Update(world, std::min(GameFrameTime(), 0.1f), PlayerInput_If(gameInput && alive && !ship.piloted && !GameUI_InventoryOpen(), PlayerInput_Frame())); // (#1249) RAYLIBGAME_MAGIC
         if (gameState == 1 && !loading && alive) MagicDiscovery_Update(world, std::min(GameFrameTime(), 0.1f)); // (#1250) finds, node motes, the Arcane line
+        // (#1564) The crosshair on a creature, a built part or a cockpit: those take the prompt and the buttons, and the terrain
+        // tool draws no preview and no text for the ground behind them (parts were already held off: PartInFront).
+        terrainTool.aimHeldOff = Animals_Aiming() || BuildTool_AimingPart() || Rocket_AimingCockpit();
         if (gameState == 1) TerrainTool_Update(world, PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;

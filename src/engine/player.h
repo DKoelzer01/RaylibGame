@@ -28,6 +28,9 @@ struct Player {
     bool grounded = false;
     bool flyMode = false;             // F: free-fly dev camera (no gravity/collision)
     bool flyAllowed = true;           // F works (#531: creative mode only; the game sets it each frame); off: leaves fly mode
+    bool doubleTapFly = false;        // (#1562) a double-tap of Space toggles flying (creative; the game sets it; benches don't)
+    float sinceJumpTap = 1e9f;        // (#1562) s since the last Space press: a second within kDoubleTapFly toggles flying
+    static constexpr float kDoubleTapFly = 0.3f;
     int spawns = 0;                   // counts spawnOn/placeAt: the game raises the loading screen on a new one
     float jetpackFuel = 1.0f;         // 0..1, recharges on the ground
     // (#1105) Ladders: touching one (the capsule overlaps a ladder's cell) turns gravity off; W climbs, S descends, nothing

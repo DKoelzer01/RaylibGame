@@ -19,6 +19,8 @@ struct TerrainToolSettings {
     float strokesPerSecond = 10.0f;
     float reach = 12.0f;         // max raycast distance (arm's reach; fly mode uses 150)
     bool noAim = false;          // (#1071) no aim at all (no hit, no dig preview): scripted pictures that use no tool
+    bool aimHeldOff = false;     // (#1564) this frame the crosshair is on something else (a creature, a part, a cockpit): no
+                                 // terrain or tree target, no preview circle or its text; that target's prompt and buttons apply
     bool creative = false;       // building costs nothing
     bool holdingItem = false;    // food or feed in hand (hotbar): RMB never places terrain with it (#201)
     bool terraform = false;      // debug (F1): the old brush tool - dig and fill any material, wheel resizes
