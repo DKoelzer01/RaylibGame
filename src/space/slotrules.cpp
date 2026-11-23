@@ -40,12 +40,13 @@ namespace {
     // A click with a held stack: put it all down / merge (what doesn't fit stays held), or swap with another item.
     void ClickHeld(SlotGrid* g, int i) {
         const InvSlot at = g->at(i);
-        if (at.empty() || at.id == held->id || g->infinite()) PutHeld(g, i, held->centi);
+        // (#1730) an item with its own record never merges: the same id with data on either side swaps like another item
+        if (at.empty() || (at.id == held->id && !at.hasData() && !held->hasData()) || g->infinite()) PutHeld(g, i, held->centi);
         else if (!g->combine(i, *held)) Swap(g, i); // (#1219) a gem onto a weapon with a free socket: set, else swap
     }
     // Double-click: every stack of the held item onto the hand, up to a full stack; partial stacks first, as Minecraft does.
     void Gather() {
-        if (held->empty()) return;
+        if (held->empty() || held->hasData()) return; // (#1730) an item with a record is one of a kind: nothing to gather
         const std::string id = held->id;
         int64_t want = 0;
         for (SlotGrid* g : grids) if (g && !g->infinite()) { want = g->capOf(id) - held->centi; break; }
@@ -54,7 +55,7 @@ namespace {
                 if (!g || g->infinite()) continue;
                 for (int j = 0; j < g->size() && want > 0; ++j) {
                     const InvSlot s = g->at(j);
-                    if (s.empty() || s.id != id || (pass == 0) == (s.centi >= g->capOf(id))) continue;
+                    if (s.empty() || s.id != id || s.hasData() || (pass == 0) == (s.centi >= g->capOf(id))) continue;
                     const int64_t k = std::min(want, s.centi);
                     g->take(j, k, *held);
                     want -= k; // (a container's comes next tick: counted now, so the hand never overfills)
@@ -101,7 +102,7 @@ bool SlotRules_Frame(const SlotInput& in, SlotGrid* g, int i) {
         } else if (held->empty()) {
             if (!at.empty()) {
                 g->take(i, g->infinite() ? g->capOf(at.id) : at.centi, *held);
-                if (!g->infinite()) { drag = Drag::Gather; gatherItem = at.id; visited = { { g, i } }; }
+                if (!g->infinite() && !at.hasData()) { drag = Drag::Gather; gatherItem = at.id; visited = { { g, i } }; }
             }
         } else { drag = Drag::Split; dragStack = *held; visited = { { g, i } }; } // a click or a split: decided on release
     }
@@ -114,7 +115,7 @@ bool SlotRules_Frame(const SlotInput& in, SlotGrid* g, int i) {
                 const int64_t half = g->infinite() ? 100 : units >= 1 ? ((units + 1) / 2) * 100 : at.centi; // the larger half
                 g->take(i, half, *held);
             }
-        } else if (!at.empty() && at.id != held->id && !g->infinite()) Swap(g, i);
+        } else if (!at.empty() && (at.id != held->id || at.hasData() || held->hasData()) && !g->infinite()) Swap(g, i); // (#1730)
         else { PutHeld(g, i, One()); drag = Drag::One; visited = { { g, i } }; }
     }
     // Dragging across new slots

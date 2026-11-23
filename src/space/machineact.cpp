@@ -66,7 +66,8 @@ void MachineAct_SetPick(uint64_t body, uint32_t plot, int part, const std::strin
 // (#854) a joined client's take onto the cursor: the server puts it in the inventory it keeps; when its delta has brought
 // it here, it moves from the inventory onto the cursor (the cursor is this screen's: the server never knew it).
 namespace {
-    struct CursorTake { std::string item; int count = 0, base = 0; double until = 0.0; };
+    // data (#1730): one item with its own record; base then counts the copies with a record (plain counts never see them)
+    struct CursorTake { std::string item; int count = 0, base = 0; double until = 0.0; std::string data; };
     std::vector<CursorTake> cursorTakes;
     int cursorMoves = 0;
 }
@@ -75,7 +76,15 @@ void MachineAct_Update() {
     for (size_t i = 0; i < cursorTakes.size();) {
         CursorTake& t = cursorTakes[i];
         auto sink = Factory::CursorSink();
-        if (inventory.count(t.item) >= t.base + t.count) {
+        if (!t.data.empty()) { // (#1730) the server's delta has brought that one item (with its record): onto the cursor with it
+            const int cell = inventory.countInstances(t.item) > t.base ? inventory.findInstance(t.item, t.data) : -1;
+            if (cell >= 0) {
+                const InvSlot one = inventory.takeInstance(cell);
+                if (sink) { sink(one.id, 1, one.heat, one.data); ++cursorMoves; } else inventory.addInstance(one.id, one.data, one.heat);
+                cursorTakes.erase(cursorTakes.begin() + i);
+                continue;
+            }
+        } else if (inventory.count(t.item) >= t.base + t.count) {
             if (sink && inventory.removeAmount(t.item, t.count)) { sink(t.item, t.count, 0.0f, std::string()); ++cursorMoves; }
             cursorTakes.erase(cursorTakes.begin() + i);
             continue;
@@ -93,7 +102,10 @@ void MachineAct_TakeSlot(uint64_t body, uint32_t plot, int part, int slot, int w
             const std::pair<std::string, int> s = which == 2 ? v.fuelSlot : (slot >= 0 && slot < (int)slots.size() ? slots[slot] : std::pair<std::string, int>{});
             const int n = cursorCount > 0 ? std::min(cursorCount, s.second) : s.second;
             if (s.first.empty() || n <= 0) return;
-            cursorTakes.push_back({ s.first, n, inventory.count(s.first), GetTime() + 3.0 });
+            const std::vector<std::string>& datas = which == 1 ? v.outData : v.inData;
+            const std::string data = which != 2 && slot >= 0 && slot < (int)datas.size() ? datas[slot] : std::string();
+            if (!data.empty()) cursorTakes.push_back({ s.first, 1, inventory.countInstances(s.first), GetTime() + 3.0, data }); // (#1730)
+            else cursorTakes.push_back({ s.first, n, inventory.count(s.first), GetTime() + 3.0 });
             gMachineRequest(body, plot, part, 5, std::string(), n, slot, which);
             return;
         }
