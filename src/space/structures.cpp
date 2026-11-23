@@ -53,6 +53,7 @@ struct Set {
     // low corner (y 0: the floor), kept where written (not moved to a 0 corner).
     std::string theme;
     Int3 room{ 0, 0, 0 };
+    std::vector<std::pair<Int3, std::string>> breakLoot; // (#1641 slice 2c) props that break open for a loot table ("part ... <material> loot <table>"): by the part's origin
 };
 std::vector<Set> sets;
 std::vector<Set> roomSets; // (#1641) dungeon room templates
@@ -73,6 +74,10 @@ std::unordered_map<std::string, std::unordered_set<uint64_t>> foundTiles; // bod
 std::set<std::string> foundKinds; // kinds of site found (saved): the Help tab lists only these with "Discovered only"
 struct PendingLoot { std::string body; uint32_t plot; int part; std::string table; uint32_t seed; };
 std::vector<PendingLoot> pending;
+// (#1641 slice 2c) Breakable props (urns, crates): a part of a dungeon room that drops a loot table when it is broken. Keyed by the
+// part's slot (parts are never reused: a removed slot stays), with its origin and type to tell it from another part there.
+struct Breakable { std::string body; uint32_t plot; int part; Int3 origin; PartType type; std::string table; uint32_t seed; };
+std::vector<Breakable> breakables;
 std::vector<std::pair<uint32_t, int>> testFilled; // tests: the chests Structures_Test built (plot, part)
 double lastCheck = -10.0;
 const char* lastSkip = "";  // why the last site was not built (tests)
@@ -149,8 +154,11 @@ bool LoadSet(const std::string& path, Set& s) {
             while (ss >> b) { if (b == "any") { s.biomes.clear(); break; } for (int i = 0; i < 12; ++i) if (b == kBiomes[i]) s.biomes.push_back(i); }
         } else if (cmd == "part") {
             std::string t, m; int x, y, z, o;
-            if (ss >> t >> x >> y >> z >> o >> m && TypeNamed(t) != PartType::Count)
+            if (ss >> t >> x >> y >> z >> o >> m && TypeNamed(t) != PartType::Count) {
                 add(TypeNamed(t), { x, y, z }, o, IsShape(TypeNamed(t)) ? matOf(m) : 0);
+                std::string kw, table; // an optional trailing "loot <table>": the part breaks open for it (#1641 slice 2c)
+                if (ss >> kw >> table && kw == "loot") s.breakLoot.push_back({ { x, y, z }, table });
+            }
         } else if (cmd == "fill" || cmd == "walls") {
             std::string t, m; int x0, y0, z0, x1, y1, z1;
             if (!(ss >> t >> x0 >> y0 >> z0 >> x1 >> y1 >> z1 >> m) || TypeNamed(t) == PartType::Count) continue;
@@ -398,7 +406,8 @@ bool RunJob(Planetoid& body, BuildJob& job, double budgetMs) { // true when the 
         if (idx >= 0) {
             BuildTool_LayFoundation(body, *plot, p);
             ++lastPlaced;
-            if (!table.empty()) pending.push_back({ body.name, plot->id, idx, table, Hash(job.seed + idx) });
+            if (table.compare(0, 6, "break:") == 0) breakables.push_back({ body.name, plot->id, idx, p.origin, p.type, table.substr(6), Hash(job.seed + idx) }); // a prop that breaks open (#1641 slice 2c)
+            else if (!table.empty()) pending.push_back({ body.name, plot->id, idx, table, Hash(job.seed + idx) });
         }
         if (spent() > budgetMs) break;
     }
@@ -431,6 +440,10 @@ struct DungeonPlan {
     int lockedGates = 0, keyChests = 0, secretRooms = 0; // (#1641 slice 2b) the vault door's locked gates, chests holding its key, secret side rooms
     Vector3 secretCentre{}, secretWall{};          // the side room (1 m over its floor) and a point in the lining block between it and its room
     int secretWallMat = -1;                        // that block's material (differs from the room's lining)
+    // (#1641 slice 2c) a portcullis on a side branch: link `portLink` (parent, child) has its child-side doorway's gates (material 2),
+    // the lever stands in leverRoom (on the parent's side); breakProps: template props that break open for loot
+    int portcullisGates = 0, levers = 0, breakProps = 0, portLink = -1, leverRoom = -1, vaultRoom = -1, keyRoomIdx = -1;
+    std::vector<int> roomFloor;                    // each room's floor (stairs join a floor's last room to the next floor's first)
     Vector3 firstHalf{};                           // the first room's half sizes (x, z) for the picture
     Vector3 entrance{}; float floorY = 0.0f, deepest = 0.0f;
     std::vector<Vector3> roomCentres;               // 1 m over each room's floor
@@ -460,6 +473,7 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
     std::vector<Room> rooms;
     std::vector<std::pair<int, size_t>> doorGates; // (room index, parts index) of every doorway gate: the deepest room's are locked (#1641)
+    std::vector<size_t> linkGate;                  // per link: where in doorGates its child-side doorway's two gates start (#1641 slice 2c)
     std::vector<std::pair<Vector3, Vector3>> cutBoxes; // (#1641) every cut in plot metres (centre, half): the lining leaves them open
     auto box = [&](Vector3 c, Vector3 half) {
         cutBoxes.push_back({ c, half });
@@ -579,6 +593,7 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             const size_t ri = rooms.size();
             rooms.push_back(r);
             const Vector3 a = doorway(rooms[fi], wall, wall < 2 ? r.c.z : r.c.x, flr);
+            linkGate.push_back(doorGates.size()); // (#1641 slice 2c) the child side's two gates go down next
             const Vector3 b = doorway(rooms[ri], back, wall < 2 ? rooms[fi].c.z : rooms[fi].c.x, flr);
             const float len = Vector2Length({ b.x - a.x, b.z - a.z });
             for (float s = 0.0f; s <= len + 0.01f; s += 0.6f) { const float k = len > 0.0f ? s / len : 0.0f; box({ a.x + (b.x - a.x) * k, flr + kCorrH * 0.5f, a.z + (b.z - a.z) * k }, { kCorrHalfW, kCorrH * 0.5f, kCorrHalfW }); }
@@ -644,6 +659,51 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     int keyRoom = lastDungeon.lockedGates > 0 ? 0 : -1; // the last room of the floor above the deepest's (room 0 on one floor)
     if (lastDungeon.lockedGates > 0 && rooms.back().floor > 0)
         for (int k = deepestRoom - 1; k >= 0; --k) if (rooms[k].floor == rooms.back().floor - 1) { keyRoom = k; break; }
+    // A portcullis on a side branch (#1641 slice 2c, seeded on its own stream): one link's child-side doorway gets portcullis gates
+    // (material 2), a lever stands in a room on the entrance's side. Only a link whose far side (the child's rooms, and the floors
+    // below it by the stairs) holds neither the vault nor the key chest: the portcullis never blocks the way to either.
+    int leverRoom = -1, leverWall = 0;
+    lastDungeon.roomFloor.clear();
+    for (const Room& r : rooms) lastDungeon.roomFloor.push_back(r.floor);
+    lastDungeon.vaultRoom = lastDungeon.lockedGates > 0 ? deepestRoom : -1;
+    lastDungeon.keyRoomIdx = keyRoom;
+    if (lastDungeon.lockedGates > 0 && !links.empty() && linkGate.size() == links.size()) {
+        uint32_t hp = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0x90c7c1ull);
+        const size_t nl = links.size(), from = (size_t)(Unit(hp) * nl) % nl;
+        const int nr = (int)rooms.size();
+        std::vector<std::pair<int, int>> stairEdges; // a floor's last room to the next floor's first
+        for (int r = 0; r + 1 < nr; ++r) if (rooms[r + 1].floor != rooms[r].floor) stairEdges.push_back({ r, r + 1 });
+        for (size_t a = 0; a < nl && leverRoom < 0; ++a) {
+            const size_t li = (from + a) % nl;
+            if (linkGate[li] + 1 >= doorGates.size()) continue;
+            std::vector<char> beyond(nr, 0);
+            beyond[links[li].second] = 1;
+            for (bool grew = true; grew;) { // the rooms past the doorway: across the other links and the stairs
+                grew = false;
+                auto spread = [&](int u, int v) { if (beyond[u] != beyond[v]) { beyond[u] = beyond[v] = 1; grew = true; } };
+                for (size_t k = 0; k < nl; ++k) if (k != li) spread(links[k].first, links[k].second);
+                for (const auto& e : stairEdges) spread(e.first, e.second);
+            }
+            if (beyond[deepestRoom] || beyond[keyRoom]) continue;
+            // The lever's room: on this side, a wall free of doors; another than the portcullis's own room when there is one.
+            int best = -1;
+            const int off = (int)(Unit(hp) * nr) % nr;
+            for (int pass = 0; pass < 2 && best < 0; ++pass)
+                for (int k = 0; k < nr && best < 0; ++k) {
+                    const int rk = (k + off) % nr;
+                    if (beyond[rk] || rk == deepestRoom || (rooms[rk].walls & 15) == 15) continue;
+                    if (pass == 0 && rk == links[li].first) continue;
+                    best = rk;
+                }
+            if (best < 0) continue;
+            leverRoom = best;
+            const int w0 = (int)(Unit(hp) * 4.0f) & 3;
+            for (int k = 0; k < 4; ++k) if (!(rooms[leverRoom].walls & (1 << ((w0 + k) & 3)))) { leverWall = (w0 + k) & 3; break; }
+            lastDungeon.portLink = (int)li;
+            for (int k = 0; k < 2; ++k) { parts[doorGates[linkGate[li] + k].second].first.material = 2; ++lastDungeon.portcullisGates; }
+        }
+    }
+    lastDungeon.leverRoom = leverRoom;
     // The rooms: carved by shape, a torch each, chests and gas.
     for (size_t i = 0; i < rooms.size(); ++i) {
         const Room& r = rooms[i];
@@ -683,6 +743,14 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             parts.push_back({ Part{ PartType::GasVent, cellOf(r.c.x + 0.25f, rf + 0.1f, r.c.z + 0.25f), 0, 0 }, "" });
             ++lastDungeon.vents;
         }
+        if ((int)i == leverRoom) { // (#1641 slice 2c) the portcullis's lever: a floor lever a cell off a wall without a door, a metre off the middle
+            const bool xWall = leverWall < 2;
+            const float sign = (leverWall & 1) ? -1.0f : 1.0f;
+            const float depthAt = (xWall ? r.c.x + sign * r.hx : r.c.z + sign * r.hz) - sign * 0.3f;
+            const float latAt = (xWall ? r.c.z : r.c.x) + (leverWall == 1 ? 1.0f : -1.0f);
+            parts.push_back({ Part{ PartType::Lever, xWall ? cellOf(depthAt, rf + 0.1f, latAt) : cellOf(latAt, rf + 0.1f, depthAt), 0, 0 }, "" });
+            ++lastDungeon.levers;
+        }
         if (r.tmpl >= 0) { // (#1641) a data template's props, from the room's low corner; none within 2 cells of a wall with a door
             const Set& T = roomSets[r.tmpl];
             const Int3 base = cellOf(r.c.x - r.hx, rf + 0.01f, r.c.z - r.hz);
@@ -705,8 +773,11 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
                 Plot::Footprint(p, fp);
                 for (const auto& c : fp) if (taken.count(c.first)) tooClose = true;
                 if (tooClose) continue;
-                parts.push_back({ p, "" });
+                std::string table;
+                for (const auto& [at, tbl] : T.breakLoot) if (at == tp.origin && lootTables.count(tbl)) table = "break:" + tbl; // an urn or crate (#1641 slice 2c)
+                parts.push_back({ p, table });
                 ++lastDungeon.templateParts;
+                lastDungeon.breakProps += !table.empty();
             }
         }
     }
@@ -958,9 +1029,33 @@ void FillLoot(Planetoid& body, const PendingLoot& L) {
 
 } // namespace
 
+bool Structures_BreakLoot(Planetoid& body, uint32_t plotId, int part, const Part& removed, std::vector<std::pair<std::string, int>>& out) {
+    for (size_t i = 0; i < breakables.size(); ++i) {
+        const Breakable& b = breakables[i];
+        if (b.body != body.name || b.plot != plotId || b.part != part) continue;
+        const Breakable e = b;
+        breakables.erase(breakables.begin() + i);
+        if (e.type != removed.type || !(e.origin == removed.origin)) return false; // another part took that slot
+        Vector3 at{};
+        if (const Plot* pl = body.plots ? body.plots->byId(plotId) : nullptr) at = pl->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
+        auto it = lootTables.find(e.table);
+        if (it == lootTables.end()) return false;
+        uint32_t h = e.seed;
+        for (const LootEntry& le : it->second) { // (FillLoot's rolls, handed to the breaker instead of a chest)
+            if (Unit(h) > le.chance) continue;
+            const int n = le.lo + (int)(Unit(h) * (le.hi - le.lo + 1));
+            if (n <= 0) continue;
+            if (MagicDiscovery_IsPage(le.item) && !MagicDiscovery_LootAllowed(body, at, le.item)) continue;
+            out.push_back({ le.item, std::min(n, le.hi) });
+        }
+        return true;
+    }
+    return false;
+}
+
 int Structures_SetCount() { Ensure(); return (int)sets.size(); }
 
-void Structures_Reset() { builtTiles.clear(); pending.clear(); builtSites.clear(); foundTiles.clear(); foundKinds.clear(); jobs.clear(); lastCheck = -10.0; }
+void Structures_Reset() { builtTiles.clear(); pending.clear(); breakables.clear(); builtSites.clear(); foundTiles.clear(); foundKinds.clear(); jobs.clear(); lastCheck = -10.0; }
 
 namespace {
 // Sites round one interest centre (a body-local point near the ground): every tile within build range, and the two
@@ -1072,6 +1167,7 @@ void Structures_Save(FILE* f) {
         fprintf(f, "\n");
     }
     for (const PendingLoot& L : pending) fprintf(f, "structure_loot %s %u %d %s %u\n", L.body.c_str(), L.plot, L.part, L.table.c_str(), L.seed);
+    for (const Breakable& b : breakables) fprintf(f, "structure_break %s %u %d %d %d %d %d %s %u\n", b.body.c_str(), b.plot, b.part, b.origin.x, b.origin.y, b.origin.z, (int)b.type, b.table.c_str(), b.seed); // (#1641 slice 2c)
     if (!foundKinds.empty()) { fprintf(f, "structure_kinds %zu", foundKinds.size()); for (const auto& k : foundKinds) fprintf(f, " %s", k.c_str()); fprintf(f, "\n"); }
     // Built sites (where, which set) and the ones found (#164 discovery); the name is last (it has spaces).
     for (const BuiltSite& b : builtSites)
@@ -1109,6 +1205,12 @@ bool Structures_LoadLine(const char* tok, FILE* f) {
         if (fscanf(f, " %127s %zu", name, &n) != 2) return true;
         auto& s = foundTiles[name];
         for (size_t i = 0; i < n; ++i) { unsigned long long k; if (fscanf(f, " %llu", &k) == 1) s.insert(k); }
+        return true;
+    }
+    if (strcmp(tok, "structure_break") == 0) { // (#1641 slice 2c) a prop that breaks open
+        char name[128], table[64]; unsigned plot = 0, seed = 0; int part = 0, x = 0, y = 0, z = 0, type = 0;
+        if (fscanf(f, " %127s %u %d %d %d %d %d %63s %u", name, &plot, &part, &x, &y, &z, &type, table, &seed) == 9 && type >= 0 && type < (int)PartType::Count)
+            breakables.push_back({ name, plot, part, { x, y, z }, (PartType)type, table, seed });
         return true;
     }
     if (strcmp(tok, "structure_loot") == 0) {
@@ -1342,12 +1444,15 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     if (placed < 0 || !plot) { printf("bench: dungeon: the ruin not built (%s) -> FAIL\n", lastSkip); return false; }
     const DungeonArgs A = lastDungeonArgs;
     uint32_t pick = 4242u;
-    for (uint32_t k = 0; k < 40; ++k) {
-        const uint32_t sd = 4242u + 7919u * k;
-        BuildJob dry;
-        PlanDungeon(dry, body, *pf, *plot, A.floorY, A.half, sd, A.stone);
-        if (lastDungeon.rooms > 0 && lastDungeon.vents > 0 && lastDungeon.darts > 0 && lastDungeon.darts < lastDungeon.plates && lastDungeon.lockedGates == 2 && lastDungeon.secretRooms == 1) { pick = sd; break; }
-    }
+    bool picked = false;
+    for (int pass = 0; pass < 2 && !picked; ++pass) // pass 0: a seed with a side branch for the portcullis (#1641 slice 2c); pass 1: any
+        for (uint32_t k = 0; k < 40 && !picked; ++k) {
+            const uint32_t sd = 4242u + 7919u * k;
+            BuildJob dry;
+            PlanDungeon(dry, body, *pf, *plot, A.floorY, A.half, sd, A.stone);
+            if (lastDungeon.rooms > 0 && lastDungeon.vents > 0 && lastDungeon.darts > 0 && lastDungeon.darts < lastDungeon.plates && lastDungeon.lockedGates == 2 && lastDungeon.secretRooms == 1 &&
+                (pass == 1 || (lastDungeon.portcullisGates == 2 && lastDungeon.levers == 1 && lastDungeon.breakProps > 0))) { pick = sd; picked = true; }
+        }
     BuildJob job;
     job.body = body.id; job.plot = plot->id; job.seed = pick;
     PlanDungeon(job, body, *pf, *plot, A.floorY, A.half, pick, A.stone);
@@ -1384,18 +1489,75 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     bool haveTemplates = false; // (#1641 slice 2) data templates for this theme: every room uses one, with props
     for (const Set& T : roomSets) haveTemplates = haveTemplates || T.theme == "any" || T.theme == (D.theme == 0 ? "crypt" : "bunker");
     const bool templatesOk = !haveTemplates || (D.templateRooms == D.rooms && D.templateParts > 0);
-    ok = ok && templatesOk;
+    // (#1641 slice 2c) the portcullis and its lever: with a side branch, exactly 2 portcullis gates and one lever placed; the vault and the
+    // key chest's room still reachable from the entrance (room 0) with the portcullis's link cut (by the links and the stairs between
+    // floors, walked here from the entrance side), and the lever's room too. Breakable props: planned, registered with their loot, and one
+    // broken here gives items. The picture: the first room's longest clear sight line from the eye is at least 3 m.
+    int portcullis = 0, levers = 0;
+    for (const Part& p : plot->parts) { portcullis += GatePortcullis(p); levers += p.type == PartType::Lever; }
+    const bool sideBranch = D.portLink >= 0;
+    bool pathOk = true;
+    if (sideBranch) {
+        const int nr = (int)D.roomFloor.size();
+        std::vector<char> seen(nr, 0);
+        std::vector<int> todo{ 0 };
+        seen[0] = 1;
+        while (!todo.empty()) {
+            const int u = todo.back(); todo.pop_back();
+            auto visit = [&](int v) { if (v >= 0 && v < nr && !seen[v]) { seen[v] = 1; todo.push_back(v); } };
+            for (size_t k = 0; k < D.links.size(); ++k) {
+                if ((int)k == D.portLink) continue; // the portcullis's own corridor is shut
+                if (D.links[k].first == u) visit(D.links[k].second);
+                if (D.links[k].second == u) visit(D.links[k].first);
+            }
+            if (u + 1 < nr && D.roomFloor[u + 1] != D.roomFloor[u]) visit(u + 1); // the stairs down from a floor's last room
+            if (u > 0 && D.roomFloor[u - 1] != D.roomFloor[u]) visit(u - 1);
+        }
+        pathOk = D.vaultRoom >= 0 && D.keyRoomIdx >= 0 && seen[D.vaultRoom] && seen[D.keyRoomIdx] && D.leverRoom >= 0 && seen[D.leverRoom];
+    }
+    const bool portOk = sideBranch ? (D.portcullisGates == 2 && portcullis == 2 && D.levers == 1 && levers == 1 && pathOk) : (portcullis == 0 && levers == 0);
+    int registered = 0, brokeItems = 0;
+    {
+        std::vector<Breakable> mine;
+        for (const Breakable& b : breakables) if (b.plot == plot->id && b.body == body.name) mine.push_back(b);
+        for (const Breakable& b : mine) registered += b.part >= 0 && b.part < (int)plot->parts.size() && plot->parts[b.part].type == b.type && plot->parts[b.part].origin == b.origin;
+        if (!mine.empty() && mine[0].part >= 0 && mine[0].part < (int)plot->parts.size()) { // break one: its table's items come back, once
+            const Part removed = plot->parts[mine[0].part];
+            std::vector<std::pair<std::string, int>> drops, again;
+            if (plot->remove(mine[0].part) && Structures_BreakLoot(body, plot->id, mine[0].part, removed, drops)) for (const auto& d : drops) brokeItems += d.second;
+            if (Structures_BreakLoot(body, plot->id, mine[0].part, removed, again)) brokeItems = -1; // (an entry is used up)
+        }
+    }
+    const bool breakOk = D.breakProps > 0 && registered > 0 && registered <= D.breakProps && brokeItems > 0;
+    // The picture: 16 directions from the first room's middle at the eye's height, each walked in 0.25 m steps up to the room's
+    // half-diagonal until a part or rock is met; the longest wins, the target 1 m over the floor at that distance. (A part in the
+    // eye's cell moves it half a metre at a time.)
+    const Vector3 c0 = D.roomCentres[0];
+    Vector3 eyeP = { c0.x, c0.y - 1.0f + 1.6f, c0.z };
+    for (int k = 0; k < 25 && plot->partAt(plot->cellAt(eyeP)) >= 0; ++k) eyeP = { c0.x + 0.5f * (float)(k % 5 - 2), eyeP.y, c0.z + 0.5f * (float)(k / 5 - 2) };
+    float viewClear = 0.0f; Vector3 viewDir{ 1, 0, 0 };
+    const float reach = sqrtf(D.firstHalf.x * D.firstHalf.x + D.firstHalf.z * D.firstHalf.z);
+    for (int k = 0; k < 16; ++k) {
+        const float ang = (float)k * (2.0f * PI / 16.0f);
+        const Vector3 dir = { cosf(ang), 0.0f, sinf(ang) };
+        float clear = 0.0f;
+        for (float d = 0.25f; d <= reach; d += 0.25f) {
+            const Vector3 q = { eyeP.x + dir.x * d, eyeP.y, eyeP.z + dir.z * d };
+            if (plot->partAt(plot->cellAt(q)) >= 0 || !air(q)) break;
+            clear = d;
+        }
+        if (clear > viewClear) { viewClear = clear; viewDir = dir; }
+    }
+    const bool viewOk = viewClear >= 3.0f;
+    ok = ok && templatesOk && portOk && breakOk && viewOk;
+    printf("bench: dungeon: slice 2c: portcullis %s (%d gates placed, %d levers, vault, key and lever reachable with it shut: %d); breakable props %d planned / %d registered, one broken gave %d items; picture clear %.2f m -> %s\n",
+           sideBranch ? "on a side branch" : "no side branch", portcullis, levers, (int)pathOk, D.breakProps, registered, brokeItems, viewClear, portOk && breakOk && viewOk ? "ok" : "WRONG");
     printf("bench: dungeon: seed %u: %d floors, %.1f m down at the deepest; %d rooms (%d open, shapes 0x%x), %d corridors (%d open at the middle), ramp open %d/%d, stairs open %d/%d; "
            "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed), templates %d rooms / %d parts; vault: %d locked gates, %d key chest, secret room %d (air %d, wall block %d, chest %d) -> %s\n",
            pick, D.floors, depth, D.rooms, roomsOpen, D.shapes, (int)D.corridorMids.size(), linksOpen, rampOpen, (int)D.rampPoints.size(), stairsOpen, (int)D.stairPoints.size(),
            D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, D.templateRooms, D.templateParts, locked, keyChests, D.secretRooms, (int)secretAir, (int)secretWallOk, (int)secretChest, ok ? "PASS" : "FAIL");
-    // The picture (#1641): from the first room's middle column (the templates keep it free), 1.6 m over the floor, toward the far
-    // corner (the torch's) at 1 m. A part in the eye's cell moves it half a metre at a time.
-    const Vector3 c0 = D.roomCentres[0];
-    Vector3 eyeP = { c0.x, c0.y - 1.0f + 1.6f, c0.z };
-    for (int k = 0; k < 25 && plot->partAt(plot->cellAt(eyeP)) >= 0; ++k) eyeP = { c0.x + 0.5f * (float)(k % 5 - 2), eyeP.y, c0.z + 0.5f * (float)(k / 5 - 2) };
     eye = plot->toBody(eyeP);
-    target = plot->toBody({ c0.x + D.firstHalf.x - 0.5f, c0.y, c0.z + D.firstHalf.z - 0.5f });
+    target = plot->toBody({ eyeP.x + viewDir.x * viewClear, c0.y, eyeP.z + viewDir.z * viewClear });
     return ok;
 }
 

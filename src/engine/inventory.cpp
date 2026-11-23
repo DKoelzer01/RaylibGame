@@ -75,7 +75,7 @@ bool ItemDB::loadExtraText(const std::string& text) {
     }
     // Placeable parts named here are blocks, as load() makes them.
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t))
+        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t) && (PartType)t != PartType::Lever)
             if (auto it = byId.find(item); it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
     return true;
 }
@@ -163,7 +163,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     // places (#812): a meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must
     // stay a resource (stone as a block stacked to 256 and lost nothing on death).
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent) continue; else
+        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent || (PartType)t == PartType::Lever) continue; else
         if (const char* item = PartCostItem((PartType)t)) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;

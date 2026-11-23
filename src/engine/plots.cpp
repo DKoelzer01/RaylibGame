@@ -65,6 +65,7 @@ const char* PartName(PartType t) {
         case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
         case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::Ladder: return "ladder"; // (#1105)
+        case PartType::Lever: return "lever"; // (#1641 slice 2c)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -168,6 +169,7 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
+        case PartType::Lever: return "stone"; // (#1641 slice 2c) a dungeon lever (not placed from the hand; never broken)
         case PartType::Shaft: return "shaft"; // (#1269)
         case PartType::Cogwheel: return "cogwheel";
         case PartType::LargeCogwheel: return "large_cogwheel";
@@ -280,6 +282,7 @@ static Color PartColor(PartType t) {
         case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
         case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
         case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
+        case PartType::Lever: return { 74, 70, 66, 255 }; // (#1641 slice 2c) dark iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -343,6 +346,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
         case PartType::Ladder: return PatLadder; // (#1105)
+        case PartType::Lever: return PatMetal; // (#1641 slice 2c)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
@@ -407,6 +411,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
         case PartType::Snare: // a low trap frame: the Slab shape (#176)
+        case PartType::Lever:  // (#1641 slice 2c) a low iron box on the floor, a cell wide: easy to aim at
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
@@ -844,7 +849,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
         const Part& pp = parts[ref.part];
         if (IsSpinningPart(pp.type)) continue; // (#1269) shafts, cogs and cranks are drawn turning (rotationmodels.cpp)
         Color color = IsShape(pp.type) ? GetBuildMaterial(pp.material).color : PartColor(pp.type);
-        if (GateLocked(pp)) color = { 74, 70, 66, 255 }; // (#1641) a vault door: dark iron
+        if (GateSolid(pp)) color = GatePortcullis(pp) ? Color{ 52, 52, 58, 255 } : Color{ 74, 70, 66, 255 }; // (#1641) a vault door: dark iron; a portcullis: darker bars
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
@@ -1002,7 +1007,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || (parts[it->second.part].type == PartType::Gate && !GateLocked(parts[it->second.part])) || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate (not a locked one, #1641), and a ladder (#1105: they climb it)
+                    if (it == cells.end() || (parts[it->second.part].type == PartType::Gate && !GateSolid(parts[it->second.part])) || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate (not a locked one, #1641), and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);

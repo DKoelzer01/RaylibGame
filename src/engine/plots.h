@@ -61,6 +61,7 @@ enum class PartType : uint8_t {
     ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
     Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
     Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
+    Lever,                                                           // (#1641 slice 2c) a dungeon floor lever: pulled, it opens the portcullis gates near it (appended: saves and NetPart ids go by order)
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
@@ -101,6 +102,9 @@ struct Part {
 };
 bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
 inline bool GateLocked(const Part& p) { return p.type == PartType::Gate && p.material == 1; } // (#1641) a vault door (a dungeon_key opens it): solid, where a plain gate is walked through
+inline bool GatePortcullis(const Part& p) { return p.type == PartType::Gate && p.material == 2; } // (#1641 slice 2c) a dungeon portcullis: solid like a vault door, opened by the lever in its dungeon
+inline bool GateSolid(const Part& p) { return GateLocked(p) || GatePortcullis(p); }                   // a gate people cannot walk through
+inline bool PartUnbreakable(const Part& p) { return GateSolid(p) || p.type == PartType::Lever; }       // vault doors, portcullises and levers are opened, never broken
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
