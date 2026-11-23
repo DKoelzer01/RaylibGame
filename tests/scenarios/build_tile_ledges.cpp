@@ -130,7 +130,8 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
             slideMin = std::min(slideMin, (double)vel.z);
         }
         if (lane == Slab) upMax = std::max(upMax, (double)vel.y); // (stepped onto: the rise rate is the launch)
-        if (t < 3.0 && along < kLedgeAt + 3.0) return false;
+        const bool slidOff = lane == Oblique && tHit >= 0.0 && t > tHit + 1.2; // (~3.5 m along its 7 m wall)
+        if (t < 3.0 && along < kLedgeAt + 3.0 && !slidOff) return false;
         gFakeHeld = 0;
         const char* n = kName[lane];
         c.metric(TextFormat("%s: min speed along the walk at it (m/s)", n), backMin, "m/s", false);

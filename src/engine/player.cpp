@@ -742,14 +742,26 @@ bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vecto
                 for (auto& pl : p.plots->plots) {
                     const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, offsets[si])));
                     Vector3 c = before, nl;
-                    if (!pl->collideSphere(c, radius / p.scale, nl)) continue;
+                    Plot::Contacts hits;
+                    if (!pl->collideSphere(c, radius / p.scale, nl, &hits)) continue;
                     const Vector3 moved = Vector3Subtract(c, before);
                     const float len = Vector3Length(moved) * p.scale;
                     if (len > 1e-6f) feet = Vector3Add(feet, Vector3Scale(p.dirToWorld(Vector3Normalize(moved)), len));
-                    const Vector3 n = p.dirToWorld(nl);
-                    const float vn = Vector3DotProduct(Vector3Subtract(velocity, frameVel), n);
-                    if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
-                    if (Vector3DotProduct(n, up) > 0.55f) { onGround = true; groundNormal = n; }
+                    // Each surface touched on its own (#1732): the sum of a floor's and a wall's normals is a 45-degree
+                    // "surface" that turned the walk into the wall, and the press into the floor, into an upward and
+                    // backward kick, and made it ground (dot 0.71), tilting the walking plane up the wall.
+                    const float vUpBefore = Vector3DotProduct(velocity, up);
+                    bool steep = false;
+                    for (int k = 0; k < hits.count; ++k) {
+                        const Vector3 n = p.dirToWorld(hits.n[k]);
+                        const float vn = Vector3DotProduct(Vector3Subtract(velocity, frameVel), n);
+                        if (vn < 0.0f) { impactSpeed = std::max(impactSpeed, -vn); velocity = Vector3Subtract(velocity, Vector3Scale(n, vn)); }
+                        const float nu = Vector3DotProduct(n, up);
+                        if (nu > walkableCos) { if (!onGround || nu > Vector3DotProduct(groundNormal, up)) groundNormal = n; onGround = true; }
+                        else steep = true;
+                    }
+                    // A wall doesn't turn a push into upward motion (no wall climbing; as the terrain pass above).
+                    if (steep) { const float vUpAfter = Vector3DotProduct(velocity, up); if (vUpAfter > vUpBefore && vUpAfter > 0.0f) velocity = Vector3Subtract(velocity, Vector3Scale(up, vUpAfter - std::max(vUpBefore, 0.0f))); }
                 }
     return onGround;
 }
@@ -798,7 +810,13 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
         if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f)
             for (auto& pl : p.plots->plots) {
                 Vector3 c = p.toLocal(Vector3Add(feet, Vector3Scale(up, radius - 0.12f))), nl;
-                if (pl->collideSphere(c, radius / p.scale, nl) && Vector3DotProduct(p.dirToWorld(nl), up) > 0.55f) { onGround = true; groundNormal = p.dirToWorld(nl); break; }
+                Plot::Contacts hits;
+                if (!pl->collideSphere(c, radius / p.scale, nl, &hits)) continue;
+                for (int k = 0; k < hits.count; ++k) { // the floor's own normal, not its sum with a wall beside the feet (#1732)
+                    const Vector3 n = p.dirToWorld(hits.n[k]);
+                    if (Vector3DotProduct(n, up) > 0.55f && (!onGround || Vector3DotProduct(n, up) > Vector3DotProduct(groundNormal, up))) { onGround = true; groundNormal = n; }
+                }
+                if (onGround) break;
             }
     }
     // Ground probe: the push-out is approximate and can leave a small gap; treat anything within a

@@ -992,8 +992,10 @@ bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#
     return false;
 }
 
-bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const {
+bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts) const {
+    if (contacts) contacts->count = 0;
     if (cells.empty()) return false;
+    auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
     const float rc = r / kCellSize;
     bool hit = false;
@@ -1020,12 +1022,12 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
         if (deepest <= 0.0f) break;
         p = Vector3Add(p, Vector3Scale(bestN, deepest));
         nSum = Vector3Add(nSum, bestN);
+        if (contacts) contacts->n[contacts->count++] = toBodyDir(bestN); // (at most 4 passes)
         hit = true;
     }
     if (!hit) return false;
     bodyCentre = toBody(Vector3Scale(p, kCellSize));
-    const Vector3 n = Vector3Normalize(nSum);
-    normalOut = Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z)));
+    normalOut = toBodyDir(Vector3Normalize(nSum));
     return true;
 }
 
