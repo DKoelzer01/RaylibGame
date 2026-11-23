@@ -10,7 +10,7 @@
 //   (c) the RMS of the left and right output of the voice, when Steam Audio runs a device (Audio_DebugVoiceLR), or else
 //       of Steam Audio's own HRTF driven offline with white noise and that same direction (no device needed: Load(true)).
 // Checks: the direction holds within 5 degrees and does not drift (3 degrees, 0.5 m over 2 s); a side source is louder in
-// its ear by 3 dB, one ahead or behind is within 2 dB (when (c) is there). Needs RAYLIBGAME_AUDIO_V2=1 (the scenario sets
+// its ear by 3 dB, one ahead or behind within 3 dB (when (c) is there). Needs RAYLIBGAME_AUDIO_V2=1 (the scenario sets
 // it) for the live part; with no audio device (the headless build) the anchoring itself is tested against the true
 // listener (Audio_AnchorOf / Audio_AnchorPos, which the emitters and one-shots use), plus the offline HRTF run.
 #include "scenario.h"
@@ -223,7 +223,7 @@ SCENARIO("audio/directions") {
             snprintf(buf, sizeof buf, "%sleft %.5f, right %.5f (RMS), right - left %.2f dB%s", tag.c_str(), l, r, dB, S.live && S.lr ? " (the voice's output)" : " (offline HRTF)");
             c.note(buf);
             if (ex.axis == 'x') c.gt(tag + "louder in the near ear (dB)", ex.sign * dB, 3.0);
-            else c.lt(tag + "balanced between the ears (|dB|)", fabs(dB), 2.0);
+            else c.lt(tag + "balanced between the ears (|dB|)", fabs(dB), 3.0); // (the default HRTF itself is 2.1 dB off-centre ahead on white noise, 0.9 behind; a side is 15+ dB)
         } else c.note(tag + "no left/right (no steam audio)");
 
         // The caption's arrow (#1635): from the line the HUD shows (live), else from the same direction maths.
