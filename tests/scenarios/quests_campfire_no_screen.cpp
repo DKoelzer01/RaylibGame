@@ -24,7 +24,7 @@ int Out(const MachineView& v, const char* item) { int n = 0; for (const auto& s 
 }
 
 SCENARIO("quests/campfire-no-screen") {
-    s.tags = { "quests", "machines" };
+    s.tags = { "quests", "machines", "craft" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 90.0;
     s.step("a campfire, a crucible mould and fuel put in without a screen", 10.0, [](ScenarioCtx& c) {
