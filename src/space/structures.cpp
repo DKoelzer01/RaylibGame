@@ -416,6 +416,7 @@ struct DungeonPlan {
 DungeonPlan lastDungeon; // tests: the last dungeon planned (plot metres)
 bool forceDungeon = false; // tests: every ruin with a dungeon chance gets one
 bool noDungeons = false;   // tests: none (--test-structures checks the surface sets and their chests)
+uint32_t lastSitePlot = 0; // tests (#1637): the plot the last site was built on
 struct DungeonArgs { float floorY = 0.0f, half = 0.0f; int stone = 0; };
 DungeonArgs lastDungeonArgs; // tests: what the last site would plan its dungeon with (built with noDungeons, then planned by hand)
 void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Plot& plot, float floorY, float ruinHalfX, uint32_t seed, int stoneMat) {
@@ -649,6 +650,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
     if (!body.plots) body.plots = std::make_unique<PlotSet>();
     if (!force && body.plots->plotFor(ground, 40.0f, false)) { lastSkip = "a build nearby"; return -1; }
     Plot* plot = body.plots->plotFor(ground, 0.0f, true);
+    if (plot) lastSitePlot = plot->id;
     if (!plot) return -1;
     const Biome biome = pf.biomeAt(site.dir, e);
     // Turned, centred on the site, its floor on the lowest corner's ground, then sunk `bury`.
@@ -1119,7 +1121,7 @@ std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid&
         ApplyTerrainEdit(body, hill);
         StructureInterior r; r.set = sets[i].name;
         if (BuildSite(&world, body, *pf, kRingTile + 300 + (uint64_t)i, s, true) < 0 || !body.plots) { r.cells = -1; r.skip = lastSkip; out.push_back(r); continue; }
-        Plot* plot = body.plots->plotFor(ground, 0.0f, false);
+        Plot* plot = body.plots->byId(lastSitePlot); // (the plot it was built on)
         if (!plot || plot->parts.empty()) { r.cells = -1; r.skip = "no plot or parts there"; out.push_back(r); continue; }
         Int3 lo{ 1 << 20, 1 << 20, 1 << 20 }, hi{ -(1 << 20), -(1 << 20), -(1 << 20) };
         std::vector<std::pair<Int3, CellShape>> fp;
