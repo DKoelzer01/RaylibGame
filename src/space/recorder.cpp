@@ -1,4 +1,5 @@
 #include "recorder.h"
+#if !(defined(RAYLIBGAME_NO_RECORDER) && RAYLIBGAME_NO_RECORDER) // (#1626) -DRAYLIBGAME_RECORDER=OFF: all of it out (recorder.h has the no-ops)
 #include "world.h"
 #include "gameui.h" // (#1119) the start and stop toasts
 
@@ -455,3 +456,4 @@ bool Recorder_Finished() { return finished; }
 bool Recorder_Active() { return active; }
 void Recorder_Shutdown() { End(); if (finisher.joinable()) finisher.join(); }
 std::string Recorder_LastDir() { std::lock_guard<std::mutex> lk(lastDirM); return lastDir; }
+#endif // RAYLIBGAME_NO_RECORDER (#1626)
