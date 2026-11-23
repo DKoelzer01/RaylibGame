@@ -32,7 +32,7 @@ struct GameSettings {
     float busVolume[7] = { 1, 1, 1, 1, 1, 1, 1 }; // (#1238) per AudioBus (audiomixer.h); [0] Master is `volume`. Audio v2 only
     int subtitles = 1;              // (#1244) sound subtitles: 0 off, 1 important (default, user decision), 2 all. Audio v2 only
     bool foliage = true;
-    int fpsCap = 0;                 // 0: the monitor's refresh rate
+    int fpsCap = 0;                 // (#1624) frames a second at most; 0: uncapped (VSync, when on, holds it to the monitor)
     bool vsync = true;              // no tearing (caps at the monitor's refresh rate)
     bool showFps = false;           // the FPS counter, on every screen (#572)
     bool reduceMotion = false;      // eased walking starts/stops and a smoothed camera up (motion sickness)
@@ -66,6 +66,7 @@ extern GameSettings settings;
 void Settings_Load();            // settings.txt (missing: defaults)
 void Settings_Save();
 void Settings_Apply();           // to the player, ship, camera, audio, foliage and frame cap
+int Display_MonitorHz();         // (#1624) the window's monitor's refresh rate (the fastest monitor's if it reads nothing; logged)
 
 // Draw (between BeginDrawing/EndDrawing) and handle clicks. Esc is handled here too.
 MenuResult Menu_Main();
