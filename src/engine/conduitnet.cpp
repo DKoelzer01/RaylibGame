@@ -202,8 +202,9 @@ struct Dinic {
 } // namespace
 
 std::vector<int64_t> Conduit_MaxFlow(const ConduitGraph& g, const std::vector<ConduitFlowNode>& sources,
-                                     const std::vector<ConduitFlowNode>& sinks, int ticks) {
+                                     const std::vector<ConduitFlowNode>& sinks, int ticks, std::vector<int64_t>* sourceFlow) {
     std::vector<int64_t> out(sinks.size(), 0);
+    if (sourceFlow) sourceFlow->assign(sources.size(), 0);
     const int N = (int)g.nodes.size();
     if (N == 0 || ticks <= 0) return out;
     const int S = N, T = N + 1;
@@ -212,7 +213,8 @@ std::vector<int64_t> Conduit_MaxFlow(const ConduitGraph& g, const std::vector<Co
     std::map<int, int64_t> supply, demand;
     for (const ConduitFlowNode& s : sources) if (s.node >= 0 && s.node < N && s.amount > 0) supply[s.node] += s.amount;
     for (const ConduitFlowNode& s : sinks) if (s.node >= 0 && s.node < N && s.amount > 0) demand[s.node] += s.amount;
-    for (const auto& kv : supply) d.add(S, kv.first, kv.second);
+    std::map<int, int> supplyArc;
+    for (const auto& kv : supply) supplyArc[kv.first] = d.add(S, kv.first, kv.second);
     std::map<int, int> sinkArc;
     for (const auto& kv : demand) sinkArc[kv.first] = d.add(kv.first, T, kv.second);
     d.run(S, T);
@@ -224,6 +226,17 @@ std::vector<int64_t> Conduit_MaxFlow(const ConduitGraph& g, const std::vector<Co
         int64_t& left = delivered[s.node];
         const int64_t give = std::min(left, s.amount);
         out[i] = give; left -= give;
+    }
+    if (sourceFlow) {
+        std::map<int, int64_t> sent; // per node: what left S through it
+        for (const auto& kv : supplyArc) sent[kv.first] = d.arcs[kv.second ^ 1].cap;
+        for (size_t i = 0; i < sources.size(); i++) {
+            const ConduitFlowNode& s = sources[i];
+            if (s.node < 0 || s.node >= N || s.amount <= 0) continue;
+            int64_t& left = sent[s.node];
+            const int64_t give = std::min(left, s.amount);
+            (*sourceFlow)[i] = give; left -= give;
+        }
     }
     return out;
 }
@@ -369,6 +382,19 @@ TEST(ConduitNet, MaxFlowBranchesAndSplits) {
     ASSERT_EQ(two.size(), 2u);
     EXPECT_EQ(two[0], 20);
     EXPECT_EQ(two[1], 12);
+}
+
+TEST(ConduitNet, MaxFlowReportsSourceFlows) {
+    // Source A behind a size-1 cable, source B behind a size-2 cable, both feeding sinks at the two ends of a line.
+    const std::vector<ConduitPortHit> ports = { { {0, 0, 0}, 0, 0 }, { {0, 0, 40}, 1, 0 }, { {40, 0, 0}, 2, 0 }, { {40, 0, 40}, 3, 0 } };
+    const ConduitGraph g = Conduit_BuildGraph({ NCable(1, 1, { {0, 0, 0}, {40, 0, 0} }), NCable(2, 2, { {0, 0, 40}, {40, 0, 40} }) }, NetCat(), ports);
+    std::vector<int64_t> sent;
+    const std::vector<int64_t> got = Conduit_MaxFlow(g, { { g.portNode[0], 1000 }, { g.portNode[1], 1000 } },
+                                                     { { g.portNode[2], 1000 }, { g.portNode[3], 1000 } }, 1, &sent);
+    ASSERT_EQ(sent.size(), 2u);
+    EXPECT_EQ(sent[0], 32);
+    EXPECT_EQ(sent[1], 128);
+    EXPECT_EQ(got[0] + got[1], 160);
 }
 
 TEST(ConduitNet, MaxFlowAcrossNetworksIsZero) {
