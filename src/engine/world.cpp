@@ -1328,7 +1328,11 @@ static void UpdatePreload(Planetoid& p, Vector3 cameraRender, int& spare) {
         const ArenaStats as = TerrainArena_Stats();
         // The estimate is generous (26 M of 44.6 M used on seed 42): regrow only when it passes the capacity by more than
         // 10%, with 10% headroom. A re-centred ring 2 nodes larger than the spawn ring regrew it whole: a 57 ms frame (#364).
-        long long need = (long long)ring.keys.size() * 800 + lodSettings.cacheVertices + (4 << 20);
+        // (#1603) In use now plus the ring at the vertices a node really averages (many ring nodes are all air or rock: 0), with a
+        // quarter to spare. It was the ring x 800 + the whole cache budget (8 M) + 4 M on top: the arena reserved ~2x what it used.
+        const WorldStats& wsr = GetWorldStats();
+        const double perNode = wsr.nodes > 1000 && as.vertices > 0 ? (double)as.vertices / wsr.nodes : 800.0;
+        long long need = (long long)as.vertices + (long long)(ring.keys.size() * perNode * 1.25);
         if (need > as.vertexCapacity + as.vertexCapacity / 10) { // (Reserve creates the arena if it is not up yet)
             need += need / 10;
             // (#1560) A ring near a ring asteroid asked for 146.7 M vertices (880 M indices, ~4.9 GB) with 11 M in use, and the
@@ -1770,11 +1774,12 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
             const ArenaStats as = TerrainArena_Stats();
             if (as.vertices > 0) {
                 const double ipv = (double)as.indices / as.vertices;
-                const long long v = (long long)as.vertices + lodSettings.cacheVertices + (4 << 20);
+                const long long v = (long long)as.vertices + as.vertices / 4 + (2 << 20); // (#1603) use + a quarter (was + the whole 8 M cache budget + 4 M)
                 TerrainArena_Reserve((int)std::min<long long>(v, INT_MAX / 2), (int)std::min<long long>((long long)(v * ipv), INT_MAX / 2));
             }
         }
     }
+    TerrainArena_MaybeShrink(); // (#1603) give arena memory back once it has stayed mostly empty
     GpuTimer_CpuMark("w-preload");
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->trees) {

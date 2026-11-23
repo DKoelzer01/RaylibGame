@@ -41,6 +41,7 @@ namespace {
     static_assert(sizeof(Attr) == 16, "packed terrain attributes");
     // (The climate in tan[1] is bit fields: see TerrainArena_Upload.)
     constexpr size_t kPosBytes = 12;
+    constexpr int kV0 = 4 << 20, kI0 = 24 << 20; // the arena's first size (and the least compaction shrinks it to, #1603)
 
     struct Command { GLuint count, instanceCount, firstIndex; GLint baseVertex; GLuint baseInstance; };
     static_assert(sizeof(Command) == 20, "indirect command");
@@ -87,6 +88,10 @@ namespace {
         GLint cpCount = -1, cpBase = -1;
         Ranges verts, idx;
         int tableCap = 0;
+        // (#1603) Each slot's ranges, as the arena placed them (compaction moves them; Free releases by these)
+        struct SlotRec { int vFirst = -1, vCount = 0, iFirst = -1, iCount = 0; };
+        std::vector<SlotRec> slotRec;
+        double lowSince = -1.0; // usage under 40% since (compaction waits 5 s)
         std::vector<int> freeSlots;
         int slotCount = 0;
         // The per-pass command / record / list ring: each flush takes the next n entries (wrapping), so a
@@ -213,7 +218,7 @@ namespace {
             }
             LOG_INFO("Arena", "draws: %s\n", S.drawCount ? "indirect count (visible chunks compacted in order)" : "all listed commands (culled ones empty)");
         }
-        const int v0 = 4 << 20, i0 = 24 << 20; // about a planet walk's working set (5.7 M vertices seen); grows as needed
+        const int v0 = kV0, i0 = kI0; // about a planet walk's working set (5.7 M vertices seen); grows as needed
         S.pos = Regrow(0, 0, (size_t)v0 * kPosBytes);
         S.attr = Regrow(0, 0, (size_t)v0 * sizeof(Attr));
         S.ibo = Regrow(0, 0, (size_t)i0 * sizeof(uint16_t));
@@ -466,6 +471,8 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
         return a;
     }
     a.slot = AllocSlot();
+    if ((int)S.slotRec.size() <= a.slot) S.slotRec.resize((size_t)a.slot + 1);
+    S.slotRec[a.slot] = { a.vFirst, a.vCount, a.iFirst, a.iCount }; // (#1603)
     const size_t posBytes = (size_t)nv * kPosBytes, attrBytes = (size_t)nv * sizeof(Attr), idxBytes = (size_t)ni * sizeof(uint16_t);
     const size_t at = StagingInit() ? StagingAlloc(posBytes + attrBytes + idxBytes + 32) : SIZE_MAX;
     if (at != SIZE_MAX) {
@@ -510,8 +517,16 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
 
 void TerrainArena_Free(ArenaAlloc& a) {
     if (S.ok) {
-        if (a.vFirst >= 0) S.verts.release(a.vFirst, a.vCount);
-        if (a.iFirst >= 0) S.idx.release(a.iFirst, a.iCount);
+        if (a.slot >= 0 && a.slot < (int)S.slotRec.size() && S.slotRec[a.slot].vFirst >= 0) {
+            // (#1603) by the arena's own record: a compaction may have moved the ranges since this copy was made
+            State::SlotRec& r = S.slotRec[a.slot];
+            S.verts.release(r.vFirst, r.vCount);
+            S.idx.release(r.iFirst, r.iCount);
+            r = State::SlotRec{};
+        } else {
+            if (a.vFirst >= 0) S.verts.release(a.vFirst, a.vCount);
+            if (a.iFirst >= 0) S.idx.release(a.iFirst, a.iCount);
+        }
         if (a.slot >= 0) S.freeSlots.push_back(a.slot);
     }
     a = ArenaAlloc{};
@@ -625,6 +640,63 @@ int TerrainArena_Flush(unsigned int shaderId, bool positionsOnly, const ArenaBod
 }
 
 // Grow ahead of need (#295): a regrow copies the whole buffers (over a GB with the preload ring), a long hitch mid-walk.
+// (#1603) Give memory back: new buffers of newV vertices / newI indices, every slot's ranges copied in packed (in slot
+// order) and its table entry's offsets rewritten. Index data are relative to the slot's first vertex (the command's
+// baseVertex), so they copy as they are. Uploads before it were copied in the same GL stream, so they arrive first.
+static bool CompactArena(int newV, int newI) {
+    int needV = 0, needI = 0;
+    for (const State::SlotRec& r : S.slotRec) if (r.vFirst >= 0) { needV += r.vCount; needI += r.iCount; }
+    newV = std::max(newV, needV); newI = std::max(newI, needI);
+    const GLuint pos = Regrow(0, 0, (size_t)newV * kPosBytes), attr = pos ? Regrow(0, 0, (size_t)newV * sizeof(Attr)) : 0,
+                 ibo = attr ? Regrow(0, 0, (size_t)newI * sizeof(uint16_t)) : 0;
+    if (!pos || !attr || !ibo) { // out of video memory: keep what there is
+        GLuint made[3] = { pos, attr, ibo };
+        for (GLuint b : made) if (b) glDeleteBuffers(1, &b);
+        return false;
+    }
+    auto copy = [](GLuint from, GLuint to, size_t src, size_t dst, size_t bytes) {
+        if (!bytes) return;
+        glBindBuffer(GL_COPY_READ_BUFFER, from); glBindBuffer(GL_COPY_WRITE_BUFFER, to);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)src, (GLintptr)dst, (GLsizeiptr)bytes);
+    };
+    int v = 0, i = 0;
+    for (int s = 0; s < (int)S.slotRec.size(); ++s) {
+        State::SlotRec& r = S.slotRec[s];
+        if (r.vFirst < 0) continue;
+        copy(S.pos, pos, (size_t)r.vFirst * kPosBytes, (size_t)v * kPosBytes, (size_t)r.vCount * kPosBytes);
+        copy(S.attr, attr, (size_t)r.vFirst * sizeof(Attr), (size_t)v * sizeof(Attr), (size_t)r.vCount * sizeof(Attr));
+        copy(S.ibo, ibo, (size_t)r.iFirst * sizeof(uint16_t), (size_t)i * sizeof(uint16_t), (size_t)r.iCount * sizeof(uint16_t));
+        r.vFirst = v; r.iFirst = i;
+        v += r.vCount; i += r.iCount;
+        const GLuint offs[2] = { (GLuint)r.iFirst, (GLuint)r.vFirst }; // TableEntry: iCount, iFirst, vFirst
+        WriteTable(s, offs, sizeof(offs), offsetof(TableEntry, iFirst));
+    }
+    glBindBuffer(GL_COPY_READ_BUFFER, 0); glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    const int oldV = S.verts.cap, oldI = S.idx.cap;
+    GLuint old[3] = { S.pos, S.attr, S.ibo };
+    glDeleteBuffers(3, old);
+    S.pos = pos; S.attr = attr; S.ibo = ibo;
+    S.verts = Ranges{}; S.verts.cap = newV; S.verts.used = v; if (newV > v) S.verts.free[v] = newV - v;
+    S.idx = Ranges{}; S.idx.cap = newI; S.idx.used = i; if (newI > i) S.idx.free[i] = newI - i;
+    BindAttributes();
+    LOG_INFO("Arena", "compacted: %.1f -> %.1f M vertices, %.1f -> %.1f M indices (%.1f / %.1f M in use)\n", oldV / 1e6, newV / 1e6, oldI / 1e6, newI / 1e6, v / 1e6, i / 1e6);
+    return true;
+}
+
+void TerrainArena_MaybeShrink() {
+    if (!S.ok) return;
+    const bool lowV = S.verts.cap > 2 * kV0 && S.verts.used < S.verts.cap * 2 / 5;
+    const bool lowI = S.idx.cap > 2 * kI0 && S.idx.used < S.idx.cap * 2 / 5;
+    if (!lowV && !lowI) { S.lowSince = -1.0; return; }
+    const double now = GetTime();
+    if (S.lowSince < 0.0) { S.lowSince = now; return; }
+    if (now - S.lowSince < 5.0) return; // under 40% for 5 s: not a dip while the view turns
+    S.lowSince = -1.0;
+    const int newV = lowV ? std::max(kV0, S.verts.used + S.verts.used / 2) : S.verts.cap;
+    const int newI = lowI ? std::max(kI0, S.idx.used + S.idx.used / 2) : S.idx.cap;
+    CompactArena(newV, newI);
+}
+
 void TerrainArena_Reserve(int vertices, int indices) {
     if (!Init()) return;
     if (S.verts.cap < vertices) GrowVerts(vertices);
@@ -654,4 +726,11 @@ void TerrainArena_Unload() {
     S.cull.unload();
     S.compact.unload();
     S = State{};
+}
+
+// (#1603 tests) Compact now to 1.5x the use, whatever the usage; true if it did. The visual/arena-compact scenario
+// checks the picture is the same after.
+bool TerrainArena_CompactForTest() {
+    if (!S.ok) return false;
+    return CompactArena(std::max(kV0, S.verts.used + S.verts.used / 2), std::max(kI0, S.idx.used + S.idx.used / 2));
 }

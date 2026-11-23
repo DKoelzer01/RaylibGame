@@ -79,6 +79,8 @@ struct ArenaStats { int vertices = 0, vertexCapacity = 0, indices = 0, indexCapa
 ArenaStats TerrainArena_Stats();
 void TerrainArena_PaletteUse(long long out[17]); // #480: packed chunks by distinct materials (index 1-16)
 void TerrainArena_Reserve(int vertices, int indices); // capacity at least this (one regrow each), e.g. behind a loading screen
+void TerrainArena_MaybeShrink(); // (#1603) once a frame: under 40% used for 5 s, compact to 1.5x the use (never under the first size)
+bool TerrainArena_CompactForTest(); // (#1603 tests) compact now (1.5x the use)
 void TerrainArena_Unload();
 
 #endif
