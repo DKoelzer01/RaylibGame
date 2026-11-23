@@ -1459,6 +1459,7 @@ int main(int argc, char** argv)
                fresh, g0.strength, g0.color.r, g0.color.g, g0.color.b, mixed, stone, cooled, inv.grid()[0].heat, g1.strength, ok ? "PASS" : "FAIL");
     }
     GameSave_Register();
+    gSaveNoticeHook = [](const std::string& note) { GameUI_Toast(note.c_str()); }; // (#1693) a save upgraded on load: one toast
     // (#902) Pointers into a world being unloaded (a body, a plot, a hit) dropped before its bodies go: frames go on drawing
     // while the next world loads, and a reload crashed in TerrainTool_Draw3D / Wind_Bind on the old, freed planet.
     World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); });
@@ -13816,7 +13817,7 @@ int main(int argc, char** argv)
                 case MenuAction::LoadGame:
                     SetWorldSavePath(m.path.c_str());
                     if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
-                    else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
+                    else GameUI_Toast(LastLoadError().empty() ? TextFormat("Could not load %s", m.path.c_str()) : LastLoadError().c_str()); // (#1693) a newer or pre-13 save says so
                     break;
                 case MenuAction::Resume: { const bool wasLoading = loading; enterGame(false); loading = wasLoading; break; } // a pause during loading (#388) keeps the loading screen
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;

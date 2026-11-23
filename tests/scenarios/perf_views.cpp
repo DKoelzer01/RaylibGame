@@ -76,7 +76,7 @@ SCENARIO("perf/sandbox-view") {
 }
 
 SCENARIO("perf/planet-view") {
-    s.tags = { "perf", "planet" };
+    s.tags = { "perf", "planet", "budget" };
     s.world = ScenarioWorld::Planet;
     s.args = { "--day" };
     s.timeout = 120.0;

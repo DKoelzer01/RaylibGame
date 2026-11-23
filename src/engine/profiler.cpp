@@ -32,6 +32,7 @@ std::string Profiler_SummaryJson() { return ""; }
 void Profiler_PrintSummary() {}
 void Profiler_MeasureZoneCost(double& onNs, double& offNs) { onNs = offNs = 0.0; }
 void Profiler_Reset() {}
+double Profiler_ZoneMeanMs(const char*) { return -1.0; }
 void Profiler_SetHitchStamp(double (*)(), std::string (*)()) {}
 void Profiler_SetHitchCap(size_t) {}
 bool Profiler_WriteSession(const std::string&, std::string&) { return false; }
@@ -223,6 +224,12 @@ void Profiler_Counter(const char* name, double v) {
     if (!Prof::gOn) return;
     Counter& c = gCounters[name];
     ++c.n; c.sum += v; c.max = std::max(c.max, v); c.last = v;
+}
+
+double Profiler_ZoneMeanMs(const char* name) {
+    if (!Prof::gOn) return -1.0;
+    const auto it = gZones.find(name);
+    return it == gZones.end() || it->second.count == 0 ? -1.0 : it->second.sumNs / (double)it->second.count / 1e6;
 }
 
 std::string Profiler_SummaryJson() {

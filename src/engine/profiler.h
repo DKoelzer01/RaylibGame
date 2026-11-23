@@ -59,6 +59,7 @@ bool Profiler_On();
 void Profiler_Sample(const char* name, double ms);   // a time measured elsewhere (gputimer's passes), main thread
 void Profiler_Counter(const char* name, double v);   // a named number once a frame (bricks awake, bytes sent), main thread
 void Profiler_Reset();                   // forget everything so far (a timed window starts; main thread)
+double Profiler_ZoneMeanMs(const char* name); // the mean of a zone since the last reset (gputimer passes are "cpu:NAME" and "gpu:NAME"); -1 when unseen
 std::string Profiler_SummaryJson();      // "" when off or nothing was recorded
 // (#886) Play sessions (RAYLIBGAME_PROFILE=1 outside a scenario): each hitch stamped with the game time and a short note of
 // what was going on; how many hitches to keep (200; a long session: more); and the summary written on quit as

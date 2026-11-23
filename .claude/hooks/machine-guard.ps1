@@ -19,6 +19,9 @@ try {
 
     $runs = $cmd -match '(?i)(^|[\s;&|("''/\\])(\.[/\\])?([\w.:/\\-]*[/\\])?game(_tests)?(\.exe)?(\s|$|"|'')' -or $cmd -match '(?i)(^|[\s;&|(])ctest(\s|$)'
     $builds = $cmd -match '(?i)cmake(\.exe)?"?\s+--build'
+    # (2026-11-23 incident) Direct compiler / build-tool calls and running a program out of a build folder count as
+    # builds too, so a refused cmake build can't be worked around during someone else's quiet window.
+    $builds = $builds -or $cmd -match '(?i)(^|[\s;&|("''/\\])(g\+\+|gcc|c\+\+|clang\+\+|clang|cc|ninja|make|mingw32-make)(\.exe)?(\s|$|")' -or $cmd -match '(?i)build[/\\][^\s"'']*\.exe'
     if (-not ($runs -or $builds)) { exit 0 }
 
     $slot = Join-Path $PSScriptRoot '../../tools/slot.sh' # this checkout's slot tool (CLAUDE_PROJECT_DIR may not be the worktree)
