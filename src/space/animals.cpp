@@ -1048,7 +1048,7 @@ struct MoveReq {
     const Planetoid* body = nullptr; const PlanetField* field = nullptr;
     Vector3 east{}, north{}, curPos{}; DVec3 pos{};
     float stepLen = 0.0f, height = 0.0f, reachUp = 0.0f, reachDown = 0.0f, speed = 0.0f, step = 0.0f, heading = 0.0f, detourSide = 0.0f, sizeX = 0.0f;
-    bool leashed = false, outside = false, steer = false;
+    bool leashed = false, outside = false, steer = false, closeHunt = false; // closeHunt (#1717): sidesteps only, no flip
     Vector3 goalPt{};
     uint32_t rng = 1;
 };
@@ -1080,9 +1080,11 @@ void ProbeMove(const MoveReq& r, MoveRes& o) {
     float side0 = r.detourSide;
     if (side0 == 0.0f) side0 = Rand01(rng) < 0.5f ? 1.0f : -1.0f;
     o.detourSideInit = side0; o.rngAfter = rng;
-    for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+    for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f }) {
+        if (r.closeHunt && turn > 1.05f) break; // (#1717) close in on its prey: sidesteps only
         for (float side : { side0, -side0 })
             if (!o.detourOk && ProbeStep(r, r.heading + side * turn, o.atD, o.nextD)) { o.detourOk = true; o.detourTurn = turn; o.detourSide = side; }
+    }
 }
 // Work items 0..n-1 on the main thread and up to 6 pool workers: the main thread takes items too, so it never waits on a
 // worker still busy with a chunk build, only on items already started. Late helpers find nothing left and return.
@@ -1243,6 +1245,8 @@ const std::string& Animals_Ore(int i) { static const std::string none; return i 
 bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
 void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
 void Animals_TestProvokeAll() { for (Animal& a : animals) { a.hurtPending = true; a.hurtBy = kPlayerPercept; a.angryUntil = simClock + 30.0; } } // (#1649)
+float Animals_Heading(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].heading : 0.0f; } // (#1717)
+void Animals_TestSetHeading(int i, float h) { if (i >= 0 && i < (int)animals.size()) { animals[i].heading = animals[i].prevHeading = h; } } // (#1717)
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
@@ -1904,6 +1908,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 }
             }
         }
+        // (#1717) Close in on its prey (the turn-rate rule's case): the detours and the stuck rule turned it up to ~180 degrees at
+        // once, past the rule; it then turned back at 180 deg/s, met the same obstacle and flipped again (the user: "turning
+        // slowly one way, flipping 180, turning back"). Close in it only sidesteps (up to ~57 degrees) or stands facing its prey.
+        static const bool closeHuntOn = !(getenv("RAYLIBGAME_CLOSE_HUNT") && getenv("RAYLIBGAME_CLOSE_HUNT")[0] == '0'); // A/B: 0 the old turns
+        const bool closeHunt = closeHuntOn && cs && CreatureTurnRules() && (CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f;
         if (cs && CreatureTurnRules()) {
             if ((CreatureTurnMask() & 1) && a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
             else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f) { // (close in, where getting behind it matters; beyond, it paths and turns freely: a thief at a distance missed its pile)
@@ -1932,7 +1941,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
         // side, turning as far as backing off - before aiming at the target again, so a pocket or a long ledge
         // doesn't trap it pushing straight into the same edge.
-        if (steer && a.detourTime > 0.0f) { a.detourTime -= step; a.heading = a.detourHeading; }
+        if (closeHunt) a.detourTime = 0.0f; // (#1717) no held detour close in: it turned it past the turn-rate rule
+        else if (steer && a.detourTime > 0.0f) { a.detourTime -= step; a.heading = a.detourHeading; }
         else if (a.detourTime > 0.0f) a.detourTime = 0.0f;
         // (#1650 slice 3) The step's probes run after this loop for every mover at once (pass 2), and what follows them in
         // the loop's order (pass 3, below the loop).
@@ -1940,7 +1950,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         mr.net = a.netId; mr.body = body; mr.field = field; mr.east = east; mr.north = north; mr.curPos = curPos; mr.pos = a.pos;
         mr.stepLen = stepLen; mr.height = height; mr.reachUp = reachUp; mr.reachDown = reachDown; mr.speed = speed; mr.step = step;
         mr.heading = a.heading; mr.detourSide = a.detourSide; mr.sizeX = s.size.x; mr.leashed = leashed; mr.outside = outside;
-        mr.steer = steer; mr.goalPt = goalPt; mr.rng = a.rng;
+        mr.steer = steer; mr.goalPt = goalPt; mr.rng = a.rng; mr.closeHunt = closeHunt;
         moveReqs.push_back(mr);
     }
     // (#1650 slice 3) Pass 2: the probes, in parallel.
@@ -2003,7 +2013,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             } else { // a plan turned it this frame: the detour from the new heading, here
                 if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
                 MoveReq turned = mr; turned.heading = a.heading;
-                for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+                for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f }) if (!mr.closeHunt || turn < 1.05f) // (#1717) sidesteps only close in
                     for (float side : { a.detourSide, -a.detourSide })
                         if (!ok && ProbeStep(turned, a.heading + side * turn, at, nextPos)) {
                             ok = true;
@@ -2023,6 +2033,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             // Blocked (water, a cliff, a wall): turn away; stuck a while, turn harder and pick a new activity.
             a.moveSpeed = 0.0f;
             a.stuckTime += step;
+            if (mr.closeHunt && a.stuckTime <= 4.0f) continue; // (#1717) close in on its prey: it stands facing it, no flip
             a.heading += PI * (0.6f + 0.6f * Rand01(a.rng)) * (a.stuckTime > 2.0f ? 1.5f : 1.0f);
             a.timer = 1.0f + Rand01(a.rng);
             if (a.stuckTime > 4.0f) { a.state = State::Graze; a.stuckTime = 0.0f; }
