@@ -1,11 +1,17 @@
 // build/multiblock-tank-parts (#1429 PR 2): the large tank's multiblock parts (bronze casings, a fluid in and a fluid out
 // hatch, the controller) and its glass walls placed layer by layer in a plot, the camera on them; then the structure
-// validates against multiblocks.txt through PartItem (the parts carry their catalog index in Part::material).
+// validates against multiblocks.txt through PartItem (the parts carry their catalog index in Part::material). (PR 3) The
+// wrench on the controller forms it; breaking a casing unforms it.
 #include "scenario.h"
+#include "buildtool.h"
+#include "hotbar.h"
+#include "inventory.h"
 #include "multiblock.h"
 #include "player.h"
+#include "playerinput.h"
 #include "plots.h"
 #include "world.h"
+#include <algorithm>
 #include <raymath.h>
 #include <string>
 
@@ -78,5 +84,44 @@ SCENARIO("build/multiblock-tank-parts") {
         const Vector3 up = Vector3Normalize(Vector3Subtract(At(0, 1, 0), At(0, 0, 0)));
         c.camera(At(base.x + 4.5f, base.y + 3.5f, base.z + 6.0f), At(base.x + 1.5f, base.y + 1.2f, base.z + 1.5f), up);
         return c.t > 1.5; // (hold the view for the capture)
+    });
+    // (#1429 PR 3) The wrench forms it, as a player does: the camera 2 m in front of the controller and looking at it (the
+    // machine aim casts from the camera), the wrench in the hand, one RMB through Machine_Update.
+    s.step("RMB with the wrench on the controller forms it", 10.0, [](ScenarioCtx& c) {
+        const MbDef* d = Multiblock_All().find("large_tank");
+        const Int3 ctl{ base.x + d->controller.x, base.y + d->controller.y, base.z + d->controller.z };
+        const int idx = plot->partAt(ctl);
+        if (!c.check("a part at the controller's cell", idx >= 0)) return true;
+        const Vector3 up = Vector3Normalize(Vector3Subtract(At(0, 1, 0), At(0, 0, 0)));
+        const Vector3 face = At(ctl.x + 0.5f, ctl.y + 0.5f, ctl.z + 0.5f);
+        c.camera(At(ctl.x + 0.5f, ctl.y + 1.5f, ctl.z + 4.5f), face, up);
+        static bool pressed = false;
+        if (c.t < 0.05) pressed = false;
+        if (c.t < 0.8) return false; // (the controller in view first)
+        if (!pressed) {
+            pressed = true;
+            c.check("not formed before the wrench", !std::binary_search(plot->formed.begin(), plot->formed.end(), idx));
+            if (inventory.count("wrench") <= 0) inventory.add("wrench", 1);
+            Hotbar_Bind(0, "wrench");
+            Hotbar_Press(0, false);
+            PlayerInput in; in.press(Act::Secondary);
+            player.flyMode = false; // (Machine_Update aims only on foot; c.camera flies the player to the eye)
+            Machine_Update(c.world, in);
+            player.flyMode = true;
+            c.check("formed by the wrench", std::binary_search(plot->formed.begin(), plot->formed.end(), idx));
+        }
+        return c.t > 2.5; // (hold the view)
+    });
+    s.step("breaking a casing unforms it", 10.0, [](ScenarioCtx& c) {
+        const MbDef* d = Multiblock_All().find("large_tank");
+        const Int3 ctl{ base.x + d->controller.x, base.y + d->controller.y, base.z + d->controller.z };
+        const int idx = plot->partAt(ctl);
+        const int casing = plot->partAt({ base.x, base.y, base.z }); // (a corner casing of the bottom layer)
+        if (!c.check("a casing at the corner", casing >= 0 && casing != idx)) return true;
+        plot->remove(casing);
+        const std::vector<int> dropped = Multiblock_Recheck(*plot);
+        c.eq("the controller unformed (the one structure dropped)", (int)dropped.size(), 1);
+        c.check("formed list empty", plot->formed.empty());
+        return true;
     });
 }
