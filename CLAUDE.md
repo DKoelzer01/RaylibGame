@@ -33,6 +33,8 @@ test; add a line when something goes wrong).
   <what>` (run it in the background; it queues you and returns "GO" when the machine is yours), run, then
   `tools/slot.sh free`. A PreToolUse hook refuses game/test runs without the slot. `tools/slot.sh status` shows the
   holder and the queue. At most 15 minutes a hold; batch your runs into one request.
+- **One run at a time, subagents included:** a subagent shares its session's slot, so the guard also refuses a game/test
+  launch while another run is going. A run that needs a host and a client together puts `SLOT_PARALLEL=1` in the command.
 - **quiet** = nobody else compiles or runs (timing, A/B, screenshots). During someone else's quiet window builds are
   refused: `tools/slot.sh wait-quiet` blocks until it ends. Never take a slot while the user playtests (the coordinator
   holds it as `playtest`).
