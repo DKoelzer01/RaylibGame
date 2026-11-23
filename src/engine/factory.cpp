@@ -2859,6 +2859,8 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     const int motor = add(PartType::Motor, { 3, 0, 10 });
     add(PartType::Shaft, { 5, 0, 10 }, xAxis);
     const int press2 = add(PartType::Press, { 6, 0, 10 });
+    add(PartType::Shaft, { 8, 0, 10 }, xAxis);
+    const int lathe = add(PartType::Lathe, { 9, 0, 10 }); // (#1614) on the same line, after the press
     ApplyLayout(L);
     PlotSim& ps = *FindPlot(7, 90);
     auto M = [&](int p) -> Machine& { return ps.machines[ps.byPart.at(p)]; };
@@ -2869,6 +2871,7 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     InsertInto(M(furnace), tables.item("iron_ore"), 8, false, buckets);
     InsertInto(M(gen), tables.item("coal"), 16, true, buckets);
     InsertInto(M(press2), tables.item("iron_ingot"), 8, false, buckets);
+    InsertInto(M(lathe), tables.item("iron_ingot"), 8, false, buckets);
     EXPECT_EQ(M(engine).boiler, ps.byPart.at(boiler)) << "the engine finds the boiler it touches";
     long long made = 0; int active = 0;
     bool engineTurned = false, dynamoWorked = false, motorTurned = false;
@@ -2882,6 +2885,7 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     EXPECT_TRUE(dynamoWorked) << "the dynamo made EU for the furnace";
     EXPECT_TRUE(motorTurned) << "the generator's EU turned the motor";
     EXPECT_GT(CountItems(M(press).out, kSlots, tables.item("iron_plate")), 0) << "the steam-driven press pressed plates";
+    EXPECT_GE(CountItems(M(lathe).out, kSlots, tables.item("iron_rod")), 3) << "(#1614) the lathe on the motor's shaft turned an ingot into 3 rods";
     EXPECT_GT(CountItems(M(furnace).out, kSlots, tables.item("iron_ingot")), 0) << "the dynamo-powered furnace smelted";
     EXPECT_GT(CountItems(M(press2).out, kSlots, tables.item("iron_plate")), 0) << "the motor-driven press pressed plates";
 }

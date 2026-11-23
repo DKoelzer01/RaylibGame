@@ -36,6 +36,8 @@ mass_driver     | 2048 | eu       | 0  |
 millstone        | 0 | rotation | 0 |
 mechanical_saw   | 0 | rotation | 0 |
 mechanical_press | 0 | rotation | 0 |
+lathe            | 0 | rotation | 0 |
+wiremill         | 0 | rotation | 0 |
 # (#1271 L3) steam: a boiler making steam (EU per tick = its steam at full heat) for the steam engines touching it; engine: a
 # steam engine (rotation from that steam); dynamo: rotation into EU at its voltage; motor: EU into rotation.
 steam_engine     | 0  | engine | 0  |

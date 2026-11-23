@@ -67,12 +67,13 @@ enum class PartType : uint8_t {
     SteamAssembler,                                                  // (#1271 L6b-2) makes steam packs on a shaft (the branch node "steam assembler")
     LvAssembler,                                                     // (#1271 L6c) the electric assembler: circuits and research packs (a disassembly mode comes with #1427)
     Compressor, Cutter,                                              // (#1427 L7e) LV successors of the press (plates) and the saw (planks)
+    Lathe, Wiremill,                                                 // (#1614) steam-age component machines on a shaft: rods and screws; wire and springs
     Count
 };
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };
-inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo || (t >= PartType::Distillery && t <= PartType::Cauldron) || (t >= PartType::SteamEngine && t <= PartType::SteamLab) || (t >= PartType::Bloomery && t <= PartType::Cutter); }
+inline bool IsMachine(PartType t) { return (t >= PartType::Chest && t <= PartType::SteamMacerator) || (t >= PartType::OreWasher && t <= PartType::PrecisionAssembler) || t == PartType::FusionReactor || t == PartType::MassDriver || (t >= PartType::Millstone && t <= PartType::Press) || (t >= PartType::LvLab && t <= PartType::HvLab) || t == PartType::ManaSiphon || t == PartType::ManaDynamo || (t >= PartType::Distillery && t <= PartType::Cauldron) || (t >= PartType::SteamEngine && t <= PartType::SteamLab) || (t >= PartType::Bloomery && t <= PartType::Wiremill); }
 // (#1269) a part of a rotation network (transmission, source, gauge or a rotation-driven machine)
 inline bool IsRotationPart(PartType t) { return (t >= PartType::Shaft && t <= PartType::Windmill) || (t >= PartType::SteamEngine && t <= PartType::SteamLab) || t == PartType::Bellows || t == PartType::SteamAssembler; }
 // (#1269) drawn turning by the rotation models, not in the plot's static mesh (its cell still collides and is hit)
