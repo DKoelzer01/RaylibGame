@@ -996,6 +996,9 @@ bool CavePopulation(int si) {
     return c && (c->habitat == Habitat::Cave || c->habitat == Habitat::Mouth);
 }
 ChunkId HomeChunk(const Animal& a) { return ChunkOf(a.hasHome ? a.home : a.pos.toFloat(), a.species); }
+// (#1740) The cave-creature lifecycle (user rules): spawn only for an underground player, 24-64 m away, unseen, dark; gone home
+// past 96 m and back one at a time; ordinary cave creatures not saved. RAYLIBGAME_CAVE_LIFECYCLE=0: the rules before (A/B).
+bool CaveLifecycleOn() { static const bool on = !(getenv("RAYLIBGAME_CAVE_LIFECYCLE") && getenv("RAYLIBGAME_CAVE_LIFECYCLE")[0] == '0'); return on; }
 // (#1717) RAYLIBGAME_CAVE_SETTLE=0: the old settle (a cave creature off its feet could be put on the surface; A/B)
 bool CaveSettleFix() { static const bool on = !(getenv("RAYLIBGAME_CAVE_SETTLE") && getenv("RAYLIBGAME_CAVE_SETTLE")[0] == '0'); return on; }
 namespace PopTune {
@@ -1137,11 +1140,17 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c });
         }
     if (kinds.empty()) return;
+    // (#1740, user rules) Only for a player who is underground (rock over their head): walking the surface over caves spawned
+    // creatures 200 m down that nobody met, simulated and saved. Sites 24-64 m away in 3D, out of the player's sight, dark.
+    if (CaveLifecycleOn() && OpenSkyOver(body, Vector3Add(player, Vector3Scale(Vector3Normalize(player), 1.6f)))) return;
     const float R = SpawnTune::kChunk;
-    // Within 64 m sideways of the player, down to 200 m under them (caves run deep under a surface player) and 30 m over.
-    const float kDown = 200.0f, kUp = 30.0f;
+    // Within 64 m sideways of the player, down to 200 m under them (caves run deep under a surface player) and 30 m over;
+    // (#1740) within 64 m in 3D.
+    const float kDown = CaveLifecycleOn() ? SpawnTune::kMaxFromPlayer : 200.0f, kUp = CaveLifecycleOn() ? SpawnTune::kMaxFromPlayer : 30.0f;
     const Vector3 cu = Vector3Normalize(centre);
     const Vector3 lo = Vector3SubtractValue(centre, kDown), hi = Vector3AddValue(centre, kDown);
+    const Vector3 eye = Vector3Add(player, Vector3Scale(Vector3Normalize(player), 1.6f));
+    int nSeen = 0, nLit = 0;
     std::vector<PlanetField::CaveSpan> spans;
     std::vector<PlanetField::CaveEntrance> ents;
     f.caveSpansNear(lo, hi, spans);
@@ -1167,6 +1176,17 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             }
             if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) { ++nNoFloor; continue; } // no headroom
             if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) { ++nNear; continue; }
+            if (CaveLifecycleOn()) { // (#1740)
+                if (Vector3Distance(floor, player) > SpawnTune::kMaxFromPlayer) { ++nFar; continue; }
+                Vector3 lit{};
+                if (NearFire(floor, SpawnTune::kDarkFromLight, lit)) { ++nLit; continue; } // interim darkness: no fire, lamp or carried light near
+                // Out of the player's sight: rock somewhere on the line from their eye to the site (1 m steps).
+                const Vector3 at = Vector3Add(floor, Vector3Scale(up, 1.0f));
+                const float len = Vector3Distance(eye, at);
+                bool hidden = false;
+                for (float t = 1.0f; t < len - 0.5f && !hidden; t += 1.0f) hidden = body.densityAt(Vector3Lerp(eye, at, t / len)) >= ISO_LEVEL;
+                if (!hidden) { ++nSeen; continue; }
+            }
             if (Claims_At(body.name, floor)) { ++nClaim; continue; } // never inside claimed land
             SpawnSite s;
             s.floor = floor; s.up = up; s.kind = sp.kind; s.radius = r;
@@ -1186,7 +1206,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         }
     }
     caveSites = (int)sites.size();
-    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d (%d under open sky)\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites, nSky);
+    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d (%d under open sky), seen %d, lit %d\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites, nSky, nSeen, nLit);
     if (sites.empty()) return;
     const int nestSi = SpeciesIndex("creature_nest");
     const double now = SimTime();
@@ -1488,9 +1508,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) if (t.body == body) { const float d = Vector3Distance(a.pos.toFloat(), t.local); if (d < pdist) { pdist = d; tg = &t; } }
         const bool sameBody = tg != nullptr;
         const Vector3 tgLocal = tg ? tg->local : Vector3{};
-        if (dist > PopTune::kReleaseRange && CavePopulation(a.species) && naturalSpawns) { // (#1633) far from every player: let go
+        const bool lifecycle = CaveLifecycleOn();
+        if (dist > (lifecycle ? SpawnTune::kReleaseRange : PopTune::kReleaseRange) && CavePopulation(a.species) && (naturalSpawns || (lifecycle && a.hasHome)) &&
+            !(lifecycle && s.id == "creature_nest")) { // (#1633) far from every player: let go; (#1740) past 96 m, nests stay (guardians)
             auto ch = spawnChunks.find(HomeChunk(a));
-            if (ch != spawnChunks.end() && !ch->second.nestDestroyed) ch->second.filled = false; // the next visit fills it again
+            if (ch != spawnChunks.end() && !ch->second.nestDestroyed) {
+                if (lifecycle) { if (ch->second.returned++ == 0) ch->second.returnAt = SimTime() + SpawnTune::kReturnEvery; } // (#1740) gone home: back one at a time
+                else ch->second.filled = false; // the next visit fills it again
+            }
             gone.push_back((int)i);
             continue;
         }
@@ -2660,6 +2685,9 @@ void Animals_DrawHUD() {
 
 void Animals_Save(FILE* f) {
     for (const Animal& a : animals) {
+        // (#1740) ordinary cave creatures are not kept: the rules spawn them again where a player goes underground. Nests stay
+        // (guardians); tamed, named and boss creatures will be kept when those exist (none are cave species today).
+        if (CaveLifecycleOn() && CavePopulation(a.species) && species[a.species].id != "creature_nest") continue;
         fprintf(f, "animal %s %s %f %f %f %f %f %f %d %.2f %.2f\n", species[a.species].id.c_str(), a.body.c_str(), a.pos.x, a.pos.y, a.pos.z,
                 a.heading, a.health, a.age, a.fed ? 1 : 0, a.lastBred, a.productReady);
         fprintf(f, "animal_id %llu\n", (unsigned long long)a.netId); // its own line: older builds skip it (#317)
