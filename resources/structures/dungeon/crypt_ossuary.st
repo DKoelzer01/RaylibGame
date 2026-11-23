@@ -9,5 +9,5 @@ fill slab 2 1 2 2 1 9 oak_planks
 fill slab 2 3 2 2 3 9 oak_planks
 fill slab 7 1 2 7 1 9 oak_planks
 fill slab 7 3 2 7 3 9 oak_planks
-part cube 3 0 2 0 granite_brick
-part cube 6 0 9 0 granite_brick
+part cube 3 0 2 0 stone_brick
+part cube 6 0 9 0 stone_brick

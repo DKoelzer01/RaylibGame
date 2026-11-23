@@ -4,7 +4,7 @@ kind room
 theme crypt
 weight 1
 room 16 12
-fill block 3 0 3 4 3 4 granite_brick
-fill block 11 0 3 12 3 4 granite_brick
-fill block 3 0 7 4 3 8 granite_brick
-fill block 11 0 7 12 3 8 granite_brick
+fill block 3 0 3 4 3 4 stone_brick
+fill block 11 0 3 12 3 4 stone_brick
+fill block 3 0 7 4 3 8 stone_brick
+fill block 11 0 7 12 3 8 stone_brick
