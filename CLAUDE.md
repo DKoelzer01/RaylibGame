@@ -76,8 +76,12 @@ test; add a line when something goes wrong).
   memory: wrong numbers cost a correction round each. Messages to the coordinator: the number + one line.
 - Feature sessions never merge, delete branches, push to main/develop or force-push (not even a fresh branch). Update a
   branch by merging its base in.
-- The coordinator merges: reviewed PRs into m84/ladder get GitHub auto-merge on "CI ok" (#1481); a PR whose evidence is
-  a new runner scenario waits for that run. m84 -> develop -> main and ladder -> m84 need the user's OK after a playtest.
+- **Merge bot (#1744, deweyserver `mergebot`):** when your PR into m84/ladder is done (tests, evidence, not a draft), label
+  it `ready`; the bot turns on auto-merge (merges on "CI ok"). Add `runner-evidence` too when the evidence is a runner
+  scenario: the bot waits for a passing `selfhosted.yml` run on the PR's head SHA (known failures allowed) - start that
+  run yourself. CI red or conflicts on a `ready` PR reach the board inbox once per head SHA; fix and push. It also
+  retargets a stacked PR after its base merges. The coordinator keeps m84 -> develop -> main and ladder -> m84 (the
+  user's OK after a playtest).
 - Quote a commit hash only after git printed it; never `reset --soft` onto a moved origin tip; check `git diff --stat`
   before pushing a shared branch. Worktree sessions refuse compound git commands: one per call, or a script under build/.
 - Commit trailers: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and `Claude-Session: <session link>`; PR
