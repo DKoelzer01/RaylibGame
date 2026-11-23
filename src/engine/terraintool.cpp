@@ -612,6 +612,8 @@ static Color DustColor(VoxelMaterial m) {
         case VoxelMaterial::Sandstone: return { 212, 182, 132, 255 };
         case VoxelMaterial::Limestone: return { 206, 202, 186, 255 };
         case VoxelMaterial::Marble: return { 236, 234, 230, 255 };
+        case VoxelMaterial::Ash: return { 70, 66, 64, 255 };    // (#1591) volcanic ash
+        case VoxelMaterial::Lava: return { 150, 52, 20, 255 };  // (#1591) a crater's glowing crust
         default: return { 128, 126, 124, 255 };
     }
 }

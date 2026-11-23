@@ -49,6 +49,8 @@ const char* VoxelMaterialName(VoxelMaterial m) {
         case VoxelMaterial::Silt: return "silt";
         case VoxelMaterial::Mud: return "mud";
         case VoxelMaterial::Farmland: return "farmland";
+        case VoxelMaterial::Ash: return "ash";   // #1591
+        case VoxelMaterial::Lava: return "lava"; // #1591: the glowing crust on a crater floor
         default: return "?";
     }
 }
@@ -2656,8 +2658,10 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
     // Bare rock is its stratum's (#587): granite, basalt, sandstone, limestone, marble, or plain (soft) rock.
     auto rockHere = [&] { return RockMaterialOf(rockTypeAt(p)); };
     if (depth < -15.0f) return Vector3DotProduct(normal, up) > 0.35f ? VoxelMaterial::Grass : rockHere(); // floating islands: turf on top, rock beneath
-    // Outcrops and boulders are bare rock (snow still caps them up high, below).
-    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return rockHere();
+    // (#1591) How far up a volcano this is (0 off one, 1 at the vent); only the surface asks
+    const float vw = depth < 2.5f + slack && gen.volcanoes ? volcanoWeight(p) : 0.0f;
+    // Outcrops and boulders are bare rock (snow still caps them up high, below); a volcano's upper cone has its own ground.
+    if (depth < 2.5f + slack && surfaceElevation < 1050.0f && vw <= 0.5f && rockFeature(p, d, radius + surfaceElevation, fp) > -0.35f) return rockHere();
     if (depth < 2.5f + slack) {
         // Surface biome from height above sea level, latitude, slope and a climate wobble. The top
         // ~0.6 m is the surface material; below it a soil layer (dirt under grass, sand under sand,
@@ -2675,8 +2679,19 @@ VoxelMaterial PlanetField::materialSkyHinted(Vector3 p, float base, float fp, Ve
         pole = pl > 1e-4f ? Vector3Scale(pole, (up.y >= 0.0f ? 1.0f : -1.0f) / pl) : Vector3{ 0, 0, 0 };
         const float shade = std::clamp(Vector3DotProduct(normal, pole) * 3.0f, -1.0f, 1.0f); // +1 facing the pole
         const float ragged = 45.0f * climate.fractal(2, p.x * 25.0f, p.y * 25.0f, p.z * 25.0f);
-        const float snowLine = 1050.0f + 150.0f * wobble - 120.0f * shade + std::min(300.0f, 900.0f * slope) + ragged;
+        // (#1591) A volcano's heat keeps its upper cone bare: the snow line climbs toward the vent (w 0 at the foot, 1 at the
+        // vent), so the cone stands dark above a snowy skirt. GUESS values.
+        const float snowLine = 1050.0f + 150.0f * wobble - 120.0f * shade + std::min(300.0f, 900.0f * slope) + ragged
+                             + 3000.0f * std::clamp((vw - 0.4f) / 0.4f, 0.0f, 1.0f);
         if (lat > 0.93f + 0.03f * wobble) return VoxelMaterial::Ice;                                         // polar cap
+        if (vw > 0.5f) {
+            // (#1591) Volcanic ground: the crater floor's level patches a glowing lava crust (walkable, hot); ash and scoria
+            // round the vent; basalt flanks with ash drifts lower down. Basalt under the skin.
+            const float patch = climate.fractal(2, p.x * 6.0f + 91.0f, p.y * 6.0f, p.z * 6.0f);
+            if (vw > 0.94f && slope < 0.2f && patch > -0.1f) return skin ? VoxelMaterial::Lava : VoxelMaterial::Basalt;
+            if (vw > 0.78f) return skin ? VoxelMaterial::Ash : VoxelMaterial::Basalt;
+            if (e < snowLine) return skin && patch > 0.25f ? VoxelMaterial::Ash : VoxelMaterial::Basalt;
+        }
         if (e > snowLine + 250.0f && slope < 0.06f && shade > -0.2f) return VoxelMaterial::Ice;              // cold hollows
         if (lat > 0.82f + 0.08f * wobble + 0.02f * ragged / 45.0f || e > snowLine) return skin ? VoxelMaterial::Snow : rockHere(); // rock under the snow (ice only in the hollows)
         // Inland water (#609, playtest 8: "rivers should replace existing terrain materials in the shape that already exists"):
@@ -3698,10 +3713,12 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 // their nearest (clay as dirt).
                 const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
                              : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland) ? (int)VoxelMaterial::Regolith
+                             : m == VoxelMaterial::Ash ? (int)VoxelMaterial::Gravel : m == VoxelMaterial::Lava ? (int)VoxelMaterial::Rock    // (#1591) ash as gravel, lava crust as rock
                              : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
-                else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
+                else if (mi < 8) out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
+                else out.colors[v * 4 + (int)VoxelMaterial::Rock] = 255; // (#1591) a material not mapped above: as rock, never past the 8 channels (it overran the buffer)
             }
             out.indices.assign(idx.begin(), idx.end());
         }
@@ -3956,5 +3973,51 @@ TEST(Voxel, UnhintedVertexDepthMatchesTheHintedNeighbour) {
         EXPECT_NEAR(unhinted, hinted, 0.05f) << "an unhinted block's vertex depth must match its hinted neighbour's";
         EXPECT_GT(VertexDepth(&f, false, 0.0f, p, 1.0f, false), 1e8f); // the A/B switch keeps the old 1e9
     }
+}
+
+// (#1591) A volcano's surface is its own, not the climate's snow: lava crust or ash at the vent, ash round it, basalt (or
+// ash drifts) on the upper flanks; never snow or ice on the upper cone, however high it stands.
+TEST(Voxel, AVolcanoHasAshAndLavaNotSnow) {
+    PlanetField f(42u, 60000.0f, false);
+    Vector3 vent{};
+    float best = 0.0f;
+    for (int i = 0; i < 60000 && best < 0.985f; ++i) { // a Fibonacci sphere, ~0.5 km apart
+        const float y = 1.0f - 2.0f * (i + 0.5f) / 60000.0f, r = sqrtf(1.0f - y * y), a = 2.39996323f * i;
+        const Vector3 d = { r * cosf(a), y, r * sinf(a) };
+        const float w = f.volcanoWeight(Vector3Scale(d, f.radius));
+        if (w > best) { best = w; vent = d; }
+    }
+    if (best < 0.9f) GTEST_SKIP() << "no volcano found on this planet";
+    // Walk outward from the vent; at each weight band, the surface's skin
+    auto skinAt = [&](Vector3 d, float& w) {
+        w = f.volcanoWeight(Vector3Scale(d, f.radius));
+        // The real surface (the 3D band moves it off the height map on steep crater walls): down to the first solid
+        float h = f.radius + f.elevation(d, 0.0f) + 30.0f;
+        for (int k = 0; k < 600 && f.baseDensity(Vector3Scale(d, h)) < ISO_LEVEL; ++k) h -= 0.1f;
+        const Vector3 p = Vector3Scale(d, h - 0.15f);
+        float sky = 0.0f;
+        return f.materialSky(p, 0.0f, 0.0f, d, sky);
+    };
+    const Vector3 t = Vector3Normalize(Vector3CrossProduct(vent, { 0, 1, 0 }));
+    int lavaOrAsh = 0, flank = 0, upper = 0, nearVent = 0, nearAsh = 0;
+    for (float km = 0.0f; km < 6.0f; km += 0.05f) {
+        const Vector3 d = Vector3Normalize(Vector3Add(vent, Vector3Scale(t, km * 1000.0f / f.radius)));
+        float w = 0.0f;
+        const VoxelMaterial m = skinAt(d, w);
+        if (w > 0.6f) {
+            ++upper;
+            EXPECT_NE(m, VoxelMaterial::Snow) << "w " << w << " at " << km << " km: heat keeps the upper cone bare";
+            EXPECT_NE(m, VoxelMaterial::Ice) << "w " << w;
+        }
+        if (w > 0.94f) lavaOrAsh += (m == VoxelMaterial::Lava || m == VoxelMaterial::Ash || m == VoxelMaterial::Basalt);
+        else if (w > 0.78f) { ++nearVent; nearAsh += (m == VoxelMaterial::Ash || m == VoxelMaterial::Lava); } // (carved walls there: basalt)
+        else if (w > 0.55f && (m == VoxelMaterial::Basalt || m == VoxelMaterial::Ash)) ++flank;
+    }
+    EXPECT_GT(upper, 5);
+    ASSERT_GT(nearVent, 3);
+    EXPECT_GE(nearAsh * 10, nearVent * 7) << nearAsh << " of " << nearVent << " near the vent ash or lava (the rest: carved walls, basalt)";
+    EXPECT_GT(flank, 0) << "basalt or ash on the upper flanks";
+    EXPECT_EQ(std::string(VoxelMaterialName(VoxelMaterial::Lava)), "lava");
+    EXPECT_EQ(std::string(VoxelMaterialName(VoxelMaterial::Ash)), "ash");
 }
 #endif

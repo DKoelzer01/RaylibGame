@@ -24,7 +24,7 @@ StepSurface StepSurfaceOfVoxel(VoxelMaterial m) {
     switch (m) {
         case VoxelMaterial::Grass: return StepSurface::Grass;
         case VoxelMaterial::Sand: return StepSurface::Sand;
-        case VoxelMaterial::Gravel: case VoxelMaterial::Pebbles: case VoxelMaterial::Regolith: return StepSurface::Gravel;
+        case VoxelMaterial::Gravel: case VoxelMaterial::Pebbles: case VoxelMaterial::Regolith: case VoxelMaterial::Ash: return StepSurface::Gravel;
         case VoxelMaterial::Snow: return StepSurface::Snow;
         case VoxelMaterial::Clay: case VoxelMaterial::Silt: case VoxelMaterial::Mud: case VoxelMaterial::Farmland: return StepSurface::Dirt;
         default: return StepSurface::Stone; // rock and its strata, ore, ice

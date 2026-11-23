@@ -675,6 +675,12 @@ void Scene::drawScene(int gamestate) {
                                  atmosphere.enabled && !underwater ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
         SetShaderValue(s, locFogShell, shell, SHADER_UNIFORM_VEC4);
     }
+    { // (#1591) the game clock for the lava crust's pulse (looked up per shader: it hot-reloads)
+        static unsigned int timeFor = 0; static int locTime = -1;
+        if (timeFor != s.id) { timeFor = s.id; locTime = GetShaderLocation(s, "time"); }
+        const float now = (float)fmod(GameClock(), 3600.0);
+        if (locTime >= 0) SetShaderValue(s, locTime, &now, SHADER_UNIFORM_FLOAT);
+    }
     // Hemisphere ambient (#130): the local up at the camera, or zero (off: flat ambient; RAYLIBGAME_HEMI=0 for A/B).
     static const bool hemiOff = getenv("RAYLIBGAME_HEMI") && getenv("RAYLIBGAME_HEMI")[0] == '0';
     const Vector3 hemiUp = atmosphere.enabled && !hemiOff ? atmUp : Vector3{ 0, 0, 0 };
