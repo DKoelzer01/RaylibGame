@@ -9,6 +9,7 @@
 #include "combat.h"
 #include "melee.h"
 #include "creatures.h" // (#1223)
+#include "subtitles.h" // (#1635) the telegraph captions
 #include "profiler.h" // (#1649) zones in the update
 #include "footsteps.h" // (#1240) step noise for creature hearing
 #include "avatar.h" // (#1225) humanoid creatures
@@ -126,6 +127,10 @@ void LoadSpecies() {
         species.push_back(s);
     }
     fclose(f);
+    // (#1635) A creature's telegraph sound is captioned with its own wind-up ("Lost miner raises its pick").
+    for (const Species& s : species)
+        if (const CreatureSpec* cs = Creature_Spec(s.id); cs && !cs->sayWindup.empty())
+            Subtitles_SetCaption(cs->sounds[(int)CreatureEvent::Telegraph], s.name + " " + cs->sayWindup, true);
 }
 int SpeciesIndex(const std::string& id) { LoadSpecies(); for (size_t i = 0; i < species.size(); ++i) if (species[i].id == id) return (int)i; return -1; }
 
@@ -1604,7 +1609,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 a.windUpAt = simClock; a.windUpHeading = a.heading; // (#1227) it faces this way until the strike
                 if (cs) FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                 if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
-                GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
+                const DVec3 at = body->toWorldD(DVec3(a.pos)); // (#1635) a caption, not a toast: "<name> raises its pick", with its direction
+                Subtitles_Event(s.name + " " + (cs && !cs->sayWindup.empty() ? cs->sayWindup : std::string(s.night ? "lunges" : "lowers its head")), true, &at, Audio_GetListener()); } // (a remote player sees the wind-up in the animal's flags)
             }
             if (strike) {
                 a.windUpAt = -1.0;
@@ -1645,11 +1651,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                             Poise_Stagger(a.poise, PoiseTune::kParryStaggerTime);
                         }
                         Audio_Play(Sfx::Error, 0.7f, r.blocked ? 0.9f : 0.5f);
-                        GameUI_Toast(r.parried ? TextFormat("Parried! The %s staggers", s.name.c_str()) : r.dodged ? TextFormat("You dodge the %s", s.name.c_str())
-                                   : r.blocked ? TextFormat("You block the %s", s.name.c_str())
-                                               : TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
+                        if (r.parried || r.dodged || r.blocked) // what you did about it stays a toast
+                            GameUI_Toast(r.parried ? TextFormat("Parried! The %s staggers", s.name.c_str()) : r.dodged ? TextFormat("You dodge the %s", s.name.c_str()) : TextFormat("You block the %s", s.name.c_str()));
+                        else { // (#1635) the hit: a caption with its direction, not a toast
+                            const DVec3 at = body->toWorldD(DVec3(a.pos));
+                            Subtitles_Event(s.name + " " + (cs && !cs->sayHit.empty() ? cs->sayHit : std::string(s.night ? "bites you" : "hits you")), true, &at, Audio_GetListener());
+                        }
                     }
-                } else if (atPlayer && tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
+                } else if (atPlayer && tg->session == 0) { const DVec3 at = body->toWorldD(DVec3(a.pos)); Subtitles_Event(s.name + " misses", false, &at, Audio_GetListener()); } // (#1635)
             }
         } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;

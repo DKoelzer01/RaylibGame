@@ -103,6 +103,10 @@ struct CreatureSpec {
     // Sound names per event (sound_idle= ... sound_death=; empty: none). The audio side (#1246) maps names to sounds; this
     // framework only names them and raises Creature_Event.
     std::string sounds[5];
+    // (#1635) What the player reads: the wind-up ("raises its pick": "The Lost miner raises its pick!", also the caption of
+    // its telegraph sound) and the hit ("swings its pick into you"). say_windup= / say_hit= with '_' for spaces; empty: the
+    // generic lines.
+    std::string sayWindup, sayHit;
 };
 
 // "id | faction | key=value ..." (see creatures.txt). False with a reason on an unknown key or a bad value.
