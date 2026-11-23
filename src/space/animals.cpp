@@ -926,6 +926,24 @@ ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
 }
 
+// (#1633) Populations: a cave creature (cave or mouth habitat, and the nests) belongs to the chunk of its home, wherever it
+// has wandered (one that chased the player out was no longer counted, so its chunk spawned another every respawn: a save
+// gathered 294 around the spawn). Around each player a species also has an area budget, and creatures far from every
+// player are let go (their chunk fills again on the next visit).
+bool CavePopulation(int si) {
+    if (si < 0 || si >= (int)species.size()) return false;
+    if (species[si].id == "creature_nest") return true;
+    const CreatureSpec* c = Creature_Spec(species[si].id);
+    return c && (c->habitat == Habitat::Cave || c->habitat == Habitat::Mouth);
+}
+ChunkId HomeChunk(const Animal& a) { return ChunkOf(a.hasHome ? a.home : a.pos, a.species); }
+namespace PopTune {
+    constexpr float kAreaRange = 128.0f;  // the area budget's radius around a player (GUESS)
+    constexpr int kAreaPerSpecies = 8;    // at most this many of one cave species within it (GUESS: four chunks' worth)
+    constexpr float kReleaseRange = 320.0f; // farther than this from every player (past the 300 m simulation): let go
+}
+bool gPopulationCleanup = false; // set by a load: trim the loaded cave creatures once (Animals_Update)
+
 // (#1227) No rock within 40 m over a body-local point (2 m steps): under the open sky.
 // (#1227) The creature facing rules (wind-up holds facing, a turn rate, strikes only in front); RAYLIBGAME_CREATURE_TURN=0: off (A/B).
 static int CreatureTurnMask() { static const int m = getenv("RAYLIBGAME_CREATURE_TURN") ? atoi(getenv("RAYLIBGAME_CREATURE_TURN")) : 7; return m; } // bits: 1 the wind-up hold, 2 the turn rate, 4 strikes in front only
@@ -1021,15 +1039,22 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         for (const SpawnSite& s : sites) if (Spawn_Fits(c, s)) byChunk[ChunkOf(s.floor, si)].push_back(&s);
         for (auto& ck : byChunk) {
             SpawnChunk& ch = spawnChunks[ck.first];
-            int alive = 0;
-            for (const Animal& a : animals) if (a.species == si && a.body == body.name) { const ChunkId id = ChunkOf(a.pos, si); alive += !(id < ck.first) && !(ck.first < id); }
+            int alive = 0, inArea = 0;
+            for (const Animal& a : animals) {
+                if (a.species != si || a.body != body.name) continue;
+                const ChunkId id = HomeChunk(a); // (#1633) by its home, wherever it wandered
+                alive += !(id < ck.first) && !(ck.first < id);
+                inArea += Vector3Distance(a.pos, centre) < PopTune::kAreaRange ? 1 : 0;
+            }
             if (c.nests && nestSi >= 0) {
                 if (!ch.hasNest) // the nest in the chunk's large chamber (none without one)
                     for (const SpawnSite* s : ck.second)
                         if (s->kind == 3 && s->radius >= SpawnTune::kNestChamber) { ch.nest = SpawnAt(body, nestSi, s->floor, Hash((uint64_t)ck.first.x * 73856093u ^ (uint64_t)ck.first.z, 3u)); ch.hasNest = true; break; }
                 if (ch.hasNest && IndexOfNet(ch.nest) < 0) ch.nestDestroyed = true;
             }
-            const int due = Spawn_Due(c, ch, alive, now);
+            int due = Spawn_Due(c, ch, alive, now);
+            due = std::min(due, std::max(0, PopTune::kAreaPerSpecies - inArea)); // (#1633) the area budget around the player
+            inArea += due;
             uint32_t h = Hash(((uint64_t)(uint32_t)ck.first.x << 32) ^ (uint32_t)ck.first.y ^ ((uint64_t)ck.first.z << 16), (uint32_t)(now * 10.0) + (uint32_t)si);
             for (int k = 0; k < due;) {
                 const SpawnSite* s = ck.second[std::min((int)ck.second.size() - 1, (int)(Rand01(h) * ck.second.size()))];
@@ -1076,6 +1101,21 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     LoadSpecies();
     ++frameNo;
     simulatedNow = 0;
+    if (gPopulationCleanup && !gAnimalsReplicated) { // (#1633) once after a load: cave creatures from before homes were saved
+        gPopulationCleanup = false;                  // (wanderers with no way back) go, and each chunk keeps its cap
+        std::map<ChunkId, int> kept;
+        int dropped = 0;
+        for (size_t i = 0; i < animals.size();) {
+            const Animal& a = animals[i];
+            bool drop = false;
+            if (CavePopulation(a.species)) {
+                const CreatureSpec* c = Creature_Spec(species[a.species].id);
+                drop = !a.hasHome || ++kept[HomeChunk(a)] > (c ? c->capPerChunk : 1);
+            }
+            if (drop) { animals.erase(animals.begin() + (long)i); ++dropped; } else ++i;
+        }
+        if (dropped) { aimed = -1; printf("animals: let %d cave creatures go after the load (#1633: no home saved, or over their chunk's cap)\n", dropped); }
+    }
     for (Animal& a : animals) { a.prevPos = a.pos; a.prevHeading = a.heading; a.prevValid = true; } // the pose drawing blends from (#315)
     if (gAnimalsReplicated) { // #334: a client - the server runs the animals; each eases toward its latest state, nothing decides here
         const double now = GetTime();
@@ -1281,6 +1321,12 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) if (t.body == body) { const float d = Vector3Distance(a.pos, t.local); if (d < pdist) { pdist = d; tg = &t; } }
         const bool sameBody = tg != nullptr;
         const Vector3 tgLocal = tg ? tg->local : Vector3{};
+        if (dist > PopTune::kReleaseRange && CavePopulation(a.species) && naturalSpawns) { // (#1633) far from every player: let go
+            auto ch = spawnChunks.find(HomeChunk(a));
+            if (ch != spawnChunks.end() && !ch->second.nestDestroyed) ch->second.filled = false; // the next visit fills it again
+            gone.push_back((int)i);
+            continue;
+        }
         if (dist > 300.0f) continue;
         ++simulatedNow; a.simFrame = frameNo;
         float step = dt;
@@ -2330,6 +2376,7 @@ void Animals_Save(FILE* f) {
         fprintf(f, "animal %s %s %f %f %f %f %f %f %d %.2f %.2f\n", species[a.species].id.c_str(), a.body.c_str(), a.pos.x, a.pos.y, a.pos.z,
                 a.heading, a.health, a.age, a.fed ? 1 : 0, a.lastBred, a.productReady);
         fprintf(f, "animal_id %llu\n", (unsigned long long)a.netId); // its own line: older builds skip it (#317)
+        if (a.hasHome) fprintf(f, "animal_home %f %f %f\n", a.home.x, a.home.y, a.home.z); // (#1633) a cave creature's home (older builds skip it)
     }
     for (const auto& kv : spawnedTiles) {
         fprintf(f, "animal_tiles %s %zu", kv.first.c_str(), kv.second.size());
@@ -2360,6 +2407,7 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
                 a.netId = NetId_Allocate(NetKind::Animal); // a save from before #317; its "animal_id" line replaces it
                 animals.push_back(a);
                 lastLoaded = (int)animals.size() - 1;
+                gPopulationCleanup = true; // (#1633)
             } else lastLoaded = -1;
         }
         return true;
@@ -2370,6 +2418,11 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
             animals[lastLoaded].netId = (uint64_t)id;
             NetId_Note((uint64_t)id);
         }
+        return true;
+    }
+    if (strcmp(tok, "animal_home") == 0) { // (#1633)
+        Vector3 h{};
+        if (fscanf(f, " %f %f %f", &h.x, &h.y, &h.z) == 3 && lastLoaded >= 0 && lastLoaded < (int)animals.size()) { animals[lastLoaded].home = h; animals[lastLoaded].hasHome = true; }
         return true;
     }
     if (strcmp(tok, "animal_tiles") == 0) {

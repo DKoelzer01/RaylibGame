@@ -10403,6 +10403,7 @@ int main(int argc, char** argv)
                                ws.nodes, ws.preloadNodes, ws.cachedNodes, a.vertices / 1e6, a.vertexCapacity / 1e6, a.indices / 1e6, a.indexCapacity / 1e6, arenaMB,
                                Profiler_CommitMB(), Profiler_VramUsedMB());
                     }
+                    printf("bench: animals (#1633): %d (%d simulated)\n", Animals_Count(), Animals_SimulatedCount());
                     if (ws.waterBuilds || ws.waterFullBuilds)
                         printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
                                ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);
