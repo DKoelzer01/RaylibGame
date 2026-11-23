@@ -63,12 +63,17 @@ namespace {
         std::atomic<float> air[3] = { 1.0f, 1.0f, 1.0f };
         std::atomic<float> send{ 0.0f };    // (#1294) how much of the dry sound goes to the reverb
         uint64_t sendCursor = 0;            // audio thread: where its next block lands in the send ring
+        // (#1724) Test hook (Audio_DebugLR): the energy of the left and right output, summed by the audio thread.
+        std::atomic<float> dbgL{ 0.0f }, dbgR{ 0.0f };
+        std::atomic<uint32_t> dbgN{ 0 };
+        std::atomic<bool> dbgClear{ false };
     };
     VoiceDsp dsp[AudioMixer::kVoices];
     AudioStream voiceStream[AudioMixer::kVoices] = {};
     std::shared_ptr<const AudioScene> worldScene; // (#1293) the ground and parts around the listener (Audio_SetWorld)
     static_assert(SteamAudio::kMaxVoices == AudioMixer::kVoices, "one Steam Audio source per voice");
     bool steam = false;                 // Steam Audio loaded: every voice is stereo and goes through its effects
+    std::atomic<bool> debugLR{ false }; // (#1724) the voices sum their output energy (Audio_DebugLR)
     // (#1294) The reverb: the voices' sends summed in a ring, a stream of its own running Steam Audio's reverb on them.
     bool reverbLive = false;
     AudioSendRing sendRing;
@@ -147,6 +152,14 @@ namespace {
         const float a = d.alpha.load(std::memory_order_relaxed);
         if (a < 1.0f)
             for (int i = 0; i < n; ++i) { d.lp += a * (d.left[i] - d.lp); d.left[i] = d.lp; d.lpR += a * (d.right[i] - d.lpR); d.right[i] = d.lpR; }
+        if (debugLR.load(std::memory_order_relaxed)) {
+            if (d.dbgClear.exchange(false)) { d.dbgL.store(0.0f); d.dbgR.store(0.0f); d.dbgN.store(0); }
+            float el = 0.0f, er = 0.0f;
+            for (int i = 0; i < n; ++i) { el += d.left[i] * d.left[i]; er += d.right[i] * d.right[i]; }
+            d.dbgL.store(d.dbgL.load() + el);
+            d.dbgR.store(d.dbgR.load() + er);
+            d.dbgN.store(d.dbgN.load() + (uint32_t)n);
+        }
         d.fifo.fill(d.left, d.right);
     }
     void FillVoiceStereo(VoiceDsp& d, float* out, unsigned int frames) {
@@ -281,6 +294,10 @@ namespace {
                 for (int k = 1; k <= 6; ++k) s += sinf(6.2832f * 55.0f * k * t) / k * (k % 2 ? 1.0f : 0.5f);
                 return 0.3f * s * (1.0f + 0.1f * sinf(6.2832f * 0.5f * t));
             });
+            return true;
+        }
+        if (name == "test_noise") { // white noise: broadband, so the HRTF's level difference between the ears shows (audio/directions, #1724)
+            out = Synth(2.0f, [&](float, float) { return 0.3f * n(rng); });
             return true;
         }
         if (name == "wind") { // low-passed noise with a slowly moving cutoff and gusts
@@ -790,4 +807,24 @@ const char* Audio_SpatialBackend() {
         }
     }
     return s.c_str();
+}
+
+// ---- Test hooks (#1724) ----
+
+void Audio_DebugLR(bool on) { debugLR.store(on); }
+
+int Audio_DebugEmitterVoice(int e) {
+    const AudioEmitters::Emitter* em = V2Ready() ? emitters.get(e) : nullptr;
+    return em && em->voice >= 0 && mixer.voice(em->voice).active && mixer.voice(em->voice).seq == em->voiceSeq ? em->voice : -1;
+}
+
+bool Audio_DebugVoiceLR(int voice, float* l, float* r, bool reset) {
+    if (!V2Ready() || !steam || voice < 0 || voice >= AudioMixer::kVoices) return false;
+    VoiceDsp& d = dsp[voice];
+    const uint32_t n = d.dbgN.load();
+    if (n == 0) return false;
+    if (l) *l = sqrtf(d.dbgL.load() / (float)n);
+    if (r) *r = sqrtf(d.dbgR.load() / (float)n);
+    if (reset) d.dbgClear.store(true);
+    return true;
 }

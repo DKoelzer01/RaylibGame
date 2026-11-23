@@ -60,6 +60,12 @@ void Audio_EmitterSetPitch(int e, float pitch);
 void Audio_EmitterStats(int& count, int& voiced);
 // (#1292) How sounds are placed: "steam audio 4.8.1, HRTF", or our own panning and why (not found, off, ...).
 const char* Audio_SpatialBackend();
+// (#1724) Test hooks: with Steam Audio running and Audio_DebugLR(true), each voice sums the energy of the left and right
+// samples it renders (after the HRTF and the low-pass; before raylib's volume and pan). Audio_DebugVoiceLR gives the RMS
+// since the last reset (false: none, or no Steam Audio); Audio_DebugEmitterVoice: the voice an emitter holds now, or -1.
+void Audio_DebugLR(bool on);
+int Audio_DebugEmitterVoice(int e);
+bool Audio_DebugVoiceLR(int voice, float* l, float* r, bool reset = true);
 
 // Master volume 0..1 (applies to every sound). Default 0.35: the procedural effects are loud at full.
 void Audio_SetMasterVolume(float v);
