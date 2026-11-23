@@ -685,6 +685,39 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
         pad.ax = plot->east; pad.ay = plot->up; pad.az = plot->north;
         pad.radius = Vector3Length(pad.half);
         ApplyTerrainEdit(body, pad);
+        // (#1637, the user: structures kept terrain inside their rooms) The pad stops 2 m up: on a slope the hill stood inside
+        // taller rooms. The whole interior is air - the footprint inset a cell from its walls, from the floor row to the top -
+        // and each doorway (a gap at the foot of a wall with wall beside it) is cut 2 m out, so the way in is open. The
+        // outside may still meet the hill. Saved as edits like the pad, so the same every load.
+        std::unordered_set<Int3> solidCell;
+        for (const Part& p : parts) { Footprint(p, fp); for (auto& c : fp) solidCell.insert({ c.first.x, c.first.y, c.first.z }); }
+        auto box = [&](float ax0, float ax1, float ay0, float ay1, float az0, float az1) {
+            TerrainEdit cut{};
+            cut.carve = true; cut.box = true;
+            cut.center = plot->toBody({ 0.5f * (ax0 + ax1), 0.5f * (ay0 + ay1), 0.5f * (az0 + az1) });
+            cut.half = { 0.5f * (ax1 - ax0), 0.5f * (ay1 - ay0), 0.5f * (az1 - az0) };
+            cut.ax = plot->east; cut.ay = plot->up; cut.az = plot->north;
+            cut.radius = Vector3Length(cut.half);
+            ApplyTerrainEdit(body, cut);
+        };
+        const float cs = kCellSize, yb = (float)dy * cs, yt = (float)(dy + S.size.y) * cs;
+        if (mx.x - mn.x >= 2 && mx.z - mn.z >= 2)
+            box((mn.x + 1 + shift.x) * cs, (mx.x + shift.x) * cs, yb, yt, (mn.z + 1 + shift.z) * cs, (mx.z + shift.z) * cs);
+        // Doorways: an empty cell at the foot of the boundary (set cells, before turning's shift) with wall on both sides of it.
+        auto solid = [&](int x, int y, int z) { return solidCell.count({ x, y, z }) > 0; };
+        const float out = 2.0f;
+        for (int x = mn.x; x <= mx.x; ++x)
+            for (int z = mn.z; z <= mx.z; ++z) {
+                const bool ex = x == mn.x || x == mx.x, ez = z == mn.z || z == mx.z;
+                if (ex == ez || solid(x, 0, z) || solid(x, 1, z)) continue; // an edge cell (not a corner), open at the foot
+                const bool gapX = ez && (solid(x - 1, 1, z) || solid(x - 2, 1, z)) && (solid(x + 1, 1, z) || solid(x + 2, 1, z));
+                const bool gapZ = ex && (solid(x, 1, z - 1) || solid(x, 1, z - 2)) && (solid(x, 1, z + 1) || solid(x, 1, z + 2));
+                if (!gapX && !gapZ) continue;
+                const float cx0 = (x + shift.x) * cs, cx1 = cx0 + cs, cz0 = (z + shift.z) * cs, cz1 = cz0 + cs;
+                const float y1 = yb + std::min(2.0f, (float)S.size.y * cs);
+                if (ez) box(cx0, cx1, yb, y1, z == mn.z ? cz0 - out : cz0, z == mn.z ? cz1 : cz1 + out);
+                else box(x == mn.x ? cx0 - out : cx0, x == mn.x ? cx1 : cx1 + out, yb, y1, cz0, cz1);
+            }
     }
     // The parts to place (decayed, moved, in the biome's stone), each chest with its loot table. They go down in a build
     // job, a few a frame (PlaceJobs): placing a site's 60-180 parts with their foundations at once was a 0.4 s frame.
@@ -1056,6 +1089,53 @@ std::string Structures_PlacesText(bool discoveredOnly) {
 }
 
 const char* Structures_LastSkip() { return lastSkip; }
+
+std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid& body, Vector3 nearLocal) {
+    // (#1637) Each set that stands on the ground (not the wonders, which shape their own) built forced 40 m apart round the
+    // player, each on the side of a hill raised beside it (a sphere of ground 9 m across, its centre 7 m to one side and a
+    // metre down): the hill reaches into the rooms. Then every cell inside the walls (the parts' bounds inset a cell) with no
+    // part in it must be air.
+    std::vector<StructureInterior> out;
+    Ensure();
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    if (!pf) return out;
+    const Vector3 up = Vector3Normalize(nearLocal);
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, up);
+    noDungeons = true;
+    int k = 0;
+    for (int i = 0; i < (int)sets.size(); ++i) {
+        if (!sets[i].carves.empty() || sets[i].yOffset != 0) continue;
+        const float ang = 0.9f * (float)k, dist = 40.0f + 30.0f * (float)(k / 7);
+        ++k;
+        const Vector3 side = Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(t2, sinf(ang)));
+        Site s; s.any = true; s.set = i; s.quarters = i & 3; s.seed = 4321u + i;
+        s.dir = Vector3Normalize(Vector3Add(up, Vector3Scale(side, dist / pf->radius)));
+        const Vector3 ground = Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir));
+        const Vector3 hillAt = Vector3Add(ground, Vector3Add(Vector3Scale(Vector3Normalize(Vector3CrossProduct(side, s.dir)), 7.0f), Vector3Scale(s.dir, -1.0f)));
+        TerrainEdit hill{ hillAt, 4.5f, 0.0f };
+        hill.fill = true;
+        ApplyTerrainEdit(body, hill);
+        StructureInterior r; r.set = sets[i].name;
+        if (BuildSite(&world, body, *pf, kRingTile + 300 + (uint64_t)i, s, true) < 0 || !body.plots) { r.cells = -1; out.push_back(r); continue; }
+        Plot* plot = body.plots->plotFor(ground, 0.0f, false);
+        if (!plot || plot->parts.empty()) { r.cells = -1; out.push_back(r); continue; }
+        Int3 lo{ 1 << 20, 1 << 20, 1 << 20 }, hi{ -(1 << 20), -(1 << 20), -(1 << 20) };
+        std::vector<std::pair<Int3, CellShape>> fp;
+        for (const Part& p : plot->parts) { Footprint(p, fp); for (auto& c : fp) { lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) }; hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) }; } }
+        for (int x = lo.x + 1; x < hi.x; ++x)
+            for (int z = lo.z + 1; z < hi.z; ++z)
+                for (int y = lo.y; y <= hi.y; ++y) {
+                    if (plot->partAt({ x, y, z }) >= 0) continue;
+                    ++r.cells;
+                    const Vector3 c = plot->toBody({ (x + 0.5f) * kCellSize, (y + 0.5f) * kCellSize, (z + 0.5f) * kCellSize });
+                    if (body.densityAt(c) >= ISO_LEVEL) ++r.solid;
+                }
+        out.push_back(r);
+    }
+    noDungeons = false;
+    return out;
+}
 
 bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target) {
     // A ruined watchtower with its dungeon forced, 40 m from the player (#719), built at once. Checks: 2-3 floors down to
