@@ -3,6 +3,7 @@
 #include "plots.h"
 #include "machinetiers.h"
 #include "ores.h"
+#include "forms.h"
 #include "disassembly.h"
 #include "composed.h"
 #include "itemdata.h"
@@ -223,6 +224,27 @@ void LoadRecipes() {
         if (cols.size() >= 6 && !cols[5].empty()) r.tier = MachineTiers_ByName(cols[5]); // (#1427 L7a)
         tables.recipes.push_back(r);
     }
+    { // (#1614) The form table's machine recipes (forms.txt): every metal's plates in the press and the compressor, ...,
+      // where machine_recipes.txt has none for that machine and output
+        std::set<std::pair<int, int>> have;
+        for (const Recipe& r : tables.recipes) for (const Stack& o : r.out) have.insert({ (int)r.machine, o.item });
+        for (const FormRecipe& f : Forms_All()) {
+            if (f.machine.empty()) continue;
+            Recipe r;
+            r.machine = MachineByName(f.machine);
+            if (r.machine == PartType::Count) continue;
+            const int out = tables.item(f.output);
+            if (out < 0 || have.count({ (int)r.machine, out })) continue;
+            r.out.push_back({ out, f.outCount });
+            bool ok = true;
+            for (const auto& [name, n] : f.inputs) { const int id = tables.item(name); ok = ok && id >= 0; r.in.push_back({ id, n }); }
+            if (!ok) continue;
+            r.ticks = std::max(1, f.ticks);
+            r.eu = std::max(0, f.eu);
+            tables.recipes.push_back(r);
+            have.insert({ (int)r.machine, out });
+        }
+    }
     if (gFactoryExtraRecipes) { // (#1254) recipes the game makes from its own data (alchemy's distillery and cauldron)
         std::vector<Factory::RecipeInfo> extra;
         gFactoryExtraRecipes(extra);
@@ -250,7 +272,7 @@ void LoadRecipes() {
     }
     // (#1427 L7c) The disassembly index, from the forward recipes: hand recipes, then the assembler's (one output each)
     std::vector<DisassemblyRecipe> forward;
-    for (const ::Recipe& h : itemDB.recipes()) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 });
+    for (const ::Recipe& h : itemDB.recipes()) if (!h.formShape) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 }); // (#1614: form shapes are raw material to disassembly)
     for (const Recipe& r : tables.recipes) {
         if (r.machine != PartType::LvAssembler || r.out.size() != 1) continue;
         DisassemblyRecipe d{ tables.name(r.out[0].item), r.out[0].count, {}, r.ticks, r.eu };
@@ -909,10 +931,16 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        // (#1254) fluid (essence) is not an item: it is lost with its vessel
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0 && !tables.fluid(old.in[i].item)) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0 && !tables.fluid(old.out[i].item)) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
-        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
+        // (#1254) fluid (essence) is not an item: it is lost with its vessel. (#1629) Every stack comes back exactly: a fraction
+        // (0.5 dirt in a chest, #1102: it was skipped, and 2.5 came back as 2) and an item's own record (#1446).
+        auto refund = [&](const Stack& s) {
+            if (Empty(s) || tables.fluid(s.item)) return;
+            ItemOut r; r.item = s.item; r.count = s.count; r.to = L.refundTo; r.centi = s.centi; r.data = s.data;
+            refunds.push_back(r);
+        };
+        for (int i = 0; i < InSlots(old); ++i) refund(old.in[i]);
+        for (int i = 0; i < kSlots; ++i) refund(old.out[i]);
+        refund(old.fuel);
     }
     ps->machines = std::move(next);
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
@@ -2831,6 +2859,12 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     const int motor = add(PartType::Motor, { 3, 0, 10 });
     add(PartType::Shaft, { 5, 0, 10 }, xAxis);
     const int press2 = add(PartType::Press, { 6, 0, 10 });
+    // (#1614) a lathe on its own motor (one motor drives one machine at full speed)
+    const int gen3 = add(PartType::Generator, { 0, 0, 20 });
+    L.cables.push_back({ 2, 0, 20 });
+    add(PartType::Motor, { 3, 0, 20 });
+    add(PartType::Shaft, { 5, 0, 20 }, xAxis);
+    const int lathe = add(PartType::Lathe, { 6, 0, 20 });
     ApplyLayout(L);
     PlotSim& ps = *FindPlot(7, 90);
     auto M = [&](int p) -> Machine& { return ps.machines[ps.byPart.at(p)]; };
@@ -2841,6 +2875,8 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     InsertInto(M(furnace), tables.item("iron_ore"), 8, false, buckets);
     InsertInto(M(gen), tables.item("coal"), 16, true, buckets);
     InsertInto(M(press2), tables.item("iron_ingot"), 8, false, buckets);
+    InsertInto(M(lathe), tables.item("iron_ingot"), 8, false, buckets);
+    InsertInto(M(gen3), tables.item("coal"), 16, true, buckets);
     EXPECT_EQ(M(engine).boiler, ps.byPart.at(boiler)) << "the engine finds the boiler it touches";
     long long made = 0; int active = 0;
     bool engineTurned = false, dynamoWorked = false, motorTurned = false;
@@ -2854,6 +2890,7 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     EXPECT_TRUE(dynamoWorked) << "the dynamo made EU for the furnace";
     EXPECT_TRUE(motorTurned) << "the generator's EU turned the motor";
     EXPECT_GT(CountItems(M(press).out, kSlots, tables.item("iron_plate")), 0) << "the steam-driven press pressed plates";
+    EXPECT_GE(CountItems(M(lathe).out, kSlots, tables.item("iron_rod")), 3) << "(#1614) the lathe on the motor's shaft turned an ingot into 3 rods";
     EXPECT_GT(CountItems(M(furnace).out, kSlots, tables.item("iron_ingot")), 0) << "the dynamo-powered furnace smelted";
     EXPECT_GT(CountItems(M(press2).out, kSlots, tables.item("iron_plate")), 0) << "the motor-driven press pressed plates";
 }
@@ -3157,6 +3194,50 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     Factory::WaitTicks(2);
     EXPECT_EQ(back("dirt"), 290);
     EXPECT_EQ(back("sand"), 30);
+    Factory::Stop();
+    plots.clear(); plotIndexDirty = true;
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+}
+
+// #1629 (playtest: "Chests with partial slots delete the item when a chest is broken"): a chest removed from the layout (broken)
+// gives back every stack exactly - a fraction with its whole part (2.5 dirt), a fraction alone (0.5 sand), a whole stack (5
+// stone) and an item with its own record (a composed pickaxe, #1446).
+TEST(Factory, ABrokenChestGivesBackEveryStackExactly) {
+    LoadRecipes();
+    Factory::Start();
+    LayoutMsg L{};
+    L.body = 11; L.plot = 3; L.version = 1;
+    std::vector<Int3> cells;
+    for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ dx, dy, dz });
+    L.machines.push_back({ 0, PartType::Chest }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+    { std::lock_guard<std::mutex> q(queueMutex); layoutQueue.push_back(L); }
+    Factory::WaitTicks(2);
+    const std::string record = "head=bronze;w=7";
+    Factory::InsertSlot(11, 3, 0, "dirt", 2, 0, 0, 50);   // 2.5 dirt
+    Factory::InsertSlot(11, 3, 0, "sand", 0, 1, 0, 50);   // 0.5 sand alone
+    Factory::InsertSlot(11, 3, 0, "stone", 5, 2);         // 5 stone
+    Factory::InsertSlot(11, 3, 0, "bronze_pickaxe", 1, 3, 0, 0, record);
+    Factory::WaitTicks(3);
+    { std::lock_guard<std::mutex> v(viewMutex); results.clear(); }
+    LayoutMsg gone{}; // the plot without its chest: broken
+    gone.body = 11; gone.plot = 3; gone.version = 2;
+    { std::lock_guard<std::mutex> q(queueMutex); layoutQueue.push_back(gone); }
+    Factory::WaitTicks(3);
+    long long dirt = 0, sand = 0, stone = 0; int picks = 0; std::string pickRecord;
+    {
+        std::lock_guard<std::mutex> l(viewMutex);
+        for (const ItemOut& r : results) {
+            const std::string id = tables.name(r.item & ~kHotItem);
+            const long long centi = (long long)r.count * 100 + r.centi;
+            if (id == "dirt") dirt += centi; else if (id == "sand") sand += centi; else if (id == "stone") stone += centi;
+            else if (id == "bronze_pickaxe") { picks += r.count; pickRecord = r.data; }
+        }
+    }
+    EXPECT_EQ(dirt, 250) << "2.5 dirt (2 came back: the fraction was dropped)";
+    EXPECT_EQ(sand, 50) << "0.5 sand (a fraction-only stack came back as nothing)";
+    EXPECT_EQ(stone, 500);
+    EXPECT_EQ(picks, 1);
+    EXPECT_EQ(pickRecord, record) << "the pickaxe keeps its own record";
     Factory::Stop();
     plots.clear(); plotIndexDirty = true;
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
@@ -3518,6 +3599,34 @@ TEST(Factory, EveryOreKindHasARecipeThatTakesIt) {
 
 // (#1473) The material column's alloys (#1614): each has a machine recipe, made in a machine of its tier or earlier (the
 // kiln is tier 1, the blast furnace tier 3, the arc furnace HV), and the ore chains give every metal they need.
+// (#1614 PR 1, structure: fails CI, unlike the cost report) Every component shape of every metal (a materials.txt form that
+// forms.txt makes) can be made by hand, and where a machine makes it too, the machine takes less metal than the hand.
+TEST(Factory, EveryComponentShapeHasAHandRecipeAndMachinesSaveMetal) {
+    UnitTest::EnsureItemDB();
+    LoadRecipes();
+    int shapes = 0;
+    for (const ItemDef& d : itemDB.items()) {
+        const size_t u = d.id.rfind('_');
+        if (u == std::string::npos) continue;
+        const std::string shape = d.id.substr(u + 1);
+        if (std::find(Forms_Shapes().begin(), Forms_Shapes().end(), shape) == Forms_Shapes().end()) continue;
+        ++shapes;
+        // Its hand recipe, and the ingots (or rods, plates...) one item takes by hand
+        double handPer = -1.0;
+        for (const ::Recipe& r : itemDB.recipes())
+            if (r.output == d.id) { int n = 0; for (const auto& in : r.inputs) n += in.second; handPer = (double)n / std::max(1, r.outputCount); break; }
+        EXPECT_GE(handPer, 0.0) << d.id << ": no hand recipe (every step can be done by hand)";
+        if (handPer < 0.0) continue;
+        for (const auto& r : tables.recipes)
+            for (const Stack& o : r.out) {
+                if (o.item != tables.item(d.id) || o.count < 1) continue;
+                int n = 0; for (const Stack& s : r.in) n += s.count;
+                EXPECT_LT((double)n / o.count, handPer) << d.id << " in machine " << (int)r.machine << ": a machine takes less metal than the hand";
+            }
+    }
+    EXPECT_GT(shapes, 20) << "the metals' plates, rods, wire, gears, screws, springs";
+}
+
 TEST(Factory, EachAlloyOfTheMaterialColumnIsMadeByItsTier) {
     LoadRecipes();
     const struct { const char* alloy; PartType latest; } kAlloys[] = {

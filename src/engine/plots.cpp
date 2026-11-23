@@ -73,6 +73,7 @@ const char* PartName(PartType t) {
         case PartType::SteamAssembler: return "steam assembler"; // (#1271 L6b-2)
         case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
+        case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -150,6 +151,7 @@ const char* PartMachineName(PartType t) {
         case PartType::SteamAssembler: return "steam_assembler"; // (#1271 L6b-2)
         case PartType::LvAssembler: return "lv_assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
+        case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -329,7 +331,7 @@ static Color PartColor(PartType t) {
         case PartType::Gearbox: return { 150, 112, 70, 255 };     // (#1269) a wooden casing
         case PartType::StressGauge: return { 160, 120, 76, 255 };
         case PartType::Millstone: return { 140, 138, 132, 255 };
-        case PartType::Saw: case PartType::Press: return { 146, 108, 68, 255 };
+        case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: return { 146, 108, 68, 255 };
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -377,7 +379,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
-        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: return PatPlanks; // (#1269) wooden frames
+        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: return PatPlanks; // (#1269) wooden frames
         case PartType::Millstone: return PatStone;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
@@ -413,7 +415,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: // (#1193; #1271 L6)
         case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
         case PartType::Distillery: case PartType::EssenceTank: case PartType::Cauldron: // (#1254)
-        case PartType::Millstone: case PartType::Saw: case PartType::Press: // (#1269)
+        case PartType::Millstone: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: // (#1269, #1614)
         case PartType::Bloomery: // (#1271 L2)
         case PartType::SteamAssembler: // (#1271 L6b-2)
         case PartType::LvAssembler: // (#1271 L6c)

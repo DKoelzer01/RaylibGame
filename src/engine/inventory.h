@@ -28,6 +28,7 @@ struct Recipe {
     std::string output;
     int outputCount = 1;
     std::vector<std::pair<std::string, int>> inputs;
+    bool formShape = false; // (#1614) made by the form table (forms.txt): a component shape, raw material to disassembly
 };
 
 class ItemDB {

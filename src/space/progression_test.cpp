@@ -91,12 +91,16 @@ namespace {
         const bool composed = Composed_Is(item);
         // Like a player: craft missing hand-craftable ingredients first (wire for cables, ...).
         for (int made = 0; composed ? made < want : inventory.count(item) < want; ++made) {
-            for (const auto& in : r->inputs) {
-                // Wildcard planks: saw whichever logs are carried.
-                while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
-                if (inventory.count(in.first) < in.second)
-                    for (const Recipe& sub : itemDB.recipes())
-                        if (sub.output == in.first) { Craft(in.first, in.second); break; }
+            // (#1614) Until every input is there: crafting one input can use up another (a spring takes a rod a piston needs)
+            for (int pass = 0, crafted = 1; crafted && pass < 4; ++pass) {
+                crafted = 0;
+                for (const auto& in : r->inputs) {
+                    // Wildcard planks: saw whichever logs are carried.
+                    while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
+                    if (inventory.count(in.first) < in.second)
+                        for (const Recipe& sub : itemDB.recipes())
+                            if (sub.output == in.first) { Craft(in.first, in.second); crafted = 1; break; }
+                }
             }
             if (!inventory.craft(*r)) {
                 printf("bench: progression: cannot craft %s:", item.c_str());
@@ -391,8 +395,9 @@ namespace {
         });
         add("press 182 blooms into iron with the windmill (its 5 minutes of tier 2)", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("press", "iron_bloom", 182); }
-            return Collect("press", "iron_ingot", 182 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
+            static int carried = 0; // (#1614) what the press's own recipe left of the anvil's ingots (it changes with the recipe)
+            if (!fed) { fed = true; carried = inventory.count("iron_ingot"); Give("press", "iron_bloom", 182); }
+            return Collect("press", "iron_ingot", 182 + carried) && QuestBook_CountOf("wheel_press") >= 300.0;
         });
         add("press 16 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 16); } return Collect("press", "bronze_plate", 16); });
         // Glass first: the steam labs take 2 each.
