@@ -184,6 +184,7 @@ struct Animal {
     Vector3 clingFloor{};
     uint64_t group = 0;          // (#1225) its group (the first member's net id; 0: alone)
     double lastDecideAt = -1.0;  // (#1650) simClock of its last brain decision (AI tiers); -1: none yet
+    double roofCheckAt = 0.0;    // (#1650) a ceiling clinger's next look for a ceiling (simClock)
     BrainOut lastBo;             // (#1650) that decision, reused until the next
     bool thrower = false;        // (#1225) the group's thrower: keeps its distance and throws
     double throwWindAt = -1.0, lastThrow = -1e9; // (#1225) a throw winding up since (simClock), the last throw
@@ -1246,7 +1247,7 @@ int Animals_Generation(int i) { return i >= 0 && i < (int)animals.size() ? anima
 const std::string& Animals_Ore(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].ore : none; }
 bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
 void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
-void Animals_TestProvokeAll() { for (Animal& a : animals) { a.hurtPending = true; a.hurtBy = kPlayerPercept; a.angryUntil = simClock + 30.0; } } // (#1649)
+void Animals_TestProvokeAll(int part, int parts) { for (size_t i = 0; i < animals.size(); ++i) if (parts <= 1 || (int)(i % (size_t)parts) == part) { Animal& a = animals[i]; a.hurtPending = true; a.hurtBy = kPlayerPercept; a.angryUntil = simClock + 30.0; } } // (#1649; #1650: one part of them a call)
 float Animals_Heading(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].heading : 0.0f; } // (#1717)
 void Animals_TestSetHeading(int i, float h) { if (i >= 0 && i < (int)animals.size()) { animals[i].heading = animals[i].prevHeading = h; } } // (#1717)
 double Animals_Clock() { return simClock; }
@@ -1466,6 +1467,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     moveReqs.reserve(animals.size());
     std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
+    const auto tLoop0 = std::chrono::steady_clock::now(); // (#1650)
+    double accSettle = 0.0, accBrain = 0.0; // (#1650) the loop's settle searches and brain time (the slow-update report)
+    double worstBrain = 0.0; std::string worstBrainWho; // (#1650) the slowest single brain block this update, and whose
+    struct AccTimer { double& acc; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now(); ~AccTimer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); } };
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
         const Species& s = species[a.species];
@@ -1498,7 +1503,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.health -= Status_Step(a.status, step, false, ResistOf(a)); // (#1223: a creature's own resistances)
             if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
         }
-        if ((a.settleIn -= step) <= 0.0f && !a.clinging) { // (#1224: not while on a ceiling)
+        if ((a.settleIn -= step) <= 0.0f && !a.clinging) { AccTimer accSettleT{ accSettle }; // (#1224: not while on a ceiling)
             a.settleIn = 1.0f;
             // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
             // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
@@ -1553,7 +1558,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         int preyIdx = -1;                      // another creature it goes for (infighting)
         Vector3 huntAt = tgLocal; float huntDist = pdist;
         if (cs) {
-            PROFILE_SCOPE("creatures: brain"); // (#1649)
+            PROFILE_SCOPE("creatures: brain"); AccTimer accBrainT{ accBrain }; // (#1649)
+            struct WorstT { double& w; std::string& who; const Animal& a; const char* sp; std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+                ~WorstT() { const double d = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); if (d > w) { w = d; who = std::string(sp) + " mood " + Mood_Name(a.brain.mood) + (a.clinging ? " clinging" : ""); } } } worstT{ worstBrain, worstBrainWho, a, s.id.c_str() };
             const Mood before = a.brain.mood;
             const Vector3 selfPos = a.pos.toFloat(); // (#1698) where it stands, in floats for the senses
             // (#1650 slice 2) AI tiers: engaged (near a player, winding up, attacking, just hit) decide every update as before;
@@ -1562,7 +1569,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const bool engaged = a.lastDecideAt < 0.0 || pdist < AiTier::kEngagedRange || a.brain.windUpAt >= 0.0 || a.hurtPending ||
                                  a.brain.mood == Mood::Attack || !AiTier::On();
             const double period = engaged ? 0.0 : pdist < AiTier::kNearRange ? AiTier::kNearPeriod : AiTier::kFarPeriod;
-            const bool decide = simClock - a.lastDecideAt >= period;
+            // (#1650) Each creature on its own phase (0.75-1.25 of the period, from its id): a crowd made together decided
+            // together, all in one update (4-7 ms spikes) and nothing between.
+            const double phase = 0.75 + 0.5 * (double)((a.netId * 0x9E3779B97F4A7C15ull) >> 40) / (double)(1ull << 24);
+            const bool decide = simClock - a.lastDecideAt >= period * phase;
             BrainInput bi; // (empty between decisions: a hit makes it engaged, so bi.hurt is always fresh)
             if (decide) {
             const float brainDt = engaged ? step : (float)std::min(simClock - a.lastDecideAt, 2.0);
@@ -1684,7 +1694,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                         }
                     }
                     if (a.clinging) { a.moveSpeed = 0.0f; a.state = State::Rest; continue; } // hanging on: no walking
-                } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0) {
+                } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0 && simClock >= a.roofCheckAt) {
+                    // (#1650) at most about once a second (its own phase): a dozen idle lurkers searching 79 samples each in one
+                    // update was a 3-5 ms spike in a crowd
+                    a.roofCheckAt = simClock + 0.75 + 0.5 * (double)((a.netId * 0x9E3779B97F4A7C15ull) >> 40) / (double)(1ull << 24);
                     float up = 0.0f; bool roof = false;
                     auto findRoof = [&] { for (float h = 0.5f; h <= 20.0f; h += 0.25f) if (body->densityAt(Vector3Add(selfPos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; } return roof; };
                     // (#1649) "no roof here" is cached per cell (in the open it searched 79 samples every step); a roof is found exactly
@@ -1965,12 +1978,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         mr.steer = steer; mr.goalPt = goalPt; mr.rng = a.rng; mr.closeHunt = closeHunt;
         moveReqs.push_back(mr);
     }
+    const auto tProbe0 = std::chrono::steady_clock::now(); // (#1650)
     // (#1650 slice 3) Pass 2: the probes, in parallel.
     std::vector<MoveRes> moveRes(moveReqs.size());
     { PROFILE_SCOPE("creatures: probes"); AiParallelFor((int)moveReqs.size(), [&](int k) { ProbeMove(moveReqs[k], moveRes[k]); }); }
     // Pass 3: applied in the loop's order on this thread (the path search is one shared search).
     std::unordered_map<uint64_t, int> indexOfNet;
     if (!moveReqs.empty()) { indexOfNet.reserve(animals.size()); for (size_t k = 0; k < animals.size(); ++k) indexOfNet[animals[k].netId] = (int)k; }
+    const auto tApply0 = std::chrono::steady_clock::now(); // (#1650)
     PROFILE_SCOPE("creatures: apply");
     for (size_t k = 0; k < moveReqs.size(); ++k) {
         const MoveReq& mr = moveReqs[k];
@@ -2057,26 +2072,35 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (fabsf(d) > m) a.heading = mr.heading + (d > 0.0f ? m : -m);
         }
     }
+    const auto tAfter0 = std::chrono::steady_clock::now(); // (#1650)
     // Penned: build parts within 30 m in all eight directions around an animal near the player
     // (checked every 2 s; the quest's "pen two animals").
-    if (here && SimTime() - lastPenCheck > 2.0) {
-        lastPenCheck = SimTime();
-        int n = 0;
-        for (const Animal& a : animals) {
-            const Vector3 ap = a.pos.toFloat();
-            if (a.body != here->name || Vector3Distance(ap, playerLocal) > 120.0f) continue;
-            if (IsPenned(*here, ap)) ++n;
+    // (#1650) A pass over the animals starts every 2 s and is spread over the next updates, 8 animals each: at once it cost
+    // 6-7 ms in a crowd (eight 30 m walls probed for each of 200 animals): the creature step's p99.
+    {
+        static size_t penCursor = 0; static int penCount = 0; static bool penPass = false;
+        if (here && !penPass && SimTime() - lastPenCheck > 2.0) { lastPenCheck = SimTime(); penPass = true; penCursor = 0; penCount = 0; }
+        if (penPass) {
+            if (!here) penPass = false;
+            for (int k = 0; penPass && k < 8; ++k, ++penCursor) {
+                if (penCursor >= animals.size()) { penPass = false; pennedNow = penCount; QuestBook_AtLeast("penned", penCount); break; }
+                const Animal& a = animals[penCursor];
+                const Vector3 ap = a.pos.toFloat();
+                if (a.body != here->name || Vector3Distance(ap, playerLocal) > 120.0f) continue;
+                if (IsPenned(*here, ap)) ++penCount;
+            }
         }
-        pennedNow = n;
-        QuestBook_AtLeast("penned", n);
     }
+    const auto tGone0 = std::chrono::steady_clock::now(); // (#1650)
     // Night hunters gone at daylight.
     for (int k = (int)gone.size() - 1; k >= 0; --k) animals.erase(animals.begin() + gone[k]);
     if (!gone.empty()) aimed = -1;
     // (#1223) Creatures' strikes on each other, gathered in the loop (a kill shifts the list), found again by id.
     for (const CreatureHit& h : creatureHits) { const int t = IndexOfNet(h.target); if (t >= 0) HitByCreature(t, h.e, h.attacker, h.from); }
     creatureHits.clear();
+    const auto tProj0 = std::chrono::steady_clock::now(); // (#1650)
     StepProjectiles(world, dt); // (#1225) thrown stones and spears in flight
+    const auto tBreed0 = std::chrono::steady_clock::now(); // (#1650)
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -2102,6 +2126,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             break;
         }
     }
+    const auto tTrail0 = std::chrono::steady_clock::now(); // (#1650)
     { // (#1108) the trail: where each animal was, for the server's rewound hit checks
         const double now = SimTime();
         for (Animal& a : animals) {
@@ -2112,6 +2137,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         }
     }
     lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    { // (#1650) RAYLIBGAME_CREATURE_SLOW=<ms>: an update slower than that prints where its time went
+        static const double slowMs = getenv("RAYLIBGAME_CREATURE_SLOW") ? atof(getenv("RAYLIBGAME_CREATURE_SLOW")) : 0.0;
+        if (slowMs > 0.0 && lastUpdateMs > slowMs) { auto ms = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+            printf("creatures: slow update %.2f ms: before the loop %.2f, loop %.2f (settle %.2f, brain %.2f; %zu movers), probes %.2f, apply %.2f, pens %.2f, removals+hits %.2f, projectiles %.2f, breeding %.2f, trails %.2f\n",
+                   lastUpdateMs, ms(t0, tLoop0), ms(tLoop0, tProbe0), accSettle, accBrain, moveReqs.size(), ms(tProbe0, tApply0), ms(tApply0, tAfter0),
+                   ms(tAfter0, tGone0), ms(tGone0, tProj0), ms(tProj0, tBreed0), ms(tBreed0, tTrail0), ms(tTrail0, std::chrono::steady_clock::now()));
+            printf("creatures:   slowest brain %.2f ms: %s\n", worstBrain, worstBrainWho.c_str()); }
+    }
 }
 
 float Animals_RewindDistance(const std::vector<std::pair<double, Vector3>>& trail, Vector3 current, Vector3 from, double now, double window) {
