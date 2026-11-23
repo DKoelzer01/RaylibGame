@@ -1330,7 +1330,7 @@ int main(int argc, char** argv)
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); FramePacer_SetTarget(fps); SetFrameTarget(fps); }
+        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : Display_MonitorHz(); FramePacer_SetTarget(fps); SetFrameTarget(fps); } // (#1624; Settings_Apply sets the player's cap)
     } else {
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
