@@ -5,14 +5,14 @@
 iron       | Iron       | 165,160,165 | ore crushed purified dust ingot plate rod screw spring
 copper     | Copper     | 205,115,65  | ore crushed purified dust ingot plate wire
 tin        | Tin        | 205,205,215 | ore crushed purified dust ingot plate
-bronze     | Bronze     | 205,140,60  | dust ingot plate gear
+bronze     | Bronze     | 205,140,60  | dust ingot plate gear rod screw spring
 steel      | Steel      | 120,122,132 | ingot plate rod gear screw spring
 nickel     | Nickel     | 200,200,150 | dust ingot plate
 gold       | Gold       | 240,200,60  | ore crushed purified dust ingot
 bauxite    | Bauxite    | 190,110,90  | ore crushed purified dust
-aluminium  | Aluminium  | 190,205,220 | dust ingot plate
+aluminium  | Aluminium  | 190,205,220 | dust ingot plate rod wire
 ilmenite   | Ilmenite   | 70,60,60    | ore crushed purified dust
-titanium   | Titanium   | 200,170,210 | dust ingot plate
+titanium   | Titanium   | 200,170,210 | dust ingot plate rod screw
 titanium_alloy | Titanium alloy | 170,150,200 | ingot plate
 # Ring metals (M24): from ring rocks, smelted in the arc furnace.
 platinum   | Platinum   | 215,215,205 | ore ingot
@@ -35,10 +35,10 @@ chromium    | Chromium    | 205,210,220 | dust ingot
 tungsten    | Tungsten    | 95,95,105   | dust ingot
 # (#1473, #1614) The material column's alloys, one new per tier: brass (T3 valves, pistons), solder (T4 circuits), electrum
 # (T5 fine wire) and invar (T5 precision parts), stainless steel (T6 structure), tungsten steel (T7 high heat). Only the
-# forms that have a recipe today; rods, wire and gears come with the component PRs (#1614).
-brass           | Brass           | 215,175,80  | ingot plate
-solder          | Solder          | 170,170,175 | ingot
-electrum        | Electrum        | 225,210,130 | ingot
-invar           | Invar           | 160,165,160 | ingot plate
-stainless_steel | Stainless steel | 195,200,205 | ingot plate
-tungstensteel   | Tungsten steel  | 80,85,100   | ingot plate
+# component shapes the material column gives them (#1614 PR 4): the form table makes them by hand and by machine.
+brass           | Brass           | 215,175,80  | ingot plate rod screw spring
+solder          | Solder          | 170,170,175 | ingot wire
+electrum        | Electrum        | 225,210,130 | ingot wire
+invar           | Invar           | 160,165,160 | ingot plate rod screw
+stainless_steel | Stainless steel | 195,200,205 | ingot plate rod screw spring gear
+tungstensteel   | Tungsten steel  | 80,85,100   | ingot plate rod
