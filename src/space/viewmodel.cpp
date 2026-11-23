@@ -40,7 +40,7 @@ namespace {
     // Swing (a mining stroke or a chop) and dip (switching what is held), 0..1 progress.
     int seenSwings = 0;
     float swing = 1.0f, dip = 1.0f, lowered = 0.0f;
-    bool meleeOn = false; float mPitch = 0.0f, mYaw = 0.0f, mSide = 0.0f; // (#1216) the melee swing's pose (degrees, m)
+    bool meleeOn = false; float mPitch = 0.0f, mYaw = 0.0f, mSide = 0.0f; bool mBack = false; // (#1216) the melee swing's pose (degrees, m)
     std::string held;           // what the hand holds: "" hands, a tool id, or an item id (a cube)
     bool visible = false;
 
@@ -124,7 +124,7 @@ void Viewmodel_Update(Scene& world, float dt) {
     if (dt > 0.0f || !Animals_MeleeBusy()) {
         int ph = 0; float f = 0.0f, charge = 0.0f; bool back = false;
         meleeOn = Animals_MeleePose(ph, f, charge, back);
-        mPitch = mYaw = mSide = 0.0f;
+        mPitch = mYaw = mSide = 0.0f; mBack = back;
         if (meleeOn) {
             const float k = 1.0f + 0.4f * charge;
             const float cockP = 40.0f * k, cockY = 35.0f * k, endP = -50.0f, endY = -40.0f;
@@ -276,8 +276,27 @@ void Viewmodel_Draw(Scene& world) {
         auto onGrip = [&](Vector3 p, Vector3 rotDeg = { 0, 0, 0 }) { return MatrixMultiply(At(p, rotDeg), grip); };
         // (#1587, playtest: "you slap enemies with the back of a sword") The swing is mostly a pitch (40 deg back to 50 down) with
         // some yaw across: an upright blade facing the view swept its flat forward. Turned about its length so the edge leads
-        // the chop (70, not 90: the swing also crosses sideways, and edge-on from behind it read as a line). GUESS: judged in a capture.
-        constexpr float kEdgeTurn = 70.0f;
+        // the chop. (#1587 FAIL, "diagonal compared to the swing direction") 70 deg left it 20 deg off at impact, and the swing's
+        // yaw (+35 to -40 deg) spins a near-upright blade about its length, so the edge faced the motion only for an instant:
+        // Now measured from the swing itself: the blade tip's motion through the middle of the hit window (the pose below, as
+        // the hand's), in the grip's own frame, gives the turn about the blade's length that puts the edge along it. A forward
+        // swing and a chained back one sweep different diagonals: each has its own (held for the whole swing, no twisting).
+        auto edgeTurnFor = [&](bool backSwing) {
+            const float cockP = 40.0f, cockY = 35.0f, endP = -50.0f, endY = -40.0f, sgn = backSwing ? -1.0f : 1.0f;
+            auto gripAt = [&](float f) {
+                const float p = cockP + (endP - cockP) * f, y = sgn * (cockY + (endY - cockY) * f), side = 0.06f * (y / 40.0f);
+                const Matrix h = MatrixMultiply(MatrixRotateXYZ({ DEG2RAD * (8.0f + p), DEG2RAD * (-12.0f - y), DEG2RAD * 4.0f }), MatrixTranslate(0.27f + side, -0.235f, -0.52f));
+                return MatrixMultiply(MatrixScale(0.65f, 0.65f, 0.65f), MatrixMultiply(At({ 0, 0.09f, -0.07f }, { -14, 0, 10 }), h));
+            };
+            const Matrix g0 = gripAt(0.5f), g1 = gripAt(0.52f);
+            const Vector3 tip = { 0, 0.4f, 0 };
+            const Vector3 d = Vector3Subtract(Vector3Transform(tip, g1), Vector3Transform(tip, g0)); // view space
+            const Matrix inv = MatrixInvert(g0);
+            const Vector3 dl = Vector3Subtract(Vector3Transform(d, inv), Vector3Transform({ 0, 0, 0 }, inv)); // the grip's frame
+            return RAD2DEG * atan2f(-dl.z, dl.x); // At's Y turn that lays the blade's local X (its edge) along it
+        };
+        static const float kEdgeFwd = edgeTurnFor(false), kEdgeBack = edgeTurnFor(true);
+        const float kEdgeTurn = mBack ? kEdgeBack : kEdgeFwd;
         switch (wc) {
             case WeaponClass::Spear:
                 Box(onGrip({ 0, 0.12f, 0 }), { 0.024f, 0.62f, 0.024f }, wood, light);
