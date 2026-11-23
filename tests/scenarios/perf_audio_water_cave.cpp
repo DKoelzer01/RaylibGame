@@ -44,7 +44,13 @@ SCENARIO("perf/audio-water-cave") {
     s.timeout = 240.0;
     s.record = false;
 
-    s.step("settle", 60.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play and an idle world"); return c.T >= 2.0 && WorldIdle(); });
+    // An idle world, or 30 s at most: a slow headless box may never get there (#1690), and the search and the side-by-side
+    // timing don't need it (warm-up settles again before the per-frame measure).
+    s.step("settle", 60.0, [](ScenarioCtx& c) {
+        c.waitingFor("2 s of play and an idle world (30 s at most)");
+        if (c.T >= 30.0 && !WorldIdle()) { c.note("settle: the world was not idle after 30 s; going on"); return true; }
+        return c.T >= 2.0 && WorldIdle();
+    });
     s.step("find a river bank by a cave mouth", 5.0, [](ScenarioCtx& c) {
         const Vector3 home = c.field->findSpawnDir(c.body->seed);
         const RiverNetwork* net = c.field->rivers();
