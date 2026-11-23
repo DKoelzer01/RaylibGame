@@ -1924,10 +1924,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // once, past the rule; it then turned back at 180 deg/s, met the same obstacle and flipped again (the user: "turning
         // slowly one way, flipping 180, turning back"). Close in it only sidesteps (up to ~57 degrees) or stands facing its prey.
         static const bool closeHuntOn = !(getenv("RAYLIBGAME_CLOSE_HUNT") && getenv("RAYLIBGAME_CLOSE_HUNT")[0] == '0'); // A/B: 0 the old turns
-        const bool closeHunt = closeHuntOn && cs && CreatureTurnRules() && (CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f;
+        const bool closeHunt = closeHuntOn && cs && CreatureTurnRules() && (CreatureTurnMask() & 2) && (a.state == State::Hunt || bo.mood == Mood::Alert) && !goingTo && huntDist < 6.0f; // (#1717: Alert too: it snapped to the noise, then turned back)
         if (cs && CreatureTurnRules()) {
             if ((CreatureTurnMask() & 1) && a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
-            else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f) { // (close in, where getting behind it matters; beyond, it paths and turns freely: a thief at a distance missed its pile)
+            else if ((CreatureTurnMask() & 2) && (a.state == State::Hunt || bo.mood == Mood::Alert) && !goingTo && huntDist < 6.0f) { // (#1717: Alert too) // (close in, where getting behind it matters; beyond, it paths and turns freely: a thief at a distance missed its pile)
                 constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
                 float d = a.heading - a.prevHeading;
                 d = atan2f(sinf(d), cosf(d));

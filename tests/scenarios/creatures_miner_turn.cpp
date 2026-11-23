@@ -66,17 +66,21 @@ SCENARIO("creatures/miner-turn") {
         s.step(std::string("the player ") + kCase[k] + ": it turns to face them, no flip", 6.0, [](ScenarioCtx& c) {
             survival.health = 100.0f; survival.dead = false;
             const int i = Idx();
-            if (!c.check("the miner is there", i >= 0)) { c.fail("gone"); return true; }
-            if (c.t < 0.05) { // the case's start: its facing set so the player is behind / left / right of it
+            if (i < 0) { c.check("the miner is there", false); c.fail("gone"); return true; }
+            if (S.caseNo == 0 && c.t < 1.0) { Animals_TestProvokeAll(); return false; } // the first case: awake and hunting first
+            static double startAt = -1.0;
+            if (startAt < 0.0 || c.t < startAt) { // the case's start: its facing set so the player is behind / left / right of it
+                startAt = c.t;
                 S.have = false; S.worstJump = 0.0f;
                 Animals_TestSetHeading(i, Wrap(BearingToPlayer(c) + kOffset[S.caseNo]));
                 Animals_TestProvokeAll();
                 return false;
             }
+            Animals_TestProvokeAll(); // kept on it (hurt: it hunts the player)
             const float h = Animals_Heading(i);
             if (S.have) S.worstJump = std::max(S.worstJump, fabsf(Wrap(h - S.lastHeading)));
             S.lastHeading = h; S.have = true;
-            if (c.t < 3.0) return false;
+            if (c.t - startAt < 3.0) return false;
             const float err = fabsf(Wrap(h - BearingToPlayer(c)));
             c.lt(std::string("largest turn in one update, deg (") + kCase[S.caseNo] + ")", S.worstJump * RAD2DEG, 45.0);
             c.lt(std::string("facing error at the end, deg (") + kCase[S.caseNo] + ")", err * RAD2DEG, 35.0);
