@@ -197,7 +197,8 @@ bool Throw_Aim(Vector3 from, Vector3 to, Vector3 up, float speed, float g, Vecto
 // ---- Spawning (#1223) ----
 // A place a creature could appear: a cave floor (body-local) with what it is (the segment kind: 0 passage, 1 mouth, 3 chamber,
 // 4 slot; its radius), how deep under the surface, the light there (0..1), and whether a cave entrance is near (20 m).
-struct SpawnSite { Vector3 floor{}, up{}; int kind = 0; float radius = 0.0f, depth = 0.0f, light = 0.0f; bool nearMouth = false, wet = false; };
+struct SpawnSite { Vector3 floor{}, up{}; int kind = 0; float radius = 0.0f, depth = 0.0f, light = 0.0f; bool nearMouth = false, wet = false;
+                   bool openSky = false; }; // (#1592) openSky: no rock over the floor within 80 m (the open ground under the sky)
 bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s);
 // One species in one 64 m chunk: what has spawned there. The first visit fills it to the cap; after that one more every
 // respawn seconds while below the cap, and none once a nest there was destroyed (species with nests=1; decided).
