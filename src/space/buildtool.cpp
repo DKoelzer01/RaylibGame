@@ -18,6 +18,7 @@
 #include "simclock.h"
 #include "factory.h"
 #include "alchemy.h" // (#1254) phials on vessels, the run on their panel
+#include "structures.h" // (#1641 slice 2c) breakable props
 #include "blueprint.h"
 #include <deque>
 #include "claims.h"
@@ -267,7 +268,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
     if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
-    if (GateLocked(hitPlot->parts[part])) { breakHeld = 0.0f; breakPart = -1; if (in.hit(Act::Primary)) GameUI_Toast("Locked: it needs a dungeon key"); return; } // (#1641) a vault door: not broken, only opened with a key
+    if (PartUnbreakable(hitPlot->parts[part])) { breakHeld = 0.0f; breakPart = -1; if (in.hit(Act::Primary)) GameUI_Toast(GateLocked(hitPlot->parts[part]) ? "Locked: it needs a dungeon key" : hitPlot->parts[part].type == PartType::Lever ? "The lever will not come loose" : "The portcullis is too heavy to break: look for a lever"); return; } // (#1641) a vault door, a portcullis or a lever: not broken
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
     if (breakHeld < BreakHold()) return;
@@ -290,6 +291,11 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
             if (ir) inventory.add("iridium_ore", ir);
             GameUI_Toast(TextFormat("The meteorite breaks apart: +%d nickel-iron%s%s", n, pt ? ", +2 platinum ore" : "", ir ? ", +1 iridium ore" : ""));
         } else if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
+        if (std::vector<std::pair<std::string, int>> drops; Structures_BreakLoot(*body, hitPlot->id, part, removed, drops)) { // (#1641 slice 2c) a dungeon urn or crate: its loot
+            std::string what;
+            for (const auto& [item, n] : drops) { inventory.add(item.c_str(), n); what += std::string(what.empty() ? "" : ", ") + std::to_string(n) + " " + item; }
+            if (!drops.empty()) GameUI_Toast(("It breaks open: " + what).c_str());
+        }
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
     }
     breakPart = -1;
@@ -658,7 +664,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]))) { // vault doors (#1641); cables: their network (#570); beds (#800); shafts (#1269)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -700,6 +706,33 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         }
         GameUI_Toast("The vault door unlocks");
         Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
+        return;
+    }
+    if (machineAim.type == PartType::Lever) { // (#1641 slice 2c) RMB (outside build mode) or E pulls it: every portcullis within 12 m of it in its plot opens
+        if (!((!buildTool.active && in.hit(Act::Secondary)) || in.hit(Act::Use))) return;
+        Planetoid* lb = Planetoid::find(machineAim.body);
+        Plot* lp = lb && lb->plots ? lb->plots->byId(machineAim.plot) : nullptr;
+        if (!lp || machineAim.part >= (int)lp->parts.size() || lp->parts[machineAim.part].type != PartType::Lever) return;
+        Part lever = lp->parts[machineAim.part];
+        if (lever.material != 0) { GameUI_Toast("The lever is already down"); return; }
+        std::vector<int> gates; // (collected first: opening replaces the parts)
+        for (size_t i = 0; i < lp->parts.size(); ++i) {
+            const Part& q = lp->parts[i];
+            if (!GatePortcullis(q)) continue;
+            const float dx = (float)(q.origin.x - lever.origin.x), dy = (float)(q.origin.y - lever.origin.y), dz = (float)(q.origin.z - lever.origin.z);
+            if (sqrtf(dx * dx + dy * dy + dz * dz) * kCellSize <= 12.0f) gates.push_back((int)i);
+        }
+        lp->remove(machineAim.part); // pulled: the lever is placed again, material 1
+        lever.material = 1;
+        lp->place(lever);
+        for (int i : gates) {
+            Part open = lp->parts[i];
+            lp->remove(i);
+            open.material = 0;
+            lp->place(open);
+        }
+        GameUI_Toast(gates.empty() ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open");
+        Audio_Play(Sfx::Pickup, 0.5f, 0.5f);
         return;
     }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
@@ -809,6 +842,13 @@ void Machine_DrawHUD() {
         return;
     }
     if (machineAim.part < 0) return;
+    if (machineAim.type == PartType::Lever) { // (#1641 slice 2c)
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 300, 52, Fade(BLACK, 0.55f));
+        DrawText("lever", x, y, 20, SKYBLUE);
+        DrawText("RMB / E to pull it", x, y + 24, 16, RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::Gate) { // (#1641) a vault door
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         DrawRectangle(x - 8, y - 6, 340, 52, Fade(BLACK, 0.55f));
