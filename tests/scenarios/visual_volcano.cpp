@@ -58,8 +58,8 @@ SCENARIO("visual/volcano") {
     s.step("from the flank: the bare cone over the snowy skirt", 30.0, [](ScenarioCtx& c) {
         if (!found) return true;
         const float R = c.field->radius;
-        const Vector3 foot = Vector3Normalize(Vector3Add(vent, Vector3Scale(side, 9000.0f / R)));
-        const Vector3 eye = Vector3Scale(foot, R + c.field->elevation(foot) + 600.0f);
+        const Vector3 foot = Vector3Normalize(Vector3Add(vent, Vector3Scale(side, 3500.0f / R)));
+        const Vector3 eye = Vector3Scale(foot, R + c.field->elevation(foot) + 900.0f);
         c.camera(eye, Vector3Scale(vent, R + c.field->elevation(vent) - 300.0f), foot);
         c.waitingFor("the cone to stream in");
         if (c.t < 6.0 || !WorldIdle()) return false;
