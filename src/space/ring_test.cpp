@@ -8,6 +8,7 @@
 //   5. stand on a huge rock (its own low gravity)
 
 #include "ring_test.h"
+#include "frames.h"
 #include "player.h"
 #include "survival.h"
 #include "ring.h"
@@ -25,6 +26,7 @@ namespace {
     int phase = 0;
     double phaseStart = 0.0;
     int rock = -1;
+    uint64_t rockNet = 0; // its NetId, for its frame once it is demoted (#1698)
     Vector3 digLocal{};
     double frameSum = 0.0, frameMax = 0.0;
     int frames = 0, instances = 0;
@@ -99,6 +101,20 @@ int RingTest_Update(Scene& world) {
                    frameSum / std::max(1, frames), frameMax, frames, instances, ring.promotedCount(), rock, ring.rocks[rock].radius * 1.44f, b ? "yes" : "NO");
             ok &= b != nullptr && frameSum / std::max(1, frames) < 8.0;
             if (!b) return -1;
+            { // (Plan 11 F6, #1698) the rock's analytic pose (what a frame on it uses once it is demoted) is its live pose
+                rockNet = b->netId;
+                BodyPose an;
+                const BodyPose live = Frames_Pose(*b);
+                const bool have = Frames_RingRockPose(rockNet, an);
+                double dR = 0.0;
+                for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) dR = std::max(dR, fabs(an.R[i][j] - live.R[i][j]));
+                const double dc = (an.centre - live.centre).length(), dv = (an.vel - live.vel).length(), dw = (an.omega - live.omega).length();
+                // A rotation error of dR moves a point on the rock's surface by ~dR * its radius.
+                const double surf = dR * ring.rocks[rock].radius;
+                printf("bench: ring: rock %d's analytic pose vs its live one: %s; centre %.2e m, velocity %.2e m/s, rotation %.2e (%.2e m at its surface), spin %.2e rad/s\n",
+                       rock, have ? "found" : "MISSING", dc, dv, dR, surf, dw);
+                ok &= have && dc < 1e-6 && dv < 1e-6 && surf < 1e-3 && dw < 1e-9;
+            }
             // Dig into its surface facing the camera.
             const Vector3 toCam = Vector3Normalize(b->toLocal(world.camera.position));
             float rS = b->radius;
@@ -130,6 +146,11 @@ int RingTest_Update(Scene& world) {
             const bool gone = ring.promotedBody(rock) == nullptr;
             printf("bench: ring: 20 km away the rock is an instance again: %s (%d voxel rocks)\n", gone ? "yes" : "NO", ring.promotedCount());
             ok &= gone;
+            // (Plan 11 F6, #1698) a frame on the demoted rock still resolves: no dangling frame for whatever was on it
+            BodyPose p;
+            const bool resolves = rockNet && Frames_PoseOf(rockNet, p);
+            printf("bench: ring: the demoted rock's frame resolves: %s\n", resolves ? "yes" : "NO");
+            ok &= resolves;
             Next();
         }
         break;

@@ -2,6 +2,8 @@
 #include "world.h"
 #include "worldtypes.h"
 #include "bodies.h"
+#include "netid.h"
+#include "ring.h"
 #include <algorithm>
 #include <cmath>
 
@@ -56,10 +58,40 @@ BodyPose Frames_Pose(const Planetoid& b) {
     return p;
 }
 
+bool Frames_RingRockPose(uint64_t netId, BodyPose& p) {
+    if (NetId_Kind(netId) != NetKind::RingRock) return false;
+    const uint64_t v = NetId_Value(netId);
+    const uint32_t hash = (uint32_t)(v >> 32), idx = (uint32_t)v; // ring name hash, rock index (netid.h)
+    for (const auto& ring : Rings()) {
+        if (!ring || NetId_NameHash(ring->name.c_str()) != hash || idx >= ring->rocks.size()) continue;
+        const Planetoid* parent = ring->parentBody();
+        if (!parent) return false;
+        const RingRock& r = ring->rocks[idx];
+        const BodyPose q = Frames_Pose(*parent);
+        p.centre = ring->rockPosition((int)idx);
+        // Its spin from the clock about its own axis, as promote() and the spin step give the live rock (#315).
+        double a = fmod((double)r.spin * WorldTime(), 360.0);
+        if (a < 0.0) a += 360.0;
+        BodyRotationFromAngles(0.0, a, 0.0, p.R);
+        p.omega = r.spin != 0.0f ? BodyAngularVelocity(Vector3{ 0.0f, (float)a, 0.0f }, Vector3{ 0.0f, r.spin, 0.0f }) : DVec3{ 0, 0, 0 };
+        // Its circular orbit in the parent's XZ plane, as Frames_Pose gives an orbiting body.
+        const DVec3 rel = p.centre - q.centre;
+        const DVec3 inPlane{ rel.x, 0.0, rel.z };
+        p.vel = q.vel + DVec3{ -inPlane.z * r.rate, 0.0, inPlane.x * r.rate };
+        p.acc = q.acc - inPlane * (r.rate * r.rate);
+        return true;
+    }
+    return false;
+}
+
+bool Frames_PoseOf(uint64_t netId, BodyPose& p) {
+    if (const Planetoid* b = Planetoid::findNet(netId)) { p = Frames_Pose(*b); return true; }
+    return Frames_RingRockPose(netId, p);
+}
+
 bool Frames_ToGlobal(const FramePos& f, DVec3& pg, DVec3& vg) {
-    const Planetoid* b = Planetoid::findNet(f.frame.body);
-    if (!b) return false;
-    const BodyPose p = Frames_Pose(*b);
+    BodyPose p;
+    if (!Frames_PoseOf(f.frame.body, p)) return false;
     if (f.frame.kind == FrameKind::Centred) { pg = p.centre + f.pos; vg = p.vel + f.vel; return true; }
     const DVec3 rx = Mul(p.R, f.pos);
     pg = p.centre + rx;
@@ -68,9 +100,8 @@ bool Frames_ToGlobal(const FramePos& f, DVec3& pg, DVec3& vg) {
 }
 
 bool Frames_FromGlobal(const DVec3& pg, const DVec3& vg, FrameRef to, FramePos& out) {
-    const Planetoid* b = Planetoid::findNet(to.body);
-    if (!b) return false;
-    const BodyPose p = Frames_Pose(*b);
+    BodyPose p;
+    if (!Frames_PoseOf(to.body, p)) return false;
     out.frame = to;
     const DVec3 d = pg - p.centre;
     if (to.kind == FrameKind::Centred) { out.pos = d; out.vel = vg - p.vel; return true; }
