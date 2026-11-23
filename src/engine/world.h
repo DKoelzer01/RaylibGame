@@ -212,6 +212,10 @@ Vector3 BodyGravityAt(const Planetoid& body, Vector3 renderPoint);
 // Plan 11 (frames.h, #667): a body's orientation (rows of R: body-local -> world) and angular velocity (world, rad/s), in
 // double from its double spin angle.
 void BodyRotationAndSpin(const Planetoid& body, double r[3][3], DVec3& omega);
+// (Plan 11 F6, #1698) The same for a body that isn't loaded: the double rotation of Euler angles (degrees; rows map body-local
+// into world) and the angular velocity (world, rad/s) of a body turning at `spin` deg/s.
+void BodyRotationFromAngles(double rx, double ry, double rz, double r[3][3]);
+DVec3 BodyAngularVelocity(Vector3 rotationDeg, Vector3 spinDegPerS);
 
 // (#1183) the game's work to finish before a save (queued blueprint foundations); nullptr: none
 inline void (*gBeforeSaveWorld)() = nullptr;
