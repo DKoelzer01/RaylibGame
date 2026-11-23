@@ -67,6 +67,14 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
 #include <functional>
 using BuildToolNetEdit = std::function<void(Planetoid& body, Plot* plot, Vector3 newOrigin, const Part& part, bool remove, int partIndex)>;
 extern BuildToolNetEdit gBuildToolNetEdit;
+// (#1684) A dungeon's vault unlock and lever pull, one edit for solo, the host's own player and the host acting for a client:
+// each part change is recorded (remove an index, or place a part, in order) so a host can send them to every client.
+struct PartEdit { bool remove = false; int index = -1; Part part{}; };
+// A locked vault door (and its other half: same column, within 2 cells) opens: material 0. Returns the gates opened (0: not a vault door).
+int Dungeon_UnlockVault(Plot& plot, int partIndex, std::vector<PartEdit>* edits = nullptr);
+// A lever goes down (material 1) and every portcullis within 12 m of it opens. Returns the portcullises opened, or -1 when the
+// part is not a lever or is already down.
+int Dungeon_PullLever(Plot& plot, int partIndex, std::vector<PartEdit>* edits = nullptr);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
 void Machine_DrawHUD();

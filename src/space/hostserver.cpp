@@ -16,6 +16,7 @@
 #include "netclient.h"
 #include "terraintool.h"
 #include "buildtool.h"
+#include "machineact.h" // (#1684) the dungeon action codes
 #include "plots.h"
 #include "factory.h"
 #include "gamerng.h"
@@ -534,12 +535,51 @@ namespace {
             }
         }
     }
+    // (#1684) The part changes of a dungeon edit, as the clients apply them (in order: the removes and places keep every plot's indices equal).
+    void SendPartEdits(uint64_t bodyNet, uint32_t plotId, const std::vector<PartEdit>& edits) {
+        for (const PartEdit& e : edits) {
+            MsgPlotEdit out; out.session = 0; out.seq = 0; out.body = bodyNet; out.plot = plotId;
+            if (e.remove) { out.op = NetPartOp::Remove; out.partIndex = (uint32_t)e.index; }
+            else { out.op = NetPartOp::Place; out.part = NetPart{ (uint8_t)e.part.type, e.part.origin.x, e.part.origin.y, e.part.origin.z, e.part.orient, e.part.material }; }
+            SendToJoined(out);
+        }
+    }
+    // A vault door (a dungeon_key from the requester's inventory) or a lever (#1684), asked for as a machine action.
+    void OnDungeonAction(uint32_t conn, Remote& rm, Planetoid& b, Plot& plot, const MsgMachineAction& a) {
+        auto refuse = [&](const char* why) { ++machineActionsRefused; SendMsg(conn, MsgChat{ 0, why }); };
+        const Part& pt = plot.parts[a.part];
+        const bool vault = a.action == kMachineActUnlockVault;
+        if (vault ? !GateLocked(pt) : (pt.type != PartType::Lever || pt.material != 0)) { if (!vault) refuse("The lever is already down"); return; } // (a locked door that is open by now: nothing to say)
+        const Int3 c = pt.origin;
+        const Vector3 at = plot.toBody({ (c.x + 0.5f) * kCellSize, (c.y + 0.5f) * kCellSize, (c.z + 0.5f) * kCellSize });
+        if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kMachineReach) { refuse("That is out of reach"); return; }
+        std::vector<PartEdit> edits;
+        const auto before = AllAmounts(rm.inventory);
+        if (vault) {
+            if (!rm.inventory.remove("dungeon_key", 1)) { refuse("Locked: it needs a dungeon key"); return; }
+            Dungeon_UnlockVault(plot, a.part, &edits);
+            SendMsg(conn, MsgChat{ 0, "The vault door unlocks" });
+        } else {
+            const int gates = Dungeon_PullLever(plot, a.part, &edits);
+            SendMsg(conn, MsgChat{ 0, gates <= 0 ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open" });
+        }
+        SendPartEdits(b.netId, plot.id, edits);
+        SendChangedItems(conn, rm.inventory, before);
+        ++machineActions;
+    }
     void OnMachineAction(uint32_t conn, uint32_t session, const MsgMachineAction& a) {
         auto rit = remotes.find(session);
         Planetoid* b = Planetoid::findNet(a.body);
         Plot* plot = b && b->plots ? b->plots->byId(a.plot) : nullptr;
         auto refuse = [&](const char* why) { ++machineActionsRefused; SendMsg(conn, MsgChat{ 0, why }); };
         if (rit == remotes.end() || rit->second.survival.dead) return;
+        if (a.action == kMachineActUnlockVault || a.action == kMachineActPullLever) { // (#1684) a dungeon's door or lever: not a machine
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size()) { refuse("That isn't there any more"); return; }
+            const Vector3 at = plot->toBody({ (plot->parts[a.part].origin.x + 0.5f) * kCellSize, (plot->parts[a.part].origin.y + 0.5f) * kCellSize, (plot->parts[a.part].origin.z + 0.5f) * kCellSize });
+            if (ClaimBlocks(session, b, at)) { const std::string why = ClaimRefusal(b, at); refuse(why.c_str()); return; } // (#343)
+            OnDungeonAction(conn, rit->second, *b, *plot, a);
+            return;
+        }
         if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
         const Factory::MachineKey key{ b->id, plot->id, a.part };
         if (a.action == 7) { machineWatch[session].on = false; return; }
@@ -2348,6 +2388,7 @@ double Host_InventoryAmount(uint32_t session, const std::string& item) {
     return it == remotes.end() ? 0.0 : it->second.inventory.amount(item);
 }
 int Host_PartsApplied() { return partsApplied; }
+void Host_BroadcastPartEdits(const Planetoid& body, const Plot& plot, const std::vector<PartEdit>& edits) { SendPartEdits(body.netId, plot.id, edits); } // (#1684)
 bool Host_Give(uint32_t session, const std::string& item, int count) {
     auto it = remotes.find(session);
     if (it == remotes.end() || count <= 0 || !itemDB.find(item)) return false;
