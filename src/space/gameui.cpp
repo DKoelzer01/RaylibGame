@@ -206,6 +206,8 @@ static std::string AmountText(const InvSlot& s) {
 // doubled font in a small cell ran out of it). Drawn with the font at that size (crisp: the dynamic atlas).
 // (#889 follow-up) The items grid's cell this frame (DrawItemsPanel): the recipe icons and the You slots are sized from it.
 static float gGridCell = 0.0f;
+static float gDrawnCellInventory = 0.0f, gDrawnCellCatalog = 0.0f; // (#887) the cell each page last drew with (tests)
+void GameUI_TestDrawnCells(float& inventoryCell, float& catalogCell) { inventoryCell = gDrawnCellInventory; catalogCell = gDrawnCellCatalog; }
 // (#1148, the user prefers the Catalog page's cells) The one slot size of the game window's item pages (Inventory, Crafting,
 // Catalog, a container's player grid; the suit, off-hand and module slots), from the screen area under the tabs: 54 px
 // at the interface scale, at most 10 across half its width (the Catalog's column), and the grid, hotbar and bin rows fitting
@@ -1238,7 +1240,10 @@ static void DrawCreative() {
     }
     ImGui::BeginChild("creativeitems");
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float cell = 48.0f * GameUI_Scale(), gap = 4.0f; // (#891)
+    // (#887, the user: "Catalog slots are larger than inventory slots") the one slot size of the item pages (#1148,
+    // SlotCellFor); a fixed 48 px at the interface scale was larger than the Inventory's wherever that fits the screen smaller
+    const float cell = gGridCell > 0.0f ? gGridCell : 48.0f * GameUI_Scale(), gap = 4.0f;
+    gDrawnCellCatalog = cell; // (#887 test)
     const int cols = std::max(1, (int)((ImGui::GetContentRegionAvail().x + gap) / (cell + gap)));
     for (int i = 0; i < (int)catalogGrid.ids.size(); ++i) {
         const ItemDef* d = itemDB.find(catalogGrid.ids[i]);
@@ -1828,6 +1833,7 @@ static void DrawItemsPanel() {
     const ImVec2 a = ImGui::GetContentRegionAvail();
     const float gap = 4.0f, pad = ImGui::GetStyle().WindowPadding.x * 2.0f;
     const float cell = gGridCell; // (#1148) the one slot size of every item page (SlotCellFor, set as the screen opens)
+    gDrawnCellInventory = cell;   // (#887 test)
     const float panelW = std::max(Inventory::kCols * cell + (Inventory::kCols - 1) * gap + pad, ImGui::CalcTextSize("Sort (middle-click)  Deposit (Q)").x + 2.0f * cell + gap + pad); // (#1161: the off hand, the bin and the buttons)
     ImGui::BeginChild("invgrid", ImVec2(std::min(panelW, a.x * 0.72f), 0.0f), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextUnformatted("Items");
