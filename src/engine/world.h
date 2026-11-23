@@ -199,7 +199,7 @@ void SetWorldSavePath(const char* path); // bench runs save to their own file, n
 const char* WorldSavePath();
 // (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest
 // BackupsKept() stay (RAYLIBGAME_BACKUPS=N, default 5, 0 none).
-void BackupSave();
+void BackupSave(const char* prefix = ""); // prefix "pre-v<N>-": the backup taken before an upgrade, never pruned (#1693)
 int BackupsKept();
 std::string BackupDir();
 extern bool gSandboxWorld; // --sandbox (#662): the start planet is a flat test plane (set before world generation)

@@ -82,7 +82,7 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   message (the menu's load toast shows it).
 - **The readers know only the current format.** Section tags (`plots5`, `planetoid`, `extras`...) stay as checks, not versions.
   `Save_LoadingVersion()` is the format being parsed (after migration, the current one).
-- **Loading an older save** (`LoadWorldSave`): the existing backup (`<save>.backups/`) is taken first, the file's lines go through
+- **Loading an older save** (`LoadWorldSave`): the existing backup is taken first, as `<save>.backups/pre-v<from>-<date-time>/` (the newest-5 rotation never prunes `pre-v` folders), the file's lines go through
   `Save_Migrate` (`src/engine/savemigrate.cpp`, the table `kWorldSteps`) into `<save>.migrating`, which the one reader parses and
   then deletes. The file on disk is untouched; the upgraded save is written by the next normal save. Data a step makes meaningless
   is removed with `ctx.drop("what")`: logged, and one toast after the load ("Save upgraded from version N; dropped: ...").

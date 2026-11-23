@@ -130,7 +130,7 @@ struct LoadState { std::vector<fs::path> dirs; size_t i = 0; int phase = 0; long
 }
 
 SCENARIO("saves/golden-load") {
-    s.tags = { "saves", "local" };
+    s.tags = { "saves" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 180.0;
     s.step("every tests/saves/v*/ loads through the chain with its facts", 120.0, [](ScenarioCtx& c) {

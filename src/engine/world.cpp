@@ -2578,7 +2578,7 @@ bool SaveWorld(Scene& world) {
 // in place chunk by chunk). RAYLIBGAME_BACKUPS=N keeps N (0: none).
 int BackupsKept() { static const int n = getenv("RAYLIBGAME_BACKUPS") ? std::max(0, atoi(getenv("RAYLIBGAME_BACKUPS"))) : 5; return n; }
 std::string BackupDir() { return SAVE_PATH_STR + ".backups"; }
-void BackupSave() {
+void BackupSave(const char* prefix) {
     namespace fs = std::filesystem;
     const int keep = BackupsKept();
     if (keep <= 0) return;
@@ -2596,7 +2596,7 @@ void BackupSave() {
 #endif
     char stamp[40];
     snprintf(stamp, sizeof(stamp), "%04d%02d%02d-%02d%02d%02d-%03d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
-    const fs::path to = root / stamp;
+    const fs::path to = root / (std::string(prefix) + stamp);
     fs::create_directories(to, ec);
     const fs::path save = SAVE_PATH_STR;
     fs::copy_file(save, to / save.filename(), fs::copy_options::overwrite_existing, ec);
@@ -2604,7 +2604,7 @@ void BackupSave() {
     const fs::path players = SAVE_PATH_STR + ".players";
     if (fs::exists(players, ec)) fs::copy(players, to / players.filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
     std::vector<fs::path> all;
-    for (const auto& e : fs::directory_iterator(root, ec)) if (e.is_directory()) all.push_back(e.path());
+    for (const auto& e : fs::directory_iterator(root, ec)) if (e.is_directory() && e.path().filename().string().rfind("pre-v", 0) != 0) all.push_back(e.path());
     std::sort(all.begin(), all.end());
     for (size_t i = 0; i + keep < all.size(); ++i) fs::remove_all(all[i], ec); // the oldest beyond the newest `keep`
 }
@@ -2649,7 +2649,7 @@ bool LoadWorldSave(Scene& world) {
             return false;
         }
         fclose(f);
-        BackupSave();
+        BackupSave(("pre-v" + std::to_string(version) + "-").c_str()); // (#1693) kept: the newest-5 rotation skips "pre-v" folders
         std::vector<std::string> lines;
         MigrateContext ctx;
         std::string error;
