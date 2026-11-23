@@ -105,6 +105,20 @@ SCENARIO("combat/weapons-composed") {
         c.check("the selected cell holds the copy", S.cell == Inventory::kGrid + 3, "cell " + std::to_string(S.cell));
         return true;
     });
+    s.step("a swing at nothing (#1639: the sky, no creature in front)", 4.0, [](ScenarioCtx& c) {
+        Pin();
+        player.forward = c.body->dirToWorld(Vector3Normalize(EyeLocal(c))); // straight up
+        static long press = -1; static int swings0 = 0; static bool started = false;
+        const MeleeState& m = Animals_Melee();
+        if (c.t < 0.3) { press = -1; started = false; return false; }
+        if (press < 0) { swings0 = m.swings; gFakeHeld |= kLmb; press = c.frame; return false; }
+        if (c.frame > press) gFakeHeld &= ~kLmb;
+        started |= m.swings > swings0;
+        if (!started && c.t < 1.5) { c.waitingFor("the swing to start"); return false; }
+        if (m.phase != MeleePhase::Idle && c.t < 3.5) { c.waitingFor("the swing to finish"); return false; }
+        c.check("the sword swings with nothing to hit", started, "swings " + std::to_string(m.swings - swings0));
+        return true;
+    });
     s.step("a light swing with the sword", 6.0, [](ScenarioCtx& c) {
         Pin(); LookAtDummy(c);
         if (c.t < 0.3) return false;
