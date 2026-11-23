@@ -283,8 +283,8 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     // each as itself) or a block stack in the off hand (#836); a tool or bare hands never place what is carried. The terraform
     // tool places freely; creative places for free, but only with ground in hand too (#1577: bare hands or a tool placed).
     const bool terrainInHand = FillerMaterial(terrainTool.heldTool) >= 0 || FillerMaterial(inventory.offHand().id) >= 0 || terrainTool.terraform;
-    // (#1085) A shovel or hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
-    const bool tiller = (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && terrainTool.till;
+    // (#1085) A hoe tills with RMB: its stroke runs (TerrainTool_Stroke tills, and never places ground with it).
+    const bool tiller = tool.type == ToolType::Hoe && terrainTool.till; // (#1085: a hoe tills; a shovel only digs)
     adding = !bucket && !terrainTool.holdingItem && !terrainTool.rmbBlocks && !digging && (terrainInHand || tiller) && in.down(Act::Secondary); // food / feed in hand never builds (#201); nor does a block (#165)
     // One swing per cooldown, and the cooldown runs whether the button is held or not, so clicking
     // fast is no faster than holding (it was: a release reset the timer). The swing animation lasts
@@ -689,8 +689,8 @@ bool TerrainTool_Stroke(bool dig) {
     if (terrainTool.terraform) return BrushStroke(dig);
 
     const float radius = MiningRadius();
-    if (!dig && (tool.type == ToolType::Shovel || tool.type == ToolType::Hoe) && IsTillable(hit.material) && terrainTool.till) {
-        // A shovel or a hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
+    if (!dig && tool.type == ToolType::Hoe && IsTillable(hit.material) && terrainTool.till) {
+        // A hoe tills soil into farmland (#1085: a state of dirt, painted as a free brush where it aims; no soil
         // placed). The brush is the tool's (TillRadius: an iron or better hoe tills a wide patch at once).
         if (terrainTool.till(p, hit.local, TillRadius(tool) / p.scale)) { Audio_Play(Sfx::Dig, 0.5f, 0.7f); ++terrainTool.swings; return true; }
         return false;
@@ -779,6 +779,13 @@ static void SetToolSphere(const Scene& world) {
         const Vector3 c = FillCentre(p, r);
         if (Vector3Distance(p.toWorld(c), world.camera.position) < terrainTool.fillRadius * 1.05f) return;
         gToolSphere = { &p, c, terrainTool.fillRadius, adding ? Color{ 120, 255, 160, 210 } : Color{ 120, 220, 255, 200 }, GetTime() };
+        return;
+    }
+    // (#1085, the user: the hoe's preview showed the dig's size, not what it tills) A hoe on tillable ground shows its till: the
+    // brush TerrainTool_Stroke tills, centred on the aimed ground (its mouth on the surface is the patch).
+    if (tool.type == ToolType::Hoe && terrainTool.till && IsTillable(hit.material) && !digging) {
+        const float tr = TillRadius(tool);
+        gToolSphere = { &p, hit.local, tr, Color{ 150, 110, 60, 220 }, GetTime() };
         return;
     }
     const float R = MiningRadius();

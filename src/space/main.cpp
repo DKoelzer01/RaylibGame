@@ -1668,7 +1668,7 @@ int main(int argc, char** argv)
     int seenSpawns = 0;
     world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
-    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
+    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
         if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
@@ -5244,9 +5244,9 @@ int main(int argc, char** argv)
                         grew = false;
                         for (const Rule& u : rules) {
                             if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
-                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe or shovel makes it
+                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe makes it
                                 bool till = false;
-                                for (const char* t : { "stone_hoe", "stone_shovel", "iron_hoe", "iron_shovel" }) till = till || have.count(t) > 0;
+                                for (const char* t : { "stone_hoe", "iron_hoe" }) till = till || have.count(t) > 0; // (#1085: hoes only)
                                 if (!till) continue;
                                 have.insert("farmland");
                             }
@@ -12254,7 +12254,7 @@ int main(int argc, char** argv)
         // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
         // --test-net-plants (#335; with --join; tools/test_net_plants.sh): RAYLIBGAME_NET_PLANTS_ROLE feller | watcher. The
         // feller fells the nearest bush (a request): its drops arrive by deltas and the plant goes on both clients (the
-        // server's removal, with its time). It then tills ground ahead with a shovel (farmland placed by the server, free),
+        // server's removal, with its time). It then tills ground ahead with a hoe (farmland placed by the server, free),
         // sows grain seeds there (the host's RAYLIBGAME_FARM_INSTANT makes them ripe) and harvests them once the server's
         // fields show the crop ripe. The watcher sees the removal and the crop come and go. Both report after
         // RAYLIBGAME_PLANTS_SECONDS (40).
@@ -12288,7 +12288,7 @@ int main(int argc, char** argv)
             cropSeen = cropSeen || hasCrop;
             cropGone = cropGone || (cropSeen && !hasCrop);
             if (feller && felled && !tillSent && pb) {
-                if (tillAt < 0.0) { terrainTool.heldTool = "stone_shovel"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
+                if (tillAt < 0.0) { terrainTool.heldTool = "stone_hoe"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
                 else if (GetTime() > tillAt) {
                     // (#1107) a ring of spots, 8 directions x 2-4 m: on the real terrain the one spot ahead can be rock or a slope
                     // (Farm_Till refuses untillable ground before it asks the server); each miss is counted by its reason

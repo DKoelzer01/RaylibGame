@@ -93,7 +93,7 @@ titanium_axe     | Titanium axe     | tool | 205,175,200 | Fells trees in a few 
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
-farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a hoe, RMB).
 grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
 root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
 flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.
