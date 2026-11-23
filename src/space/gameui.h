@@ -15,6 +15,7 @@ GameScreen GameUI_Screen();               // the screen shown (or shown last)
 void GameUI_ShowTab(const char* tab);     // older names: "Crafting", "Quest tree" (Quests, tree view), "Suit" (Inventory), "Help"
 bool GameUI_TextInputActive();            // a text field in the window has the keyboard (the window's keys don't apply)
 float GameUI_Scale();                     // the interface size (Settings; auto by the screen's height)
+void GameUI_TestDrawnCells(float& inventoryCell, float& catalogCell); // (#887 tests) the slot size each page last drew with
 float GameUI_HudScale();                  // (#925) the HUD outside the game window: the pre-#891 size (half the menus')
 void GameUI_ApplyStyleScale();             // (#891) before each ImGui frame: fonts, padding and spacing at the interface scale
 void GameUI_PrepareFrame(Scene& world);  // (#822) before ImGui, after the world: renders the inventory screen's player preview
