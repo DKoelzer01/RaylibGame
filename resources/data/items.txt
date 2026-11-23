@@ -346,3 +346,9 @@ valve            | Valve            | 64  | 185,135, 75 | A bronze valve with a 
 lv_motor         | LV motor         | 64  | 120,125,135 | A small electric motor: steel rods, a copper winding, an iron frame. Anything electric that moves has one.
 lv_pump          | LV pump          | 64  | 110,130,150 | An LV motor driving a valve: the water pump and the ore washer.
 lv_heating_coil  | LV heating coil  | 64  | 200,120, 70 | A copper heating coil (nickel coils at MV). The electric furnace has two.
+# (#1429) multiblock parts: casings, hatches and a controller (placeable; forming comes later)
+bronze_casing    | Bronze casing    | 64  | 150,115, 80 | A bronze machine casing: the walls of steam-age multiblocks.
+steel_casing     | Steel casing     | 64  | 130,135,145 | A steel machine casing: the walls of electric-age multiblocks.
+fluid_in_hatch   | Fluid input hatch | 64 | 100,130,170 | A casing with a fluid input: pipes feed a multiblock through it.
+fluid_out_hatch  | Fluid output hatch | 64 | 170,130,100 | A casing with a fluid output: a multiblock empties into pipes through it.
+large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.

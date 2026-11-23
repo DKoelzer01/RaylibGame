@@ -426,7 +426,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     Vector3 dir, ld; DVec3 lo;
     player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     aim.body = body;
-    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)(IsMachine((PartType)buildTool.part) ? buildTool.variant : buildTool.material) }; // (#1427: a machine's variant)
+    aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)(IsMachine((PartType)buildTool.part) || IsMultiblockPart((PartType)buildTool.part) ? buildTool.variant : buildTool.material) }; // (#1427: a machine's variant; #1429: a multiblock part's list index)
 
     // Nearest part face along the ray, and the terrain.
     float bestPart = buildTool.reach;
@@ -681,7 +681,7 @@ void BuildTool_DrawHUD() {
     const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2;
     DrawLine(cx - 8, cy, cx + 8, cy, RAYWHITE);
     DrawLine(cx, cy - 8, cx, cy + 8, RAYWHITE);
-    const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)(IsMachine(t) ? buildTool.variant : buildTool.material) };
+    const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)(IsMachine(t) || IsMultiblockPart(t) ? buildTool.variant : buildTool.material) };
     const char* item = PartItem(p);
     const char* label = IsShape(t) ? TextFormat("%s %s", GetBuildMaterial(buildTool.material).name, PartName(t)) : PartName(t);
     const char* line = TextFormat("BUILD  %s  (%d %s, have %d)", label, PartCostCount(t), item, inventory.count(item));

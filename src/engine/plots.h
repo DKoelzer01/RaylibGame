@@ -69,8 +69,10 @@ enum class PartType : uint8_t {
     LvAssembler,                                                     // (#1271 L6c) the electric assembler: circuits and research packs (a disassembly mode comes with #1427)
     Compressor, Cutter,                                              // (#1427 L7e) LV successors of the press (plates) and the saw (planks)
     Lathe, Wiremill,                                                 // (#1614) steam-age component machines on a shaft: rods and screws; wire and springs
+    MbController, MbCasing, MbHatch,                                 // (#1429) multiblock parts: Part::material = the index in the multiblock catalog's controllers / casings / hatches
     Count
 };
+inline bool IsMultiblockPart(PartType t) { return t >= PartType::MbController && t <= PartType::MbHatch; }
 // (#343) a claim banner's tier (0-3), or -1; and how far across its claim reaches (m)
 inline int ClaimBannerTier(PartType t) { return t >= PartType::ClaimBanner && t <= PartType::ClaimBanner4 ? (int)t - (int)PartType::ClaimBanner : -1; }
 constexpr float kClaimBannerAcross[4] = { 100.0f, 200.0f, 400.0f, 800.0f };

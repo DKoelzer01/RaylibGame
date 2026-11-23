@@ -1,4 +1,5 @@
-# Multiblock structures (#1429) definitions only: the part types come with the multiblock parts PR.
+# Multiblock structures (#1429) definitions. The parts exist now (placeable: Part::material = the index in the casing /
+# hatch / controller lists below, in file order); forming comes next.
 #
 # casing <part id> tier <n>                       a casing part; a cell asking for a casing accepts any casing of >= tier
 # hatch <part id> kind <kind> tier <n>            a hatch part; kinds: item_in item_out fluid_in fluid_out energy rotation
@@ -20,7 +21,7 @@ multiblock large_tank | Large tank | tier 3
   legend C controller:large_tank_controller
   legend c casing:bronze_casing
   legend h hatch:fluid_in,fluid_out casing:bronze_casing
-  legend g part:tank_glass
+  legend g part:glass
   legend . air
   legend - any
   hatches fluid_in 1..2

@@ -67,6 +67,8 @@ const std::string& Animals_Ore(int index); // (#1226 tests) an ooze's ore
 bool Animals_Thrower(int index);
 void Animals_TestSetGroup(int index, uint64_t group, bool thrower); // (#1225 tests) make a group by hand
 void Animals_TestProvokeAll(int part = 0, int parts = 1); // (#1649 tests) creatures hurt by the local player (every parts-th from part; default all): they turn on it and chase
+float Animals_Heading(int index); // (#1717 tests) radians from east toward north in its local tangent frame
+void Animals_TestSetHeading(int index, float heading); // (#1717 tests) also its previous heading (no turn from the old one)
 int Animals_CaveSpawned();
 int Animals_CaveSites();
 void Animals_CaveSpawnNow();
