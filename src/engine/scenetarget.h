@@ -38,5 +38,11 @@ void SceneTarget_Unload();
 void SceneTarget_SetTonemap(int curve);
 int SceneTarget_Tonemap();
 void SceneTarget_SetBrightness(float ev); // (#1166) Settings > Brightness: stops, -1..+1
+// (#1610) Settings > Anti-aliasing: the scene target's MSAA samples (0: none) and FXAA (after the tonemap). Live: a new
+// sample count re-creates the target at the next frame. Force (--aa) makes later Set calls no-ops (benches, captures).
+void SceneTarget_SetAntiAliasing(int samples, bool fxaa);
+void SceneTarget_ForceAntiAliasing(int samples, bool fxaa);
+int SceneTarget_Samples();
+bool SceneTarget_Fxaa();
 
 #endif

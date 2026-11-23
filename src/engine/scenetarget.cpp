@@ -56,6 +56,12 @@ namespace {
         GLuint bloomTex[kBloomLevels] = {}, bloomFbo[kBloomLevels] = {};
         int bloomW[kBloomLevels] = {}, bloomH[kBloomLevels] = {};
         GLuint downProg = 0, upProg = 0;
+        // (#1610) Anti-aliasing: the scene's sample count (Settings; -1: the window's, as before) and FXAA (the composite
+        // into an LDR texture, then FXAA to the window). samplesDirty: re-create the target at the next Begin.
+        int aaSamples = -1;
+        bool fxaa = false, samplesDirty = false, aaForced = false;
+        GLuint ldrFbo = 0, ldrTex = 0, fxaaProg = 0;
+        int ldrW = 0, ldrH = 0;
     } S;
     constexpr GLuint kExposureBinding = 5;
 
@@ -64,6 +70,31 @@ namespace {
     // sides, which only some drivers' default framebuffers happen to match (PR #156 review).
     const char* kVs = "#version 330\nout vec2 uv;\nvoid main() { vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); uv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
     const char* kFs = "#version 330\nin vec2 uv;\nuniform sampler2D scene;\nout vec4 color;\nvoid main() { color = texture(scene, uv); }\n";
+    // (#1610) FXAA (Lottes' compact form): on the tonemapped, display-encoded image. Low-contrast pixels pass unchanged;
+    // edges blend along the direction the luma gradient gives, up to 8 pixels.
+    const char* kFsFxaa = R"(#version 330
+in vec2 uv;
+uniform sampler2D src;
+uniform vec2 rcpFrame;
+out vec4 color;
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+void main() {
+    vec3 m = texture(src, uv).rgb;
+    vec3 nw = texture(src, uv + vec2(-1.0, -1.0) * rcpFrame).rgb, ne = texture(src, uv + vec2(1.0, -1.0) * rcpFrame).rgb;
+    vec3 sw = texture(src, uv + vec2(-1.0, 1.0) * rcpFrame).rgb, se = texture(src, uv + vec2(1.0, 1.0) * rcpFrame).rgb;
+    float lM = luma(m), lNW = luma(nw), lNE = luma(ne), lSW = luma(sw), lSE = luma(se);
+    float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE))), lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+    if (lMax - lMin < max(0.0312, lMax * 0.125)) { color = vec4(m, 1.0); return; }
+    vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+    float reduce = max((lNW + lNE + lSW + lSE) * (0.25 / 8.0), 1.0 / 128.0);
+    float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+    dir = clamp(dir * rcpMin, vec2(-8.0), vec2(8.0)) * rcpFrame;
+    vec3 a = 0.5 * (texture(src, uv + dir * (1.0 / 3.0 - 0.5)).rgb + texture(src, uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+    vec3 b = a * 0.5 + 0.25 * (texture(src, uv - dir * 0.5).rgb + texture(src, uv + dir * 0.5).rgb);
+    float lB = luma(b);
+    color = vec4(lB < lMin || lB > lMax ? a : b, 1.0);
+}
+)";
     // HDR composite (#131). The world shaders still write display-encoded colour (pow 1/2.2, and the atmosphere, sky,
     // particles and raylib's default shader write display colour as they always did), now unclamped in RGBA16F. So: decode,
     // expose, tonemap, encode. Blending and MSAA stay where they were (display space), so nothing else changes.
@@ -306,6 +337,9 @@ void main() {
         if (S.depthFbo) glDeleteFramebuffers(1, &S.depthFbo);
         if (S.depthTex) glDeleteTextures(1, &S.depthTex);
         if (S.hizTex) glDeleteTextures(1, &S.hizTex);
+        if (S.ldrFbo) glDeleteFramebuffers(1, &S.ldrFbo); // (#1610)
+        if (S.ldrTex) glDeleteTextures(1, &S.ldrTex);
+        S.ldrFbo = S.ldrTex = 0; S.ldrW = S.ldrH = 0;
         S.fbo = S.color = S.depth = S.resolveFbo = S.resolveTex = S.depthFbo = S.depthTex = S.hizTex = 0; S.hizValid = false;
         S.w = S.h = 0;
         for (int i = 0; i < State::kBloomLevels; ++i) {
@@ -313,6 +347,30 @@ void main() {
             if (S.bloomTex[i]) glDeleteTextures(1, &S.bloomTex[i]);
             S.bloomFbo[i] = S.bloomTex[i] = 0;
         }
+    }
+
+    // (#1610) The LDR texture FXAA reads (RGBA8, linear filtering), at the target's size; made when first needed.
+    bool EnsureLdr() {
+        if (S.ldrFbo && S.ldrW == S.w && S.ldrH == S.h) return true;
+        if (S.ldrFbo) glDeleteFramebuffers(1, &S.ldrFbo);
+        if (S.ldrTex) glDeleteTextures(1, &S.ldrTex);
+        glGenTextures(1, &S.ldrTex);
+        glBindTexture(GL_TEXTURE_2D, S.ldrTex);
+        GpuMemTag gm_("scene target"); // VRAM accounting (#302)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, S.w, S.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glGenFramebuffers(1, &S.ldrFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, S.ldrFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, S.ldrTex, 0);
+        const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (!ok) { glDeleteFramebuffers(1, &S.ldrFbo); glDeleteTextures(1, &S.ldrTex); S.ldrFbo = S.ldrTex = 0; S.fxaa = false; LOG_WARN("SceneTarget", "FXAA target incomplete: FXAA off\n"); return false; }
+        S.ldrW = S.w; S.ldrH = S.h;
+        return true;
     }
 
     // The bloom levels (#140): half, quarter, ... size, RGBA16F, linear filtering.
@@ -521,11 +579,16 @@ void main() {
             S.prog = (vs && fs) ? rlLoadShaderProgram(vs, fs) : 0;
         }
         if (!S.prog) { LOG_WARN("SceneTarget", "resolve shader failed: reverse-Z off\n"); return false; }
+        { const unsigned fvs = rlCompileShader(kVs, RL_VERTEX_SHADER), ffs = rlCompileShader(kFsFxaa, RL_FRAGMENT_SHADER); // (#1610)
+          S.fxaaProg = (fvs && ffs) ? rlLoadShaderProgram(fvs, ffs) : 0; }
         glGenVertexArrays(1, &S.vao);
         GLint samples = 0;
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glGetIntegerv(GL_SAMPLES, &samples);
         S.samples = samples;
+        if (S.aaSamples >= 0) S.samples = S.aaSamples; // (#1610) the Anti-aliasing setting, set before the target existed
+        if (const char* e = getenv("RAYLIBGAME_MSAA_SAMPLES")) S.samples = atoi(e); // (#1610) A/B: the scene target's samples, apart from the window's
+        { GLint maxS = 0; glGetIntegerv(GL_MAX_SAMPLES, &maxS); S.samples = std::clamp(S.samples, 0, std::max(1, (int)maxS)); }
         if (S.hiz) { // #134
             const unsigned hcs = rlCompileShader(kCsHiZ, RL_COMPUTE_SHADER);
             S.hizProg = hcs ? rlLoadComputeShaderProgram(hcs) : 0;
@@ -542,7 +605,8 @@ bool SceneTarget_Begin(Color clear) {
     if (!Init()) return false;
     rlDrawRenderBatchActive();
     const int w = GetRenderWidth(), h = GetRenderHeight();
-    if ((w != S.w || h != S.h) && w > 0 && h > 0 && !Create(w, h)) { S.ok = false; return false; }
+    if ((w != S.w || h != S.h || S.samplesDirty) && w > 0 && h > 0 && !Create(w, h)) { S.ok = false; return false; }
+    S.samplesDirty = false;
     glBindFramebuffer(GL_FRAMEBUFFER, S.fbo);
     S.clipControl(kLowerLeft, kZeroToOne);
     glDepthFunc(GL_GREATER);
@@ -675,6 +739,9 @@ void SceneTarget_End() {
     S.clipControl(kLowerLeft, kNegOneToOne);
     glDepthFunc(GL_LEQUAL);
     glClearDepth(1.0);
+    // (#1610) FXAA: the composite goes into the LDR texture, and FXAA from there to the window.
+    const bool fxaaOn = S.fxaa && S.fxaaProg && EnsureLdr();
+    if (fxaaOn) glBindFramebuffer(GL_FRAMEBUFFER, S.ldrFbo);
     // Draw it to the window.
     glViewport(0, 0, S.w, S.h);
     glDisable(GL_DEPTH_TEST);
@@ -711,6 +778,15 @@ void SceneTarget_End() {
     }
     glBindVertexArray(S.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (fxaaOn) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glUseProgram(S.fxaaProg);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, S.ldrTex);
+        glUniform1i(glGetUniformLocation(S.fxaaProg, "src"), 0);
+        glUniform2f(glGetUniformLocation(S.fxaaProg, "rcpFrame"), 1.0f / S.w, 1.0f / S.h);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glUseProgram(0);
@@ -721,6 +797,7 @@ void SceneTarget_End() {
 
 void SceneTarget_Unload() {
     if (S.ok) Release();
+    if (S.fxaaProg) rlUnloadShaderProgram(S.fxaaProg); // (#1610)
     if (S.prog) rlUnloadShaderProgram(S.prog);
     if (S.downProg) rlUnloadShaderProgram(S.downProg);
     if (S.upProg) rlUnloadShaderProgram(S.upProg);
@@ -740,3 +817,18 @@ void SceneTarget_SetTonemap(int curve) {
 int SceneTarget_Tonemap() { return S.tonemap; }
 // (#1166) Settings > Brightness: an exposure offset in stops, after auto-exposure and before the tonemap (-1..+1).
 void SceneTarget_SetBrightness(float ev) { if (getenv("RAYLIBGAME_BRIGHTNESS")) return; S.brightnessEV = std::clamp(ev, -1.0f, 1.0f); } // the env wins (captures)
+
+// (#1610) Settings > Anti-aliasing: the scene's MSAA samples (0/1: none) and FXAA after the tonemap. A changed sample
+// count re-creates the target at the next frame. RAYLIBGAME_MSAA_SAMPLES and --aa (SceneTarget_ForceAntiAliasing) win.
+void SceneTarget_SetAntiAliasing(int samples, bool fxaa) {
+    if (S.aaForced) return;
+    S.fxaa = fxaa;
+    S.aaSamples = std::max(0, samples);
+    if (getenv("RAYLIBGAME_MSAA_SAMPLES") || !S.tried) return; // Init picks it up
+    GLint maxS = 0; glGetIntegerv(GL_MAX_SAMPLES, &maxS);
+    const int want = std::clamp(S.aaSamples, 0, std::max(1, (int)maxS));
+    if ((want > 1 ? want : 0) != (S.samples > 1 ? S.samples : 0)) { S.samples = want; S.samplesDirty = true; }
+}
+void SceneTarget_ForceAntiAliasing(int samples, bool fxaa) { S.aaForced = false; SceneTarget_SetAntiAliasing(samples, fxaa); S.aaForced = true; }
+int SceneTarget_Samples() { return S.samples > 1 ? S.samples : 0; }
+bool SceneTarget_Fxaa() { return S.fxaa; }

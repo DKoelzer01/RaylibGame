@@ -231,6 +231,10 @@ namespace {
             // #131: how bright light rolls off - Clip (hard white), Knee (today's look; highlights roll off), ACES (filmic).
             static const char* curves[] = { "Clip", "Knee", "ACES" };
             changed |= Choice({ x, y, w, h }, "Tonemap", curves, 3, settings.tonemap); next();
+            // (#1610) Anti-aliasing of the world: MSAA 4x (sharpest edges, the most GPU), 2x, FXAA (a cheap filter after the
+            // tonemap) or off. Live; Low keeps it off (#302).
+            static const char* aaNames[] = { "Off", "FXAA", "MSAA 2x", "MSAA 4x" };
+            changed |= Choice({ x, y, w, h }, "Anti-aliasing", aaNames, 4, settings.antiAliasing); next();
             changed |= Slider({ x, y, w, h }, "Brightness", settings.brightness, -1.0f, 1.0f, "%+.1f EV"); next(); // (#1166)
             // #302: Low also turns anti-aliasing (MSAA) off to save video memory; that takes a restart.
             static const int startDetail = settings.terrainDetail;
@@ -374,6 +378,7 @@ void Settings_Load() {
             else if (!strcmp(key, "terraindetail")) settings.terrainDetail = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "camerasmoothing")) settings.cameraSmoothing = std::clamp((int)v, 0, 3);
             else if (!strcmp(key, "tonemap")) settings.tonemap = std::clamp((int)v, 0, 2); // (#131)
+            else if (!strcmp(key, "antialiasing")) settings.antiAliasing = std::clamp((int)v, 0, 3); // (#1610)
             else if (!strcmp(key, "brightness")) settings.brightness = std::clamp(v, -1.0f, 1.0f); // (#1166)
             else if (!strcmp(key, "speedvignette")) settings.speedVignette = v != 0.0f;
             else if (!strcmp(key, "fireflicker")) settings.fireFlicker = v != 0.0f;
@@ -402,6 +407,7 @@ void Settings_Save() {
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
     fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", settings.terrainDetail, settings.cameraSmoothing, settings.speedVignette ? 1 : 0); // (terrain detail was never saved, #297)
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
+    fprintf(f, "antialiasing %d\n", settings.antiAliasing); // (#1610)
     fprintf(f, "brightness %.2f\n", settings.brightness); // (#1166)
     fprintf(f, "fireflicker %d\n", settings.fireFlicker ? 1 : 0);
     fprintf(f, "reduceflashing %d\n", settings.reduceFlashing ? 1 : 0);
@@ -443,6 +449,7 @@ void Settings_Apply() {
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     SceneTarget_SetBrightness(settings.brightness); // (#1166)
+    { const int aa = settings.terrainDetail == 0 ? 0 : std::clamp(settings.antiAliasing, 0, 3); SceneTarget_SetAntiAliasing(aa == 3 ? 4 : aa == 2 ? 2 : 0, aa == 1); } // (#1610; #302: Low = off)
     player.smoothMotion = settings.reduceMotion;
     gDoubleTapDodge = settings.doubleTapDodge; // (#1218)
     { const float kScale[] = { 1.0f, 0.5f, 1.0f, 2.4f }; const int k = std::clamp(settings.cameraSmoothing, 0, 3); player.eyeSmoothing = k > 0; player.eyeSmoothScale = kScale[k]; } // #168
