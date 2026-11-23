@@ -12,3 +12,12 @@ hand screw      | 2 = rod 1
 hand spring     | 1 = rod 1
 machine plate   | mechanical_press | 1 = ingot 1 | 100 | 0
 machine plate   | compressor       | 1 = ingot 1 | 60  | 8
+# (#1614 PR 2) The steam-age component machines (shaft power, tier 3) and their LV successor, the cutter. Each beats the
+# hand on metal (the structure test checks it); GUESS counts and times.
+machine rod     | lathe            | 3 = ingot 1 | 120 | 0
+machine screw   | lathe            | 4 = rod 1   | 80  | 0
+machine wire    | wiremill         | 3 = ingot 1 | 100 | 0
+machine spring  | wiremill         | 2 = rod 1   | 80  | 0
+machine gear    | mechanical_press | 1 = plate 2, rod 1 | 120 | 0
+machine rod     | cutter           | 3 = ingot 1 | 60  | 8
+machine screw   | cutter           | 4 = rod 1   | 40  | 8
