@@ -39,7 +39,7 @@ struct GameSettings {
     bool doubleTapDodge = true;     // (#1218) double-tapping a direction dodges
     bool showHands = true;          // the hands and held tool (a fixed reference in view: motion sickness)
     int handBob = 0;                // 0 full, 1 reduced, 2 off
-    int terrainDetail = 1;          // 0 Low, 1 Medium, 2 High (lighter), 3 High, 4 Ultra: LOD factor 2 / 2.5 / 2.75 / 3 / 4 (#297, #1610)
+    int terrainDetail = 1;          // 0 Low, 1 Medium, 2 Balanced, 3 High, 4 Ultra: LOD factor 2 / 2.5 / 2.75 / 3 / 4 (#297, #1610)
     int cameraSmoothing = 2;        // 0 Off, 1 Low, 2 Default, 3 High: eye smoothing strength (#168)
     bool speedVignette = false;     // darken the screen edges when moving or turning fast (#168)
     bool fireFlicker = true;        // torches and campfires flicker their light (#558: off = a steady glow)
@@ -51,7 +51,7 @@ struct GameSettings {
     float xpRate = 1.0f;              // (#883) the last New World screen's skill XP rate (the next one's default)
     bool invertSlotWheel = false;     // (#862) the inventory's scroll wheel: false = down sends one to the other side, up pulls one in
     int tonemap = 1;                // #131: the HDR curve, as the Graphics tab lists them: 0 Clip, 1 Knee (the default: today's look), 2 ACES
-    int antiAliasing = 3;           // (#1610) 0 Off, 1 FXAA, 2 MSAA 2x, 3 MSAA 4x (the scene; Low turns it off, #302)
+    int antiAliasing = 2;           // (#1610) 0 Off, 1 FXAA, 2 MSAA 2x (the default, user 2026-11-23), 3 MSAA 4x (the scene; Low turns it off, #302)
     float brightness = 0.0f;        // (#1166) an exposure offset in stops, -1..+1 (0: as tuned): nights darker or brighter
     int difficulty = 1;             // new worlds: 0 peaceful (no threats, slower hunger, extra food), 1 normal, 2 hard (no Map, hungrier, fiercer nights)
     std::string logLevel;           // settings.txt "log_level trace|debug|info|warn|error|fatal|off" (#514; --log-level wins); empty: the build default
