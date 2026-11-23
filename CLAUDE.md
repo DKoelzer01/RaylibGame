@@ -82,14 +82,16 @@ test; add a line when something goes wrong).
   before pushing a shared branch. Worktree sessions refuse compound git commands: one per call, or a script under build/.
 - Commit trailers: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and `Claude-Session: <session link>`; PR
   bodies end with the Claude Code line and the session link.
-- Save-breaking changes are fine (note them in the PR); old region formats (RGN1-3) still load.
+- Save-breaking changes are fine (note them in the PR); only RGN5 terrain edits load (RGN1-4 are skipped);
+  versioned save migration is planned in #1693.
 
 ## Sessions and coordination (user, 2026-11-19 on)
 
 - Sessions: **Lighting and Graphics** (rendering, streaming, combat #1215-#1222, creatures, item data #1446, composed
   tools #1449), **Water** (fluids, Plan 11 body frames #667 P0), **UI/UX and Adventure** (UI, multiplayer, accessibility,
-  scenario harness and CI), **Progression** (the ladder #1271, tiered machines #1427, research #1030), **Audio**, **Magic**,
-  **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
+  scenario harness and CI; also **audio** #1003), **Progression** (the ladder #1271, tiered machines #1427, research
+  #1030). **Magic** (#1001) is split by feature (user, 2026-11-23): crafting, machines and essence logistics go to
+  Progression; spells, rituals and the adventure side to UI/UX and Adventure. **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
   the coordinator.
 - **Messages:** send only what someone needs: reports, questions, PR numbers. No acknowledgements of FYIs ("holding",
   "noted"); a message marked "FYI" needs no reply. Batch your requests.
