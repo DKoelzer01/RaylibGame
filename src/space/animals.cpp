@@ -927,7 +927,8 @@ ChunkId ChunkOf(Vector3 p, int si) {
 
 // (#1227) No rock within 40 m over a body-local point (2 m steps): under the open sky.
 // (#1227) The creature facing rules (wind-up holds facing, a turn rate, strikes only in front); RAYLIBGAME_CREATURE_TURN=0: off (A/B).
-static bool CreatureTurnRules() { static const bool on = !(getenv("RAYLIBGAME_CREATURE_TURN") && getenv("RAYLIBGAME_CREATURE_TURN")[0] == '0'); return on; }
+static int CreatureTurnMask() { static const int m = getenv("RAYLIBGAME_CREATURE_TURN") ? atoi(getenv("RAYLIBGAME_CREATURE_TURN")) : 7; return m; } // bits: 1 the wind-up hold, 2 the turn rate, 4 strikes in front only
+static bool CreatureTurnRules() { return CreatureTurnMask() != 0; }
 static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
     const Vector3 up = Vector3Normalize(p);
     for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
@@ -1521,7 +1522,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 // (#1227) A creature's strike lands only in front of it (within 75 degrees of where it faces, GUESS): with its
                 // facing held through the wind-up, stepping round it is the counter.
                 bool inFront = true;
-                if (cs && CreatureTurnRules()) {
+                if (cs && (CreatureTurnMask() & 4)) {
                     const Vector3 upA = Vector3Normalize(a.pos);
                     Vector3 eA, nA; TangentFrame(upA, eA, nA);
                     const Vector3 fwdA = Vector3Add(Vector3Scale(eA, cosf(a.heading)), Vector3Scale(nA, sinf(a.heading)));
@@ -1656,8 +1657,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
         }
         if (cs && CreatureTurnRules()) {
-            if (a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
-            else if (a.state == State::Hunt && !goingTo) { // (an attack: a thief going for a pile turns freely, else it circles the pile)
+            if ((CreatureTurnMask() & 1) && a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
+            else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo) { // (an attack: a thief going for a pile turns freely, else it circles the pile)
                 constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
                 float d = a.heading - a.prevHeading;
                 d = atan2f(sinf(d), cosf(d));
