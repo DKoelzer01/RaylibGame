@@ -432,7 +432,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
-        if (!buildTool.orientManual && aim.part.type == PartType::Ladder && hitFace.y != 0) { // (#1640) stacked on (or under) a ladder: its facing
+        static const bool stackFacing = !(getenv("RAYLIBGAME_LADDER_STACK_FACING") && getenv("RAYLIBGAME_LADDER_STACK_FACING")[0] == '0'); // (A/B)
+        if (stackFacing && !buildTool.orientManual && aim.part.type == PartType::Ladder && hitFace.y != 0) { // (#1640) stacked on (or under) a ladder: its facing
             const int on = hitPlot->partAt(hitCell);
             if (on >= 0 && hitPlot->parts[on].type == PartType::Ladder) { aim.part.orient = hitPlot->parts[on].orient; buildTool.orient = aim.part.orient; }
         }
