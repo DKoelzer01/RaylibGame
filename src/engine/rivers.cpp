@@ -771,6 +771,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // samples a node.
     if (params.bankHeight) {
         constexpr float kMaxLower = 3.0f;
+        const bool perchedOld = EnvFlag("RAYLIBGAME_RIVER_PERCHED_OLD"); // (#1520) A/B: =1 the 3 m limit everywhere
         const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t)
@@ -783,15 +784,20 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
                                          : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                     const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
                     const float half = discWidthOf(k);
-                    float cap = 1e30f;
+                    float capS[2] = { 1e30f, 1e30f }; // per side
                     const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
                     for (int a = 0; a < 2; ++a)
                         for (float off : { half + 2.0f, half + 6.0f }) {
                             if (a == 1 && off > half + 2.0f) continue;
-                            for (int s = -1; s <= 1; s += 2)
-                                cap = std::min(cap, params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, s * off)))) - 0.3f);
+                            for (int s = 0; s < 2; ++s)
+                                capS[s] = std::min(capS[s], params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, (s ? 1.0f : -1.0f) * off)))) - 0.3f);
                         }
-                    own[k] = std::max(std::min(own[k], cap), own[k] - kMaxLower);
+                    const float cap = std::min(capS[0], capS[1]);
+                    // (#1520) Both banks far under the level is water perched over falling ground (rapids on gullied slopes stood
+                    // 6-9 m over the ground on both sides, a tilted floating slab): no slope to run along, so it goes all the way
+                    // down to where it would spill. One high bank keeps the limit (a river along a slope: no trench into it).
+                    const bool perched = capS[0] < own[k] - kMaxLower && capS[1] < own[k] - kMaxLower && !perchedOld;
+                    own[k] = perched ? std::min(own[k], cap) : std::max(std::min(own[k], cap), own[k] - kMaxLower);
                 }
             });
         for (auto& th : pool) th.join();
