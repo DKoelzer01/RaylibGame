@@ -2122,6 +2122,11 @@ Vector3 Fluid::FlowAt(const Planetoid& body, Vector3 local, float radius) {
     std::lock_guard<std::mutex> lk(flowMx);
     const double now = GetTime();
     radius = std::max(0.5f, radius); // as stored: a smaller radius matched no watch and added one every call (#392 review)
+    // The CPU path never resolves watches, so nothing else expires them: same 3 s rule here, or the list only grows (#1680).
+    // Not on the GPU path: GpuFlowResolve erases there, and watchCells is indexed by position until its next resolve.
+    if (!gpuMode)
+        flowWatches.erase(std::remove_if(flowWatches.begin(), flowWatches.end(), [&](const FlowWatch& w) { return now - w.lastAsk > 3.0; }), flowWatches.end());
+    // CPU mode has no flux readout yet (the value stays 0); only the GPU path reads flow back (GpuFlowRead).
     for (FlowWatch& w : flowWatches)
         if (w.body == body.id && fabsf(w.r - radius) < 0.01f && Vector3DistanceSqr(w.local, local) < 0.25f) { w.lastAsk = now; return w.value; }
     FlowWatch w; w.body = body.id; w.local = local; w.r = radius; w.lastAsk = now;
