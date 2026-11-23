@@ -10,9 +10,11 @@
 #include "terraintool.h"
 #include "world.h"
 #include <raymath.h>
+#include <string>
 
 namespace {
 Plot* plot = nullptr;
+std::string aimNote;
 Int3 base{};
 const Int3 kOut[4] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 const char* kName[4] = { "east", "west", "north", "south" };
@@ -65,19 +67,20 @@ SCENARIO("build/ladder-stack") {
             if (phase == 0) { phase = 1; return false; } // the camera in place a frame first
             if (phase == 1) { // (flying never sets the player's body, #1555: the build tool aims on it)
                 player.nearest = c.body;
-                PlayerInput in; in.press(Act::Secondary); BuildTool_Update(c.world, in, true); phase = 2; return false;
+                buildTool.active = true; buildTool.part = (int)PartType::Ladder; // (the game's own update, flying, turns it off each frame)
+                PlayerInput in; in.press(Act::Secondary); BuildTool_Update(c.world, in, true);
+                Vector3 no{}; Int3 o2{};
+                const Plot* ap = BuildTool_AimPlacement(&no, &o2);
+                aimNote = TextFormat("aim plot %s, origin (%d, %d, %d), orient %d", ap == plot ? "the walls'" : ap ? "another" : "none", o2.x, o2.y, o2.z, BuildTool_AimOrient());
+                phase = 2; return false;
             }
             // the placed ladder: in the column, the row above the last
             const int row = col.y + 1 + placed;
             const int at = plot->partAt({ col.x, row, col.z });
             const bool ladder = at >= 0 && plot->parts[at].type == PartType::Ladder;
             if (!ladder) { // (what the build tool aimed at, for the failure's story)
-                Vector3 no{}; Int3 o2{};
-                const Plot* ap = BuildTool_AimPlacement(&no, &o2);
                 int ladders = 0; for (const Part& p : plot->parts) ladders += p.type == PartType::Ladder;
-                c.note(TextFormat("%s ladder %d: body %d, aim plot %s, aim origin (%d, %d, %d), orient %d, the column (%d, %d, %d), ladders on the plot %d",
-                                  kName[f], placed + 1, player.nearest ? 1 : 0, ap == plot ? "the walls'" : ap ? "another" : "none", o2.x, o2.y, o2.z,
-                                  BuildTool_AimOrient(), col.x, row, col.z, ladders));
+                c.note(TextFormat("%s ladder %d: %s; the column (%d, %d, %d), ladders on the plot %d", kName[f], placed + 1, aimNote.c_str(), col.x, row, col.z, ladders));
             }
             c.check(TextFormat("%s: ladder %d in the column, row %d", kName[f], placed + 1, row - col.y), ladder);
             if (!ladder) return true;
