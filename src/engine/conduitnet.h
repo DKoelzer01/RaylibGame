@@ -29,6 +29,8 @@ struct ConduitFlowNode { int node; int64_t amount; };   // a source's supply or 
 // Max flow from sources to sinks over the graph's edges (undirected: each edge carries up to its capacity * ticks in
 // either direction). Returns each sink's delivered amount (same order as sinks).
 std::vector<int64_t> Conduit_MaxFlow(const ConduitGraph& g, const std::vector<ConduitFlowNode>& sources,
-                                     const std::vector<ConduitFlowNode>& sinks, int ticks);
+                                     const std::vector<ConduitFlowNode>& sinks, int ticks, std::vector<int64_t>* sourceFlow = nullptr);
+// sourceFlow (optional): what each source actually sent (same order as sources); several sources on one node split what
+// left that node in input order, each up to its amount.
 
 #endif
