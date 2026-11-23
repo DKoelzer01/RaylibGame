@@ -15,6 +15,7 @@ constexpr long long kBudget = 760;        // m^3 of floating rock in all (today 
 constexpr int kMinChambers = 10;          // fewer: the check would say little (today 20)
 constexpr float kCavernRange = 1200.0f;   // (#1465) large caverns within this (seed 42: 2, r 86 and 91 m, 2 m grid)
 constexpr long long kCavernBudget = 830;  // m^3 floating in them (784 when caverns landed; GUESS margin, the same rule)
+constexpr long long kSheetBudget = 460;   // (#1465) m^3 floating in the sheet caves within the same range (432 when they landed: 36 sheets; GUESS)
 }
 
 SCENARIO("caves/islands") {
@@ -38,6 +39,9 @@ SCENARIO("caves/islands") {
         c.metric("floating rock in caverns (m^3)", (double)r.cavernVolume, "m^3");
         c.check("a cavern to judge (>= 1)", r.caverns >= 1, std::to_string(r.caverns));
         c.check("floating rock in caverns within budget (<= 830 m^3)", r.cavernVolume <= kCavernBudget, std::to_string(r.cavernVolume) + " m^3");
+        c.metric("sheet caves within 1200 m", r.sheets, "");
+        c.metric("floating rock in sheet caves (m^3)", (double)r.sheetVolume, "m^3");
+        c.check("floating rock in sheet caves within budget (<= 460 m^3)", r.sheetVolume <= kSheetBudget, std::to_string(r.sheetVolume) + " m^3");
         return true;
     });
 }

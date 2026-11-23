@@ -125,6 +125,7 @@ void Scan(Scene& world) {
                 const int k = pf->oreKind(p, depth);
                 if (k < 0) continue;
                 best = dist; S().scanDist = dist; S().scanKind = PlanetField::OreKindName(k); S().scanLocal = p;
+                if (const char* fam = pf->depositFamilyAt(p)) S().scanKind += std::string(" (") + fam + ")"; // (#1467) its vein family
             }
 }
 

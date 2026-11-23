@@ -4,7 +4,10 @@
 #include <cstring>
 #include "voxel.h"
 #include "ores.h"
+#include "oreveins.h"
+#include "underground.h"
 #include "cavekinds.h"
+#include "underground.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
@@ -1201,6 +1204,7 @@ namespace {
 constexpr float kCaveCell = 256.0f;
 constexpr int kCaveCellReach = 3;      // a passage and its branches run at most ~700 m: cells within 3 of a point can reach it
 constexpr float kCavernShare = 0.006f;  // (#1465) the share of deep (100 m+) main-passage vertices with a large cavern (GUESS)
+constexpr float kSheetShare = 0.03f;    // (#1465) the share of main-passage vertices 30-120 m down (in layered rock) with a sheet cave (GUESS)
 struct CaveSeg { Vector3 a, b, up; float ra, rb, flat; int kind = 0; }; // kind: 0 passage, 1 mouth (rougher, rubble floor), 2 rubble apron (solid)
 struct CaveMouth { Vector3 at, out; int kind = 0; float radius = 0.0f, depth = 0.0f; }; // radius, depth: shafts (kind 1, #1067) // (#615 step 3) an entrance: its axis point at the face, outward; kind 0 hillside, 1 karst sink (#1052: at the doline floor, out = up), 2 resurgence; 3 a chamber's centre (#1058: not an entrance)
 struct CaveCellData { std::vector<CaveSeg> segs; std::vector<CaveMouth> mouths; };
@@ -1331,6 +1335,41 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             if (cavernSolids) add(onFloor(dist, ang, floorH - 1.0f), onFloor(dist, ang, 1.4f * r * flat), pr, pr, 1.0f, (int)CaveKind::Solid);
         }
     };
+    // (#1465 cave variety) A sheet cave at a main-passage vertex 30-120 m down in layered rock (sedimentary strata, or a
+    // karst region on the underground map): a wide, low bedding-plane passage, kind 5 (cavekinds.h: a level floor, pockets
+    // and wander at a passage's size, outcrops capped at 3 m), half-width 12-25 m, height x0.12-0.2, running 40-100 m level
+    // (the same depth under the ground at both ends) from the vertex at a random heading. Its own numbers, as caverns; only
+    // where its reach stays inside the cells' gather reach, and its roof 10 m+ under the ground. RAYLIBGAME_CAVE_SHEETS=0: none.
+    static const bool sheetsOn = !(getenv("RAYLIBGAME_CAVE_SHEETS") && getenv("RAYLIBGAME_CAVE_SHEETS")[0] == '0');
+    auto sheet = [&](Vector3 c, Vector3 head, float depth, uint32_t bits) {
+        const Vector3 up = Vector3Normalize(c);
+        const int province = f.strataColumn(up).province;
+        if (province != 0 && province != 3 && Underground_RegionAt(f, c) != UndergroundRegion::Karst) return; // layered rock only
+        std::mt19937 g(bits);
+        std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
+        const float r = 12.0f + 13.0f * Ug(g), flat = 0.12f + 0.08f * Ug(g), L = 40.0f + 60.0f * Ug(g), turn = 2.0f * PI * Ug(g);
+        if (depth - r * flat * 2.3f < 10.0f) return;
+        const Vector3 hd0 = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
+        const Vector3 sd0 = Vector3CrossProduct(up, hd0);
+        const Vector3 hd = Vector3Add(Vector3Scale(hd0, cosf(turn)), Vector3Scale(sd0, sinf(turn)));
+        const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(up, R), Vector3Scale(hd, L)));
+        const float e2 = f.elevation(dir2);
+        if (e2 < 0.0f) return;                                             // not under the sea
+        const Vector3 end = Vector3Scale(dir2, R + e2 - depth);           // level: the same depth under the ground
+        const Vector3 mid = Vector3Scale(Vector3Add(c, end), 0.5f);
+        const float ml = Vector3Length(mid);
+        if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml - r * flat * 2.3f < 10.0f) return; // (the ground between may dip)
+        const Vector3 sp = Vector3Scale(Vector3Normalize(mid), R);
+        for (int a = 0; a < 3; ++a) {
+            const float p = a == 0 ? sp.x : a == 1 ? sp.y : sp.z, lo = a == 0 ? cellLo.x : a == 1 ? cellLo.y : cellLo.z;
+            const float outside = std::max(0.0f, std::max(lo - p, p - (lo + kCaveCell)));
+            if (outside + 0.5f * L + 2.6f * r > kCaveCellReach * kCaveCell - 64.0f) return;
+        }
+        CaveSeg sg; sg.a = c; sg.b = end; sg.ra = r; sg.rb = r; sg.flat = flat; sg.up = Vector3Normalize(Vector3Add(c, end)); sg.kind = (int)CaveKind::Sheet;
+        segs->push_back(sg);
+        CaveMouth cm; cm.at = mid; cm.out = sg.up; cm.kind = 5; cm.radius = 0.5f * L + r; cm.depth = depth; // (kind 5: a sheet cave's middle; radius: its half-extent, for the islands gate)
+        data->mouths.push_back(cm);
+    };
     std::function<void(Vector3, Vector3, float, float, float, int, int)> walk = [&](Vector3 pos, Vector3 head, float depth, float r, float flat, int n, int level) {
         Vector3 dir = Vector3Normalize(pos);
         const float rmin = level == 0 ? 2.0f : 1.2f, rmax = level == 0 ? 8.0f : 4.0f;
@@ -1355,10 +1394,12 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
             if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
-            if (level == 0 && cavernsOn) { // (#1465) a large cavern: its own numbers (no draw from rng: the rest stays as before)
+            if (level == 0) { // (#1465) large caverns and sheet caves: their own numbers (no draw from rng: the rest stays as before)
                 uint32_t h = cellBits ^ (uint32_t)(++vertexNo) * 0x9E3779B1u;
                 h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
-                if (depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+                if (cavernsOn && depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+                const uint32_t hs = h * 0x85ebca6bu ^ 0x5bd1e995u; // a second draw from the same hash
+                if (sheetsOn && depth2 >= 30.0f && depth2 <= 120.0f && ((hs ^ (hs >> 13)) >> 8) * (1.0f / 16777216.0f) < kSheetShare) sheet(pos2, head, depth2, hs);
             }
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
@@ -2101,7 +2142,7 @@ static float CaveGraphDistance(const CaveNoises& N, Vector3 q, const float* segs
                 const float fc = std::clamp(fa, 0.0f, 1.0f);
                 const float fade = fc * fc * (3.0f - 2.0f * fc);
                 static const float hallRa = getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA") ? (float)atof(getenv("RAYLIBGAME_CAVE_HALL_NOISE_RA")) : 4.0f; // (#1116: 8 -> 4 m, floating 1500 -> 722 m^3 with the swell fix; the env is CPU only, tuning)
-                const float cap = K.outcropCap > 0.0f && hall ? hallRa : K.outcropCap; // (the env tunes chambers' cap, CPU only)
+                const float cap = ki == (int)CaveKind::Chamber ? hallRa : K.outcropCap; // (the env tunes only chambers' cap, CPU only; its default = the table's 4)
                 const float ra = cap > 0.0f ? std::min(rw, cap) : rw;          // chambers: outcrops at most passage-sized (else tens of metres)
                 intrude = K.intrude * ra * fade * wn;
             }
@@ -3697,26 +3738,39 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
 // ---------------------------------------------------------------------------------------------
 
 namespace {
-    constexpr float kDepositCell = 96.0f;
-    uint32_t OreHash(int x, int y, int z, uint32_t seed) {
-        uint32_t h = (uint32_t)x * 73856093u ^ (uint32_t)y * 19349663u ^ (uint32_t)z * 83492791u ^ seed * 2654435761u;
-        h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
-        return h;
-    }
-    float OreUnit(uint32_t& h) { h = h * 1664525u + 1013904223u; return (h >> 8) * (1.0f / 16777216.0f); }
-    struct Deposit { bool exists; Vector3 centre; float radius; int kind; };
-    Deposit DepositOf(int cx, int cy, int cz, uint32_t seed) {
-        uint32_t h = OreHash(cx, cy, cz, seed);
-        Deposit d{ false, {}, 0, -1 };
-        if (OreUnit(h) > 0.35f) return d;
-        d.exists = true;
-        d.centre = { (cx + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cy + 0.25f + 0.5f * OreUnit(h)) * kDepositCell, (cz + 0.25f + 0.5f * OreUnit(h)) * kDepositCell };
-        d.radius = 3.5f + 5.5f * OreUnit(h); // 7-18 m across
-        d.kind = Ores_DepositKind(OreUnit(h)); // (#1466) ores.txt: each kind's share of the deposits, in its roll order
-        if (d.kind < 0) d.exists = false;
-        return d;
-    }
+    constexpr float kDepositCell = kVeinCell;
+    uint32_t OreHash(int x, int y, int z, uint32_t seed) { return OreVeins_Hash(x, y, z, seed); }
+    float OreUnit(uint32_t& h) { return OreVeins_Unit(h); }
     float MinDepth(int kind) { const OreDef* o = Ores_Get(kind); return o ? o->minDepth : 1e30f; }
+    const char* RockName(RockType r) {
+        static const char* n[] = { "rock", "granite", "basalt", "sandstone", "limestone", "marble" };
+        return (int)r < (int)(sizeof(n) / sizeof(n[0])) ? n[(int)r] : "rock";
+    }
+}
+
+// (#1467) A cell's deposit: a vein family picked by the rock, depth, biome and region at its centre (oreveins.h). Those
+// lookups are dear and oreKind runs per mesh vertex on the workers, so each thread keeps the cells it has seen (the result
+// is a pure function of the field and the cell: no locks). Bounded: cleared past 65536 cells.
+VeinDeposit PlanetField::depositOf(int cx, int cy, int cz) const {
+    struct Key { const PlanetField* f; uint32_t seed; int x, y, z; bool operator==(const Key& o) const { return f == o.f && seed == o.seed && x == o.x && y == o.y && z == o.z; } };
+    struct KeyHash { size_t operator()(const Key& k) const { return (size_t)OreVeins_Hash(k.x, k.y, k.z, k.seed ^ (uint32_t)(uintptr_t)k.f); } };
+    static thread_local std::unordered_map<Key, VeinDeposit, KeyHash> cache;
+    const Key key{ this, oreSeed, cx, cy, cz };
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+    if (cache.size() > 65536) cache.clear();
+    const VeinDeposit d = OreVeins_Make(cx, cy, cz, OreHash(cx, cy, cz, oreSeed), [&](Vector3 c) {
+        VeinSite s;
+        const float r = Vector3Length(c);
+        const Vector3 dir = Vector3Scale(c, 1.0f / std::max(r, 1.0f));
+        const float elev = elevation(dir, 8.0f);
+        s.depth = radius + elev - r;
+        s.rock = RockName(rockTypeAt(c));
+        s.biome = BiomeName(biomeAt(dir, elev));
+        s.region = UndergroundRegion_Name(Underground_RegionAt(*this, c)); // (#1548) the underground region map
+        return s;
+    });
+    cache.emplace(key, d);
+    return d;
 }
 
 const char* PlanetField::OreKindName(int kind) {
@@ -3727,13 +3781,18 @@ int PlanetField::OreKindCount() { return Ores_Count(); }
 
 int PlanetField::oreKind(Vector3 p, float depth) const {
     if (moon || depth < 3.0f) return -1;
-    // A deposit (its blob stays inside its own cell: centre at least 24 m from the edges, radius <= 9 m
-    // plus the lumpiness).
+    // A deposit of a vein family in its shape (#1467; every shape stays inside its own cell: centre at least 24 m from the
+    // edges, kVeinReach 22 m), each point one of the family's ores
     const int cx = (int)floorf(p.x / kDepositCell), cy = (int)floorf(p.y / kDepositCell), cz = (int)floorf(p.z / kDepositCell);
-    const Deposit d = DepositOf(cx, cy, cz, oreSeed);
-    if (d.exists && depth >= MinDepth(d.kind)) {
-        const float k = Vector3Distance(p, d.centre) / d.radius + 0.35f * veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
-        if (k < 1.0f) return d.kind;
+    const VeinDeposit d = depositOf(cx, cy, cz);
+    if (d.exists && Vector3Distance(p, d.centre) < kVeinReach + 1.0f) {
+        const float n1 = veins.fractal(2, p.x * 3.0f, p.y * 3.0f, p.z * 3.0f);
+        const float s = d.shape == VeinShape::Stockwork ? 30.0f / std::max(d.size, 1.0f) : 0.0f; // (veins is 1/30 m: veins d.size apart)
+        const float n2 = d.shape == VeinShape::Stockwork ? veins.fractal(1, p.x * s + 517.0f, p.y * s, p.z * s) : 1.0f;
+        if (OreVeins_Inside(d, p, n1, n2)) {
+            const int k = OreVeins_Member(d, p);
+            if (k >= 0 && depth >= MinDepth(k)) return k;
+        }
     }
     // Scattered pockets of the common ores and coal, more of them near the surface.
     const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
@@ -3747,10 +3806,17 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
 
 bool PlanetField::depositAt(Vector3 p, Vector3& centre, float& radius, int& kind) const {
     if (moon) return false;
-    const Deposit d = DepositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell), oreSeed);
+    const VeinDeposit d = depositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell));
     if (!d.exists) return false;
-    centre = d.centre; radius = d.radius; kind = d.kind;
-    return true;
+    const auto& fams = OreFamilies_All();
+    centre = d.centre; radius = d.envelope; kind = fams[d.family].members.empty() ? -1 : fams[d.family].members[0].kind; // its main ore
+    return kind >= 0;
+}
+
+const char* PlanetField::depositFamilyAt(Vector3 p) const {
+    if (moon) return nullptr;
+    const VeinDeposit d = depositOf((int)floorf(p.x / kDepositCell), (int)floorf(p.y / kDepositCell), (int)floorf(p.z / kDepositCell));
+    return d.exists ? OreFamilies_All()[d.family].id.c_str() : nullptr;
 }
 
 int PlanetField::depositNear(Vector3 p, float reach) const {
@@ -3762,10 +3828,10 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     for (int z = z0; z <= z1; ++z)
         for (int y = y0; y <= y1; ++y)
             for (int x = x0; x <= x1; ++x) {
-                const Deposit d = DepositOf(x, y, z, oreSeed);
-                if (!d.exists) continue;
-                const float dist = Vector3Distance(p, d.centre) - d.radius;
-                if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
+                const VeinDeposit d = depositOf(x, y, z);
+                if (!d.exists || d.family < 0 || OreFamilies_All()[d.family].members.empty()) continue;
+                const float dist = Vector3Distance(p, d.centre) - d.envelope;
+                if (dist < reach && dist < bestD) { bestD = dist; best = OreFamilies_All()[d.family].members[0].kind; } // its main ore
             }
     return best;
 }

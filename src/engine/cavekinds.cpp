@@ -41,25 +41,27 @@ std::string CaveKinds_Glsl() {
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
 TEST(CaveKinds, TodaysKindsAndTheirIndex) {
-    ASSERT_EQ(kCaveKindCount, 5);
+    ASSERT_EQ(kCaveKindCount, 6);
     EXPECT_STREQ(kCaveKinds[(int)CaveKind::Passage].name, "passage");
     EXPECT_STREQ(kCaveKinds[(int)CaveKind::Mouth].name, "mouth");
     EXPECT_STREQ(kCaveKinds[(int)CaveKind::Solid].name, "solid");
     EXPECT_STREQ(kCaveKinds[(int)CaveKind::Chamber].name, "chamber");
     EXPECT_STREQ(kCaveKinds[(int)CaveKind::Cavern].name, "cavern");
+    EXPECT_STREQ(kCaveKinds[(int)CaveKind::Sheet].name, "sheet");
     // the old inline tests: mouth 0.5 < k < 1.5, solid 1.5 < k < 2.5, hall k > 2.5, else passage
     EXPECT_EQ(CaveKind_Index(0.0f), 0);
     EXPECT_EQ(CaveKind_Index(1.0f), 1);
     EXPECT_EQ(CaveKind_Index(2.0f), 2);
     EXPECT_EQ(CaveKind_Index(3.0f), 3);
     EXPECT_EQ(CaveKind_Index(4.0f), 4) << "a cavern";
-    EXPECT_EQ(CaveKind_Index(7.0f), 4) << "past the last: the last";
+    EXPECT_EQ(CaveKind_Index(5.0f), 5) << "a sheet cave";
+    EXPECT_EQ(CaveKind_Index(7.0f), 5) << "past the last: the last";
     EXPECT_EQ(CaveKind_Index(-1.0f), 0);
 }
 TEST(CaveKinds, TheGlslBlockReadsBackExactly) {
     const std::string g = CaveKinds_Glsl();
-    EXPECT_NE(g.find("const float kCK_outline[5] = float[](0.200000003, 0.400000006, 0.200000003, 0.200000003, 0.200000003);"), std::string::npos) << g;
-    EXPECT_NE(g.find("const float kCK_fixedLevel[5] = float[](-1.0, 0.449999988, -1.0, -1.0, -1.0);"), std::string::npos) << g;
-    EXPECT_NE(g.find("const int kCK_solid[5] = int[](0, 0, 1, 0, 0);"), std::string::npos) << g;
+    EXPECT_NE(g.find("const float kCK_outline[6] = float[](0.200000003, 0.400000006, 0.200000003, 0.200000003, 0.200000003, 0.200000003);"), std::string::npos) << g;
+    EXPECT_NE(g.find("const float kCK_fixedLevel[6] = float[](-1.0, 0.449999988, -1.0, -1.0, -1.0, -1.0);"), std::string::npos) << g;
+    EXPECT_NE(g.find("const int kCK_solid[6] = int[](0, 0, 1, 0, 0, 0);"), std::string::npos) << g;
 }
 #endif

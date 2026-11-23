@@ -3,6 +3,7 @@
 #include "structures.h"
 #include "voxel.h"
 #include "ores.h"
+#include "orefamilies.h"
 #include "world.h"
 
 #include <raymath.h>
@@ -94,7 +95,15 @@ const char* Locate_CompassPoint(float bearing) {
 }
 
 std::string Locate_FeatureList() {
-    return "cave, hillside, sinkhole, resurgence, chamber, karst, tube, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, ore, ore:<kind>, biome:<name>";
+    std::string s = "cave, hillside, sinkhole, resurgence, chamber, karst, tube, volcano, ruin, dungeon, camp, wreck, wonder, spring, oilseep, lake, river, ore, ore:<kind>, biome:<name>";
+    // (#1467) the ore kinds, from ores.txt (the new vein families' ores too)
+    s += " (ore kinds:";
+    for (int k = 0; k < Ores_Count(); ++k) {
+        std::string id = Ores_Get(k)->item;
+        if (id.size() > 4 && id.compare(id.size() - 4, 4, "_ore") == 0) id.resize(id.size() - 4);
+        s += (k ? ", " : " ") + id;
+    }
+    return s + ")";
 }
 
 bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& featureIn, int n, std::vector<LocateHit>& out, std::string& why) {
@@ -152,9 +161,10 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
             }
         }
     } else if (feature == "ore" || feature.rfind("ore:", 0) == 0) {
-        // Ore deposits (#207: one blob per 96 m cell in about a third of them): the cells under the ground round the
-        // player, 5-100 m down; a deposit counts when its centre is under the surface. ore:<kind> = iron, copper, tin,
-        // coal, bauxite, ilmenite.
+        // Ore deposits (#207: one per 96 m cell in about a third of them; #1467: each an ore family in its vein shape): the
+        // cells under the ground round the player, 5-200 m down; a deposit counts when its centre is under the surface.
+        // ore:<kind> = any ores.txt kind (iron, copper, tin, coal, bauxite, ilmenite, galena, sphalerite, acanthite,
+        // magnetite, pentlandite, cinnabar, chromite, wolframite, gold): a deposit whose family holds it, main ore or not.
         int want = -1;
         if (feature.size() > 4) {
             const std::string name = feature.substr(4);
@@ -180,17 +190,26 @@ bool Locate_Find(const Planetoid& body, Vector3 from, const std::string& feature
             if (a * a + b * b > kRange * kRange) continue;
             const Vector3 d = Vector3Normalize(Vector3Add(Vector3Scale(home, pf->radius), Vector3Add(Vector3Scale(east, a), Vector3Scale(north, b))));
             const float ground = pf->radius + pf->elevation(d);
-            for (float depth = 5.0f; depth <= 100.0f; depth += 47.5f) {
+            for (float depth = 5.0f; depth <= 200.0f; depth += 48.75f) { // (#1467: the deep families start at 60-100 m)
                 Vector3 c; float r; int kind;
-                if (!pf->depositAt(Vector3Scale(d, ground - depth), c, r, kind) || (want >= 0 && kind != want)) continue;
+                const Vector3 at = Vector3Scale(d, ground - depth);
+                if (!pf->depositAt(at, c, r, kind)) continue;
+                const char* famId = pf->depositFamilyAt(at);
+                const OreFamily* fam = famId ? OreFamilies_Find(famId) : nullptr;
+                if (want >= 0) { // its family holds the ore (a byproduct too: sphalerite in lead-zinc-silver)
+                    bool holds = kind == want;
+                    if (fam) for (const OreFamilyMember& m : fam->members) holds = holds || m.kind == want;
+                    if (!holds) continue;
+                }
                 const float down = pf->radius + pf->elevation(Vector3Normalize(c)) - Vector3Length(c);
                 if (down < 2.0f) continue; // (in the air, or barely under: no ore there)
                 bool seen = false;
                 for (const Vector3& o : centres) if (Vector3Distance(o, c) < 1.0f) { seen = true; break; }
                 if (seen) continue;
                 centres.push_back(c);
-                char what[96];
-                snprintf(what, sizeof what, "%s deposit, ~%.0f m across, %.0f m down", PlanetField::OreKindName(kind), 2.0f * r, down);
+                char what[160];
+                if (fam) snprintf(what, sizeof what, "%s deposit (%s, %s), ~%.0f m across, %.0f m down", PlanetField::OreKindName(kind), fam->id.c_str(), OreFamilies_ShapeName(fam->shape), 2.0f * r, down);
+                else snprintf(what, sizeof what, "%s deposit, ~%.0f m across, %.0f m down", PlanetField::OreKindName(kind), 2.0f * r, down);
                 add(Ground(*pf, Vector3Normalize(c)), what);
             }
         }

@@ -43,8 +43,10 @@ SCENARIO("world/locate") {
         Planetoid* const body = p.nearest ? p.nearest : c.body;
         const Vector3 from = p.nearest ? p.nearest->toLocalD(p.position).toFloat() : Vector3Scale(c.field->findSpawnDir(c.body->seed), c.field->radius + 2.0f);
         if (!p.nearest) c.note("the player has no body yet: searching from the spawn point");
-        const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert", "ore", "ore:iron" };
-        const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river" };
+        // (#1467) ore:sphalerite: a byproduct, never a family's main ore, found through its family (lead-zinc-silver)
+        const char* common[] = { "cave", "ruin", "spring", "lake", "biome:desert", "ore", "ore:iron", "ore:sphalerite" };
+        const char* rare[] = { "hillside", "sinkhole", "resurgence", "karst", "tube", "chamber", "volcano", "dungeon", "camp", "wreck", "wonder", "oilseep", "river",
+                               "ore:galena", "ore:magnetite", "ore:gold", "ore:pentlandite", "ore:cinnabar", "ore:chromite", "ore:wolframite" };
         for (const char* f : common) {
             std::vector<LocateHit> hits; std::string why;
             const bool ok = Locate_Find(*body, from, f, 3, hits, why);

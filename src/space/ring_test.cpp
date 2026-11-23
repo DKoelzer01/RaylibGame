@@ -13,6 +13,7 @@
 #include "ring.h"
 #include "world.h"
 #include "worldtypes.h"
+#include "terrainarena.h"
 
 #include <raymath.h>
 #include <algorithm>
@@ -169,6 +170,14 @@ int RingTest_Update(Scene& world) {
             printf("bench: ring: standing on %s (%.0f m across): grounded %d%% of 3 s, gravity %.2f m/s^2, %.0f m from its centre\n",
                    huge->name.c_str(), huge->radius * 1.44f, 100 * groundedFrames / std::max(1, standFrames), player.gravity, Vector3Distance(feet, huge->position));
             ok &= groundedFrames > standFrames * 9 / 10 && player.gravity > 0.5f && player.gravity < 3.0f && survival.deaths == 0;
+            { // (#1560) A playtest aborted out here: the huge rock's preload ring (~300 k nodes: the whole body) reserved
+              // 146.7 M vertices (~4.9 GB) with ~11 M in use. Its own line (the gate above has #488's grounding too).
+                const ArenaStats as = TerrainArena_Stats();
+                const bool bounded = as.vertexCapacity <= (32 << 20) && as.indexCapacity <= (192 << 20);
+                printf("bench: ring arena (#1560): %.1f M / %.1f M vertices, %.1f M / %.1f M indices at %s -> %s\n", as.vertices / 1e6, as.vertexCapacity / 1e6,
+                       as.indices / 1e6, as.indexCapacity / 1e6, huge->name.c_str(), bounded ? "PASS" : "FAIL");
+                ok &= bounded;
+            }
             printf("bench: ring gate: %s\n", ok ? "PASS" : "FAIL");
             return ok ? 1 : -1;
         }

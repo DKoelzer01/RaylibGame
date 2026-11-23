@@ -147,9 +147,15 @@ namespace {
         while (glGetError() != GL_NO_ERROR) {} // (earlier errors are not this allocation's)
         glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)newBytes, nullptr, usage);
         // Out of video memory (#902): said so, not a buffer with no storage that later draws and copies run into.
-        if (glGetError() == GL_OUT_OF_MEMORY)
-            LOG_FATAL("Arena", "out of video memory growing the terrain arena to %.0f MB (from %.0f MB; %.0f MB of GPU memory tracked in use)\n",
-                      newBytes / 1048576.0, oldBytes / 1048576.0, GpuMem_Total() / 1048576.0);
+        // (#1560) Not fatal: the old buffer stays (0 back: the caller keeps its capacity). A playtest aborted here on a
+        // reservation the arena never needed.
+        if (glGetError() == GL_OUT_OF_MEMORY) {
+            LOG_WARN("Arena", "out of video memory growing a terrain arena buffer to %.0f MB (from %.0f MB; %.0f MB of GPU memory tracked in use): kept the old one\n",
+                     newBytes / 1048576.0, oldBytes / 1048576.0, GpuMem_Total() / 1048576.0);
+            glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+            glDeleteBuffers(1, &b);
+            return 0;
+        }
         if (old && oldBytes) {
             glBindBuffer(GL_COPY_READ_BUFFER, old);
             glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)oldBytes);
@@ -224,26 +230,36 @@ namespace {
         return true;
     }
 
-    void GrowVerts(int newCap) {
+    // (#1560) false: out of video memory, the capacity unchanged (a buffer that did grow keeps its old contents and size in use).
+    bool GrowVerts(int newCap) {
         const int oldCap = S.verts.cap;
-        S.pos = Regrow(S.pos, (size_t)oldCap * kPosBytes, (size_t)newCap * kPosBytes);
-        S.attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
+        const GLuint pos = Regrow(S.pos, (size_t)oldCap * kPosBytes, (size_t)newCap * kPosBytes);
+        if (!pos) return false;
+        S.pos = pos;
+        const GLuint attr = Regrow(S.attr, (size_t)oldCap * sizeof(Attr), (size_t)newCap * sizeof(Attr));
+        if (!attr) { BindAttributes(); return false; }
+        S.attr = attr;
         S.verts.grow(newCap);
         BindAttributes();
         LOG_INFO("Arena", "vertices grown to %d\n", newCap);
+        return true;
     }
-    void GrowIndices(int newCap) {
+    bool GrowIndices(int newCap) {
         const int oldCap = S.idx.cap;
-        S.ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
+        const GLuint ibo = Regrow(S.ibo, (size_t)oldCap * sizeof(uint16_t), (size_t)newCap * sizeof(uint16_t));
+        if (!ibo) return false;
+        S.ibo = ibo;
         S.idx.grow(newCap);
         BindAttributes();
         LOG_INFO("Arena", "indices grown to %d\n", newCap);
+        return true;
     }
-    // Grows by half (not double: a doubled multi-hundred-MB buffer would be mostly empty) until n fits.
+    // Grows by half (not double: a doubled multi-hundred-MB buffer would be mostly empty) until n fits; -1 when it can't
+    // (out of video memory: the mesh is dropped, #1560).
     int AllocVerts(int n) {
         int off = S.verts.alloc(n);
         while (off < 0) {
-            GrowVerts(std::max(S.verts.cap + S.verts.cap / 2, S.verts.cap + n));
+            if (!GrowVerts(std::max(S.verts.cap + S.verts.cap / 2, S.verts.cap + n))) return -1;
             off = S.verts.alloc(n);
         }
         return off;
@@ -251,7 +267,7 @@ namespace {
     int AllocIndices(int n) {
         int off = S.idx.alloc(n);
         while (off < 0) {
-            GrowIndices(std::max(S.idx.cap + S.idx.cap / 2, S.idx.cap + n));
+            if (!GrowIndices(std::max(S.idx.cap + S.idx.cap / 2, S.idx.cap + n))) return -1;
             off = S.idx.alloc(n);
         }
         return off;
@@ -434,10 +450,21 @@ ArenaAlloc TerrainArena_Upload(const ChunkMeshData& d) {
     const unsigned short* idxData = pk->indices.empty() ? d.indices.data() : pk->indices.data();
     const int nv = (int)(pk->attr.size() / sizeof(Attr)), ni = (int)d.indices.size();
     const unsigned char* v = pk->attr.data();
+    // (#1560) A single chunk mesh is tens of thousands of vertices; one past 4 M is a broken count: refused, and said so.
+    if (nv > (4 << 20) || ni > (24 << 20)) {
+        LOG_WARN("Arena", "refused a chunk mesh of %d vertices, %d indices: a broken count\n", nv, ni);
+        return a;
+    }
     a.vFirst = AllocVerts(nv);
     a.vCount = nv;
     a.iFirst = AllocIndices(ni);
     a.iCount = ni;
+    if (a.vFirst < 0 || a.iFirst < 0) { // (#1560) out of video memory: dropped, not fatal
+        static int warned = 0;
+        if (warned++ < 5) LOG_WARN("Arena", "no room for a chunk mesh (%d vertices) and the arena can't grow: dropped\n", nv);
+        TerrainArena_Free(a);
+        return a;
+    }
     a.slot = AllocSlot();
     const size_t posBytes = (size_t)nv * kPosBytes, attrBytes = (size_t)nv * sizeof(Attr), idxBytes = (size_t)ni * sizeof(uint16_t);
     const size_t at = StagingInit() ? StagingAlloc(posBytes + attrBytes + idxBytes + 32) : SIZE_MAX;
