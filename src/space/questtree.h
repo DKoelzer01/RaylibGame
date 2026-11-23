@@ -20,6 +20,7 @@ bool QuestTree_LoadLine(const char* tok, FILE* f);
 
 // Tests.
 int QuestTree_NodeCount();
+double QuestTree_GetCap(const std::string& item); // (#1728) the most any "get" node asks of this item (0: none asks)
 bool QuestTree_IsDone(const std::string& id);
 bool QuestTree_IsOpen(const std::string& id);   // requirements done, task not yet
 

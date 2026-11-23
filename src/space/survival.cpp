@@ -406,11 +406,15 @@ namespace {
     QuestBookState localBook;
     QuestBookState* book = &localBook;
     QuestBookState& Q() { return *book; }
-    double ObtainedTotal(const std::string& id) {
-        if (!Q().ownObtained) return inventory.obtainedTotal(id);
-        const auto& m = Q().obtained;
+    double MapTotal(const std::unordered_map<std::string, double>& m, const std::string& id) {
         if (id.rfind("any_", 0) == 0) { double t = 0.0; for (const auto& kv : m) if (ItemMatches(id, kv.first)) t += kv.second; return t; }
         auto it = m.find(id); return it == m.end() ? 0.0 : it->second;
+    }
+    // (#1728) What "get" counts: the larger of what was obtained (crafted, mined, taken) and what the book's machines finished
+    // (each map summed over a wildcard first), so an item both made and later taken counts once.
+    double ObtainedTotal(const std::string& id) {
+        const double got = Q().ownObtained ? MapTotal(Q().obtained, id) : inventory.obtainedTotal(id);
+        return std::max(got, MapTotal(Q().made, id));
     }
     bool Done(int tier, int task) { return Q().tasksDone.count({ tier, task }) > 0; }
 
@@ -496,6 +500,24 @@ QuestBookState& QuestBook_LocalState() { return localBook; }
 void QuestBook_Select(QuestBookState* b) { book = b ? b : &localBook; }
 QuestBookState& QuestBook_Selected() { return Q(); }
 void QuestBook_NotePlaced(const std::string& item) { Q().placed.insert(item); }
+// (#1728) Only what some "get" asks for, and only up to the most it asks: a factory finishes thousands of crafts, and every
+// change to a team's book is resent to its members.
+double QuestBook_MadeCap(const std::string& item) {
+    static std::unordered_map<std::string, double> caps; // (main thread: Factory::Sync's hook; the data doesn't change in a run)
+    auto it = caps.find(item);
+    if (it != caps.end()) return it->second;
+    LoadTiers();
+    double cap = QuestTree_GetCap(item);
+    for (const Tier& t : tiers) for (const Task& k : t.tasks) if (k.kind == "get" && ItemMatches(k.target, item)) cap = std::max(cap, k.n);
+    caps[item] = cap;
+    return cap;
+}
+void QuestBook_NoteMade(const std::string& item, double n) {
+    if (n <= 0.0) return;
+    const double cap = QuestBook_MadeCap(item);
+    double& m = Q().made[item];
+    if (m < cap) m = std::min(cap, m + n);
+}
 bool QuestBook_Met(const std::string& kind, const std::string& target, double n) { Task t; t.kind = kind; t.target = target; t.n = n; return TaskMet(t); }
 void QuestBook_Count(const std::string& event, double n) { Q().counts[event] += n; }
 void QuestBook_AtLeast(const std::string& event, double v) { double& c = Q().counts[event]; c = std::max(c, v); }
@@ -524,6 +546,7 @@ void QuestBook_Reset() {
     Q().counts.clear();
     QuestTree_Reset();
     Q().tasksDone.clear();
+    Q().made.clear(); // (#1728)
     if (Q().ownObtained) Q().obtained.clear(); // (#338) a team book's own totals (the local book's live in the inventory)
 }
 
@@ -584,6 +607,7 @@ void QuestBook_Save(FILE* f) {
             if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
     for (const std::string& p : Q().placed) fprintf(f, "placed %s\n", p.c_str());
     for (const auto& kv : (Q().ownObtained ? Q().obtained : inventory.obtained)) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    for (const auto& kv : Q().made) if (kv.second > 0.0) fprintf(f, "made %s %.2f\n", kv.first.c_str(), kv.second); // (#1728)
     fprintf(f, "quest_flags %d %d %d\n", Q().reachedOrbit ? 1 : 0, Q().visitedMoon ? 1 : 0, Q().visitedRing ? 1 : 0);
     for (const auto& kv : Q().counts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
     QuestTree_Save(f);
@@ -603,6 +627,7 @@ bool QuestBook_LoadLine(const char* tok, FILE* f) {
     if (QuestTree_LoadLine(tok, f)) return true;
     if (strcmp(tok, "quest_count") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) Q().counts[id] = n; return true; }
     if (strcmp(tok, "obtained") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) (Q().ownObtained ? Q().obtained : inventory.obtained)[id] = n; return true; }
+    if (strcmp(tok, "made") == 0) { double n = 0; if (fscanf(f, " %63s %lf", id, &n) == 2) Q().made[id] = n; return true; } // (#1728)
     if (strcmp(tok, "quest_flags") == 0) {
         int a = 0, b = 0, c = 0;
         if (fscanf(f, " %d %d %d", &a, &b, &c) == 3) { Q().reachedOrbit = a; Q().visitedMoon = b; Q().visitedRing = c; }
@@ -833,5 +858,35 @@ TEST(Survival, BitterrootCuresPoisonEvenWhenFull) {
     inv.add("berries", 1);
     EXPECT_TRUE(Survival_UseItemFor("berries", s, inv, stats, false));
     EXPECT_GT(s.status.poison, 0.0f);
+}
+
+// (#1728) A "get" task counts the larger of what was obtained and what the book's machines finished, per item (a wildcard sums
+// each map first), so a fired crucible counts without anyone taking it, and made-then-taken is not counted twice.
+TEST(Survival, AGetTaskCountsTheLargerOfObtainedAndMade) {
+    UnitTest::EnsureItemDB();
+    QuestBookState team;
+    team.ownObtained = true; // a team's book: its own totals
+    QuestBook_Select(&team);
+    EXPECT_FALSE(QuestBook_Met("get", "fired_crucible", 1.0));
+    QuestBook_NoteMade("fired_crucible", 1.0);
+    EXPECT_TRUE(QuestBook_Met("get", "fired_crucible", 1.0)) << "finished in a machine, never taken";
+    EXPECT_FALSE(QuestBook_Met("get", "fired_crucible", 2.0));
+    team.obtained["fired_crucible"] = 1.0; // and then taken: still one, not two
+    EXPECT_FALSE(QuestBook_Met("get", "fired_crucible", 2.0)) << "max, not the sum";
+    team.obtained["fired_crucible"] = 3.0;
+    EXPECT_TRUE(QuestBook_Met("get", "fired_crucible", 3.0)) << "the larger side";
+    QuestBook_NoteMade("oak_log", 2.0); QuestBook_NoteMade("birch_log", 2.0);
+    team.obtained["oak_log"] = 1.0;
+    EXPECT_TRUE(QuestBook_Met("get", "any_log", 4.0)) << "a wildcard sums each map, then the larger: made 4 vs obtained 1";
+    EXPECT_FALSE(QuestBook_Met("get", "any_log", 5.0));
+    QuestBook_NoteMade("oak_log", 0.0); QuestBook_NoteMade("oak_log", -3.0);
+    EXPECT_DOUBLE_EQ(team.made["oak_log"], 2.0) << "nothing for zero or negative";
+    // Capped at the most any "get" asks (a factory's thousands of crafts must not churn the team book's resends).
+    QuestBook_NoteMade("fired_crucible", 500.0);
+    EXPECT_LE(team.made["fired_crucible"], std::max(1.0, QuestBook_MadeCap("fired_crucible")));
+    EXPECT_GE(QuestBook_MadeCap("fired_crucible"), 1.0) << "tier 0 asks for one";
+    QuestBook_NoteMade("unit_test_nothing_asks", 5.0);
+    EXPECT_DOUBLE_EQ(team.made["unit_test_nothing_asks"], 0.0) << "nobody asks for it: not recorded";
+    QuestBook_Select(nullptr);
 }
 #endif
