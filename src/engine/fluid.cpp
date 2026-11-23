@@ -1562,9 +1562,18 @@ void GpuReadback() {
         std::vector<unsigned> flagsV;
         const unsigned* flags = nullptr;
         const uint32_t* packed = nullptr;
+        bool mapped = false;
         if (G.asyncRb && G.rbFence) {
-            glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // at most 100 ms
+            // Wait again until the copy is done (#1679): skipping this readback is not safe, GpuTick dispatches next and
+            // overwrites lastList, the fence and the mapped buffer, so these results would be lost. A failed wait (a broken
+            // fence) drops to the download path below instead of reading a buffer the copy may not have filled.
+            GLenum waited;
+            do waited = glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100 ms a try
+            while (waited == GL_TIMEOUT_EXPIRED);
             glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr;
+            mapped = waited != GL_WAIT_FAILED;
+        }
+        if (mapped) {
             flags = (const unsigned*)G.rbPtr;
             packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
             if (G.rbSinkBytes) creditSinks((const unsigned*)(G.rbPtr + G.rbSinkAt), (int)(G.rbSinkBytes / 4)); // #656
