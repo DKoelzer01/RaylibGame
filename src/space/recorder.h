@@ -28,6 +28,24 @@
 #include <string>
 #include <raylib.h>
 
+#if defined(RAYLIBGAME_NO_RECORDER) && RAYLIBGAME_NO_RECORDER
+// (#1626) -DRAYLIBGAME_RECORDER=OFF: the recorder compiled out (no buffers, no F10 or F2, no indicator); every call a no-op.
+inline bool Recorder_ParseArg(int, char**, int&) { return false; }
+inline void Recorder_Start() {}
+inline void Recorder_Update(bool) {}
+inline bool Recorder_WantsFrame(bool) { return false; }
+inline void Recorder_Capture() {}
+inline bool Recorder_Finished() { return false; }
+inline void Recorder_Shutdown() {}
+inline bool Recorder_Active() { return false; }
+inline void Recorder_Cue() {}
+inline void Recorder_Screenshot() {}
+inline void Recorder_SetShotExtra(std::function<std::string(const Image&)>) {}
+inline std::string Recorder_LastDir() { return std::string(); }
+inline void Recorder_FrameDone() {}
+inline void Recorder_DrawIndicator() {}
+#else
+
 bool Recorder_ParseArg(int argc, char** argv, int& i); // consumes one of the flags above (true when it did)
 void Recorder_Start();                    // after the window opens: seeds, fixed dt
 void Recorder_Update(bool worldReady);    // once a frame before drawing: start delay, F10
@@ -43,5 +61,6 @@ void Recorder_SetShotExtra(std::function<std::string(const Image&)> f);
 std::string Recorder_LastDir();           // the last finished recording's folder ("" if none): bug reports attach it (#169)
 void Recorder_FrameDone();               // end of every frame: counts rendered frames for --record-every
 void Recorder_DrawIndicator();          // (#1119) F10: REC, a red dot and the time, after the capture (never in the recording)
+#endif
 
 #endif

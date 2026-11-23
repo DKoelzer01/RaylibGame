@@ -23,6 +23,12 @@ set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}" CACHE PATH "Where game.exe is written 
 # log.txt) for shipping builds. RAYLIBGAME_LOG_MIN strips the levels below it at compile time (the runtime level,
 # --log-level or settings.txt's log_level, filters what is left).
 option(RAYLIBGAME_LOGGING "Build with logging (log.txt); OFF for shipping builds" ON)
+# (#1626) The in-game recorder (--record, F10, F2, the REC indicator). OFF compiles it out entirely (an A/B of its cost; the
+# capture skill and scenario captures need it ON).
+option(RAYLIBGAME_RECORDER "Build with the in-game recorder (--record, F10, F2)" ON)
+if(NOT RAYLIBGAME_RECORDER)
+    add_compile_definitions(RAYLIBGAME_NO_RECORDER=1)
+endif()
 set(RAYLIBGAME_LOG_MIN "TRACE" CACHE STRING "Lowest log level compiled in: TRACE, DEBUG, INFO, WARN, ERROR or FATAL")
 set_property(CACHE RAYLIBGAME_LOG_MIN PROPERTY STRINGS TRACE DEBUG INFO WARN ERROR FATAL)
 # Linux dedicated server (#792, #326): raylib built with src/platform/rcore_headless.c instead of GLFW: no X11 or
