@@ -15,3 +15,4 @@
 48 | ladder          | #1219 | SetGem: a gem from the inventory set in a weapon's socket
 49 | ladder          | #1509 | AnimalHit flags: a client's heavy and from-behind hits
 50 | ladder          | #1614 | the lathe and wiremill part types in NetPart
+51 | ladder          | #1429 | the multiblock part types (controller, casing, hatch) in NetPart

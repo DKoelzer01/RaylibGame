@@ -37,6 +37,7 @@
 #include "inventory.h"
 #include "farming.h"
 #include "claims.h"
+#include "multiblock.h"
 #include "serveradmin.h"
 #include "trees.h"
 #include "structures.h" // (#1641 slice 2c) breakable props
@@ -1788,7 +1789,8 @@ namespace {
         } else {
             Part part = ToPart(q.part);
             if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type)); // (#1427 L7a) a machine's variant step
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || (IsShape(part.type) && part.material >= BuildMaterialCount())
+                || (IsMultiblockPart(part.type) && !*Multiblock_PartItem(part.type, part.material))) { // (#1429) no such casing/hatch/controller
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
             Plot* plot = nullptr;

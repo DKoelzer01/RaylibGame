@@ -1,6 +1,7 @@
 #include "hotbar.h"
 #include "melee.h"
 #include "machinetiers.h"
+#include "multiblock.h"
 #include "uipalette.h"
 #include "playersession.h"
 #include "playerinput.h"
@@ -56,6 +57,7 @@ namespace {
     // A part type placed from this item (machines, conveyors, cables), or Count.
     PartType PartForItem(const std::string& id, int* step = nullptr) {
         if (step) *step = 0;
+        { PartType mt; int mm = 0; if (Multiblock_ItemPart(id, mt, mm)) { if (step) *step = mm; return mt; } } // (#1429) a multiblock part: its list index is the step
         { PartType vt; int vs = 0; if (MachineTiers_ItemPart(id, vt, vs)) { if (step) *step = vs; return vt; } } // (#1427 L7a) a machine variant
         for (int t = 0; t < (int)PartType::Count; ++t)
             if (IsShape((PartType)t)) continue; else
