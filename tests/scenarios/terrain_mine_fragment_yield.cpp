@@ -51,7 +51,14 @@ SCENARIO("terrain/mine-fragment-yield") {
 
         const double g0 = inventory.amount("gravel");
         int swings = 0;
-        for (int n = 0; n < 60 && AimAtFragment(c, centreRender); ++n) if (TerrainTool_Stroke(true)) ++swings;
+        for (int n = 0; n < 60 && AimAtFragment(c, centreRender); ++n) {
+            Planetoid* hb = nullptr; Vector3 hl{}, hn{};
+            TerrainTool_LastHit(hb, hl, hn);
+            const double before = inventory.amount("gravel");
+            const bool did = TerrainTool_Stroke(true);
+            c.note(TextFormat("swing %d: stroke %d, hit %.2f %.2f %.2f (fragment %.2f %.2f %.2f), yield %.3f, dens at centre %.2f", n, (int)did, hl.x, hl.y, hl.z, fill.center.x, fill.center.y, fill.center.z, inventory.amount("gravel") - before, c.body->densityAt(fill.center)));
+            if (did) ++swings;
+        }
         const double total = inventory.amount("gravel") - g0;
         c.note(TextFormat("%d swings took the fragment: %.2f gravel (fragment volume %.2f m^3 -> %.2f expected)", swings, total, expected / 1.8, expected));
         c.near("total yield matches the fragment's volume", total, expected, 0.25 * expected);
