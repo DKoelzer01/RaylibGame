@@ -66,7 +66,7 @@ int Animals_Generation(int index);        // (#1226 tests) 0 whole, 1-2 split of
 const std::string& Animals_Ore(int index); // (#1226 tests) an ooze's ore
 bool Animals_Thrower(int index);
 void Animals_TestSetGroup(int index, uint64_t group, bool thrower); // (#1225 tests) make a group by hand
-void Animals_TestProvokeAll(); // (#1649 tests) every creature hurt by the local player: they all turn on it and chase
+void Animals_TestProvokeAll(int part = 0, int parts = 1); // (#1649 tests) creatures hurt by the local player (every parts-th from part; default all): they turn on it and chase
 int Animals_CaveSpawned();
 int Animals_CaveSites();
 void Animals_CaveSpawnNow();

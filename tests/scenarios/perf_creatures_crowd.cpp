@@ -54,7 +54,10 @@ template <int N> void BuildCrowd(ScenarioDef& s) {
         survival.health = 100.0f; survival.dead = false;
         static double provokedAt = -10.0;
         if (c.t < 0.1) provokedAt = -10.0;
-        if (c.t - provokedAt > 3.0) { Animals_TestProvokeAll(); provokedAt = c.t; } // all of them on the player, chasing
+        // All of them on the player, chasing: a twentieth every 0.15 s (each creature again every 3 s). (#1650) Not all at once:
+        // 200 hits in one update made 200 brains decide together, a 6 ms spike no play makes.
+        static int provokePart = 0;
+        if (c.t - provokedAt > 0.15) { Animals_TestProvokeAll(provokePart, 20); provokePart = (provokePart + 1) % 20; provokedAt = c.t; }
         if (c.t > 1.0) S.ms.push_back(Animals_LastUpdateMs());
         if (c.t < 11.0) return false;
         double sum = 0.0; for (double v : S.ms) sum += v;
