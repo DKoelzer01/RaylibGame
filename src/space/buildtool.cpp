@@ -27,6 +27,7 @@
 #include "playerrecord.h"
 #include "menus.h"
 #include "net.h"
+#include "hostserver.h" // (#1684) Host_BroadcastPartEdits
 #include <ctime>
 
 #include "uipalette.h"
@@ -160,6 +161,44 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
     } else plot.place(part);
     BuildTool_LayFoundation(body, plot, part);
     return true;
+}
+
+// (#1684) The part at `i` again with a new material; the edit is recorded (a remove, then the place at the index it lands on).
+static void RematerialPart(Plot& plot, int i, uint8_t material, std::vector<PartEdit>* edits) {
+    Part q = plot.parts[i];
+    plot.remove(i);
+    if (edits) edits->push_back({ true, i, {} });
+    q.material = material;
+    const int at = plot.place(q);
+    if (edits) edits->push_back({ false, at, q });
+}
+
+int Dungeon_UnlockVault(Plot& plot, int partIndex, std::vector<PartEdit>* edits) {
+    if (partIndex < 0 || partIndex >= (int)plot.parts.size() || !GateLocked(plot.parts[partIndex])) return 0;
+    const Part g = plot.parts[partIndex];
+    int opened = 0;
+    for (int i = 0; i < (int)plot.parts.size(); ++i) { // both gates of the door (stacked: same column, 2 cells apart)
+        const Part& q = plot.parts[i];
+        if (!GateLocked(q) || q.origin.x != g.origin.x || q.origin.z != g.origin.z || abs(q.origin.y - g.origin.y) > 2) continue;
+        RematerialPart(plot, i, 0, edits);
+        ++opened;
+    }
+    return opened;
+}
+
+int Dungeon_PullLever(Plot& plot, int partIndex, std::vector<PartEdit>* edits) {
+    if (partIndex < 0 || partIndex >= (int)plot.parts.size() || plot.parts[partIndex].type != PartType::Lever || plot.parts[partIndex].material != 0) return -1;
+    const Part lever = plot.parts[partIndex];
+    std::vector<int> gates; // (collected first: opening replaces the parts)
+    for (size_t i = 0; i < plot.parts.size(); ++i) {
+        const Part& q = plot.parts[i];
+        if (!GatePortcullis(q)) continue;
+        const float dx = (float)(q.origin.x - lever.origin.x), dy = (float)(q.origin.y - lever.origin.y), dz = (float)(q.origin.z - lever.origin.z);
+        if (sqrtf(dx * dx + dy * dy + dz * dz) * kCellSize <= 12.0f) gates.push_back((int)i);
+    }
+    RematerialPart(plot, partIndex, 1, edits); // pulled: the lever is placed again, material 1
+    for (int i : gates) RematerialPart(plot, i, 0, edits);
+    return (int)gates.size();
 }
 
 // (#900) Claims in a game this player runs (single player, or a host's own player): the player's team (a solo player is a
@@ -709,15 +748,12 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         Planetoid* gb = Planetoid::find(machineAim.body);
         Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
         if (!gp || machineAim.part >= (int)gp->parts.size() || !GateLocked(gp->parts[machineAim.part])) return;
-        if (!inventory.remove("dungeon_key", 1)) { GameUI_Toast("Locked: it needs a dungeon key"); Audio_Play(Sfx::Error, 0.5f); return; }
-        const Part g = gp->parts[machineAim.part];
-        for (size_t i = 0; i < gp->parts.size(); ++i) { // both gates of the door (stacked: same column, 2 cells apart)
-            const Part q = gp->parts[i];
-            if (!GateLocked(q) || q.origin.x != g.origin.x || q.origin.z != g.origin.z || abs(q.origin.y - g.origin.y) > 2) continue;
-            gp->remove((int)i);
-            Part open = q; open.material = 0;
-            gp->place(open);
-        }
+        if (inventory.count("dungeon_key") <= 0) { GameUI_Toast("Locked: it needs a dungeon key"); Audio_Play(Sfx::Error, 0.5f); return; }
+        if (MachineAct_Remote()) { gMachineRequest(machineAim.body, machineAim.plot, machineAim.part, kMachineActUnlockVault, std::string(), 0, 0, 0); return; } // (#1684) joined: the host unlocks, takes the key and tells everyone
+        inventory.remove("dungeon_key", 1);
+        std::vector<PartEdit> edits;
+        Dungeon_UnlockVault(*gp, machineAim.part, &edits);
+        if (gNetRole == NetRole::Host) Host_BroadcastPartEdits(*gb, *gp, edits); // (#1684) a host's own player: the clients get it too
         GameUI_Toast("The vault door unlocks");
         Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
         return;
@@ -727,25 +763,12 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         Planetoid* lb = Planetoid::find(machineAim.body);
         Plot* lp = lb && lb->plots ? lb->plots->byId(machineAim.plot) : nullptr;
         if (!lp || machineAim.part >= (int)lp->parts.size() || lp->parts[machineAim.part].type != PartType::Lever) return;
-        Part lever = lp->parts[machineAim.part];
-        if (lever.material != 0) { GameUI_Toast("The lever is already down"); return; }
-        std::vector<int> gates; // (collected first: opening replaces the parts)
-        for (size_t i = 0; i < lp->parts.size(); ++i) {
-            const Part& q = lp->parts[i];
-            if (!GatePortcullis(q)) continue;
-            const float dx = (float)(q.origin.x - lever.origin.x), dy = (float)(q.origin.y - lever.origin.y), dz = (float)(q.origin.z - lever.origin.z);
-            if (sqrtf(dx * dx + dy * dy + dz * dz) * kCellSize <= 12.0f) gates.push_back((int)i);
-        }
-        lp->remove(machineAim.part); // pulled: the lever is placed again, material 1
-        lever.material = 1;
-        lp->place(lever);
-        for (int i : gates) {
-            Part open = lp->parts[i];
-            lp->remove(i);
-            open.material = 0;
-            lp->place(open);
-        }
-        GameUI_Toast(gates.empty() ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open");
+        if (lp->parts[machineAim.part].material != 0) { GameUI_Toast("The lever is already down"); return; }
+        if (MachineAct_Remote()) { gMachineRequest(machineAim.body, machineAim.plot, machineAim.part, kMachineActPullLever, std::string(), 0, 0, 0); return; } // (#1684) joined: the host pulls it and tells everyone
+        std::vector<PartEdit> edits;
+        const int gates = Dungeon_PullLever(*lp, machineAim.part, &edits);
+        if (gNetRole == NetRole::Host) Host_BroadcastPartEdits(*lb, *lp, edits); // (#1684)
+        GameUI_Toast(gates <= 0 ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open");
         Audio_Play(Sfx::Pickup, 0.5f, 0.5f);
         return;
     }
@@ -976,5 +999,57 @@ TEST(BuildFacing, LadderClimbingFaceOutOfTheWallMachinesFrontAsBefore) {
         const int* m = Orientation(BuildTool_AutoOrient((int)PartType::Chest, out));
         EXPECT_EQ(Int3({ m[2], m[5], m[8] }), out) << "a chest's front, out of the wall (" << out.x << ", " << out.z << ")";
     }
+}
+// #1684: a vault unlock and a lever pull are one shared edit; the part changes it records, replayed on another plot in order
+// (as a client applies the host's MsgPlotEdit), leave that plot with the same parts (indices included).
+static void ReplayPartEdits(Plot& plot, const std::vector<PartEdit>& edits) {
+    for (const PartEdit& e : edits) {
+        if (e.remove) plot.remove(e.index);
+        else EXPECT_EQ(plot.place(e.part), e.index);
+    }
+}
+static void ExpectSameParts(const Plot& a, const Plot& b) {
+    ASSERT_EQ(a.parts.size(), b.parts.size());
+    for (size_t i = 0; i < a.parts.size(); ++i) {
+        EXPECT_EQ((int)a.parts[i].type, (int)b.parts[i].type) << "part " << i;
+        EXPECT_EQ(a.parts[i].material, b.parts[i].material) << "part " << i;
+        EXPECT_EQ(a.parts[i].origin, b.parts[i].origin) << "part " << i;
+    }
+}
+TEST(DungeonEdits, VaultUnlockOpensBothHalvesAndReplaysOnAClient) {
+    Plot host, client;
+    for (Plot* p : { &host, &client }) {
+        p->place(Part{ PartType::Gate, { 4, 0, 4 }, 0, 1 });
+        p->place(Part{ PartType::Gate, { 4, 2, 4 }, 0, 1 });
+        p->place(Part{ PartType::Gate, { 20, 0, 4 }, 0, 1 }); // another vault door: stays locked
+    }
+    EXPECT_EQ(Dungeon_UnlockVault(host, 2 + 99), 0);          // no such part
+    std::vector<PartEdit> edits;
+    EXPECT_EQ(Dungeon_UnlockVault(host, 1, &edits), 2);        // the aimed half opens its other half too
+    EXPECT_EQ(host.parts[3].material, 0);
+    EXPECT_EQ(host.parts[4].material, 0);
+    EXPECT_TRUE(GateLocked(host.parts[2]));
+    EXPECT_EQ(Dungeon_UnlockVault(host, 3), 0);                // already open: not a vault door any more
+    ReplayPartEdits(client, edits);
+    ExpectSameParts(host, client);
+}
+TEST(DungeonEdits, LeverOpensPortcullisesWithin12mOnly) {
+    Plot host, client;
+    for (Plot* p : { &host, &client }) {
+        p->place(Part{ PartType::Lever, { 0, 0, 0 }, 0, 0 });
+        p->place(Part{ PartType::Gate, { 10, 0, 0 }, 0, 2 });  // 5 m: opens
+        p->place(Part{ PartType::Gate, { 40, 0, 0 }, 0, 2 });  // 20 m: stays shut
+        p->place(Part{ PartType::Gate, { 0, 0, 10 }, 0, 1 });  // a vault door: not a portcullis
+    }
+    EXPECT_EQ(Dungeon_PullLever(host, 3), -1);                 // not a lever
+    std::vector<PartEdit> edits;
+    EXPECT_EQ(Dungeon_PullLever(host, 0, &edits), 1);
+    EXPECT_EQ(host.parts[4].material, 1);                      // the lever, down
+    EXPECT_EQ(host.parts[5].material, 0);                      // the near portcullis, open
+    EXPECT_TRUE(GatePortcullis(host.parts[2]));                // the far one, shut
+    EXPECT_TRUE(GateLocked(host.parts[3]));
+    EXPECT_EQ(Dungeon_PullLever(host, 4), -1);                 // already down
+    ReplayPartEdits(client, edits);
+    ExpectSameParts(host, client);
 }
 #endif
