@@ -91,12 +91,16 @@ namespace {
         const bool composed = Composed_Is(item);
         // Like a player: craft missing hand-craftable ingredients first (wire for cables, ...).
         for (int made = 0; composed ? made < want : inventory.count(item) < want; ++made) {
-            for (const auto& in : r->inputs) {
-                // Wildcard planks: saw whichever logs are carried.
-                while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
-                if (inventory.count(in.first) < in.second)
-                    for (const Recipe& sub : itemDB.recipes())
-                        if (sub.output == in.first) { Craft(in.first, in.second); break; }
+            // (#1614) Until every input is there: crafting one input can use up another (a spring takes a rod a piston needs)
+            for (int pass = 0, crafted = 1; crafted && pass < 4; ++pass) {
+                crafted = 0;
+                for (const auto& in : r->inputs) {
+                    // Wildcard planks: saw whichever logs are carried.
+                    while (in.first == "any_planks" && inventory.count(in.first) < in.second && SawLog()) {}
+                    if (inventory.count(in.first) < in.second)
+                        for (const Recipe& sub : itemDB.recipes())
+                            if (sub.output == in.first) { Craft(in.first, in.second); crafted = 1; break; }
+                }
             }
             if (!inventory.craft(*r)) {
                 printf("bench: progression: cannot craft %s:", item.c_str());
