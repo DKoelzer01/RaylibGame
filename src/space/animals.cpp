@@ -7,8 +7,16 @@
 #include "instancebatch.h"
 #include "audio.h"
 #include "combat.h"
+#include "melee.h"
+#include "creatures.h" // (#1223)
+#include "footsteps.h" // (#1240) step noise for creature hearing
+#include "avatar.h" // (#1225) humanoid creatures
+#include "locallights.h"
+#include "toolwear.h" // (#1226) an ooze corrodes tools
+#include "claims.h"
 #include "headless.h"
 #include "net.h"
+#include "netproto.h" // (#1343, #1364) creature shots and events to clients
 #include "playersession.h"
 #include "buildtool.h"
 #include "gameui.h"
@@ -32,6 +40,8 @@
 #include <sstream>
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
@@ -48,6 +58,7 @@ struct Species {
     Vector3 size{ 1, 1, 1 };                         // length, height, width (m)
     Color body = WHITE, head = GRAY;
     float walk = 1.0f, run = 4.0f, health = 10.0f;
+    Resistances resist;                              // (#1215) per damage type and flat armour (species data later, #1223)
     std::vector<std::string> diet;
     std::vector<std::pair<std::string, int>> drops;
     std::string product, productTool;                // "-" none / no tool needed
@@ -59,6 +70,13 @@ struct Species {
     float latMin = 0.0f, latMax = 0.8f;
     std::vector<Biome> biomes;         // Plan 5 B: where herds live (empty: by latitude)
     bool biped = false, wool = false, horns = false, spikes = false, beak = false, tail = false, ears = false, longBody = false; // model (Plan 5 A)
+    bool nest = false;                                // (#1223) a creature nest: a still mound, no legs or head
+    bool hexa = false;                                // (#1224) six legs (the tunnel lurker)
+    bool humanoid = false;                            // (#1225) drawn with the avatar rig (cave scavengers)
+    std::string held;                                 // (#1227) a humanoid's item in hand (model held:<item>; default a torch)
+    bool plankShield = false;                         // (#1227) a humanoid with a plank shield on its arm (model plankshield)
+    bool blob = false;                                // (#1226) a mineral ooze: a wobbling heap, the colour of its ore
+    bool turret = false;                              // (#1228) a ruin sentinel: a pedestal, a turning head and a barrel; its eye glows as it charges
 };
 std::vector<Species> species;
 bool speciesLoaded = false;
@@ -102,7 +120,7 @@ void LoadSpecies() {
         if (c.size() > 13) for (const auto& bn : Split(c[13], ',')) for (int b = 0; b < (int)Biome::Count; ++b) if (bn == BiomeName((Biome)b)) s.biomes.push_back((Biome)b);
         if (c.size() > 14) { // the model (Plan 5 A): quad or biped, then features
             std::istringstream ms(c[14]); std::string w;
-            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; }
+            while (ms >> w) { if (w == "biped") s.biped = true; else if (w == "wool") s.wool = true; else if (w == "horns") s.horns = true; else if (w == "spikes") s.spikes = true; else if (w == "beak") s.beak = true; else if (w == "tail") s.tail = true; else if (w == "ears") s.ears = true; else if (w == "long") s.longBody = true; else if (w == "nest") s.nest = true; else if (w == "hexa") s.hexa = true; else if (w == "humanoid") s.humanoid = true; else if (w.rfind("held:", 0) == 0) s.held = w.substr(5); else if (w == "plankshield") s.plankShield = true; else if (w == "blob") s.blob = true; else if (w == "turret") s.turret = true; }
         }
         species.push_back(s);
     }
@@ -138,6 +156,22 @@ struct Animal {
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
+    StatusState status;          // (#1215) burn, chill, bleed, poison
+    PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
+    BrainState brain;            // (#1223) a creature's mind (creatures.txt rows only)
+    bool hurtPending = false;    // (#1223) hit since its last update: by hurtBy (a player: kPlayerPercept | session), from hurtFrom
+    uint64_t hurtBy = 0;
+    Vector3 hurtFrom{};
+    double heardPlayerAt = -1e9; // (#1224) sim time it last heard a player (a blind hunter tracks by this)
+    bool clinging = false;       // (#1224) on a cave ceiling (pos), waiting over clingFloor
+    float dropIn = -1.0f, clingWait = 0.0f; // the drop's telegraph left (s, -1 none); s it has heard prey not under it
+    Vector3 clingFloor{};
+    uint64_t group = 0;          // (#1225) its group (the first member's net id; 0: alone)
+    bool thrower = false;        // (#1225) the group's thrower: keeps its distance and throws
+    double throwWindAt = -1.0, lastThrow = -1e9; // (#1225) a throw winding up since (simClock), the last throw
+    std::vector<InvSlot> carried; // (#1225) what a thief took (dropped when it falls)
+    std::string ore;             // (#1226) an ooze: the ore it ate (its colour, its drop); set from where it lives
+    int generation = 0;          // (#1226) an ooze: 0 whole, 1-2 split off
     float daylight = 0.0f;                     // night hunters: seconds of daylight seen (they leave)
     // Plan 5 A: needs (0..1) that drive the choice between grazing, wandering and resting; the herd; a
     // chase target (predators); the gait for the walk animation.
@@ -154,8 +188,32 @@ struct Animal {
     float pathAge = 0.0f, planWait = 0.0f;      // seconds on this route; no new plan before this runs out (s)
     // #334 a client's copy (replicated mode): the server's latest state of it, eased toward; when it was last heard of.
     Vector3 netPos{}; float netHeading = 0.0f; double netSeen = -1.0;
+    // (#1108) where it was lately (sim time, body-local; the last kTrailSeconds): a server checks a joined player's hit against
+    // where the animal was when that player saw it, not where it is by the time the hit arrives
+    std::vector<std::pair<double, Vector3>> trail;
 };
+constexpr double kTrailSeconds = 0.3;
 std::vector<Animal> animals;
+constexpr uint64_t kPlayerPercept = kPlayerSource; // (#1223) a player's id among a creature's percepts (| its session)
+int IndexOfNet(uint64_t id) { for (size_t i = 0; i < animals.size(); ++i) if (animals[i].netId == id) return (int)i; return -1; }
+// (#1223) Its faction: its creatures.txt row's; a plain animal is livestock (calm) or wild.
+int AnimalFaction(const Animal& a) {
+    const Species& s = species[a.species];
+    if (const CreatureSpec* c = Creature_Spec(s.id)) return c->factionIdx;
+    return Factions().find(s.wild ? "wild" : "livestock");
+}
+struct CreatureHit { uint64_t target, attacker; Vector3 from; DamageEvent e; }; // (#1223) one creature's strike on another
+std::vector<CreatureHit> creatureHits;
+int shieldBlocks = 0; // (#1227) hits a front shield took (tests)
+// (#1343, #1364) A server's creature shots and events since the host last took them (Animals_TakeFx), for its clients.
+std::vector<MsgCreatureFx::Shot> fxShots;
+std::vector<uint32_t> fxEnded;
+std::vector<MsgCreatureFx::Event> fxEvents;
+void FxEvent(const Animal& a, const CreatureSpec& c, CreatureEvent e, uint64_t bodyId, Vector3 pos) {
+    Creature_Event(c, e, bodyId, pos); // here (sounds through gCreatureEvent)
+    if (gNetRole != NetRole::Host || fxEvents.size() >= 256) return;
+    if (Planetoid* b = Planetoid::find(bodyId)) fxEvents.push_back({ a.netId, (uint8_t)e, (uint8_t)a.species, b->netId, DVec3(pos) });
+}
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
@@ -188,6 +246,23 @@ bool TangentFrame(Vector3 up, Vector3& east, Vector3& north) {
 Planetoid* BodyNamed(Scene& world, const std::string& name) {
     for (auto& o : world.objects) if (auto* p = dynamic_cast<Planetoid*>(o.get()); p && p->name == name) return p;
     return nullptr;
+}
+uint64_t BodyIdOf(const std::string& name) { for (Planetoid* p : Planetoid::All()) if (p->name == name) return p->id; return 0; } // (#1223) creature events
+// Its facing (body-local, level): heading from east toward north.
+Vector3 AnimalForward(const Animal& a) {
+    Vector3 east, north;
+    TangentFrame(Vector3Normalize(a.pos), east, north);
+    return Vector3Add(Vector3Scale(east, cosf(a.heading)), Vector3Scale(north, sinf(a.heading)));
+}
+
+// (#1226) An ooze's ore: the deposit where it lives (iron ore where there is none), set the first time it is asked.
+const std::string& OozeOre(Animal& a) {
+    if (a.ore.empty()) {
+        const char* k = nullptr;
+        for (Planetoid* p : Planetoid::All()) if (p->name == a.body) { k = OreKindOf(*p, a.pos); break; }
+        a.ore = k && *k ? k : "iron_ore";
+    }
+    return a.ore;
 }
 
 // Solid enough to block an animal (a wall, an overhang): ~0.4 m into rock. Thin near-iso films hover just over the
@@ -222,6 +297,8 @@ bool Ground(const Planetoid& body, const PlanetField& pf, Vector3 dir, Vector3& 
     }
     if (!found) return false;
     elevation = Vector3Length(at) - pf.radius;
+    // (#1223) Under the surface (a cave floor, 3 m or more down): no sea or river there, whatever the height.
+    if (pf.elevation(dir) - elevation > 3.0f) return true;
     if (elevation < 0.3f) return false; // the sea
     if (pf.inlandWaterNear(dir, 0.0f)) {
         const float w = pf.waterElevation(dir);
@@ -436,7 +513,8 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
             };
             std::vector<int> fit;
             for (size_t i = 0; i < species.size(); ++i)
-                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0))
+                if (livesHere(species[i]) && species[i].herdMax > 0 && !species[i].night && !(species[i].hostile && worldDifficulty == 0) &&
+                    (!body.profile || body.profile->allowsCreature(species[i].id))) // the world file's creatures (#1274)
                     fit.push_back((int)i);
             if (fit.empty()) continue;
             const Species& s = species[fit[(size_t)(Rand01(h) * fit.size()) % fit.size()]];
@@ -448,28 +526,115 @@ void SpawnHerds(Scene& world, Planetoid& body, const PlanetField& pf, Vector3 up
         }
 }
 
-void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr) { // dropsTo (#334): a server's, for the hitting player
+// toGround (#1223): killed by another creature, its drops lie where it fell (a pile anyone picks up), no quest counts.
+void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bool toGround = false) { // dropsTo (#334): a server's, for the hitting player
     const Animal& a = animals[i];
     const Species& s = species[a.species];
-    if (!dropsTo) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
-    if (!dropsTo && s.night) QuestBook_Count("stalker");
+    const CreatureSpec* cs = Creature_Spec(s.id);
+    if (cs) FxEvent(a, *cs, CreatureEvent::Death, BodyIdOf(a.body), a.pos);
+    if (!dropsTo && !toGround) QuestBook_Count("slain"); // (a server's kill isn't its own player's quest)
+    if (!dropsTo && !toGround && s.night) QuestBook_Count("stalker");
+    std::vector<std::pair<std::string, int>> all = s.drops;
+    if (cs) all.insert(all.end(), cs->loot.begin(), cs->loot.end()); // (#1223) the creature's extra loot
+    if (cs) { uint32_t r = a.rng ^ 0x9e3779b9u; for (const CreatureSpec::Rare& rr : cs->rare) if (Rand01(r) < rr.chance) all.push_back({ rr.item, rr.n }); } // (#1227) sometimes
+    if (cs && cs->split) all.push_back({ OozeOre(animals[i]), a.generation == 0 ? 3 : 1 }); // (#1226) the ore an ooze ate
     std::string got;
-    for (const auto& d : s.drops) {
+    for (const auto& d : all) {
         const int n = std::max(1, (int)lroundf(d.second * (0.4f + 0.6f * a.age)));
         if (!itemDB.find(d.first)) continue;
+        if (toGround) { InvSlot st; st.id = d.first; st.centi = (int64_t)n * 100; Combat_DropFor(a.body, DVec3(a.pos), st, ""); continue; }
         if (dropsTo) { dropsTo->push_back({ d.first, n }); continue; }
         inventory.add(d.first, n); got += TextFormat("  +%d %s", n, d.first.c_str());
     }
-    if (!dropsTo) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
+    for (const InvSlot& st : a.carried) { // (#1225) what a thief took comes back
+        const int n = std::max(1, (int)((st.centi + 50) / 100));
+        if (toGround) { Combat_DropFor(a.body, DVec3(a.pos), st, ""); continue; }
+        if (dropsTo) { dropsTo->push_back({ st.id, n }); continue; }
+        inventory.add(st.id, n); got += TextFormat("  +%d %s", n, st.id.c_str());
+    }
+    if (!dropsTo && !toGround) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
     animals.erase(animals.begin() + i);
     if (aimed == i) aimed = -1;
+}
+
+// (#1223) The resistances a hit meets: its creatures.txt row's, else the species'.
+const Resistances& ResistOf(const Animal& a) {
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) return cs->resist;
+    return species[a.species].resist;
+}
+
+// A typed hit's damage on an animal (#1215 types and status, #1217 poise): what to take off its health.
+float TypedAmount(Animal& a, const DamageEvent& e) {
+    float amount = e.amount;
+    // (#1227) A front shield (the lost miner's plank shield) takes most of a non-blunt hit that comes at its face.
+    if (const CreatureSpec* sh = Creature_Spec(species[a.species].id); sh && sh->frontShield > 0.0f && e.fromFront && e.type != DamageType::Blunt) {
+        amount *= 1.0f - sh->frontShield;
+        ++shieldBlocks;
+    }
+    // (#1217) Poise: the hit wears it (its poise damage; none given: its amount); broken, the creature staggers (its attack
+    // cancelled), and the first hit while it staggers does x1.5. Small creatures stagger on any heavy hit.
+    if (Combat3_On()) {
+        const Species& sp = species[a.species];
+        if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(sp.health));
+        const bool small = std::max(sp.size.x, std::max(sp.size.y, sp.size.z)) * (0.6f + 0.4f * a.age) <= PoiseTune::kSmallSize;
+        const PoiseHit ph = Poise_Hit(a.poise, e.poise > 0.0f ? e.poise : e.amount, e.heavy, small);
+        amount *= ph.damageScale;
+        if (ph.staggered) { a.windUpAt = -1.0; a.brain.windUpAt = -1.0; }
+    }
+    if (Combat1_On()) {
+        amount = Damage_Apply(amount, e.type, ResistOf(a));
+        Status_Apply(a.status, Status_FromHit(e.type, e.status, e.heavy, e.fromBehind, e.kind == DamageKind::Bite));
+        if (const CreatureSpec* im = Creature_Spec(species[a.species].id)) { // (#1228) a construct neither bleeds nor is poisoned
+            if (im->immuneBleed) { a.status.bleed = 0.0f; a.status.bleedStacks = 0; }
+            if (im->immunePoison) a.status.poison = 0.0f;
+        }
+    }
+    return amount;
+}
+
+
+// (#1226) An ooze cut (a slashing or piercing hit) splits in two: the half it loses becomes a second ooze beside it, of
+// the same ore (two generations at most). Blunt hits don't split it, nor does anything while it burns.
+int oozeSplits = 0;
+void MaybeSplit(int i, DamageType type) {
+    Animal& a = animals[i];
+    const CreatureSpec* cs = Creature_Spec(species[a.species].id);
+    if (!cs || !cs->split || (type != DamageType::Slash && type != DamageType::Pierce) || a.status.burn > 0.0f || a.generation >= 2 || a.health <= 6.0f) return;
+    OozeOre(a);
+    Animal b = a;
+    b.health = a.health * 0.5f;
+    a.health -= b.health;
+    b.generation = ++a.generation;
+    const Vector3 up = Vector3Normalize(a.pos);
+    const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    b.pos = b.prevPos = Vector3Add(a.pos, Vector3Scale(side, 0.9f));
+    b.netId = NetId_Allocate(NetKind::Animal);
+    b.brain = BrainState{}; b.poise = PoiseState{}; b.hurtPending = false; b.carried.clear();
+    animals.push_back(b);
+    ++oozeSplits;
+}
+
+// (#1223) One creature's strike on another: typed damage; the struck one learns who hit it (a creature turns on it, a plain
+// animal runs); a kill leaves its loot on the ground.
+void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from) {
+    Animal& a = animals[i];
+    DamageEvent ef = e; // (#1227) at its face or not, from where the attacker stood
+    { const CreatureSpec* fs = Creature_Spec(species[a.species].id);
+      ef.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(from, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
+    a.health -= TypedAmount(a, ef);
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
+        a.hurtPending = true; a.hurtBy = attacker; a.hurtFrom = from;
+        FxEvent(a, *cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+    } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.state = State::Flee; }
+    if (a.health <= 0.0f) Kill(i, nullptr, true);
+    else MaybeSplit(i, e.type); // (#1226)
 }
 
 } // namespace
 
 // ---------------------------------------------------------------------------------------------
 
-void Animals_Reset() { animals.clear(); spawnedTiles.clear(); aimed = -1; gSearch.active = false; gSearch.body = nullptr; } // (#902: the search held the old world's body)
+void Animals_Reset() { Animals_ResetCaveSpawns(); animals.clear(); spawnedTiles.clear(); aimed = -1; gSearch.active = false; gSearch.body = nullptr; } // (#902: the search held the old world's body)
 int Animals_Count() { return (int)animals.size(); }
 Vector3 Animals_Position(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].pos : Vector3{ 0, 0, 0 }; }
 double Animals_LastUpdateMs() { return lastUpdateMs; }
@@ -482,7 +647,14 @@ bool Animals_IsFeed(const std::string& id) { LoadSpecies(); for (const Species& 
 const std::string& Animals_Body(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].body : none; }
 bool Animals_Wild(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].wild; }
 bool Animals_Hostile(int i) { return i >= 0 && i < (int)animals.size() && species[animals[i].species].hostile; }
-bool Animals_Aiming() { return aimed >= 0 || hitLatch; }
+int Animals_AimedIndex() { return aimed >= 0 && aimed < (int)animals.size() ? aimed : -1; }
+std::pair<std::string, std::string> Animals_SpeciesOf(int i) {
+    LoadSpecies();
+    if (i < 0 || i >= (int)animals.size() || animals[i].species < 0 || animals[i].species >= (int)species.size()) return {};
+    const Species& s = species[animals[i].species];
+    return { s.id, s.name };
+}
+bool Animals_Aiming() { return aimed >= 0 || hitLatch || Animals_MeleeBusy(); }
 int Animals_YoungCount() { int n = 0; for (const Animal& a : animals) n += a.age < 1.0f ? 1 : 0; return n; }
 
 double Animals_BiteWindUp() { return kBiteWindUp; }
@@ -541,15 +713,35 @@ bool Animals_Hit(int i, float damage) {
     if (i < 0 || i >= (int)animals.size()) return false;
     Animal& a = animals[i];
     a.health -= damage;
+    if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
+        // (#1223) A creature: its brain hears who hit it (the local player) and decides (turn on them, retreat, run).
+        a.hurtPending = true; a.hurtBy = kPlayerPercept; a.hurtFrom = a.pos;
+        FxEvent(a, *cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos);
+    } else {
     // Hostile ones fight back until badly hurt; the rest run.
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
     a.fleeFrom = a.pos; // refined to the player's position in the update
     a.state = State::Flee;
+    }
     Audio_Play(Sfx::Dig, 0.5f, 1.6f);
     if (a.health <= 0.0f) { Kill(i); return true; }
     return false;
 }
+
+// (#1215) A typed hit: through the species' resistances and armour (the 10% floor), its status effect, then the hit itself.
+// RAYLIBGAME_COMBAT1=0: the amount as it is (today).
+bool Animals_HitEvent(int i, const DamageEvent& e, float* dealtOut) {
+    if (i < 0 || i >= (int)animals.size()) return false;
+    const float amount = TypedAmount(animals[i], e); // (#1215, #1217; #1223: a creature's own resistances)
+    if (dealtOut) *dealtOut = amount;
+    const bool fell = Animals_Hit(i, amount);
+    if (!fell) MaybeSplit(i, e.type); // (#1226) an ooze cut in two
+    return fell;
+}
+
+const StatusState* Animals_Status(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].status : nullptr; } // (#1215 tests)
+const PoiseState* Animals_Poise(int i) { return i >= 0 && i < (int)animals.size() ? &animals[i].poise : nullptr; } // (#1217 tests)
 
 bool Animals_Feed(int i) {
     if (i < 0 || i >= (int)animals.size()) return false;
@@ -569,6 +761,292 @@ bool Animals_Feed(int i) {
     GameUI_Toast(TextFormat("The %s eats %s", s.name.c_str(), want.c_str()));
     return false;
 }
+
+// ---- (#1225) Thrown projectiles and humanoid creatures ----
+// A creature's throw (a rock or spear) flies on a ballistic arc under the planet's pull (~9.8 m/s^2 along the local down),
+// hits the first player whose body it passes within 0.45 m of (through Combat_Damage: a raised shield facing it blocks; a
+// dodge passes through; never parried), and stops in rock. Gone after 6 s.
+namespace {
+struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; bool dart = false; uint32_t id = 0; }; // (#1343) id: a server's shots carry it to clients // (#1228) dart: a sentinel's bolt (pierce, fast, flat)
+std::vector<Projectile> projectiles;
+int projectileHits = 0, projectilesThrown = 0;
+
+void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear, float speed = 16.0f, bool dart = false) {
+    Vector3 vel;
+    Throw_Aim(from, target, Vector3Normalize(from), speed, 9.81f, vel);
+    static uint32_t nextShot = 1;
+    const uint32_t id = nextShot++;
+    projectiles.push_back({ body, from, vel, damage, owner, simClock, spear, dart, id });
+    if (gNetRole == NetRole::Host && fxShots.size() < 128) // (#1343) its clients fly it too
+        for (Planetoid* b : Planetoid::All()) if (b->name == body) { fxShots.push_back({ id, b->netId, DVec3(from), vel, (uint8_t)(dart ? 2 : spear ? 1 : 0), owner }); break; }
+    ++projectilesThrown;
+}
+
+void StepProjectiles(Scene& world, float dt) {
+    if (projectiles.empty() || dt <= 0.0f) return;
+    Planetoid* here = player.nearest;
+    const Vector3 feet = here ? here->toLocalOf(player.position, world.renderOrigin) : Vector3{};
+    for (size_t k = 0; k < projectiles.size();) {
+        Projectile& p = projectiles[k];
+        Planetoid* body = BodyNamed(world, p.body);
+        bool gone = !body || simClock - p.born > 6.0;
+        if (!gone) {
+            const Vector3 up = Vector3Normalize(p.pos);
+            const Vector3 before = p.pos;
+            p.vel = Vector3Add(p.vel, Vector3Scale(up, -9.81f * dt));
+            p.pos = Vector3Add(p.pos, Vector3Scale(p.vel, dt));
+            if (body->densityAt(p.pos) >= ISO_LEVEL) gone = true; // into rock or the ground
+            // The local player: their body from the feet up 1.7 m.
+            if (!gone && here == body && !survival.dead && !player.flyMode && !gAnimalsReplicated) { // (a client only flies them: hits are the server's)
+                const Vector3 pu = Vector3Normalize(feet);
+                if (Melee_SegmentDistance(before, p.pos, feet, Vector3Add(feet, Vector3Scale(pu, 1.7f))) < 0.45f) {
+                    DamageEvent e;
+                    e.amount = p.damage * Difficulty_ThreatScale();
+                    e.kind = DamageKind::Projectile; e.type = (p.spear || p.dart) ? DamageType::Pierce : DamageType::Blunt;
+                    e.parryable = false; e.hasSource = true;
+                    e.source = body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f)))); // where it came from
+                    e.knockback = 2.0f; e.sourceId = p.owner;
+                    const DamageResult r = Combat_Damage(LocalSession(), e);
+                    GameUI_Toast(p.dart ? (r.dodged ? "You dodge a dart" : r.blocked ? "Your shield takes a dart" : "A dart hits you!") : r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
+                    ++projectileHits;
+                    gone = true;
+                }
+            }
+            // Remote players (a server): their feet as the animals see them.
+            if (!gone)
+                for (const AnimalTarget& t : gAnimalTargets) {
+                    if (Planetoid::findNet(t.body) != body || !t.vulnerable) continue;
+                    const Vector3 tu = Vector3Normalize(t.local);
+                    if (Melee_SegmentDistance(before, p.pos, t.local, Vector3Add(t.local, Vector3Scale(tu, 1.7f))) >= 0.45f) continue;
+                    DamageEvent e; e.amount = p.damage * Difficulty_ThreatScale(); e.kind = DamageKind::Projectile; e.parryable = false;
+                    e.hasSource = true; e.source = body->toWorldD(DVec3(before)); e.knockback = 2.0f; e.sourceId = p.owner;
+                    if (gAnimalDamageRemote) gAnimalDamageRemote(t.session, e);
+                    ++projectileHits;
+                    gone = true;
+                    break;
+                }
+        }
+        if (gone) { if (gNetRole == NetRole::Host && fxEnded.size() < 128) fxEnded.push_back(p.id); projectiles[k] = projectiles.back(); projectiles.pop_back(); }
+        else ++k;
+    }
+}
+
+void DrawProjectiles(Scene& world) {
+    for (const Projectile& p : projectiles) {
+        Planetoid* body = BodyNamed(world, p.body);
+        if (!body) continue;
+        const Vector3 w = body->toWorld(p.pos);
+        if (Vector3Distance(w, world.camera.position) > 120.0f) continue;
+        if (p.dart) { // (#1228) a glowing bolt along its flight
+            const Vector3 d = Vector3Normalize(body->dirToWorld(p.vel));
+            for (int s = 0; s < 3; ++s) IB_Cube(Vector3Add(w, Vector3Scale(d, -0.12f * s)), { 0.05f, 0.05f, 0.05f }, s == 0 ? Color{ 255, 120, 80, 255 } : Color{ 160, 160, 170, 255 });
+            continue;
+        }
+        if (!p.spear) { IB_Cube(w, { 0.16f, 0.14f, 0.16f }, Color{ 120, 115, 105, 255 }); continue; }
+        const Vector3 d = Vector3Normalize(body->dirToWorld(p.vel));
+        for (int s = -2; s <= 2; ++s) IB_Cube(Vector3Add(w, Vector3Scale(d, 0.3f * s)), { 0.05f, 0.05f, 0.05f }, s == 2 ? Color{ 90, 90, 95, 255 } : Color{ 120, 90, 60, 255 });
+    }
+}
+} // namespace
+
+
+// (#1343, #1364) The host: what happened since the last call (shots launched, shots ended, creature events), moved out.
+void Animals_TakeFx(MsgCreatureFx& out) {
+    out.shots.swap(fxShots); fxShots.clear();
+    out.ended.swap(fxEnded); fxEnded.clear();
+    out.events.swap(fxEvents); fxEvents.clear();
+}
+
+// (#1343, #1364) A client: the server's shots fly here too (a flight only: hits are the server's), ended ones go, and creature
+// events reach this machine's hook (the sounds and captions, #1363).
+void Animals_ApplyFx(const MsgCreatureFx& m) {
+    LoadSpecies();
+    for (const MsgCreatureFx::Shot& s : m.shots) {
+        const Planetoid* b = Planetoid::findNet(s.body);
+        if (!b) continue;
+        projectiles.push_back({ b->name, s.pos.toFloat(), s.vel, 0.0f, s.owner, simClock, s.kind == 1, s.kind == 2, s.id });
+    }
+    for (uint32_t id : m.ended)
+        for (size_t k = 0; k < projectiles.size(); ++k)
+            if (projectiles[k].id == id) { projectiles[k] = projectiles.back(); projectiles.pop_back(); break; }
+    for (const MsgCreatureFx::Event& e : m.events) {
+        if (e.species >= species.size()) continue;
+        const CreatureSpec* cs = Creature_Spec(species[e.species].id);
+        const Planetoid* b = Planetoid::findNet(e.body);
+        if (cs && b) Creature_Event(*cs, (CreatureEvent)e.kind, b->id, e.pos.toFloat());
+    }
+}
+
+int Animals_ProjectilesThrown() { return projectilesThrown; }
+int Animals_ProjectileHits() { return projectileHits; }
+
+// (#1225) Torches carried by creatures (torch=1): a warm light each, for the frame's local lights (render space).
+void Animals_AddLights(Scene& world) {
+    for (const Animal& a : animals) {
+        const CreatureSpec* cs = Creature_Spec(species[a.species].id);
+        if (cs && cs->ranged && cs->dart && a.throwWindAt >= 0.0) { // (#1228) a sentinel charging: its eye lights the room red
+            if (Planetoid* sb = BodyNamed(world, a.body)) {
+                const float ch = std::clamp((float)((simClock - a.throwWindAt) / std::max(0.1f, cs->throwWindUp)), 0.0f, 1.0f);
+                LocalLight L; L.position = sb->toWorld(Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 1.0f))); L.range = 4.0f + 4.0f * ch;
+                L.color = { 1.0f, 0.3f + 0.5f * ch, 0.2f + 0.5f * ch }; L.intensity = 0.6f + 1.2f * ch;
+                if (Vector3Distance(L.position, world.camera.position) < 70.0f) world.localLights.push_back(L);
+            }
+            continue;
+        }
+        if (!cs || !cs->torch || a.thrower) continue; // (the thrower's hands hold stones)
+        Planetoid* body = BodyNamed(world, a.body);
+        if (!body) continue;
+        const Vector3 w = body->toWorld(Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 1.5f)));
+        if (Vector3Distance(w, world.camera.position) > 70.0f) continue;
+        LocalLight L;
+        L.position = w; L.range = 9.0f; L.color = { 1.0f, 0.62f, 0.32f }; L.intensity = 1.3f;
+        world.localLights.push_back(L);
+    }
+}
+
+// ---- (#1223) Cave creatures: spawning ----
+// Every 2 s around each interest centre (players) on a planet with graph caves: the cave segments within 64 m give spawn
+// sites (their floors, found down from the axis), each with its depth, light and whether an entrance is near. Each cave
+// species (creatures.txt habitat=cave or mouth) fills each 64 m chunk where it fits up to its cap on the first visit, then
+// adds one every respawn seconds while below it; a species with nests gets a nest in a chunk's large chamber, and once that
+// nest is destroyed the chunk stays clear (decided). None on peaceful, none inside claims, none within 24 m of the player.
+namespace {
+struct ChunkId { int x, y, z, species; bool operator<(const ChunkId& o) const { return std::tie(x, y, z, species) < std::tie(o.x, o.y, o.z, o.species); } };
+std::map<ChunkId, SpawnChunk> spawnChunks;
+double lastCaveSpawn = -1e9;
+int caveSpawned = 0, caveSites = 0;
+int lurkerDrops = 0; // (#1224) drops that landed on a player (tests)
+int thefts = 0;      // (#1225) piles taken by thieves (tests)
+
+ChunkId ChunkOf(Vector3 p, int si) {
+    return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
+}
+
+// An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
+uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
+    Animal a;
+    a.species = si;
+    a.body = body.name;
+    a.pos = a.prevPos = at;
+    a.heading = 2.0f * PI * Rand01(seed);
+    a.health = species[si].health;
+    a.age = 1.0f;
+    a.rng = seed ^ (uint32_t)(animals.size() * 7919u);
+    a.timer = 1.0f + 4.0f * Rand01(seed);
+    a.settleIn = 1.0f;
+    a.productReady = WorldTime();
+    a.netId = NetId_Allocate(NetKind::Animal);
+    animals.push_back(a);
+    return a.netId;
+}
+
+void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, Vector3 player) {
+    std::vector<std::pair<int, const CreatureSpec*>> kinds;
+    for (const CreatureSpec& c : Creature_All())
+        if ((c.habitat == Habitat::Cave || c.habitat == Habitat::Mouth) && (!body.profile || body.profile->allowsCreature(c.id))) { // (#1274) the world file's creatures
+            const int si = SpeciesIndex(c.id); if (si >= 0) kinds.push_back({ si, &c });
+        }
+    if (kinds.empty()) return;
+    const float R = SpawnTune::kChunk;
+    // Within 64 m sideways of the player, down to 200 m under them (caves run deep under a surface player) and 30 m over.
+    const float kDown = 200.0f, kUp = 30.0f;
+    const Vector3 cu = Vector3Normalize(centre);
+    const Vector3 lo = Vector3SubtractValue(centre, kDown), hi = Vector3AddValue(centre, kDown);
+    std::vector<PlanetField::CaveSpan> spans;
+    std::vector<PlanetField::CaveEntrance> ents;
+    f.caveSpansNear(lo, hi, spans);
+    f.caveEntrancesNear(Vector3SubtractValue(lo, 20.0f), Vector3AddValue(hi, 20.0f), ents);
+    std::vector<SpawnSite> sites;
+    int nSolid = 0, nNoFloor = 0, nNear = 0, nClaim = 0, nFar = 0;
+    for (const PlanetField::CaveSpan& sp : spans) {
+        if (sp.kind == 2) continue; // rubble is solid
+        const float len = Vector3Distance(sp.a, sp.b);
+        const int n = std::max(1, (int)(len / 12.0f));
+        for (int k = 0; k < n; ++k) {
+            const float t = (k + 0.5f) / n;
+            const Vector3 axis = Vector3Lerp(sp.a, sp.b, t);
+            { const Vector3 rel = Vector3Subtract(axis, centre); const float v = Vector3DotProduct(rel, cu);
+              if (Vector3Length(Vector3Subtract(rel, Vector3Scale(cu, v))) > R || v < -kDown || v > kUp) { ++nFar; continue; } }
+            const float r = sp.ra + (sp.rb - sp.ra) * t;
+            const Vector3 up = Vector3Normalize(sp.up);
+            if (body.densityAt(axis) >= ISO_LEVEL) { ++nSolid; continue; }          // the axis itself in rock (a squeezed span): no room
+            Vector3 floor{}; bool found = false;
+            for (float d = 0.25f; d <= r + 2.0f; d += 0.25f) {
+                const Vector3 q = Vector3Subtract(axis, Vector3Scale(up, d));
+                if (body.densityAt(q) >= ISO_LEVEL) { floor = Vector3Add(q, Vector3Scale(up, 0.25f)); found = true; break; }
+            }
+            if (!found || body.densityAt(Vector3Add(floor, Vector3Scale(up, 1.0f))) >= ISO_LEVEL) { ++nNoFloor; continue; } // no headroom
+            if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) { ++nNear; continue; }
+            if (Claims_At(body.name, floor)) { ++nClaim; continue; } // never inside claimed land
+            SpawnSite s;
+            s.floor = floor; s.up = up; s.kind = sp.kind; s.radius = r;
+            const Vector3 dir = Vector3Normalize(floor);
+            s.depth = f.radius + f.elevation(dir) - Vector3Length(floor);
+            for (const PlanetField::CaveEntrance& e : ents) if (Vector3Distance(e.at, floor) < 20.0f) { s.nearMouth = true; break; }
+            s.light = s.nearMouth ? 0.5f : s.depth < 4.0f ? 0.6f : 0.0f;
+            s.wet = f.caveWetColumn(dir, f.elevation(dir)) > 0.3f; // (#1226) wet karst: by the cave water, the sumps
+            sites.push_back(s);
+        }
+    }
+    caveSites = (int)sites.size();
+    if (getenv("RAYLIBGAME_CAVE_SPAWN_LOG")) printf("cave spawn: spans %d, far %d, solid %d, no floor %d, near %d, claimed %d, sites %d\n", (int)spans.size(), nFar, nSolid, nNoFloor, nNear, nClaim, caveSites);
+    if (sites.empty()) return;
+    const int nestSi = SpeciesIndex("creature_nest");
+    const double now = SimTime();
+    for (const auto& kv : kinds) {
+        const int si = kv.first; const CreatureSpec& c = *kv.second;
+        std::map<ChunkId, std::vector<const SpawnSite*>> byChunk;
+        for (const SpawnSite& s : sites) if (Spawn_Fits(c, s)) byChunk[ChunkOf(s.floor, si)].push_back(&s);
+        for (auto& ck : byChunk) {
+            SpawnChunk& ch = spawnChunks[ck.first];
+            int alive = 0;
+            for (const Animal& a : animals) if (a.species == si && a.body == body.name) { const ChunkId id = ChunkOf(a.pos, si); alive += !(id < ck.first) && !(ck.first < id); }
+            if (c.nests && nestSi >= 0) {
+                if (!ch.hasNest) // the nest in the chunk's large chamber (none without one)
+                    for (const SpawnSite* s : ck.second)
+                        if (s->kind == 3 && s->radius >= SpawnTune::kNestChamber) { ch.nest = SpawnAt(body, nestSi, s->floor, Hash((uint64_t)ck.first.x * 73856093u ^ (uint64_t)ck.first.z, 3u)); ch.hasNest = true; break; }
+                if (ch.hasNest && IndexOfNet(ch.nest) < 0) ch.nestDestroyed = true;
+            }
+            const int due = Spawn_Due(c, ch, alive, now);
+            uint32_t h = Hash(((uint64_t)(uint32_t)ck.first.x << 32) ^ (uint32_t)ck.first.y ^ ((uint64_t)ck.first.z << 16), (uint32_t)(now * 10.0) + (uint32_t)si);
+            for (int k = 0; k < due;) {
+                const SpawnSite* s = ck.second[std::min((int)ck.second.size() - 1, (int)(Rand01(h) * ck.second.size()))];
+                // (#1225) A group species comes as a group at one site: up to `group` together (within what is due), the first
+                // its thrower when the species has one.
+                const int n = std::max(1, std::min(c.group, due - k));
+                uint64_t first = 0;
+                for (int m = 0; m < n; ++m) {
+                    const uint64_t id = SpawnAt(body, si, s->floor, h);
+                    if (const int j = IndexOfNet(id); j >= 0 && c.group > 1) {
+                        if (!first) first = id;
+                        animals[j].group = first;
+                        animals[j].thrower = c.thrower && m == 0;
+                    }
+                    ++caveSpawned;
+                }
+                k += n;
+            }
+        }
+    }
+}
+} // namespace
+
+int Animals_CaveSpawned() { return caveSpawned; }
+bool Animals_Clinging(int i) { return i >= 0 && i < (int)animals.size() && animals[i].clinging; }
+Vector3 Animals_ClingFloor(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].clingFloor : Vector3{ 0, 0, 0 }; }
+int Animals_LurkerDrops() { return lurkerDrops; }
+int Animals_Thefts() { return thefts; }
+int Animals_ShieldBlocks() { return shieldBlocks; }
+const char* Animals_MoodName(int i) { return i >= 0 && i < (int)animals.size() ? Mood_Name(animals[i].brain.mood) : "-"; }
+int Animals_OozeSplits() { return oozeSplits; }
+int Animals_Generation(int i) { return i >= 0 && i < (int)animals.size() ? animals[i].generation : -1; }
+const std::string& Animals_Ore(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].ore : none; }
+bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
+void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
+double Animals_Clock() { return simClock; }
+int Animals_CaveSites() { return caveSites; }
+void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
+void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }
 
 void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     const auto t0 = std::chrono::steady_clock::now();
@@ -592,13 +1070,34 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (step > 1e-4f) a.gait += step / std::max(0.25f, species[a.species].size.x * 0.45f) * PI; // the walk cycle, as the AI drives it
             ++i;
         }
+        StepProjectiles(world, dt); // (#1343) the server's shots, flown here (no hits: those are the server's)
         lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         return;
     }
     Planetoid* here = player.nearest;
     const PlanetField* pf = here ? dynamic_cast<const PlanetField*>(here->field.get()) : nullptr;
     Vector3 playerLocal{};
-    if (here) playerLocal = here->toLocal((player.position - world.renderOrigin).toFloat());
+    if (here) playerLocal = here->toLocalOf(player.position, world.renderOrigin);
+    // (#1223) Players' noise, for creatures' hearing. Footsteps and landings come from the footsteps module (#1240: each step's
+    // loudness by surface, pace and posture - crouched and prone are quiet); 1 there (walking on stone) is 0.4 here (a walk is
+    // heard within 0.4 x a creature's hearing). Each dig or swing stroke of the local player is loud (melee hits: MeleeFrame).
+    {
+        static double lastStepTime = -1e9;
+        static int lastSwings = 0;
+        for (const StepNoise& n : Footsteps_RecentNoises()) {
+            if (n.time <= lastStepTime) continue;
+            lastStepTime = n.time;
+            Planetoid* b = nullptr;
+            if (n.who == 0) b = here;
+            else for (const AnimalTarget& t : gAnimalTargets) if (t.session == n.who) { b = Planetoid::findNet(t.body); break; }
+            if (!b) continue;
+            Noise_Emit(b->id, b->toLocalD(n.pos).toFloat(), n.loudness * 0.4f, simClock, kPlayerPercept | n.who);
+        }
+        if (here && !player.flyMode && !survival.dead && terrainTool.swings != lastSwings) {
+            lastSwings = terrainTool.swings;
+            Noise_Emit(here->id, playerLocal, NoiseTune::kDig, simClock, kPlayerPercept);
+        }
+    }
     // Interest centres (#318): the local player and every other centre (other players on a server). Herds spawn and animals
     // are simulated around all of them; player-specific behaviour (fleeing the player, following food in hand, night
     // hunters, campfires) still looks at the local player only.
@@ -681,6 +1180,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) { // (#334: around every player out in the dark, as around the local one)
         const PlanetField* tf = dynamic_cast<const PlanetField*>(t.body->field.get());
         if (!tf || !t.vulnerable || hunter < 0) continue;
+        if (t.body->profile && !t.body->profile->allowsCreature(species[hunter].id)) continue; // the world file's creatures (#1274)
         const Vector3 up = Vector3Normalize(t.local);
         const bool dark = Vector3DotProduct(Vector3Normalize(world.sunDirection), t.body->dirToWorld(up)) < -0.1f;
         const bool surface = Vector3Length(t.local) > tf->radius + tf->elevation(up) - 6.0f;
@@ -699,6 +1199,15 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 }
             }
         }
+        }
+    }
+    // (#1223) Cave creatures around each interest centre, every 2 s (none on peaceful, or with threats off: benches).
+    if (Creatures_On() && threatsOn && Difficulty_ThreatScale() > 0.0f && SimTime() - lastCaveSpawn > SpawnTune::kPass) {
+        lastCaveSpawn = SimTime();
+        for (const InterestCentre& c : centres) {
+            Planetoid* b = Planetoid::find(c.body);
+            const PlanetField* cf = b ? dynamic_cast<const PlanetField*>(b->field.get()) : nullptr;
+            if (cf) SpawnCaveCreatures(*b, *cf, c.local, c.local);
         }
     }
     // Ecology (Plan 5 A), twice a second over the animals near the player: predators (the hostile kinds)
@@ -723,7 +1232,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 const Species& t = species[b.species];
                 if (b.species == a.species && d < 40.0f) { centre = Vector3Add(centre, b.pos); ++herd; }
                 if (s.hostile && !t.hostile && d < bestPrey && threatsOn) { bestPrey = d; a.chase = j; }
-                if (!s.hostile && t.hostile && d < bestThreat && threatsOn) { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = b.pos; }
+                if (!s.hostile && t.hostile && d < bestThreat && threatsOn && !Creature_Spec(s.id)) /* (#1225: a creature's fears are its faction's) */ { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = b.pos; }
             }
             a.herdCentre = herd ? Vector3Scale(centre, 1.0f / herd) : a.pos;
             a.herdSize = herd;
@@ -754,7 +1263,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         ++simulatedNow; a.simFrame = frameNo;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
-        if ((a.settleIn -= step) <= 0.0f) {
+        if (Combat1_On() && a.status.any()) { // (#1215) burn, bleed and poison over time (creatures on land: no water to douse)
+            a.health -= Status_Step(a.status, step, false, ResistOf(a)); // (#1223: a creature's own resistances)
+            if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
+        }
+        if ((a.settleIn -= step) <= 0.0f && !a.clinging) { // (#1224: not while on a ceiling)
             a.settleIn = 1.0f;
             // Settle (#223): ground dug out from under it drops it onto what is left (up to 3 m); inside rock
             // (an older save, ground built over it) or over a deeper hole, it goes to the surface found from above.
@@ -770,6 +1283,11 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         const Vector3 up = Vector3Normalize(a.pos);
         Vector3 east, north;
         TangentFrame(up, east, north);
+        // (#1217) Staggered: its attack is off and it stands where it is until the stagger ends; poise comes back after a rest.
+        if (Combat3_On() && a.poise.max > 0.0f) {
+            Poise_Step(a.poise, step);
+            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; a.state = State::Flee; continue; }
+        }
         // Decide.
         float speed = 0.0f;
         Vector3 toward{};
@@ -786,7 +1304,152 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
         // stalkers will not come within 14 m of one.
         bool hunting = false;
-        if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
+        bool goingTo = false, ranged = false; // (#1225) going for a pile (a thief); throwing from a distance (a thrower)
+        // (#1223) A creature (a creatures.txt row) is driven by the brain (creatures.h): what it perceives (the nearest player,
+        // creatures of factions it hunts or fears), whether it was hurt, noise it heard, fire, daylight. A plain animal, or
+        // RAYLIBGAME_CREATURES=0: the code below it (the brain's thornback and stalker rows reproduce that code).
+        const CreatureSpec* cs = Creature_Spec(s.id);
+        if (cs && cs->split) OozeOre(a); // (#1226) an ooze takes the colour of the ore where it lives
+        BrainOut bo;
+        int preyIdx = -1;                      // another creature it goes for (infighting)
+        Vector3 huntAt = tgLocal; float huntDist = pdist;
+        if (cs) {
+            BrainInput bi;
+            bi.now = simClock;
+            bi.health01 = s.health > 0.0f ? a.health / s.health : 1.0f;
+            bi.daylight = !dark;
+            bi.peaceful = !threatsOn || Difficulty_ThreatScale() <= 0.0f;
+            bi.self = a.pos;
+            Vector3 fire{};
+            bi.nearFire = cs->fireScares && NearFire(a.pos, 14.0f, fire);
+            bi.fire = fire;
+            if (cs->wakeByLight) { Vector3 lf; bi.lightNear = NearFire(a.pos, cs->wakeRange, lf) || (sameBody && tg->lit && pdist < cs->wakeRange); } // (#1227)
+            if (sameBody) {
+                Percept p;
+                p.id = kPlayerPercept | tg->session; p.pos = tgLocal; p.dist = pdist; p.faction = Faction_Player();
+                p.seen = Sense_Sees(*cs, pdist, dark && !tg->lit ? 0.0f : 1.0f, true);
+                Vector3 f2; p.safe = cs->fireSafe && NearFire(tgLocal, 10.0f, f2); // (#1225: not for torch-bearers)
+                p.vulnerable = tg->vulnerable;
+                bi.others.push_back(p);
+            }
+            for (size_t j = 0; j < animals.size(); ++j) { // other creatures it has a stance toward, within its sight
+                if (j == i || animals[j].body != a.body) continue;
+                const float d = Vector3Distance(animals[j].pos, a.pos);
+                if (d > std::min(40.0f, cs->sight)) continue;
+                const int fj = AnimalFaction(animals[j]);
+                if (Factions().stance(cs->factionIdx, fj) == Stance::Neutral) continue;
+                Percept p; p.id = animals[j].netId; p.pos = animals[j].pos; p.dist = d; p.faction = fj; p.seen = Sense_Sees(*cs, d, dark ? 0.0f : 1.0f, true);
+                bi.others.push_back(p);
+            }
+            if (a.hurtPending) { bi.hurt = true; bi.hurtBy = a.hurtBy; bi.hurtFrom = (a.hurtBy & kPlayerPercept) ? tgLocal : a.hurtFrom; a.hurtPending = false; }
+            for (const NoiseEvent& n : Noise_Recent(simClock))
+                if (n.body == body->id && n.source != a.netId && Sense_Hears(*cs, Vector3Distance(n.pos, a.pos), n.loudness)) {
+                    bi.heardNoise = true; bi.noiseAt = n.pos;
+                    if (n.source & kPlayerPercept) a.heardPlayerAt = simClock; // (#1224) the player made it
+                }
+            for (Percept& p : bi.others) if (p.id & kPlayerPercept) p.heard = simClock - a.heardPlayerAt < 4.0;
+            const Mood before = a.brain.mood;
+            bo = Brain_Step(a.brain, *cs, bi, step);
+            if (bo.mood == Mood::Idle && Rand01(a.rng) < step / 12.0f) FxEvent(a, *cs, CreatureEvent::Idle, body->id, a.pos); // (#1363) an idle call now and then (~12 s)
+            if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { const Percept* pp = nullptr; for (const Percept& q : bi.others) if (q.id & kPlayerPercept) pp = &q;
+                printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
+            if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
+                FxEvent(a, *cs, CreatureEvent::Alert, body->id, a.pos);
+            if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; }
+            if ((bo.mood == Mood::Chase || bo.mood == Mood::Attack) && a.fleeTimer <= 0.0f) {
+                if (bo.target & kPlayerPercept) hunting = sameBody;
+                else if ((preyIdx = IndexOfNet(bo.target)) >= 0) { hunting = true; huntAt = animals[preyIdx].pos; huntDist = Vector3Distance(huntAt, a.pos); }
+            }
+            if (bo.mood == Mood::Alert && a.fleeTimer <= 0.0f) { // goes to look where the noise was
+                a.state = State::Walk;
+                toward = Vector3Subtract(bo.goal, a.pos); steer = true; speed = s.walk;
+            }
+            // (#1224) Ceiling clingers (the tunnel lurker): idle in a cave with a ceiling 2.2-20 m over it (chambers run tall), it climbs up and waits
+            // there. Prey heard or seen right under it (within dropRange sideways): a rattle (the telegraph), and 0.35 s later it
+            // drops onto them (damage x dropScale, a heavy hit). Prey it hunts but that stays clear for 3 s: it drops anyway
+            // and gives chase. Hit or staggered: it falls.
+            if (cs->ceiling) {
+                const Vector3 aup = Vector3Normalize(a.pos);
+                if (getenv("RAYLIBGAME_CREATURE_LOG") && (frameNo % 60) == 0) { float r = -1.0f; for (float h = 0.5f; h <= 20.0f; h += 0.25f) if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { r = h; break; }
+                    printf("creature %llu: mood %s, hunting %d, flee %.1f, clinging %d, since bite %.1f, roof %.2f m\n", (unsigned long long)a.netId, Mood_Name(bo.mood), (int)hunting, a.fleeTimer, (int)a.clinging, simClock - a.lastBite, r); }
+                if (a.clinging) {
+                    const bool knocked = bi.hurt || (Combat3_On() && Poise_Staggered(a.poise));
+                    auto fall = [&]() { a.pos = a.prevPos = a.clingFloor; a.clinging = false; a.dropIn = -1.0f; a.clingWait = 0.0f; };
+                    if (knocked) fall();
+                    else if (a.dropIn >= 0.0f) {
+                        a.dropIn -= step;
+                        if (a.dropIn <= 0.0f) {
+                            const Vector3 below = a.clingFloor;
+                            fall();
+                            if (sameBody && hunting && preyIdx < 0) {
+                                // It drops onto its prey: within its drop range sideways of where it hung (and not far above or
+                                // below that floor), it lands beside them and the drop hits.
+                                const Vector3 d = Vector3Subtract(tgLocal, below);
+                                const float vert = Vector3DotProduct(d, aup);
+                                const Vector3 flat = Vector3Subtract(d, Vector3Scale(aup, vert));
+                                const float side = Vector3Length(flat);
+                                if (getenv("RAYLIBGAME_CREATURE_LOG")) printf("creature %llu: drop, prey %.2f m sideways, %.2f m up from the floor below\n", (unsigned long long)a.netId, side, vert);
+                                if (side < cs->dropRange + 0.5f && fabsf(vert) < 3.0f) {
+                                    if (side > 0.9f) a.pos = a.prevPos = Vector3Add(below, Vector3Scale(flat, (side - 0.9f) / side)); // beside them
+                                    DamageEvent e;
+                                    e.amount = cs->damage * cs->dropScale * Difficulty_ThreatScale();
+                                    e.poise = e.amount * PoiseTune::kAttackPoisePerDamage;
+                                    e.heavy = true; e.kind = DamageKind::Melee; e.type = cs->type;
+                                    e.hasSource = true; e.source = body->toWorldD(DVec3(below)); e.knockback = cs->knockback; e.sourceId = a.netId;
+                                    e.faction = (uint8_t)std::max(0, cs->factionIdx);
+                                    if (tg->session != 0) { if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e); }
+                                    else {
+                                        const DamageResult r = Combat_Damage(LocalSession(), e);
+                                        GameUI_Toast(r.dodged ? TextFormat("The %s drops - you roll clear", s.name.c_str()) : TextFormat("The %s drops on you!", s.name.c_str()));
+                                    }
+                                    ++lurkerDrops;
+                                    a.lastBite = simClock;
+                                    a.brain.lastStrike = simClock; // its cooldown starts with the drop
+                                }
+                            }
+                        }
+                    } else if (hunting && preyIdx < 0) {
+                        const Vector3 d = Vector3Subtract(tgLocal, a.clingFloor);
+                        const float side = Vector3Length(Vector3Subtract(d, Vector3Scale(aup, Vector3DotProduct(d, aup))));
+                        a.clingWait += step;
+                        if (side < cs->dropRange || a.clingWait > 3.0f) {
+                            a.dropIn = 0.35f;
+                            FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
+                            if (tg->session == 0 && side < cs->dropRange) { Audio_Play(Sfx::Error, 0.4f, 1.8f); GameUI_Toast("Something rattles overhead!"); }
+                        }
+                    }
+                    if (a.clinging) { a.moveSpeed = 0.0f; a.state = State::Rest; continue; } // hanging on: no walking
+                } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0) {
+                    float up = 0.0f; bool roof = false;
+                    for (float h = 0.5f; h <= 20.0f; h += 0.25f)
+                        if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; }
+                    if (roof && up >= 2.2f) {
+                        a.clingFloor = a.pos;
+                        a.pos = a.prevPos = Vector3Add(a.pos, Vector3Scale(aup, up - 0.3f));
+                        a.clinging = true; a.clingWait = 0.0f; a.dropIn = -1.0f;
+                        a.moveSpeed = 0.0f; a.state = State::Rest;
+                        continue;
+                    }
+                }
+            }
+            // (#1225) Thieves: a dropped pile within 12 m (and nothing carried yet): it goes for it, takes it whole and runs
+            // (12 s away from the player). It carries it until it falls (then it drops with its loot).
+            if (cs->thief && a.carried.empty() && a.fleeTimer <= 0.0f) {
+                Vector3 pile{};
+                if (Combat_PileNear(a.body, a.pos, 12.0f, pile)) {
+                    if (Vector3Distance(pile, a.pos) < 1.4f) {
+                        if (Combat_TakePileNear(a.body, a.pos, 1.6f, a.carried) && !a.carried.empty()) {
+                            a.fleeTimer = 12.0f; a.fleeFrom = sameBody ? tgLocal : a.pos; hunting = false;
+                            ++thefts;
+                            if (sameBody && tg->session == 0 && pdist < 40.0f)
+                                GameUI_Toast(TextFormat("A %s grabs your %s and runs!", s.name.c_str(), a.carried[0].id.c_str()));
+                        }
+                    } else { hunting = true; goingTo = true; preyIdx = -1; huntAt = pile; huntDist = Vector3Distance(pile, a.pos); }
+                }
+            }
+            // (#1225) The group's thrower keeps its distance from the player it hunts and throws instead of closing in.
+            ranged = hunting && !goingTo && preyIdx < 0 && ((a.thrower && cs->thrower) || cs->ranged); // (#1228: every sentinel shoots)
+        } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(tgLocal, 10.0f, fire);
             if (s.night && NearFire(a.pos, 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
@@ -796,40 +1459,82 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (!hunting) a.windUpAt = -1.0; // a wind-up broken off (the prey gone or safe) never lands later
         if (hunting) {
             a.state = State::Hunt;
-            toward = Vector3Subtract(tgLocal, a.pos);
+            toward = Vector3Subtract(huntAt, a.pos);
             steer = true;
             speed = s.run * (s.night ? 0.8f : 1.0f);
-            const float reach = 0.5f * s.size.x + 1.0f;
+            if (cs && cs->burst) speed *= fmodf((float)simClock + (a.rng % 97) * 0.01f, cs->burstOn + cs->burstOff) < cs->burstOn ? 1.0f : 0.33f; // (#1224) bursts
+            const float reach = cs ? cs->reach : 0.5f * s.size.x + 1.0f;
+            const bool atPlayer = preyIdx < 0;
             // A telegraphed attack (#165): in reach it winds up (a growl, a warning) and strikes kBiteWindUp later; the
             // hit goes through Combat_Damage (a shield block, knockback away from it). Out of reach by then: it missed.
-            if (pdist < reach) {
-                speed = 0.0f;
-                if (a.windUpAt < 0.0 && simClock - a.lastBite > 1.2) { // (on simClock: tests step animals many times in a frame)
-                    a.windUpAt = simClock;
-                    if (tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
-                    GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
-                }
+            bool windUp = false, strike = false;
+            if (cs) { // (#1223) the brain's timing (the same numbers for the surface hunters)
+                if (bo.mood == Mood::Attack) speed = 0.0f;
+                windUp = bo.windUpStarted; strike = bo.strike;
+            } else {
+                if (pdist < reach) { speed = 0.0f; windUp = a.windUpAt < 0.0 && simClock - a.lastBite > 1.2; } // (on simClock: tests step animals many times in a frame)
+                strike = a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp;
             }
-            if (a.windUpAt >= 0.0 && simClock - a.windUpAt >= kBiteWindUp) {
+            // (#1225) A thief going for a pile walks to it (no attack). A thrower: too close (under throwMin), it backs off; in
+            // range, it stands and throws (a telegraphed wind-up, then a stone on an arc at the player's chest); further, it
+            // closes in. Neither melees.
+            if (goingTo) { a.state = State::Walk; windUp = strike = false; }
+            else if (ranged) {
+                windUp = strike = false;
+                if (pdist < cs->throwMin) { toward = Vector3Subtract(a.pos, tgLocal); speed = s.walk * 1.5f; a.throwWindAt = -1.0; }
+                else if (pdist <= cs->throwRange) {
+                    speed = 0.0f;
+                    if (a.throwWindAt < 0.0 && simClock - a.lastThrow > cs->throwCooldown) {
+                        a.throwWindAt = simClock;
+                        FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
+                        if (tg->session == 0) GameUI_Toast(TextFormat(cs->dart ? "The %s charges up!" : "The %s winds up a throw!", s.name.c_str())); // (#1228: a sentinel's charge)
+                    }
+                    if (a.throwWindAt >= 0.0 && simClock - a.throwWindAt >= cs->throwWindUp) {
+                        const Vector3 aup = Vector3Normalize(a.pos), tup = Vector3Normalize(tgLocal);
+                        ThrowAt(a.body, Vector3Add(a.pos, Vector3Scale(aup, cs->dart ? 1.1f : 1.6f)), Vector3Add(tgLocal, Vector3Scale(tup, 1.1f)), cs->throwDamage, a.netId, false, cs->dart ? cs->dartSpeed : 16.0f, cs->dart);
+                        a.throwWindAt = -1.0; a.lastThrow = simClock;
+                    }
+                } else a.throwWindAt = -1.0;
+            }
+            if (windUp) {
+                a.windUpAt = simClock;
+                if (cs) FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
+                if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
+                GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
+            }
+            if (strike) {
                 a.windUpAt = -1.0;
                 a.lastBite = simClock;
-                if (pdist < reach + 0.4f) {
+                if (huntDist < reach + 0.4f) {
                     DamageEvent e;
-                    e.amount = 8.0f * Difficulty_ThreatScale();
-                    e.kind = s.night ? DamageKind::Bite : DamageKind::Melee;
+                    e.amount = (cs ? cs->damage : 8.0f) * Difficulty_ThreatScale();
+                    e.poise = cs && cs->poise > 0.0f ? cs->poise : e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
+                    e.kind = (cs ? cs->bite : s.night) ? DamageKind::Bite : DamageKind::Melee;
+                    if (cs) e.type = cs->type;
                     e.hasSource = true;
                     e.source = body->toWorldD(DVec3(a.pos));
-                    e.knockback = s.night ? 3.0f : 6.0f; // a ram shoves harder than a bite
+                    e.knockback = cs ? cs->knockback : s.night ? 3.0f : 6.0f; // a ram shoves harder than a bite
                     e.sourceId = a.netId;
-                    if (tg->session != 0) { // (#334) a remote player: its client applies the hit (shield, health), the server the shove
+                    if (cs) e.faction = (uint8_t)std::max(0, cs->factionIdx);
+                    if (!atPlayer) creatureHits.push_back({ animals[preyIdx].netId, a.netId, a.pos, e }); // (#1223) applied after the loop
+                    else if (tg->session != 0) { // (#334) a remote player: its client applies the hit (shield, health), the server the shove
                         if (gAnimalDamageRemote) gAnimalDamageRemote(tg->session, e);
                     } else {
                         const DamageResult r = Combat_Damage(LocalSession(), e);
+                        if (cs && cs->corrode > 0 && !r.dodged && !r.parried && ToolOf(terrainTool.heldTool).type != ToolType::Hands) { // (#1226) its touch eats the tool
+                            ToolWear_OnStroke(terrainTool.heldTool, cs->corrode);
+                            GameUI_Toast(TextFormat("The %s corrodes your %s", s.name.c_str(), terrainTool.heldTool.c_str()));
+                        }
+                        if (r.parried) { // (#1218) a parry staggers the attacker (2 s, #1217)
+                            if (a.poise.max <= 0.0f) Poise_Init(a.poise, Poise_CreatureMax(s.health));
+                            Poise_Stagger(a.poise, PoiseTune::kParryStaggerTime);
+                        }
                         Audio_Play(Sfx::Error, 0.7f, r.blocked ? 0.9f : 0.5f);
-                        GameUI_Toast(r.blocked ? TextFormat("You block the %s", s.name.c_str())
+                        GameUI_Toast(r.parried ? TextFormat("Parried! The %s staggers", s.name.c_str()) : r.dodged ? TextFormat("You dodge the %s", s.name.c_str())
+                                   : r.blocked ? TextFormat("You block the %s", s.name.c_str())
                                                : TextFormat("The %s %s you!", s.name.c_str(), s.night ? "bites" : "rams"));
                     }
-                } else if (tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
+                } else if (atPlayer && tg->session == 0) GameUI_Toast(TextFormat("The %s misses", s.name.c_str()));
             }
         } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;
@@ -902,6 +1607,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 a.detourTime = 0.0f;
             }
         }
+        if (Combat1_On()) speed *= Status_SpeedFactor(a.status); // (#1215) chilled 0.7, frozen 0
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
@@ -993,6 +1699,10 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // Night hunters gone at daylight.
     for (int k = (int)gone.size() - 1; k >= 0; --k) animals.erase(animals.begin() + gone[k]);
     if (!gone.empty()) aimed = -1;
+    // (#1223) Creatures' strikes on each other, gathered in the loop (a kill shifts the list), found again by id.
+    for (const CreatureHit& h : creatureHits) { const int t = IndexOfNet(h.target); if (t >= 0) HitByCreature(t, h.e, h.attacker, h.from); }
+    creatureHits.clear();
+    StepProjectiles(world, dt); // (#1225) thrown stones and spears in flight
     // Breeding: two fed adults of a kind within 6 m make a young one (once every 5 min of world time).
     for (size_t i = 0; i < animals.size(); ++i) {
         Animal& a = animals[i];
@@ -1018,8 +1728,205 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             break;
         }
     }
+    { // (#1108) the trail: where each animal was, for the server's rewound hit checks
+        const double now = SimTime();
+        for (Animal& a : animals) {
+            if (a.trail.empty() || a.trail.back().first < now) a.trail.push_back({ now, a.pos });
+            size_t drop = 0;
+            while (drop < a.trail.size() && a.trail[drop].first < now - kTrailSeconds) ++drop;
+            if (drop) a.trail.erase(a.trail.begin(), a.trail.begin() + (long)drop);
+        }
+    }
     lastUpdateMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
+
+float Animals_RewindDistance(const std::vector<std::pair<double, Vector3>>& trail, Vector3 current, Vector3 from, double now, double window) {
+    float best = Vector3Distance(current, from);
+    for (const auto& [t, p] : trail) if (t >= now - window) best = std::min(best, Vector3Distance(p, from));
+    return best;
+}
+float Animals_HitDistance(int i, Vector3 from, double window) {
+    if (i < 0 || i >= (int)animals.size()) return 1e30f;
+    return Animals_RewindDistance(animals[i].trail, animals[i].pos, from, SimTime(), window);
+}
+
+// ---- (#1216) Melee in phases (combat step 2, melee.h) ----
+// LMB at a creature (aimed at, locked on, or inside the light swing's arc and reach) starts a swing; the rest of LMB stays
+// the terrain tool's. The swing runs on sim time with this frame's view: each step of its hit window sweeps the blade
+// across the arc against every creature's body capsule, once per creature per swing; terrain and parts in front of a
+// creature shield it. Middle mouse toggles a soft lock-on (the view eases toward the creature). RAYLIBGAME_COMBAT2=0: the
+// old one-click hit.
+namespace {
+MeleeState gMelee;
+double gMeleeClock = -1.0;
+int gMeleeShocks = 0, gMeleeStaggers = 0, gMeleeDodges = 0;
+uint64_t gLockNet = 0;              // the soft lock-on's creature (0: none)
+Vector2 gLockScreen{ -1.0f, -1.0f }; // where it is on screen (the HUD marker)
+WeaponClass gMeleeClass = WeaponClass::Tools;
+int gMeleeHits = 0;                 // hits landed (tests)
+
+
+
+// Its body as a capsule along its length (body-local), its radius half its height or width.
+void AnimalCapsule(const Animal& a, Vector3& q0, Vector3& q1, float& r) {
+    const Species& s = species[a.species];
+    const float scale = 0.6f + 0.4f * a.age;
+    const Vector3 up = Vector3Normalize(a.pos), fwd = AnimalForward(a);
+    r = 0.5f * std::max(s.size.x, s.size.y) * scale;
+    const Vector3 c = Vector3Add(a.pos, Vector3Scale(up, 0.5f * s.size.y * scale));
+    const float hl = std::max(0.0f, 0.5f * s.size.z * scale - r);
+    q0 = Vector3Subtract(c, Vector3Scale(fwd, hl)); q1 = Vector3Add(c, Vector3Scale(fwd, hl));
+}
+
+Vector3 AnimalCentre(const Animal& a) {
+    const Species& s = species[a.species];
+    return Vector3Add(a.pos, Vector3Scale(Vector3Normalize(a.pos), 0.5f * s.size.y * (0.6f + 0.4f * a.age)));
+}
+
+// Terrain or a part between the eye and a point (body-local) on `here`.
+bool Shielded(Scene& world, Planetoid& here, Vector3 eye, Vector3 at) {
+    const Vector3 d = Vector3Subtract(at, eye);
+    const float len = Vector3Length(d);
+    if (len < 0.2f) return false;
+    const Vector3 dir = Vector3Scale(d, 1.0f / len);
+    TerrainHit th;
+    if (RaycastTerrain(world, Ray{ here.toWorld(eye), here.dirToWorld(dir) }, len, th) && th.distance < len - 0.15f) return true;
+    if (here.plots)
+        for (auto& pl : here.plots->plots) { Int3 c, f; float dd; if (pl->raycast(eye, dir, len - 0.15f, c, f, dd)) return true; }
+    return false;
+}
+
+void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 dirW) {
+    const double now = SimTime();
+    const float dt = gMeleeClock < 0.0 ? 0.0f : (float)std::clamp(now - gMeleeClock, 0.0, 0.1);
+    gMeleeClock = now;
+    if (gMelee.phase == MeleePhase::Idle) gMeleeClass = Weapon_ClassOf(terrainTool.heldTool);
+    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    const bool live = here && !player.flyMode && in.enabled && !buildTool.active && !survival.dead;
+    if (!here || survival.dead || player.flyMode) { gMelee = MeleeState{}; gLockNet = 0; gLockScreen = { -1.0f, -1.0f }; return; }
+    const Vector3 eye = here->toLocal(world.camera.position);
+    const Vector3 fwd = here->dirToLocal(dirW);
+    const Vector3 up = Vector3Length(eye) > 1.0f ? Vector3Normalize(eye) : Vector3{ 0, 1, 0 };
+
+    // The soft lock-on: middle mouse takes the creature nearest the view's centre (within 35 degrees and 12 m), again lets go.
+    if (live && in.hit(Act::LockOn)) {
+        if (gLockNet) gLockNet = 0;
+        else {
+            float best = cosf(MeleeTune::kLockConeDeg * DEG2RAD);
+            for (const Animal& a : animals) {
+                if (a.body != here->name) continue;
+                const Vector3 to = Vector3Subtract(AnimalCentre(a), eye);
+                const float d = Vector3Length(to);
+                if (d > MeleeTune::kLockRange || d < 0.1f) continue;
+                const float c = Vector3DotProduct(Vector3Scale(to, 1.0f / d), fwd);
+                if (c > best && !Shielded(world, *here, eye, AnimalCentre(a))) { best = c; gLockNet = a.netId; }
+            }
+            if (!gLockNet) GameUI_Toast("Nothing to lock on to");
+        }
+    }
+    int lockIdx = gLockNet ? IndexOfNet(gLockNet) : -1;
+    if (gLockNet && (lockIdx < 0 || animals[lockIdx].body != here->name ||
+                     Vector3Distance(AnimalCentre(animals[lockIdx]), eye) > MeleeTune::kLockKeep)) { gLockNet = 0; lockIdx = -1; }
+    gLockScreen = lockIdx >= 0 ? GetWorldToScreen(here->toWorld(AnimalCentre(animals[lockIdx])), world.camera) : Vector2{ -1.0f, -1.0f };
+
+    // A creature the light swing would reach (from the view as it is now).
+    auto inArc = [&]() {
+        const float half = 0.5f * w.arcDeg * DEG2RAD;
+        for (const Animal& a : animals) {
+            if (a.body != here->name || Vector3Distance(a.pos, eye) > w.reach + 4.0f) continue;
+            Vector3 q0, q1, hit; float r;
+            AnimalCapsule(a, q0, q1, r);
+            if (Melee_SweepCapsule(eye, fwd, up, w.reach, half, -half, q0, q1, r, &hit) && !Shielded(world, *here, eye, hit)) return true;
+        }
+        return false;
+    };
+    MeleeInput mi;
+    mi.pressed = live && in.hit(Act::Primary) && !gPrimaryLatch.latched &&
+                 (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
+    mi.held = live && in.down(Act::Primary) && survival.windedLeft <= 0.0f; // (#1218) winded: no heavies
+    mi.block = survival.blocking;
+    mi.dodge = survival.dodges != gMeleeDodges; // (#1218) a dodge started
+    gMeleeDodges = survival.dodges;
+    mi.interrupted = survival.shocks != gMeleeShocks || survival.staggers != gMeleeStaggers; // a shock or (#1217) a stagger
+    gMeleeShocks = survival.shocks; gMeleeStaggers = survival.staggers;
+    mi.stamina = survival.stamina;
+    const MeleeStep o = Melee_Step(gMelee, w, mi, dt);
+    survival.hyperArmour = Combat3_On() && Melee_HyperArmour(gMelee, w); // (#1217) hits don't stagger this wind-up
+    if (o.cost > 0.0f) { survival.stamina = std::max(0.0f, survival.stamina - o.cost); survival.staminaUsedAt = now; }
+    if (o.tired) GameUI_Toast("Too tired to swing");
+    if (o.started) { hitLatch = true; ++terrainTool.swings; Audio_Play(Sfx::Dig, 0.25f, 1.9f); }
+    if (!o.sweeping) return;
+
+    // The hit window: the blade from this step's start angle to its end, against every creature on this body.
+    const float a0 = Melee_SweepAngle(gMelee, w, o.sweepFrom), a1 = Melee_SweepAngle(gMelee, w, o.sweepTo);
+    struct Hit { int i; Vector3 at; };
+    std::vector<Hit> hits;
+    for (size_t i = 0; i < animals.size(); ++i) {
+        const Animal& a = animals[i];
+        if (a.body != here->name || Vector3Distance(a.pos, eye) > w.reach + 4.0f || Melee_Struck(gMelee, a.netId)) continue;
+        Vector3 q0, q1, at; float r;
+        AnimalCapsule(a, q0, q1, r);
+        if (!Melee_SweepCapsule(eye, fwd, up, w.reach, a0, a1, q0, q1, r, &at)) continue;
+        if (Shielded(world, *here, eye, at)) continue; // terrain or a part takes the blow
+        hits.push_back({ (int)i, at });
+    }
+    const ToolSpec t = ToolOf(terrainTool.heldTool);
+    const float base = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier; // today's damage by tool (weapons: #1219)
+    std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.i > y.i; }); // a kill removes it: high first
+    for (const Hit& h : hits) {
+        const Animal& a = animals[h.i];
+        gMelee.struck.push_back(a.netId);
+        DamageEvent e;
+        e.amount = Melee_Damage(base, gMelee);
+        e.kind = DamageKind::Melee;
+        e.type = Weapon_TypeOf(terrainTool.heldTool);
+        e.heavy = gMelee.heavy;
+        e.poise = Melee_Poise(gMelee, w);
+        e.fromBehind = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(h.at, eye))) > 0.5f; // its back to the blade
+        { const CreatureSpec* fs = Creature_Spec(species[a.species].id); // (#1227) at its face: within its shield's arc of its facing
+          e.fromFront = Vector3DotProduct(AnimalForward(a), Vector3Normalize(Vector3Subtract(eye, a.pos))) > cosf((fs ? fs->shieldArcDeg : 60.0f) * DEG2RAD); }
+        survival.lastDealtAt = now;
+        ++gMeleeHits;
+        Noise_Emit(here->id, eye, NoiseTune::kHit, simClock, kPlayerPercept); // (#1224) combat is loud
+        if (gAnimalsReplicated) { if (gAnimalHitRequest) gAnimalHitRequest(a.netId); } // (#334) a client: the server decides
+        else {
+            const CreatureSpec* hs = Creature_Spec(species[animals[h.i].species].id);
+            if (hs && hs->corrode > 0 && ToolOf(terrainTool.heldTool).type != ToolType::Hands) ToolWear_OnStroke(terrainTool.heldTool, std::max(1, hs->corrode / 3)); // (#1226) a tool that strikes an ooze corrodes
+            Animals_HitEvent(h.i, e);
+        }
+    }
+}
+} // namespace
+
+bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
+    if (!Combat2_On() || gMelee.phase == MeleePhase::Idle) return false;
+    const WeaponSpec& w = Weapon_Spec(gMeleeClass);
+    phase = (int)gMelee.phase;
+    back = gMelee.chain == 1;
+    charge = gMelee.heavy ? 1.0f : 0.0f;
+    switch (gMelee.phase) {
+        case MeleePhase::WindUp:
+            f = std::min(1.0f, gMelee.t / w.windUp);
+            if (gMelee.heavy) charge = std::clamp((gMelee.t - w.windUp) / (w.windUp * (MeleeTune::kHeavyWindUp - 1.0f)), 0.0f, 1.0f);
+            break;
+        case MeleePhase::Hit: f = gMelee.sweep; break;
+        default: f = std::min(1.0f, gMelee.t / w.recovery); break;
+    }
+    return true;
+}
+
+void Animals_LockOnView(Scene& world, float dt) {
+    const int i = gLockNet ? IndexOfNet(gLockNet) : -1;
+    Planetoid* here = player.nearest;
+    if (i < 0 || !here || player.flyMode) return;
+    const Vector3 to = Vector3Subtract(here->toWorld(AnimalCentre(animals[i])), world.camera.position);
+    player.forward = Melee_SoftTurn(player.forward, player.up, to, dt);
+}
+
+uint64_t Animals_LockOn() { return gLockNet; }
+int Animals_MeleeHits() { return gMeleeHits; }
+const MeleeState& Animals_Melee() { return gMelee; }
+bool Animals_MeleeBusy() { return Combat2_On() && gMelee.phase != MeleePhase::Idle; }
 
 // Aim along the crosshair and the player's actions on the aimed animal (#222). Called after the camera is placed
 // for this frame (Animals_Update ran on last frame's), right before the terrain tool, which holds off while
@@ -1054,10 +1961,12 @@ void Animals_Aim(Scene& world, const PlayerInput& in) {
         TerrainHit th;
         if (aimed >= 0 && RaycastTerrain(world, Ray{ world.camera.position, dirW }, best, th) && th.distance < best - 0.3f) aimed = -1;
     }
+    // (#1216) Melee in phases: LMB at a creature goes to the swing (the old one-click hit below with RAYLIBGAME_COMBAT2=0).
+    if (Combat2_On()) MeleeFrame(world, in, here, Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)));
     if (aimed >= 0 && in.enabled && !buildTool.active) {
         Animal& a = animals[aimed];
         const Species& s = species[a.species];
-        if (in.hit(Act::Primary) && !gPrimaryLatch.latched && SimTime() - lastHit > 0.35) { // (#896: not while eating; #895: not on a used-up hold)
+        if (!Combat2_On() && in.hit(Act::Primary) && !gPrimaryLatch.latched && SimTime() - lastHit > 0.35) { // (#896: not while eating; #895: not on a used-up hold)
             lastHit = SimTime();
             hitLatch = true;
             const ToolSpec t = ToolOf(terrainTool.heldTool);
@@ -1099,6 +2008,35 @@ static inline void DrawCubeB(Vector3 p, float w, float h, float l, Color c) { IB
 template <typename ShadeFn>
 static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
     const Vector3 sz = s.size;                       // length (z), height (y), width (x)
+    if (s.blob) { // (#1226) a mineral ooze: a wobbling heap, half its own green and half the colour of the ore it ate, with lumps of it
+        const ItemDef* od = a.ore.empty() ? nullptr : itemDB.find(a.ore);
+        const Color oc = od ? od->color : s.head;
+        const Color mix = { (unsigned char)((s.body.r + oc.r) / 2), (unsigned char)((s.body.g + oc.g) / 2), (unsigned char)((s.body.b + oc.b) / 2), 255 };
+        const float t = (float)GameClock(), w = 1.0f + 0.07f * sinf(t * 2.3f + (float)(a.rng % 17));
+        const float g = a.generation == 0 ? 1.0f : a.generation == 1 ? 0.8f : 0.62f; // the split-off ones are smaller
+        DrawCubeB({ 0, sz.y * 0.28f * w * g, 0 }, sz.z * g / w, sz.y * 0.56f * w * g, sz.x * g / w, shade(mix, 1.0f));
+        DrawCubeB({ 0, sz.y * 0.6f * w * g, 0 }, sz.z * 0.68f * g, sz.y * 0.4f * g, sz.x * 0.68f * g, shade(mix, 1.12f));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.28f * g, sz.y * (0.55f + 0.1f * (k & 1)) * g, (k == 1 ? 0.25f : -0.15f) * sz.x * g }, sz.z * 0.16f * g, sz.y * 0.16f * g, sz.z * 0.16f * g, shade(oc, 0.95f));
+        return;
+    }
+    if (s.turret) { // (#1228) a ruin sentinel: stone pedestal, a bronze head on it facing its heading, a barrel, and an eye that
+        // glows from dull red to white-hot as a shot charges (the telegraph you can see)
+        const CreatureSpec* tc = Creature_Spec(s.id);
+        const float charge = a.throwWindAt >= 0.0 && tc ? std::clamp((float)((simClock - a.throwWindAt) / std::max(0.1f, tc->throwWindUp)), 0.0f, 1.0f) : 0.0f;
+        DrawCubeB({ 0, sz.y * 0.2f, 0 }, sz.z * 0.9f, sz.y * 0.4f, sz.x * 0.9f, shade(s.body, 0.9f));            // pedestal
+        DrawCubeB({ 0, sz.y * 0.42f, 0 }, sz.z * 0.6f, sz.y * 0.08f, sz.x * 0.6f, shade(s.body, 1.1f));          // collar
+        DrawCubeB({ 0, sz.y * 0.62f, 0 }, sz.z * 0.7f, sz.y * 0.32f, sz.x * 0.7f, shade(s.head, 1.0f));          // head
+        DrawCubeB({ 0, sz.y * 0.64f, sz.x * 0.55f }, sz.z * 0.14f, sz.y * 0.12f, sz.x * 0.5f, shade(s.head, 0.7f)); // barrel
+        const Color eye = { 255, (unsigned char)(60 + 195 * charge), (unsigned char)(40 + 200 * charge * charge), 255 };
+        DrawCubeB({ 0, sz.y * 0.72f, sz.x * 0.36f }, sz.z * 0.22f, sz.y * 0.1f, sz.x * 0.04f, eye);              // the eye
+        return;
+    }
+    if (s.nest) { // (#1223) a nest: a low mound of lumps, the egg-like pods on top (no legs, no head, never moves)
+        DrawCubeB({ 0, sz.y * 0.3f, 0 }, sz.z, sz.y * 0.6f, sz.x, shade(s.body, 1.0f));
+        DrawCubeB({ sz.z * 0.2f, sz.y * 0.55f, -sz.x * 0.15f }, sz.z * 0.55f, sz.y * 0.5f, sz.x * 0.5f, shade(s.body, 0.9f));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ (k - 1) * sz.z * 0.25f, sz.y * 0.8f, (k % 2 ? 0.15f : -0.1f) * sz.x }, sz.z * 0.18f, sz.y * 0.3f, sz.z * 0.18f, shade(s.head, 1.0f));
+        return;
+    }
     const float t = (float)GameClock();
     const bool resting = a.state == State::Rest, grazing = a.state == State::Graze && a.moveSpeed <= 0.0f;
     const float legH = sz.y * (s.biped ? 0.45f : 0.42f);
@@ -1157,17 +2095,21 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
         box({ 0, bodyY + bodyH * 0.8f, -len * 0.48f }, { sz.z * 0.12f, sz.y * (s.biped ? 0.3f : 0.45f), sz.z * 0.12f }, s.biped ? 140.0f : 35.0f, sway, shade(s.body, 0.85f));
     }
     // Legs: two segments, swinging from the hips; diagonal pairs in step (bipeds: alternating).
-    const int legs = s.biped ? 2 : 4;
+    // (#1224) Six legs (hexa): three pairs splayed out to the sides, an alternating tripod gait, the body slung low.
+    const int legs = s.biped ? 2 : s.hexa ? 6 : 4;
     const Color legC = shade(s.body, 0.8f);
     for (int l = 0; l < legs; ++l) {
-        const bool right = l & 1, front = s.biped ? true : (l & 2) != 0;
-        const float phase = s.biped ? (right ? PI : 0.0f) : ((right != front) ? PI : 0.0f);
+        const bool right = l & 1, front = s.biped ? true : s.hexa ? (l >> 1) == 0 : (l & 2) != 0;
+        const int row = l >> 1; // hexa: 0 front, 1 middle, 2 back
+        const float phase = s.biped ? (right ? PI : 0.0f) : s.hexa ? ((right != (row == 1)) ? PI : 0.0f) : ((right != front) ? PI : 0.0f);
         const float ang = resting ? 80.0f : swing * sinf(a.gait + phase) * RAD2DEG;
         const float knee = resting ? -150.0f : std::max(0.0f, -sinf(a.gait + phase)) * swing * 60.0f;
-        const Vector3 hip = { (right ? 0.32f : -0.32f) * sz.z, bodyY + bodyH * 0.15f, s.biped ? 0.0f : (front ? 0.3f : -0.33f) * len };
-        const float upper = legH * 0.55f, lowerLen = legH * 0.5f, w = sz.z * (s.biped ? 0.1f : 0.16f);
+        const float hipZ = s.biped ? 0.0f : s.hexa ? (0.34f - 0.34f * row) * len : (front ? 0.3f : -0.33f) * len;
+        const Vector3 hip = { (right ? 0.32f : -0.32f) * sz.z * (s.hexa ? 1.3f : 1.0f), bodyY + bodyH * 0.15f, hipZ };
+        const float upper = legH * 0.55f, lowerLen = legH * 0.5f, w = sz.z * (s.biped ? 0.1f : s.hexa ? 0.1f : 0.16f);
         rlPushMatrix();
         rlTranslatef(hip.x, hip.y, hip.z);
+        if (s.hexa) rlRotatef(right ? 40.0f : -40.0f, 0, 0, 1); // splayed out sideways
         rlRotatef(ang, 1, 0, 0);
         DrawCubeB({ 0, -upper * 0.5f, 0 }, w * 1.15f, upper, w * 1.15f, legC);
         rlTranslatef(0, -upper, 0);
@@ -1179,7 +2121,10 @@ static void DrawAnimalModel(const Species& s, const Animal& a, ShadeFn shade) {
 }
 
 void Animals_Draw3D(Scene& world) {
+    DrawProjectiles(world); // (#1225) stones and spears in flight
     if (animals.empty()) return;
+    static std::vector<AvatarState> humanoids; humanoids.clear(); // (#1225) drawn after the loop, through the avatar rig
+    static std::vector<Matrix> shieldMats; shieldMats.clear(); // (#1227) plank shields, drawn after the avatars
     const Vector3 sun = Vector3Normalize(world.sunDirection);
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -1202,11 +2147,26 @@ void Animals_Draw3D(Scene& world) {
         Vector3 east, north;
         TangentFrame(lup, east, north);
         const Vector3 f = body->dirToWorld(Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading))));
-        const Vector3 u = body->dirToWorld(lup);
+        const Vector3 u = body->dirToWorld(a.clinging ? Vector3Negate(lup) : lup); // (#1224) upside down on a ceiling
         const Vector3 r = Vector3CrossProduct(u, f); // right-handed (r, u, f)
         const float k = 0.6f + 0.4f * a.age;
         const float light = 1.0f; // lit by the instance batch shader (sun, shadows, headlamp)
         auto shade = [&](Color c, float m) { return Color{ (unsigned char)(c.r * light * m), (unsigned char)(c.g * light * m), (unsigned char)(c.b * light * m), 255 }; };
+        if (s.humanoid) { // (#1225) a cave scavenger: the avatar rig in ragged colours, a torch in hand (the thrower: a stone)
+            AvatarState av;
+            av.session = 0x40000000u | (uint32_t)(a.netId & 0x3FFFFFFFu);
+            av.position = body->toWorldD(DVec3(at)); // (absolute world, as player.position)
+            av.up = u; av.facing = f;
+            av.velocity = Vector3Scale(f, a.moveSpeed);
+            av.held = a.thrower ? "stone" : !s.held.empty() ? s.held : "torch"; // (#1227: a miner's rusted pick)
+            const bool winding = a.windUpAt >= 0.0 || a.throwWindAt >= 0.0;
+            av.action = winding ? 1 : 0;
+            av.actionPhase = winding ? (float)std::min(1.0, (simClock - std::max(a.windUpAt, a.throwWindAt)) / 0.6) : 0.0f;
+            av.suitColor = s.body;
+            humanoids.push_back(av);
+            if (s.plankShield) shieldMats.push_back(Matrix{ r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 }); // (#1227)
+            continue;
+        }
         Matrix m = { r.x, u.x, f.x, base.x, r.y, u.y, f.y, base.y, r.z, u.z, f.z, base.z, 0, 0, 0, 1 };
         rlPushMatrix();
         rlMultMatrixf(MatrixToFloat(m));
@@ -1215,9 +2175,22 @@ void Animals_Draw3D(Scene& world) {
         if ((int)i == aimed) DrawCubeWires({ 0, s.size.y * 0.5f, 0 }, s.size.z * 1.15f, s.size.y * 1.1f, s.size.x * 1.15f, YELLOW);
         rlPopMatrix();
     }
+    if (!humanoids.empty()) Avatar_Draw3D(world, humanoids); // (#1225)
+    for (const Matrix& sm : shieldMats) { // (#1227) the lost miner's plank shield on its arm: three boards and a rusted band, facing out
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(sm));
+        for (int k = 0; k < 3; ++k) DrawCubeB({ -0.3f + (k - 1) * 0.15f, 1.05f, 0.34f }, 0.14f, 0.7f, 0.05f, Color{ (unsigned char)(120 + 10 * k), 88, 56, 255 });
+        DrawCubeB({ -0.3f, 1.2f, 0.37f }, 0.48f, 0.07f, 0.03f, Color{ 105, 70, 48, 255 });
+        rlPopMatrix();
+    }
 }
 
 void Animals_DrawHUD() {
+    if (gLockNet && gLockScreen.x >= 0.0f) { // (#1216) the soft lock-on's marker: a diamond around the creature's centre
+        const Vector2 p = gLockScreen; const float r = 14.0f; const Color c = Color{ 255, 200, 90, 230 };
+        DrawLineEx({ p.x, p.y - r }, { p.x + r, p.y }, 2.0f, c); DrawLineEx({ p.x + r, p.y }, { p.x, p.y + r }, 2.0f, c);
+        DrawLineEx({ p.x, p.y + r }, { p.x - r, p.y }, 2.0f, c); DrawLineEx({ p.x - r, p.y }, { p.x, p.y - r }, 2.0f, c);
+    }
     if (aimed < 0 || aimed >= (int)animals.size()) return;
     const Animal& a = animals[aimed];
     const Species& s = species[a.species];
@@ -1229,7 +2202,7 @@ void Animals_DrawHUD() {
     DrawRectangle(x, y + 26, (int)(200 * std::max(0.0f, a.health) / s.health), 6, RED);
     std::string diet;
     for (const auto& d : s.diet) diet += (diet.empty() ? "" : "/") + d;
-    DrawText(TextFormat("I feed (%s)   O %s   LMB attack", diet.c_str(), s.product.empty() || s.product == "-" ? "-" : s.product.c_str()), x, y + 40, 15, Fade(RAYWHITE, 0.75f));
+    DrawText(TextFormat("I feed (%s)   O %s   LMB attack%s", diet.c_str(), s.product.empty() || s.product == "-" ? "-" : s.product.c_str(), Combat2_On() ? " (hold: heavy)   MMB lock on" : ""), x, y + 40, 15, Fade(RAYWHITE, 0.75f));
 }
 
 void Animals_Save(FILE* f) {
@@ -1381,4 +2354,29 @@ bool Animals_UseNet(uint64_t netId, int action, Inventory& inv, std::string& why
         return true;
     }
     why = "unknown action"; return false;
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+TEST(AnimalLagCompensation, AHitCountsWhereTheAnimalWasWithinTheRewind) { // (#1108)
+    // A deer fleeing at 6 m/s along x, its trail a sample every sim step (60 Hz) for 0.3 s; the hunter stands at x = -4.4,
+    // 4.4 m behind where the deer was 0.15 s ago, 5.3 m from where it is now (out of the 4.5 m reach).
+    std::vector<std::pair<double, Vector3>> trail;
+    const double now = 10.0;
+    for (int k = 18; k >= 1; --k) { const double t = now - k / 60.0; trail.push_back({ t, Vector3{ (float)(6.0 * (t - now)), 0.0f, 0.0f } }); }
+    const Vector3 current{ 0.0f, 0.0f, 0.0f }, hunter{ -5.3f, 0.0f, 0.0f };
+    EXPECT_NEAR(Animals_RewindDistance(trail, current, hunter, now, 0.0), 5.3f, 1e-4f) << "no rewind: where it is now";
+    EXPECT_LT(Animals_RewindDistance(trail, current, hunter, now, 0.2), 4.5f) << "within 0.2 s it was in reach";
+    EXPECT_GT(Animals_RewindDistance(trail, current, Vector3{ -7.0f, 0.0f, 0.0f }, now, 0.2), 4.5f) << "the rewind is capped: further back doesn't count";
+}
+#endif
+// (#1216 tests) A training dummy: the animal held at `pos` (body-local, on the ground) facing `face` (body-local), at rest.
+void Animals_TestPin(int i, Vector3 pos, Vector3 face) {
+    if (i < 0 || i >= (int)animals.size()) return;
+    Animal& a = animals[i];
+    Vector3 east, north;
+    TangentFrame(Vector3Normalize(pos), east, north);
+    a.pos = a.prevPos = pos;
+    a.heading = a.prevHeading = atan2f(Vector3DotProduct(face, north), Vector3DotProduct(face, east));
+    a.state = State::Rest; a.fleeTimer = 0.0f; a.path.clear();
 }

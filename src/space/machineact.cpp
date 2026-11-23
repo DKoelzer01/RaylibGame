@@ -9,25 +9,25 @@
 
 bool MachineAct_Remote() { return (bool)gMachineRequest; }
 
-void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, bool fuel) {
-    if (count <= 0) return;
+void MachineAct_Insert(uint64_t body, uint32_t plot, int part, const std::string& item, int count, bool fuel, int centi) {
+    if (count <= 0 && centi <= 0) return;
     if (gMachineRequest) {
         inventory.addAmount(item, count); // back: the server takes it from the inventory it keeps, and its delta from ours
         gMachineRequest(body, plot, part, fuel ? 3 : 1, item, count, 0, 0);
         return;
     }
     if (fuel) Factory::InsertFuel(body, plot, part, item, count);
-    else Factory::Insert(body, plot, part, item, count);
+    else Factory::Insert(body, plot, part, item, count, 0, centi);
 }
 
-void MachineAct_InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot) {
-    if (count <= 0) return;
+void MachineAct_InsertSlot(uint64_t body, uint32_t plot, int part, const std::string& item, int count, int slot, int centi) {
+    if (count <= 0 && centi <= 0) return;
     if (gMachineRequest) {
         inventory.addAmount(item, count); // back, as Insert: the server takes it from the inventory it keeps
         gMachineRequest(body, plot, part, 8, item, count, slot, 0);
         return;
     }
-    Factory::InsertSlot(body, plot, part, item, count, slot);
+    Factory::InsertSlot(body, plot, part, item, count, slot, 0, centi);
 }
 
 void MachineAct_Take(uint64_t body, uint32_t plot, int part, const std::string& item, int count) {
@@ -39,6 +39,10 @@ void MachineAct_Take(uint64_t body, uint32_t plot, int part, const std::string& 
 void MachineAct_Extract(uint64_t body, uint32_t plot, int part) {
     if (gMachineRequest) { gMachineRequest(body, plot, part, 4, std::string(), 0, 0, 0); return; }
     Factory::Extract(body, plot, part);
+}
+void MachineAct_SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
+    if (gMachineRequest) { gMachineRequest(body, plot, part, 10, std::string(), lit ? 1 : 0, 0, 0); return; }
+    Factory::SetFire(body, plot, part, lit);
 }
 
 // (#854) a joined client's take onto the cursor: the server puts it in the inventory it keeps; when its delta has brought

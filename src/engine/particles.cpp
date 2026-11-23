@@ -6,6 +6,7 @@
 #include <rlgl.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -199,6 +200,8 @@ void Particles_Draw(Scene& world) {
             case ParticleKind::Firefly: { const float s = 0.5f + 0.5f * sinf(p.age * 2.6f + p.seed * 40.0f); a = s * s * std::min(1.0f, t * 4.0f) * std::min(1.0f, (1.0f - t) * 4.0f); break; }
             default: break;
             }
+            a *= Particles_NearFade(sqrtf(it.d2), it.size); // (#1126) dust drifting into the eye fades out
+            if (a <= 0.0f) continue;
             float k = kInfo[(int)p.kind].additive ? 1.0f : it.light;
             if (!kInfo[(int)p.kind].additive && p.kind != ParticleKind::Debris) k = std::max(k, 0.2f);
             rlColor4ub((unsigned char)(c.r * k), (unsigned char)(c.g * k), (unsigned char)(c.b * k), (unsigned char)std::clamp(a * c.a, 0.0f, 255.0f));
@@ -225,3 +228,33 @@ void Particles_Draw(Scene& world) {
 void Particles_Clear() { pool.clear(); nextSlot = 0; }
 int Particles_Count() { int n = 0; for (const Particle& p : pool) n += p.alive() ? 1 : 0; return n; }
 void Particles_Unload() { Particles_Clear(); if (sprite.id > 0) UnloadTexture(sprite); sprite = Texture2D{}; }
+
+float Particles_NearFade(float dist, float size) {
+    static const bool on = !(getenv("RAYLIBGAME_PARTICLE_NEAR_FADE") && getenv("RAYLIBGAME_PARTICLE_NEAR_FADE")[0] == '0');
+    if (!on) return 1.0f;
+    // Gone once the eye is about inside the quad (a quarter metre plus half its width), whole 0.6 m further out: in a
+    // tight tunnel the dust a pick throws up still shows at arm's length, but a 0.35-0.8 m puff a few cm from the near
+    // plane no longer covers the view (#1126: copper ore's green, rusty ore's orange).
+    const float lo = 0.25f + 0.5f * size, hi = lo + 0.6f;
+    const float t = std::clamp((dist - lo) / (hi - lo), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1126): particles fade out near the eye ----
+#include "unit_helpers.h"
+
+TEST(Particles, NearTheEyeTheyFadeOut) {
+    EXPECT_FLOAT_EQ(Particles_NearFade(0.05f, 0.35f), 0.0f) << "a puff at the near plane: hidden";
+    EXPECT_FLOAT_EQ(Particles_NearFade(0.4f, 0.35f), 0.0f) << "the eye about inside it: hidden";
+    EXPECT_FLOAT_EQ(Particles_NearFade(1.6f, 0.35f), 1.0f) << "at arm's length and beyond: whole";
+    EXPECT_FLOAT_EQ(Particles_NearFade(30.0f, 2.0f), 1.0f) << "smoke far off: whole";
+    const float mid = Particles_NearFade(0.725f, 0.35f);
+    EXPECT_GT(mid, 0.2f); EXPECT_LT(mid, 0.8f);
+    // A bigger puff fades further out.
+    EXPECT_LT(Particles_NearFade(1.0f, 0.8f), Particles_NearFade(1.0f, 0.35f));
+    // Monotonic with distance.
+    float last = -1.0f;
+    for (float d = 0.0f; d < 3.0f; d += 0.05f) { const float f = Particles_NearFade(d, 0.5f); EXPECT_GE(f, last); last = f; }
+}
+#endif

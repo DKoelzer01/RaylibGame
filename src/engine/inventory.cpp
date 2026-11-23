@@ -30,6 +30,56 @@ static std::vector<std::string> Split(const std::string& s, char sep) {
     return out;
 }
 
+bool ItemDB::loadExtra(const char* itemsPath) {
+    std::ifstream file(itemsPath);
+    if (!file) { LOG_ERROR("Items", "Cannot open %s\n", itemsPath); return false; }
+    std::stringstream text;
+    text << file.rdbuf();
+    return loadExtraText(text.str());
+}
+
+bool ItemDB::loadExtraText(const std::string& text) {
+    std::istringstream items(text);
+    std::string line;
+    std::vector<std::string> recipeLines; // (#1252) "out n = in n, ..." lines: parsed once every item of the file is known
+    while (std::getline(items, line)) {
+        line = Trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        if (line.find('|') == std::string::npos && line.find('=') != std::string::npos) { recipeLines.push_back(line); continue; }
+        const auto f = Split(line, '|');
+        if (f.size() < 5 || byId.count(f[0])) continue;
+        ItemDef d;
+        d.id = f[0];
+        d.name = f[1];
+        d.kind = f[2] == "tool" || f[2] == "1" ? ItemKind::Tool : f[2] == "block" ? ItemKind::Block : ItemKind::Resource;
+        const auto rgb = Split(f[3], ',');
+        if (rgb.size() == 3) d.color = { (unsigned char)atoi(rgb[0].c_str()), (unsigned char)atoi(rgb[1].c_str()), (unsigned char)atoi(rgb[2].c_str()), 255 };
+        d.description = f[4];
+        byId[d.id] = itemList.size();
+        itemList.push_back(d);
+    }
+    for (const std::string& rl : recipeLines) {
+        const size_t eq = rl.find('=');
+        Recipe r;
+        std::istringstream out(rl.substr(0, eq));
+        out >> r.output >> r.outputCount;
+        for (const std::string& in : Split(rl.substr(eq + 1), ',')) {
+            std::istringstream is(in);
+            std::string id; int n = 0;
+            if (is >> id >> n && n > 0) r.inputs.push_back({ id, n });
+        }
+        bool valid = find(r.output) != nullptr && !r.inputs.empty();
+        for (auto& in : r.inputs) valid = valid && find(in.first) != nullptr;
+        if (valid) recipeList.push_back(r);
+        else LOG_WARN("Items", "recipes: unknown item in '%s'\n", rl.c_str());
+    }
+    // Placeable parts named here are blocks, as load() makes them.
+    for (int t = 0; t < (int)PartType::Count; ++t)
+        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t))
+            if (auto it = byId.find(item); it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
+    return true;
+}
+
 bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     itemList.clear();
     byId.clear();
@@ -566,5 +616,31 @@ TEST_F(InventoryTest, LunacreteIsGoneAndOldStacksBecomeStone) {
     EXPECT_STREQ(RetiredItem("stone"), "") << "a current item keeps its id";
     for (const Recipe& r : itemDB.recipes())
         for (const auto& in : r.inputs) EXPECT_NE(in.first, "concrete") << r.output;
+}
+
+// (#1250) magic_items.txt adds its items after the table; items.txt's own stay as they were.
+TEST(ItemDBExtra, MagicItemsAddWithoutReplacing) {
+    ItemDB db;
+    ASSERT_TRUE(db.load("resources/data/items.txt", "resources/data/recipes.txt"));
+    const size_t before = db.items().size();
+    EXPECT_EQ(db.find("first_sight_page"), nullptr) << "not in the base game";
+    ASSERT_TRUE(db.loadExtra("resources/data/magic_items.txt"));
+    ASSERT_NE(db.find("first_sight_page"), nullptr);
+    ASSERT_NE(db.find("resonant_crystal"), nullptr);
+    const size_t withMagic = db.items().size();
+    EXPECT_GT(withMagic, before + 2);
+    // (#1252) the magic machines are placeable blocks, jars are resources, and their recipes load with them
+    ASSERT_NE(db.find("mana_siphon"), nullptr);
+    EXPECT_EQ(db.find("mana_siphon")->kind, ItemKind::Block);
+    EXPECT_EQ(db.find("research_table")->kind, ItemKind::Block);
+    EXPECT_EQ(db.find("jar_storm")->kind, ItemKind::Resource);
+    int magicRecipes = 0;
+    for (const Recipe& r : db.recipes()) magicRecipes += r.output == "mana_siphon" || r.output == "mana_dynamo" || r.output == "research_table" || r.output == "mana_jar";
+    EXPECT_EQ(magicRecipes, 4) << "every magic recipe's items are known";
+    const std::string stoneName = db.find("stone")->name;
+    EXPECT_TRUE(db.loadExtra("resources/data/items.txt")) << "loading known ids again";
+    EXPECT_EQ(db.items().size(), withMagic) << "known ids are kept, not added twice";
+    EXPECT_EQ(db.find("stone")->name, stoneName);
+    EXPECT_FALSE(db.loadExtra("resources/data/no_such_file.txt"));
 }
 #endif

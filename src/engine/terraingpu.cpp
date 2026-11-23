@@ -155,7 +155,7 @@ namespace {
             blocks.push_back(b);
             for (size_t k = 0; k < g.h.size(); ++k) { // per node: elevation, 3D mask, f, - | -, -, -, - (the cliff lip went with the terraces, #543; the layout stays)
                 const PlanetField::Column3D& c = g.cols[k];
-                const float v[8] = { g.h[k], c.mask, c.f, c.wet, 0.0f, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland
+                const float v[8] = { g.h[k], c.mask, c.f, c.wet, c.river, 0.0f, 0.0f, 0.0f }; // (#971) w: wet lowland; (#1438) second x: river channel
                 grid.insert(grid.end(), v, v + 8);
             }
             isl.insert(isl.end(), j.islands.begin(), j.islands.end());
@@ -230,6 +230,10 @@ static std::atomic<bool> gHold{ false };
 void TerrainGpu_SetHold(bool hold) { gHold.store(hold); }
 
 void TerrainGpu_SetBackground(float from, bool throttle) { gBackgroundFrom = from; gBackgroundThrottle = throttle; }
+// (#1122) At most this many new batches a frame (worldUpdate sets it from the frame time): fast flight high up asked for a
+// batch in every free slot every frame, and the density compute plus its uploads ate the frame (66 FPS at 250 m/s).
+static int gLaunchLimit = kSlots;
+void TerrainGpu_SetLaunchLimit(int n) { gLaunchLimit = n; }
 
 void TerrainGpu_Pump() {
     if (!S.ok) return;
@@ -322,8 +326,10 @@ void TerrainGpu_Pump() {
     // Free slots: the next batch (blocks of one field, still wanted). The queue is in priority order, so background
     // blocks (#296) only come after the rest; while throttled, one small batch of them a frame.
     bool backgroundSent = false;
+    int launched = 0; // (#1122) batches started this frame
     for (Slot& sl : S.slots) {
         if (sl.fence || !sl.jobs.empty()) continue;
+        if (launched >= gLaunchLimit) break;                         // (#1122) the frame's share
         {
             std::lock_guard<std::mutex> lock(S.m);
             const PlanetField* f = nullptr;
@@ -348,6 +354,7 @@ void TerrainGpu_Pump() {
             if (background > 0) backgroundSent = true;
         }
         if (sl.jobs.empty()) break;
+        ++launched;
         if (S.disabled) {
             // Turned off after a mismatch: whatever was still queued is sampled on the CPU (once; new builds
             // no longer come here, TerrainGpu_Available is false).

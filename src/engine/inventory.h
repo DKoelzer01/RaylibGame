@@ -37,6 +37,10 @@ const char* RetiredItem(const std::string& id);
 class ItemDB {
 public:
     bool load(const char* itemsPath, const char* recipesPath);
+    // More items in items.txt's format, added after load (#1250: magic_items.txt, only with RAYLIBGAME_MAGIC); ids already
+    // known are kept as they were. False if the file can't be read.
+    bool loadExtra(const char* itemsPath);
+    bool loadExtraText(const std::string& text); // (#1254) the same from text (items the game makes from its data: alchemy)
     const ItemDef* find(const std::string& id) const;
     const std::vector<ItemDef>& items() const { return itemList; }
     const std::vector<Recipe>& recipes() const { return recipeList; }

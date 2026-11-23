@@ -1,4 +1,5 @@
 #include "world.h"
+#include "frames.h"
 #include "netid.h"
 #include "gamerng.h"
 #include "terrainarena.h"
@@ -64,6 +65,7 @@ namespace {
     constexpr float kBackgroundPriority = 1e7f;
     long long gEvicted = 0;                    // cache evictions (#295)
     bool gPreloadUrgent = false;               // spawn preload (#294): ring builds without the spare-time gate
+    bool gZoomUrgent = false;                  // (#1424) a zoom change: the view re-selects at once, unbudgeted until its nodes are built
     std::atomic<int> gForegroundBuilds{ 0 };   // view/edit builds whose closures are alive (#296)
     struct ForegroundToken {
         ForegroundToken() { ++gForegroundBuilds; }
@@ -205,10 +207,10 @@ static void BodyRotationDd(double rx, double ry, double rz, double r[3][3]);
 // 3.05e-5 deg, up to ~3 cm at Terra's surface, and frames/still saw the standing player jump 13-31 mm in single steps.
 // The double angle is used while it is current - advanceBodies wrote `rotation` from it - and the float angles otherwise
 // (a load, a script or a test set `rotation`).
-static bool kFramesPose = [] { const char* e = getenv("RAYLIBGAME_FRAMES"); return e && e[0] == '1'; }(); // (unit tests set it)
+// (The switch is Frames_On(), read on first use: frames.cpp.)
 struct BodyAngles { double x, y, z; };
 static BodyAngles AnglesOf(const Planetoid& p) {
-    if (kFramesPose && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
+    if (Frames_On() && p.spinAngleSet && (float)p.spinAngle[0] == p.rotation.x && (float)p.spinAngle[1] == p.rotation.y && (float)p.spinAngle[2] == p.rotation.z)
         return { p.spinAngle[0], p.spinAngle[1], p.spinAngle[2] };
     return { p.rotation.x, p.rotation.y, p.rotation.z };
 }
@@ -340,6 +342,16 @@ DVec3 Planetoid::toLocalD(const DVec3& w) const {
                  (r[0][2] * d.x + r[1][2] * d.y + r[2][2] * d.z) * inv);
 }
 
+Vector3 Planetoid::toLocalOf(const DVec3& worldAbs, const DVec3& renderOrigin) const {
+    if (Frames_On()) return toLocalD(worldAbs).toFloat();
+    return toLocal((worldAbs - renderOrigin).toFloat());
+}
+
+DVec3 Planetoid::toLocalRenderD(Vector3 renderPos, const DVec3& renderOrigin) const {
+    if (Frames_On()) return toLocalD(renderOrigin + DVec3(renderPos));
+    return DVec3(toLocal(renderPos));
+}
+
 // Places a body's chunks in render space. Rotation and scale act on chunk-local vertices (small
 // numbers), so float is fine there; the translation is the chunk origin's render-space position,
 // computed in double so chunks far from the body centre neither jitter nor open seams as the
@@ -354,7 +366,7 @@ namespace {
             : rs(MatrixMultiply(MatrixScale(p.scale, p.scale, p.scale), MatrixRotateXYZ({ DEG2RAD * p.rotation.x, DEG2RAD * p.rotation.y, DEG2RAD * p.rotation.z }))),
               offset(p.worldPos - renderOrigin), s(p.scale) {
             BodyRotationOf(p, r);
-            if (kFramesPose) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
+            if (Frames_On()) rs = RotationMatrix(r, p.scale); // (#667) the vertices turned by the same double pose as the translation
         }
         Matrix model(const NodeKey& key) const { const Vector3 o = key.origin(); return modelAt(DVec3(o)); }
         Matrix modelAt(const DVec3& o) const {
@@ -500,7 +512,7 @@ Vector3 Planetoid::dirToWorld(Vector3 localDir) const {
 }
 
 Quaternion Planetoid::rotationQuat() const {
-    if (!kFramesPose) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
+    if (!Frames_On()) return QuaternionFromMatrix(MatrixRotateXYZ({ DEG2RAD * rotation.x, DEG2RAD * rotation.y, DEG2RAD * rotation.z }));
     double r[3][3];
     BodyRotationOf(*this, r); // (#667) the double pose: a grounded player's view turns with it step by step, unquantised
     return QuaternionFromMatrix(RotationMatrix(r));
@@ -545,7 +557,7 @@ static void SyncGrassBlockers(Planetoid& p) {
 
 void Planetoid::draw(const RenderContext& ctx) {
     if (!isActive) return;
-    if (plots && field && kind == BodyKind::Planet) SyncGrassBlockers(*this); // (#830) grass only grows on planets
+    if (plots && field && profile && profile->foliage) SyncGrassBlockers(*this); // (#830) grass only grows on worlds with foliage (#1274)
     for (const auto& objPtr : children) objPtr->draw(ctx);
     if (farSphere && ctx.farShader) farSphere->ready(); // uploads the bake once it is done
     if (useFarSphere(ctx)) { farSphere->draw(*this, ctx, *ctx.farShader); return; }
@@ -565,8 +577,8 @@ void Planetoid::draw(const RenderContext& ctx) {
     if (drawList.empty() || !ctx.terrainMaterial) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.terrainMaterial, ctx.terrainLayers, ctx.terrainLayersLoc); // bound once for all chunks
-    // Planets use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's.
-    const int palette = kind == BodyKind::Planet ? 2 : ctx.scenePalette;
+    // Earthlike worlds use the texture-layer palette (dirt, sand, grass, ...); other bodies the scene's (world file `palette`, #1274).
+    const int palette = profile && profile->planetPalette ? 2 : ctx.scenePalette;
     batch.setUniform(ctx.paletteLoc, &palette, SHADER_UNIFORM_INT);
     // Planets and moons shadow their own night side at any distance (the shadow map is local): a
     // sphere 60 m below sea level blocks the sun. Other bodies clear it (the uniform persists).
@@ -973,6 +985,7 @@ struct PreloadRing {
 };
 static std::unordered_map<uint64_t, PreloadRing> gPreload;
 static std::unordered_map<uint64_t, int> gCachedCount; // per body, from its last LOD update (#295)
+static std::unordered_map<uint64_t, int> gLodUncovered; // (#1418) per body: desired nodes neither ready nor covered by a kept node (gaps)
 
 // Decide which nodes to build and draw. Old nodes stay on screen until every desired node that
 // overlaps them is ready, so LOD changes never open holes. Returns how many builds it requested.
@@ -1111,6 +1124,22 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
         for (Chunk* c : draw) { const Vector3 lo = c->key.origin(); byDist.push_back({ DistanceToBox(camLocal, lo, Vector3AddValue(lo, c->key.size())), c }); }
         std::sort(byDist.begin(), byDist.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         for (size_t i = 0; i < draw.size(); ++i) draw[i] = byDist[i].second;
+    }
+    {   // (#1418) Gaps: desired nodes not ready that no kept node covers (an ancestor kept, or a kept node inside it). The
+        // finer kept nodes' ancestors in a set, so the test is a walk up each desired node's ancestors, not all pairs.
+        static FlatKeySet keptWithin;
+        keptWithin.reset(retained.size() * 4 + 16);
+        for (const Chunk* r : retained)
+            for (NodeKey k = r->key; k.level <= p.rootLevel; k = parentOf(k)) if (!keptWithin.insert(k)) break;
+        int uncovered = 0;
+        for (const NodeKey& d : desired) {
+            auto n = p.nodes.find(d);
+            if (n != p.nodes.end() && n->second->ready) continue;
+            bool covered = keptWithin.count(d) > 0;
+            for (NodeKey k = parentOf(d); !covered && k.level <= p.rootLevel; k = parentOf(k)) covered = retainedSet.count(k) > 0;
+            if (!covered) ++uncovered;
+        }
+        gLodUncovered[p.id] = uncovered;
     }
     p.drawList = std::move(draw);
 
@@ -1345,6 +1374,10 @@ void SetLodZoom(Scene& world, float zoom, Vector3 dir, float halfAngle) {
     s.zoomHalfAngle = halfAngle;
     if (!changed) return;
     s.zoomDir = dir;
+    // (#1424) Opening or closing the telescope re-selects much of the view in one go: its builds bypass the streaming budget until
+    // the view's nodes are in (the budget saw the slow frames of the swap and throttled them: closing took 200-350 ms, was ~25).
+    static const bool zoomUrgentOn = !(getenv("RAYLIBGAME_ZOOM_URGENT") && getenv("RAYLIBGAME_ZOOM_URGENT")[0] == '0');
+    if (zoomUrgentOn) gZoomUrgent = true;
     for (auto& obj : world.objects)
         if (auto* p = dynamic_cast<Planetoid*>(obj.get())) p->lodDirty = true;
 }
@@ -1529,6 +1562,37 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
     PROFILE_FUNCTION();
     GpuTimer_CpuMark("w-before");
     TerrainGpu_SetBackground(kBackgroundPriority, !gPreloadUrgent); // preload-ring blocks: gently, except during the spawn preload
+    {   // (#1122) New GPU density batches by the frame time: both slots while frames are quick, one past 7 ms, one every other
+        // frame past 12 ms. Fast flight high up (300 m, 250 m/s) asked for a batch in every free slot every frame and the
+        // density compute plus its uploads ate the frame (66 FPS, still falling); the terrain's detail now lags a little
+        // instead. Not during the spawn preload or a load. RAYLIBGAME_STREAM_BUDGET=0: as before (A/B).
+        static const bool budgetOn = !(getenv("RAYLIBGAME_STREAM_BUDGET") && getenv("RAYLIBGAME_STREAM_BUDGET")[0] == '0');
+        static long frameNo = 0;
+        ++frameNo;
+        // (#545) The frame's busy time, not GetFrameTime: that includes the frame-rate cap's or vsync's wait, so a capped game
+        // (60 Hz vsync: 16.7 ms) was throttled as if overloaded while the GPU idled, to ~16 blocks a frame, and the view's
+        // terrain fell behind in flight (gaps for a few frames: ~3500 nodes waiting at 60 m/s and 30 FPS).
+        // RAYLIBGAME_STREAM_BUDGET_BUSY=0: GetFrameTime as before (A/B).
+        static const bool busyOn = !(getenv("RAYLIBGAME_STREAM_BUDGET_BUSY") && getenv("RAYLIBGAME_STREAM_BUDGET_BUSY")[0] == '0');
+        // A frame no longer than the cap's (or vsync's) target was held by it, not by work: its CPU busy time says how loaded it
+        // was. A frame past the target was really late (CPU, or the GPU at the swap: #1122's flight): its full time, as before.
+        const float wallMs = GetFrameTime() * 1000.0f;
+        const bool heldByCap = gTargetFrameMs > 0.0f && wallMs <= gTargetFrameMs * 1.1f + 1.0f;
+        const float frameMs = busyOn && heldByCap && gFrameBusyMs > 0.0f ? gFrameBusyMs : wallMs;
+        // The cap's wait is time the frame had to spare: 7 ms or more of it, both slots (a per-frame limit scales the terrain's
+        // throughput with the frame rate: at 30-60 FPS one batch a frame was too few for flight whatever the busy time).
+        const bool slack = busyOn && heldByCap && gFrameBusyMs > 0.0f && gTargetFrameMs - gFrameBusyMs >= 7.0f;
+        int limit = 2;
+        if (budgetOn && !gPreloadUrgent && !gZoomUrgent && generationStart < 0.0 && !slack) limit = frameMs > 12.0f ? (frameNo % 2 == 0 ? 1 : 0) : frameMs > 7.0f ? 1 : 2;
+        static const bool budgetLog = getenv("RAYLIBGAME_BUDGET_LOG") && getenv("RAYLIBGAME_BUDGET_LOG")[0] == '1';
+        static double lastBudgetLog = 0.0;
+        if (budgetLog && GetTime() - lastBudgetLog > 2.0) {
+            lastBudgetLog = GetTime();
+            printf("budget: wall %.1f ms, busy %.1f ms, target %.1f ms, held by the cap %d, slack %d -> launch limit %d; gpu density queue %d\n",
+                   wallMs, gFrameBusyMs, gTargetFrameMs, heldByCap ? 1 : 0, slack ? 1 : 0, limit, TerrainGpu_Pending());
+        }
+        TerrainGpu_SetLaunchLimit(limit);
+    }
     TerrainGpu_Pump(); // GPU density blocks (Plan 6 step 4): finished batches back to the workers, the next batch out
     GpuTimer_CpuMark("w-gpu-pump");
     // Ring rocks near the camera and near every interest centre (every player, #318) become voxel bodies (and back)
@@ -1655,6 +1719,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         bool complete = true;
         for (auto& [id, ring] : gPreload) { stats.preloadNodes += (int)ring.keys.size(); stats.preloadReady += ring.ready; complete &= ring.complete; }
         for (auto& [id, n] : gCachedCount) stats.cachedNodes += n;
+        stats.lodUncovered = 0;
+        for (auto it = gLodUncovered.begin(); it != gLodUncovered.end();) it = alive.count(it->first) ? std::next(it) : gLodUncovered.erase(it);
+        for (auto& [id, n] : gLodUncovered) stats.lodUncovered += n;
         stats.evicted = gEvicted;
         stats.waterBuilds = gWaterBuilds.load(); stats.waterMs = gWaterUs.load() / 1000.0;
         stats.waterFullBuilds = gWaterFullBuilds.load(); stats.waterCacheBytes = ChunkWaterCacheBytes();
@@ -1726,6 +1793,7 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
         }
     }
 
+    if (gZoomUrgent && !AnyLodPending(world)) gZoomUrgent = false; // (#1424) the zoomed (or unzoomed) view is in: budget again
     if (generationStart >= 0.0 && PipelineIdle() && !AnyLodPending(world)) {
         stats.lastGenerationSeconds = (float)(GetTime() - generationStart);
         LOG_INFO("World", "ready in %.2f s (%d meshes drawn, %d nodes, avg build %.2f ms on %d threads)\n",
@@ -1954,6 +2022,7 @@ void worldHandler(Scene& world) {
 }
 
 bool ReloadSystemDef() {
+    WorldProfile_ClearCache(); // the world files are read again with the bodies file (#1274)
     SystemDef sys;
     const bool ok = LoadSystemDef(worldGen.bodiesPath, sys);
     if (!ok) {
@@ -2011,14 +2080,16 @@ void generateWorld(Scene& world) {
     auto add = [&](const BodyDef& d, BodyKind kind, const std::string& name, DVec3 pos, float radius, unsigned int seed, float spin) {
         auto p = std::make_unique<Planetoid>(name, pos, Vector3{ 0, 0, 0 }, 1.0f, seed, radius);
         p->kind = kind;
-        if (kind == BodyKind::Planet || kind == BodyKind::Moon) {
+        p->profile = WorldProfile_For(name, kind); // (#1274) planets and moons: resources/data/worlds/<name>.txt over the kind's default
+        if (p->profile) {
+            const WorldProfile& wp = *p->profile;
             // Planet terrain: radius is sea level, where gravity's reference surface sits too; the
             // LOD root must also cover the highest mountains.
-            auto field = std::make_shared<PlanetField>(seed, radius, kind == BodyKind::Moon);
+            auto field = std::make_shared<PlanetField>(seed, radius, wp.airless);
             const bool sandbox = gSandboxWorld && kind == BodyKind::Planet; // #662: a flat test plane (no bake, no trees)
-            if (kind == BodyKind::Planet) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
+            if (wp.newWorld) field->setGenParams(WorldGenParams_ForSave(WorldSavePath())); // #504: the New World screen's choice (defaults without one)
             if (sandbox) field->setSandbox();
-            if (gErosionPrototype && kind == BodyKind::Planet && field->gen.erosion) {
+            if (gErosionPrototype && wp.erosion && !wp.airless && field->gen.erosion) {
                 // Plan 7 (#355): the save's bake, or a new one (~60 s). On a thread (#362, the #355 review): the main
                 // thread keeps drawing the loading screen through gWorldGenWait instead of freezing the window. The field
                 // is only shared (p->field below) once the bake is done.
@@ -2036,7 +2107,7 @@ void generateWorld(Scene& world) {
             p->rootLevel = 0;
             while (kVoxelSize * (float)(CHUNK_SIZE << p->rootLevel) < field->maxRadius() + 24.0f) p->rootLevel++;
             p->field = field;
-            if (kind == BodyKind::Planet && !sandbox) {
+            if (wp.foliage && !sandbox) {
                 field->foliage = true;
                 field->foliageSeed = seed ^ 0x7aee5u;
                 p->trees = std::make_unique<TreeSystem>(field, field->foliageSeed);
@@ -2441,6 +2512,7 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
 }
 
 bool SaveWorld(Scene& world) {
+    if (gBeforeSaveWorld) gBeforeSaveWorld(); // (#1183) queued foundations land first (their terrain is saved with them)
     if (!DirectoryExists("saves")) MakeDirectory("saves");
     // Written to <save>.tmp and renamed over the save when complete (#346): a crash mid-save leaves the last save whole.
     const std::string tmpPath = SAVE_PATH_STR + ".tmp";
@@ -2867,6 +2939,38 @@ TEST(Frames, FloatToLocalMatchesTheDoublePathAt60km) {
     EXPECT_LT(worst, 0.004); // body-local float rounding at 60 km: 0.8 mm measured (the old float matrix: 8.6 mm)
 }
 
+// Plan 11 F3 (#1277): a point that stays put on a turning body (the player standing, the camera of a still player) reads
+// back from the gameplay helpers as the same body-local point at every angle with RAYLIBGAME_FRAMES=1 (one rounding of
+// the exact point; since #1072 the float path holds still too for a fixed render origin). Off: today's path bit for bit.
+TEST(Frames, GameplayReadersHoldStillOnATurningBody) {
+    const bool was = Frames_On();
+    auto b = MakeBody(DVec3(0.0, -60010.0, 0.0), { 0.0f, 200.0f, 0.0f });
+    const DVec3 L(310.25, 60004.75, -122.5);                 // a body-fixed point near the surface, 60 km out
+    const DVec3 ro = b->toWorldD(L);                          // the render origin near it, as the camera keeps it
+    b->position = (b->worldPos - ro).toFloat();
+    double worstOn = 0.0, worstD = 0.0;
+    int movedOn = 0;
+    Vector3 firstOn{};
+    for (int k = 0; k < 400; ++k) {
+        b->rotation = { 0.0f, 200.0f + 0.003f * (float)k, 0.0f }; // ~1 m of surface travel a step
+        const DVec3 w = b->toWorldD(L);
+        Frames_SetOn(false);
+        const Vector3 off = b->toLocalOf(w, ro);
+        const Vector3 old = b->toLocal((w - ro).toFloat());
+        EXPECT_EQ(memcmp(&off, &old, sizeof off), 0) << "switch off: today's float path, bit for bit";
+        Frames_SetOn(true);
+        const Vector3 on = b->toLocalOf(w, ro);
+        worstOn = std::max(worstOn, (DVec3(on) - L).length());
+        worstD = std::max(worstD, (b->toLocalRenderD((w - ro).toFloat(), ro) - L).length());
+        if (k == 0) { firstOn = on; }
+        if (memcmp(&on, &firstOn, sizeof on) != 0) ++movedOn;
+    }
+    Frames_SetOn(was);
+    EXPECT_EQ(movedOn, 0) << "switch on: the still point reads back as the same float at every angle";
+    EXPECT_LT(worstOn, 0.004);  // that float is one rounding of the exact point (at 60 km: <= 3.9 mm ulp)
+    EXPECT_LT(worstD, 1e-4);    // the aim ray's double origin: the render-space float's rounding only (micrometres)
+}
+
 // A body-fixed point's velocity from the spin (surfaceVelocity) is the rate its world position changes: the player rides
 // on it, and a wrong one slides everything standing on a turning planet (#749, #856).
 namespace {
@@ -2929,7 +3033,7 @@ TEST(Frames, ADayOfSpinKeepsLocalPointsFixed) {
 // pose (RAYLIBGAME_FRAMES=1) every 1/60 s step moves it the same arc, to well under a millimetre.
 TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
     auto stepSpread = [](bool doublePose) {
-        kFramesPose = doublePose;
+        Frames_SetOn(doublePose);
         auto b = MakeBody({ 0.0, 0.0, 0.0 }, { 0, 0, 0 });
         b->spin = { 0.0f, 0.1f, 0.0f }; // Terra's day: 360 deg an hour
         const DVec3 l{ 1234.5, 31000.0, 51300.0 }; // a surface point ~60 km out, off the axis
@@ -2943,7 +3047,7 @@ TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
             if (k > 0) { const double d = Dist(w, last); lo = std::min(lo, d); hi = std::max(hi, d); }
             last = w;
         }
-        kFramesPose = false;
+        Frames_SetOn(false);
         return hi - lo;
     };
     const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);

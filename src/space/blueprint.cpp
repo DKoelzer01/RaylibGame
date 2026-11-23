@@ -1,3 +1,5 @@
+#include "profiler.h"
+#include "uipalette.h"
 #include "blueprint.h"
 #include "playerinput.h"
 #include "buildtool.h"
@@ -132,8 +134,10 @@ void DrawCellEdges(const Part& q, Color col) {
 }
 
 int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bool charge, std::string& missing, bool leaveGhosts) {
+    PROFILE_SCOPE("blueprint place");
     int placed = 0;
     std::map<std::string, int> short_;
+    BuildTool_BeginFoundationBatch(); // (#1167) the parts' foundations as one terrain edit batch, at the end
     for (const Part& p : bp.parts) {
         const Part q = At(p, o);
         if (!plot.canPlace(q)) continue; // already there (filling in) or blocked
@@ -145,6 +149,7 @@ int Blueprint_Place(Planetoid& body, Plot& plot, const Blueprint& bp, Int3 o, bo
         }
         if (BuildTool_Place(body, plot, q, charge)) ++placed;
     }
+    BuildTool_EndFoundationBatch(body);
     missing.clear();
     for (const auto& kv : short_) missing += TextFormat("%s%d %s", missing.empty() ? "" : ", ", kv.second, kv.first.c_str());
     return placed;
@@ -240,7 +245,7 @@ void Blueprint_DrawGhost(Planetoid& body, const Plot& frame, Int3 origin, bool o
     const Blueprint* bp = Blueprint_Active();
     if (!bp) return;
     std::vector<std::pair<Int3, CellShape>> fp;
-    const Color col = ok ? Fade(SKYBLUE, 0.8f) : Fade(RED, 0.8f);
+    const Color col = ok ? Fade(UiPalette_Mode() == ColorVision::Normal ? SKYBLUE : Ui().good, 0.8f) : Fade(Ui().bad, 0.8f); // (#1432)
     // In plot coordinates under the plot's double-precision model, as its blocks are drawn (#271).
     rlDrawRenderBatchActive();
     rlPushMatrix();

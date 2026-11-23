@@ -1,4 +1,5 @@
 #include "hostserver.h"
+#include "headless.h"
 #include "netinterest.h"
 #include "netguard.h"
 #include "gputimer.h"
@@ -20,6 +21,7 @@
 #include "gamerng.h"
 #include "tools.h"
 #include "animals.h"
+#include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
@@ -38,6 +40,7 @@
 #include <ctime>
 #include <future>
 #include <chrono>
+#include <filesystem>
 #include "playerinput.h"
 #include "worldtypes.h"
 #include "voxel.h"
@@ -203,6 +206,7 @@ namespace {
                 // (#1087) the player's own suit, as single player applies it every frame: the starting suit has no jetpack
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
+                r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
                 if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
@@ -236,12 +240,36 @@ namespace {
     long long lastAnimals = 0;
     std::unordered_map<uint32_t, std::unordered_set<uint64_t>> animalsSent; // by connection
     std::unordered_map<uint32_t, double> lastAnimalHit;                     // by session (the cooldown)
-    int animalHits = 0, animalHitsRefused = 0;
+    int animalHits = 0, animalHitsRefused = 0, animalHitsRewound = 0; // (rewound: #1108, allowed only by the rewind)
     bool RemoteLocal(const Remote& r, uint64_t& body, Vector3& local, double& scale) {
         Planetoid* b = r.player.nearest;
         if (!b) return false;
         body = b->netId; local = b->toLocalD(r.player.position).toFloat(); scale = b->scale;
         return true;
+    }
+    // (#1343, #1364) Creature shots launched and ended, and creature events, to each player near them (80 m), each tick
+    // there are any: the clients fly the shots and play the creatures' sounds and captions.
+    void SendCreatureFx(Scene&) {
+        static MsgCreatureFx all;
+        Animals_TakeFx(all);
+        if (all.shots.empty() && all.ended.empty() && all.events.empty()) return;
+        constexpr float kFxRange = 80.0f;
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+            if (rit == remotes.end() || !RemoteLocal(rit->second, body, at, scale)) continue;
+            MsgCreatureFx m;
+            for (const MsgCreatureFx::Shot& s : all.shots)
+                if (s.body == body && Vector3Distance(s.pos.toFloat(), at) * (float)scale <= kFxRange) m.shots.push_back(s);
+            m.ended = all.ended; // (ids it never had are ignored there)
+            for (const MsgCreatureFx::Event& e : all.events)
+                if (e.body == body && Vector3Distance(e.pos.toFloat(), at) * (float)scale <= kFxRange) m.events.push_back(e);
+            if (m.shots.empty() && m.ended.empty() && m.events.empty()) continue;
+            NetWriter w; NetWrite(w, m);
+            Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);
+        }
+        all.shots.clear(); all.ended.clear(); all.events.clear();
     }
     void SendAnimals(Scene& world) {
         if (SimTick() - lastAnimals < kAnimalEvery) return;
@@ -290,6 +318,7 @@ namespace {
     // distance it may have moved since the client saw it), and the player's swing cooldown spent. The damage is the held
     // tool's (as in single player); the drops go to that player's inventory.
     constexpr float kAnimalReach = 4.5f; // m: the 3 m aim, the animal's size, and its motion during the round trip
+    constexpr double kHitRewind = 0.2;   // (#1108) s: how far back a hit may be checked (the combat design's cap, #1002)
     constexpr double kAnimalHitCooldown = 0.25; // s
     // (#337) each player's survival numbers to that player, 5 a second (its HUD; its own simulation fills in between)
     constexpr int kVitalsEvery = 12; // sim steps
@@ -422,6 +451,7 @@ namespace {
         std::vector<Vector3> near;
         for (auto& [sid, r] : remotes) near.push_back((r.player.position - world.renderOrigin).toFloat());
         Factory::SetNearPoints(near);
+        Factory::SetCameraNear(!Headless()); // (#1302) a dedicated server's camera is nobody: only its players make plots near
         std::vector<Factory::MachineKey> keys;
         for (const auto& [sid, w] : machineWatch) if (w.on) keys.push_back(w.key);
         for (const auto& [sid, r] : remotes) for (const auto& [b, pc] : ChestsNear(sid, r)) keys.push_back({ b->id, pc.first->id, pc.second }); // (#854)
@@ -550,6 +580,10 @@ namespace {
             case 5: // one slot of its screen; with a count (#854), that much of it (its client puts it on its cursor)
                 if (a.count > 0) Factory::TakeSlotToCursor(b->id, plot->id, a.part, a.slot, a.which, a.count, session);
                 else Factory::TakeSlot(b->id, plot->id, a.part, a.slot, a.which, session);
+                break;
+            case 10: // (#1103) light (count 1) or put out a campfire
+                if (type != PartType::Campfire) { refuse("Only a campfire lights that way"); return; }
+                Factory::SetFire(b->id, plot->id, a.part, a.count != 0);
                 break;
             default: return;
         }
@@ -796,7 +830,7 @@ namespace {
     int animalBites = 0;
     // (#334 slice 2) the remote players for the animals to mind, each frame; a bite on one:
     // the server's copy takes it (Combat_DamageFor: health, the shove, a held block facing it cuts both - #337); its client gets the hit's feel.
-    void SetAnimalTargets(Scene&) {
+    void SetAnimalTargets(Scene& world) {
         gAnimalTargets.clear();
         for (const Session& s : sessions) {
             if (!s.online) continue;
@@ -804,6 +838,50 @@ namespace {
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
             gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
+        }
+        // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
+        // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
+        // every second until it falls. Both clients report the health they saw and the death (the replication of one creature).
+        // (#1421) "Playing": each has walked 3 m from where it first stood - the test's players walk once their loading screens
+        // are gone. Online was not enough (on the runner the join sync took 35-67 s), nor were inputs (they flow during the ~20 s
+        // spawn-area loading screen after the sync): the creature lived and fell before the clients were in the world.
+        static const bool joinCreature = getenv("RAYLIBGAME_JOIN_CREATURE") && getenv("RAYLIBGAME_JOIN_CREATURE")[0] == '1';
+        if (joinCreature) {
+            static double bothAt = -1.0, spawnedAt = -1.0, lastHit = 0.0; static uint64_t net = 0; static bool fell = false;
+            static std::unordered_map<uint32_t, Vector3> firstAt; static std::unordered_set<uint32_t> walked;
+            const double now = GetTime();
+            for (const auto& kv : remotes) {
+                uint64_t body = 0; Vector3 at{}; double scale = 1.0;
+                if (kv.second.lastQueued == 0 || !RemoteLocal(kv.second, body, at, scale)) continue;
+                auto it = firstAt.find(kv.first);
+                if (it == firstAt.end()) firstAt[kv.first] = at;
+                else if (Vector3Distance(it->second, at) * (float)scale > 3.0f) walked.insert(kv.first);
+            }
+            const int playing = (int)walked.size();
+            if (playing >= 2 && gAnimalTargets.size() >= 2 && bothAt < 0.0) {
+                bothAt = now; Animals_SetThreats(true); Animals_SetNaturalSpawns(false);
+                printf("host: creature: both players in the world\n");
+            }
+            if (bothAt >= 0.0 && spawnedAt < 0.0 && now - bothAt > 3.0 && !gAnimalTargets.empty()) {
+                const AnimalTarget& t = gAnimalTargets[0];
+                Planetoid* b = Planetoid::findNet(t.body);
+                const Vector3 up = Vector3Normalize(t.local);
+                const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const int before = Animals_Count();
+                if (b) Animals_Spawn(world, *b, "thornback", Vector3Add(t.local, Vector3Scale(side, 5.0f)), 1, false, 0.01f);
+                if (Animals_Count() > before) { net = Animals_NetId(Animals_Count() - 1); printf("host: creature: a thornback (%llu) by session %u\n", (unsigned long long)net, t.session); }
+                spawnedAt = now; lastHit = now;
+            }
+            // (#1421) The test is the creature's replication, not the players' survival: while it lives, neither test player
+            // goes below half health. On the runner a ram threw bob into the air and the hit killed him; he spent the
+            // creature's whole life on the respawn screen and never saw it.
+            if (net && !fell) for (auto& kv : remotes) kv.second.survival.health = std::max(kv.second.survival.health, 50.0f);
+            if (net && !fell && spawnedAt >= 0.0 && now - spawnedAt > 6.0 && now - lastHit >= 1.0) {
+                lastHit = now;
+                const int i = Animals_FindNet(net);
+                if (i < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); }
+                else { DamageEvent e; e.amount = 10.0f; Animals_HitEvent(i, e); if (Animals_FindNet(net) < 0) { fell = true; printf("host: creature: fell (bites on players %d)\n", animalBites); } else printf("host: creature: health %.0f\n", Animals_HealthOf(i)); }
+            }
         }
         if (!gAnimalDamageRemote) gAnimalDamageRemote = [](uint32_t session, const DamageEvent& e) {
             auto rit = remotes.find(session);
@@ -826,7 +904,12 @@ namespace {
         const int i = Animals_FindNet(netId);
         if (rit == remotes.end() || i < 0 || !RemoteLocal(rit->second, body, at, scale)) { ++animalHitsRefused; return; }
         const Planetoid* b = rit->second.player.nearest;
-        if (!b || Animals_Body(i) != b->name || Vector3Distance(Animals_Position(i), at) * (float)scale > kAnimalReach) { ++animalHitsRefused; return; }
+        if (!b || Animals_Body(i) != b->name) { ++animalHitsRefused; return; }
+        // (#1108) lag compensation: within reach of where the animal was in the last kHitRewind (the player swung at what
+        // they saw: a round trip and their interpolation behind); a fleeing animal's hits were refused at the edge of reach
+        const float nowD = Vector3Distance(Animals_Position(i), at) * (float)scale, rewD = Animals_HitDistance(i, at, kHitRewind) * (float)scale;
+        if (rewD > kAnimalReach) { ++animalHitsRefused; return; }
+        if (nowD > kAnimalReach) ++animalHitsRewound; // (allowed only by the rewind)
         if (ClaimBlocks(session, b, Animals_Position(i))) { ++animalHitsRefused; if (const uint32_t conn = ConnOf(session)) SendMsg(conn, MsgChat{ 0, ClaimRefusal(b, Animals_Position(i)) + ": its animals are theirs" }); return; } // (#343)
         double& last = lastAnimalHit[session];
         if (GetTime() - last < kAnimalHitCooldown) { ++animalHitsRefused; return; }
@@ -1078,6 +1161,15 @@ namespace {
     void TellTeam(int team, const std::string& text) {
         if (const TeamRecord* t = Teams_Find(team)) for (const std::string& u : t->members) if (const Session* s = SessionOfUuid(u)) Tell(*s, text);
     }
+    // (#828) An offline player's "last seen": seconds since their record file was last written (on leaving, and by autosaves
+    // while they played); 0 when there is none.
+    uint32_t SecondsSinceRecord(const std::string& uuid) {
+        std::error_code ec;
+        const auto when = std::filesystem::last_write_time(PlayerRecord_Path(uuid), ec);
+        if (ec) return 0;
+        const long long s = std::chrono::duration_cast<std::chrono::seconds>(std::filesystem::file_time_type::clock::now() - when).count();
+        return s > 0 ? (uint32_t)std::min<long long>(s, 0xFFFFFFFFll) : 1;
+    }
     void SendTeamState(const Session& s) {
         MsgTeamState m;
         m.team = Teams_Of(s.uuid);
@@ -1087,9 +1179,12 @@ namespace {
             for (const std::string& u : t->members) {
                 MsgTeamState::Member x;
                 x.name = NameOfUuid(u); x.owner = u == owner; x.you = u == s.uuid;
-                if (const Session* o = SessionOfUuid(u)) { x.online = true; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                if (const Session* o = SessionOfUuid(u)) { x.online = true; x.session = o->id; auto it = remotes.find(o->id); x.health = it != remotes.end() ? it->second.survival.health : 0.0f; }
+                else x.lastSeen = SecondsSinceRecord(u); // (#828) their record is written when they leave
                 m.members.push_back(x);
             }
+            m.claimBudget = Claims_Budget(TeamQuests_BodiesReached(m.team)); // (#828)
+            for (const int a : Claims_AlliesOf(m.team)) if (const TeamRecord* at = Teams_Find(a)) m.allies.push_back(at->name);
         }
         for (const TeamInvite& i : teamInvites) if (i.to == s.uuid && GetTime() < i.until) if (const TeamRecord* t = Teams_Find(i.team)) m.invite = t->name;
         SendMsg(s.conn, m);
@@ -1513,6 +1608,7 @@ namespace {
             e.till = true;
             out.flags = 16;
             TeamEvent(session, "count", "till"); RemoteXp(session, "till"); // (#335) the quest's count, Farming XP
+            printf("host: session %u tilled (edit %u, radius %.2f m)\n", session, q.seq, q.radius); // (#1107) an accepted till, to trace it
         } else {
             const int paint = TerrainTool_FillerMaterial(q.item);
             if (paint < 0) { RefuseEdit(conn, q.seq, NetEditRefusal::Shape); return; }
@@ -1816,6 +1912,8 @@ namespace {
             std::string why;
             const GuardVerdict v = NetGuard_Admit(it->second.guard, NetPeek(m.data), m.data.size(), NetWellFormed(m.data), GetTime(), why);
             if (v != GuardVerdict::Accept) {
+                // (#1107) the first drops are logged: a player's request lost here was silent ("can't interact")
+                if (guardDropped < 20) printf("host: dropped a %s from session %u (%zu bytes): %s\n", NetMsgName(NetPeek(m.data)), it->second.session, m.data.size(), why.c_str());
                 ++guardDropped;
                 if (v == GuardVerdict::Kick) GuardKick(m.conn, why);
                 return;
@@ -2066,7 +2164,8 @@ namespace {
             }
             case NetMsg::EditRequest: {
                 MsgEditRequest q;
-                if (!it->second.joined || !NetRead(r, q)) return;
+                if (!it->second.joined) return;
+                if (!NetRead(r, q)) { printf("host: an edit request from session %u didn't read (%zu bytes)\n", it->second.session, m.data.size()); return; } // (#1107)
                 OnEditRequest(world, m.conn, it->second.session, q);
                 return;
             }
@@ -2092,7 +2191,7 @@ bool Host_Start(uint16_t port, std::string& status) {
     gNetRole = NetRole::Host; // the authority either way: the world runs and rolls here
     lastSave = GetTime();
     // (#332) what a player takes from a machine reaches its inventory as the server keeps it, then its client by deltas
-    gFactoryDeliver = [](uint32_t to, const std::string& item, int count, float heat) {
+    gFactoryDeliver = [](uint32_t to, const std::string& item, double count, float heat) { // (#1102: an amount)
         auto rit = remotes.find(to);
         if (rit == remotes.end() || count <= 0) return;
         const std::map<std::string, double> before{ { item, rit->second.inventory.amount(item) } };
@@ -2159,6 +2258,7 @@ void Host_Update(Scene& world) {
     GpuTimer_CpuMark("host: remote players");
     SendSnapshots(world);
     SendAnimals(world);   // (#334) and the animals near each player
+    SendCreatureFx(world); // (#1343, #1364) their shots and calls
     SendVitals();         // (#337) and each player's survival numbers, to that player
     SendSkills();         // (#920) and their skills, when they changed
     SendTeamStates(); // (#604) each player's team, once a second and when it changes
@@ -2168,6 +2268,16 @@ void Host_Update(Scene& world) {
     StepPlants(world);    // (#335) plant removals to everyone, farm fields near each player
     StepClaims();         // (#343) claim decay, enter/leave lines
     SetInterestCentres(world); // (#334) and animals live around every player (#318's centres)
+    {   // (#1224) every connected player's footsteps (no sound on the server): what creatures hear (Footsteps_RecentNoises)
+        static std::vector<std::pair<uint32_t, const Player*>> walkers;
+        walkers.clear();
+        for (const Session& s : sessions) {
+            if (!s.online) continue;
+            auto rit = remotes.find(s.id);
+            if (rit != remotes.end() && rit->second.player.nearest) walkers.push_back({ s.id, &rit->second.player });
+        }
+        Footsteps_UpdateServer(world, walkers, GetFrameTime());
+    }
     SetAnimalTargets(world);   // (#334 slice 2) and mind them: flee, follow, hunt, bite
     GpuTimer_CpuMark("host: snapshots");
 }
@@ -2215,6 +2325,17 @@ bool Host_PlayerLocal(Scene& world, uint32_t session, uint64_t& body, DVec3& loc
     const MsgPlayerState s = StateOf(world, session, it->second);
     body = s.body; local = s.local;
     return true;
+}
+// (#1171) An op's /tp: the remote player to a body-local spot, at rest (hovering when flying). Their game follows: its next
+// state from us is far from its prediction, so it goes back to ours (NetClient_Step's reconcile).
+bool Host_TeleportPlayer(Scene& world, uint32_t session, uint64_t body, const DVec3& local, bool hover) {
+    auto it = remotes.find(session);
+    if (it == remotes.end()) return false;
+    Player::NetState s;
+    if (!it->second.player.netState(world, s)) return false;
+    s.body = body; s.local = local; s.vel = {}; s.grounded = false; s.hovering = hover;
+    if (hover && it->second.creative) it->second.player.flyMode = true;
+    return it->second.player.applyNetState(world, s);
 }
 int Host_EditsApplied() { return editsApplied; }
 double Host_InventoryAmount(uint32_t session, const std::string& item) {
@@ -2329,6 +2450,7 @@ bool Host_SetCreative(const std::string& name, bool on) {
         if (it == remotes.end()) return false;
         it->second.creative = on;
         it->second.player.flyAllowed = on; // (#781: flying only for creative players, whom ops set)
+        it->second.player.doubleTapFly = on; // (#1562) as the client predicts it
         if (!on) it->second.player.flyMode = false;
         lastVitals = 0; // (its client hears at once, with the next vitals)
         return true;

@@ -7,7 +7,7 @@ class Scene;
 
 // The game window (#821, Dear ImGui for now): one window filling the screen, its screens switched by large tabs across
 // the top (Inventory, Crafting, Quests, Skills, Team). Tab or E opens it at the screen last used.
-enum class GameScreen { Inventory, Crafting, Quests, Skills, Team, Catalog, Count }; // Catalog: only in creative (#823)
+enum class GameScreen { Inventory, Crafting, Quests, Skills, Team, Catalog, Research, Statistics, Tome, Count }; // Catalog: only in creative (#823); Research: #1192
 bool GameUI_InventoryOpen();              // the game window is open (any screen)
 void GameUI_ToggleInventory();
 void GameUI_ShowScreen(GameScreen s);     // open the window on a screen

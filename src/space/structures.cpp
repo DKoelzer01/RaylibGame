@@ -1,4 +1,5 @@
 #include "structures.h"
+#include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
 #include "factory.h"
 #include "inventory.h"
@@ -728,6 +729,17 @@ void FillLoot(Planetoid& body, const PendingLoot& L) {
     for (const LootEntry& e : it->second) {
         if (Unit(h) > e.chance) continue;
         const int n = e.lo + (int)(Unit(h) * (e.hi - e.lo + 1));
+        if (n > 0 && MagicDiscovery_IsPage(e.item)) { // (#1250) a First Sight page only lies near a ley line (magic items come last: the rolls before stay)
+            Vector3 at{};
+            bool placed = false;
+            if (body.plots) for (auto& p : body.plots->plots)
+                if (p->id == L.plot && L.part >= 0 && L.part < (int)p->parts.size()) {
+                    const Int3 o = p->parts[L.part].origin;
+                    at = p->toBody({ (o.x + 1) * kCellSize, (o.y + 1) * kCellSize, (o.z + 1) * kCellSize });
+                    placed = true;
+                }
+            if (!placed || !MagicDiscovery_LootAllowed(body, at, e.item)) continue;
+        }
         if (n > 0) Factory::Insert(body.id, L.plot, L.part, e.item, std::min(n, e.hi));
     }
 }
@@ -812,7 +824,7 @@ void Structures_Update(Scene& world) {
     if (sets.empty()) return;
     Planetoid* body = player.nearest;
     const bool onFoot = body && !player.flyMode;
-    const Vector3 me = body ? body->toLocal((player.position - world.renderOrigin).toFloat()) : Vector3{};
+    const Vector3 me = body ? body->toLocalOf(player.position, world.renderOrigin) : Vector3{};
     // Only the authority generates (#164 design, MP): a client gets the structures as plot and terrain edits. It builds
     // round the local player and every interest centre (#318: a server's players).
     if (Net_IsAuthority()) {
@@ -924,6 +936,39 @@ bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, V
         if (d < best) { best = d; at = p; set = sets[s.set].name; found = true; }
     }
     return found;
+}
+
+int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std::vector<SiteInfo>& out) {
+    out.clear();
+    Ensure();
+    const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+    if (!pf) return 0;
+    const Vector3 up = Vector3Normalize(local);
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, up);
+    std::unordered_set<uint64_t> seen;
+    auto add = [&](const Site& s) {
+        if (!s.any) return;
+        const Vector3 p = Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir));
+        const float d = Vector3Distance(p, local);
+        if (d > range) return;
+        const Set& S = sets[s.set];
+        uint32_t dh = Hash((uint64_t)s.seed ^ 0xd0d0ull);
+        const bool dungeon = S.dungeon > 0.0f && DungeonsOn() && Unit(dh) < S.dungeon; // (as Build's roll)
+        out.push_back({ p, S.name, S.kind, dungeon, d });
+    };
+    const int R = (int)ceilf(range / kTile) + 1;
+    for (int a = -R; a <= R; ++a)
+        for (int b = -R; b <= R; ++b) {
+            Vector3 centre;
+            const uint64_t tile = TileOf(Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(t1, a * kTile * 0.5f / pf->radius), Vector3Scale(t2, b * kTile * 0.5f / pf->radius)))), pf->radius, &centre);
+            if (!seen.insert(tile).second) continue;
+            add(SiteOf(*pf, tile, centre, pf->radius, StartOf(*pf, body.seed)));
+        }
+    for (int k = 0; k < 2; ++k) add(RingSite(*pf, StartOf(*pf, body.seed), k)); // and the ring sites near the start
+    std::sort(out.begin(), out.end(), [](const SiteInfo& x, const SiteInfo& y) { return x.distance < y.distance; });
+    out.erase(std::unique(out.begin(), out.end(), [](const SiteInfo& x, const SiteInfo& y) { return Vector3Distance(x.at, y.at) < 1.0f; }), out.end());
+    return (int)out.size();
 }
 
 bool Structures_Test(Scene& world, Planetoid& body, Vector3 nearLocal) {

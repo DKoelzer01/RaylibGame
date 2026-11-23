@@ -29,12 +29,18 @@ extern BuildToolState& buildTool; // the local PlayerSession's (#313)
 
 struct PlayerInput;
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable);
+// --shot-preview (#1432): after BuildTool_Update, push the preview onto `cell` in `plot` (a built cell: the
+// can't-place ghost). Parts now slide out of the face they're aimed at, so aiming alone no longer gets there.
+class Plot; struct Int3;
+void BuildTool_BenchAimAt(Plot& plot, Int3 cell);
 void BuildTool_Draw3D(Scene& world);
 void BuildTool_ForgetWorld(); // drop the aim's pointers into a world being unloaded (#902)
 void BuildTool_DrawHUD();
 float BuildTool_BreakProgress();   // 0..1 while LMB is held on a part (the HUD bar under the crosshair)
 float BuildTool_BreakHold();       // (#919) seconds LMB must be held to take a part down (Building's perks shorten it)
 bool BuildTool_AimingPart();       // the crosshair is on a built part in reach (LMB breaks it)
+bool BuildTool_AimingCampfire();   // (#1103) on a campfire: E lights it or puts it out (not the game window)
+int BuildTool_AutoOrient(int partType, Int3 target); // (#196, #1578) the automatic facing: the part's front toward target
 int BuildTool_AimOrient();        // the aimed placement's orientation (0..23), -1 without an aim (#196 test)
 // The aimed placement for tests (#550/#551): the plot it goes into (null: a new plot at newOrigin, body-local) and its
 // origin cell.
@@ -45,6 +51,14 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& part, bool charge)
 void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part); // (#919) Building XP once the part has stood 5 min
 // Clear terrain inside a part's cells and fill small gaps under it (placing; a rocket landing).
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
+// (#1167) Many parts at once (a blueprint): between Begin and End the foundations' terrain edits are gathered and applied in
+// one batch at End (each part's own batch re-dirtied the same chunks again and again: a freeze on a big blueprint).
+void BuildTool_BeginFoundationBatch();
+void BuildTool_EndFoundationBatch(Planetoid& body);
+// (#1183) Foundations queued by a placement land over the next frames: each frame applies them within budgetMs (0: all
+// now, e.g. before a save). BuildTool_PendingFoundations: how many wait.
+void BuildTool_ApplyPendingFoundations(double budgetMs);
+int BuildTool_PendingFoundations();
 // The placement itself, no cost or quest (multiplayer, #330: the server and every client apply a player's part with it,
 // in the server's order, so the plots and their part indices stay the same everywhere): beams as cubes, the foundation.
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);

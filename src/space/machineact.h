@@ -11,10 +11,11 @@
 
 // The caller has already taken `count` of `item` out of the inventory (or off the cursor), as before. Joined: it is
 // given back here and the server takes it out of the inventory it keeps (the delta then removes it here too).
-void MachineAct_Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, bool fuel = false);
+void MachineAct_Insert(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, bool fuel = false, int centi = 0); // centi (#1102): a fraction more (a local chest keeps it)
 void MachineAct_Extract(uint64_t bodyId, uint32_t plotId, int part);
+void MachineAct_SetFire(uint64_t bodyId, uint32_t plotId, int part, bool lit); // (#1103) light or put out a campfire. Joined: action 10.
 // (#862) As Insert, into one storage slot of a chest (a machine routes it as Insert does). Joined: action 8.
-void MachineAct_InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot);
+void MachineAct_InsertSlot(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count, int slot, int centi = 0);
 // (#862) `count` of item out of a chest into the inventory (the scroll wheel's pull). Joined: action 9.
 void MachineAct_Take(uint64_t bodyId, uint32_t plotId, int part, const std::string& item, int count);
 // One slot of a machine's screen: to the inventory, or (cursorCount >= 0) onto the cursor (0: all). Joined: always to the

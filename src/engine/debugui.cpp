@@ -110,6 +110,36 @@ void DebugUI_Draw(Scene& world) {
         if (ImGui::CollapsingHeader("Audio")) {
             float vol = Audio_GetMasterVolume();
             if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 1.0f, "%.2f")) Audio_SetMasterVolume(vol);
+            if (Audio_V2()) { // (#1238) buses, voices, ducking
+                for (int b = 1; b < (int)AudioBus::Count; ++b) {
+                    float bv = Audio_GetBusVolume((AudioBus)b);
+                    if (ImGui::SliderFloat(AudioBus_Name((AudioBus)b), &bv, 0.0f, 1.0f, "%.2f")) Audio_SetBusVolume((AudioBus)b, bv);
+                }
+                const AudioMixer::Stats st = Audio_Stats();
+                ImGui::Text("Voices %d / %d; played %lld, stolen %lld, dropped %lld; duck %.2f", st.active, AudioMixer::kVoices,
+                            st.played, st.stolen, st.dropped, Audio_Mixer().duckLevel());
+                if (ImGui::Button("Duck 3 s")) Audio_DuckFor(3.0);
+                // (#1239) positional checks: a hum left 8 m ahead of the camera (walk around it), a centred wind bed.
+                int ec = 0, ev = 0;
+                Audio_EmitterStats(ec, ev);
+                ImGui::Text("Emitters %d (%d with a voice)", ec, ev);
+                ImGui::TextUnformatted(Audio_SpatialBackend()); // (#1292)
+                static int testHum = -1, testWind = -1;
+                ImGui::SameLine();
+                if (ImGui::Button(testHum < 0 ? "Hum 8 m ahead" : "Hum off")) {
+                    if (testHum < 0) {
+                        const AudioListener& l = Audio_GetListener();
+                        testHum = Audio_EmitterCreate(Audio_Sound("hum"), AudioBus::Machines, AudioPriority::Normal);
+                        Audio_EmitterSetPosition(testHum, l.pos + DVec3(Vector3Scale(l.forward, 8.0f)));
+                        Audio_EmitterSetPlaying(testHum, true);
+                    } else { Audio_EmitterDestroy(testHum); testHum = -1; }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(testWind < 0 ? "Wind bed" : "Wind off")) {
+                    if (testWind < 0) { testWind = Audio_EmitterCreate(Audio_Sound("wind"), AudioBus::Ambience, AudioPriority::Low, {}, false); Audio_EmitterSetPlaying(testWind, true); }
+                    else { Audio_EmitterDestroy(testWind); testWind = -1; }
+                }
+            } else ImGui::TextDisabled("RAYLIBGAME_AUDIO_V2=1: buses and voices");
         }
 
         if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {

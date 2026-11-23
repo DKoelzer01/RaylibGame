@@ -79,7 +79,7 @@ void Finish(const char* why, bool movedOk, bool pass) {
     printf("bench: mp-bots: timings: join p50 %.0f / max %.0f ms; rtt p50 %.0f / p95 %.0f / max %.0f ms (%zu pongs); rejoin p50 %.0f / max %.0f ms\n",
            Pct(joinMs, 0.5), Pct(joinMs, 1.0), Pct(rtts, 0.5), Pct(rtts, 0.95), Pct(rtts, 1.0), rtts.size(), Pct(rejoinMs, 0.5), Pct(rejoinMs, 1.0));
     for (const Bot& b : bots)
-        printf("bench: mp-bots: %s (session %u): %d own states, prediction off by %.3f m at worst (%.3f last), %d corrections; %.2f m from the server at the end\n",
+        printf("bench: mp-bots: %s (session %u): %d own states, prediction off by %.3f m at worst (%.3f last), %d corrections; %.2f m from the server at the end (limit %.2f m)\n",
                b.name.c_str(), b.session, b.c.states, b.c.worstError, b.c.lastError, b.c.corrections, b.serverGap, GapLimit(&b - bots.data()));
     printf("bench: mp-bots: %zu bots joined %zu; moved ok %d (bot1 saw the others move at most %.2f x their scripted speed); world clock estimate off by %.0f ms at worst (#339); churn %d of %d rounds: %d rejoins kept their session %d, "
            "online count right %d of %d; %s after %.1f s -> %s\n",

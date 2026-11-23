@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "machinemodels.h"
 #include "machineact.h"
 #include "buildtool.h"
@@ -16,12 +17,16 @@
 #include "worldtypes.h"
 #include "simclock.h"
 #include "factory.h"
+#include "alchemy.h" // (#1254) phials on vessels, the run on their panel
 #include "blueprint.h"
+#include <deque>
 #include "claims.h"
 #include "playerrecord.h"
 #include "menus.h"
 #include "net.h"
 #include <ctime>
+
+#include "uipalette.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -57,6 +62,56 @@ bool IsMachineItem(const std::string& id) {
 
 // Foundation (#210): the terrain inside the part's cells is subtracted, exactly those boxes (a carve, as mining, but with
 // no yield), and nothing else changes: no fill under it, no brush reaching past it (the plot carries parts above ground).
+namespace {
+    bool foundationBatching = false;            // (#1167) between Begin and EndFoundationBatch
+    std::vector<TerrainEdit> foundationBatch;
+    // (#1183) A blueprint's foundations land over the next frames: the edits wait here (with their body) and each frame
+    // applies them in small groups until kFoundationFrameMs is spent; the parts are placed at once. (The terrain edit was
+    // ~11.7 of a 60-part placement's ~11.8 ms in one frame.) RAYLIBGAME_BLUEPRINT_ASYNC=0: all in the placing frame (A/B).
+    struct PendingFoundation { uint64_t body; TerrainEdit edit; };
+    std::deque<PendingFoundation> foundationsPending;
+    // A frame's share for foundations (#1372, perf/blueprint-place with the world idle, 2026-11-21): a 60-part placement all in
+    // one frame was a ~12 ms frame; queued at 3 ms its worst frame after was +5.4 ms over a ~2.7 ms baseline (5 frames), at
+    // 1 ms +3.9 ms (14 frames, ~0.23 s). An edit costs ~0.16 ms. RAYLIBGAME_FOUNDATION_MS overrides (A/B).
+    const double kFoundationFrameMs = [] { const char* e = getenv("RAYLIBGAME_FOUNDATION_MS"); return e ? atof(e) : 1.0; }();
+    constexpr size_t kFoundationGroup = 4;      // edits applied together (one snapshot each); 2 measured no better (#1183)
+}
+void BuildTool_BeginFoundationBatch() { // RAYLIBGAME_BLUEPRINT_BATCH=0: a batch per part, as before (A/B)
+    static const bool on = !(getenv("RAYLIBGAME_BLUEPRINT_BATCH") && getenv("RAYLIBGAME_BLUEPRINT_BATCH")[0] == '0');
+    foundationBatching = on; foundationBatch.clear();
+}
+void BuildTool_EndFoundationBatch(Planetoid& body) {
+    PROFILE_SCOPE("blueprint foundations");
+    foundationBatching = false;
+    static const bool async = !(getenv("RAYLIBGAME_BLUEPRINT_ASYNC") && getenv("RAYLIBGAME_BLUEPRINT_ASYNC")[0] == '0');
+    if (async) for (const TerrainEdit& e : foundationBatch) foundationsPending.push_back({ body.id, e });
+    else if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
+    foundationBatch.clear();
+}
+int BuildTool_PendingFoundations() { return (int)foundationsPending.size(); }
+void BuildTool_ApplyPendingFoundations(double budgetMs) {
+    if (foundationsPending.empty()) return;
+    PROFILE_SCOPE("blueprint foundations (queued)");
+    const double t0 = GetTime();
+    // (#1372) the next group only if it fits the budget by the groups' cost so far (checking only before each group overran a
+    // 3 ms budget to 4); at least one group a frame, so the queue always drains
+    static double groupMs = 0.0; // a running average
+    std::vector<TerrainEdit> group;
+    int groups = 0;
+    while (!foundationsPending.empty()) {
+        const double spent = (GetTime() - t0) * 1000.0;
+        if (budgetMs > 0.0 && groups > 0 && spent + groupMs > budgetMs) break;
+        const uint64_t id = foundationsPending.front().body;
+        group.clear();
+        while (!foundationsPending.empty() && foundationsPending.front().body == id && group.size() < kFoundationGroup) { group.push_back(foundationsPending.front().edit); foundationsPending.pop_front(); }
+        const double g0 = GetTime();
+        if (Planetoid* b = Planetoid::find(id)) ApplyTerrainEdits(*b, group.data(), group.size()); // (a body gone: its edits with it)
+        const double ms = (GetTime() - g0) * 1000.0;
+        groupMs = groupMs > 0.0 ? groupMs * 0.8 + ms * 0.2 : ms;
+        ++groups;
+    }
+}
+
 void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(part, fp);
@@ -86,6 +141,7 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
         e.radius = h * 1.7320508f; // its bounding reach (dirty chunks, trees, fluid)
         edits.push_back(e);
     }
+    if (foundationBatching) { foundationBatch.insert(foundationBatch.end(), edits.begin(), edits.end()); return; } // (#1167)
     if (!edits.empty()) ApplyTerrainEdits(body, edits.data(), edits.size());
 }
 
@@ -175,6 +231,19 @@ namespace {
 float BuildTool_BreakProgress() { return breakAiming && breakHeld > 0.0f ? std::min(1.0f, breakHeld / BreakHold()) : 0.0f; }
 float BuildTool_BreakHold() { return BreakHold(); }
 bool BuildTool_AimingPart() { return breakAiming; }
+
+int BuildTool_AutoOrient(int partType, Int3 target) {
+    const PartType type = (PartType)partType;
+    // The part's front - its local +z, where machines have their door - toward target (one of the 4 turns about up). (#1578) A
+    // ladder is a thin frame against its cell's -x side: its climbing face (local +x) goes toward target, not its edge.
+    const int col = type == PartType::Ladder ? 0 : 2;
+    int o = 0;
+    for (int k = 0; k < 4; ++k, o = RotateOrientation(o, 1)) {
+        const int* m = Orientation(o);
+        if (m[col] == target.x && m[3 + col] == target.y && m[6 + col] == target.z) return o;
+    }
+    return 0; // (straight up or down: no turn about up faces it)
+}
 int BuildTool_AimOrient() { return aim.plot || aim.newOrigin.x != 0.0f || aim.newOrigin.y != 0.0f || aim.newOrigin.z != 0.0f ? (int)aim.part.orient : -1; }
 const Plot* BuildTool_AimPlacement(Vector3* newOrigin, Int3* origin) { if (newOrigin) *newOrigin = aim.newOrigin; if (origin) *origin = aim.part.origin; return aim.plot; }
 
@@ -182,8 +251,8 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     breakAiming = false;
     Planetoid* body = player.nearest;
     if (!body || !body->plots || player.flyMode) { breakHeld = 0.0f; breakPart = -1; return; }
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = buildTool.active ? buildTool.reach : terrainTool.reach;
     Plot* hitPlot = nullptr;
     Int3 hitCell{};
@@ -250,8 +319,20 @@ void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part&
     if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, part.origin, part.type, SimTime() });
 }
 
+void BuildTool_BenchAimAt(Plot& plot, Int3 cell) {
+    // The part's first footprint cell onto `cell`: a facing rotates the footprint about the origin cell's centre, which can
+    // move it a cell off the origin (Plot::Footprint).
+    aim.plot = &plot;
+    aim.part.origin = { 0, 0, 0 };
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(aim.part, fp);
+    aim.part.origin = fp.empty() ? cell : Int3{ cell.x - fp[0].first.x, cell.y - fp[0].first.y, cell.z - fp[0].first.z };
+    aim.canPlace = plot.canPlace(aim.part);
+}
+
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
+    BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
     if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
     UpdateBreak(world, in);
@@ -282,8 +363,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     }
     Planetoid* body = player.nearest;
     if (!body) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     aim.body = body;
     aim.part = { (PartType)buildTool.part, { 0, 0, 0 }, (uint8_t)buildTool.orient, (uint8_t)buildTool.material };
 
@@ -301,7 +382,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // A part bigger than a cell is centred on the aimed point across the face it is placed on (#196: a 2x2 machine hung
     // off one corner of the aimed cell). `normal` is the face's axis (a plot axis); the other two axes move the
     // footprint so its middle is nearest the hit point (in cells).
-    auto centreOn = [&](Plot& pl, Int3 normal, Vector3 hitBodyLocal, bool onGround = false) {
+    auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
         if (fp.size() <= 1) return;
@@ -340,11 +421,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     // turns toward the player - on a wall, out of the wall; on the ground or a floor, back along the view.
     auto faceToward = [&](Int3 target) {
         if (buildTool.orientManual) return;
-        int o = 0;
-        for (int k = 0; k < 4; ++k, o = RotateOrientation(o, 1)) {
-            const int* m = Orientation(o);
-            if (m[2] == target.x && m[5] == target.y && m[8] == target.z) break;
-        }
+        const int o = BuildTool_AutoOrient((int)aim.part.type, target);
         buildTool.orient = o;          // shown, and where a hand rotation starts from
         aim.part.orient = (uint8_t)o;
     };
@@ -356,18 +433,10 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
-        centreOn(*hitPlot, hitFace, Vector3Add(lo, Vector3Scale(ld, bestPart)));
-        {   // A part bigger than a cell grows from its origin, which could reach back into the block
-            // aimed at: slide it out along the aimed face until every cell of it is in front of that face.
-            std::vector<std::pair<Int3, CellShape>> fp;
-            Plot::Footprint(aim.part, fp);
-            int behind = 0;
-            for (const auto& c : fp) {
-                const int d = (c.first.x - hitCell.x) * hitFace.x + (c.first.y - hitCell.y) * hitFace.y + (c.first.z - hitCell.z) * hitFace.z;
-                behind = std::max(behind, 1 - d);
-            }
-            aim.part.origin = { aim.part.origin.x + hitFace.x * behind, aim.part.origin.y + hitFace.y * behind, aim.part.origin.z + hitFace.z * behind };
-        }
+        centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
+        // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a
+        // cell off it: flush against the aimed face, every cell in front of it (#1574: it slid only outward).
+        aim.part.origin = Plot::FlushAgainstFace(aim.part, hitCell, hitFace);
         aim.removePlot = hitPlot;
         aim.removePart = hitPlot->partAt(hitCell);
     } else if (terrain) {
@@ -388,7 +457,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
             faceToward(towardViewer(*near));
             // The cell just above the ground at the aim.
             aim.part.origin = near->cellAt(near->toPlot(Vector3Add(ground, Vector3Scale(near->up, 0.1f))));
-            centreOn(*near, Int3{ 0, 1, 0 }, ground, true); // on the ground: the bottom face's middle at the aim
+            centreOn(*near, Int3{ 0, 1, 0 }, DVec3(ground), true); // on the ground: the bottom face's middle at the aim
         } else {
             // A new plot (#550): its grid starts at the aim, so the part grew from its corner there. Move the plot's
             // origin back along its east and north axes (as PlotSet::plotFor will set them) by half the footprint, so
@@ -490,7 +559,8 @@ void BuildTool_Draw3D(Scene& world) {
     // The part's real shape (#197): each footprint cell's faces (slopes, corners, beams as they will be), translucent
     // green (or red: can't place) with their edges, inflated 2 cm about the cell centre so they stand off the blocks
     // around them (#199), both sides drawn.
-    auto ghost = [&](const Plot& p, const std::vector<std::pair<Int3, CellShape>>& cells, Color fill, Color edge) {
+    // cross: can't place - each face also gets its diagonals, a cue that doesn't depend on telling the colours apart (#1432).
+    auto ghost = [&](const Plot& p, const std::vector<std::pair<Int3, CellShape>>& cells, Color fill, Color edge, bool cross) {
         std::vector<std::vector<Vector3>> faces;
         rlDrawRenderBatchActive();
         rlPushMatrix();
@@ -508,6 +578,11 @@ void BuildTool_Draw3D(Scene& world) {
             for (const auto& poly : faces) {
                 for (size_t i = 1; i + 1 < poly.size(); ++i) DrawTriangle3D(toPlot(poly[0]), toPlot(poly[i]), toPlot(poly[i + 1]), fill);
                 for (size_t i = 0; i < poly.size(); ++i) DrawLine3D(toPlot(poly[i]), toPlot(poly[(i + 1) % poly.size()]), edge);
+                if (cross && poly.size() >= 3) { // corner to the opposite corner (a triangle: each corner to the far edge's middle)
+                    const size_t n = poly.size();
+                    if (n >= 4) for (size_t i = 0; i < n / 2; ++i) DrawLine3D(toPlot(poly[i]), toPlot(poly[i + n / 2]), edge);
+                    else for (size_t i = 0; i < 3; ++i) DrawLine3D(toPlot(poly[i]), toPlot(Vector3Scale(Vector3Add(poly[(i + 1) % 3], poly[(i + 2) % 3]), 0.5f)), edge);
+                }
             }
         }
         rlDrawRenderBatchActive();
@@ -518,7 +593,7 @@ void BuildTool_Draw3D(Scene& world) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Plot::Footprint(aim.part, fp);
     if (Blueprint_Active()) Blueprint_DrawGhost(body, *frame, aim.part.origin, true, world.renderOrigin); // the whole blueprint instead of one part
-    else ghost(*frame, fp, aim.canPlace ? Fade(GREEN, 0.28f) : Fade(RED, 0.30f), aim.canPlace ? GREEN : RED);
+    else ghost(*frame, fp, aim.canPlace ? Fade(Ui().good, 0.28f) : Fade(Ui().bad, 0.30f), aim.canPlace ? Ui().good : Ui().bad, !aim.canPlace);
     if (aim.removePlot && aim.removePart >= 0) {
         Plot::Footprint(aim.removePlot->parts[aim.removePart], fp);
         for (const auto& c : fp) box(*aim.removePlot, c.first, Fade(ORANGE, 0.7f));
@@ -560,22 +635,24 @@ namespace {
     struct FarmAim { uint64_t body = 0; Vector3 local{}; bool on = false; } farmAim; // (#1085) farmland ground or a crop, aimed
     double handPumpAt = -10.0; // the last frame the hand pump was worked (GetTime), and the litres since this go began (#571)
     float handPumpLitres = 0.0f;
+    double crankAt = -10.0; // (#1269) the last frame a hand crank was turned (GetTime)
 }
+bool BuildTool_AimingCampfire() { return machineAim.part >= 0 && machineAim.type == PartType::Campfire; }
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
     farmAim = FarmAim{};
     Planetoid* body = player.nearest;
     if (!body || player.flyMode) return;
-    const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    const Vector3 lo = body->toLocal(world.camera.position), ld = body->dirToLocal(dir);
+    Vector3 dir, ld; DVec3 lo;
+    player.aimRay(world, *body, lo, ld, dir); // (F4, #1412: the eye in double with the frame path; the camera before)
     float best = 6.0f;
     if (body->plots) for (auto& pl : body->plots->plots) {
         Int3 c, f; float d;
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -602,6 +679,11 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
+    if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it
+        if (!buildTool.active && in.down(Act::Secondary)) { Factory::Crank(machineAim.body, machineAim.plot, machineAim.part); crankAt = GetTime(); }
+        return;
+    }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) return; // shafts, cogs, gearboxes, gauges: looked at only
     if (machineAim.type == PartType::HandPump) {
         // Hand pump (#280): hold RMB (outside build mode) to work it; the water goes down its pipes at the next pass.
         if (!buildTool.active && in.down(Act::Secondary)) {
@@ -611,6 +693,16 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
             static double nextSound = 0.0;
             if (GetTime() > nextSound) { Audio_Play(Sfx::Pickup, 0.25f, 0.6f); nextSound = GetTime() + 0.6; }
         }
+        return;
+    }
+    if (machineAim.type == PartType::Campfire && in.hit(Act::Use)) {
+        // (#1103) E on a campfire lights it or puts it out, as its screen's button does (E elsewhere opens the game window)
+        const MachineView v = Factory::View(machineAim.body, machineAim.plot, machineAim.part);
+        const bool burning = v.status == MachineStatus::Working;
+        if (burning || v.fuelSlot.second > 0 || v.energy > 0) {
+            MachineAct_SetFire(machineAim.body, machineAim.plot, machineAim.part, !burning);
+            GameUI_Toast(burning ? "Campfire put out" : "Campfire lit");
+        } else GameUI_Toast("The campfire needs fuel to light");
         return;
     }
     if (machineAim.type == PartType::Bed) {
@@ -628,6 +720,8 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     // RMB (outside build mode, where RMB places parts) opens the machine's own screen: its slots
     // beside the inventory, like the player's.
     if (!buildTool.active && in.hit(Act::Secondary)) {
+        // (#1254) phials in hand on an alchemy vessel: empty ones fill from it, full ones pour in
+        if (Alchemy_UsePhials(machineAim.body, machineAim.plot, machineAim.part, machineAim.type, Hotbar_Slot(Hotbar_Selected()))) { Audio_Play(Sfx::Pickup, 0.4f, 1.4f); return; }
         GameUI_OpenContainer(machineAim.body, machineAim.plot, machineAim.part, (int)machineAim.type);
         Audio_Play(Sfx::Pickup, 0.3f, 1.0f);
         return;
@@ -705,6 +799,22 @@ void Machine_DrawHUD() {
         }
         return;
     }
+    if (IsRotationPart(machineAim.type) && !IsMachine(machineAim.type)) { // (#1269) a shaft line: its speed and its network's load
+        const RotationView rv = Factory::RotationAt(machineAim.body, machineAim.plot, machineAim.part);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        const bool crank = machineAim.type == PartType::HandCrank;
+        DrawRectangle(x - 8, y - 6, 420, crank ? 100 : 76, Fade(BLACK, 0.55f));
+        DrawText(PartName(machineAim.type), x, y, 20, SKYBLUE);
+        if (!rv.valid) { DrawText("...", x, y + 24, 16, RAYWHITE); return; }
+        const Color amber = { 255, 190, 70, 255 };
+        if (rv.jam[0]) DrawText(TextFormat("jammed: %s", rv.jam), x, y + 24, 16, Color{ 255, 110, 90, 255 });
+        else DrawText(TextFormat("%.1f RPM  (%s)", fabsf(rv.rpm), rv.status), x, y + 24, 16, RAYWHITE);
+        if (rv.demand > 0 || rv.capacity > 0)
+            DrawText(TextFormat("stress %d%% - running at %d%%  (%d / %d SU)", rv.stressPercent, rv.speedPercent, rv.demand, rv.capacity), x, y + 44, 16, rv.stressPercent > 100 ? amber : RAYWHITE);
+        else DrawText("no load", x, y + 44, 16, RAYWHITE);
+        if (crank) DrawText(GetTime() - crankAt < 0.2 ? "turning" : "hold RMB to turn it", x, y + 68, 16, GetTime() - crankAt < 0.2 ? Color{ 120, 200, 255, 255 } : RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::Cable) { // its power network (#570): what feeds it and what flowed in the last tick
         const CableView cv = Factory::Cable(machineAim.body, machineAim.plot, machineAim.cell);
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
@@ -727,7 +837,8 @@ void Machine_DrawHUD() {
     // counted (#567: a full chest ran off the screen).
     const std::vector<std::string> in = WrapItemList(chest ? "holds: " : "in: ", v.input, w - 16, 16, 4);
     const std::vector<std::string> out = chest ? std::vector<std::string>{} : WrapItemList("out: ", v.output, w - 16, 16, 2);
-    const int lines = (int)(in.size() + out.size());
+    const std::string runLine = Alchemy_IsVessel(machineAim.type) ? Alchemy_PanelLine(machineAim.body, machineAim.plot, machineAim.part) : std::string(); // (#1254)
+    const int lines = (int)(in.size() + out.size()) + (runLine.empty() ? 0 : 1);
     DrawRectangle(x - 8, y - 6, w, 72 + 20 * lines, Fade(BLACK, 0.55f));
     DrawText(TextFormat("%s: %s", PartName(machineAim.type), v.valid ? MachineStatusName(v.status) : "..."), x, y, 20, SKYBLUE);
     if (v.duration > 0) {
@@ -735,11 +846,35 @@ void Machine_DrawHUD() {
         DrawRectangle(x, y + 26, 300 * v.progress / v.duration, 8, ORANGE);
     }
     int ty = y + 40;
+    if (v.rotation) { // (#1269) the shaft it runs on
+        DrawRectangle(x - 8, y + 66 + 20 * lines, w, 22, Fade(BLACK, 0.55f));
+        DrawText(TextFormat("%.1f RPM (%s), stress %d%% - running at %d%%", v.rpm, v.rotStatus, v.stressPercent, v.speedPercent), x, y + 68 + 20 * lines, 16,
+                 v.stressPercent > 100 ? Color{ 255, 190, 70, 255 } : RAYWHITE);
+    }
     for (const std::string& l : in) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
+    if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
     else DrawText(chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
 
 // The world is going (#902): the aim points into its bodies and plots.
 void BuildTool_ForgetWorld() { aim = {}; }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+// #1578 (playtest: a ladder placed against a wall showed its edge): automatic facing turns a ladder's climbing face out of the
+// wall (its frame against the wall), and a machine's front (local +z) as before.
+TEST(BuildFacing, LadderClimbingFaceOutOfTheWallMachinesFrontAsBefore) {
+    for (const Int3 out : { Int3{ 1, 0, 0 }, Int3{ -1, 0, 0 }, Int3{ 0, 0, 1 }, Int3{ 0, 0, -1 } }) {
+        Part ladder{ PartType::Ladder, { 0, 0, 0 }, (uint8_t)BuildTool_AutoOrient((int)PartType::Ladder, out), 0 };
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(ladder, fp);
+        ASSERT_EQ(fp.size(), 1u);
+        const Vector3 n = fp[0].second.n[0]; // the frame's open side: the cell beyond its climbing face
+        EXPECT_EQ(Int3({ (int)lroundf(n.x), (int)lroundf(n.y), (int)lroundf(n.z) }), out) << "ladder, out of the wall (" << out.x << ", " << out.z << ")";
+        const int* m = Orientation(BuildTool_AutoOrient((int)PartType::Chest, out));
+        EXPECT_EQ(Int3({ m[2], m[5], m[8] }), out) << "a chest's front, out of the wall (" << out.x << ", " << out.z << ")";
+    }
+}
+#endif

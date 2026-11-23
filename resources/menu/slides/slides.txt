@@ -1,16 +1,28 @@
-# Menu and loading-screen slides (#386): "file | caption". Every PNG/JPG in this folder is shown; a caption is optional.
-# First set: shots from the test scenes (--shot-biomes, --sun-elev, --day, all with --no-hud), made into slides with
-# game.exe --to-slide <shot.png> <slide.jpg>. To be replaced by curated shots (a base, other planets and moons).
-start.jpg           | Terra: the start
-sunset.jpg          | Terra: sunset over the start
-biome_forest.jpg    | Terra: temperate forest
-biome_meadow.jpg    | Terra: meadow
-biome_savanna.jpg   | Terra: savanna
-biome_desert.jpg    | Terra: desert dunes
-biome_badlands.jpg  | Terra: badlands
-biome_jungle.jpg    | Terra: jungle
-biome_swamp.jpg     | Terra: swamp
-biome_taiga.jpg     | Terra: taiga
-biome_tundra.jpg    | Terra: tundra
-biome_alpine.jpg    | Terra: alpine
-biome_island.jpg    | Terra: a floating island
+# Menu and loading-screen slides (#386, #1071): "file | caption". Every PNG/JPG in this folder is shown; a caption is optional.
+# The set the user picked on 2026-11-22 from three scripted batches (seed 42, HUD off): tools/slides/shots_a.sh and
+# shots_b.sh (the --shot-* benches), shots_c.sh (the slides/* scenarios: hand-placed cameras) and the scenarios that grab
+# a picture with RAYLIBGAME_SLIDE_SHOTS; made into slides by tools/slides/to_slides.ps1 (1600 px JPEG).
+floating_island.jpg    | Terra: a floating island over the sea
+badlands.jpg           | Terra: badlands below the hills
+desert.jpg             | Terra: desert dunes
+forest.jpg             | Terra: temperate forest under the ring
+jungle.jpg             | Terra: jungle canopy
+taiga.jpg              | Terra: taiga
+meadow_forest.jpg      | Terra: meadow and autumn woods
+autumn_plain.jpg       | Terra: an autumn plain under the ring
+lake_valley.jpg        | Terra: a lake valley
+lake_shore.jpg         | Terra: sandy shores
+mountain.jpg           | Terra: snow on the heights
+sunset.jpg             | Terra: sunset
+sunset_ring.jpg        | Terra: the ring at sunset
+sun_clouds.jpg         | Terra: sun through the clouds
+animals.jpg            | Terra: the herds
+campfire.jpg           | A campfire in the grass
+machines.jpg           | Steam power: boilers, engines and belts
+room.jpg               | A built room, looking out
+ladder.jpg             | Climbing a ladder
+cave_chamber.jpg       | A cave chamber, lit
+lava_tube_cave.jpg     | Inside a lava tube
+lava_tube_skylight.jpg | A lava tube's skylight
+planet_limb.jpg        | Terra from 25 km up
+planet_ring.jpg        | Terra and its ring

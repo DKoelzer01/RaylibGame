@@ -107,7 +107,7 @@ void Scan(Scene& world) {
     Planetoid* body = player.nearest;
     const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
     if (!pf) return;
-    const Vector3 me = body->toLocal((player.position - world.renderOrigin).toFloat());
+    const Vector3 me = body->toLocalOf(player.position, world.renderOrigin);
     const Vector3 up = Vector3Normalize(me);
     Vector3 east = Vector3CrossProduct({ 0, 1, 0 }, up);
     east = Vector3Length(east) < 1e-3f ? Vector3{ 1, 0, 0 } : Vector3Normalize(east);

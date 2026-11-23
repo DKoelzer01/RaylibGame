@@ -59,13 +59,18 @@ bool hizOccluded(vec3 o, float side) {
     // the part turned into view since is not (turning showed ground holes: grass standing over nothing for a frame).
     if (lo.x < -1.0 || lo.y < -1.0 || hi.x > 1.0 || hi.y > 1.0) return false;
     if (lo.x >= hi.x || lo.y >= hi.y) return false;
-    vec2 uv0 = lo * 0.5 + 0.5, uv1 = hi * 0.5 + 0.5;
-    vec2 px = (uv1 - uv0) * hizSize;
+    vec2 p0 = (lo * 0.5 + 0.5) * hizSize, p1 = (hi * 0.5 + 0.5) * hizSize; // the rectangle in level-0 pixels
+    vec2 px = p1 - p0;
     // A level where the rectangle spans at most 2 texels (so at most 3 x 3 cover it): coarser levels' texels reach far past
     // the box (often into the sky over a ridge, depth 0), and nothing was ever culled.
     int level = int(clamp(ceil(log2(max(max(px.x, px.y) * 0.5, 1.0))), 0.0, float(hizLevels - 1)));
     ivec2 size = textureSize(hizTex, level);
-    ivec2 t0 = clamp(ivec2(uv0 * vec2(size)), ivec2(0), size - 1), t1 = clamp(ivec2(uv1 * vec2(size)), ivec2(0), size - 1);
+    // (#1532) Texel x of level L holds level-0 pixels [x * 2^L, (x + 1) * 2^L); a row's last texel also takes the odd
+    // remainder (the pyramid halves sizes rounding down). Scaling uv by the level's size instead drifted up to a texel toward
+    // the origin on sizes that aren't powers of two (1440 = 22 x 64 + 32), so the texel under the box's far edge could be
+    // missed and the box culled behind nearer ground beside it.
+    float cell = exp2(float(level));
+    ivec2 t0 = clamp(ivec2(floor(p0 / cell)), ivec2(0), size - 1), t1 = clamp(ivec2(floor(p1 / cell)), ivec2(0), size - 1);
     t1 = min(t1, t0 + 3);
     float far0 = 1e30;
     for (int y = t0.y; y <= t1.y; ++y)
