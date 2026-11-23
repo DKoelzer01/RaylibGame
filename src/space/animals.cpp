@@ -2050,6 +2050,12 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.timer = 1.0f + Rand01(a.rng);
             if (a.stuckTime > 4.0f) { a.state = State::Graze; a.stuckTime = 0.0f; }
         }
+        // (#1717) Close in on its prey, its facing keeps the turn rate through this pass too: a sidestep or a planned route turned
+        // it up to ~75 degrees in one update. It may step sideways, but it turns at 180 deg/s.
+        if (mr.closeHunt) {
+            const float d = atan2f(sinf(a.heading - mr.heading), cosf(a.heading - mr.heading)), m = PI * step;
+            if (fabsf(d) > m) a.heading = mr.heading + (d > 0.0f ? m : -m);
+        }
     }
     // Penned: build parts within 30 m in all eight directions around an animal near the player
     // (checked every 2 s; the quest's "pen two animals").
