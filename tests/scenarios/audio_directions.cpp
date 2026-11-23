@@ -18,6 +18,7 @@
 #include "audiospatial.h"
 #include "player.h"
 #include "steamaudio.h"
+#include "subtitles.h"
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
@@ -46,6 +47,7 @@ struct St {
     int k = 0;                      // the case, 0..7: phase = k / 4 (0 north, 1 east), emitter = k % 4
     double t0 = -1.0, tReset = -1.0, T0 = 0.0, err0 = 0.0, dist0 = 0.0;
     bool init = false, sampled = false;
+    SubtitleLevel level = SubtitleLevel::Important;
     long frames = 0;
     int em[4] = { -1, -1, -1, -1 };
     bool live = false, lr = false, offline = false, loadedHere = false;
@@ -100,6 +102,8 @@ bool OfflineLR(const Vector3& dir, float& l, float& r) {
 
 void Setup(ScenarioCtx& c) {
     Audio_DebugLR(true);
+    S.level = Subtitles_Level();
+    Subtitles_SetLevel(SubtitleLevel::All); // the caption of the test sound ("Test noise") shows its arrow
     const int snd = Audio_Sound("test_noise");
     S.live = snd >= 0;
     if (S.live) {
@@ -124,6 +128,7 @@ void Finish() {
     if (S.fx) SteamAudio::DestroyVoice(S.fx);
     if (S.loadedHere) SteamAudio::Shutdown();
     Audio_DebugLR(false);
+    Subtitles_SetLevel(S.level);
 }
 }
 
@@ -220,6 +225,18 @@ SCENARIO("audio/directions") {
             if (ex.axis == 'x') c.gt(tag + "louder in the near ear (dB)", ex.sign * dB, 3.0);
             else c.lt(tag + "balanced between the ears (|dB|)", fabs(dB), 2.0);
         } else c.note(tag + "no left/right (no steam audio)");
+
+        // The caption's arrow (#1635): from the line the HUD shows (live), else from the same direction maths.
+        float ang = Subtitle_Angle(L, now);
+        bool directional = false;
+        const bool fromLog = S.live && Subtitles_DebugLine("Test noise", &ang, &directional);
+        std::string al, ar;
+        Subtitle_Arrows(ang, al, ar);
+        const std::string want = ex.axis == 'x' ? (ex.sign > 0 ? "right" : "left") : (ex.sign > 0 ? "behind" : "none (ahead)");
+        const bool arrowOk = ex.axis == 'x' ? (ex.sign > 0 ? (ar == " >" && al.empty()) : (al == "< " && ar.empty())) : (ex.sign > 0 ? (al == "v " && ar.empty()) : (al.empty() && ar.empty()));
+        snprintf(buf, sizeof buf, "%scaption angle %.1f deg (%s), arrow \"%s\"|\"%s\"", tag.c_str(), ang, fromLog ? "from the caption line on the HUD" : "computed", al.c_str(), ar.c_str());
+        c.note(buf);
+        c.check(tag + "caption arrow points " + want, arrowOk && (!fromLog || directional));
 
         S.t0 = -1.0;
         if (++S.k >= 8) { Finish(); return true; }

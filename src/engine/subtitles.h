@@ -44,6 +44,7 @@ public:
     void expire(double now);
     // The lines a level shows, newest first, at most kMaxLines.
     void visible(SubtitleLevel level, std::vector<const Line*>& out) const;
+    const Line* find(const std::string& text) const { for (const Line& l : lines) if (l.text == text) return &l; return nullptr; }
 
 private:
     std::vector<Line> lines;
@@ -56,5 +57,7 @@ SubtitleLevel Subtitles_Level();
 void Subtitles_OnSound(const std::string& sound, const DVec3* pos, const AudioListener& listener);
 // The HUD: the list and the edge arcs. `scale`: the interface size.
 void Subtitles_Draw(float scale);
+// (#1724) Test hook: the line a caption has now (its angle, as the arrows use it); false when it is not on the list.
+bool Subtitles_DebugLine(const std::string& text, float* angleDeg, bool* directional);
 
 #endif
