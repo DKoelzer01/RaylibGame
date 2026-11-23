@@ -156,6 +156,7 @@ struct Animal {
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
+    float windUpHeading = 0.0f;  // (#1227) its heading when the wind-up began: held until the strike
     StatusState status;          // (#1215) burn, chill, bleed, poison
     PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
     BrainState brain;            // (#1223) a creature's mind (creatures.txt rows only)
@@ -1286,7 +1287,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // (#1217) Staggered: its attack is off and it stands where it is until the stagger ends; poise comes back after a rest.
         if (Combat3_On() && a.poise.max > 0.0f) {
             Poise_Step(a.poise, step);
-            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; a.state = State::Flee; continue; }
+            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; continue; } // (#1218) its state kept: it was set to Flee here and read "fleeing"
         }
         // Decide.
         float speed = 0.0f;
@@ -1497,7 +1498,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 } else a.throwWindAt = -1.0;
             }
             if (windUp) {
-                a.windUpAt = simClock;
+                a.windUpAt = simClock; a.windUpHeading = a.heading; // (#1227) it faces this way until the strike
                 if (cs) FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                 if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
                 GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
@@ -1505,7 +1506,18 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (strike) {
                 a.windUpAt = -1.0;
                 a.lastBite = simClock;
-                if (huntDist < reach + 0.4f) {
+                // (#1227) A creature's strike lands only in front of it (within 75 degrees of where it faces, GUESS): with its
+                // facing held through the wind-up, stepping round it is the counter.
+                bool inFront = true;
+                if (cs) {
+                    const Vector3 upA = Vector3Normalize(a.pos);
+                    Vector3 eA, nA; TangentFrame(upA, eA, nA);
+                    const Vector3 fwdA = Vector3Add(Vector3Scale(eA, cosf(a.heading)), Vector3Scale(nA, sinf(a.heading)));
+                    Vector3 toT = Vector3Subtract(huntAt, a.pos);
+                    toT = Vector3Subtract(toT, Vector3Scale(upA, Vector3DotProduct(toT, upA)));
+                    if (Vector3Length(toT) > 0.3f) inFront = Vector3DotProduct(Vector3Normalize(toT), fwdA) >= cosf(75.0f * DEG2RAD);
+                }
+                if (huntDist < reach + 0.4f && inFront) {
                     DamageEvent e;
                     e.amount = (cs ? cs->damage : 8.0f) * Difficulty_ThreatScale();
                     e.poise = cs && cs->poise > 0.0f ? cs->poise : e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
@@ -1605,6 +1617,19 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 const Vector3 w = Vector3Subtract(a.path.front(), a.pos);
                 a.heading = atan2f(Vector3DotProduct(w, north), Vector3DotProduct(w, east));
                 a.detourTime = 0.0f;
+            }
+        }
+        // (#1227 playtest: "perfectly tracks player, so getting a hit from behind is very hard ... when it starts winding up an
+        // attack, it should lock its looking angle") Creatures: a wound-up attack holds the facing it began with (step aside or
+        // behind it then), and hunting they turn at most kCreatureTurnRate (GUESS), not straight at the player every step.
+        if (cs) {
+            if (a.windUpAt >= 0.0) a.heading = a.windUpHeading;
+            else if (a.state == State::Hunt) {
+                constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
+                float d = a.heading - a.prevHeading;
+                d = atan2f(sinf(d), cosf(d));
+                const float maxTurn = kCreatureTurnRate * step;
+                if (fabsf(d) > maxTurn) a.heading = a.prevHeading + (d > 0.0f ? maxTurn : -maxTurn);
             }
         }
         if (Combat1_On()) speed *= Status_SpeedFactor(a.status); // (#1215) chilled 0.7, frozen 0
@@ -1921,15 +1946,49 @@ bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
     return true;
 }
 
+static Vector3 gLockPrevTo{}; static uint64_t gLockPrevNet = 0; // (#1216) the bearing last frame, and to which lock
 void Animals_LockOnView(Scene& world, float dt) {
     const int i = gLockNet ? IndexOfNet(gLockNet) : -1;
     Planetoid* here = player.nearest;
-    if (i < 0 || !here || player.flyMode) return;
+    if (i < 0 || !here || player.flyMode) { gLockPrevNet = 0; return; }
     const Vector3 to = Vector3Subtract(here->toWorld(AnimalCentre(animals[i])), world.camera.position);
+    // (#1216 playtest: "does not lock to the enemy hard enough when strafing sideways") The ease alone trails a target whose
+    // bearing keeps turning (strafing at 5 m/s, 3 m away: ~1.7 rad/s x 0.12 s = ~11 degrees behind). First the view turns
+    // with the bearing's own change since last frame, then the ease takes out what is left of the offset.
+    Vector3& prevTo = gLockPrevTo; uint64_t& prevLock = gLockPrevNet;
+    if (prevLock == gLockNet && Vector3Length(prevTo) > 1e-3f && Vector3Length(to) > 1e-3f) {
+        const Vector3 turned = Vector3RotateByQuaternion(player.forward, QuaternionFromVector3ToVector3(Vector3Normalize(prevTo), Vector3Normalize(to)));
+        if (fabsf(Vector3DotProduct(Vector3Normalize(turned), Vector3Normalize(player.up))) < 0.985f) player.forward = Vector3Normalize(turned); // the look's pitch clamp
+    }
+    prevTo = to; prevLock = gLockNet;
     player.forward = Melee_SoftTurn(player.forward, player.up, to, dt);
+    // (#1218) A sideways dodge just started (more across the view than along it): it circles the locked creature, the way
+    // the dodge was going (player.cpp follows the circle each step).
+    if (player.dodgeLeft > 0.0f && player.dodgeOrbitSign == 0.0f && !player.dodgeOrbitDone) {
+        player.dodgeOrbitDone = true;
+        const Vector3 n = Vector3Normalize(player.up);
+        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(n, Vector3DotProduct(player.forward, n))));
+        if (fabsf(Vector3DotProduct(Vector3Normalize(player.dodgeDir), flat)) < 0.5f) {
+            const DVec3 c = here->toWorldD(DVec3(AnimalCentre(animals[i])));
+            const Vector3 rel = (player.position - c).toFloat();
+            const Vector3 tangent = Vector3CrossProduct(n, Vector3Subtract(rel, Vector3Scale(n, Vector3DotProduct(rel, n))));
+            if (Vector3Length(tangent) > 1e-3f) { player.dodgeOrbit = c; player.dodgeOrbitSign = Vector3DotProduct(tangent, player.dodgeDir) >= 0.0f ? 1.0f : -1.0f; }
+        }
+    }
+    if (player.dodgeLeft <= 0.0f) player.dodgeOrbitDone = false;
 }
 
 uint64_t Animals_LockOn() { return gLockNet; }
+// (#1218) The lock-on creature's centre in the world (doubles), for a dodge that circles it; false: no lock (or it's gone).
+bool Animals_LockOnWorld(Scene& world, DVec3& out) {
+    if (!gLockNet) return false;
+    const int i = Animals_FindNet(gLockNet);
+    if (i < 0) return false;
+    Planetoid* b = BodyNamed(world, animals[i].body);
+    if (!b) return false;
+    out = b->toWorldD(DVec3(AnimalCentre(animals[i])));
+    return true;
+}
 int Animals_MeleeHits() { return gMeleeHits; }
 const MeleeState& Animals_Melee() { return gMelee; }
 bool Animals_MeleeBusy() { return Combat2_On() && gMelee.phase != MeleePhase::Idle; }
@@ -2202,7 +2261,7 @@ void Animals_DrawHUD() {
     const Species& s = species[a.species];
     const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
     DrawRectangle(x - 8, y - 6, 380, 74, Fade(BLACK, 0.55f));
-    const char* state = a.state == State::Hunt ? "hunting you" : a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
+    const char* state = Combat3_On() && a.poise.max > 0.0f && Poise_Staggered(a.poise) ? "staggered" : a.state == State::Hunt ? "hunting you" : a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
     DrawText(TextFormat("%s%s  (%s%s)", a.age < 1.0f ? "young " : "", s.name.c_str(), state, a.fed ? ", fed" : ""), x, y, 20, Color{ 240, 220, 160, 255 });
     DrawRectangle(x, y + 26, 200, 6, Fade(RAYWHITE, 0.2f));
     DrawRectangle(x, y + 26, (int)(200 * std::max(0.0f, a.health) / s.health), 6, RED);

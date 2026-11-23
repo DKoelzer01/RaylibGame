@@ -109,6 +109,7 @@ PoiseHit Poise_Hit(PoiseState& p, float poiseDamage, bool heavy, bool small, boo
         if (p.bonus) { h.damageScale = PoiseTune::kStaggerBonus; p.bonus = false; }
         return h;
     }
+    if (p.immune > 0.0f) return h;  // (#1218) just out of a stagger: not worn, so heavy hits can't chain one stagger into the next
     p.value = std::max(0.0f, p.value - std::max(0.0f, poiseDamage));
     if (p.unstaggerable || hyper) return h;
     if (p.value <= 0.0f || (small && heavy)) {
@@ -125,7 +126,8 @@ void Poise_Stagger(PoiseState& p, float seconds) {
 
 void Poise_Step(PoiseState& p, float dt) {
     if (dt <= 0.0f) return;
-    if (p.stagger > 0.0f) { p.stagger = std::max(0.0f, p.stagger - dt); if (p.stagger <= 0.0f) p.bonus = false; }
+    if (p.stagger > 0.0f) { p.stagger = std::max(0.0f, p.stagger - dt); if (p.stagger <= 0.0f) { p.bonus = false; p.immune = PoiseTune::kStaggerImmune; } }
+    else if (p.immune > 0.0f) p.immune = std::max(0.0f, p.immune - dt);
     p.sinceHit += dt;
     if (p.sinceHit >= PoiseTune::kRegenDelay && p.value < p.max) p.value = std::min(p.max, p.value + p.max * dt / PoiseTune::kRegenTime);
 }
@@ -225,6 +227,17 @@ TEST(Poise, BreaksStaggersAndTheNextHitDoesMore) {
     EXPECT_FALSE(Poise_Staggered(p));
     EXPECT_FLOAT_EQ(p.value, p.max);                                      // full again
     EXPECT_EQ(p.staggers, 1);
+}
+
+TEST(Poise, NoStunlockRightAfterAStagger) { // (#1218 playtest: heavy hits froze a Lost Miner)
+    PoiseState p; Poise_Init(p, 37.0f);           // a lost miner (80 health)
+    EXPECT_TRUE(Poise_Hit(p, 40.0f, true, false).staggered);
+    for (int i = 0; i < 61; ++i) Poise_Step(p, 1.0f / 60.0f); // the stagger's 1 s ends
+    EXPECT_FALSE(Poise_Staggered(p));
+    EXPECT_FALSE(Poise_Hit(p, 40.0f, true, false).staggered) << "just out of a stagger: not straight back into one";
+    EXPECT_FLOAT_EQ(p.value, p.max) << "and not worn";
+    for (int i = 0; i < 100; ++i) Poise_Step(p, 1.0f / 60.0f); // the immunity's 1.5 s pass
+    EXPECT_TRUE(Poise_Hit(p, 40.0f, true, false).staggered) << "after it, a heavy breaks it again";
 }
 
 TEST(Poise, ComesBackAfterARest) {

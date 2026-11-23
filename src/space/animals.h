@@ -39,6 +39,7 @@ bool Animals_MeleeBusy();
 bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back);
 void Animals_LockOnView(Scene& world, float dt);
 uint64_t Animals_LockOn();
+bool Animals_LockOnWorld(Scene& world, DVec3& out); // (#1218) the locked creature's centre (world); false without a lock
 int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place

@@ -225,10 +225,13 @@ static void SetToolSphere(const Scene& world); // (#1089) below
 void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
     PROFILE_FUNCTION();
     const Vector3 dir = Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position));
-    hasHit = !terrainTool.noAim && RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
+    // (#1573, user) A weapon in hand (knife, sword, greatsword, spear, mace: weapon_*) is for fighting only: no aim at the
+    // ground, so no dig / place / till / chop and no preview; LMB / RMB are combat's. Tools (the axe included) keep theirs.
+    const bool weaponHeld = terrainTool.heldTool.rfind("weapon_", 0) == 0;
+    hasHit = !terrainTool.noAim && !weaponHeld && RaycastTerrain(world, Ray{ world.camera.position, dir }, player.flyMode ? 150.0f : terrainTool.reach, hit) && !PartInFront(world, dir, hit);
     hasPlant = false;
     plantBody = player.nearest;
-    if (plantBody && plantBody->trees && !player.flyMode) {
+    if (plantBody && plantBody->trees && !player.flyMode && !weaponHeld) {
         const Vector3 lo = plantBody->toLocalRenderD(world.camera.position, world.renderOrigin).toFloat(), ld = plantBody->dirToLocal(dir); // (#1277)
         const float reach = std::min(terrainTool.reach, 6.0f); // arm's length for an axe
         hasPlant = plantBody->trees->raycast(lo, ld, hasHit ? std::min(reach, hit.distance) : reach, plantHit);

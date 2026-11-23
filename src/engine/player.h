@@ -98,6 +98,9 @@ struct Player {
     // (#1218) A dodge under way (Combat_Step starts it): a fixed step along dodgeDir (world, level) for dodgeLeft s.
     Vector3 dodgeDir = { 0, 0, 0 };
     float dodgeLeft = 0.0f, dodgeSpeed = 0.0f;
+    DVec3 dodgeOrbit{};             // (#1218) a sideways dodge while locked on: circles this point (world)
+    float dodgeOrbitSign = 0.0f;     //   +1 / -1 the way round (n x (here - target)), 0 a straight dodge
+    bool dodgeOrbitDone = false;     //   this dodge was looked at (animals.cpp)
     float runMultiplier = 2.0f;
     // Knockback (#165): a push relative to the ground, applied at the next physics step. On the ground it lifts
     // you off it like a jump does (grounded velocity is overwritten by walking each step); in the air it adds.
