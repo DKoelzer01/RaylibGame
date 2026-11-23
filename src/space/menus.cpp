@@ -1,4 +1,5 @@
 #include "menus.h"
+#include "framepacer.h"
 #include "playerinput.h"
 #include "magic.h" // (#1249) Magic_Enabled: the magic sight key only with magic on
 #include "playerrecord.h"
@@ -434,11 +435,11 @@ void Settings_Apply() {
     foliageEnabled = settings.foliage;
     { const float kDetail[] = { 2.0f, 2.5f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 3)]; } // #297
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
-    if (Headless()) { SetTargetFPS(kSimHz); SetFrameTarget(kSimHz); } // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
+    if (Headless()) { FramePacer_SetTarget(kSimHz); SetFrameTarget(kSimHz); } // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
     else {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
     { const int fps = settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
-      SetTargetFPS(fps); SetFrameTarget(fps, settings.vsync ? GetMonitorRefreshRate(GetCurrentMonitor()) : 0); } // (#545) the budget's target
+      FramePacer_SetTarget(fps); SetFrameTarget(fps, settings.vsync ? GetMonitorRefreshRate(GetCurrentMonitor()) : 0); } // (#545) the budget's target
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     SceneTarget_SetBrightness(settings.brightness); // (#1166)

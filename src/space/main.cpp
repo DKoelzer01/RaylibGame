@@ -49,6 +49,7 @@
 #include "audio.h"
 #include "rlImGui.h"
 #include "gputimer.h"
+#include "framepacer.h"
 #include "ship.h"
 #include "camera.h"
 #include "survival.h"
@@ -1315,7 +1316,7 @@ int main(int argc, char** argv)
     if (gHeadless) { // #311: a hidden window for the GL context the loaders still need; nothing is drawn into it
         SetConfigFlags(FLAG_WINDOW_HIDDEN);
         InitWindow(320, 180, windowTitle("headless").c_str());
-        { const int fps = bench ? std::max(0, benchFps) : kSimHz; SetTargetFPS(fps); SetFrameTarget(fps); } // a server ticks at the sim rate
+        { const int fps = bench ? std::max(0, benchFps) : kSimHz; FramePacer_SetTarget(fps); SetFrameTarget(fps); } // a server ticks at the sim rate
     } else if ((!bench && !benchWindow && playNewSeconds <= 0.0) || nativeWindow) {
         SetConfigFlags(FLAG_WINDOW_RESIZABLE); // Allow window resizing
         SetConfigFlags(FLAG_WINDOW_UNDECORATED); // Remove window decorations for a cleaner look
@@ -1323,7 +1324,7 @@ int main(int argc, char** argv)
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); SetTargetFPS(fps); SetFrameTarget(fps); }
+        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); FramePacer_SetTarget(fps); SetFrameTarget(fps); }
     } else {
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
@@ -1331,7 +1332,7 @@ int main(int argc, char** argv)
         int winW = playNewSeconds > 0.0 ? 1280 : 1920, winH = playNewSeconds > 0.0 ? 720 : 1080;
         for (int i = 1; i + 2 < argc; ++i) if (std::string(argv[i]) == "--window") { winW = std::max(320, atoi(argv[i + 1])); winH = std::max(240, atoi(argv[i + 2])); } // --window W H (#512: menus at 1280x720)
         InitWindow(winW, winH, windowTitle(playNewSeconds > 0.0 ? "play-new" : playLoadSeconds > 0.0 ? "play-load" : "bench").c_str()); // #520
-        SetTargetFPS(std::max(0, benchFps)); SetFrameTarget(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
+        FramePacer_SetTarget(std::max(0, benchFps)); SetFrameTarget(std::max(0, benchFps)); // --fps N caps it (frame-rate-dependence checks); 0 = uncapped
     }
     if (vramReport && IsWindowReady()) GpuMem_Install(); // --vram (#302): count GPU allocations per subsystem from here on
     // A long world-generation step (the erosion bake, #362) runs on a thread; meanwhile draw the loading screen with its
@@ -1353,7 +1354,7 @@ int main(int argc, char** argv)
         if (strncmp(what, "Shaping", 7) == 0) // a real bake (a cache read is quick and says "Loading", #505)
             DrawText("A new world's terrain is shaped once (about a minute); loading it later is quick.", bx, by + 26, 16, Fade(RAYWHITE, 0.6f));
         if (settings.showFps) DrawFPS(10, 10); // every screen when the setting is on (#572)
-        EndDrawing();
+        EndDrawing(); FramePacer_Wait(); // (#1583) the cap raylib held before
     };
     if (!IsWindowReady()) {
         // raylib is built for an OpenGL 4.3 core context (compute shaders, multi-draw indirect, SSBOs): without
@@ -1596,7 +1597,7 @@ int main(int argc, char** argv)
                 Slideshow_Draw(0.5f); // (#1070) the screenshots behind the join too
                 DrawText(waiting.c_str(), 40, 40, 30, RAYWHITE);
                 if (retrySeconds > 0.0) DrawText(TextFormat("%.0f s", GetTime() - t0), 40, 84, 24, Fade(RAYWHITE, 0.6f));
-                EndDrawing();
+                EndDrawing(); FramePacer_Wait();
             }
             if (gJoin.state == NetClient::State::Joined || gJoin.state == NetClient::State::Rejected || GetTime() - t0 > retrySeconds || WindowShouldClose()) break;
             WaitTime(0.5); // (the server isn't up yet)
@@ -2535,7 +2536,7 @@ int main(int argc, char** argv)
                 BeginDrawing();
                 NewWorld_Draw();
                 if (Recorder_WantsFrame(true)) { rlDrawRenderBatchActive(); Recorder_Capture(); } // the batch drawn first (the planet, the text)
-                EndDrawing();
+                EndDrawing(); FramePacer_Wait();
                 Recorder_FrameDone();
                 if (firstBuild < 0.0 && NewWorld_PreviewBuildSeconds() >= 0.0) firstBuild = NewWorld_PreviewBuildSeconds();
                 if (firstBuild >= 0.0 && !shot1 && t > 3.0) { TakeScreenshot("bench_newworld.png"); shot1 = true; }
@@ -14206,6 +14207,8 @@ int main(int argc, char** argv)
             lastFrameEnd = GetTime();
         }
         GpuTimer_Mark("swap+poll");
+        { PROFILE_SCOPE("frame cap"); FramePacer_Wait(); } // (#1583) the FPS cap's wait, apart from the swap (raylib's was inside EndDrawing)
+        GpuTimer_Mark("frame cap");
         // (#1239) the listener is the camera, in global coordinates; (#1238) audio v2: emitters, ducking, voices, gains
         Audio_SetListener(world.cameraWorld(), Vector3Normalize(Vector3Subtract(world.camera.target, world.camera.position)), world.camera.up);
         Audio_SetWorld(world); // (#1293) occlusion's view of the ground and parts
