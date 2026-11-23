@@ -342,3 +342,7 @@ wiremill         | Wiremill         | 20  | 140,110, 75 | Mechanical power: draw
 mechanism        | Mechanism        | 64  | 150,120, 80 | A small gear train: wooden cogwheels on an iron rod, pinned with screws. The heart of the press, the lathe and the steam engine.
 piston           | Piston           | 64  | 190,140, 70 | A bronze piston on iron rods with a return spring. Steam engines need two.
 valve            | Valve            | 64  | 185,135, 75 | A bronze valve with a spring: lets steam through and holds it back. Boilers and steam engines need one.
+# (#1614 PR 5) LV assemblies (by hand with Tab, or in the LV assembler), built into the LV machines
+lv_motor         | LV motor         | 64  | 120,125,135 | A small electric motor: steel rods, a copper winding, an iron frame. Anything electric that moves has one.
+lv_pump          | LV pump          | 64  | 110,130,150 | An LV motor driving a valve: the water pump and the ore washer.
+lv_heating_coil  | LV heating coil  | 64  | 200,120, 70 | A copper heating coil (nickel coils at MV). The electric furnace has two.
