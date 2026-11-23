@@ -1,0 +1,14 @@
+# The form table (#1614, machine components): how each component shape is made of a metal, by hand and by machine. One
+# line per shape and route; it applies to every materials.txt material that has the shape and the input forms. A recipe
+# written out in recipes.txt or machine_recipes.txt for the same output (and machine) wins.
+#   hand <shape>    | <n out> = <form> <n>, ...
+#   machine <shape> | <machine> | <n out> = <form> <n>, ... | ticks | EU/t
+# By hand costs about twice the metal (the user's answer to #1614 Q2); a machine gives it back. GUESS counts and times.
+hand plate      | 1 = ingot 2
+hand rod        | 1 = ingot 1
+hand wire       | 2 = ingot 1
+hand gear       | 1 = plate 4
+hand screw      | 2 = rod 1
+hand spring     | 1 = rod 1
+machine plate   | mechanical_press | 1 = ingot 1 | 100 | 0
+machine plate   | compressor       | 1 = ingot 1 | 60  | 8
