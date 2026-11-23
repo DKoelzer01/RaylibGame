@@ -797,7 +797,23 @@ static bool BehindHorizon(Vector3 cam, Vector3 lo, Vector3 hi, float ro) {
 // Octree descent from the 8 root nodes: split while the camera is closer than lodFactor * node size.
 // The camera as the LOD sees it (body-local). With a zoomed view (telescope), nodes inside the view
 // cone are refined as if they were `zoom` times closer.
+// (#1603 step 3) The nodes a selection split, per body: the next selection keeps them split until kMergeSlack farther than
+// the split distance (hysteresis), so a node at the threshold doesn't flip between levels as the camera hovers there.
+struct NodeKeyHashH {
+    size_t operator()(const NodeKey& k) const {
+        uint64_t h = (uint64_t)(uint32_t)k.x * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)k.y * 0xC2B2AE3D27D4EB4Full ^
+                     (uint64_t)(uint32_t)k.z * 0x165667B19E3779F9ull ^ (uint64_t)(uint32_t)k.level * 0x27D4EB2F165667C5ull;
+        h ^= h >> 31; h *= 0xBF58476D1CE4E5B9ull; h ^= h >> 29;
+        return (size_t)h;
+    }
+};
+using SplitSet = std::unordered_set<NodeKey, NodeKeyHashH>;
+constexpr float kMergeSlack = 1.2f; // GUESS: merge back only 20% past the split distance
+static bool LodHysteresisOn() { static const bool on = !(getenv("RAYLIBGAME_LOD_HYSTERESIS") && getenv("RAYLIBGAME_LOD_HYSTERESIS")[0] == '0'); return on; }
+
 struct LodView {
+    const SplitSet* prevSplit = nullptr; // (#1603) last selection's split nodes (hysteresis)
+    SplitSet* split = nullptr;           //   this selection's
     Vector3 cam;
     Vector3 dir = { 0, 0, 1 };  // view direction (body-local)
     float zoom = 1.0f;
@@ -839,7 +855,10 @@ static void CollectDesired(const Planetoid& p, const NodeKey& key, const LodView
         const float farBox = Vector3Length({ std::max(fabsf(lo.x), fabsf(hi.x)), std::max(fabsf(lo.y), fabsf(hi.y)), std::max(fabsf(lo.z), fabsf(hi.z)) });
         lodDist = std::max(lodDist, Vector3Length(v.cam) - std::min(p.field->maxRadius() + 24.0f, farBox));
     }
-    if (key.level > 0 && lodDist < lodSettings.lodFactor * key.size()) {
+    // (#1603) Hysteresis: split last time -> stays split until kMergeSlack x farther.
+    const float slack = v.prevSplit && v.prevSplit->count(key) ? kMergeSlack : 1.0f;
+    if (key.level > 0 && lodDist < lodSettings.lodFactor * key.size() * slack) {
+        if (v.split) v.split->insert(key);
         for (int i = 0; i < 8; ++i)
             CollectDesired(p, { key.level - 1, key.x * 2 + (i & 1), key.y * 2 + ((i >> 1) & 1), key.z * 2 + ((i >> 2) & 1) }, v, out);
         return;
@@ -1003,7 +1022,7 @@ static std::unordered_map<uint64_t, int> gLodUncovered; // (#1418) per body: des
 static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     PROFILE_FUNCTION();
     const Vector3 camLocal = p.toLocal(cameraRender);
-    LodView view{ camLocal };
+    LodView view; view.cam = camLocal;
     if (lodSettings.zoom > 1.0f) {
         view.dir = p.dirToLocal(lodSettings.zoomDir);
         // (#1579, telescope 64x at ~10 FPS) The LOD refines what's in view as if at most 16x closer (GUESS): 64x asked for far
@@ -1022,7 +1041,11 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     p.lodDirty = false;
     p.lodCamLocal = camLocal;
     std::vector<NodeKey> desired;
+    static std::unordered_map<uint64_t, SplitSet> gSplit; // (#1603) per body: the last selection's split nodes
+    SplitSet nextSplit;
+    if (LodHysteresisOn()) { view.prevSplit = &gSplit[p.id]; view.split = &nextSplit; nextSplit.reserve(gSplit[p.id].size() + 64); }
     { PROFILE_SCOPE("UpdateLod: collect"); ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, view, desired); }); }
+    if (view.split) gSplit[p.id].swap(nextSplit);
     { static size_t peak = 0; if (desired.size() > peak) { peak = desired.size(); if (getenv("RAYLIBGAME_LOD_LOG")) printf("lod: %s desired %zu (zoom %.0f)\n", p.name.c_str(), desired.size(), view.zoom); } }
     static FlatKeySet desiredSet;
     desiredSet.reset(desired.size());
@@ -1056,7 +1079,7 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     keepSet.reset(64);
     if (view.zoom > 1.0f && !gStreamOld) {
         std::vector<NodeKey> unzoomed;
-        LodView plain{ camLocal };
+        LodView plain; plain.cam = camLocal;
         ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, plain, unzoomed); });
         for (const NodeKey& k : unzoomed) if (auto it = p.nodes.find(k); it != p.nodes.end()) { keepSet.insert(k); it->second->lastWanted = now; }
     }
