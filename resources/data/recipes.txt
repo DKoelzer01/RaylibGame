@@ -30,7 +30,7 @@ basic_circuit 1   = vacuum_tube 2, copper_wire 4, steel_plate 1
 lv_hull 1         = steel_plate 6, steel_screw 4
 generator 1       = lv_hull 1, copper_wire 4, steel_plate 4
 electric_furnace 1 = lv_hull 1, lv_heating_coil 2, basic_circuit 1, cable 2
-macerator 1       = lv_hull 1, lv_motor 1, steel_gear 1, basic_circuit 2
+macerator 1       = lv_hull 1, lv_motor 1, basic_circuit 2
 battery 1         = lv_hull 1, power_cell 2
 # Milestone 8: LV ore processing, MV, HV.
 ore_washer 1      = lv_hull 1, lv_pump 1, lv_motor 1, basic_circuit 1
