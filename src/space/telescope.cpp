@@ -6,6 +6,7 @@
 #include "worldtypes.h"
 #include "audio.h"
 #include "hotbar.h"
+#include "buildtool.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,7 +28,7 @@ void Telescope_Update(Scene& world, bool inputEnabled, bool usable) {
     const bool has = inventory.count("telescope") > 0;
     if (!usable || !has) { Telescope_SetActive(world, false); return; }
     // (#534, the user) The key, or RMB with the telescope selected on the hotbar (the off hand's: its key, main.cpp).
-    const bool rmbScope = Hotbar_Selected() >= 0 && Hotbar_Slot(Hotbar_Selected()) == "telescope" && PlayerInput_BindingPressed(Act::Secondary);
+    const bool rmbScope = Hotbar_Selected() >= 0 && Hotbar_Slot(Hotbar_Selected()) == "telescope" && (PlayerInput_Frame().pressed >> (int)Act::Secondary & 1u) && !Interact_RmbConsumed(); // (#1716: an aimed chest or machine takes the click; the frame input also carries scripted presses)
     if (inputEnabled && (PlayerInput_BindingPressed(Act::Telescope) || rmbScope)) {
         Telescope_SetActive(world, !telescope.active);
         Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f);
