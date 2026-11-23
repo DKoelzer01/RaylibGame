@@ -7,7 +7,7 @@ copper     | Copper     | 205,115,65  | ore crushed purified dust ingot plate wi
 tin        | Tin        | 205,205,215 | ore crushed purified dust ingot plate
 bronze     | Bronze     | 205,140,60  | dust ingot plate gear rod screw spring
 steel      | Steel      | 120,122,132 | ingot plate rod gear screw spring
-nickel     | Nickel     | 200,200,150 | dust ingot plate
+nickel     | Nickel     | 200,200,150 | dust ingot plate rod wire
 gold       | Gold       | 240,200,60  | ore crushed purified dust ingot
 bauxite    | Bauxite    | 190,110,90  | ore crushed purified dust
 aluminium  | Aluminium  | 190,205,220 | dust ingot plate rod wire
