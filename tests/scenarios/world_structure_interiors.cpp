@@ -1,6 +1,6 @@
 // world/structure-interiors (#1637, the user: generated structures kept terrain inside their rooms): every set that stands on
 // the ground (ruins, huts, camps, towers...; not the wonders, which shape their own ground) is built forced on the side of a
-// hill raised beside it on the sandbox, so the hill reaches into its rooms. Every cell inside its walls with no part in it
+// hill raised beside it (seed 42, round the start), so the hill reaches into its rooms. Every cell inside its walls with no part in it
 // must be air (rooms, corridors, doorways); the outside may meet the hill.
 #include "scenario.h"
 #include "player.h"
