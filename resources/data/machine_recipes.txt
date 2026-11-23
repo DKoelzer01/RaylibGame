@@ -261,3 +261,10 @@ arc_furnace      | tungsten_ingot 1   | wolframite_ore 2, coke 1  | 600 | 160
 steam_assembler  | mechanism 1        | cogwheel 2, iron_rod 1, iron_screw 2 | 120 | 0
 steam_assembler  | piston 1           | bronze_plate 1, iron_rod 2, iron_spring 1 | 160 | 0
 steam_assembler  | valve 1            | bronze_plate 1, iron_spring 1, iron_screw 2 | 140 | 0
+# (#1614 PR 6) MV and HV assemblies in the assembler of their tier (an MV or HV assembler, or overclocked above). GUESS times.
+lv_assembler     | mv_motor 1         | invar_rod 2, copper_wire 8, steel_plate 1 | 200 | 48 | MV
+lv_assembler     | mv_pump 1          | mv_motor 1, valve 1, cable 2, steel_screw 2 | 240 | 48 | MV
+lv_assembler     | mv_heating_coil 1  | nickel_wire 8, steel_screw 1 | 160 | 32 | MV
+lv_assembler     | hv_motor 1         | steel_rod 2, aluminium_wire 8, aluminium_plate 1 | 240 | 128 | HV
+lv_assembler     | hv_pump 1          | hv_motor 1, valve 1, cable 2, steel_screw 2 | 280 | 128 | HV
+lv_assembler     | hv_heating_coil 1  | nickel_wire 8, aluminium_plate 1, steel_screw 1 | 200 | 96 | HV
