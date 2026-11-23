@@ -218,6 +218,16 @@ static std::string benchTelescopeTarget = "luna";
 // camera 40 m over the start, which forward doesn't move (#1337: the shot showed the ground and no target label).
 // A target below the horizon is reported as SKIP (it is behind the planet: nothing to show).
 static void AimAtTelescopeTarget(Scene& world) {
+    if (benchTelescopeTarget == "horizon") { // (#1579) distant terrain: level, 1 degree down, a fixed heading from the start
+        static Vector3 heading{}; static bool set = false;
+        const Vector3 up = Vector3Normalize(player.up);
+        if (!set) { set = true; const Vector3 f = Vector3Subtract(player.forward, Vector3Scale(up, Vector3DotProduct(player.forward, up))); heading = Vector3Length(f) > 1e-3f ? Vector3Normalize(f) : Vector3Normalize(Vector3CrossProduct(up, { 0, 0, 1 })); printf("bench: telescope on the horizon\n"); }
+        const Vector3 dir = Vector3Normalize(Vector3Subtract(heading, Vector3Scale(up, 0.0175f)));
+        player.forward = dir;
+        world.camera.target = Vector3Add(world.camera.position, Vector3Scale(dir, 100.0f));
+        world.camera.up = up;
+        return;
+    }
     for (auto& obj : world.objects) {
         auto* p = dynamic_cast<Planetoid*>(obj.get());
         if (!p || p->name != benchTelescopeTarget) continue;
