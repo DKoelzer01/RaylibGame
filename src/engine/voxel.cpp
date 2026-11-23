@@ -3713,10 +3713,12 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                 // their nearest (clay as dirt).
                 const int mi = m == VoxelMaterial::Pebbles ? (int)VoxelMaterial::Gravel                                              // river stones as gravel (#595)
                              : (m == VoxelMaterial::Clay || m == VoxelMaterial::Silt || m == VoxelMaterial::Mud || m == VoxelMaterial::Farmland) ? (int)VoxelMaterial::Regolith
+                             : m == VoxelMaterial::Ash ? (int)VoxelMaterial::Gravel : m == VoxelMaterial::Lava ? (int)VoxelMaterial::Rock    // (#1591) ash as gravel, lava crust as rock
                              : (m >= VoxelMaterial::Granite && m <= VoxelMaterial::Marble) ? (int)VoxelMaterial::Rock : (int)m; // rock strata (#587): as rock
                 if (mi < 4) out.colors[v * 4 + mi] = 255;
                 else if (mi < 6) out.texcoords[v * 2 + (mi - 4)] = 1.0f;
-                else out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
+                else if (mi < 8) out.texcoords2[v * 2 + (mi - 6)] = 1.0f;
+                else out.colors[v * 4 + (int)VoxelMaterial::Rock] = 255; // (#1591) a material not mapped above: as rock, never past the 8 channels (it overran the buffer)
             }
             out.indices.assign(idx.begin(), idx.end());
         }
