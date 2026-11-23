@@ -65,8 +65,7 @@ SCENARIO("build/ladder-stack") {
             }
             c.camera(eye, target, up); // (flying: the build tool aims from the camera)
             if (phase == 0) { phase = 1; return false; } // the camera in place a frame first
-            if (phase == 1) { // (flying never sets the player's body, #1555: the build tool aims on it)
-                player.nearest = c.body;
+            if (phase == 1) {
                 buildTool.active = true; buildTool.part = (int)PartType::Ladder; // (the game's own update, flying, turns it off each frame)
                 PlayerInput in; in.press(Act::Secondary); BuildTool_Update(c.world, in, true);
                 Vector3 no{}; Int3 o2{};
