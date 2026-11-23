@@ -100,7 +100,7 @@ bool Drive(ScenarioCtx& c, const Spec& sp) {
     const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, { 0.0f, 0.0f, 1.0f }));
     if (R.ph == Ph::Spawn) {
         gFakeHeld &= ~kRmb;
-        GameUI_CloseContainer();
+        if (GameUI_InventoryOpen()) GameUI_ToggleInventory(); GameUI_CloseContainer();
         Telescope_SetActive(c.world, false);
         survival.hasBed = false;
         survival.food = 50.0f; survival.stamina = 100.0f;
@@ -149,7 +149,7 @@ bool Drive(ScenarioCtx& c, const Spec& sp) {
             c.check(what + ": the item's RMB did not fire", !R.fired);
         }
         R.ph = Ph::Spawn; R.f = 0; ++R.idx;
-        if (R.idx > kN) { gScenarioInput = false; gFakeHeld &= ~kRmb; GameUI_CloseContainer(); Telescope_SetActive(c.world, false); return true; }
+        if (R.idx > kN) { gScenarioInput = false; gFakeHeld &= ~kRmb; if (GameUI_InventoryOpen()) GameUI_ToggleInventory(); GameUI_CloseContainer(); Telescope_SetActive(c.world, false); return true; }
     }
     return false;
 }
@@ -157,7 +157,7 @@ bool Drive(ScenarioCtx& c, const Spec& sp) {
 }
 
 SCENARIO("input/rmb-telescope") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static const Spec sp = { "telescope", "telescope", "", 4, [](ScenarioCtx&) {}, [] { return telescope.active; } };
@@ -165,7 +165,7 @@ SCENARIO("input/rmb-telescope") {
 }
 
 SCENARIO("input/rmb-bucket") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static int before = 0;
@@ -176,7 +176,7 @@ SCENARIO("input/rmb-bucket") {
 }
 
 SCENARIO("input/rmb-food") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static int eaten0 = 0;
@@ -187,7 +187,7 @@ SCENARIO("input/rmb-food") {
 }
 
 SCENARIO("input/rmb-shield") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static const Spec sp = { "shield", "", "wooden_shield", 20, [](ScenarioCtx&) {}, [] { return survival.blocking; } };
@@ -195,7 +195,7 @@ SCENARIO("input/rmb-shield") {
 }
 
 SCENARIO("input/rmb-ground") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static int before = 0;
@@ -206,7 +206,7 @@ SCENARIO("input/rmb-ground") {
 }
 
 SCENARIO("input/rmb-torch") {
-    s.tags = { "input", "rmb" };
+    s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     static int before = 0;
