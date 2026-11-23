@@ -136,5 +136,6 @@ inline bool gScenarioInput = false;
 // while set, the player's first-person view does not overwrite it each frame. Scenarios that set it clear it again.
 inline bool gScenarioCamera = false;
 std::string Scenario_BaselineDir(); // RAYLIBGAME_BASELINES, default //DEWEYSERVER/files/claude-media/raylib-baselines
+std::string Scenario_RunDir();      // (#1693) this run's folder (results.json, shots/): where saves/golden-write puts golden-v<N>/
 
 #endif
