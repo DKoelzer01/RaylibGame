@@ -53,6 +53,8 @@ void Subtitles_Load();                          // the table (once; audio.cpp ca
 void Subtitles_SetLevel(SubtitleLevel level);
 SubtitleLevel Subtitles_Level();
 // A sound heard (audio.cpp): its name, where it is (nullptr: everywhere, no direction), the listener.
+// (#1635) A caption for one sound name, ahead of subtitles.txt (a creature's telegraph sound: its own wind-up words).
+void Subtitles_SetCaption(const std::string& sound, const std::string& text, bool important);
 void Subtitles_OnSound(const std::string& sound, const DVec3* pos, const AudioListener& listener);
 // The HUD: the list and the edge arcs. `scale`: the interface size.
 void Subtitles_Draw(float scale);
