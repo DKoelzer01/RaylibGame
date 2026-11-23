@@ -11,6 +11,7 @@
 #include "creatures.h" // (#1223)
 #include "subtitles.h" // (#1635) the telegraph captions
 #include "profiler.h" // (#1649) zones in the update
+#include "jobsystem.h" // (#1650 slice 3) the probes on the pool
 #include "footsteps.h" // (#1240) step noise for creature hearing
 #include "avatar.h" // (#1225) humanoid creatures
 #include "locallights.h"
@@ -38,6 +39,11 @@
 #include <raymath.h>
 #include <rlgl.h>
 #include <algorithm>
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <chrono>
 #include <sstream>
 #include <cmath>
@@ -1009,12 +1015,20 @@ namespace ColumnCache {
         const uint64_t x = (uint64_t)(int64_t)floorf(p.x) & 0xFFFFF, y = (uint64_t)(int64_t)floorf(p.y) & 0xFFFFF, z = (uint64_t)(int64_t)floorf(p.z) & 0xFFFFF;
         return (x | (y << 20) | (z << 40) | (kind << 60)) ^ ((uint64_t)(uintptr_t)&body * 0x9E3779B97F4A7C15ull);
     }
+    std::mutex m; // (#1650 slice 3) the step's probes run on worker threads too: the map under a lock, the probe outside it
     template <class F> bool Get(const Planetoid& body, Vector3 p, uint64_t kind, F probe) {
         const double now = SimTime();
-        if (cells.size() > 200000) cells.clear();
-        auto [it, fresh] = cells.try_emplace(Key(body, p, kind), false, -1e9);
-        if (fresh || now - it->second.second > kKeep) it->second = { probe(), now };
-        return it->second.first;
+        const uint64_t key = Key(body, p, kind);
+        {
+            std::lock_guard<std::mutex> lk(m);
+            if (cells.size() > 200000) cells.clear();
+            auto it = cells.find(key);
+            if (it != cells.end() && now - it->second.second <= kKeep) return it->second.first;
+        }
+        const bool v = probe();
+        std::lock_guard<std::mutex> lk(m);
+        cells[key] = { v, now };
+        return v;
     }
 }
 static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
@@ -1023,6 +1037,73 @@ static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
         for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
         return true;
     });
+}
+
+// (#1650 slice 3) The step in three passes: the update loop decides and records each mover's step (a MoveReq); the
+// terrain probes for all of them run in parallel (each request reads only the terrain, the parts and its own record);
+// then the results are applied in the loop's order on the main thread (path plans, positions, the stuck rule). Same
+// results whatever the threads: a request never reads another's. RAYLIBGAME_AI_THREADS=0: the probes on one thread.
+struct MoveReq {
+    uint64_t net = 0;
+    const Planetoid* body = nullptr; const PlanetField* field = nullptr;
+    Vector3 east{}, north{}, curPos{}; DVec3 pos{};
+    float stepLen = 0.0f, height = 0.0f, reachUp = 0.0f, reachDown = 0.0f, speed = 0.0f, step = 0.0f, heading = 0.0f, detourSide = 0.0f, sizeX = 0.0f;
+    bool leashed = false, outside = false, steer = false;
+    Vector3 goalPt{};
+    uint32_t rng = 1;
+};
+struct MoveRes {
+    bool ok0 = false; Vector3 at0{}; DVec3 next0{};          // the step straight on
+    bool detourTried = false, detourOk = false;              // the detour (steering and blocked), as the serial code ran it
+    float detourSideInit = 0.0f, detourTurn = 0.0f, detourSide = 0.0f; uint32_t rngAfter = 1; Vector3 atD{}; DVec3 nextD{};
+};
+// One step's probe along `heading` (the old tryStep): ground within reach, room for the body, no part in the way, a leashed
+// cave creature not stepping out under the open sky.
+bool ProbeStep(const MoveReq& r, float heading, Vector3& at, DVec3& nextPos) {
+    const Vector3 fwd = Vector3Add(Vector3Scale(r.east, cosf(heading)), Vector3Scale(r.north, sinf(heading)));
+    const DVec3 target = r.pos + DVec3(fwd) * (double)r.stepLen; // the stride is added in doubles (#1698)
+    const Vector3 nd = Vector3Normalize(target.toFloat());
+    float e;
+    if (!Ground(*r.body, *r.field, nd, at, e, Vector3Length(r.curPos), r.reachUp, r.reachDown)) return false;
+    nextPos = target * (Vector3Length(at) / target.length()); // the probe gives the height; the sideways position stays double
+    return r.body->densityAt(Vector3Add(at, Vector3Scale(nd, r.height * 0.8f))) < ISO_LEVEL + kRockMargin &&
+           !BlockedAlong(*r.body, r.curPos, at, r.height) &&
+           !(r.leashed && !r.outside && OpenSkyOver(*r.body, at)); // (#1227) a cave creature doesn't step out under the sky
+}
+// The straight step, and the detour a blocked steering creature would take (its side from a copy of its random state: the
+// real one moves only if the detour is used, pass 3).
+void ProbeMove(const MoveReq& r, MoveRes& o) {
+    o.ok0 = ProbeStep(r, r.heading, o.at0, o.next0);
+    if (o.ok0 || !r.steer) return;
+    o.detourTried = true;
+    uint32_t rng = r.rng;
+    float side0 = r.detourSide;
+    if (side0 == 0.0f) side0 = Rand01(rng) < 0.5f ? 1.0f : -1.0f;
+    o.detourSideInit = side0; o.rngAfter = rng;
+    for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+        for (float side : { side0, -side0 })
+            if (!o.detourOk && ProbeStep(r, r.heading + side * turn, o.atD, o.nextD)) { o.detourOk = true; o.detourTurn = turn; o.detourSide = side; }
+}
+// Work items 0..n-1 on the main thread and up to 6 pool workers: the main thread takes items too, so it never waits on a
+// worker still busy with a chunk build, only on items already started. Late helpers find nothing left and return.
+template <class F> void AiParallelFor(int n, F f) {
+    static const bool on = !(getenv("RAYLIBGAME_AI_THREADS") && getenv("RAYLIBGAME_AI_THREADS")[0] == '0');
+    if (!on || n < 24) { for (int k = 0; k < n; ++k) f(k); return; }
+    struct Shared { std::atomic<int> next{ 0 }, done{ 0 }; int n = 0; std::function<void(int)> fn; };
+    auto sh = std::make_shared<Shared>();
+    sh->n = n; sh->fn = f;
+    constexpr int kChunk = 8;
+    auto work = [sh] {
+        for (int k; (k = sh->next.fetch_add(kChunk)) < sh->n;) {
+            const int e = std::min(k + kChunk, sh->n);
+            for (int j = k; j < e; ++j) sh->fn(j);
+            sh->done.fetch_add(e - k);
+        }
+    };
+    const int helpers = std::min(6, n / kChunk - 1);
+    for (int h = 0; h < helpers; ++h) WorldJobs().submit(-1e30f, work);
+    work();
+    while (sh->done.load() < n) std::this_thread::yield();
 }
 
 // An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
@@ -1375,6 +1456,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     }
     static const bool pathsOn = !(getenv("RAYLIBGAME_ANIMAL_PATHS") && getenv("RAYLIBGAME_ANIMAL_PATHS")[0] == '0'); // A/B
     int plansLeft = pathsOn ? 1 : 0; // route plans this update (#253)
+    std::vector<MoveReq> moveReqs; // (#1650 slice 3) the steps to probe (pass 2) and apply (pass 3) after the loop
+    moveReqs.reserve(animals.size());
     std::vector<int> gone;
     std::unordered_map<std::string, Planetoid*> bodies;
     for (size_t i = 0; i < animals.size(); ++i) {
@@ -1835,8 +1918,6 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
         const float stepLen = speed * step * (0.6f + 0.4f * a.age);
-        Vector3 at; float e;
-        DVec3 nextPos; // where the last good step puts it, in doubles
         const float height = s.size.y * (0.6f + 0.4f * a.age);
         // The ground ahead within a 40 degree climb or drop of where it stands (a steeper step is a wall or a
         // cliff), with room for its body above (no walking under overhangs into rock).
@@ -1847,24 +1928,44 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // most) and hops down 1.5 m; grazing and wandering it keeps to small steps. Taller cliffs still stop it.
         const float reachUp = steer ? std::max(reach, std::min(1.2f, height * 1.3f)) : reach;
         const float reachDown = steer ? std::max(reach, 1.5f) : reach;
-        auto tryStep = [&](float heading) {
-            const Vector3 fwd = Vector3Add(Vector3Scale(east, cosf(heading)), Vector3Scale(north, sinf(heading)));
-            const DVec3 target = a.pos + DVec3(fwd) * (double)stepLen; // the stride is added in doubles (#1698)
-            const Vector3 nd = Vector3Normalize(target.toFloat());
-            if (!Ground(*body, *field, nd, at, e, Vector3Length(curPos), reachUp, reachDown)) return false;
-            // The ground probe answers in floats: it gives the height, the sideways position stays the double one.
-            nextPos = target * (Vector3Length(at) / target.length());
-            return body->densityAt(Vector3Add(at, Vector3Scale(nd, height * 0.8f))) < ISO_LEVEL + kRockMargin &&
-                   !BlockedAlong(*body, curPos, at, height) &&
-                   !(leashed && !outside && OpenSkyOver(*body, at)); // (#1227) a cave creature doesn't step out under the sky
-        };
         // Heading somewhere (the player, the herd, away from a threat) and blocked: go round (#223: real terrain has
         // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
         // side, turning as far as backing off - before aiming at the target again, so a pocket or a long ledge
         // doesn't trap it pushing straight into the same edge.
         if (steer && a.detourTime > 0.0f) { a.detourTime -= step; a.heading = a.detourHeading; }
         else if (a.detourTime > 0.0f) a.detourTime = 0.0f;
-        bool ok = tryStep(a.heading);
+        // (#1650 slice 3) The step's probes run after this loop for every mover at once (pass 2), and what follows them in
+        // the loop's order (pass 3, below the loop).
+        MoveReq mr;
+        mr.net = a.netId; mr.body = body; mr.field = field; mr.east = east; mr.north = north; mr.curPos = curPos; mr.pos = a.pos;
+        mr.stepLen = stepLen; mr.height = height; mr.reachUp = reachUp; mr.reachDown = reachDown; mr.speed = speed; mr.step = step;
+        mr.heading = a.heading; mr.detourSide = a.detourSide; mr.sizeX = s.size.x; mr.leashed = leashed; mr.outside = outside;
+        mr.steer = steer; mr.goalPt = goalPt; mr.rng = a.rng;
+        moveReqs.push_back(mr);
+    }
+    // (#1650 slice 3) Pass 2: the probes, in parallel.
+    std::vector<MoveRes> moveRes(moveReqs.size());
+    { PROFILE_SCOPE("creatures: probes"); AiParallelFor((int)moveReqs.size(), [&](int k) { ProbeMove(moveReqs[k], moveRes[k]); }); }
+    // Pass 3: applied in the loop's order on this thread (the path search is one shared search).
+    std::unordered_map<uint64_t, int> indexOfNet;
+    if (!moveReqs.empty()) { indexOfNet.reserve(animals.size()); for (size_t k = 0; k < animals.size(); ++k) indexOfNet[animals[k].netId] = (int)k; }
+    PROFILE_SCOPE("creatures: apply");
+    for (size_t k = 0; k < moveReqs.size(); ++k) {
+        const MoveReq& mr = moveReqs[k];
+        const MoveRes& res = moveRes[k];
+        auto itI = indexOfNet.find(mr.net);
+        if (itI == indexOfNet.end()) continue;
+        const int i = itI->second;
+        Animal& a = animals[i];
+        const PlanetField* field = mr.field;
+        const Planetoid* body = mr.body;
+        const Vector3 curPos = mr.curPos, east = mr.east, north = mr.north, goalPt = mr.goalPt;
+        const bool steer = mr.steer;
+        const float step = mr.step, speed = mr.speed, stepLen = mr.stepLen, height = mr.height, reachUp = mr.reachUp, reachDown = mr.reachDown;
+        Vector3 at = res.at0;
+        DVec3 nextPos = res.next0;
+        bool headingMoved = false; // a plan turned it: the detour from pass 2 was for the old heading
+        bool ok = res.ok0;
         if (ok && a.detourTime <= 0.0f) a.detourSide = 0.0f;
         if (!ok && steer && !a.path.empty()) { a.path.clear(); a.planWait = 1.0f; } // the route's step failed (a thin wall between cells)
         // Blocked on the way somewhere: plan a route round (one plan a frame for all animals, then a 3 s wait after a
@@ -1884,25 +1985,39 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 const Vector3 w = Vector3Subtract(a.path.front(), curPos);
                 a.heading = atan2f(Vector3DotProduct(w, north), Vector3DotProduct(w, east));
                 a.detourTime = 0.0f;
-                ok = tryStep(a.heading);
+                MoveReq turned = mr; turned.heading = a.heading;
+                ok = ProbeStep(turned, a.heading, at, nextPos); // (one creature a frame at most: on this thread)
+                headingMoved = true;
             } else a.planWait = 3.0f;
         }
         if (!ok && steer) {
-            if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
-            for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
-                for (float side : { a.detourSide, -a.detourSide })
-                    if (!ok && tryStep(a.heading + side * turn)) {
-                        ok = true;
-                        a.heading += side * turn;
-                        a.detourSide = side;
-                        a.detourHeading = a.heading;
-                        a.detourTime = 1.5f;
-                    }
+            if (!headingMoved && res.detourTried) { // the detour pass 2 probed, for this heading and side
+                a.detourSide = res.detourSideInit; a.rng = res.rngAfter;
+                if (res.detourOk) {
+                    ok = true; at = res.atD; nextPos = res.nextD;
+                    a.heading += res.detourSide * res.detourTurn;
+                    a.detourSide = res.detourSide;
+                    a.detourHeading = a.heading;
+                    a.detourTime = 1.5f;
+                }
+            } else { // a plan turned it this frame: the detour from the new heading, here
+                if (a.detourSide == 0.0f) a.detourSide = Rand01(a.rng) < 0.5f ? 1.0f : -1.0f;
+                MoveReq turned = mr; turned.heading = a.heading;
+                for (float turn : { 0.5f, 1.0f, 1.6f, 2.2f, 3.1f })
+                    for (float side : { a.detourSide, -a.detourSide })
+                        if (!ok && ProbeStep(turned, a.heading + side * turn, at, nextPos)) {
+                            ok = true;
+                            a.heading += side * turn;
+                            a.detourSide = side;
+                            a.detourHeading = a.heading;
+                            a.detourTime = 1.5f;
+                        }
+            }
         }
         if (ok) {
             a.pos = nextPos;
             a.moveSpeed = speed;
-            a.gait += stepLen / std::max(0.25f, s.size.x * 0.45f) * PI; // one stride per ~0.9 body lengths
+            a.gait += stepLen / std::max(0.25f, mr.sizeX * 0.45f) * PI; // one stride per ~0.9 body lengths
             a.stuckTime = 0.0f;
         } else {
             // Blocked (water, a cliff, a wall): turn away; stuck a while, turn harder and pick a new activity.
