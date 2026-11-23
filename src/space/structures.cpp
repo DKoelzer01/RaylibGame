@@ -48,8 +48,14 @@ struct Set {
     struct Guard { std::string species; int count = 1; float radius = 6.0f; };
     std::vector<Guard> guards;     // animals set down round the site when it is built ("guard <species> <n> [radius m]")
     float dungeon = 0.0f;          // the odds of a dungeon under it (#719: "dungeon <chance>"; RAYLIBGAME_DUNGEONS=0 off)
+    // (#1641) Dungeon room templates (resources/structures/dungeon/*.st, "kind room"): the theme it belongs to ("theme crypt",
+    // "bunker" or "any") and the room's floor in cells ("room <x> <z>"); its parts are props in room cells from the floor's
+    // low corner (y 0: the floor), kept where written (not moved to a 0 corner).
+    std::string theme;
+    Int3 room{ 0, 0, 0 };
 };
 std::vector<Set> sets;
+std::vector<Set> roomSets; // (#1641) dungeon room templates
 bool loaded = false;
 
 // Sites: one per 512 m tile at most (#164). Near the start (design 2026-11-17): none within kSpawnKeepOut, and two
@@ -167,6 +173,10 @@ bool LoadSet(const std::string& path, Set& s) {
             }), s.parts.end());
         } else if (cmd == "dungeon") {
             ss >> s.dungeon;
+        } else if (cmd == "theme") { // (#1641) a dungeon room template's theme
+            ss >> s.theme;
+        } else if (cmd == "room") {  // (#1641) its floor, cells
+            ss >> s.room.x >> s.room.z;
         } else if (cmd == "guard") {
             Set::Guard g; if (ss >> g.species >> g.count) { float r; if (ss >> r) g.radius = r; s.guards.push_back(g); }
         } else if (cmd == "carve") {
@@ -179,6 +189,7 @@ bool LoadSet(const std::string& path, Set& s) {
         }
     }
     fclose(f);
+    if (s.kind == "room") return s.room.x >= 4 && s.room.z >= 4; // (#1641) a room template: its props stay where written
     if (s.parts.empty()) return false;
     // Size and lowest corner 0 (footprints, so turned parts count).
     std::vector<std::pair<Int3, CellShape>> fp;
@@ -202,6 +213,13 @@ void Ensure() {
             if (e.is_regular_file() && e.path().extension() == ".st") files.push_back(e.path().string());
     std::sort(files.begin(), files.end());
     for (const std::string& f : files) { Set s; if (LoadSet(f, s)) sets.push_back(std::move(s)); }
+    // (#1641) The dungeon room templates, apart from the sites.
+    files.clear();
+    if (fs::exists("resources/structures/dungeon", ec))
+        for (const auto& e : fs::directory_iterator("resources/structures/dungeon", ec))
+            if (e.is_regular_file() && e.path().extension() == ".st") files.push_back(e.path().string());
+    std::sort(files.begin(), files.end());
+    for (const std::string& f : files) { Set s; if (LoadSet(f, s) && s.kind == "room") roomSets.push_back(std::move(s)); }
 }
 
 // Turning a part a quarter turn about up (plot y): the origin cell turns as a vector (x, y, z) -> (z, y, -x) and the
@@ -408,7 +426,8 @@ void PlaceJobs() {
 bool DungeonsOn() { static const bool on = !(getenv("RAYLIBGAME_DUNGEONS") && atoi(getenv("RAYLIBGAME_DUNGEONS")) == 0); return on; }
 struct DungeonPlan {
     int rooms = 0, floors = 0, doors = 0, plates = 0, darts = 0, vents = 0, shapes = 0; // shapes: a bit per room shape used
-    int theme = 0, lining = 0;                       // (#1641) 0 crypt, 1 colony bunker; the lining's blocks
+    int templateParts = 0, templateRooms = 0;        // (#1641 slice 2) props placed from room templates; rooms that use one
+    int theme = 0, lining = 0;                     // (#1641) 0 crypt, 1 colony bunker; the lining's blocks
     Vector3 entrance{}; float floorY = 0.0f, deepest = 0.0f;
     std::vector<Vector3> roomCentres;               // 1 m over each room's floor
     std::vector<std::pair<int, int>> links;
@@ -431,7 +450,7 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     auto cellOf = [](float x, float y, float z) { return Int3{ (int)floorf(x / kCellSize), (int)floorf(y / kCellSize), (int)floorf(z / kCellSize) }; };
     std::vector<TerrainEdit> cuts;
     std::vector<std::pair<Part, std::string>> parts;
-    struct Room { Vector3 c; float hx, hz; int shape; int floor; uint8_t walls = 0; }; // walls: a bit per wall with a door or stairs (+x, -x, +z, -z)
+    struct Room { Vector3 c; float hx, hz; int shape; int floor; uint8_t walls = 0; int tmpl = -1; }; // tmpl: a roomSets index (#1641); walls: a bit per wall with a door or stairs (+x, -x, +z, -z)
     static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f }, { 2.5f, 4.5f }, { 4.5f, 3.5f } }; // half sizes (m)
     constexpr int kTemplateCount = 6;
     uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
@@ -485,6 +504,24 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     };
     // The ramp: from just outside the ruin (+x), 0.5 m forward and 0.35 m down a step (35 deg), 2.4 m of headroom.
     lastDungeon = DungeonPlan{};
+    // The theme (#1641): 0 crypt, 1 colony bunker; picks the room templates and the lining.
+    lastDungeon.theme = Unit(h) < 0.5f ? 0 : 1;
+    if (const char* t = getenv("RAYLIBGAME_DUNGEON_THEME")) lastDungeon.theme = atoi(t) == 1 ? 1 : 0; // (tests, pictures)
+    // A room's size from a data template of this theme (weighted by Set::weight), else one of kTemplates. One Unit(h) either way.
+    std::vector<int> themed;
+    for (int i = 0; i < (int)roomSets.size(); ++i)
+        if (roomSets[i].theme == "any" || roomSets[i].theme == (lastDungeon.theme == 0 ? "crypt" : "bunker")) themed.push_back(i);
+    auto pickSize = [&](int& tmpl) {
+        const float u = Unit(h);
+        tmpl = -1;
+        if (themed.empty()) return kTemplates[(int)(u * kTemplateCount) % kTemplateCount];
+        float total = 0.0f;
+        for (int i : themed) total += std::max(0.0f, roomSets[i].weight);
+        float at = u * total;
+        tmpl = themed.back();
+        for (int i : themed) { at -= std::max(0.0f, roomSets[i].weight); if (at < 0.0f) { tmpl = i; break; } }
+        return Vector2{ roomSets[tmpl].room.x * kCellSize * 0.5f, roomSets[tmpl].room.z * kCellSize * 0.5f };
+    };
     const float x0 = ruinHalfX + 2.0f;
     const int steps = (int)ceilf(kDepth / kStepDown);
     for (int i = 0; i <= steps; ++i) {
@@ -503,10 +540,12 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         const size_t first = rooms.size();
         // The first room at the foot of the ramp or stairs, along their direction.
         {
-            const int ti = (int)(Unit(h) * kTemplateCount) % kTemplateCount;
-            const Vector2 t = kTemplates[ti];
+            int tm = -1;
+            const Vector2 t = pickSize(tm);
             const float reach = fabsf(footDir.x) > 0.5f ? t.x : t.y;
             Room r{ Vector3Add(foot, Vector3Scale(footDir, reach)), t.x, t.y, (int)(Unit(h) * 4.0f) & 3, fl };
+            if (tm >= 0) r.shape = 0; // a template room is plain: its props are the furnishing
+            r.tmpl = tm;
             r.c.y = flr;
             if (!covered(r, flr)) break; // the ground falls away here: no (deeper) floor
             rooms.push_back(r);
@@ -514,7 +553,8 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         const int n = 2 + (int)(Unit(h) * 3.0f) % 3;
         for (int tries = 0; (int)(rooms.size() - first) < n && tries < 60; ++tries) {
             const size_t fi = first + (size_t)(Unit(h) * (rooms.size() - first)) % (rooms.size() - first);
-            const Vector2 t = kTemplates[(int)(Unit(h) * kTemplateCount) % kTemplateCount];
+            int tm = -1;
+            const Vector2 t = pickSize(tm);
             const int wall = (int)(Unit(h) * 4.0f) & 3;
             if (rooms[fi].walls & (1 << wall)) continue;
             const Room& from = rooms[fi];
@@ -523,6 +563,8 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             Vector3 c = from.c;
             if (wall < 2) { c.x += sign * (from.hx + gap + t.x); c.z += side; } else { c.z += sign * (from.hz + gap + t.y); c.x += side; }
             Room r{ c, t.x, t.y, (int)(Unit(h) * 4.0f) & 3, fl };
+            if (tm >= 0) r.shape = 0;
+            r.tmpl = tm;
             bool clear = fl > 0 || fabsf(r.c.x) > ruinHalfX + 4.0f + r.hx || fabsf(r.c.z) > ruinHalfX + 4.0f + r.hz; // not under the ruin (or its ramp's top)
             for (size_t k = first; k < rooms.size(); ++k) { const Room& o = rooms[k]; clear = clear && (fabsf(o.c.x - r.c.x) > o.hx + r.hx + 3.0f || fabsf(o.c.z - r.c.z) > o.hz + r.hz + 3.0f); }
             if (fl == 0) clear = clear && (fabsf(r.c.z) > r.hz + 2.0f || r.c.x - r.hx > foot.x + 1.0f || r.c.x + r.hx < x0 - 1.0f); // off the ramp
@@ -610,6 +652,28 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             }
         }
         lastDungeon.roomCentres.push_back({ r.c.x, rf + 1.0f, r.c.z });
+        if (r.tmpl >= 0) { // (#1641) a data template's props, from the room's low corner; none within 2 cells of a wall with a door
+            const Set& T = roomSets[r.tmpl];
+            const Int3 base = cellOf(r.c.x - r.hx, rf + 0.01f, r.c.z - r.hz);
+            std::vector<std::pair<Int3, CellShape>> fp;
+            ++lastDungeon.templateRooms;
+            for (const Part& tp : T.parts) {
+                Part p = tp;
+                p.origin = { base.x + tp.origin.x, base.y + tp.origin.y, base.z + tp.origin.z };
+                Plot::Footprint(tp, fp);
+                bool tooClose = false;
+                for (const auto& c : fp) {
+                    const int cx = c.first.x, cz = c.first.z; // (footprint cells include the part's origin: the template's frame)
+                    if ((r.walls & 1) && cx >= T.room.x - 2) tooClose = true;
+                    if ((r.walls & 2) && cx < 2) tooClose = true;
+                    if ((r.walls & 4) && cz >= T.room.z - 2) tooClose = true;
+                    if ((r.walls & 8) && cz < 2) tooClose = true;
+                }
+                if (tooClose) continue;
+                parts.push_back({ p, "" });
+                ++lastDungeon.templateParts;
+            }
+        }
         if (body.trees) body.trees->addClearing(plot.toBody({ r.c.x, rf + kRoomH, r.c.z }), std::max(r.hx, r.hz) + 2.0f); // (roots)
         // A torch in a corner (light: rooms 8 m down are black), and a chest against the far wall now and then: always in
         // a floor's last room, of rare loot in the deepest.
@@ -629,8 +693,6 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     // the stairs, a vault, an alcove) is left out, so every way through stays open; about a fifth are missing (decay), so
     // the rock shows through. Placed in the rock, a block shows its face to the room only.
     {
-        lastDungeon.theme = Unit(h) < 0.5f ? 0 : 1; // 0 crypt, 1 colony bunker
-        if (const char* t = getenv("RAYLIBGAME_DUNGEON_THEME")) lastDungeon.theme = atoi(t) == 1 ? 1 : 0; // (tests, pictures)
         const bool crypt = lastDungeon.theme == 0;
         const uint8_t wallM = crypt ? (uint8_t)stoneMat : (uint8_t)std::max(0, BuildMaterialForItem("iron_plate"));
         const uint8_t floorM = (uint8_t)std::max(0, BuildMaterialForItem(crypt ? "marble_brick" : "iron_plate"));
@@ -1228,14 +1290,18 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     int rare = 0;
     for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "dungeon_rare";
     const float depth = D.entrance.y - D.deepest;
-    const bool ok = D.floors >= 2 && D.floors <= 3 && depth > 18.0f && depth < 31.0f && D.rooms >= 4 && D.rooms <= 12 && roomsOpen == D.rooms &&
+    bool ok = D.floors >= 2 && D.floors <= 3 && depth > 18.0f && depth < 31.0f && D.rooms >= 4 && D.rooms <= 12 && roomsOpen == D.rooms &&
                     linksOpen == (int)D.corridorMids.size() && rampOpen == (int)D.rampPoints.size() && !D.stairPoints.empty() && stairsOpen == (int)D.stairPoints.size() &&
                     D.doors == 2 * (int)D.links.size() && gates == 2 * D.doors && plates == D.plates && vents == D.vents && rare == 1 &&
                     D.lining >= 20 * D.rooms && blocks >= D.lining * 0.9f; // (#1641) lined: ~20+ blocks a room, nearly all placed (overlaps drop a few)
+    bool haveTemplates = false; // (#1641 slice 2) data templates for this theme: every room uses one, with props
+    for (const Set& T : roomSets) haveTemplates = haveTemplates || T.theme == "any" || T.theme == (D.theme == 0 ? "crypt" : "bunker");
+    const bool templatesOk = !haveTemplates || (D.templateRooms == D.rooms && D.templateParts > 0);
+    ok = ok && templatesOk;
     printf("bench: dungeon: seed %u: %d floors, %.1f m down at the deepest; %d rooms (%d open, shapes 0x%x), %d corridors (%d open at the middle), ramp open %d/%d, stairs open %d/%d; "
-           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed) -> %s\n",
+           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed), templates %d rooms / %d parts -> %s\n",
            pick, D.floors, depth, D.rooms, roomsOpen, D.shapes, (int)D.corridorMids.size(), linksOpen, rampOpen, (int)D.rampPoints.size(), stairsOpen, (int)D.stairPoints.size(),
-           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, ok ? "PASS" : "FAIL");
+           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, D.templateRooms, D.templateParts, ok ? "PASS" : "FAIL");
     const Vector3 c0 = D.roomCentres[0];
     eye = plot->toBody({ c0.x - 1.5f, c0.y + 0.6f, c0.z - 1.5f });
     target = plot->toBody({ c0.x + 3.0f, c0.y - 0.6f, c0.z + 3.0f });
