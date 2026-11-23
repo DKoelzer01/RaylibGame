@@ -701,12 +701,13 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             ApplyTerrainEdit(body, cut);
         };
         const float cs = kCellSize, yb = (float)dy * cs, yt = (float)(dy + S.size.y) * cs;
-        if (mx.x - mn.x >= 2 && mx.z - mn.z >= 2)
+        static const bool interiors = !(getenv("RAYLIBGAME_STRUCTURE_INTERIORS") && getenv("RAYLIBGAME_STRUCTURE_INTERIORS")[0] == '0'); // (A/B: 0 = the pad only)
+        if (interiors && mx.x - mn.x >= 2 && mx.z - mn.z >= 2)
             box((mn.x + 1 + shift.x) * cs, (mx.x + shift.x) * cs, yb, yt, (mn.z + 1 + shift.z) * cs, (mx.z + shift.z) * cs);
         // Doorways: an empty cell at the foot of the boundary (set cells, before turning's shift) with wall on both sides of it.
         auto solid = [&](int x, int y, int z) { return solidCell.count({ x, y, z }) > 0; };
         const float out = 2.0f;
-        for (int x = mn.x; x <= mx.x; ++x)
+        for (int x = mn.x; interiors && x <= mx.x; ++x)
             for (int z = mn.z; z <= mx.z; ++z) {
                 const bool ex = x == mn.x || x == mx.x, ez = z == mn.z || z == mx.z;
                 if (ex == ez || solid(x, 0, z) || solid(x, 1, z)) continue; // an edge cell (not a corner), open at the foot
