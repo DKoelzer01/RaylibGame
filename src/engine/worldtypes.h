@@ -123,6 +123,7 @@ public:
     bool lodDirty = true;
     double lastFreeSweep = -1e9; // GetTime() of the last pass over every node for frees and cache evictions (#295)
     Vector3 lodCamLocal = { 1e30f, 1e30f, 1e30f };
+    double lodSelectedAt = -1e9;     // (#1579) when the LOD was last selected (zoomed re-selections are rate-limited)
 
     Planetoid(std::string name, DVec3 worldPos, Vector3 rotation, float scale, unsigned int seed, float radius);
     // Open-world terrain body.

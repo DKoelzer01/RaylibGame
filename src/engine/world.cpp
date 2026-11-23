@@ -804,6 +804,8 @@ struct LodView {
     float halfAngle = 0.0f;     // view cone half-angle (rad), to the screen corners
 };
 
+constexpr float kMaxLodZoom = 16.0f; // (#1579) the most a telescope's zoom refines the LOD (GUESS)
+
 static float LodDistance(const LodView& v, Vector3 lo, Vector3 hi) {
     const float d = DistanceToBox(v.cam, lo, hi);
     if (v.zoom <= 1.0f || d <= 0.0f) return d;
@@ -995,16 +997,24 @@ static int UpdateLod(Planetoid& p, Vector3 cameraRender) {
     LodView view{ camLocal };
     if (lodSettings.zoom > 1.0f) {
         view.dir = p.dirToLocal(lodSettings.zoomDir);
-        view.zoom = lodSettings.zoom;
+        // (#1579, telescope 64x at ~10 FPS) The LOD refines what's in view as if at most 16x closer (GUESS): 64x asked for far
+        // more nodes than the narrow view can show (8x already 20 k desired against 7.5 k, a selection 9 ms of CPU).
+        view.zoom = std::min(lodSettings.zoom, kMaxLodZoom);
         view.halfAngle = lodSettings.zoomHalfAngle;
     }
     // Nothing to do while the camera (in body space) stays within 1 m of the last selection and no
     // results or edits arrived: the smallest node splits at lodFactor * 32 m, so 1 m is invisible.
     if (!p.lodDirty && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f) return 0;
+    // (#1579) Zoomed, the streaming's arriving builds made it dirty every frame, and each zoomed selection costs several ms:
+    // with the camera still (under 1 m), re-select at most 10 times a second (it stays dirty meanwhile).
+    const double nowSel = GetTime();
+    if (lodSettings.zoom > 1.0f && Vector3DistanceSqr(camLocal, p.lodCamLocal) < 1.0f && nowSel - p.lodSelectedAt < 0.1) return 0;
+    p.lodSelectedAt = nowSel;
     p.lodDirty = false;
     p.lodCamLocal = camLocal;
     std::vector<NodeKey> desired;
-    ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, view, desired); });
+    { PROFILE_SCOPE("UpdateLod: collect"); ForEachRoot(p, camLocal, [&](const NodeKey& r) { CollectDesired(p, r, view, desired); }); }
+    { static size_t peak = 0; if (desired.size() > peak) { peak = desired.size(); if (getenv("RAYLIBGAME_LOD_LOG")) printf("lod: %s desired %zu (zoom %.0f)\n", p.name.c_str(), desired.size(), view.zoom); } }
     static FlatKeySet desiredSet;
     desiredSet.reset(desired.size());
     for (const NodeKey& k : desired) desiredSet.insert(k);
