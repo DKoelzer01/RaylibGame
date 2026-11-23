@@ -4,8 +4,8 @@
 // holding coal, a carved pit in the ground, the player at a known spot; saves it and copies the save (the world file, the
 // player records, the region files; not the backups or the erosion cache) into <run dir>/golden-v<kSaveVersion>/ together with
 // facts.txt (what it built, read back by golden-load). The command that produces a new one:
-//   $GAME --seed 42 --scenario saves/golden-write --scenario-out <dir>   ->  <dir>/saves_golden-write/golden-v13/
-// (the run folder is the scenario name with '/' as '_'); commit that folder as tests/saves/v13/.
+//   $GAME --seed 42 --scenario saves/golden-write --scenario-out <dir>   ->  <dir>/saves/golden-write/golden-v13/
+// (the run folder is <dir>/<scenario name>); commit that folder as tests/saves/v13/.
 //
 // golden-load loads every tests/saves/v*/ through the migration chain (a copy beside the run's save: the load never touches
 // the committed files) and checks facts.txt against the loaded world. No directory yet: it notes so and passes.

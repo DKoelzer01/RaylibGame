@@ -529,6 +529,7 @@ bool GameSave_TestSplit(Scene& world) {
     };
     bool ok5 = refused(kSaveVersion + 1, "newer build") && refused(kOldestSaveVersion - 1, "older build");
     spit(save, w);
+    fs::create_directories(PlayerRecord_Dir(), ec);
     spit(PlayerRecord_Path(me), rec);
     scramble();
     ok5 = ok5 && LoadWorldSave(world) && GameSave_PlayerLoaded() && same("put back after the refusals") && LastLoadError().empty();

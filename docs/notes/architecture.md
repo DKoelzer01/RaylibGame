@@ -93,6 +93,6 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   in savemigrate.cpp), a function over the text lines that turns format N into N+1 (rewrite lines, `ctx.drop` what no longer means
   anything); set `kSaveVersion` to N+1; reserve nothing else. Binary region files keep their own magic (RGN5; older ones skipped
   with a warning): a region change adds its step beside the world file's. Then make a golden save with the new build:
-  `$GAME --seed 42 --scenario saves/golden-write --scenario-out <dir>` and commit `<dir>/saves_golden-write/golden-vN/` as
+  `$GAME --seed 42 --scenario saves/golden-write --scenario-out <dir>` and commit `<dir>/saves/golden-write/golden-vN/` as
   `tests/saves/vN/`. `saves/golden-load` (scenario, runner or local) loads every `tests/saves/v*/` through the chain and checks the
   facts in each `facts.txt`; keep the old directories, they are the test that old saves still open.
