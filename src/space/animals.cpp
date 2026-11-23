@@ -157,6 +157,8 @@ struct Animal {
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
     float windUpHeading = 0.0f;  // (#1227) its heading when the wind-up began: held until the strike
+    Vector3 home{};              // (#1227) a cave creature's spawn floor (body-local): where it goes back to
+    bool hasHome = false;
     StatusState status;          // (#1215) burn, chill, bleed, poison
     PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
     BrainState brain;            // (#1223) a creature's mind (creatures.txt rows only)
@@ -923,12 +925,22 @@ ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
 }
 
+// (#1227) No rock within 40 m over a body-local point (2 m steps): under the open sky.
+// (#1227) The creature facing rules (wind-up holds facing, a turn rate, strikes only in front); RAYLIBGAME_CREATURE_TURN=0: off (A/B).
+static bool CreatureTurnRules() { static const bool on = !(getenv("RAYLIBGAME_CREATURE_TURN") && getenv("RAYLIBGAME_CREATURE_TURN")[0] == '0'); return on; }
+static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
+    const Vector3 up = Vector3Normalize(p);
+    for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
+    return true;
+}
+
 // An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
 uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
     Animal a;
     a.species = si;
     a.body = body.name;
     a.pos = a.prevPos = at;
+    a.home = at; a.hasHome = true; // (#1227) the leash's anchor
     a.heading = 2.0f * PI * Rand01(seed);
     a.health = species[si].health;
     a.age = 1.0f;
@@ -1509,7 +1521,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 // (#1227) A creature's strike lands only in front of it (within 75 degrees of where it faces, GUESS): with its
                 // facing held through the wind-up, stepping round it is the counter.
                 bool inFront = true;
-                if (cs) {
+                if (cs && CreatureTurnRules()) {
                     const Vector3 upA = Vector3Normalize(a.pos);
                     Vector3 eA, nA; TangentFrame(upA, eA, nA);
                     const Vector3 fwdA = Vector3Add(Vector3Scale(eA, cosf(a.heading)), Vector3Scale(nA, sinf(a.heading)));
@@ -1622,7 +1634,28 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // (#1227 playtest: "perfectly tracks player, so getting a hit from behind is very hard ... when it starts winding up an
         // attack, it should lock its looking angle") Creatures: a wound-up attack holds the facing it began with (step aside or
         // behind it then), and hunting they turn at most kCreatureTurnRate (GUESS), not straight at the player every step.
-        if (cs) {
+        // (#1227, user 2026-11-22) Cave species stay underground: they give up a chase at the cave mouth (a step out under the
+        // open sky fails, tryStep below). Only the Lost Miner may come out near a mouth at night; by day, or a cave creature
+        // caught outside, it walks back to where it spawned.
+        bool leashed = false, outside = false;
+        if (cs && cs->habitat == Habitat::Cave && a.hasHome) {
+            leashed = true;
+            if (s.id == "lost_miner" && dark && field) {
+                std::vector<PlanetField::CaveEntrance> ents;
+                field->caveEntrancesNear(Vector3SubtractValue(a.pos, 30.0f), Vector3AddValue(a.pos, 30.0f), ents);
+                if (!ents.empty()) leashed = false; // out at night near a mouth: allowed
+            }
+            outside = leashed && OpenSkyOver(*body, a.pos);
+            if (outside) { // back under rock: toward its home, at a walk, the chase dropped
+                Vector3 h = Vector3Subtract(a.home, a.pos);
+                h = Vector3Subtract(h, Vector3Scale(up, Vector3DotProduct(h, up)));
+                if (Vector3Length(h) > 0.5f) {
+                    a.heading = atan2f(Vector3DotProduct(h, north), Vector3DotProduct(h, east));
+                    a.windUpAt = -1.0; a.state = State::Walk; steer = true; speed = std::max(speed, s.walk);
+                }
+            }
+        }
+        if (cs && CreatureTurnRules()) {
             if (a.windUpAt >= 0.0) a.heading = a.windUpHeading;
             else if (a.state == State::Hunt) {
                 constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
@@ -1652,7 +1685,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
             return Ground(*body, *field, nd, at, e, Vector3Length(a.pos), reachUp, reachDown) &&
                    body->densityAt(Vector3Add(at, Vector3Scale(nd, height * 0.8f))) < ISO_LEVEL + kRockMargin &&
-                   !BlockedAlong(*body, a.pos, at, height);
+                   !BlockedAlong(*body, a.pos, at, height) &&
+                   !(leashed && !outside && OpenSkyOver(*body, at)); // (#1227) a cave creature doesn't step out under the sky
         };
         // Heading somewhere (the player, the herd, away from a threat) and blocked: go round (#223: real terrain has
         // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
