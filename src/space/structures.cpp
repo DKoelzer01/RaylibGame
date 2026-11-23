@@ -408,6 +408,7 @@ void PlaceJobs() {
 bool DungeonsOn() { static const bool on = !(getenv("RAYLIBGAME_DUNGEONS") && atoi(getenv("RAYLIBGAME_DUNGEONS")) == 0); return on; }
 struct DungeonPlan {
     int rooms = 0, floors = 0, doors = 0, plates = 0, darts = 0, vents = 0, shapes = 0; // shapes: a bit per room shape used
+    int theme = 0, lining = 0;                       // (#1641) 0 crypt, 1 colony bunker; the lining's blocks
     Vector3 entrance{}; float floorY = 0.0f, deepest = 0.0f;
     std::vector<Vector3> roomCentres;               // 1 m over each room's floor
     std::vector<std::pair<int, int>> links;
@@ -434,7 +435,9 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     static const Vector2 kTemplates[] = { { 3.0f, 3.0f }, { 5.0f, 2.5f }, { 2.5f, 2.5f }, { 4.0f, 4.0f }, { 2.5f, 4.5f }, { 4.5f, 3.5f } }; // half sizes (m)
     constexpr int kTemplateCount = 6;
     uint32_t h = Hash((uint64_t)seed * 0x9e3779b97f4a7c15ull ^ 0xd06e0ull);
+    std::vector<std::pair<Vector3, Vector3>> cutBoxes; // (#1641) every cut in plot metres (centre, half): the lining leaves them open
     auto box = [&](Vector3 c, Vector3 half) {
+        cutBoxes.push_back({ c, half });
         TerrainEdit e{};
         e.carve = true; e.box = true;
         e.center = plot.toBody(c);
@@ -618,6 +621,42 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         if (i > 0 && !deepest && Unit(h) < (r.floor == 0 ? 0.2f : 0.35f)) {
             parts.push_back({ Part{ PartType::GasVent, cellOf(r.c.x + 0.25f, rf + 0.1f, r.c.z + 0.25f), 0, 0 }, "" });
             ++lastDungeon.vents;
+        }
+    }
+    // (#1641 slice 1, the user: "just rooms carved out of the stone") A built lining, by theme: each room walled, floored and
+    // roofed with 1 m blocks just outside its cut - a crypt of the biome's stone brick, marble underfoot and plank beams over,
+    // or a colony bunker of iron plate under white plaster. A block that would stand in another cut (a doorway, a corridor,
+    // the stairs, a vault, an alcove) is left out, so every way through stays open; about a fifth are missing (decay), so
+    // the rock shows through. Placed in the rock, a block shows its face to the room only.
+    {
+        lastDungeon.theme = Unit(h) < 0.5f ? 0 : 1; // 0 crypt, 1 colony bunker
+        if (const char* t = getenv("RAYLIBGAME_DUNGEON_THEME")) lastDungeon.theme = atoi(t) == 1 ? 1 : 0; // (tests, pictures)
+        const bool crypt = lastDungeon.theme == 0;
+        const uint8_t wallM = crypt ? (uint8_t)stoneMat : (uint8_t)std::max(0, BuildMaterialForItem("iron_plate"));
+        const uint8_t floorM = (uint8_t)std::max(0, BuildMaterialForItem(crypt ? "marble_brick" : "iron_plate"));
+        const uint8_t roofM = (uint8_t)std::max(0, BuildMaterialForItem(crypt ? "oak_planks" : "white_plaster"));
+        auto inCut = [&](Vector3 p) {
+            for (const auto& [c, hf] : cutBoxes)
+                if (fabsf(p.x - c.x) < hf.x && fabsf(p.y - c.y) < hf.y && fabsf(p.z - c.z) < hf.z) return true;
+            return false;
+        };
+        auto lay = [&](float x, float y, float z, uint8_t m) { // a 1 m block whose low corner is near (x, y, z), off any cut
+            const Int3 lo = cellOf(x, y, z);
+            const Vector3 mid = { (lo.x + 1) * kCellSize, (lo.y + 1) * kCellSize, (lo.z + 1) * kCellSize };
+            bool open = false;
+            for (int k = 0; k < 8 && !open; ++k) open = inCut({ mid.x + (k & 1 ? 0.25f : -0.25f), mid.y + (k & 2 ? 0.25f : -0.25f), mid.z + (k & 4 ? 0.25f : -0.25f) });
+            if (open || Unit(h) < 0.2f) return;
+            parts.push_back({ Part{ PartType::Block, lo, 0, m }, "" });
+            ++lastDungeon.lining;
+        };
+        for (const Room& r : rooms) {
+            const float rf = r.c.y, x0 = r.c.x - r.hx, x1 = r.c.x + r.hx, z0 = r.c.z - r.hz, z1 = r.c.z + r.hz;
+            for (float x = x0; x < x1 - 0.01f; x += 1.0f)
+                for (float z = z0; z < z1 - 0.01f; z += 1.0f) { lay(x, rf - 1.0f, z, floorM); lay(x, rf + kRoomH, z, roofM); }
+            for (float y = rf; y < rf + kRoomH - 0.01f; y += 1.0f) {
+                for (float x = x0 - 1.0f; x < x1 + 0.99f; x += 1.0f) { lay(x, y, z0 - 1.0f, wallM); lay(x, y, z1, wallM); }
+                for (float z = z0; z < z1 - 0.01f; z += 1.0f) { lay(x0 - 1.0f, y, z, wallM); lay(x1, y, z, wallM); }
+            }
         }
     }
     job.edits.insert(job.edits.end(), cuts.begin(), cuts.end());
@@ -1184,18 +1223,19 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     for (const Vector3& m : D.corridorMids) linksOpen += air(m);
     for (const Vector3& p : D.rampPoints) rampOpen += air(p);
     for (const Vector3& p : D.stairPoints) stairsOpen += air(p);
-    int gates = 0, plates = 0, vents = 0;
-    for (const Part& p : plot->parts) { gates += p.type == PartType::Gate; plates += p.type == PartType::PressurePlate; vents += p.type == PartType::GasVent; }
+    int gates = 0, plates = 0, vents = 0, blocks = 0;
+    for (const Part& p : plot->parts) { gates += p.type == PartType::Gate; plates += p.type == PartType::PressurePlate; vents += p.type == PartType::GasVent; blocks += p.type == PartType::Block; }
     int rare = 0;
     for (size_t k = pending0; k < pending.size(); ++k) rare += pending[k].table == "dungeon_rare";
     const float depth = D.entrance.y - D.deepest;
     const bool ok = D.floors >= 2 && D.floors <= 3 && depth > 18.0f && depth < 31.0f && D.rooms >= 4 && D.rooms <= 12 && roomsOpen == D.rooms &&
                     linksOpen == (int)D.corridorMids.size() && rampOpen == (int)D.rampPoints.size() && !D.stairPoints.empty() && stairsOpen == (int)D.stairPoints.size() &&
-                    D.doors == 2 * (int)D.links.size() && gates == 2 * D.doors && plates == D.plates && vents == D.vents && rare == 1;
+                    D.doors == 2 * (int)D.links.size() && gates == 2 * D.doors && plates == D.plates && vents == D.vents && rare == 1 &&
+                    D.lining >= 20 * D.rooms && blocks >= D.lining * 0.9f; // (#1641) lined: ~20+ blocks a room, nearly all placed (overlaps drop a few)
     printf("bench: dungeon: seed %u: %d floors, %.1f m down at the deepest; %d rooms (%d open, shapes 0x%x), %d corridors (%d open at the middle), ramp open %d/%d, stairs open %d/%d; "
-           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest -> %s\n",
+           "%d doors (%d gates placed); %d plates (%d darts; %d placed), %d gas vents (%d placed); %d dungeon_rare chest; %s, lining %d blocks (%d placed) -> %s\n",
            pick, D.floors, depth, D.rooms, roomsOpen, D.shapes, (int)D.corridorMids.size(), linksOpen, rampOpen, (int)D.rampPoints.size(), stairsOpen, (int)D.stairPoints.size(),
-           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, ok ? "PASS" : "FAIL");
+           D.doors, gates, D.plates, D.darts, plates, D.vents, vents, rare, D.theme == 0 ? "a crypt" : "a colony bunker", D.lining, blocks, ok ? "PASS" : "FAIL");
     const Vector3 c0 = D.roomCentres[0];
     eye = plot->toBody({ c0.x - 1.5f, c0.y + 0.6f, c0.z - 1.5f });
     target = plot->toBody({ c0.x + 3.0f, c0.y - 0.6f, c0.z + 3.0f });
