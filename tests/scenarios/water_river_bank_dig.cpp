@@ -40,7 +40,7 @@ SCENARIO("water/river-bank-dig-playtest") {
 }
 
 void BuildBankDig(ScenarioDef& s) {
-    s.tags = { "water" };
+    s.tags = { "water", "local" }; // local: as water/river-trench (a river's flow needs the PC's real-time rates, #1447)
     s.world = ScenarioWorld::Planet;
     s.args = { "--day" };
     s.timeout = 240.0;
