@@ -27,7 +27,19 @@ struct BState {
 BState B;
 }
 
-SCENARIO("water/river-bank-dig") {
+void BuildBankDig(ScenarioDef& s);
+
+SCENARIO("water/river-bank-dig") { BuildBankDig(s); }
+
+// The playtest's spot (2026-11-23, #1520: world_32, a swamp river's sandy bank): the dig flooded there before the fix (1.1 m^3
+// in the hole: cells under where the bank stood over the water became river sources). Its own world: the first run bakes it.
+SCENARIO("water/river-bank-dig-playtest") {
+    s.seed = 2233234013u;
+    s.env = { { "RAYLIBGAME_BANKDIG_AT", "38.699 94.870" } };
+    BuildBankDig(s);
+}
+
+void BuildBankDig(ScenarioDef& s) {
     s.tags = { "water" };
     s.world = ScenarioWorld::Planet;
     s.args = { "--day" };
