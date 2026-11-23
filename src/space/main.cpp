@@ -11254,13 +11254,31 @@ int main(int argc, char** argv)
             ++dungeonFrame;
             if (dungeonFrame == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
             if (dungeonFrame == 60) Structures_TestDungeon(world, *p, p->toLocalOf(player.position, world.renderOrigin), eye, target);
-            if (dungeonFrame >= 61 && dungeonFrame < 200) {
+            if (dungeonFrame >= 61) {
                 player.flyMode = true;
                 world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(target);
                 world.camera.up = p->dirToWorld(Vector3Normalize(eye));
                 player.position = world.renderOrigin + world.camera.position;
             }
-            if (dungeonFrame == 200) { TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false; }
+            // (#1641) No sky from inside a room: with --crack-check (no skybox, a magenta clear) every magenta pixel is somewhere
+            // nothing is drawn. Counted at frame 200 (the old picture's moment, chunks maybe still remeshing after the build's
+            // carves) and once the world is idle with every foundation carve applied (the picture); the second must be none.
+            auto skyShown = [&]() {
+                Image shot = LoadImageFromScreen();
+                Color* px = LoadImageColors(shot);
+                long sky = 0;
+                const long holes = CrackHoles(px, shot.width, shot.height, 2, &sky);
+                UnloadImageColors(px); UnloadImage(shot);
+                return holes + sky;
+            };
+            if (dungeonFrame == 200 && crackCheck) printf("bench: dungeon: at frame 200, %ld magenta samples (nothing drawn) in the view\n", skyShown());
+            if (dungeonFrame >= 200 && ((WorldIdle() && BuildTool_PendingFoundations() == 0 && dungeonFrame >= 260) || dungeonFrame >= 1500)) {
+                if (crackCheck) {
+                    const long n = skyShown();
+                    printf("bench: dungeon: no sky from inside the room: %ld magenta samples once settled (frame %d) -> %s\n", n, dungeonFrame, n == 0 ? "PASS" : "FAIL");
+                }
+                TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false;
+            }
         }
         // --test-dungeon-traps (#719): a falling block, darts and gas in a trench at the start (dungeontraps.cpp).
         if (benchDungeonTraps && gameState == 1 && !loading && (dungeonTrapFrame > 0 || WorldIdle())) {
