@@ -48,8 +48,17 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
     const Vector3 p = Vector3Scale(up, f.radius + e);
     const float w = f.climate.fractal(2, p.x, p.y, p.z);
     if (lat > 0.9f && e < 0.0f) return kIce;                                     // frozen polar sea
-    if (lat > 0.93f + 0.03f * w || e > 1350.0f + 100.0f * w) return kIce;
-    if (lat > 0.82f + 0.08f * w || e > 1050.0f + 150.0f * w) return kSnow;
+    // (#1591) A volcano, as materialAt draws it close up (the far planet and the map must agree): its heat lifts the snow
+    // line toward the vent; ash round the vent, a glowing crust on the crater floor, basalt flanks under the snow line
+    const float vw = f.volcanoWeight(p);
+    const float heat = 3000.0f * std::clamp((vw - 0.4f) / 0.4f, 0.0f, 1.0f);
+    if (lat < 0.93f + 0.03f * w && vw > 0.5f) {
+        if (vw > 0.94f && slope < 0.2f) return { 0.45f, 0.12f, 0.04f }; // lava crust
+        if (vw > 0.78f) return { 0.17f, 0.16f, 0.155f };                 // ash
+        if (e < 1050.0f + 150.0f * w + heat) return { 0.24f, 0.24f, 0.26f }; // basalt
+    }
+    if (lat > 0.93f + 0.03f * w || e > 1350.0f + 100.0f * w + heat) return kIce;
+    if (lat > 0.82f + 0.08f * w || e > 1050.0f + 150.0f * w + heat) return kSnow;
     if (slope > 0.45f) return kStone;
     if (e < 6.0f + 4.0f * w) return kSand;
     // Biomes (Plan 5 B), with the terrain shader's climate tints (lighting.fs biomeTint).

@@ -409,7 +409,10 @@ void main()
                 float seam = 1.0 - smoothstep(0.02, 0.09, abs(n1 - 0.5)) + 0.6 * (1.0 - smoothstep(0.01, 0.05, abs(n2 - 0.5)));
                 float pulse = 0.75 + 0.25 * sin(time * 0.9 + 6.2832 * periodicNoise(fragTexPos, 0.15));
                 c *= 0.35;
-                emissive += vec3(1.0, 0.33, 0.07) * (2.5 * clamp(seam, 0.0, 1.0) + 0.15) * pulse * wi;
+                // Far off the seams alias into glitter: fade to their mean, an even dull glow (50-300 m)
+                float lavaNear = 1.0 - smoothstep(50.0, 300.0, length(viewPos - fragPosition));
+                float glow = mix(0.55, 2.5 * clamp(seam, 0.0, 1.0) + 0.15, lavaNear);
+                emissive += vec3(1.0, 0.33, 0.07) * glow * pulse * wi;
             }
             a += c * wi;
             vec2 ra = vec2(roughOf[i], 1.0);
