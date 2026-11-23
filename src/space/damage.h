@@ -81,12 +81,14 @@ constexpr float kRegenDelay = 2.0f, kRegenTime = 3.0f;          // s unhit befor
 constexpr float kSmallSize = 0.7f;                              // m: a creature this size or smaller staggers on any heavy
 constexpr float kPlayerStaggerTime = 0.6f, kPlayerStaggerSlow = 0.3f; // a player's stagger: walk speed x0.3
 constexpr float kAttackPoisePerDamage = 2.5f;                   // a creature's attack: poise damage per point of damage (8 -> 20, a strong bite)
+constexpr float kStaggerImmune = 1.5f;                          // (#1218, GUESS) s after a stagger in which hits don't wear poise: no stunlock
 }
 
 struct PoiseState {
     float value = 0.0f, max = 0.0f;  // max 0: not set up yet
     float stagger = 0.0f;            // s of stagger left
     float sinceHit = 1e9f;           // s since the last hit (regen waits kRegenDelay)
+    float immune = 0.0f;             // (#1218) s left after a stagger in which hits don't wear it (heavy hits chained a Lost Miner frozen)
     bool bonus = false;              // the next hit while staggered does x1.5
     bool unstaggerable = false;      // (bosses' phases, later)
     int staggers = 0;                // times broken (counters, tests)

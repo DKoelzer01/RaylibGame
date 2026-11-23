@@ -1,6 +1,6 @@
 // combat/parry-dodge (#1218, combat step 4): parry timing, a dodge through an attack, and the winded state.
 //   parry:  the wooden (round) shield raised (RMB through the real input path) a few steps before a hit from in front: stopped
-//           whole, for no stamina. Held past the 150 ms window: an ordinary block (a quarter of the hit lands).
+//           whole, for no stamina. Held past the 330 ms window (#1218: was 150): an ordinary block (a quarter of the hit lands).
 //   dodge:  a double-tap of D: a 0.45 s step of ~3 m to the right for 20 stamina; a hit inside its first 0.2 s passes through.
 //   winded: run out of stamina: winded 1.5 s (walk x0.7), and a double-tap does not dodge.
 #include "scenario.h"

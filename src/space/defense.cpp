@@ -9,9 +9,11 @@ bool Combat4_On() {
 }
 
 // The combat doc's shields (section 3, guesses).
-static const ShieldSpec kBuckler = { "buckler", 0.55f, 45.0f, 0.22f, 1.0f };
-static const ShieldSpec kRound = { "round shield", 0.75f, 60.0f, 0.15f, 1.0f };
-static const ShieldSpec kTower = { "tower shield", 0.95f, 75.0f, 0.10f, 0.7f };
+// (#1218 playtest 2026-11-22: "could not parry") Parry windows doubled, GUESS: raising on the wind-up's telegraph (0.4-0.6 s, plus
+// ~0.25 s to react) landed ~0.25 s before the strike, outside 0.15 s: an ordinary block every time. Was 0.22 / 0.15 / 0.10.
+static const ShieldSpec kBuckler = { "buckler", 0.55f, 45.0f, 0.45f, 1.0f };
+static const ShieldSpec kRound = { "round shield", 0.75f, 60.0f, 0.33f, 1.0f };
+static const ShieldSpec kTower = { "tower shield", 0.95f, 75.0f, 0.22f, 0.7f };
 
 const ShieldSpec* Shield_Of(const std::string& id) {
     if (id.find("buckler") != std::string::npos) return &kBuckler;
@@ -39,16 +41,16 @@ TEST(Defense, Shields) {
     EXPECT_EQ(Shield_Of("heat_shield_tile"), nullptr);
     ASSERT_NE(Shield_Of("wooden_shield"), nullptr);
     EXPECT_FLOAT_EQ(Shield_Of("wooden_shield")->stops, 0.75f);  // today's
-    EXPECT_FLOAT_EQ(Shield_Of("iron_buckler")->parryWindow, 0.22f);
+    EXPECT_FLOAT_EQ(Shield_Of("iron_buckler")->parryWindow, 0.45f);
     EXPECT_FLOAT_EQ(Shield_Of("steel_tower_shield")->raisedWalk, 0.7f);
 }
 
 TEST(Defense, ParryWindow) {
     const ShieldSpec& round = *Shield_Of("wooden_shield");
     EXPECT_TRUE(Parry_InWindow(10.0, 10.1, round));
-    EXPECT_TRUE(Parry_InWindow(10.0, 10.15, round));
-    EXPECT_FALSE(Parry_InWindow(10.0, 10.2, round));             // too early a raise: an ordinary block
-    EXPECT_TRUE(Parry_InWindow(10.0, 10.2, *Shield_Of("buckler"))); // a buckler's window is wider
+    EXPECT_TRUE(Parry_InWindow(10.0, 10.3, round));              // (#1218: a reaction to the telegraph)
+    EXPECT_FALSE(Parry_InWindow(10.0, 10.4, round));             // too early a raise: an ordinary block
+    EXPECT_TRUE(Parry_InWindow(10.0, 10.4, *Shield_Of("buckler"))); // a buckler's window is wider
     EXPECT_FALSE(Parry_InWindow(10.0, 9.9, round));              // raised after the hit
 }
 

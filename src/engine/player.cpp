@@ -450,6 +450,14 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         Vector3 walk = Vector3Scale(along, walkSpeed * statusSpeed * (inWater ? 0.55f : 1.0f)); // wading is slow; (#1215) chill
         walk = Vector3Add(walk, Vector3Scale(Vector3Subtract(riverCurrent, Vector3Scale(n, Vector3DotProduct(riverCurrent, n))), 0.4f)); // wading in a river: pushed downstream (#361)
         if (dodgeLeft > 0.0f) { // (#1218) a dodge: a fixed step along the ground, whatever the keys
+            // (#1218 playtest: "should follow a curve around the targeted enemy if dodging sideways while locked") A sideways dodge
+            // with a lock-on circles the target: each step goes along the circle through here around it, the same way round.
+            if (dodgeOrbitSign != 0.0f) {
+                const Vector3 rel = (position - dodgeOrbit).toFloat(); // a short difference: fine in float
+                const Vector3 relFlat = Vector3Subtract(rel, Vector3Scale(n, Vector3DotProduct(rel, n)));
+                const Vector3 tangent = Vector3CrossProduct(n, relFlat);
+                if (Vector3Length(relFlat) > 0.5f && Vector3Length(tangent) > 1e-4f) dodgeDir = Vector3Scale(Vector3Normalize(tangent), dodgeOrbitSign);
+            }
             const Vector3 dd = Vector3Subtract(dodgeDir, Vector3Scale(n, Vector3DotProduct(dodgeDir, n)));
             const float dl = Vector3Length(dd);
             if (dl > 1e-4f) walk = Vector3Scale(dd, dodgeSpeed / dl);
@@ -537,7 +545,7 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
         }
     }
     pendingPush = { 0, 0, 0 };
-    if (dodgeLeft > 0.0f) dodgeLeft = std::max(0.0f, dodgeLeft - dt); // (#1218)
+    if (dodgeLeft > 0.0f) { dodgeLeft = std::max(0.0f, dodgeLeft - dt); if (dodgeLeft <= 0.0f) dodgeOrbitSign = 0.0f; } // (#1218)
     // On the ground (surface-relative velocity) the felt gravity; in the air the world's (a rock's
     // orbit is then followed by the frame carry): the world's planet pull on the ground of a ring rock
     // shoved the player off it.

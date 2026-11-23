@@ -156,6 +156,9 @@ struct Animal {
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
+    float windUpHeading = 0.0f;  // (#1227) its heading when the wind-up began: held until the strike
+    Vector3 home{};              // (#1227) a cave creature's spawn floor (body-local): where it goes back to
+    bool hasHome = false;
     StatusState status;          // (#1215) burn, chill, bleed, poison
     PoiseState poise;            // (#1217) worn down by hits; broken, it staggers (set up on its first hit)
     BrainState brain;            // (#1223) a creature's mind (creatures.txt rows only)
@@ -923,12 +926,23 @@ ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
 }
 
+// (#1227) No rock within 40 m over a body-local point (2 m steps): under the open sky.
+// (#1227) The creature facing rules (wind-up holds facing, a turn rate, strikes only in front); RAYLIBGAME_CREATURE_TURN=0: off (A/B).
+static int CreatureTurnMask() { static const int m = getenv("RAYLIBGAME_CREATURE_TURN") ? atoi(getenv("RAYLIBGAME_CREATURE_TURN")) : 7; return m; } // bits: 1 the wind-up hold, 2 the turn rate, 4 strikes in front only
+static bool CreatureTurnRules() { return CreatureTurnMask() != 0; }
+static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
+    const Vector3 up = Vector3Normalize(p);
+    for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
+    return true;
+}
+
 // An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
 uint64_t SpawnAt(Planetoid& body, int si, Vector3 at, uint32_t seed) {
     Animal a;
     a.species = si;
     a.body = body.name;
     a.pos = a.prevPos = at;
+    a.home = at; a.hasHome = true; // (#1227) the leash's anchor
     a.heading = 2.0f * PI * Rand01(seed);
     a.health = species[si].health;
     a.age = 1.0f;
@@ -1294,7 +1308,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // (#1217) Staggered: its attack is off and it stands where it is until the stagger ends; poise comes back after a rest.
         if (Combat3_On() && a.poise.max > 0.0f) {
             Poise_Step(a.poise, step);
-            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; a.state = State::Flee; continue; }
+            if (Poise_Staggered(a.poise)) { a.windUpAt = -1.0; a.moveSpeed = 0.0f; continue; } // (#1218) its state kept: it was set to Flee here and read "fleeing"
         }
         // Decide.
         float speed = 0.0f;
@@ -1517,7 +1531,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 } else a.throwWindAt = -1.0;
             }
             if (windUp) {
-                a.windUpAt = simClock;
+                a.windUpAt = simClock; a.windUpHeading = a.heading; // (#1227) it faces this way until the strike
                 if (cs) FxEvent(a, *cs, CreatureEvent::Telegraph, body->id, a.pos);
                 if (atPlayer && tg->session == 0) { Audio_Play(Sfx::Error, 0.5f, 0.35f);
                 GameUI_Toast(TextFormat("The %s %s!", s.name.c_str(), s.night ? "lunges" : "lowers its head")); } // (a remote player sees the wind-up in the animal's flags)
@@ -1525,7 +1539,18 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             if (strike) {
                 a.windUpAt = -1.0;
                 a.lastBite = simClock;
-                if (huntDist < reach + 0.4f) {
+                // (#1227) A creature's strike lands only in front of it (within 75 degrees of where it faces, GUESS): with its
+                // facing held through the wind-up, stepping round it is the counter.
+                bool inFront = true;
+                if (cs && (CreatureTurnMask() & 4)) {
+                    const Vector3 upA = Vector3Normalize(a.pos);
+                    Vector3 eA, nA; TangentFrame(upA, eA, nA);
+                    const Vector3 fwdA = Vector3Add(Vector3Scale(eA, cosf(a.heading)), Vector3Scale(nA, sinf(a.heading)));
+                    Vector3 toT = Vector3Subtract(huntAt, a.pos);
+                    toT = Vector3Subtract(toT, Vector3Scale(upA, Vector3DotProduct(toT, upA)));
+                    if (Vector3Length(toT) > 0.3f) inFront = Vector3DotProduct(Vector3Normalize(toT), fwdA) >= cosf(75.0f * DEG2RAD);
+                }
+                if (huntDist < reach + 0.4f && inFront) {
                     DamageEvent e;
                     e.amount = (cs ? cs->damage : 8.0f) * Difficulty_ThreatScale();
                     e.poise = cs && cs->poise > 0.0f ? cs->poise : e.amount * PoiseTune::kAttackPoisePerDamage; // (#1217) a strong bite or ram: 20
@@ -1627,6 +1652,40 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 a.detourTime = 0.0f;
             }
         }
+        // (#1227 playtest: "perfectly tracks player, so getting a hit from behind is very hard ... when it starts winding up an
+        // attack, it should lock its looking angle") Creatures: a wound-up attack holds the facing it began with (step aside or
+        // behind it then), and hunting they turn at most kCreatureTurnRate (GUESS), not straight at the player every step.
+        // (#1227, user 2026-11-22) Cave species stay underground: they give up a chase at the cave mouth (a step out under the
+        // open sky fails, tryStep below). Only the Lost Miner may come out near a mouth at night; by day, or a cave creature
+        // caught outside, it walks back to where it spawned.
+        bool leashed = false, outside = false;
+        if (cs && cs->habitat == Habitat::Cave && a.hasHome) {
+            leashed = true;
+            if (s.id == "lost_miner" && dark && field) {
+                std::vector<PlanetField::CaveEntrance> ents;
+                field->caveEntrancesNear(Vector3SubtractValue(a.pos, 30.0f), Vector3AddValue(a.pos, 30.0f), ents);
+                if (!ents.empty()) leashed = false; // out at night near a mouth: allowed
+            }
+            outside = leashed && OpenSkyOver(*body, a.pos);
+            if (outside) { // back under rock: toward its home, at a walk, the chase dropped
+                Vector3 h = Vector3Subtract(a.home, a.pos);
+                h = Vector3Subtract(h, Vector3Scale(up, Vector3DotProduct(h, up)));
+                if (Vector3Length(h) > 0.5f) {
+                    a.heading = atan2f(Vector3DotProduct(h, north), Vector3DotProduct(h, east));
+                    a.windUpAt = -1.0; a.state = State::Walk; steer = true; speed = std::max(speed, s.walk);
+                }
+            }
+        }
+        if (cs && CreatureTurnRules()) {
+            if ((CreatureTurnMask() & 1) && a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
+            else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f) { // (close in, where getting behind it matters; beyond, it paths and turns freely: a thief at a distance missed its pile)
+                constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
+                float d = a.heading - a.prevHeading;
+                d = atan2f(sinf(d), cosf(d));
+                const float maxTurn = kCreatureTurnRate * step;
+                if (fabsf(d) > maxTurn) a.heading = a.prevHeading + (d > 0.0f ? maxTurn : -maxTurn);
+            }
+        }
         if (Combat1_On()) speed *= Status_SpeedFactor(a.status); // (#1215) chilled 0.7, frozen 0
         if (speed <= 0.0f) { a.moveSpeed = 0.0f; continue; }
         // Move along the surface; turn away from water, cliffs and build parts.
@@ -1647,7 +1706,8 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const Vector3 nd = Vector3Normalize(Vector3Add(a.pos, Vector3Scale(fwd, stepLen)));
             return Ground(*body, *field, nd, at, e, Vector3Length(a.pos), reachUp, reachDown) &&
                    body->densityAt(Vector3Add(at, Vector3Scale(nd, height * 0.8f))) < ISO_LEVEL + kRockMargin &&
-                   !BlockedAlong(*body, a.pos, at, height);
+                   !BlockedAlong(*body, a.pos, at, height) &&
+                   !(leashed && !outside && OpenSkyOver(*body, at)); // (#1227) a cave creature doesn't step out under the sky
         };
         // Heading somewhere (the player, the herd, away from a threat) and blocked: go round (#223: real terrain has
         // ledges, pits and basins the height map hid). The detour is held for a while - following the obstacle on one
@@ -1941,15 +2001,49 @@ bool Animals_MeleePose(int& phase, float& f, float& charge, bool& back) {
     return true;
 }
 
+static Vector3 gLockPrevTo{}; static uint64_t gLockPrevNet = 0; // (#1216) the bearing last frame, and to which lock
 void Animals_LockOnView(Scene& world, float dt) {
     const int i = gLockNet ? IndexOfNet(gLockNet) : -1;
     Planetoid* here = player.nearest;
-    if (i < 0 || !here || player.flyMode) return;
+    if (i < 0 || !here || player.flyMode) { gLockPrevNet = 0; return; }
     const Vector3 to = Vector3Subtract(here->toWorld(AnimalCentre(animals[i])), world.camera.position);
+    // (#1216 playtest: "does not lock to the enemy hard enough when strafing sideways") The ease alone trails a target whose
+    // bearing keeps turning (strafing at 5 m/s, 3 m away: ~1.7 rad/s x 0.12 s = ~11 degrees behind). First the view turns
+    // with the bearing's own change since last frame, then the ease takes out what is left of the offset.
+    Vector3& prevTo = gLockPrevTo; uint64_t& prevLock = gLockPrevNet;
+    if (prevLock == gLockNet && Vector3Length(prevTo) > 1e-3f && Vector3Length(to) > 1e-3f) {
+        const Vector3 turned = Vector3RotateByQuaternion(player.forward, QuaternionFromVector3ToVector3(Vector3Normalize(prevTo), Vector3Normalize(to)));
+        if (fabsf(Vector3DotProduct(Vector3Normalize(turned), Vector3Normalize(player.up))) < 0.985f) player.forward = Vector3Normalize(turned); // the look's pitch clamp
+    }
+    prevTo = to; prevLock = gLockNet;
     player.forward = Melee_SoftTurn(player.forward, player.up, to, dt);
+    // (#1218) A sideways dodge just started (more across the view than along it): it circles the locked creature, the way
+    // the dodge was going (player.cpp follows the circle each step).
+    if (player.dodgeLeft > 0.0f && player.dodgeOrbitSign == 0.0f && !player.dodgeOrbitDone) {
+        player.dodgeOrbitDone = true;
+        const Vector3 n = Vector3Normalize(player.up);
+        const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(n, Vector3DotProduct(player.forward, n))));
+        if (fabsf(Vector3DotProduct(Vector3Normalize(player.dodgeDir), flat)) < 0.5f) {
+            const DVec3 c = here->toWorldD(DVec3(AnimalCentre(animals[i])));
+            const Vector3 rel = (player.position - c).toFloat();
+            const Vector3 tangent = Vector3CrossProduct(n, Vector3Subtract(rel, Vector3Scale(n, Vector3DotProduct(rel, n))));
+            if (Vector3Length(tangent) > 1e-3f) { player.dodgeOrbit = c; player.dodgeOrbitSign = Vector3DotProduct(tangent, player.dodgeDir) >= 0.0f ? 1.0f : -1.0f; }
+        }
+    }
+    if (player.dodgeLeft <= 0.0f) player.dodgeOrbitDone = false;
 }
 
 uint64_t Animals_LockOn() { return gLockNet; }
+// (#1218) The lock-on creature's centre in the world (doubles), for a dodge that circles it; false: no lock (or it's gone).
+bool Animals_LockOnWorld(Scene& world, DVec3& out) {
+    if (!gLockNet) return false;
+    const int i = Animals_FindNet(gLockNet);
+    if (i < 0) return false;
+    Planetoid* b = BodyNamed(world, animals[i].body);
+    if (!b) return false;
+    out = b->toWorldD(DVec3(AnimalCentre(animals[i])));
+    return true;
+}
 int Animals_MeleeHits() { return gMeleeHits; }
 const MeleeState& Animals_Melee() { return gMelee; }
 bool Animals_MeleeBusy() { return Combat2_On() && gMelee.phase != MeleePhase::Idle; }
@@ -2222,7 +2316,7 @@ void Animals_DrawHUD() {
     const Species& s = species[a.species];
     const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
     DrawRectangle(x - 8, y - 6, 380, 74, Fade(BLACK, 0.55f));
-    const char* state = a.state == State::Hunt ? "hunting you" : a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
+    const char* state = Combat3_On() && a.poise.max > 0.0f && Poise_Staggered(a.poise) ? "staggered" : a.state == State::Hunt ? "hunting you" : a.state == State::Flee ? "fleeing" : a.state == State::Follow ? "follows you" : a.state == State::Rest ? "resting" : a.state == State::Walk ? "wandering" : "grazing";
     DrawText(TextFormat("%s%s  (%s%s)", a.age < 1.0f ? "young " : "", s.name.c_str(), state, a.fed ? ", fed" : ""), x, y, 20, Color{ 240, 220, 160, 255 });
     DrawRectangle(x, y + 26, 200, 6, Fade(RAYWHITE, 0.2f));
     DrawRectangle(x, y + 26, (int)(200 * std::max(0.0f, a.health) / s.health), 6, RED);
