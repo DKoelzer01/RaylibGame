@@ -9,6 +9,7 @@
 #include <rlgl.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 
 bool foliageEnabled = true;
@@ -218,9 +219,37 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
     // Instances arrive grouped by variant (ScatterGrass); count each group from the scale's tens.
     const int n = (int)(inst.size() / kGrassFloats);
     for (int i = 0; i < n; ++i) ++g.count[std::clamp((int)(inst[(size_t)i * kGrassFloats + 3] / 10.0f), 0, kGrassVariants - 1)];
+    // (#1603: grass was 147-345 MB of VRAM) Packed 32 -> 16 bytes an instance: position and scale (+10 x variant) as half
+    // floats (8 B: ~4 mm at 8 m, the variant still reads from the tens); the up direction and the hash as signed bytes (4 B:
+    // hash x 2 - 1, grass.vs undoes it); the climate (the up vector's length in the float form: 2 + temperature step +
+    // moisture) as unsigned bytes (4 B: step + 1, 0 = none; moisture). ScatterGrass's float form is unchanged.
+    auto half = [](float f) -> uint16_t {
+        uint32_t x; memcpy(&x, &f, 4);
+        const uint32_t sign = (x >> 16) & 0x8000u; int e = (int)((x >> 23) & 0xFF) - 127 + 15; uint32_t m = x & 0x7FFFFFu;
+        if (e <= 0) return (uint16_t)sign;                                   // tiny: zero
+        if (e >= 31) return (uint16_t)(sign | 0x7BFFu);                      // huge: the largest finite
+        uint32_t hv = sign | ((uint32_t)e << 10) | (m >> 13);
+        if (m & 0x1000u) ++hv;                                               // round half up
+        return (uint16_t)hv;
+    };
+    auto sbyte = [](float f) { return (int8_t)std::clamp((int)lroundf(f * 127.0f), -127, 127); };
+    std::vector<uint8_t> packed((size_t)n * kGrassPackedBytes);
+    for (int i = 0; i < n; ++i) {
+        const float* s = &inst[(size_t)i * kGrassFloats];
+        uint8_t* d = &packed[(size_t)i * kGrassPackedBytes];
+        const uint16_t h4[4] = { half(s[0]), half(s[1]), half(s[2]), half(s[3]) };
+        memcpy(d, h4, 8);
+        const float len = sqrtf(s[4] * s[4] + s[5] * s[5] + s[6] * s[6]);
+        const float inv = len > 1e-6f ? 1.0f / len : 0.0f;
+        const int8_t u4[4] = { sbyte(s[4] * inv), sbyte(s[5] * inv), sbyte(s[6] * inv), sbyte(s[7] * 2.0f - 1.0f) };
+        memcpy(d + 8, u4, 4);
+        uint8_t c4[4] = { 0, 0, 0, 0 };
+        if (len > 1.5f) { c4[0] = (uint8_t)std::clamp((int)floorf(len) - 2 + 1, 1, 255); c4[1] = (uint8_t)std::clamp((int)lroundf((len - floorf(len)) * 255.0f), 0, 255); }
+        memcpy(d + 12, c4, 4);
+    }
     GpuMemTag gm133_("grass"); // VRAM accounting (#302)
-    g.vbo = rlLoadVertexBuffer(inst.data(), (int)(inst.size() * sizeof(float)), false);
-    const int stride = kGrassFloats * (int)sizeof(float);
+    g.vbo = rlLoadVertexBuffer(packed.data(), (int)packed.size(), false);
+    const int stride = kGrassPackedBytes;
     int first = 0;
     for (int v = 0; v < kGrassVariants; ++v) {
         if (!g.count[v]) continue;
@@ -231,12 +260,16 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
         rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0);
         rlEnableVertexAttribute(0);
         rlEnableVertexBuffer(g.vbo);
-        rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, first * stride);                       // position + scale
+        constexpr int kHalfFloat = 0x140B, kByte = 0x1400, kUByte = 0x1401; // GL_HALF_FLOAT, GL_BYTE, GL_UNSIGNED_BYTE
+        rlSetVertexAttribute(10, 4, kHalfFloat, false, stride, first * stride);      // position + scale (#1603: half floats)
         rlEnableVertexAttribute(10);
         rlSetVertexAttributeDivisor(10, 1);
-        rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, first * stride + 4 * (int)sizeof(float)); // up + hash
+        rlSetVertexAttribute(11, 4, kByte, true, stride, first * stride + 8);         // up + hash (signed bytes)
         rlEnableVertexAttribute(11);
         rlSetVertexAttributeDivisor(11, 1);
+        rlSetVertexAttribute(12, 4, kUByte, true, stride, first * stride + 12);       // climate: step + 1, moisture
+        rlEnableVertexAttribute(12);
+        rlSetVertexAttributeDivisor(12, 1);
         rlDisableVertexArray();
         first += g.count[v];
     }

@@ -22,6 +22,7 @@ struct ChunkMeshData;
 // Each tuft instance is 8 floats: position (chunk-local, mesh frame), scale (m) + 10 * variant, body-local up
 // (xyz) and a hash in [0, 1) for rotation, lean and colour variation.
 constexpr int kGrassFloats = 8;
+constexpr int kGrassPackedBytes = 16; // (#1603) the GPU form: half-float position + scale, byte up + hash, byte climate (foliage.cpp)
 constexpr float kGrassPerSquareMetre = 7.0f;
 constexpr int kGrassVariants = 3;            // sparse tuft, clump, dense clump (foliage.cpp)
 inline float kGrassDrawDistance = 100.0f;    // fully faded out by here (m); --grass-dist
