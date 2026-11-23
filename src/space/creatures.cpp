@@ -204,6 +204,10 @@ bool Creatures_ParseLine(const std::string& line, CreatureSpec& c, std::string* 
                 if (p.empty() || (colon != std::string::npos && !ToFloat(p.substr(colon + 1), n))) { ok = false; break; }
                 c.loot.push_back({ p.substr(0, colon), (int)n });
             }
+        } else if (k == "say_windup" || k == "say_hit") { // (#1635) '_' for spaces
+            std::string t = v;
+            std::replace(t.begin(), t.end(), '_', ' ');
+            (k == "say_windup" ? c.sayWindup : c.sayHit) = t;
         } else if (k.rfind("sound_", 0) == 0) {
             static const char* kNames[5] = { "idle", "alert", "telegraph", "hurt", "death" };
             ok = false;
@@ -433,6 +437,13 @@ BrainOut Step(BrainState& s, const CreatureSpec& c, double now, std::vector<Perc
     BrainInput in; in.now = now; in.others = std::move(others); in.hurt = hurt; in.hurtBy = 7; in.health01 = health;
     return Brain_Step(s, c, in, 1.0f / 60.0f);
 }
+}
+
+TEST(Creatures, SayLines) { // (#1635)
+    CreatureSpec c; std::string err;
+    ASSERT_TRUE(Creatures_ParseLine("miner | undead | say_windup=raises_its_pick say_hit=swings_its_pick_into_you", c, &err)) << err;
+    EXPECT_EQ(c.sayWindup, "raises its pick");
+    EXPECT_EQ(c.sayHit, "swings its pick into you");
 }
 
 TEST(Creatures, ParseAndRejects) {

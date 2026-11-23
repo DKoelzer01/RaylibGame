@@ -9,6 +9,7 @@
 #include "itemdata.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
+#include "conduitnet.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -331,7 +332,9 @@ struct Machine {
     MachineStatus status = MachineStatus::Idle;
     int powerNet = -1, itemNet = -1;
     int received = 0;                       // EU this tick (consumers)
-    int rotAcc = 0;                         // (#1269) rotation machines: permille of a tick of progress carried over
+    std::vector<int> powerNodes;            // (#1620 C2b) its nodes in the plot's power conduit graph (where cables touch it), BuildNets
+    long long reach = -1, canSend = -1;     // (#1620 C2b) this step: what the cables can bring a consumer / take from a generator or dynamo; -1 = no cap
+    int rotAcc = 0;                        // (#1269) rotation machines: permille of a tick of progress carried over
     int boiler = -1;                        // (#1271 L3) a steam engine: the boiler it draws steam from (one touching it), else -1
     int bellows = -1;                       // (#1271 L2) a bloomery or blast furnace: the bellows touching it (blowing while its shaft turns), else -1
     int strike = 0;                         // (#1271 L2) a manual machine (the anvil): ticks of work a player's strikes have put in, not yet used
@@ -354,6 +357,7 @@ struct Net {
     std::vector<int> machines; int credit = 0, rr = 0, voltage = kTierLV;
     bool asleep = false; // (#1214) its last pass moved nothing and none of its machines changed since
     long long supply = 0, demand = 0; int ticks = 1; // the last step's EU made and wanted, over its ticks (cable tooltips, #570)
+    long long carried = 0;                           // (#1620 C2b) of that demand, what the cables could carry ("carries X of Y")
 };
 
 // (#1199) Production statistics: a count kept in Factorio's windows, rolled once a second of factory time: the last minute by
@@ -383,6 +387,7 @@ struct PlotSim {
     std::unordered_map<int, int> byPart;
     std::vector<Net> itemNets, powerNets;
     std::unordered_map<Int3, int> cableNet; // cable cell -> its power network (#570)
+    ConduitGraph powerGraph;                // (#1620 C2b) the cables as 1x1 copper runs (capacity per cable path), empty without the copper material
     PlotStats stats;                        // (#1199)
     RotationPlot rot;                       // (#1269) its shaft networks (per plot: ticks on any worker)
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
@@ -812,6 +817,55 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     };
     flood(L.conveyors, ps.itemNets, false);
     flood(L.cables, ps.powerNets, true);
+    // (#1620 C2b) The cables as a conduit graph: each cable cell is a centred 1x1 copper run (the design's conversion), so a
+    // network's cables carry at most 32 EU/t a path. Runs join neighbouring cells; a machine's port is the face slot of a
+    // cable cell touching it (only for the network the machine joined). Without the copper material: no graph, no capping.
+    ps.powerGraph = ConduitGraph();
+    for (Machine& m : ps.machines) m.powerNodes.clear();
+    if (Conduit_Materials().find("copper")) {
+        std::vector<Int3> cs = L.cables;
+        std::sort(cs.begin(), cs.end(), [](const Int3& a, const Int3& b) { return a.x != b.x ? a.x < b.x : a.y != b.y ? a.y < b.y : a.z < b.z; });
+        cs.erase(std::unique(cs.begin(), cs.end(), [](const Int3& a, const Int3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; }), cs.end());
+        std::unordered_set<Int3> cableCells(cs.begin(), cs.end());
+        auto centre = [](const Int3& c) { return CInt3{ c.x * 8 + 4, c.y * 8 + 4, c.z * 8 + 4 }; };
+        std::vector<ConduitRun> runs;
+        auto addRun = [&](CInt3 a, CInt3 b) {
+            ConduitRun r; r.id = (int)runs.size() + 1; r.kind = ConduitKind::Cable; r.material = "copper"; r.size = 1; r.points = { a, b };
+            runs.push_back(std::move(r));
+        };
+        for (const Int3& c : cs) {
+            if (cableCells.count({ c.x + 1, c.y, c.z })) addRun(centre(c), centre({ c.x + 1, c.y, c.z }));
+            if (cableCells.count({ c.x, c.y + 1, c.z })) addRun(centre(c), centre({ c.x, c.y + 1, c.z }));
+            if (cableCells.count({ c.x, c.y, c.z + 1 })) addRun(centre(c), centre({ c.x, c.y, c.z + 1 }));
+        }
+        std::vector<ConduitPortHit> hits;
+        const Int3 dirs[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+        for (const Int3& c : cs) {
+            const auto cn = ps.cableNet.find(c);
+            if (cn == ps.cableNet.end()) continue;
+            for (const Int3& d : dirs) {
+                const auto mt = machineAt.find({ c.x + d.x, c.y + d.y, c.z + d.z });
+                if (mt == machineAt.end() || ps.machines[mt->second].powerNet != cn->second) continue;
+                const CInt3 cc = centre(c);
+                const CInt3 f = { cc.x + d.x * 4, cc.y + d.y * 4, cc.z + d.z * 4 };
+                addRun(cc, f);
+                hits.push_back({ f, mt->second, 0 });
+            }
+        }
+        ps.powerGraph = Conduit_BuildGraph(runs, Conduit_Materials(), hits);
+        for (size_t i = 0; i < hits.size(); ++i) {
+            const int n = ps.powerGraph.portNode[i];
+            if (n < 0) continue;
+            std::vector<int>& pn = ps.machines[hits[i].owner].powerNodes;
+            if (std::find(pn.begin(), pn.end(), n) == pn.end()) pn.push_back(n);
+        }
+        // A machine touching the cables at several places passes power inside itself.
+        for (const Machine& m : ps.machines)
+            for (size_t k = 1; k < m.powerNodes.size(); ++k) {
+                ConduitEdge e; e.a = m.powerNodes[0]; e.b = m.powerNodes[k]; e.runId = 0; e.capacity = 1LL << 40; e.length = 0;
+                ps.powerGraph.edges.push_back(e);
+            }
+    }
     // A network runs at the highest voltage of its generators and batteries (lower machines refuse it).
     for (Net& net : ps.powerNets) {
         net.voltage = 0;
@@ -1133,7 +1187,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            m.received = 0;
+            m.received = 0; m.reach = -1; m.canSend = -1;
             if (def.power == Power::Battery) {
                 batteryAvail += std::min(m.energy, kBatteryRate * dt);
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
@@ -1145,43 +1199,107 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 if (ps.rot.NetHasLoad(m.part)) demand += (long long)Rotation::kMotorEuPerTick * dt;
             }
         }
+        // (#1620 C2b) What the cables can carry: sources (generators, dynamos, batteries) to sinks (the consumers that want
+        // power), a max-flow over the plot's cable graph. A sink's reach and a source's canSend cap them below; batteries'
+        // charging is not capped (only what they give out counts as a source).
+        long long capped = demand;
+        if (!ps.powerGraph.nodes.empty()) {
+            std::vector<ConduitFlowNode> sources, sinks;
+            std::vector<int> srcMachine, sinkMachine;
+            for (int mi : net.machines) {
+                Machine& m = ps.machines[mi];
+                if (m.powerNodes.empty()) continue;
+                const MachineDef& def = Def(m.type);
+                const int node = m.powerNodes[0];
+                if (def.power == Power::Generator) { // (out of fuel, nothing banked: it can't send, so it mustn't take the cable's path)
+                    const bool empty = m.energy <= 0 && m.fuel.count <= 0 && m.fuelEU <= 0;
+                    sources.push_back({ node, empty ? 0LL : (long long)def.euOut * dt }); srcMachine.push_back(mi);
+                }
+                else if (def.power == Power::Dynamo) {
+                    const long long can = (long long)Rotation::kDynamoEuPerTick * dt * std::min(1000, ps.rot.ProgressPermille(m.part)) / 1000;
+                    sources.push_back({ node, can }); srcMachine.push_back(mi);
+                } else if (def.power == Power::Battery) sources.push_back({ node, (long long)std::min(m.energy, kBatteryRate * dt) }), srcMachine.push_back(-1);
+                else if (def.power == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) { sinks.push_back({ node, (long long)JobEu(m) * dt }); sinkMachine.push_back(mi); }
+                else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { sinks.push_back({ node, (long long)Rotation::kMotorEuPerTick * dt }); sinkMachine.push_back(mi); }
+            }
+            std::vector<int64_t> srcFlow;
+            std::vector<int64_t> reach = Conduit_MaxFlow(ps.powerGraph, sources, sinks, dt, &srcFlow);
+            long long want = 0, got = 0;
+            for (size_t i = 0; i < sinks.size(); ++i) { want += sinks[i].amount; got += reach[i]; }
+            if (got < want) {
+                // A max-flow fills sinks in whatever order its paths come: some machines would run full, others get nothing.
+                // The rule is that a shortfall slows everyone evenly: the largest equal share of every sink's need (in 1/1024)
+                // the cables can deliver in full, found by halving (10 solves, only on a shortfall).
+                std::vector<ConduitFlowNode> scaled = sinks;
+                std::vector<int64_t> bestFlow(sources.size(), 0);
+                std::vector<int64_t> bestReach(sinks.size(), 0);
+                int lo = 0, hi = 1024;
+                while (lo < hi) {
+                    const int mid = (lo + hi + 1) / 2;
+                    long long ask = 0, gave = 0;
+                    for (size_t i = 0; i < sinks.size(); ++i) { scaled[i].amount = sinks[i].amount * mid / 1024; ask += scaled[i].amount; }
+                    std::vector<int64_t> f;
+                    const std::vector<int64_t> r = Conduit_MaxFlow(ps.powerGraph, sources, scaled, dt, &f);
+                    for (int64_t v : r) gave += v;
+                    if (gave >= ask) { lo = mid; bestFlow = f; bestReach = r; } else hi = mid - 1;
+                }
+                reach = bestReach;
+                srcFlow = bestFlow;
+            }
+            capped = 0;
+            for (size_t i = 0; i < sinks.size(); ++i) { ps.machines[sinkMachine[i]].reach = reach[i]; capped += reach[i]; }
+            for (size_t i = 0; i < sources.size(); ++i) if (srcMachine[i] >= 0) ps.machines[srcMachine[i]].canSend = srcFlow[i];
+            // (sinks without a cable node stay uncapped: add what they want back)
+            for (int mi : net.machines) {
+                const Machine& m = ps.machines[mi];
+                if (!m.powerNodes.empty()) continue;
+                const MachineDef& def = Def(m.type);
+                if (def.power == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) capped += (long long)JobEu(m) * dt;
+                else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) capped += (long long)Rotation::kMotorEuPerTick * dt;
+            }
+        }
         // Generators burn for the consumers and the batteries' room, in a fixed order (#229: not whatever the load).
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
             if (def.power == Power::Dynamo) { // (#1271 L3) EU from its shaft's speed (full at its rated speed), as much as is wanted
                 const long long can = (long long)Rotation::kDynamoEuPerTick * dt * std::min(1000, ps.rot.ProgressPermille(m.part)) / 1000;
-                const long long eu = std::min(can, std::max(0LL, demand + batteryRoom - supply));
+                long long eu = std::min(can, std::max(0LL, capped + batteryRoom - supply));
+                if (m.canSend >= 0) eu = std::min(eu, m.canSend);
                 supply += eu;
                 if (eu > 0) ps.stats.euMade[(int)m.type].add(eu);
                 m.status = eu > 0 ? MachineStatus::Working : can > 0 ? MachineStatus::NoLoad : MachineStatus::NoPower;
                 continue;
             }
             if (def.power != Power::Generator) continue;
-            const long long eu = GeneratorStep(m, def, dt, std::max(0LL, demand + batteryRoom - supply));
+            long long need = std::max(0LL, capped + batteryRoom - supply);
+            if (m.canSend >= 0) need = std::min(need, m.canSend); // (#1620 C2b) it burns only for what its cables carry away
+            const long long eu = GeneratorStep(m, def, dt, need);
             supply += eu;
             if (eu > 0) ps.stats.euMade[(int)m.type].add(eu); // (#1199)
             m.euWindow += eu; if (ps.mode == PlotSim::Mode::Near) m.nearEuCur += eu; // (#1261)
         }
         ps.stats.euDemand.add(demand);
         // Share: generation first, then the batteries; a shortfall slows every consumer equally.
-        const long long fromBatteries = std::max(0LL, std::min(batteryAvail, demand - supply));
+        const long long fromBatteries = std::max(0LL, std::min(batteryAvail, capped - supply));
         const long long avail = supply + fromBatteries;
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
             if (def.power == Power::Eu && JobEu(m) >= 0 && VoltsOf(m) >= net.voltage) {
                 const long long need = (long long)JobEu(m) * dt;
-                m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
+                const long long cap = m.reach >= 0 ? std::min(need, m.reach) : need; // (#1620 C2b) what its cables bring it
+                m.received = (int)(capped <= avail ? cap : cap * avail / std::max(1LL, capped));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
             } else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { // (#1271 L3) its share
                 const long long need = (long long)Rotation::kMotorEuPerTick * dt;
-                m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
+                const long long cap = m.reach >= 0 ? std::min(need, m.reach) : need;
+                m.received = (int)(capped <= avail ? cap : cap * avail / std::max(1LL, capped));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received);
             }
         }
-        net.supply = supply + fromBatteries; net.demand = demand; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
-        long long surplus = supply - std::min(supply, demand);
+        net.supply = supply + fromBatteries; net.demand = demand; net.carried = capped; net.ticks = std::max(1, dt); // for the cable tooltip (#570)
+        long long surplus = supply - std::min(supply, capped);
         long long drain = fromBatteries;
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
@@ -2562,7 +2680,7 @@ void Factory::LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines) 
         if (!(ss >> tag >> plot >> part)) continue;
         std::vector<std::string> rest;
         std::string w;
-        while (ss >> w) rest.push_back(w);
+        while (ss >> w) { if (const char* now = RetiredItem(w); *now) w = now; rest.push_back(w); } // #1090: item ids only match it
         pendingStates[{ bodyId, plot, part }] = rest;
     }
 }
@@ -3087,6 +3205,48 @@ TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallTh
     EXPECT_GE(made * 100, full * 5 / 8 * 85) << "about 5/8 of the full rate (at least 85% of it): made " << made << " of " << full;
     EXPECT_LE(made, full * 32 / 48) << "and no more than the share allows";
     plots.clear(); plotIndexDirty = true;
+}
+
+// (#1620 C2b) Cables carry what their copper allows (32 EU/t a path). Two LV generators (64 EU/t) and eight macerators wanting
+// 64 EU/t in all: a straight line of cable carries 32 of it.
+namespace {
+struct CableRun { long long used = 0, made = 0; };
+CableRun RunCableLine(uint32_t plotId, const std::vector<Int3>& cables, int ticks) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    std::vector<OraclePart> parts = { { PartType::Generator, 1, 0 }, { PartType::Generator, 4, 0 } };
+    for (int k = 0; k < 8; ++k) parts.push_back({ PartType::Macerator, 7 + 3 * k, 0 });
+    ApplyLayout(OracleLayout(plotId, parts, {}, cables));
+    PlotSim& ps = *FindPlot(9, plotId);
+    int b = 0;
+    for (int k = 0; k < 2; ++k) InsertInto(ps.machines[ps.byPart.at(k)], tables.item("coal"), 64, true, b);
+    for (int k = 2; k < 10; ++k) InsertInto(ps.machines[ps.byPart.at(k)], tables.item("iron_ore"), 64, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < ticks; ++t) TickPlot(ps, 1, made, active);
+    CableRun r;
+    for (const auto& kv : ps.stats.euUsed) r.used += kv.second.total + kv.second.acc;
+    for (const auto& kv : ps.stats.euMade) r.made += kv.second.total + kv.second.acc;
+    plots.clear(); plotIndexDirty = true;
+    return r;
+}
+} // namespace
+
+TEST(Factory, ACableCarriesItsCapacity) {
+    constexpr int kT = 10 * kTicksPerSecond;
+    const CableRun r = RunCableLine(5, Row(0, 31, -1), kT);
+    EXPECT_LE(r.used, 32LL * kT + 64) << "one cable carries 32 EU/t, not the 64 the generators could make: used " << r.used;
+    EXPECT_GE(r.used, 32LL * kT * 9 / 10) << "and it does carry that: used " << r.used;
+    EXPECT_LE(r.made, 32LL * kT + 64) << "the generators burn only for what is carried: made " << r.made;
+}
+
+TEST(Factory, ParallelCablesCarryMore) {
+    constexpr int kT = 10 * kTicksPerSecond;
+    std::vector<Int3> cables = Row(-1, 31, -1);
+    for (const Int3& c : Row(-1, 31, 2)) cables.push_back(c);
+    for (int z = 0; z <= 1; ++z) { cables.push_back({ -1, 0, z }); cables.push_back({ 31, 0, z }); }
+    const CableRun r = RunCableLine(6, cables, kT);
+    EXPECT_GT(r.used, 32LL * kT * 3 / 2) << "two lines carry about 64 EU/t: used " << r.used;
+    EXPECT_LE(r.used, 64LL * kT + 64) << "but never more than the generators make: used " << r.used;
 }
 
 // (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the

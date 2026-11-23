@@ -338,7 +338,7 @@ namespace {
             changed |= Slider({ x, y, w, h }, Audio_V2() ? "Master volume" : "Volume", settings.volume, 0.0f, 1.0f, "%.2f"); next();
             if (Audio_V2()) // (#1238) the buses; the old engine has only the master volume
                 for (int b = 1; b < (int)AudioBus::Count; ++b) { changed |= Slider({ x, y, w, h }, AudioBus_Name((AudioBus)b), settings.busVolume[b], 0.0f, 1.0f, "%.2f"); next(); }
-            if (Audio_V2()) { // (#1244) captions for sounds, with their direction
+            { // (#1244) captions for sounds, with their direction; (#1635) with either audio engine (creature wind-ups and hits always)
                 static const char* const kSub[] = { "Off", "Important", "All" };
                 changed |= Choice({ x, y, w, h }, "Subtitles", kSub, 3, settings.subtitles); next();
             }

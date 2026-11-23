@@ -34,6 +34,18 @@ try {
                 [Console]::Error.WriteLine("machine-guard: running the game/tests needs the machine slot (one session at a time, #1477).`n$st`nAsk with: tools/slot.sh request <minutes> [quiet] <what>   (run it in the background; it returns when the machine is yours), then tools/slot.sh free when done.")
                 exit 2
             }
+            # One run at a time even inside the holding session: its subagents share its worktree and so count as the
+            # holder, and two runs at once spoil timing and captures (user, 2026-11-23). A run that needs two processes
+            # (a host and a client) opts out with SLOT_PARALLEL=1 in the command.
+            if ($cmd -notmatch 'SLOT_PARALLEL=1') {
+                $busy = Get-Process -Name 'game', 'game_tests' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Path -and $_.Path -notmatch '(?i)\\RaylibGame\\game\.exe$' } # the user's root game.exe aside
+                if ($busy) {
+                    $list = ($busy | ForEach-Object { "$($_.Id) $($_.Path)" }) -join "`n  "
+                    [Console]::Error.WriteLine("machine-guard: a game/test run is already going (one run at a time, subagents included):`n  $list`nWait for it to finish (or stop your own stale one). A run that needs a host and a client together: put SLOT_PARALLEL=1 in the command.")
+                    exit 2
+                }
+            }
         } elseif ($builds) {
             $q = (& $bash $slot quiet-other 2>$null) -join ''
             if ($LASTEXITCODE -eq 0) {

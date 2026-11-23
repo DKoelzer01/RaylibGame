@@ -1,0 +1,4 @@
+# (#1620) Conduit materials. cable <id> | item <item id> | units <slots per item at 1x1> | volts <EU/t per amp>
+#                            pipe  <id> | item <item id> | units <n> | flow <L/t at 1x1> | maxtemp <C>
+cable copper   | item cable | units 8 | volts 32
+pipe  iron     | item pipe  | units 8 | flow 40 | maxtemp 250

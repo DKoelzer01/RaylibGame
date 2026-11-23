@@ -3,10 +3,8 @@ iron_plate 1      = iron_ingot 2
 water 1           = ice 2
 oxygen_canister 1 = water 2, iron_plate 1
 power_cell 1      = iron_plate 2, regolith 4
-concrete 2        = regolith 3, water 1, any_stone 2
 telescope 1       = glass 2, iron_plate 2
 rope 1            = fibre 3
-concrete 2        = any_stone 2, sand 1
 # --- Tier ladder (quest book): hand crafting ---
 crucible_mold 1   = clay 4
 campfire 1        = any_stone 8, any_planks 4
@@ -27,15 +25,15 @@ coke_oven 1       = any_stone 24, clay 8
 blast_furnace 1   = bronze_plate 8, any_stone 16, clay 8
 vacuum_tube 1     = glass 1, copper_wire 2, steel_plate 1
 basic_circuit 1   = vacuum_tube 2, copper_wire 4, steel_plate 1
-lv_hull 1         = steel_plate 8
+lv_hull 1         = steel_plate 6, steel_screw 4
 generator 1       = lv_hull 1, copper_wire 4, steel_plate 4
-electric_furnace 1 = lv_hull 1, basic_circuit 2, copper_wire 4
-macerator 1       = lv_hull 1, basic_circuit 2, steel_plate 2
+electric_furnace 1 = lv_hull 1, lv_heating_coil 2, basic_circuit 1, cable 2
+macerator 1       = lv_hull 1, lv_motor 1, basic_circuit 2
 battery 1         = lv_hull 1, power_cell 2
 # Milestone 8: LV ore processing, MV, HV.
-ore_washer 1      = lv_hull 1, basic_circuit 1, steel_plate 4
-centrifuge 1      = lv_hull 1, basic_circuit 2, copper_wire 8
-water_pump 1      = lv_hull 1, basic_circuit 1, iron_plate 4
+ore_washer 1      = lv_hull 1, lv_pump 1, lv_motor 1, basic_circuit 1
+centrifuge 1      = lv_hull 1, lv_motor 2, basic_circuit 2
+water_pump 1      = lv_hull 1, lv_pump 1, basic_circuit 1
 hand_pump 1       = any_planks 4, bronze_plate 2
 mv_hull 1         = steel_plate 4, steel_screw 4, copper_wire 4
 mv_generator 1    = mv_hull 1, basic_circuit 2, steel_plate 6
@@ -203,7 +201,7 @@ windmill 1         = any_planks 12, rope 8, shaft 1
 # --- (#1271 L3) Steam on rotation, and the bridge to LV ---
 steam_engine 1     = iron_plate 4, piston 2, valve 1, mechanism 1
 dynamo 1           = iron_plate 4, copper_wire 8, shaft 1
-electric_motor 1   = iron_plate 4, copper_wire 8, shaft 1, basic_circuit 1
+electric_motor 1   = lv_motor 1, shaft 1, iron_plate 2, basic_circuit 1
 # (#1271 L6) the first lab, on a shaft: the tier 2 milestone hands over its recipe (once gating is on)
 steam_lab 1        = iron_plate 4, glass 2, cogwheel 2, any_planks 8
 # --- (#211, #1271 L2) Metallurgy: the bloomery, the anvil, moulds and bronze tools ---
@@ -216,10 +214,10 @@ tool_axe 1         = bronze_axe_head 1, any_planks 2
 # (#1271 L6b-2) the steam assembler (unlocked by its research node)
 steam_assembler 1  = iron_plate 4, mechanism 1, cogwheel 2, any_planks 8
 # (#1271 L6c) the LV assembler (with tier 4)
-lv_assembler 1     = lv_hull 1, basic_circuit 2, copper_wire 8, steel_plate 2
+lv_assembler 1     = lv_hull 1, lv_motor 1, basic_circuit 2, copper_wire 4
 # (#1427 L7e) the LV successors of the press and the saw
-compressor 1       = lv_hull 1, basic_circuit 2, steel_plate 4
-cutter 1           = lv_hull 1, basic_circuit 2, steel_plate 2, iron_plate 2
+compressor 1       = lv_hull 1, lv_motor 1, piston 1, basic_circuit 1
+cutter 1           = lv_hull 1, lv_motor 1, steel_gear 1, basic_circuit 1
 # (#1219) Composed weapons: heads hafted with planks (Composed_FromParts reads the head's material). Stone heads are knapped
 # by hand; bronze, iron and steel heads come from the kiln and the anvil (machine_recipes.txt).
 stone_blade 1        = any_stone 2
@@ -252,6 +250,16 @@ wiremill 1           = iron_plate 4, mechanism 1, iron_rod 2, any_planks 4
 mechanism 1          = cogwheel 2, iron_rod 1, iron_screw 2
 piston 1             = bronze_plate 1, iron_rod 2, iron_spring 1
 valve 1              = bronze_plate 1, iron_spring 1, iron_screw 2
+# (#1614 PR 5) LV assemblies. GUESS counts. Copper coils at LV (nickel reaches the player at MV, from the ore line)
+lv_motor 1           = steel_rod 2, copper_wire 4, iron_plate 1
+lv_pump 1            = lv_motor 1, valve 1, cable 1, steel_screw 2
+lv_heating_coil 1    = copper_wire 8, steel_screw 1
+# (#1429) GUESS counts: multiblock parts
+bronze_casing 1      = bronze_plate 4, bronze_screw 4, bronze_rod 2
+steel_casing 1       = steel_plate 4, steel_screw 4, steel_rod 2
+fluid_in_hatch 1     = bronze_casing 1, valve 1, bronze_plate 2
+fluid_out_hatch 1    = bronze_casing 1, valve 1, bronze_plate 2
+large_tank_controller 1 = bronze_casing 1, mechanism 1, glass 2
 # (#1614 PR 6) MV and HV assemblies, from the metals the ladder has at those tiers: invar (nickel from the LV ore line) and
 # copper at MV; aluminium wire at HV (stainless steel and chromium coils come with chromite, later). GUESS counts.
 mv_motor 1           = invar_rod 2, copper_wire 8, steel_plate 1

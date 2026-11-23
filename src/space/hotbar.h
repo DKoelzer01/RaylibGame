@@ -3,7 +3,7 @@
 
 // The hotbar: keys 1-9 and 0 select one of ten slots, each bound to a tool or an item.
 //   tool:terrain     the terrain tool (LMB dig, RMB fill) - build mode off
-//   a material item  build mode with that material (concrete, stone, wood, iron plate, glass,
+//   a material item  build mode with that material (bricks, wood, iron plate, glass,
 //                    dirt): the wheel picks any shape (cube, block, slope, corner, beams)
 //   a machine item   build mode placing that machine (or a conveyor / cable)
 //   a consumable     used at once (oxygen canister, power cell)

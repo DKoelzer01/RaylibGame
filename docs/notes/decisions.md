@@ -141,6 +141,36 @@ Rulings 2026-11-19 to 2026-11-21 (user)
 - Coordination (#1476): the machine slot is self-serve through tools/slot.sh with hooks; CLAUDE.md holds core rules
   only; auto-merge on "CI ok"; known runner failures listed; protocol numbers reserved in a file.
 
+Rulings 2026-11-22 (user)
+- Machine components (#1614, sub of #1271): GregTech-style layers (microcraft components -> assemblies -> machines),
+  all doable by hand (1.5-2x the machine's metal) or by machine; fair cost, no grind; automation and magic favoured over
+  brute force; exploration and quests give shortcuts (loot parts, permanent team-wide blueprints ~25% cheaper per
+  assembly, research notes up to half a branch node / 25% of a core node). 7 shapes (plate, rod, wire, gear, screw,
+  spring, cable); one alloy per tier (brass T3, solder T4, electrum + invar T5, stainless T6, tungsten steel T7);
+  migration one pass per tier. **Budget is report only**: CI prints the per-machine minutes table, never fails on cost
+  (structure still fails: hand recipe per step, plannable from raw, no cycles). **Yield order: magic + tech together
+  best, tech alone = magic alone, hand worst** (a structure test fixes the order).
+- Multiblocks (#1429): the controller projects a see-through ghost, the player places the real parts and forms it with
+  a wrench or hammer (no auto-build); placed parts stay visible and animate; fixed shapes, a few (tanks, boilers,
+  distillation towers, furnaces) stretchable. All 10 design recommendations accepted: tier = lowest of casings and energy
+  hatch; up to 4 parallel; break-to-unform; Craft missing via the planner; no maintenance; first six: large tank, large
+  bronze boiler, coke oven battery, EBF, large ore line, distillation tower.
+- Conduits (#1620, sub of #1429): 1/8-cell sub-grid, straight/right-angle runs, no crossing; amps by cross-section
+  (1x1 = 1 A .. 4x4 = 16 A), voltage by material tier; overload trips a breaker at the source, manual reset; no loss
+  inside a plot, poles + transformers between plots; pipes carry one fluid, limited by material temperature and
+  diameter; conveyors stay cells. All 9 design recommendations accepted.
+- Anvil quality (#1613, sub of #1219): quality = tier-gated materials + smithing skill + a voxel-forging minigame
+  (2D 12x8 height grid); 75-130% with grades Crude / Common / Fine (>=110) / Masterwork (>=125); machines make composed
+  items at a fixed 100%; re-forging at a better anvil raises quality (costs head material, resets wear). All 8 design
+  recommendations accepted.
+- Basic circuits stay hand-craftable at tier 4, assembler optional (#1531); the planner hand-plans them from tier 4.
+- Volcanoes (#1591): new materials (Ash near the vent, an emissive Lava crust on the crater floor); the crust is
+  walkable but hot (heat damage while standing on it); digging through it may later expose simulated lava.
+- Cave species are leashed underground (give up the chase at the cave mouth); only the Lost Miner may wander out near
+  cave mouths at night and returns underground by day (#1227).
+- RMB placing ground from a stack in the off hand stays (#836), even with a tool in the main hand (#1577).
+- LOD selection stays distance-based (detail setting scales it), no screen-space-error metric (#1603, #1607).
+
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.
 

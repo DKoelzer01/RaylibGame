@@ -442,18 +442,29 @@ void Computer(Canvas& cv, C3 c) {
 }
 
 enum class ToolKind { Pickaxe, Shovel, Axe, Hoe };
+Sdf ToolHeadShape(ToolKind t) {
+    switch (t) {
+    case ToolKind::Pickaxe: return Poly({ { 6, 20 }, { 18, 11 }, { 32, 8 }, { 46, 11 }, { 58, 20 }, { 55, 22 }, { 44, 16 }, { 32, 14 }, { 20, 16 }, { 9, 22 } });
+    case ToolKind::Shovel: return Union(Poly({ { 22, 24 }, { 22, 10 }, { 32, 2 }, { 42, 10 }, { 42, 24 } }), Box(32, 26, 4, 3));
+    case ToolKind::Axe: return Poly({ { 30, 8 }, { 50, 3 }, { 56, 15 }, { 52, 28 }, { 30, 22 } });
+    default: return Poly({ { 30, 8 }, { 52, 8 }, { 54, 22 }, { 48, 22 }, { 46, 14 }, { 30, 14 } }); // hoe
+    }
+}
 void Tool(Canvas& cv, ToolKind t, C3 head, C3 handle) {
     const float ang = 0.72f; // the tool leans to the right
     auto R = [&](Sdf s) { return Rot(s, 32, 32, ang); };
     cv.paint(R(Capsule(32, 58, 32, 12, 3)), Lin(handle));
-    Sdf h;
-    switch (t) {
-    case ToolKind::Pickaxe: h = Poly({ { 6, 20 }, { 18, 11 }, { 32, 8 }, { 46, 11 }, { 58, 20 }, { 55, 22 }, { 44, 16 }, { 32, 14 }, { 20, 16 }, { 9, 22 } }); break;
-    case ToolKind::Shovel: h = Union(Poly({ { 22, 24 }, { 22, 10 }, { 32, 2 }, { 42, 10 }, { 42, 24 } }), Box(32, 26, 4, 3)); break;
-    case ToolKind::Axe: h = Poly({ { 30, 8 }, { 50, 3 }, { 56, 15 }, { 52, 28 }, { 30, 22 } }); break;
-    case ToolKind::Hoe: h = Poly({ { 30, 8 }, { 52, 8 }, { 54, 22 }, { 48, 22 }, { 46, 14 }, { 30, 14 } }); break;
-    }
-    cv.paint(R(h), Lin(head, 0.4f), 1.6f);
+    cv.paint(R(ToolHeadShape(t)), Lin(head, 0.4f), 1.6f);
+}
+// (#1634) A loose tool head (<material>_pick_head etc.): the tool's head shape alone, scaled to fill the icon, in the
+// material's colour, with the dark eye the handle goes through.
+Sdf Fit(Sdf a, float cx, float cy, float s) { return [=](float x, float y) { return a((x - 32.0f) / s + cx, (y - 32.0f) / s + cy) * s; }; }
+void ToolHeadIcon(Canvas& cv, ToolKind t, C3 c) {
+    struct F { float cx, cy, s, eyeY; };
+    const F f = t == ToolKind::Pickaxe ? F{ 32, 15, 1.1f, 11.5f } : t == ToolKind::Shovel ? F{ 32, 15, 1.9f, 26.0f }
+              : t == ToolKind::Axe ? F{ 43, 15.5f, 1.8f, 15.0f } : F{ 42, 15, 1.9f, 11.0f };
+    cv.paint(Fit(ToolHeadShape(t), f.cx, f.cy, f.s), Lin(c, 0.4f), 1.6f);
+    cv.paint(Fit(Box(32, f.eyeY, 2.4f, 2.2f, 0.6f), f.cx, f.cy, f.s), Flat(c * 0.3f));
 }
 // (#1219) Weapons, leaning as the tools do: the head in its colour on a wooden grip.
 enum class WeaponKind { Knife, Sword, Greatsword, Spear, Mace };
@@ -588,6 +599,11 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
         Tool(cv, t, c, starts("titanium") || starts("steel") ? C3{ 0.3f, 0.3f, 0.34f } : kWood);
         return;
     }
+    // (#1634) Loose tool heads: the head alone (they took their material's icon)
+    if (ends("_pick_head") || ends("_shovel_head") || ends("_axe_head") || ends("_hoe_head")) {
+        ToolHeadIcon(cv, ends("_pick_head") ? ToolKind::Pickaxe : ends("_shovel_head") ? ToolKind::Shovel : ends("_axe_head") ? ToolKind::Axe : ToolKind::Hoe, c);
+        return;
+    }
     // (#1219) Composed weapons and their heads
     if (starts("weapon_")) {
         const WeaponKind k = ends("_knife") ? WeaponKind::Knife : ends("_greatsword") ? WeaponKind::Greatsword : ends("_sword") ? WeaponKind::Sword : ends("_spear") ? WeaponKind::Spear : WeaponKind::Mace;
@@ -639,7 +655,6 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
     if (is({ "quartz", "amethyst", "ruby", "sapphire", "emerald" })) { Gem(cv, c); return; }
     if (is({ "granite", "basalt", "sandstone", "limestone", "marble" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "brick" || ends("_brick")) { Cube(cv, c, Pat::Brick); return; } // fired and dressed stone (#1098)
-    if (is({ "concrete" })) { Cube(cv, c, Pat::Stone); return; }
     if (id == "heat_shield_tile") { Cube(cv, c, Pat::Tiles); return; }
     if (id == "farmland") { Cube(cv, { 0.4f, 0.27f, 0.16f }, Pat::Soil); return; }
     if (is({ "sand", "regolith", "dirt", "helium3_dust" })) { Pile(cv, c); return; }

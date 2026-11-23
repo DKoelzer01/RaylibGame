@@ -10,7 +10,6 @@ iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
 water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
-concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).
@@ -141,7 +140,7 @@ steel_mace_head       | Steel mace head       | 64 | 125,128,140 | Forged at an 
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.
-farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a shovel or hoe, RMB).
+farmland         | Farmland         | block | 86,60,38    | Old tilled-soil block (farmland is tilled ground now, #1085: till soil with a hoe, RMB).
 grain_seeds      | Grain seeds      |   999 | 200,180,110 | Plant on farmland. From bushes and harvests.
 root_seeds       | Root seeds       |   999 | 160,110,70  | Plant on farmland. From bushes and harvests.
 flax_seeds       | Flax seeds       |   999 | 110,140,180 | Plant on farmland for fibre. From bushes and harvests.
@@ -276,6 +275,7 @@ cactus           | Cactus           | 999 | 92,140, 72  | From desert and badlan
 rubber           | Rubber           | 200 | 66, 58, 46  | Latex from jungle trees, set. A chemical reactor makes plastic of it.
 peat             | Peat             | 999 | 72, 52, 36  | Dug from swamp ground. Burns slowly in campfires, kilns, boilers and generators.
 ancient_relic    | Ancient relic    | 20  | 196,168, 92 | A carved idol from the deepest room of a dungeon. Found nowhere else.
+dungeon_key      | Dungeon key      | 20  | 214,184, 72 | Opens the locked vault door of a dungeon, once. Lies in a chest on the floor above the vault.
 # Research (#1193, #1030): packs (labs turn them into research for the team's queue; hand-crafted slowly, the assembler
 # comes later), the labs, and the labs' research units (counted by the game, never carried).
 steam_pack      | Steam research pack | 999 | 190,150,90  | Research for tier 3 (Steam and steel): put it in a lab.
@@ -342,6 +342,16 @@ wiremill         | Wiremill         | 20  | 140,110, 75 | Mechanical power: draw
 mechanism        | Mechanism        | 64  | 150,120, 80 | A small gear train: wooden cogwheels on an iron rod, pinned with screws. The heart of the press, the lathe and the steam engine.
 piston           | Piston           | 64  | 190,140, 70 | A bronze piston on iron rods with a return spring. Steam engines need two.
 valve            | Valve            | 64  | 185,135, 75 | A bronze valve with a spring: lets steam through and holds it back. Boilers and steam engines need one.
+# (#1614 PR 5) LV assemblies (by hand with Tab, or in the LV assembler), built into the LV machines
+lv_motor         | LV motor         | 64  | 120,125,135 | A small electric motor: steel rods, a copper winding, an iron frame. Anything electric that moves has one.
+lv_pump          | LV pump          | 64  | 110,130,150 | An LV motor driving a valve: the water pump and the ore washer.
+lv_heating_coil  | LV heating coil  | 64  | 200,120, 70 | A copper heating coil (nickel coils at MV). The electric furnace has two.
+# (#1429) multiblock parts: casings, hatches and a controller (placeable; forming comes later)
+bronze_casing    | Bronze casing    | 64  | 150,115, 80 | A bronze machine casing: the walls of steam-age multiblocks.
+steel_casing     | Steel casing     | 64  | 130,135,145 | A steel machine casing: the walls of electric-age multiblocks.
+fluid_in_hatch   | Fluid input hatch | 64 | 100,130,170 | A casing with a fluid input: pipes feed a multiblock through it.
+fluid_out_hatch  | Fluid output hatch | 64 | 170,130,100 | A casing with a fluid output: a multiblock empties into pipes through it.
+large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
 # (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)
 mv_motor         | MV motor         | 64  | 140,150,150 | An MV motor: invar rods, a heavy copper winding. MV machines that move have one or two.
 mv_pump          | MV pump          | 64  | 120,145,165 | An MV motor driving a valve: electrolyzers, chemical reactors, MV ore washers.

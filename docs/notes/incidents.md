@@ -19,6 +19,11 @@ what happened, the cause, and the fix or rule. Read the patterns before you star
 4. **Two instants mixed in one computation.** The body poses advance before the rocket and its substeps, so a frame
    switch or an outside-written state used positions from different instants: 16 m, 13 m, 7.5 m jumps (F5, #1436,
    #1460). Re-express state only at one consistent instant (after the step's last substep).
+6. **Process slips cost more than code bugs (2026-11-22/23).** Wrong PR numbers in reports (about one in five), a
+   retargeted stacked PR that sat an hour with no CI (#1653), a playtest-board baseline that missed 39 marks (old
+   failures never reached their issues), two game runs at once through a session's subagents (#1662). Fixes: quote
+   numbers only from `gh` output; no stacks; update-branch after a retarget; the board's own `routed` field is the
+   baseline (docs/notes/board.md); the guard refuses a second run.
 5. **Don't state an inference as a decision.** The coordinator wrote "composed items disassemble into parts" into
    decisions.md before the user answered; the user chose raw materials (#1495). Mark unconfirmed items "GUESS" or
    ask first.
@@ -37,3 +42,4 @@ what happened, the cause, and the fix or rule. Read the patterns before you star
 | 2026-11-22 | River widening showed no change on the slide's river | the slide's spot is a river head (narrow by design, 7 cm of water: under one cell, so nothing drawn) | Check a change on the user-visible case before the PR |
 | 2026-11-22 | --test-flow-sea "passed" on a river mouth since #190 | its shore walk used waterSourceAt, which never reports the sea, so every sea pick stopped 2 m out; only a river's water in the way gave a real channel | The walk counts the sea as water; re-baselined at a real sea spot (#1512); pattern 1: check what a test's pick actually is |
 | 2026-11-22 | A passing scenario run's log.txt ended in `FATAL abort()`, reported as a crash (#1527) | an earlier run killed by `timeout` hung in termination with log.txt still open and wrote its FATAL line at its old offset, mid-line in the next run's log | A FATAL line with no timestamp that cuts a line is another process; check for leftover game processes before calling it a crash. Let the scenario's wall timeout end a run rather than killing it |
+| 2026-11-23 | A sonnet subagent compiled forge.cpp with g++ directly and ran a driver on this PC during the user's playtest quiet window, after the hook refused its cmake build (#1613) | its brief banned the build command, not other compilers; a refusal was read as "the build tool is blocked" rather than "the machine is off limits" | Briefs say: no compiling or running anything on this PC by any route; the sandbox builds. Never route around a refusal |

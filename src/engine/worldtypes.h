@@ -163,7 +163,7 @@ public:
     bool useFarSphere(const RenderContext& ctx) const;  // far enough (zoom included) and baked
 
     float densityAt(Vector3 local) const; // includes edits; main-thread helper (raycasts)
-    static inline long long densityCalls = 0;     // (#768) densityAt calls since the start: the player-cost bench reads it
+    static inline std::atomic<long long> densityCalls{ 0 }; // (#768) densityAt calls since the start: the player-cost bench reads it; (#1650) atomic: creature probes run on workers too
     VoxelMaterial materialAt(Vector3 local) const; // the material there: placed ground's own, else the field's
     // #636: with the visible surface's normal (body-local), as the meshes pick it: steep faces show rock, not turf or gravel
     VoxelMaterial materialAt(Vector3 local, Vector3 normal) const;

@@ -411,7 +411,7 @@ VoxelMaterial Planetoid::materialAt(Vector3 local, Vector3 normal) const {
 }
 
 float Planetoid::densityAt(Vector3 local) const {
-    ++densityCalls; // (#768)
+    densityCalls.fetch_add(1, std::memory_order_relaxed); // (#768)
     return field->density(local, edits.get());
 }
 
@@ -439,6 +439,9 @@ static DVec3 AngularVelocityD(Vector3 rotation, Vector3 spin) {
             for (int k = 0; k < 3; ++k) w[i][j] += (rp[i][k] - rm[i][k]) / (2.0 * h) * r0[j][k];
     return DVec3{ 0.5 * (w[2][1] - w[1][2]), 0.5 * (w[0][2] - w[2][0]), 0.5 * (w[1][0] - w[0][1]) };
 }
+
+void BodyRotationFromAngles(double rx, double ry, double rz, double r[3][3]) { BodyRotationDd(rx, ry, rz, r); }
+DVec3 BodyAngularVelocity(Vector3 rotationDeg, Vector3 spinDegPerS) { return AngularVelocityD(rotationDeg, spinDegPerS); }
 
 // Plan 11 (frames.h, #667): a body's orientation (rows: body-local -> world) and angular velocity (world, rad/s) in double,
 // from the double spin angle while it is current (whatever RAYLIBGAME_FRAMES says: only frame code asks for this).

@@ -2,6 +2,7 @@
 #include "gpumem.h"
 #include "worldtypes.h"
 #include "machinetiers.h"
+#include "multiblock.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -68,12 +69,14 @@ const char* PartName(PartType t) {
         case PartType::ResearchTable: return "research table"; case PartType::ManaSiphon: return "mana siphon"; case PartType::ManaDynamo: return "mana dynamo"; // (#1252)
         case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::Ladder: return "ladder"; // (#1105)
+        case PartType::Lever: return "lever"; // (#1641 slice 2c)
         case PartType::SteamLab: return "steam lab"; // (#1271 L6)
         case PartType::Bloomery: return "bloomery"; case PartType::Bellows: return "bellows"; case PartType::Anvil: return "anvil"; // (#1271 L2)
         case PartType::SteamAssembler: return "steam assembler"; // (#1271 L6b-2)
         case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
         case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
+        case PartType::MbController: return "multiblock controller"; case PartType::MbCasing: return "machine casing"; case PartType::MbHatch: return "machine hatch"; // (#1429)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -189,6 +192,7 @@ const char* PartCostItem(PartType t) {
         case PartType::ClaimBanner3: return "steel_claim_banner"; case PartType::ClaimBanner4: return "titanium_claim_banner";
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
+        case PartType::Lever: return "stone"; // (#1641 slice 2c) a dungeon lever (not placed from the hand; never broken)
         case PartType::Shaft: return "shaft"; // (#1269)
         case PartType::Cogwheel: return "cogwheel";
         case PartType::LargeCogwheel: return "large_cogwheel";
@@ -197,7 +201,11 @@ const char* PartCostItem(PartType t) {
         case PartType::StressGauge: return "stress_gauge";
         case PartType::WaterWheel: return "water_wheel"; // (#1270)
         case PartType::Windmill: return "windmill";
-        default: { const char* m = PartMachineName(t); return m ? m : "concrete"; }
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: { // (#1429) the first of the role's list (PartItem gives the part's own)
+            const char* id = Multiblock_PartItem(t, 0);
+            return *id ? id : "stone_brick";
+        }
+        default: { const char* m = PartMachineName(t); return m ? m : "stone_brick"; } // shapes: material 0 (#1090: was concrete)
     }
 }
 
@@ -205,7 +213,7 @@ namespace {
     // Saves store a part's index here: keep the order, and relabel a slot rather than remove it (#1098). An item listed
     // twice is built from its first slot (BuildMaterialForItem); the later one only keeps old parts.
     const BuildMaterial kBuildMaterials[] = {
-        { "concrete", "Concrete", { 168, 166, 158, 255 } },
+        { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1090: was lunacrete ("concrete", gone from the planet); its parts become stone brick
         { "stone_brick", "Stone brick", { 122, 122, 128, 255 } }, // #1098: was raw "stone" (old parts keep the slot)
         { "iron_plate", "Iron", { 118, 122, 130, 255 } },
         { "glass", "Glass", { 172, 212, 226, 255 } },
@@ -261,6 +269,7 @@ int BuildMaterialForItem(const char* item) {
 }
 const char* PartItem(const Part& p) {
     if (IsShape(p.type)) return GetBuildMaterial(p.material).item;
+    if (IsMultiblockPart(p.type)) { const char* id = Multiblock_PartItem(p.type, p.material); if (*id) return id; } // (#1429)
     if (p.material > 0 && IsMachine(p.type)) { // (#1427 L7a) a tiered machine's variant: its step in the material
         static std::mutex m;
         static std::map<std::pair<int, int>, std::string> names; // (nodes never move: the pointers stay good)
@@ -312,6 +321,7 @@ static Color PartColor(PartType t) {
         case PartType::ResearchTable: return { 150, 110, 70, 255 }; case PartType::ManaSiphon: return { 120, 100, 190, 255 }; case PartType::ManaDynamo: return { 90, 90, 140, 255 }; // (#1252) wood, violet, dark steel
         case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
         case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
+        case PartType::Lever: return { 74, 70, 66, 255 }; // (#1641 slice 2c) dark iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -332,6 +342,9 @@ static Color PartColor(PartType t) {
         case PartType::StressGauge: return { 160, 120, 76, 255 };
         case PartType::Millstone: return { 140, 138, 132, 255 };
         case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: return { 146, 108, 68, 255 };
+        case PartType::MbCasing: return { 142, 118, 92, 255 };     // (#1429) grey-bronze
+        case PartType::MbController: return { 58, 60, 68, 255 };   // dark metal
+        case PartType::MbHatch: return { 104, 120, 140, 255 };     // blue-grey
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -370,11 +383,13 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Conveyor: return PatConveyor;
         case PartType::Cable: return PatCable;
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: return PatMetal; // (#1429)
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
         case PartType::Ladder: return PatLadder; // (#1105)
+        case PartType::Lever: return PatMetal; // (#1641 slice 2c)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
@@ -405,6 +420,9 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) out.push_back({ { x, y, 0 }, s });
             break;
         }
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: // (#1429) one cell each
+            out.push_back({ { 0, 0, 0 }, full });
+            break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:
@@ -445,6 +463,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int z = 0; z < 4; ++z) for (int x = 0; x < 2; ++x) out.push_back({ { x, 0, z }, full });
             break;
         case PartType::Snare: // a low trap frame: the Slab shape (#176)
+        case PartType::Lever:  // (#1641 slice 2c) a low iron box on the floor, a cell wide: easy to aim at
         case PartType::Slab: {  // the lower half of the cell
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 0.5f;
             out.push_back({ { 0, 0, 0 }, s });
@@ -581,6 +600,13 @@ void Plot::Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out
     }
 }
 
+Int3 Plot::SingleCellOrigin(const Part& p, Int3 cell) {
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Footprint(p, fp);
+    if (fp.size() != 1) return p.origin;
+    return { p.origin.x + cell.x - fp[0].first.x, p.origin.y + cell.y - fp[0].first.y, p.origin.z + cell.z - fp[0].first.z };
+}
+
 Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
     // The rotation turns cells about the origin cell's corner, so an orientation that flips the face's axis moves every cell
     // one further out (Footprint's off = -1): sliding only outward left such a part a cell away from the face (#1574). Both
@@ -588,6 +614,9 @@ Int3 Plot::FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face) {
     std::vector<std::pair<Int3, CellShape>> fp;
     Footprint(p, fp);
     if (fp.empty()) return p.origin;
+    // (#1630) A single-cell part goes exactly into the cell in front of the aimed face, whatever its orientation: the corner
+    // rotation moves its one cell sideways too (a planks block placed beside the face a quarter-turn on).
+    if (fp.size() == 1) return SingleCellOrigin(p, { hitCell.x + face.x, hitCell.y + face.y, hitCell.z + face.z });
     int nearest = 1 << 30;
     for (const auto& c : fp)
         nearest = std::min(nearest, (c.first.x - hitCell.x) * face.x + (c.first.y - hitCell.y) * face.y + (c.first.z - hitCell.z) * face.z);
@@ -891,6 +920,7 @@ void Plot::buildSection(Int3 key, Section& s, const std::vector<Int3>& sectionCe
             const Color tc = MachineTiers_Color(MachineTiers_PartTier(pp.type, pp.material, 0));
             color = { (unsigned char)((color.r + tc.r) / 2), (unsigned char)((color.g + tc.g) / 2), (unsigned char)((color.b + tc.b) / 2), color.a };
         }
+        if (GateSolid(pp)) color = GatePortcullis(pp) ? Color{ 52, 52, 58, 255 } : Color{ 74, 70, 66, 255 }; // (#1641) a vault door: dark iron; a portcullis: darker bars
         if (pp.type == PartType::Block && IsShape(pp.type)) color = { (unsigned char)(color.r * 0.92f), (unsigned char)(color.g * 0.92f), (unsigned char)(color.b * 0.92f), 255 };
         color.a = PartPatternOf(pp); // the surface pattern id (parts.fs)
         const Vector3 base = { (float)(c.x - lo.x), (float)(c.y - lo.y), (float)(c.z - lo.z) };
@@ -1048,7 +1078,7 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
             for (int y = (int)floorf(p.y - rc); y <= (int)floorf(p.y + rc); ++y)
                 for (int x = (int)floorf(p.x - rc); x <= (int)floorf(p.x + rc); ++x) {
                     auto it = cells.find({ x, y, z });
-                    if (it == cells.end() || parts[it->second.part].type == PartType::Gate || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate, and a ladder (#1105: they climb it)
+                    if (it == cells.end() || (parts[it->second.part].type == PartType::Gate && !GateSolid(parts[it->second.part])) || parts[it->second.part].type == PartType::Ladder) continue; // people pass a gate (not a locked one, #1641), and a ladder (#1105: they climb it)
                     const CellShape& s = it->second.shape;
                     const Vector3 q = ClosestInCell(p, { x, y, z }, s);
                     Vector3 d = Vector3Subtract(p, q);
@@ -1267,20 +1297,45 @@ TEST(PlotPlacement, MultiCellPartsSitFlushAgainstEveryFace) {
             }
 }
 
+// #1630 (playtest: a planks block placed against the face a quarter-turn from the aimed one, until R was pressed): a single-cell
+// part placed against any face, in any orientation (the automatic facing's or a hand-turned one), takes exactly the cell in
+// front of the aimed face; on the ground (SingleCellOrigin) exactly the aimed cell.
+TEST(PlotPlacement, SingleCellPartsTakeTheAimedCellInAnyOrientation) {
+    const Int3 hit{ 5, 7, -3 };
+    const Int3 faces[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (PartType t : { PartType::Cube, PartType::Ladder, PartType::Panel, PartType::Slab, PartType::Pane, PartType::Conveyor })
+        for (const Int3& f : faces)
+            for (int o = 0; o < 24; ++o) {
+                const Int3 want{ hit.x + f.x, hit.y + f.y, hit.z + f.z };
+                Part p{ t, want, (uint8_t)o, 0 };
+                p.origin = Plot::FlushAgainstFace(p, hit, f);
+                std::vector<std::pair<Int3, CellShape>> fp;
+                Plot::Footprint(p, fp);
+                ASSERT_EQ(fp.size(), 1u);
+                EXPECT_TRUE(fp[0].first == want) << "part " << (int)t << ", face (" << f.x << ", " << f.y << ", " << f.z << "), orientation " << o
+                                                 << ": its cell (" << fp[0].first.x << ", " << fp[0].first.y << ", " << fp[0].first.z << ")";
+                Part g{ t, want, (uint8_t)o, 0 }; // on the ground: the aimed cell itself
+                g.origin = Plot::SingleCellOrigin(g, want);
+                Plot::Footprint(g, fp);
+                EXPECT_TRUE(fp[0].first == want) << "on the ground: part " << (int)t << ", orientation " << o;
+            }
+}
+
 TEST(BuildMaterials, LooseGroundAndRawStoneAreNotPartMaterials) {
-    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
+    for (const char* m : { "dirt", "sand", "gravel", "regolith", "clay", "concrete", "stone", "granite", "basalt", "sandstone", "limestone", "marble" })
         EXPECT_LT(BuildMaterialForItem(m), 0) << m;
     for (const char* m : { "stone_brick", "granite_brick", "basalt_brick", "sandstone_brick", "limestone_brick", "marble_brick", "brick",
-                           "oak_planks", "oak_log", "spruce_log", "concrete" })
+                           "oak_planks", "oak_log", "spruce_log" })
         EXPECT_GE(BuildMaterialForItem(m), 0) << m;
 }
 
 TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
-    // Saves store the index: raw stone was slot 1, dirt 4, clay 40; they now read as stone brick, stone brick, brick.
+    // Saves store the index: concrete was slot 0 (#1090), raw stone 1, dirt 4, clay 40; they now read as stone brick and brick.
+    EXPECT_STREQ(GetBuildMaterial(0).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(1).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(4).item, "stone_brick");
     EXPECT_STREQ(GetBuildMaterial(40).item, "brick");
-    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 1); // new parts use the first slot
+    EXPECT_EQ(BuildMaterialForItem("stone_brick"), 0); // new parts use the first slot
     EXPECT_EQ(BuildMaterialForItem("brick"), 16);
     // Each dressed stone keeps its rock's look.
     auto pat = [](const char* item) { return PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, (uint8_t)BuildMaterialForItem(item) }); };

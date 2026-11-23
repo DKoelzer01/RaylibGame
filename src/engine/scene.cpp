@@ -616,6 +616,8 @@ void Scene::drawScene(int gamestate) {
     {   // Distant forests: the canopy tint takes over where the real trees fade out.
         const float treeDist = kTreeDrawDistance;
         SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
+        { static const float farCheap = getenv("RAYLIBGAME_FAR_CHEAP") ? (float)atof(getenv("RAYLIBGAME_FAR_CHEAP")) : 0.0f; // (#1610 item 4) m; 0 off
+          SetShaderValue(s, GetShaderLocation(s, "farCheapFrom"), &farCheap, SHADER_UNIFORM_FLOAT); }
         const float farForest = FarForestOn();
         SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
     }

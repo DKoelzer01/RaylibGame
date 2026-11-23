@@ -74,6 +74,21 @@ SCENARIO("creatures/cave-spawn") {
         c.lt("most in one chunk (cap 2 plus a nest)", worst, 3.5);
         return true;
     });
+    // (#1717 / #1227, playtest: "a lost miner wandering around near dawn" on open grass) 20 s of living there: none ends up on
+    // the surface (a creature off its feet used to take the surface fallback and stand over its cave by day).
+    s.step("20 s later: all still underground", 30.0, [](ScenarioCtx& c) {
+        if (c.t < 20.0) { c.waitingFor("20 s of the cave creatures living"); return false; }
+        int under = 0, n = 0;
+        for (int i = S.count0; i < Animals_Count(); ++i) {
+            if (Animals_Body(i) != c.body->name || Animals_SpeciesOf(i).first != "hornhide") continue;
+            const Vector3 p = Animals_Position(i), dir = Vector3Normalize(p);
+            ++n;
+            under += c.field->radius + c.field->elevation(dir) - Vector3Length(p) >= 3.0f;
+        }
+        c.metric("cave creatures after 20 s", n, "", false);
+        c.eq("all still underground (3 m+) after 20 s", under, n);
+        return true;
+    });
     s.step("peaceful: none", 15.0, [](ScenarioCtx& c) {
         static bool armed = false;
         if (!armed) { armed = true; worldDifficulty = 0; Animals_ResetCaveSpawns(); Animals_CaveSpawnNow(); S.spawned0 = Animals_CaveSpawned(); return false; }

@@ -1709,7 +1709,7 @@ int main(int argc, char** argv)
     int seenSpawns = 0;
     world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
-    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a shovel's RMB
+    terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
         const int s = Hotbar_Selected();
         if (Hotbar_Slot(s) == from) Hotbar_Bind(s, to);
@@ -2414,6 +2414,21 @@ int main(int argc, char** argv)
                     world.camera.up = upW;
                 }
         } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        else if (benchPlanet && !benchCamGiven) {
+            // --at-save: the bench flies the camera from the save's own spot, but nothing set it, so its up stayed the scene's
+            // world +Y: on a planet turned since (or anywhere off its +Y side) the view came up rolled, even upside down
+            // (#1610's world_29 view looked half at the sky). From the player: its eye, its facing, the body's up there.
+            const Vector3 eye = (player.position - world.renderOrigin).toFloat();
+            Planetoid* nb = NearestPlanetoid(world, eye);
+            Vector3 up = player.up;
+            if (nb) { const Vector3 r = Vector3Subtract(eye, (nb->worldPos - world.renderOrigin).toFloat()); if (Vector3Length(r) > 1e-3f) up = Vector3Normalize(r); }
+            if (Vector3Length(up) < 1e-3f) up = { 0, 1, 0 };
+            Vector3 fw = player.forward; // the saved facing (pitch kept)
+            if (Vector3Length(fw) < 1e-4f || fabsf(Vector3DotProduct(Vector3Normalize(fw), up)) > 0.999f) fw = Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
+            world.camera.position = Vector3Add(eye, Vector3Scale(up, player.eyeHeight)); // (eye: the feet)
+            world.camera.target = Vector3Add(world.camera.position, Vector3Normalize(fw));
+            world.camera.up = up;
+        }
         if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)
             const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
             const Vector3 side = Vector3CrossProduct(ahead, player.up);
@@ -5386,9 +5401,9 @@ int main(int argc, char** argv)
                         grew = false;
                         for (const Rule& u : rules) {
                             if (!u.machine.empty() && u.machine[0] != '#' && !have.count(u.machine)) continue;
-                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe or shovel makes it
+                            if (u.machine == "#farmland" && !have.count("farmland")) { // (#1142) farmland is tilled ground (#1085): a hoe makes it
                                 bool till = false;
-                                for (const char* t : { "stone_hoe", "stone_shovel", "iron_hoe", "iron_shovel" }) till = till || have.count(t) > 0;
+                                for (const char* t : { "stone_hoe", "iron_hoe" }) till = till || have.count(t) > 0; // (#1085: hoes only)
                                 if (!till) continue;
                                 have.insert("farmland");
                             }
@@ -9292,18 +9307,18 @@ int main(int argc, char** argv)
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         inventory.clear();
                         Hotbar_Reset(); // empty: put what the test uses on the hotbar (slot 1 stays empty: bare hands)
-                        inventory.add("concrete", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
-                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister"); // the stacks move there (#209)
+                        inventory.add("stone_brick", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
+                        Hotbar_Bind(1, "stone_brick"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister"); // the stacks move there (#209)
                         const Vector3 home = StartSpawnDirLocal(*p);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                         const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
                         if (!p->plots) p->plots = std::make_unique<PlotSet>();
                         Plot* plot = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
-                        Hotbar_Press(1, false); // key 2: concrete
-                        const bool concreteMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("concrete");
-                        const int c0 = inventory.count("concrete");
+                        Hotbar_Press(1, false); // key 2: stone brick
+                        const bool brickMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("stone_brick");
+                        const int c0 = inventory.count("stone_brick");
                         const bool slope = BuildTool_Place(*p, *plot, { PartType::Slope, { 0, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
-                        const int c1 = inventory.count("concrete");
+                        const int c1 = inventory.count("stone_brick");
                         Hotbar_Press(3, false); // key 4: wood
                         const int w0 = inventory.count("oak_planks");
                         const bool beam = BuildTool_Place(*p, *plot, { PartType::Beam4, { 2, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
@@ -9372,17 +9387,17 @@ int main(int argc, char** argv)
                         Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        int woodParts = 0, concreteParts = 0;
+                        int woodParts = 0, brickParts = 0;
                         if (q && q->plots)
                             for (auto& pl : q->plots->plots)
                                 for (const Part& part : pl->parts) {
                                     if (part.type == PartType::Count) continue;
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
-                                    if (PartItem(part) == std::string("concrete")) ++concreteParts;
+                                    if (PartItem(part) == std::string("stone_brick")) ++brickParts;
                                 }
-                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
-                        printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
-                               concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && brickMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && brickParts == 2;
+                        printf("bench: hotbar: brick mode %d, slope -%d brick, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d brick parts -> %s\n",
+                               brickMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, brickParts, ok ? "PASS" : "FAIL");
                     }
                     benchHotbar = false;
                 } else if (benchRing && (ringStarted || WorldIdle())) {
@@ -10003,7 +10018,7 @@ int main(int argc, char** argv)
                             minePhase = 2;
                         }
                     } else {
-                        const int fillersBefore = inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete");
+                        const int fillersBefore = inventory.count("stone") + inventory.count("regolith");
                         int built = 0;
                         terrainTool.heldTool = inventory.count("stone") > 0 ? "stone" : "regolith"; // (#1098: placing takes a ground item in hand)
                         for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
@@ -10011,7 +10026,7 @@ int main(int argc, char** argv)
                         for (const ItemDef& d : itemDB.items()) if (inventory.amount(d.id) > 0.0) inv += " " + d.id + "=" + TextFormat("%.2f", inventory.amount(d.id));
                         printf("bench: mined %d strokes%s, crafted %d times, built %d strokes (fillers %d -> %d); inventory:%s\n",
                                minedStrokes, mineStoppedEarly ? " (hole left arm's reach)" : "", mineCrafted, built, fillersBefore,
-                               inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete"), inv.c_str());
+                               inventory.count("stone") + inventory.count("regolith"), inv.c_str());
                         benchMineStrokes = 0;
                         minePhase = 3;
                     }
@@ -11413,13 +11428,31 @@ int main(int argc, char** argv)
             ++dungeonFrame;
             if (dungeonFrame == 5) { player.flyMode = false; player.spawnOn(world, *p, StartSpawnDir(*p)); }
             if (dungeonFrame == 60) Structures_TestDungeon(world, *p, p->toLocalOf(player.position, world.renderOrigin), eye, target);
-            if (dungeonFrame >= 61 && dungeonFrame < 200) {
+            if (dungeonFrame >= 61) {
                 player.flyMode = true;
                 world.camera.position = p->toWorld(eye); world.camera.target = p->toWorld(target);
                 world.camera.up = p->dirToWorld(Vector3Normalize(eye));
                 player.position = world.renderOrigin + world.camera.position;
             }
-            if (dungeonFrame == 200) { TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false; }
+            // (#1641) No sky from inside a room: with --crack-check (no skybox, a magenta clear) every magenta pixel is somewhere
+            // nothing is drawn. Counted at frame 200 (the old picture's moment, chunks maybe still remeshing after the build's
+            // carves) and once the world is idle with every foundation carve applied (the picture); the second must be none.
+            auto skyShown = [&]() {
+                Image shot = LoadImageFromScreen();
+                Color* px = LoadImageColors(shot);
+                long sky = 0;
+                const long holes = CrackHoles(px, shot.width, shot.height, 2, &sky);
+                UnloadImageColors(px); UnloadImage(shot);
+                return holes + sky;
+            };
+            if (dungeonFrame == 200 && crackCheck) printf("bench: dungeon: at frame 200, %ld magenta samples (nothing drawn) in the view\n", skyShown());
+            if (dungeonFrame >= 200 && ((WorldIdle() && BuildTool_PendingFoundations() == 0 && dungeonFrame >= 260) || dungeonFrame >= 1500)) {
+                if (crackCheck) {
+                    const long n = skyShown();
+                    printf("bench: dungeon: no sky from inside the room: %ld magenta samples once settled (frame %d) -> %s\n", n, dungeonFrame, n == 0 ? "PASS" : "FAIL");
+                }
+                TakeScreenshot("bench_dungeon.png"); printf("bench: dungeon: bench_dungeon.png\n"); benchDungeon = false;
+            }
         }
         // --test-dungeon-traps (#719): a falling block, darts and gas in a trench at the start (dungeontraps.cpp).
         if (benchDungeonTraps && gameState == 1 && !loading && (dungeonTrapFrame > 0 || WorldIdle())) {
@@ -12169,7 +12202,7 @@ int main(int argc, char** argv)
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net dig: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetDig = false; }
             }
         }
-        // --test-net-build (#330, with --host <save>, ENABLE_GNS): bob gets 3 concrete (the admin give) and builds beside where
+        // --test-net-build (#330, with --host <save>, ENABLE_GNS): bob gets 3 stone bricks (the admin give) and builds beside where
         // the server has him: a cube into a new plot, a cube on it; then a cube where one is (blocked), one 30 m off (reach),
         // breaks the first (refunded), and a block that needs 4 (cost). carol watches. Checks: both clients got every plot
         // edit in the same order (the new plot first), the server's plot holds the one cube left at the right cell, bob's
@@ -12199,7 +12232,7 @@ int main(int argc, char** argv)
                 else if (phase == 1 && carol.state == NetClient::State::Joined && synced && GetTime() - syncedAt > 2.0) {
                     bob.inventory = &bobInv; carol.inventory = &carolInv;
                     carol.keepPlotLog = true; // replayed into a plot set of her own at the end (the world here is the server's)
-                    Host_Give(bob.welcome.session, "concrete", 3);
+                    Host_Give(bob.welcome.session, "stone_brick", 3);
                     // The anchor: the ground 2 m east of the server's bob.
                     uint64_t bid = 0; DVec3 feet{};
                     bool found = false;
@@ -12216,7 +12249,7 @@ int main(int argc, char** argv)
                 } else if (phase == 2) {
                     constexpr int kSteps = 6;
                     if (step < kSteps && GetTime() - t0 > 0.5 * step) {
-                        Part cube{}; cube.type = PartType::Cube; cube.orient = 0; cube.material = 0; // concrete
+                        Part cube{}; cube.type = PartType::Cube; cube.orient = 0; cube.material = 0; // stone brick
                         Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
                         if (step == 0) NetClient_RequestPart(bob, *body, nullptr, anchor, cube, false, -1);                                  // a new plot
                         else if (step == 1 && plot) { cube.origin = { 0, 1, 0 }; NetClient_RequestPart(bob, *body, plot, anchor, cube, false, -1); } // on top
@@ -12241,7 +12274,7 @@ int main(int argc, char** argv)
                         const Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
                         const bool left = plot && plot->partCount() == 1 && plot->partAt({ 0, 1, 0 }) >= 0 && plot->partAt({ 0, 0, 0 }) < 0;
                         const bool sameOrder = bob.plotEdits == carol.plotEdits && bob.plotOrder == carol.plotOrder && bob.plotEdits == 4; // new plot, 2 places, a break
-                        const double mine = bobInv.amount("concrete"), server = Host_InventoryAmount(bob.welcome.session, "concrete");
+                        const double mine = bobInv.amount("stone_brick"), server = Host_InventoryAmount(bob.welcome.session, "stone_brick");
                         const bool inv = std::fabs(mine - server) < 0.005 && std::fabs(mine - 2.0) < 0.005; // 3 - 2 + 1
                         const auto why = [&](NetPartRefusal r) { return (bob.partRefusedWhy & (1u << (unsigned)r)) != 0; };
                         const bool refusals = why(NetPartRefusal::Blocked) && why(NetPartRefusal::Reach) && why(NetPartRefusal::Cost) && bob.partsRefused == 3;
@@ -12271,7 +12304,7 @@ int main(int argc, char** argv)
                         }
                         const bool ok = Host_PartsApplied() == 3 && left && sameOrder && inv && refusals && replay;
                         printf("bench: net build (#330, 100 ms round trip, 2%% loss): %d parts placed or broken by the server; plot edits bob %d, carol %d, same order %d; "
-                               "the plot holds the top cube only %d; carol's edits replayed make the same plot %d; concrete bob %.2f, server %.2f (want 2) %d; "
+                               "the plot holds the top cube only %d; carol's edits replayed make the same plot %d; bricks bob %.2f, server %.2f (want 2) %d; "
                                "refused: blocked %d, reach %d, cost %d (%d) -> %s\n",
                                Host_PartsApplied(), bob.plotEdits, carol.plotEdits, (int)sameOrder, (int)left, (int)replay, mine, server, (int)inv,
                                (int)why(NetPartRefusal::Blocked), (int)why(NetPartRefusal::Reach), (int)why(NetPartRefusal::Cost), bob.partsRefused, ok ? "PASS" : "FAIL");
@@ -12413,7 +12446,7 @@ int main(int argc, char** argv)
         // roots reach its inventory by deltas. Both report after RAYLIBGAME_MACHINES_SECONDS.
         // --test-net-plants (#335; with --join; tools/test_net_plants.sh): RAYLIBGAME_NET_PLANTS_ROLE feller | watcher. The
         // feller fells the nearest bush (a request): its drops arrive by deltas and the plant goes on both clients (the
-        // server's removal, with its time). It then tills ground ahead with a shovel (farmland placed by the server, free),
+        // server's removal, with its time). It then tills ground ahead with a hoe (farmland placed by the server, free),
         // sows grain seeds there (the host's RAYLIBGAME_FARM_INSTANT makes them ripe) and harvests them once the server's
         // fields show the crop ripe. The watcher sees the removal and the crop come and go. Both report after
         // RAYLIBGAME_PLANTS_SECONDS (40).
@@ -12447,7 +12480,7 @@ int main(int argc, char** argv)
             cropSeen = cropSeen || hasCrop;
             cropGone = cropGone || (cropSeen && !hasCrop);
             if (feller && felled && !tillSent && pb) {
-                if (tillAt < 0.0) { terrainTool.heldTool = "stone_shovel"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
+                if (tillAt < 0.0) { terrainTool.heldTool = "stone_hoe"; tillAt = GetTime() + 1.5; } // (the loadout tells the server what's in hand)
                 else if (GetTime() > tillAt) {
                     // (#1107) a ring of spots, 8 directions x 2-4 m: on the real terrain the one spot ahead can be rock or a slope
                     // (Farm_Till refuses untillable ground before it asks the server); each miss is counted by its reason
@@ -14123,7 +14156,7 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
-                if (Audio_V2()) Subtitles_Draw(GameUI_Scale()); // (#1244) sound captions and edge arcs
+                Subtitles_Draw(GameUI_Scale()); // (#1244) sound captions and edge arcs; (#1635) with either audio engine
                 Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1
                 MagicSight_DrawHUD(world); // (#1249) RAYLIBGAME_MAGIC=1
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }

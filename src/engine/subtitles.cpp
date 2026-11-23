@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 
 bool SubtitleTable::parse(const std::string& text, std::string* error) {
     rows.clear();
@@ -97,6 +98,7 @@ namespace {
     SubtitleLog logLines;
     SubtitleLevel level = SubtitleLevel::Important;
     bool loaded = false;
+    std::unordered_map<std::string, SubtitleCaption> overrides; // (#1635) Subtitles_SetCaption: exact sound names, before the table
 }
 
 void Subtitles_Load() {
@@ -113,9 +115,22 @@ void Subtitles_Load() {
 void Subtitles_SetLevel(SubtitleLevel l) { level = l; }
 SubtitleLevel Subtitles_Level() { return level; }
 
+void Subtitles_SetCaption(const std::string& sound, const std::string& text, bool important) {
+    if (sound.empty() || text.empty()) return;
+    SubtitleCaption c; c.text = text; c.important = important;
+    overrides[sound] = c;
+}
+
+void Subtitles_Event(const std::string& text, bool important, const DVec3* pos, const AudioListener& listener) {
+    if (level == SubtitleLevel::Off || text.empty() || (level == SubtitleLevel::Important && !important)) return;
+    SubtitleCaption c; c.text = text; c.important = important;
+    logLines.add(c, pos != nullptr, pos ? Subtitle_Angle(listener, *pos) : 0.0f, GetTime());
+}
+
 void Subtitles_OnSound(const std::string& sound, const DVec3* pos, const AudioListener& listener) {
     if (level == SubtitleLevel::Off) return;
-    const SubtitleCaption* c = table.find(sound);
+    const auto ov = overrides.find(sound); // (#1635) a creature's own words first
+    const SubtitleCaption* c = ov != overrides.end() ? &ov->second : table.find(sound);
     if (!c || (level == SubtitleLevel::Important && !c->important)) return;
     logLines.add(*c, pos != nullptr, pos ? Subtitle_Angle(listener, *pos) : 0.0f, GetTime());
 }
