@@ -257,7 +257,11 @@ static const bool kShoreSim = [] { const char* e = getenv("RAYLIBGAME_SHORE_SIM"
 // films lifted over the sand and tilted toward dry neighbours (shards), a resting one's 15 cm skin and sheet rule cut the
 // shallow band into jagged pieces, and the drawing switched rules at every brick edge. Water the simulation holds at the
 // generated level is the generated water: the mesher draws it so (the same level, so it meets the simulated water - the
-// flooded hole, dug cells - without a seam). A drained column (no wet cell) stays the simulation's.
+// flooded hole, dug cells - without a seam). A drained column (no wet cell) stays the simulation's (a pond emptied by bucket),
+// except in a brick that holds generated water at its level (#1590): there a dry undug column is land the dig's bricks reached
+// beside the sea, lake or river. Drawn as the simulation's (dry), it pulled the generated surface next to it down into walls and
+// shards along the beach; the generated water's own rules (its level, clipped by the ground and the original bed) draw nothing
+// there. Held water never drains, and pond bricks hold none (their water is finite), so an emptied pond stays empty.
 bool ChunkSampler::generatedColumn(int si, int ci, int cj, int ck) const {
     if (kShoreSim) return false;
     const int bk = ck >> 4;
@@ -271,9 +275,21 @@ bool ChunkSampler::generatedColumn(int si, int ci, int cj, int ck) const {
         if (flags & kDug) gen = false;                                   // an edit opened it: the simulation's water
         else if (fill > 0) { if ((flags & kStatic) && CellKind(flags) == 0) wet = true; else gen = false; }
     }
-    const bool r = gen && wet;
+    if (gen && !wet) gen = holdsGenerated(si, ci >> 4, cj >> 4, bk);
+    const bool r = gen;
     genMemo.emplace(key, r);
     return r;
+}
+
+bool ChunkSampler::holdsGenerated(int si, int bi, int bj, int bk) const {
+    const int64_t key = ((int64_t)si << 56) | ((int64_t)((bi + 8192) & 0x3FFF) << 28) | ((int64_t)((bj + 8192) & 0x3FFF) << 14) | (int64_t)((bk + 8192) & 0x3FFF);
+    auto it = heldMemo.find(key);
+    if (it != heldMemo.end()) return it->second;
+    bool held = false;
+    if (const Brick* b = brickPtr(si, bi, bj, bk))
+        for (int i = 0; i < kBrick * kBrick * kBrick && !held; ++i) held = b->fill[i] > 0 && (b->flags[i] & kStatic) && CellKind(b->flags[i]) == 0;
+    heldMemo.emplace(key, held);
+    return held;
 }
 
 bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
@@ -437,25 +453,31 @@ TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
                 uint8_t fl = kSource | kStatic;
                 if (x == 5) fl = kDug;   // column 5: dug, flooded from the sea
                 if (x == 9) fl = 0;      // column 9: water the simulation moved (no generated level)
-                if (x == 12) continue;   // column 12: dry
+                if (x == 12) { b->flags[i] = kSolid; continue; } // column 12: the beach, its ground over the sea's level (#1590)
                 b->flags[i] = fl; b->fill[i] = b->drawn[i] = 255;
             }
     b->kinds = 1;
+    auto pond = std::make_shared<Brick>(); // a pond's brick, emptied by bucket: finite water, none held, nothing left
+    pond->kinds = 1;
     Snapshot snap;
     Site s;
     s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 };
     const float cs = CellSize(), side = kBrick * cs;
-    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.lo = { 0, 0, 0 }; s.hi = { 2 * side, side, side };
     s.bricks[BrickKey(0, 0, 0)] = b;
+    s.bricks[BrickKey(1, 0, 0)] = pond;
     snap.sites.push_back(s);
-    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { 2 * side, side, side });
     auto at = [&](int x) { return Vector3{ (x + 0.5f) * cs, (sea - 0.5f) * cs, 3.5f * cs }; }; // a sample just under the sea's surface
+    auto over = [&](int x) { return Vector3{ (x + 0.5f) * cs, (sea + 0.5f) * cs, 3.5f * cs }; }; // just over it
     float w = 0.0f;
     EXPECT_FALSE(sampler.density(at(2), 0, w)) << "generated sea: the generated water draws it";
     EXPECT_FALSE(sampler.covered(at(2)));
     EXPECT_TRUE(sampler.density(at(5), 0, w)) << "a dug, flooded column";
     EXPECT_TRUE(sampler.covered(at(5)));
     EXPECT_TRUE(sampler.density(at(9), 0, w)) << "simulated water";
-    EXPECT_TRUE(sampler.density(at(12), 0, w)) << "a drained column stays drained";
+    EXPECT_FALSE(sampler.covered(over(12))) << "dry land beside the sea: the generated water's rules (#1590)";
+    EXPECT_TRUE(sampler.density(at(kBrick + 4), 0, w)) << "an emptied pond stays empty";
+    EXPECT_TRUE(sampler.covered(at(kBrick + 4)));
 }
 #endif
