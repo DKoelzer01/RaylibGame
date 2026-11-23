@@ -455,7 +455,7 @@ struct ContainerGrid : SlotGrid {
             const auto fuels = Factory::FuelsOf(container.type);
             if (std::find(fuels.begin(), fuels.end(), id) == fuels.end()) return 0;
         } else if (!ContainerTakes(id)) return 0;
-        if (container.type == PartType::Chest || which == 2) { if (!s.empty() && (s.id != id || s.hasData())) return 0; // (#1730) a slot with a record takes nothing more return (int64_t)StackLimit(id) * 100 - s.centi; }
+        if (container.type == PartType::Chest || which == 2) { if (!s.empty() && (s.id != id || s.hasData())) return 0; return (int64_t)StackLimit(id) * 100 - s.centi; } // (#1730) a slot with a record takes nothing more
         return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
