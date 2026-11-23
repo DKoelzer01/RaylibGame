@@ -3989,7 +3989,10 @@ TEST(Voxel, AVolcanoHasAshAndLavaNotSnow) {
     // Walk outward from the vent; at each weight band, the surface's skin
     auto skinAt = [&](Vector3 d, float& w) {
         w = f.volcanoWeight(Vector3Scale(d, f.radius));
-        const Vector3 p = Vector3Scale(d, f.radius + f.elevation(d, 0.0f) - 0.2f);
+        // The real surface (the 3D band moves it off the height map on steep crater walls): down to the first solid
+        float h = f.radius + f.elevation(d, 0.0f) + 30.0f;
+        for (int k = 0; k < 600 && f.baseDensity(Vector3Scale(d, h)) < ISO_LEVEL; ++k) h -= 0.1f;
+        const Vector3 p = Vector3Scale(d, h - 0.15f);
         float sky = 0.0f;
         return f.materialSky(p, 0.0f, 0.0f, d, sky);
     };
