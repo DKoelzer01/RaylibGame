@@ -2988,9 +2988,10 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
-        uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) continue;
-        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
+        uint8_t f, fl, sh = 0;
+        if (!PubCell(s, local, 0, f, fl, nullptr, &sh)) continue;
+        // shut: the cell's ground share (#454), last so the older "fill N flags X" prefix still parses (#1520)
+        return TextFormat("fill %d flags %s%s%s%s%s shut %d", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "", sh);
     }
     return "no site";
 }
