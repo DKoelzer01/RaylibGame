@@ -2811,7 +2811,8 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
     }
     // Only with flow state to restore: RiversOf builds the whole river network on first use (~470 ms), which an empty
     // "riverflow 0 0" line made every load pay up front (#737; it is built later anyway, when water first needs it).
-    if (!cur.empty() || !set.empty())
+    // A save at another cell size drops its sites, and the flow state goes with them: the reaches that set it start over (#1674).
+    if (keep && (!cur.empty() || !set.empty()))
         if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
 }
 
