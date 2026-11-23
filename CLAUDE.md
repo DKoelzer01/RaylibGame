@@ -69,8 +69,11 @@ test; add a line when something goes wrong).
 
 ## Git and PRs
 
-- Branch per batch from `origin/m84-integration` (or `origin/ladder`); PRs target that branch. Stacked PRs: GitHub doesn't
-  retarget the next one - PATCH its base before it merges.
+- Branch per batch from `origin/m84-integration` (or `origin/ladder`); PRs target that branch. **One PR per branch off the
+  base; no stacks** unless a PR truly needs another's code (then say so). Stacked PRs: GitHub doesn't retarget the next
+  one - PATCH its base, then `PUT pulls/N/update-branch` (a retarget alone runs no CI).
+- **Quote a PR or issue number only after `gh` printed it** (the `gh pr create` / `file_issue.sh` output), never from
+  memory: wrong numbers cost a correction round each. Messages to the coordinator: the number + one line.
 - Feature sessions never merge, delete branches, push to main/develop or force-push (not even a fresh branch). Update a
   branch by merging its base in.
 - The coordinator merges: reviewed PRs into m84/ladder get GitHub auto-merge on "CI ok" (#1481); a PR whose evidence is
