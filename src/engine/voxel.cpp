@@ -2942,8 +2942,16 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         auto exact = [&](int x, int y, int z) {
             const Vector3 p = { origin.x + x * stride, origin.y + y * stride, origin.z + z * stride };
             float w;
-            if (!(simKind && sim.density(p, kind, w)))
-                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - sqrtf(p.x * p.x + p.y * p.y + p.z * p.z)) : ISO_LEVEL - DENSITY_GRADIENT;
+            if (!(simKind && sim.density(p, kind, w))) {
+                const float pl = sqrtf(p.x * p.x + p.y * p.y + p.z * p.z);
+                w = genKind ? ISO_LEVEL + DENSITY_GRADIENT * (levelAt(x, y, z) - pl) : ISO_LEVEL - DENSITY_GRADIENT;
+                // (#1590) Under the original ground the generated water is not there, as the triangle rule below says - here in
+                // the density too: a pit dug below the water's level beside the simulated bricks read as wet just past them, and
+                // the wet/dry step at the brick edge stood as a vertical sheet in the dry pit (its triangles' centres slipped
+                // past the rule). The margin keeps the water body's new floor a metre inside the terrain, never through a bed.
+                if (genKind && pf && w > ISO_LEVEL && pl > 1.0f && groundAt(p, Vector3Scale(p, 1.0f / pl)) > pl - sea + std::max(1.0f, 2.0f * stride))
+                    w = ISO_LEVEL - DENSITY_GRADIENT;
+            }
             return w;
         };
         long long exactCount = 0;

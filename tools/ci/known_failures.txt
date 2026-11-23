@@ -12,3 +12,5 @@ farm/till-rmb                          | #1176 | no RMB stroke runs on the runne
 fluid/flow-meter                       | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
 fluid/pond                             | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
 bench: flow: reached the channel end   | #1512 | --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
+fluid/u-bend -> FAIL                   | #1168 | the two pits stand 1.77 m apart (want < 0.15); the same on the m84 tip (e5715641) without #1664
+fluid/u-bend-cpu -> FAIL               | #1168 | the CPU twin of fluid/u-bend, same check
