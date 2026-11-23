@@ -995,6 +995,8 @@ bool CavePopulation(int si) {
     return c && (c->habitat == Habitat::Cave || c->habitat == Habitat::Mouth);
 }
 ChunkId HomeChunk(const Animal& a) { return ChunkOf(a.hasHome ? a.home : a.pos.toFloat(), a.species); }
+// (#1717) RAYLIBGAME_CAVE_SETTLE=0: the old settle (a cave creature off its feet could be put on the surface; A/B)
+bool CaveSettleFix() { static const bool on = !(getenv("RAYLIBGAME_CAVE_SETTLE") && getenv("RAYLIBGAME_CAVE_SETTLE")[0] == '0'); return on; }
 namespace PopTune {
     constexpr float kAreaRange = 128.0f;  // the area budget's radius around a player (GUESS)
     constexpr int kAreaPerSpecies = 8;    // at most this many of one cave species within it (GUESS: four chunks' worth)
@@ -1508,7 +1510,14 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             const bool standing = body->densityAt(Vector3Subtract(p0, Vector3Scale(d, 0.15f))) >= ISO_LEVEL &&
                                   body->densityAt(Vector3Add(p0, Vector3Scale(d, 0.3f))) < ISO_LEVEL;
             Vector3 g; float ge;
-            if (!standing && (Ground(*body, *field, d, g, ge, Vector3Length(p0), 0.6f, 3.0f) || Ground(*body, *field, d, g, ge))) a.pos = DVec3(g);
+            // (#1717 / #1227) A cave creature never takes the surface fallback (the field's whole band finds the ground at the TOP): a
+            // miner on a sloped cave floor failed the standing test, was put on the surface over its cave and stood there by day,
+            // its home straight below (nothing to walk to). No ground near it: back to its home.
+            if (!standing) {
+                if (Ground(*body, *field, d, g, ge, Vector3Length(p0), 0.6f, 3.0f)) a.pos = DVec3(g);
+                else if (CavePopulation(a.species) && CaveSettleFix()) { if (a.hasHome) a.pos = DVec3(a.home); }
+                else if (Ground(*body, *field, d, g, ge)) a.pos = DVec3(g);
+            }
         }
         const Vector3 up = Vector3Normalize(a.pos.toFloat());
         Vector3 east, north;
@@ -1905,6 +1914,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 if (Vector3Length(h) > 0.5f) {
                     a.heading = atan2f(Vector3DotProduct(h, north), Vector3DotProduct(h, east));
                     a.windUpAt = -1.0; a.state = State::Walk; steer = true; speed = std::max(speed, s.walk);
+                } else if (Vector3Distance(a.home, curPos) > 3.0f) { // (#1717) its home straight below (stranded over its cave by
+                    a.pos = a.prevPos = DVec3(a.home);                  // the old surface fallback): back down to it
+                    a.windUpAt = -1.0; a.moveSpeed = 0.0f;
                 }
             }
         }
