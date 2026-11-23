@@ -445,7 +445,7 @@ namespace {
         });
         add("bake 28 coke", [] { static bool fed = false; if (!fed) { fed = true; Give("coke_oven", "coal", 56); } return Collect("coke_oven", "coke", 28); });
         add("make 110 steel", [] { static bool fed = false; if (!fed) { fed = true; Give("blast_furnace", "iron_ingot", 110); Give("blast_furnace", "coke", 28); } return Collect("blast_furnace", "steel_ingot", 110); });
-        add("press 110 steel plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "steel_ingot", 110); } return Collect("press", "steel_plate", 110); });
+        add("press 96 steel plates (14 ingots stay for rods and screws, #1614)", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "steel_ingot", 96); } return Collect("press", "steel_plate", 96); });
         add("pen two hornhides in a ring of fences (then take their hide)", [] {
             static int phase = 0;
             if (phase == 0) {
