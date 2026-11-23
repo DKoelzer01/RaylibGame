@@ -18,7 +18,7 @@ std::string aimNote;
 Int3 base{};
 const Int3 kOut[4] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
 const char* kName[4] = { "east", "west", "north", "south" };
-Int3 WallCell(int f) { return { base.x + 6 * (f - 2), base.y, base.z + 6 }; } // the column's foot (a row of four, 3 m apart)
+Int3 WallCell(int f) { return { base.x + 12 * (f - 2), base.y, base.z + 6 }; } // the column's foot (a row of four, 6 m apart: a camera 2.5 m out stays clear of the next)
 Vector3 At(float x, float y, float z) { return plot->toBody({ x * kCellSize, y * kCellSize, z * kCellSize }); }
 }
 
