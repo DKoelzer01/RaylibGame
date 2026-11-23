@@ -909,10 +909,16 @@ void ApplyLayout(const LayoutMsg& L) {
     for (const Machine& old : ps->machines) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
-        // (#1254) fluid (essence) is not an item: it is lost with its vessel
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0 && !tables.fluid(old.in[i].item)) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0 && !tables.fluid(old.out[i].item)) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
-        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
+        // (#1254) fluid (essence) is not an item: it is lost with its vessel. (#1629) Every stack comes back exactly: a fraction
+        // (0.5 dirt in a chest, #1102: it was skipped, and 2.5 came back as 2) and an item's own record (#1446).
+        auto refund = [&](const Stack& s) {
+            if (Empty(s) || tables.fluid(s.item)) return;
+            ItemOut r; r.item = s.item; r.count = s.count; r.to = L.refundTo; r.centi = s.centi; r.data = s.data;
+            refunds.push_back(r);
+        };
+        for (int i = 0; i < InSlots(old); ++i) refund(old.in[i]);
+        for (int i = 0; i < kSlots; ++i) refund(old.out[i]);
+        refund(old.fuel);
     }
     ps->machines = std::move(next);
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
@@ -3157,6 +3163,50 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     Factory::WaitTicks(2);
     EXPECT_EQ(back("dirt"), 290);
     EXPECT_EQ(back("sand"), 30);
+    Factory::Stop();
+    plots.clear(); plotIndexDirty = true;
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+}
+
+// #1629 (playtest: "Chests with partial slots delete the item when a chest is broken"): a chest removed from the layout (broken)
+// gives back every stack exactly - a fraction with its whole part (2.5 dirt), a fraction alone (0.5 sand), a whole stack (5
+// stone) and an item with its own record (a composed pickaxe, #1446).
+TEST(Factory, ABrokenChestGivesBackEveryStackExactly) {
+    LoadRecipes();
+    Factory::Start();
+    LayoutMsg L{};
+    L.body = 11; L.plot = 3; L.version = 1;
+    std::vector<Int3> cells;
+    for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ dx, dy, dz });
+    L.machines.push_back({ 0, PartType::Chest }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+    { std::lock_guard<std::mutex> q(queueMutex); layoutQueue.push_back(L); }
+    Factory::WaitTicks(2);
+    const std::string record = "head=bronze;w=7";
+    Factory::InsertSlot(11, 3, 0, "dirt", 2, 0, 0, 50);   // 2.5 dirt
+    Factory::InsertSlot(11, 3, 0, "sand", 0, 1, 0, 50);   // 0.5 sand alone
+    Factory::InsertSlot(11, 3, 0, "stone", 5, 2);         // 5 stone
+    Factory::InsertSlot(11, 3, 0, "bronze_pickaxe", 1, 3, 0, 0, record);
+    Factory::WaitTicks(3);
+    { std::lock_guard<std::mutex> v(viewMutex); results.clear(); }
+    LayoutMsg gone{}; // the plot without its chest: broken
+    gone.body = 11; gone.plot = 3; gone.version = 2;
+    { std::lock_guard<std::mutex> q(queueMutex); layoutQueue.push_back(gone); }
+    Factory::WaitTicks(3);
+    long long dirt = 0, sand = 0, stone = 0; int picks = 0; std::string pickRecord;
+    {
+        std::lock_guard<std::mutex> l(viewMutex);
+        for (const ItemOut& r : results) {
+            const std::string id = tables.name(r.item & ~kHotItem);
+            const long long centi = (long long)r.count * 100 + r.centi;
+            if (id == "dirt") dirt += centi; else if (id == "sand") sand += centi; else if (id == "stone") stone += centi;
+            else if (id == "bronze_pickaxe") { picks += r.count; pickRecord = r.data; }
+        }
+    }
+    EXPECT_EQ(dirt, 250) << "2.5 dirt (2 came back: the fraction was dropped)";
+    EXPECT_EQ(sand, 50) << "0.5 sand (a fraction-only stack came back as nothing)";
+    EXPECT_EQ(stone, 500);
+    EXPECT_EQ(picks, 1);
+    EXPECT_EQ(pickRecord, record) << "the pickaxe keeps its own record";
     Factory::Stop();
     plots.clear(); plotIndexDirty = true;
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
