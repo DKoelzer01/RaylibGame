@@ -1047,8 +1047,9 @@ void RiverNetwork::setFlowState(const std::vector<std::pair<int, float>>& cur, c
 }
 
 int RiverNetwork::pieceBeyond(int piece, Vector3 centre, float dist) const {
-    if (piece < 0 || piece >= (int)pieces.size()) return -1;
-    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
+    // Legacy (non-bake) networks never fill nodeParent: no downstream chain to walk (#1673).
+    if (!bake || piece < 0 || piece >= (int)pieces.size() || piece >= (int)nodeParent.size()) return -1;
+    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && k < (int)nodeParent.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
         if (Vector3Distance(pieces[k].a, centre) > dist) return k;
     return -1;
 }
