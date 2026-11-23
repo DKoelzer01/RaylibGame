@@ -734,33 +734,6 @@ bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vecto
         }
         if (!moved) break;
     }
-    // (#1732) Step up onto a part: grounded, the feet sphere against a part's side (a near-vertical face) whose top is within
-    // kStepMax: the capsule is lifted onto it when every sphere is clear there. Parts are boxes with vertical sides, so
-    // walking into the next tile (a 0.5 m cell) stopped the player and the walk pressed it back every frame - a bounce,
-    // where a terrain lip's slope slides the sphere up.
-    if (p.plots && grounded && Vector3DotProduct(Vector3Subtract(velocity, frameVel), up) <= 0.5f) {
-        constexpr float kStepMax = 0.55f; // m: a one-cell step (0.5 m) and a little
-        auto partHit = [&](Vector3 worldCentre, Vector3* nOut) {
-            for (auto& pl : p.plots->plots) {
-                Vector3 c = p.toLocal(worldCentre), nl;
-                if (pl->collideSphere(c, radius / p.scale, nl)) { if (nOut) *nOut = p.dirToWorld(nl); return true; }
-            }
-            return false;
-        };
-        Vector3 wallN{};
-        if (partHit(Vector3Add(feet, Vector3Scale(up, offsets[0])), &wallN) && fabsf(Vector3DotProduct(wallN, up)) < 0.3f) {
-            const Vector3 into = Vector3Normalize(Vector3Subtract(Vector3Scale(wallN, -1.0f), Vector3Scale(up, Vector3DotProduct(wallN, up) * -1.0f)));
-            for (float h = 0.05f; h <= kStepMax + 1e-4f; h += 0.05f) {
-                const Vector3 raised = Vector3Add(Vector3Add(feet, Vector3Scale(up, h)), Vector3Scale(into, 0.05f));
-                bool clear = true;
-                for (int si = 0; si < kSamples && clear; ++si) {
-                    const Vector3 c = Vector3Add(raised, Vector3Scale(up, offsets[si]));
-                    clear = !partHit(c, nullptr) && p.densityAt(p.toLocal(c)) < ISO_LEVEL;
-                }
-                if (clear) { feet = raised; onGround = true; break; }
-            }
-        }
-    }
     // Build plot parts: the same capsule spheres pushed out of part shapes (exact convex cells). Only the first
     // kSamples offsets are set (the array is sized for the tallest override).
     if (p.plots)

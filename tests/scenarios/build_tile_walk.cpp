@@ -31,9 +31,18 @@ Vector3 Feet(ScenarioCtx& c) { return c.body->toLocalD(player.position).toFloat(
 Vector3 AtM(float x, float y, float z) { return plot->toBody({ x, y, z }); }  // plot metres -> body-local
 double Height(ScenarioCtx& c) { return Vector3DotProduct(Feet(c), upL); }
 double Along(ScenarioCtx& c) { return plot->toPlot(Feet(c)).x; }              // metres along the floor (plot x)
-double SpeedAlong(ScenarioCtx& c, Vector3 dirL) { // relative to the surface, along a body-local direction
-    const Vector3 surface = c.body->surfaceVelocity(c.body->toWorld(Feet(c)));
-    return Vector3DotProduct(Vector3Subtract(player.velocity, surface), c.body->dirToWorld(dirL));
+// Speed relative to the ground along a body-local direction, from the feet's body-local motion since the last call (doubles:
+// with the frames (Plan 11) player.velocity is already ground-relative near a body, and subtracting surfaceVelocity took the
+// spin off twice). 0 on the first call or when no time passed.
+DVec3 prevFeet{}; double prevT = -1.0, lastSpeed = 0.0;
+double SpeedAlong(ScenarioCtx& c, Vector3 dirL) {
+    const DVec3 now = c.body->toLocalD(player.position);
+    if (prevT >= 0.0 && c.T > prevT) {
+        const DVec3 d = now - prevFeet;
+        lastSpeed = (d.x * dirL.x + d.y * dirL.y + d.z * dirL.z) / (c.T - prevT);
+    }
+    prevFeet = now; prevT = c.T;
+    return lastSpeed;
 }
 void Hold(bool on) { if (on) gFakeHeld |= kW; else gFakeHeld &= ~kW; }
 void Face(ScenarioCtx& c, Vector3 dirL) { player.forward = c.body->dirToWorld(dirL); }
@@ -49,12 +58,18 @@ void PlaceOnFloor(ScenarioCtx& c, float x, float z) {
     const float top = (base.y + 1) * kCellSize;
     player.flyMode = false;
     player.placeAt(c.world, *c.body, c.body->toWorld(AtM(x, top + 0.3f, z)));
+    prevT = -1.0; lastSpeed = 0.0; // a teleport is not a speed
 }
 }
 
-SCENARIO("build/tile-walk") {
+void BuildTileWalk(ScenarioDef& s, ScenarioWorld world);
+SCENARIO("build/tile-walk") { BuildTileWalk(s, ScenarioWorld::Sandbox); }
+// On the planet, 60 km from its centre, where a plot's positions pass through float transforms (#1732's playtest).
+SCENARIO("build/tile-walk-planet") { BuildTileWalk(s, ScenarioWorld::Planet); }
+
+void BuildTileWalk(ScenarioDef& s, ScenarioWorld world) {
     s.tags = { "build", "physics" };
-    s.world = ScenarioWorld::Sandbox;
+    s.world = world;
     s.args = { "--day" };
     s.timeout = 120.0;
     s.step("build the tile floor, the step and the wall", 20.0, [](ScenarioCtx& c) {
