@@ -47,7 +47,15 @@ struct MbCatalog {
     std::map<std::string, int> casingTier;                      // casing id -> tier
     std::map<std::string, std::pair<std::string, int>> hatches; // hatch id -> kind, tier
     const MbDef* find(const std::string& id) const;
+    // (#1429 PR 2) ordered part lists: the index is a placed part's Part::material, so the order is the file's (deterministic)
+    std::vector<std::string> controllers, casings, hatchIds; // at most 256 each
 };
+
+// (#1429 PR 2) The multiblock parts: one PartType per role (MbController, MbCasing, MbHatch), Part::material = the index in
+// the catalog's list for that role.
+enum class PartType : uint8_t; // plots.h
+bool Multiblock_ItemPart(const std::string& item, PartType& type, int& material); // true when the item is a controller, casing or hatch
+const char* Multiblock_PartItem(PartType type, int material);                     // its item id, or "" when out of range
 
 // Parse; errors appended as "line N: message". Bad blocks are skipped, good ones kept.
 MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* errors);

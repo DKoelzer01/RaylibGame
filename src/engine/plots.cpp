@@ -2,6 +2,7 @@
 #include "gpumem.h"
 #include "worldtypes.h"
 #include "machinetiers.h"
+#include "multiblock.h"
 
 #include <raymath.h>
 #include <rlgl.h>
@@ -75,6 +76,7 @@ const char* PartName(PartType t) {
         case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
         case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
+        case PartType::MbController: return "multiblock controller"; case PartType::MbCasing: return "machine casing"; case PartType::MbHatch: return "machine hatch"; // (#1429)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -199,6 +201,10 @@ const char* PartCostItem(PartType t) {
         case PartType::StressGauge: return "stress_gauge";
         case PartType::WaterWheel: return "water_wheel"; // (#1270)
         case PartType::Windmill: return "windmill";
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: { // (#1429) the first of the role's list (PartItem gives the part's own)
+            const char* id = Multiblock_PartItem(t, 0);
+            return *id ? id : "stone_brick";
+        }
         default: { const char* m = PartMachineName(t); return m ? m : "stone_brick"; } // shapes: material 0 (#1090: was concrete)
     }
 }
@@ -263,6 +269,7 @@ int BuildMaterialForItem(const char* item) {
 }
 const char* PartItem(const Part& p) {
     if (IsShape(p.type)) return GetBuildMaterial(p.material).item;
+    if (IsMultiblockPart(p.type)) { const char* id = Multiblock_PartItem(p.type, p.material); if (*id) return id; } // (#1429)
     if (p.material > 0 && IsMachine(p.type)) { // (#1427 L7a) a tiered machine's variant: its step in the material
         static std::mutex m;
         static std::map<std::pair<int, int>, std::string> names; // (nodes never move: the pointers stay good)
@@ -335,6 +342,9 @@ static Color PartColor(PartType t) {
         case PartType::StressGauge: return { 160, 120, 76, 255 };
         case PartType::Millstone: return { 140, 138, 132, 255 };
         case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: return { 146, 108, 68, 255 };
+        case PartType::MbCasing: return { 142, 118, 92, 255 };     // (#1429) grey-bronze
+        case PartType::MbController: return { 58, 60, 68, 255 };   // dark metal
+        case PartType::MbHatch: return { 104, 120, 140, 255 };     // blue-grey
         default: return { 168, 166, 158, 255 };                                                          // concrete
     }
 }
@@ -373,6 +383,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Conveyor: return PatConveyor;
         case PartType::Cable: return PatCable;
         case PartType::Pipe: case PartType::Outlet: return PatMetal;
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: return PatMetal; // (#1429)
         case PartType::Farmland: return PatFarmland;
         case PartType::Torch: return PatLog; // the shaft; machinemodels draws the flame
         case PartType::Snare: return PatPlanks; // a low wooden frame; machinemodels draws the noose and a catch
@@ -409,6 +420,9 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
             for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) out.push_back({ { x, y, 0 }, s });
             break;
         }
+        case PartType::MbController: case PartType::MbCasing: case PartType::MbHatch: // (#1429) one cell each
+            out.push_back({ { 0, 0, 0 }, full });
+            break;
         case PartType::Block: case PartType::Chest: case PartType::Generator: case PartType::Furnace: case PartType::Macerator: case PartType::Battery:
         case PartType::Kiln: case PartType::CokeOven: case PartType::BlastFurnace: case PartType::Boiler:
         case PartType::ForgeHammer: case PartType::AlloySmelter: case PartType::SteamMacerator:

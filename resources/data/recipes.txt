@@ -254,3 +254,9 @@ valve 1              = bronze_plate 1, iron_spring 1, iron_screw 2
 lv_motor 1           = steel_rod 2, copper_wire 4, iron_plate 1
 lv_pump 1            = lv_motor 1, valve 1, cable 1, steel_screw 2
 lv_heating_coil 1    = copper_wire 8, steel_screw 1
+# (#1429) GUESS counts: multiblock parts
+bronze_casing 1      = bronze_plate 4, bronze_screw 4, bronze_rod 2
+steel_casing 1       = steel_plate 4, steel_screw 4, steel_rod 2
+fluid_in_hatch 1     = bronze_casing 1, valve 1, bronze_plate 2
+fluid_out_hatch 1    = bronze_casing 1, valve 1, bronze_plate 2
+large_tank_controller 1 = bronze_casing 1, mechanism 1, glass 2

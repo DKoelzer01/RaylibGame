@@ -30,3 +30,10 @@ compressor_mv | tier 5
 cutter_mv     | tier 5
 compressor_hv | tier 6
 cutter_hv     | tier 6
+
+# (#1429) the multiblock parts come with tier 3
+bronze_casing | tier 3
+steel_casing  | tier 3
+fluid_in_hatch | tier 3
+fluid_out_hatch | tier 3
+large_tank_controller | tier 3

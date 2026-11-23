@@ -1,4 +1,5 @@
 #include "multiblock.h"
+#include "plots.h"
 #include "utils/logger.h"
 
 #include <algorithm>
@@ -136,10 +137,16 @@ MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* er
             continue;
         }
         if (!cur.open) {
-            if (kw == "casing" && w.size() == 4 && w[2] == "tier") cat.casingTier[w[1]] = atoi(w[3].c_str());
+            if (kw == "casing" && w.size() == 4 && w[2] == "tier") {
+                cat.casingTier[w[1]] = atoi(w[3].c_str());
+                if (std::find(cat.casings.begin(), cat.casings.end(), w[1]) == cat.casings.end()) cat.casings.push_back(w[1]);
+            }
             else if (kw == "hatch" && w.size() == 6 && w[2] == "kind" && w[4] == "tier") {
                 if (!IsHatchKind(w[3])) err(lineNo, "unknown hatch kind '" + w[3] + "'");
-                else cat.hatches[w[1]] = { w[3], atoi(w[5].c_str()) };
+                else {
+                    cat.hatches[w[1]] = { w[3], atoi(w[5].c_str()) };
+                    if (std::find(cat.hatchIds.begin(), cat.hatchIds.end(), w[1]) == cat.hatchIds.end()) cat.hatchIds.push_back(w[1]);
+                }
             }
             else err(lineNo, "unexpected '" + kw + "' outside a multiblock");
             continue;
@@ -226,7 +233,31 @@ MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* er
             if (!cat.casingTier.count(p.casing)) { err(p.line, "casing '" + p.casing + "' is not declared by a casing line"); ok = false; }
         if (!ok) cat.defs.erase(cat.defs.begin() + i);
     }
+    // (#1429 PR 2) the controllers, in definition order (the index is a placed part's material: saved)
+    for (const MbDef& d : cat.defs)
+        for (const MbLegend& l : d.legend)
+            if (l.role == MbRole::Controller && std::find(cat.controllers.begin(), cat.controllers.end(), l.id) == cat.controllers.end()) cat.controllers.push_back(l.id);
+    if (cat.controllers.size() > 256) err(0, "more than 256 controllers (a part's material is a byte)");
+    if (cat.casings.size() > 256) err(0, "more than 256 casings (a part's material is a byte)");
+    if (cat.hatchIds.size() > 256) err(0, "more than 256 hatches (a part's material is a byte)");
     return cat;
+}
+
+bool Multiblock_ItemPart(const std::string& item, PartType& type, int& material) {
+    const MbCatalog& c = Multiblock_All();
+    const struct { const std::vector<std::string>& list; PartType t; } roles[3] = { { c.controllers, PartType::MbController }, { c.casings, PartType::MbCasing }, { c.hatchIds, PartType::MbHatch } };
+    for (const auto& r : roles) {
+        const auto it = std::find(r.list.begin(), r.list.end(), item);
+        if (it != r.list.end() && it - r.list.begin() < 256) { type = r.t; material = (int)(it - r.list.begin()); return true; }
+    }
+    return false;
+}
+
+const char* Multiblock_PartItem(PartType type, int material) {
+    const MbCatalog& c = Multiblock_All();
+    const std::vector<std::string>* list = type == PartType::MbController ? &c.controllers : type == PartType::MbCasing ? &c.casings : type == PartType::MbHatch ? &c.hatchIds : nullptr;
+    if (!list || material < 0 || material >= (int)list->size() || material >= 256) return "";
+    return (*list)[material].c_str();
 }
 
 const MbCatalog& Multiblock_All() {
@@ -706,5 +737,61 @@ TEST(Multiblock, TheGameFileParses) {
     const MbCatalog cat = Multiblock_Parse(ss.str(), &errors);
     for (const std::string& e : errors) ADD_FAILURE() << e;
     EXPECT_GE(cat.defs.size(), 1u);
+}
+
+// (#1429 PR 2) every id of the real catalog's three lists is a part item, and back
+TEST(Multiblock, PartItemsRoundTrip) {
+    const MbCatalog& cat = Multiblock_All();
+    ASSERT_FALSE(cat.controllers.empty());
+    ASSERT_FALSE(cat.casings.empty());
+    ASSERT_FALSE(cat.hatchIds.empty());
+    const struct { const std::vector<std::string>& list; PartType t; } roles[3] = { { cat.controllers, PartType::MbController }, { cat.casings, PartType::MbCasing }, { cat.hatchIds, PartType::MbHatch } };
+    for (const auto& r : roles)
+        for (int i = 0; i < (int)r.list.size(); ++i) {
+            PartType t = PartType::Count; int m = -1;
+            ASSERT_TRUE(Multiblock_ItemPart(r.list[i], t, m)) << r.list[i];
+            EXPECT_EQ((int)t, (int)r.t) << r.list[i];
+            EXPECT_EQ(m, i) << r.list[i];
+            EXPECT_STREQ(Multiblock_PartItem(r.t, i), r.list[i].c_str());
+            EXPECT_STREQ(PartItem(Part{ r.t, { 0, 0, 0 }, 0, (uint8_t)i }), r.list[i].c_str()) << "a placed part gives its item back";
+        }
+    PartType t = PartType::Count; int m = -1;
+    EXPECT_FALSE(Multiblock_ItemPart("iron_plate", t, m));
+    EXPECT_FALSE(Multiblock_ItemPart("", t, m));
+    EXPECT_STREQ(Multiblock_PartItem(PartType::MbCasing, (int)cat.casings.size()), "");
+    EXPECT_STREQ(Multiblock_PartItem(PartType::Cube, 0), "");
+}
+
+// (#1429 PR 2) a large tank built of real Part structs validates through PartItem
+TEST(Multiblock, ValidatesRealParts) {
+    const MbCatalog& cat = Multiblock_All();
+    const MbDef* d = cat.find("large_tank");
+    ASSERT_NE(d, nullptr);
+    const int glass = BuildMaterialForItem("glass");
+    ASSERT_GE(glass, 0);
+    const MbInt3 at{ 10, 5, 10 };
+    World ids;
+    Stamp(ids, *d, at, 0, 1, 2); // two stretch layers
+    std::map<std::tuple<int, int, int>, Part> parts;
+    for (const auto& [k, id] : ids) {
+        PartType t = PartType::Cube; int m = 0;
+        if (!Multiblock_ItemPart(id, t, m)) { ASSERT_EQ(id, "glass"); m = glass; }
+        parts[k] = Part{ t, { std::get<0>(k), std::get<1>(k), std::get<2>(k) }, 0, (uint8_t)m };
+    }
+    const auto look = [&parts](MbInt3 p) { const auto it = parts.find({ p.x, p.y, p.z }); return it == parts.end() ? std::string() : std::string(PartItem(it->second)); };
+    MbResult r = Multiblock_Validate(*d, cat, look, at, 0, 1);
+    EXPECT_TRUE(r.formed) << r.problem;
+    EXPECT_EQ(r.hatchCount["fluid_in"], 1);
+    EXPECT_EQ(r.hatchCount["fluid_out"], 1);
+    // a steel casing in a bronze casing's place is fine (a better casing); a hatch part where glass goes is not
+    const MbInt3 casingCell = Multiblock_ToWorld(*d, { 0, 0, 0 }, at, 0, 1, 1);
+    PartType ct; int cm = 0;
+    ASSERT_TRUE(Multiblock_ItemPart("steel_casing", ct, cm));
+    parts[{ casingCell.x, casingCell.y, casingCell.z }] = Part{ ct, { casingCell.x, casingCell.y, casingCell.z }, 0, (uint8_t)cm };
+    EXPECT_TRUE(Multiblock_Validate(*d, cat, look, at, 0, 1).formed);
+    const MbInt3 glassCell = Multiblock_ToWorld(*d, { 0, 1, 0 }, at, 0, 1, 1);
+    ASSERT_TRUE(Multiblock_ItemPart("fluid_in_hatch", ct, cm));
+    parts[{ glassCell.x, glassCell.y, glassCell.z }] = Part{ ct, { glassCell.x, glassCell.y, glassCell.z }, 0, (uint8_t)cm };
+    EXPECT_FALSE(Multiblock_Validate(*d, cat, look, at, 0, 1).formed);
 }
 #endif
