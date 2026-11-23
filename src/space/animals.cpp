@@ -1658,7 +1658,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         }
         if (cs && CreatureTurnRules()) {
             if ((CreatureTurnMask() & 1) && a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
-            else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo) { // (an attack: a thief going for a pile turns freely, else it circles the pile)
+            else if ((CreatureTurnMask() & 2) && a.state == State::Hunt && !goingTo && huntDist < 6.0f) { // (close in, where getting behind it matters; beyond, it paths and turns freely: a thief at a distance missed its pile)
                 constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
                 float d = a.heading - a.prevHeading;
                 d = atan2f(sinf(d), cosf(d));
