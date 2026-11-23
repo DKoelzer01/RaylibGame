@@ -2344,6 +2344,7 @@ void UpdateRiverFlow() {
     const float simDt = wallTime ? dt : (float)steps * 0.05f / (float)kSubsteps;
     static const bool flowLog = EnvFlag("RAYLIBGAME_RIVERFLOW_LOG"); // diagnostics: each reach's measure once a second
     static std::vector<int> changed;
+    std::vector<std::pair<uint64_t, const RiverNetwork*>> nets; // the distinct networks of the sites
     for (auto& s : sites) {
         Planetoid* body = Planetoid::find(s->body);
         const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
@@ -2397,10 +2398,14 @@ void UpdateRiverFlow() {
                 const int up = s->releases[sp.rel].upPiece;
                 sp.scale = up >= 0 ? std::clamp(net->flowOf(up), 0.0f, 1.5f) : 1.0f;
             }
+        if (std::find(nets.begin(), nets.end(), std::make_pair(s->body, net)) == nets.end()) nets.push_back({ s->body, net });
+    }
+    // Each network eases once a tick, however many sites sit on its body (#1676).
+    for (const auto& [bodyId, net] : nets) {
         changed.clear();
         if (!net->stepFlow(std::min(dt, 2.0f), changed)) continue; // a long gap (a load, a stall) must not jump the river: it eases at its speed
         for (int piece : changed)
-            if (refreshQueued.insert({ s->body, piece }).second) refreshQueue.push_back({ s->body, piece });
+            if (refreshQueued.insert({ bodyId, piece }).second) refreshQueue.push_back({ bodyId, piece });
     }
 }
 
