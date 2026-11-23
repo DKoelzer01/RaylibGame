@@ -54,10 +54,14 @@ SCENARIO("perf/factory-base") {
         S.t0 = c.T;
         return true;
     });
-    s.step("warm-up", kBudgetWarmup + 5.0, [](ScenarioCtx& c) {
+    s.step("warm-up", kBudgetSettleCap + 5.0, [](ScenarioCtx& c) {
         Factory::Sync(c.world);
         Orbit(c, c.T - S.t0);
-        return c.T - S.t0 > kBudgetWarmup;
+        c.waitingFor("the world to settle");
+        static BudgetSettle settle;
+        if (!settle.done(c)) return false;
+        Factory::ResetTickStats(); // the tick mean and p99 below cover the timed window only (one ring of samples)
+        return true;
     });
     s.step("measure", kBudgetMeasure + 10.0, [](ScenarioCtx& c) {
         Factory::Sync(c.world);

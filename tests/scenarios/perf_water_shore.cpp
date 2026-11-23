@@ -1,16 +1,16 @@
 // perf/water-shore (#1690): a budget scene. Planet; the nearest sea shore (found as in water/beach), the camera 1.7 m over
 // the beach walking along the waterline at 3 m/s for 20 s after 5 s of warm-up (waves, shore foam, the fluid bricks of the
-// shore and any river mouth in view). Frame mean and p95, and the fluid step's mean (the scene's own cost).
+// shore and any river mouth in view). Frame mean and p95, and the water render pass's CPU and GPU time (the scene's own cost).
 // Limits live in tools/ci/perf_budgets.txt (runner only).
 #include "perf_budget.h"
-#include "fluid.h"
+#include "profiler.h"
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
 
 namespace {
-struct St { BudgetFrames frames; bool found = false; Vector3 sea{}, up{}; double fluidSum = 0.0, fluidWorst = 0.0; int n = 0; } S;
+struct St { BudgetFrames frames; bool found = false; Vector3 sea{}, up{}; } S;
 void Walk(ScenarioCtx& c, double t) {
     const float R = c.field->radius;
     const Vector3 up = Vector3Normalize(S.up);
@@ -51,24 +51,24 @@ SCENARIO("perf/water-shore") {
         if (!c.check("a sea shore within 4 km of the start", S.found)) c.fail("no shore");
         return true;
     });
-    s.step("warm-up", 60.0, [](ScenarioCtx& c) {
+    s.step("warm-up", kBudgetSettleCap + 5.0, [](ScenarioCtx& c) {
         if (!S.found) return true;
         Walk(c, 0.0);
-        c.waitingFor("the shore built (an idle world), then 5 s");
-        static double idleAt = -1.0;
-        if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) idleAt = c.t;
-        return idleAt >= 0.0 && c.t > idleAt + kBudgetWarmup;
+        c.waitingFor("the world to settle");
+        static BudgetSettle settle;
+        return settle.done(c);
     });
     s.step("measure", kBudgetMeasure + 10.0, [](ScenarioCtx& c) {
         if (!S.found) return true;
+        if (c.t < 0.02) Profiler_Reset(); // the zone means below cover the timed window only
         Walk(c, c.t);
         S.frames.frame();
-        const double ms = Fluid::GetStats().stepMs; S.fluidSum += ms; S.fluidWorst = std::max(S.fluidWorst, ms); ++S.n;
         c.waitingFor("the timed window");
         if (c.t <= kBudgetMeasure) return false;
         S.frames.report(c);
-        c.metric("fluid step mean", S.n ? S.fluidSum / S.n : 0.0, "ms");
-        c.metric("fluid step worst", S.fluidWorst, "ms");
+        // (Fluid::GetStats().stepMs is the local fluid sim only: 0 on a plain shore.) The sea's cost is its render pass.
+        c.metric("water pass gpu mean", std::max(0.0, Profiler_ZoneMeanMs("gpu:water")), "ms");
+        c.metric("water pass cpu mean", std::max(0.0, Profiler_ZoneMeanMs("cpu:water")), "ms");
         return true;
     });
 }

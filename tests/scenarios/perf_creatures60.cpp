@@ -51,10 +51,12 @@ SCENARIO("perf/creatures-60") {
         c.gt("creatures spawned", Animals_Count() - S.count0, 50.0);
         return true;
     });
-    s.step("warm-up", kBudgetWarmup + 5.0, [](ScenarioCtx& c) {
+    s.step("warm-up", kBudgetSettleCap + 5.0, [](ScenarioCtx& c) {
         survival.health = 100.0f; survival.dead = false;
         Orbit(c, c.t);
-        return c.t > kBudgetWarmup;
+        c.waitingFor("the world to settle");
+        static BudgetSettle settle;
+        return settle.done(c);
     });
     s.step("measure", kBudgetMeasure + 10.0, [](ScenarioCtx& c) {
         survival.health = 100.0f; survival.dead = false;

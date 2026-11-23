@@ -18,7 +18,7 @@ perf/creatures-60 frame p95 0
 perf/creatures-60 animal update mean 0
 perf/water-shore frame mean 0
 perf/water-shore frame p95 0
-perf/water-shore fluid step mean 0
+perf/water-shore water pass gpu mean 0
 perf/factory-base frame mean 0
 perf/factory-base frame p95 0
 perf/factory-base factory tick mean 0
