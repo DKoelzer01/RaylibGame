@@ -203,6 +203,22 @@ static void UnloadShadowmapRenderTexture(RenderTexture2D target) {
 // Scene
 // ---------------------------------------------------------------------------------------------
 
+// (#1603) The star cubemap (skybox.png, 32 MB on the GPU), shared: the menu's scene and the world's each loaded their own.
+namespace {
+    Texture2D gSkyCube{};
+    int gSkyRefs = 0;
+    Texture2D SkyCubemap_Acquire() {
+        if (gSkyRefs++ == 0) {
+            GpuMemTag gm_("sky"); // VRAM accounting (#302)
+            Image img = LoadImage("resources/skybox.png");
+            gSkyCube = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);
+            UnloadImage(img);
+        }
+        return gSkyCube;
+    }
+    void SkyCubemap_Release() { if (gSkyRefs > 0 && --gSkyRefs == 0) { UnloadTexture(gSkyCube); gSkyCube = Texture2D{}; } }
+}
+
 Scene::Scene(std::string name, bool isActive)
     : name(name), isActive(isActive),
       rootObject("root", "root", {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, WHITE, 1.0f)
@@ -216,9 +232,7 @@ Scene::Scene(std::string name, bool isActive)
     SetShaderValue(sky, GetShaderLocation(sky, "environmentMap"), &kCubemapMap, SHADER_UNIFORM_INT);
     SetShaderValue(sky, GetShaderLocation(sky, "doGamma"), &kZero, SHADER_UNIFORM_INT);
     SetShaderValue(sky, GetShaderLocation(sky, "vflipped"), &kZero, SHADER_UNIFORM_INT);
-    Image img = LoadImage("resources/skybox.png");
-    skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = LoadTextureCubemap(img, CUBEMAP_LAYOUT_AUTO_DETECT);
-    UnloadImage(img);
+    skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture = SkyCubemap_Acquire(); // (#1603) one for both scenes (menu, world)
 
     // Materials. LoadMaterialDefault allocates the maps array once; we own it for the scene's lifetime.
     terrainMaterial = LoadMaterialDefault();
@@ -1170,7 +1184,7 @@ void Scene::drawUI(int gamestate) {
 Scene::~Scene() {
     if (skybox.meshCount > 0) {
         UnloadShader(skybox.materials[0].shader);
-        UnloadTexture(skybox.materials[0].maps[MATERIAL_MAP_CUBEMAP].texture);
+        SkyCubemap_Release();
         UnloadModel(skybox);
     }
     if (terrainTexturesLoaded) {

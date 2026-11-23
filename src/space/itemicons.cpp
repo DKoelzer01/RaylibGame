@@ -9,6 +9,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "gpumem.h"
 
 // Icons are painted into a float canvas from signed distance functions: each shape is anti-aliased
 // (coverage from the distance), shaded (light from the top left), and edged with a darker outline of
@@ -755,6 +756,7 @@ void ItemIcons_Init() {
         });
     for (auto& th : pool) th.join();
     for (int i = 0; i < n; ++i) cellOf[keys[i]] = i;
+    GpuMemTag gm_("item icons"); // VRAM accounting (#302, #1603)
     atlas = LoadTextureFromImage(atlasImage);
     GenTextureMipmaps(&atlas);
     SetTextureFilter(atlas, TEXTURE_FILTER_TRILINEAR);

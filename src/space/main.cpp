@@ -14143,6 +14143,7 @@ int main(int argc, char** argv)
                         if (bench) printf("bench: loading screen after a spawn: %d frames, %.2f s; the bar never went back: %s (worst step %.4f), biggest one-frame step %.3f\n",
                                           loadFrames, GetTime() - loadStart, barLowest >= 0.0f ? "yes" : "NO", barLowest, barJump);
                         loading = false; spawnLoad = false;
+                        Slideshow_Unload(); // (#1603) its textures (4 MB each) until the next menu or loading screen loads one again
                     }
                 }
                 // (No per-frame cursor warp: the cursor is locked with DisableCursor while playing, #204 / #205.)
