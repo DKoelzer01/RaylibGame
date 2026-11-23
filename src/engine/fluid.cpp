@@ -2653,6 +2653,68 @@ float Fluid::VolumeAbove(const Planetoid& body, Vector3 local, float radius, flo
     return (float)vol;
 }
 
+namespace {
+    // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry): 0, 10 (a spring) or 100.
+    float GeneratedWaterAt(const Planetoid& body, Vector3 local, float radius) {
+        if (WaterField::CellFill(*WaterField::Current(), body.id, local, 0) >= 0) return 0.0f;
+        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+        if (!pf) return 0.0f;
+        const float d = Vector3Length(local);
+        const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
+        float level = pf->seaLevelRadius();
+        const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
+        if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
+        if (d - radius < level && pf->radius + pf->elevation(dir) < level) return ws.kind == 3 ? 10.0f : 100.0f;
+        return 0.0f;
+    }
+}
+
+bool Fluid::AnyWaterNear(const Planetoid& body, Vector3 local, float radius, float minVolume) {
+    // (#1736) WaterAt's cube is (2 * radius / 0.25 m)^3 cells per site (2 M at 16 m): too slow for a yes/no every 0.5 s.
+    // Here: only the bricks the cube touches (a handful of hash lookups), only those the solver says hold water (kinds
+    // bit 0), and at most kCellBudget cell reads in all. A budget that runs out with a wet brick in reach answers yes
+    // (this is a "look first" test; a false yes only costs the caller its precise follow-up).
+    constexpr int kCellBudget = 20000;
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    int budget = kCellBudget;
+    float total = 0.0f;
+    const float cellVol = WaterField::CellVolume();
+    for (const WaterField::Site& s : snapNow->sites) {
+        if (s.body != body.id) continue;
+        // Site bounds (body-local, axis-aligned) against the query box.
+        if (local.x + radius < s.lo.x || local.x - radius > s.hi.x || local.y + radius < s.lo.y || local.y - radius > s.hi.y ||
+            local.z + radius < s.lo.z || local.z - radius > s.hi.z) continue;
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int R = (int)ceilf(radius / WaterField::CellSize());
+        const int ci0 = (int)floorf(fx) - R, cj0 = (int)floorf(fy) - R, ck0 = (int)floorf(fz) - R;
+        const int ci1 = (int)floorf(fx) + R, cj1 = (int)floorf(fy) + R, ck1 = (int)floorf(fz) + R;
+        using namespace WaterField;
+        for (int bk = FloorDiv(ck0, kBrick); bk <= FloorDiv(ck1, kBrick); ++bk)
+            for (int bj = FloorDiv(cj0, kBrick); bj <= FloorDiv(cj1, kBrick); ++bj)
+                for (int bi = FloorDiv(ci0, kBrick); bi <= FloorDiv(ci1, kBrick); ++bi) {
+                    const Brick* b = s.brick(bi, bj, bk);
+                    if (!b || !(b->kinds & 1)) continue; // no water (kind 0) in the brick
+                    const int i0 = std::max(ci0, bi * kBrick), i1 = std::min(ci1, bi * kBrick + kBrick - 1);
+                    const int j0 = std::max(cj0, bj * kBrick), j1 = std::min(cj1, bj * kBrick + kBrick - 1);
+                    const int k0 = std::max(ck0, bk * kBrick), k1 = std::min(ck1, bk * kBrick + kBrick - 1);
+                    for (int k = k0; k <= k1; ++k)
+                        for (int j = j0; j <= j1; ++j)
+                            for (int i = i0; i <= i1; ++i) {
+                                const int ix = CellIdx(i - bi * kBrick, j - bj * kBrick, k - bk * kBrick);
+                                const uint8_t fl = b->flags[ix];
+                                if (CellKind(fl) != 0) continue;
+                                total += (fl & kSource) ? 100.0f : b->fill[ix] / 255.0f * cellVol;
+                                if (total > minVolume) return true;
+                            }
+                    budget -= (i1 - i0 + 1) * (j1 - j0 + 1) * (k1 - k0 + 1);
+                    if (budget <= 0) return true;
+                }
+    }
+    // Generated water, as WaterAt's fallback (cheap: one elevation sample).
+    return total <= 0.0f && GeneratedWaterAt(body, local, radius) > minVolume;
+}
+
 float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
     float total = 0.0f;
     {
@@ -2670,17 +2732,7 @@ float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
         }
     }
     // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry).
-    if (total <= 0.0f && WaterField::CellFill(*WaterField::Current(), body.id, local, 0) < 0) {
-        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
-        if (pf) {
-            const float d = Vector3Length(local);
-            const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
-            float level = pf->seaLevelRadius();
-            const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
-            if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
-            if (d - radius < level && pf->radius + pf->elevation(dir) < level) total = ws.kind == 3 ? 10.0f : 100.0f;
-        }
-    }
+    if (total <= 0.0f) total = GeneratedWaterAt(body, local, radius);
     return total;
 }
 
