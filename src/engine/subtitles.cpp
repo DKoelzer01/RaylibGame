@@ -121,6 +121,12 @@ void Subtitles_SetCaption(const std::string& sound, const std::string& text, boo
     overrides[sound] = c;
 }
 
+void Subtitles_Event(const std::string& text, bool important, const DVec3* pos, const AudioListener& listener) {
+    if (level == SubtitleLevel::Off || text.empty() || (level == SubtitleLevel::Important && !important)) return;
+    SubtitleCaption c; c.text = text; c.important = important;
+    logLines.add(c, pos != nullptr, pos ? Subtitle_Angle(listener, *pos) : 0.0f, GetTime());
+}
+
 void Subtitles_OnSound(const std::string& sound, const DVec3* pos, const AudioListener& listener) {
     if (level == SubtitleLevel::Off) return;
     const auto ov = overrides.find(sound); // (#1635) a creature's own words first
