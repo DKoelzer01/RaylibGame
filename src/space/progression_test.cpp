@@ -391,8 +391,9 @@ namespace {
         });
         add("press 182 blooms into iron with the windmill (its 5 minutes of tier 2)", [] {
             static bool fed = false;
-            if (!fed) { fed = true; Give("press", "iron_bloom", 182); }
-            return Collect("press", "iron_ingot", 182 + 12) && QuestBook_CountOf("wheel_press") >= 300.0;
+            static int carried = 0; // (#1614) what the press's own recipe left of the anvil's ingots (it changes with the recipe)
+            if (!fed) { fed = true; carried = inventory.count("iron_ingot"); Give("press", "iron_bloom", 182); }
+            return Collect("press", "iron_ingot", 182 + carried) && QuestBook_CountOf("wheel_press") >= 300.0;
         });
         add("press 16 bronze plates", [] { static bool fed = false; if (!fed) { fed = true; Give("press", "bronze_ingot", 16); } return Collect("press", "bronze_plate", 16); });
         // Glass first: the steam labs take 2 each.
