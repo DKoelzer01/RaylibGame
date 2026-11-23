@@ -1970,9 +1970,12 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         }
         return false;
     };
+    // (#1639) A weapon (knife, sword, mace, spear, two-handed) always swings: what it hits is the sweep's reach against the
+    // hitboxes below, not the crosshair. Tools and axes still swing only at a creature (else LMB mines, digs or fells).
+    const bool weaponInHand = terrainTool.heldTool.rfind("weapon_", 0) == 0 && gMeleeClass != WeaponClass::Axe; // (composed weapons; not parts or machines named like them)
     MeleeInput mi;
     mi.pressed = live && in.hit(Act::Primary) && !gPrimaryLatch.latched &&
-                 (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
+                 (weaponInHand || gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
     mi.held = live && in.down(Act::Primary) && survival.windedLeft <= 0.0f; // (#1218) winded: no heavies
     mi.block = survival.blocking;
     mi.dodge = survival.dodges != gMeleeDodges; // (#1218) a dodge started
