@@ -452,9 +452,15 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
                 if (!solid && kind && kind != 5 && z <= coveredTo && r - hc < level && r > bed - hc) fl |= kDug;
                 uint8_t tg = 0;
+                // (#1520) The generated water stands on the ORIGINAL ground (the height map's bed): the cell's ground share is
+                // at least the original ground's. A dig beside a river took the sand out of cells straddling its level, and they
+                // turned into river sources up to the level - an infinite source in the hole, under where the bank had stood
+                // over the water ("hidden water voxels in the sand": the hole flooded with no path to the river). Dug space
+                // is fed only by flow from the river's own cells (Plan 4: a channel cut into it still floods).
+                const int shGen = std::max(sh, std::clamp((int)lroundf((bed - (r - hc)) / cs * 255.0f), 0, 255));
                 if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - hc)) / cs * 255.0f), 0, 255);
-                    if ((int)tg - sh > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
+                    if ((int)tg - shGen > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {
                         b.basin = true;
                         faces |= (x == 0 ? 1 : 0) | (x == B - 1 ? 2 : 0) | (y == 0 ? 4 : 0) | (y == B - 1 ? 8 : 0) | (z == 0 ? 16 : 0) | (z == B - 1 && tg == 255 ? 32 : 0);
@@ -462,7 +468,7 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 }
                 if (b.keepFill && !solid && !(fl & kSource) && b.fill[i] > 0) fl |= (b.flags[i] & kKindMask); // kept fluid stays its kind
                 b.flags[i] = fl;
-                const int tf = std::max(0, (int)tg - sh); // the generated level is a height: the ground under it holds no water (#454)
+                const int tf = std::max(0, (int)tg - shGen); // the generated level is a height: the ground under it holds no water (#454), the original ground's included (#1520)
                 b.target[i] = (fl & kSource) ? (uint8_t)tf : 0;
                 if (b.keepFill) { if (solid) b.fill[i] = 0; else if (fl & kSource) b.fill[i] = (uint8_t)tf; else b.fill[i] = (uint8_t)std::min((int)b.fill[i], 255 - sh); }
                 else b.fill[i] = solid ? 0 : (uint8_t)tf;
