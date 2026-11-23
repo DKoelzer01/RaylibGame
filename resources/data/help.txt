@@ -27,7 +27,7 @@ Better tools (bronze, iron, steel...) dig harder rock and work faster.
 
 # Building
 G enters build mode. The mouse wheel picks the shape, R and V rotate it, RMB places, holding LMB removes a part.
-Parts are built from the material in your hand (bricks, planks, logs, concrete...): stone buildings need bricks, crafted from 2 of that stone (Tab); machines are placed from the hotbar like blocks.
+Parts are built from the material in your hand (bricks, planks, logs, iron plate, glass...): stone buildings need bricks, crafted from 2 of that stone (Tab); machines are placed from the hotbar like blocks.
 Parts snap to a 0.5 m grid on a build plot, which starts where you place the first part. B saves the plot you look at as a blueprint; N cycles your blueprints.
 
 # Machines and power
@@ -41,7 +41,7 @@ Water flows into holes and channels you dig next to it. Buckets scoop and pour 1
 Pumps lift water from under them into pipes; outlets pour it out and boilers fill from them. A hand pump (no power) pumps while you hold RMB on it.
 
 # Farming
-Till soil with a shovel or hoe (RMB) to make farmland where you aim. Plant seeds on it (I, half a metre apart) and harvest ripe crops (O). Fields near water grow better; buckets and outlets can water them.
+Till soil with a hoe (RMB) to make farmland where you aim. Plant seeds on it (I, half a metre apart) and harvest ripe crops (O). Fields near water grow better; buckets and outlets can water them.
 
 # Animals
 Animals live in herds. Hold a food an animal eats and it follows you; lead it into a pen of fences and gates (you can walk through a gate, animals can't).

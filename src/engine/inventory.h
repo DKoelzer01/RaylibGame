@@ -31,6 +31,10 @@ struct Recipe {
     bool formShape = false; // (#1614) made by the form table (forms.txt): a component shape, raw material to disassembly
 };
 
+// An item a save may still hold that the game no longer has, and what it becomes on load ("" = keep the id).
+// #1090: lunacrete ("concrete") left the planet game; old stacks turn into stone, 1 for 1.
+const char* RetiredItem(const std::string& id);
+
 class ItemDB {
 public:
     bool load(const char* itemsPath, const char* recipesPath);

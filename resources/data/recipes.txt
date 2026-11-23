@@ -3,10 +3,8 @@ iron_plate 1      = iron_ingot 2
 water 1           = ice 2
 oxygen_canister 1 = water 2, iron_plate 1
 power_cell 1      = iron_plate 2, regolith 4
-concrete 2        = regolith 3, water 1, any_stone 2
 telescope 1       = glass 2, iron_plate 2
 rope 1            = fibre 3
-concrete 2        = any_stone 2, sand 1
 # --- Tier ladder (quest book): hand crafting ---
 crucible_mold 1   = clay 4
 campfire 1        = any_stone 8, any_planks 4
