@@ -80,7 +80,7 @@ constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slop
 constexpr int kShapeCount = (int)(sizeof(kShapes) / sizeof(kShapes[0]));
 const char* PartName(PartType t);
 int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
-const char* PartCostItem(PartType t);       // shapes: concrete (material 0); else the part's own item
+const char* PartCostItem(PartType t);       // shapes: stone brick (material 0); else the part's own item
 const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr
 
 // Building materials: any shape can be built from any of them, costing the material's item.

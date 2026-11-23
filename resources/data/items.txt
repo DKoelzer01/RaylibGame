@@ -10,7 +10,6 @@ iron_plate      | Iron plate      | 200 | 180,180,190 | Refined metal.
 water           | Water           | 200 |  70,130,220 | Drinkable, and splits into oxygen.
 oxygen_canister | Oxygen canister |  20 | 120,200,255 | Refills suit oxygen.
 power_cell      | Power cell      |  20 | 250,220, 80 | Recharges suit power.
-concrete        | Lunacrete       | block | 200,200,190 | Dense building material.
 glass           | Glass           | 200 | 190,225,235 | Melted from sand. Lenses and windows.
 telescope       | Telescope       |   tool | 200,170,110 | T to raise it, wheel to zoom. Spot the moon and the ring from the ground.
 any_planks      | Any planks      | 999 | 166,120, 74 | Planks of any wood: recipes that need wood take whichever planks you carry (saw logs into planks, Tab).

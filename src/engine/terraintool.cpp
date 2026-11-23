@@ -313,7 +313,7 @@ void TerrainTool_Update(Scene& world, const PlayerInput& in, bool editEnabled) {
 static int FillerMaterial(const std::string& item) {
     static const struct { const char* item; VoxelMaterial m; } kFillers[] = {
         { "dirt", VoxelMaterial::Regolith }, { "regolith", VoxelMaterial::Regolith }, { "gravel", VoxelMaterial::Gravel },
-        { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock }, { "concrete", VoxelMaterial::Rock },
+        { "sand", VoxelMaterial::Sand }, { "clay", VoxelMaterial::Clay }, { "stone", VoxelMaterial::Rock },
         // Rock strata (#587): placed rock keeps its kind.
         { "granite", VoxelMaterial::Granite }, { "basalt", VoxelMaterial::Basalt }, { "limestone", VoxelMaterial::Limestone },
         { "marble", VoxelMaterial::Marble }, { "sandstone", VoxelMaterial::Sandstone },

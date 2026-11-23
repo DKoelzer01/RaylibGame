@@ -9144,18 +9144,18 @@ int main(int argc, char** argv)
                         player.spawnOn(world, *p, StartSpawnDir(*p));
                         inventory.clear();
                         Hotbar_Reset(); // empty: put what the test uses on the hotbar (slot 1 stays empty: bare hands)
-                        inventory.add("concrete", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
-                        Hotbar_Bind(1, "concrete"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister"); // the stacks move there (#209)
+                        inventory.add("stone_brick", 20); inventory.add("oak_planks", 10); inventory.add("oxygen_canister", 1);
+                        Hotbar_Bind(1, "stone_brick"); Hotbar_Bind(3, "oak_planks"); Hotbar_Bind(8, "oxygen_canister"); // the stacks move there (#209)
                         const Vector3 home = StartSpawnDirLocal(*p);
                         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 }));
                         const Vector3 d = Vector3Normalize(Vector3Add(home, Vector3Scale(t1, 10.0f / pf->radius)));
                         if (!p->plots) p->plots = std::make_unique<PlotSet>();
                         Plot* plot = p->plots->plotFor(Vector3Scale(d, pf->radius + pf->elevation(d)), 0.0f, true);
-                        Hotbar_Press(1, false); // key 2: concrete
-                        const bool concreteMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("concrete");
-                        const int c0 = inventory.count("concrete");
+                        Hotbar_Press(1, false); // key 2: stone brick
+                        const bool brickMode = buildTool.active && GetBuildMaterial(buildTool.material).item == std::string("stone_brick");
+                        const int c0 = inventory.count("stone_brick");
                         const bool slope = BuildTool_Place(*p, *plot, { PartType::Slope, { 0, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
-                        const int c1 = inventory.count("concrete");
+                        const int c1 = inventory.count("stone_brick");
                         Hotbar_Press(3, false); // key 4: wood
                         const int w0 = inventory.count("oak_planks");
                         const bool beam = BuildTool_Place(*p, *plot, { PartType::Beam4, { 2, 0, 0 }, 0, (uint8_t)buildTool.material }, true);
@@ -9224,17 +9224,17 @@ int main(int argc, char** argv)
                         Hotbar_Press(0, false);
                         const bool saved = SaveWorld(world), loaded = saved && LoadWorldSave(world);
                         Planetoid* q = dynamic_cast<Planetoid*>(world.objects[0].get());
-                        int woodParts = 0, concreteParts = 0;
+                        int woodParts = 0, brickParts = 0;
                         if (q && q->plots)
                             for (auto& pl : q->plots->plots)
                                 for (const Part& part : pl->parts) {
                                     if (part.type == PartType::Count) continue;
                                     if (PartItem(part) == std::string("oak_planks")) ++woodParts;
-                                    if (PartItem(part) == std::string("concrete")) ++concreteParts;
+                                    if (PartItem(part) == std::string("stone_brick")) ++brickParts;
                                 }
-                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && concreteMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && concreteParts == 2;
-                        printf("bench: hotbar: concrete mode %d, slope -%d concrete, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d concrete parts -> %s\n",
-                               concreteMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, concreteParts, ok ? "PASS" : "FAIL");
+                        ok = lastEnds && flyLocked && flyCreative && flyDropped && plainHeld && scopeHeld && brickMode && slope && c0 - c1 == 1 && beam && w0 - w1 == 4 /* a beam is 4 single cubes now, one plank each (#200) */ && block && (before >= ISO_LEVEL ? after >= ISO_LEVEL : fabsf(after - before) < 0.02f) /* the ground beside the block stays ground: #210's exact box carve pulls its density toward the surface (CSG), it doesn't dig */ && used && toolMode && loaded && woodParts == 4 && brickParts == 2;
+                        printf("bench: hotbar: brick mode %d, slope -%d brick, wood beam4 -%d wood, block placed %d (ground outside %.3f -> %.3f), O2 used %d, tool mode %d, save/load %d/%d: %d wood + %d brick parts -> %s\n",
+                               brickMode, c0 - c1, w0 - w1, block, before, after, used, toolMode, saved, loaded, woodParts, brickParts, ok ? "PASS" : "FAIL");
                     }
                     benchHotbar = false;
                 } else if (benchRing && (ringStarted || WorldIdle())) {
@@ -9855,7 +9855,7 @@ int main(int argc, char** argv)
                             minePhase = 2;
                         }
                     } else {
-                        const int fillersBefore = inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete");
+                        const int fillersBefore = inventory.count("stone") + inventory.count("regolith");
                         int built = 0;
                         terrainTool.heldTool = inventory.count("stone") > 0 ? "stone" : "regolith"; // (#1098: placing takes a ground item in hand)
                         for (int b = 0; b < 3; ++b) built += TerrainTool_Stroke(false) ? 1 : 0;
@@ -9863,7 +9863,7 @@ int main(int argc, char** argv)
                         for (const ItemDef& d : itemDB.items()) if (inventory.amount(d.id) > 0.0) inv += " " + d.id + "=" + TextFormat("%.2f", inventory.amount(d.id));
                         printf("bench: mined %d strokes%s, crafted %d times, built %d strokes (fillers %d -> %d); inventory:%s\n",
                                minedStrokes, mineStoppedEarly ? " (hole left arm's reach)" : "", mineCrafted, built, fillersBefore,
-                               inventory.count("stone") + inventory.count("regolith") + inventory.count("concrete"), inv.c_str());
+                               inventory.count("stone") + inventory.count("regolith"), inv.c_str());
                         benchMineStrokes = 0;
                         minePhase = 3;
                     }
@@ -12010,7 +12010,7 @@ int main(int argc, char** argv)
                 if (phase < 2 && GetTime() - t0 > 20.0) { printf("bench: net dig: bob %s, carol %s after 20 s -> FAIL\n", NetClient_StateName(bob.state), NetClient_StateName(carol.state)); benchNetDig = false; }
             }
         }
-        // --test-net-build (#330, with --host <save>, ENABLE_GNS): bob gets 3 concrete (the admin give) and builds beside where
+        // --test-net-build (#330, with --host <save>, ENABLE_GNS): bob gets 3 stone bricks (the admin give) and builds beside where
         // the server has him: a cube into a new plot, a cube on it; then a cube where one is (blocked), one 30 m off (reach),
         // breaks the first (refunded), and a block that needs 4 (cost). carol watches. Checks: both clients got every plot
         // edit in the same order (the new plot first), the server's plot holds the one cube left at the right cell, bob's
@@ -12040,7 +12040,7 @@ int main(int argc, char** argv)
                 else if (phase == 1 && carol.state == NetClient::State::Joined && synced && GetTime() - syncedAt > 2.0) {
                     bob.inventory = &bobInv; carol.inventory = &carolInv;
                     carol.keepPlotLog = true; // replayed into a plot set of her own at the end (the world here is the server's)
-                    Host_Give(bob.welcome.session, "concrete", 3);
+                    Host_Give(bob.welcome.session, "stone_brick", 3);
                     // The anchor: the ground 2 m east of the server's bob.
                     uint64_t bid = 0; DVec3 feet{};
                     bool found = false;
@@ -12057,7 +12057,7 @@ int main(int argc, char** argv)
                 } else if (phase == 2) {
                     constexpr int kSteps = 6;
                     if (step < kSteps && GetTime() - t0 > 0.5 * step) {
-                        Part cube{}; cube.type = PartType::Cube; cube.orient = 0; cube.material = 0; // concrete
+                        Part cube{}; cube.type = PartType::Cube; cube.orient = 0; cube.material = 0; // stone brick
                         Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
                         if (step == 0) NetClient_RequestPart(bob, *body, nullptr, anchor, cube, false, -1);                                  // a new plot
                         else if (step == 1 && plot) { cube.origin = { 0, 1, 0 }; NetClient_RequestPart(bob, *body, plot, anchor, cube, false, -1); } // on top
@@ -12082,7 +12082,7 @@ int main(int argc, char** argv)
                         const Plot* plot = body->plots ? body->plots->byId(bob.lastNewPlot) : nullptr;
                         const bool left = plot && plot->partCount() == 1 && plot->partAt({ 0, 1, 0 }) >= 0 && plot->partAt({ 0, 0, 0 }) < 0;
                         const bool sameOrder = bob.plotEdits == carol.plotEdits && bob.plotOrder == carol.plotOrder && bob.plotEdits == 4; // new plot, 2 places, a break
-                        const double mine = bobInv.amount("concrete"), server = Host_InventoryAmount(bob.welcome.session, "concrete");
+                        const double mine = bobInv.amount("stone_brick"), server = Host_InventoryAmount(bob.welcome.session, "stone_brick");
                         const bool inv = std::fabs(mine - server) < 0.005 && std::fabs(mine - 2.0) < 0.005; // 3 - 2 + 1
                         const auto why = [&](NetPartRefusal r) { return (bob.partRefusedWhy & (1u << (unsigned)r)) != 0; };
                         const bool refusals = why(NetPartRefusal::Blocked) && why(NetPartRefusal::Reach) && why(NetPartRefusal::Cost) && bob.partsRefused == 3;
@@ -12112,7 +12112,7 @@ int main(int argc, char** argv)
                         }
                         const bool ok = Host_PartsApplied() == 3 && left && sameOrder && inv && refusals && replay;
                         printf("bench: net build (#330, 100 ms round trip, 2%% loss): %d parts placed or broken by the server; plot edits bob %d, carol %d, same order %d; "
-                               "the plot holds the top cube only %d; carol's edits replayed make the same plot %d; concrete bob %.2f, server %.2f (want 2) %d; "
+                               "the plot holds the top cube only %d; carol's edits replayed make the same plot %d; bricks bob %.2f, server %.2f (want 2) %d; "
                                "refused: blocked %d, reach %d, cost %d (%d) -> %s\n",
                                Host_PartsApplied(), bob.plotEdits, carol.plotEdits, (int)sameOrder, (int)left, (int)replay, mine, server, (int)inv,
                                (int)why(NetPartRefusal::Blocked), (int)why(NetPartRefusal::Reach), (int)why(NetPartRefusal::Cost), bob.partsRefused, ok ? "PASS" : "FAIL");

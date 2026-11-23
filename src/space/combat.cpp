@@ -589,6 +589,7 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         char id[64] = {};
         long long c = 0;
         if (fscanf(f, " %63s %lld", id, &c) != 2) return true;
+        if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
         if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
         else if ((int)i == g.offHand) g.offHand = -1;
     }
