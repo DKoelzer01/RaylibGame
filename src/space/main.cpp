@@ -2414,6 +2414,21 @@ int main(int argc, char** argv)
                     world.camera.up = upW;
                 }
         } else if (!benchAtSave) world.camera.position = Vector3Add(world.camera.target, benchCamOffset);
+        else if (benchPlanet && !benchCamGiven) {
+            // --at-save: the bench flies the camera from the save's own spot, but nothing set it, so its up stayed the scene's
+            // world +Y: on a planet turned since (or anywhere off its +Y side) the view came up rolled, even upside down
+            // (#1610's world_29 view looked half at the sky). From the player: its eye, its facing, the body's up there.
+            const Vector3 eye = (player.position - world.renderOrigin).toFloat();
+            Planetoid* nb = NearestPlanetoid(world, eye);
+            Vector3 up = player.up;
+            if (nb) { const Vector3 r = Vector3Subtract(eye, (nb->worldPos - world.renderOrigin).toFloat()); if (Vector3Length(r) > 1e-3f) up = Vector3Normalize(r); }
+            if (Vector3Length(up) < 1e-3f) up = { 0, 1, 0 };
+            Vector3 fw = player.forward; // the saved facing (pitch kept)
+            if (Vector3Length(fw) < 1e-4f || fabsf(Vector3DotProduct(Vector3Normalize(fw), up)) > 0.999f) fw = Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
+            world.camera.position = Vector3Add(eye, Vector3Scale(up, player.eyeHeight)); // (eye: the feet)
+            world.camera.target = Vector3Add(world.camera.position, Vector3Normalize(fw));
+            world.camera.up = up;
+        }
         if (benchDay) { // mid-morning over the start: 45 degrees up, from ahead-left (shadows fall toward the camera's right)
             const Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
             const Vector3 side = Vector3CrossProduct(ahead, player.up);
