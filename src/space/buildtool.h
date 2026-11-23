@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include "plots.h" // Part, held by value in PartEdit (#1684)
 
 class Scene;
 class Planetoid;
