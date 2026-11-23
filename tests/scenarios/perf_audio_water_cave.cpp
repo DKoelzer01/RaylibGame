@@ -10,6 +10,7 @@
 #include "profiler.h"
 #include "rivers.h"
 #include "voxel.h"
+#include "waterfield.h"
 #include "world.h"
 #include <raymath.h>
 #include <algorithm>
@@ -97,6 +98,39 @@ SCENARIO("perf/audio-water-cave") {
         c.metric("water within 16 m (m^3)", wat, "m^3", false);
         c.check("AnyWaterNear agrees with WaterAt > 0.2 (a budget overrun may say yes to a no)", any || !(wat > 0.2f));
         c.lt("AnyWaterNear(16 m) ms", newMs, 2.0);
+        return true;
+    });
+    // The dense case: inside simulated water every brick within 16 m exists, so a brick walk still reads the whole cube.
+    // The wet brick with the most bricks within 4 (the 16 m cube at 0.25 m cells) anywhere on the body; both calls at its centre.
+    s.step("old call against new, in water", 5.0, [](ScenarioCtx& c) {
+        const WaterField::SnapshotPtr snap = WaterField::Current();
+        const WaterField::Site* best = nullptr; int bi = 0, bj = 0, bk = 0, bestN = -1;
+        for (const WaterField::Site& s : snap->sites) {
+            if (s.body != c.body->id) continue;
+            for (const auto& kv : s.bricks) {
+                if (!kv.second || !(kv.second->kinds & 1)) continue;
+                const int i = (int)(kv.first >> 22) - 1024, j = (int)((kv.first >> 11) & 2047) - 1024, k = (int)(kv.first & 2047) - 1024;
+                int n = 0;
+                for (int dk = -4; dk <= 4; ++dk) for (int dj = -4; dj <= 4; ++dj) for (int di = -4; di <= 4; ++di) n += s.brick(i + di, j + dj, k + dk) != nullptr;
+                if (n > bestN) { bestN = n; best = &s; bi = i; bj = j; bk = k; }
+            }
+        }
+        if (!best) { c.note("no simulated water on the body: the in-water case is skipped"); return true; }
+        Vector3 lo, hi;
+        best->brickBounds(bi, bj, bk, lo, hi);
+        const Vector3 here = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+        const auto t0 = std::chrono::steady_clock::now();
+        const float wat = Fluid::WaterAt(*c.body, here, 16.0f);
+        const double oldMs = Ms(t0);
+        const auto t1 = std::chrono::steady_clock::now();
+        const bool any = Fluid::AnyWaterNear(*c.body, here, 16.0f, 0.2f);
+        const double newMs = Ms(t1);
+        c.metric("in water: bricks in the 16 m cube (of 729)", bestN, "", false);
+        c.metric("in water: water within 16 m (m^3)", wat, "m^3", false);
+        c.metric("in water: WaterAt(16 m), the old look", oldMs, "ms", false);
+        c.metric("in water: AnyWaterNear(16 m), the new look", newMs, "ms", false);
+        c.check("in water: AnyWaterNear agrees with WaterAt > 0.2", any || !(wat > 0.2f));
+        c.lt("in water: AnyWaterNear(16 m) ms", newMs, 2.0);
         return true;
     });
     s.step("measure", kBudgetMeasure + 10.0, [](ScenarioCtx& c) {
