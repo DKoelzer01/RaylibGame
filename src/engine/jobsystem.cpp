@@ -96,3 +96,36 @@ void JobSystem::workerLoop() {
         if (fg) --foreground; // after the job, so a job that submits follow-ups keeps the count above zero
     }
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+#include <chrono>
+
+// (#1671) A pool job that fans out into parts must finish with a single worker (that worker is the job itself): the old
+// submit-and-spin pattern waited forever for helpers no thread could run.
+TEST(JobSystem, ParallelPartsFromInsideAJobWithOneWorker) {
+    JobSystem js(1);
+    std::atomic<int> sum{ 0 };
+    std::atomic<bool> finished{ false };
+    js.submit(0.0f, [&] {
+        ParallelParts(js, 8, [&](int p) { sum.fetch_add(p + 1); }, 0.0f, JobTag::Other);
+        finished = true;
+    });
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!finished.load() && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5)) std::this_thread::yield();
+    EXPECT_TRUE(finished.load());
+    EXPECT_EQ(sum.load(), 36); // every part ran exactly once
+}
+
+// Helpers dropped before they start (unloadWorld's clearQueued): the caller runs their parts.
+TEST(JobSystem, ParallelPartsWhenHelpersAreDropped) {
+    JobSystem js(1);
+    std::atomic<bool> release{ false };
+    js.submit(0.0f, [&] { while (!release.load()) std::this_thread::yield(); }); // keeps the only worker busy
+    std::atomic<int> runs{ 0 };
+    ParallelParts(js, 4, [&](int) { runs.fetch_add(1); }, 0.0f, JobTag::Other); // its helpers queue behind the busy job
+    js.clearQueued();
+    release = true;
+    EXPECT_EQ(runs.load(), 4);
+}
+#endif

@@ -787,13 +787,7 @@ void RunPass(Grid& g, const Params& p, const std::vector<int>& list, int pass) {
                     for (int local = grp * 64; local < grp * 64 + 64; ++local) ps.cell(slot, local);
         }
     };
-    std::atomic<int> left{ parts - 1 };
-    for (int part = 1; part < parts; ++part) {
-        JobSystem::tagNext(JobTag::Fluid);
-        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-    }
-    run(0);
-    while (left.load() > 0) std::this_thread::yield();
+    ParallelParts(WorldJobs(), parts, run, -3.0f, JobTag::Fluid); // (#1671) no hang with one worker
 }
 
 } // namespace
@@ -820,13 +814,7 @@ void BeginTick(Grid& g, const std::vector<int>& list, int slots) {
             m[0] |= w[0]; m[1] |= w[1];            // and the groups wet now: the first substep lists them and their borders
         }
     };
-    std::atomic<int> left{ parts - 1 };
-    for (int part = 1; part < parts; ++part) {
-        JobSystem::tagNext(JobTag::Fluid);
-        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-    }
-    run(0);
-    while (left.load() > 0) std::this_thread::yield();
+    ParallelParts(WorldJobs(), parts, run, -3.0f, JobTag::Fluid); // (#1671) no hang with one worker
     g.gcur = 0;
     g.groupsFull = false;
 }
