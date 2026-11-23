@@ -1118,9 +1118,9 @@ std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid&
         hill.fill = true;
         ApplyTerrainEdit(body, hill);
         StructureInterior r; r.set = sets[i].name;
-        if (BuildSite(&world, body, *pf, kRingTile + 300 + (uint64_t)i, s, true) < 0 || !body.plots) { r.cells = -1; out.push_back(r); continue; }
+        if (BuildSite(&world, body, *pf, kRingTile + 300 + (uint64_t)i, s, true) < 0 || !body.plots) { r.cells = -1; r.skip = lastSkip; out.push_back(r); continue; }
         Plot* plot = body.plots->plotFor(ground, 0.0f, false);
-        if (!plot || plot->parts.empty()) { r.cells = -1; out.push_back(r); continue; }
+        if (!plot || plot->parts.empty()) { r.cells = -1; r.skip = "no plot or parts there"; out.push_back(r); continue; }
         Int3 lo{ 1 << 20, 1 << 20, 1 << 20 }, hi{ -(1 << 20), -(1 << 20), -(1 << 20) };
         std::vector<std::pair<Int3, CellShape>> fp;
         for (const Part& p : plot->parts) { Footprint(p, fp); for (auto& c : fp) { lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) }; hi = { std::max(hi.x, c.first.x), std::max(hi.y, c.first.y), std::max(hi.z, c.first.z) }; } }

@@ -39,7 +39,7 @@ bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash
 bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Vector3& eye, Vector3& target);
 // Tests (#1637): every set standing on the ground built on the side of a raised hill round the player; per set, the cells
 // inside its walls with no part in them (-1: not built) and how many of those are solid ground.
-struct StructureInterior { std::string set; int cells = 0, solid = 0; };
+struct StructureInterior { std::string set, skip; int cells = 0, solid = 0; }; // skip: why it wasn't built (cells -1)
 std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid& body, Vector3 nearLocal);
 int Structures_SitesBuilt();          // tests: sites built by the world placement
 void Structures_TestFill(Planetoid& body);          // tests: fill every waiting chest now
