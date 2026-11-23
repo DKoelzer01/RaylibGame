@@ -45,7 +45,7 @@ std::string ReadFile(const char* path) {
 std::vector<std::string> gShapes;
 } // namespace
 
-std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::string& materialsText) {
+std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::string& materialsText, std::vector<std::string>* shapesOut) {
     // forms.txt: "hand <shape> | <n> = <form> <n>, ..."  or  "machine <shape> | <machine> | <n> = <form> <n>, ... | ticks | eu"
     std::vector<Rule> rules;
     std::set<std::string> shapes;
@@ -73,7 +73,7 @@ std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::
             rules.push_back(r);
         }
     }
-    gShapes.assign(shapes.begin(), shapes.end());
+    if (shapesOut) shapesOut->assign(shapes.begin(), shapes.end()); // (only the caller's: the game's table keeps its own, tests pass their text)
     // materials.txt: "<id> | <Name> | r,g,b | <forms>"
     std::vector<FormRecipe> out;
     std::istringstream in(materialsText);
@@ -105,7 +105,7 @@ std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::
 }
 
 const std::vector<FormRecipe>& Forms_All() {
-    static const std::vector<FormRecipe> all = Forms_Generate(ReadFile("resources/data/forms.txt"), ReadFile("resources/data/materials.txt"));
+    static const std::vector<FormRecipe> all = Forms_Generate(ReadFile("resources/data/forms.txt"), ReadFile("resources/data/materials.txt"), &gShapes);
     return all;
 }
 const std::vector<std::string>& Forms_Shapes() { Forms_All(); return gShapes; }
@@ -133,5 +133,6 @@ TEST(Forms, OneLinePerShapeGivesEveryMetalItsRecipe) {
     EXPECT_EQ(has("", "iron_screw")->outCount, 2);
     EXPECT_EQ(has("", "brass_screw"), nullptr) << "no rod form: no screw recipe";
     EXPECT_EQ(has("", "zinc_screw"), nullptr) << "no screw form";
+    EXPECT_GE(Forms_Shapes().size(), 6u) << "a test's generate leaves the game's shapes alone (it emptied them on Windows' test order)";
 }
 #endif

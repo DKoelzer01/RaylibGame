@@ -20,7 +20,7 @@ struct FormRecipe {
 };
 
 // The recipes the form table gives for the materials (forms.txt and materials.txt as text: tests pass their own).
-std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::string& materialsText);
+std::vector<FormRecipe> Forms_Generate(const std::string& formsText, const std::string& materialsText, std::vector<std::string>* shapesOut = nullptr);
 // From resources/data (the game's files), loaded once.
 const std::vector<FormRecipe>& Forms_All();
 const std::vector<std::string>& Forms_Shapes(); // the shapes forms.txt names (plate, rod, ...)
