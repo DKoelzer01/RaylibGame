@@ -256,3 +256,8 @@ blast_furnace    | zinc_ingot 1       | sphalerite_ore 2          | 400 | 0
 blast_furnace    | nickel_ingot 1     | pentlandite_ore 2         | 500 | 0
 arc_furnace      | chromium_ingot 1   | chromite_ore 2, coke 1    | 400 | 120
 arc_furnace      | tungsten_ingot 1   | wolframite_ore 2, coke 1  | 600 | 160
+# (#1614 PR 3) The steam assembler makes the steam age's assemblies too (on a shaft, unattended): the same parts as by hand,
+# faster and in bulk; the components' own machines (lathe, wiremill) are where the metal is saved. GUESS times.
+steam_assembler  | mechanism 1        | cogwheel 2, iron_rod 1, iron_screw 2 | 120 | 0
+steam_assembler  | piston 1           | bronze_plate 1, iron_rod 2, iron_spring 1 | 160 | 0
+steam_assembler  | valve 1            | bronze_plate 1, iron_spring 1, iron_screw 2 | 140 | 0

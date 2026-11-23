@@ -1,5 +1,6 @@
 #include "inventory.h"
 #include "composed.h"
+#include "forms.h"
 #include "utils/logger.h"
 #include "world.h"
 #include "voxel.h"
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 ItemDB itemDB;
@@ -157,6 +159,20 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         for (auto& in : r.inputs) valid = valid && find(in.first) != nullptr;
         if (valid) recipeList.push_back(r);
         else LOG_WARN("Items", "recipes: unknown item in '%s'\n", line.c_str());
+    }
+    // (#1614) The form table's hand recipes (forms.txt): every metal's plates, rods, wire, gears, screws and springs by hand,
+    // where recipes.txt has no recipe for that output
+    {
+        std::set<std::string> made;
+        for (const Recipe& r : recipeList) made.insert(r.output);
+        for (const FormRecipe& f : Forms_All()) {
+            if (!f.machine.empty() || made.count(f.output) || !find(f.output)) continue;
+            Recipe r;
+            r.output = f.output; r.outputCount = f.outCount; r.inputs = f.inputs; r.formShape = true;
+            bool valid = true;
+            for (auto& in : r.inputs) valid = valid && find(in.first) != nullptr;
+            if (valid) { recipeList.push_back(r); made.insert(r.output); }
+        }
     }
     // Placeable parts (machines, conveyors, cables, rocket parts) are blocks: stacks of 256. Not the parts only the world
     // places (#812): a meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must

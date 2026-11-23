@@ -2,6 +2,8 @@
 #include <set>
 #include <map>
 #include <tuple>
+#include <fstream>
+#include <sstream>
 #include <cstring>
 #include <raylib.h>
 #include <string>
@@ -31,6 +33,7 @@
 #include "ores.h"
 #include "orefamilies.h"
 #include "oreveins.h"
+#include "components.h"
 #include "joininfo.h"
 #include "scene.h"
 #include "object.h"
@@ -1330,7 +1333,7 @@ int main(int argc, char** argv)
         if (exclusive) SetConfigFlags(FLAG_FULLSCREEN_MODE);
         InitWindow(GetMonitorWidth(0), GetMonitorHeight(0), windowTitle("").c_str()); // #501: branch + commit (#520: + driver)
         // No VSync: cap at the monitor's refresh rate instead (VSync on a 60 Hz desktop locked the game to 60).
-        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())); FramePacer_SetTarget(fps); SetFrameTarget(fps); }
+        { const int fps = bench ? std::max(0, benchFps) : benchFps >= 0 ? benchFps : Display_MonitorHz(); FramePacer_SetTarget(fps); SetFrameTarget(fps); } // (#1624; Settings_Apply sets the player's cap)
     } else {
         // Benches and --play-new (#387): a plain window that opens without taking focus, so an agent run never grabs the
         // keyboard and mouse of whoever is at the machine.
@@ -1902,6 +1905,32 @@ int main(int argc, char** argv)
             ExportImage(img, "bench_ore_slices.png");
             UnloadImage(img);
             printf("bench: ore slices: bench_ore_slices.png\n");
+            return 0;
+        }
+    for (int i = 1; i < argc; ++i) // (its own loop: the next one's body is the single if after it)
+        if (std::string(argv[i]) == "--component-costs") {
+            // (#1614) The cost report (report only, the user's answer to Q4): every machine's raw cost in gathering minutes,
+            // by hand (hand recipes where an item has one) and by the best route (the cheapest of hand and machine recipes),
+            // from the recipes and resources/data/gather.txt. Unknown raw items (no recipe, no time) are listed.
+            CostModel m;
+            { std::ifstream g("resources/data/gather.txt"); std::stringstream ss; ss << g.rdbuf(); m.gatherSeconds = Components_ParseGather(ss.str()); }
+            for (const Recipe& r : itemDB.recipes()) m.recipes.push_back({ true, r.output, r.outputCount, r.inputs });
+            for (const Factory::RecipeInfo& r : Factory::RecipeList())
+                for (const auto& [out, n] : r.out) m.recipes.push_back({ false, out, n, r.in });
+            std::set<std::string> unknownAll;
+            printf("bench: component costs: %-24s %8s %8s\n", "machine", "hand min", "best min");
+            for (int t = 0; t < (int)PartType::Count; ++t) {
+                if (!IsMachine((PartType)t) || LadderMigrate_IsRemovedMachine(t)) continue; // (the retired ones: no recipe by design)
+                const char* item = PartCostItem((PartType)t);
+                if (!item || !itemDB.find(item)) continue;
+                std::vector<std::string> unknown;
+                const double hand = Components_Cost(m, item, CostRoute::Hand, &unknown) / 60.0, best = Components_Cost(m, item, CostRoute::Best, &unknown) / 60.0;
+                for (const std::string& u : unknown) unknownAll.insert(u);
+                printf("bench: component costs: %-24s %8.1f %8.1f\n", item, hand, best);
+            }
+            std::string u;
+            for (const std::string& s : unknownAll) u += " " + s;
+            printf("bench: component costs: raw items with no gathering time (10 s each):%s\n", u.empty() ? " none" : u.c_str());
             return 0;
         }
     for (int i = 1; i < argc; ++i)
@@ -10403,6 +10432,7 @@ int main(int argc, char** argv)
                                ws.nodes, ws.preloadNodes, ws.cachedNodes, a.vertices / 1e6, a.vertexCapacity / 1e6, a.indices / 1e6, a.indexCapacity / 1e6, arenaMB,
                                Profiler_CommitMB(), Profiler_VramUsedMB());
                     }
+                    printf("bench: animals (#1633): %d (%d simulated)\n", Animals_Count(), Animals_SimulatedCount());
                     if (ws.waterBuilds || ws.waterFullBuilds)
                         printf("bench: water redraws: %lld chunk water rebuilds, avg %.2f ms on a worker, total %.0f ms; %lld full builds for water; caches %.1f MB (#360)\n",
                                ws.waterBuilds, ws.waterBuilds ? ws.waterMs / ws.waterBuilds : 0.0, ws.waterMs, ws.waterFullBuilds, ws.waterCacheBytes / 1048576.0);

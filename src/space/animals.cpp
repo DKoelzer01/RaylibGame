@@ -10,6 +10,7 @@
 #include "melee.h"
 #include "creatures.h" // (#1223)
 #include "subtitles.h" // (#1635) the telegraph captions
+#include "profiler.h" // (#1649) zones in the update
 #include "footsteps.h" // (#1240) step noise for creature hearing
 #include "avatar.h" // (#1225) humanoid creatures
 #include "locallights.h"
@@ -344,7 +345,7 @@ bool BlockedAlong(const Planetoid& body, Vector3 from, Vector3 to, float height)
 // closest, if that is real progress.
 constexpr int kPathCells = 40;          // grid half-width (m): 81 x 81 cells
 constexpr int kPathMaxExpand = 3000;
-constexpr double kPathFrameMs = 3.0, kPathTotalMs = 60.0;
+constexpr double kPathFrameMs = 1.0, kPathTotalMs = 60.0; // (#1649: 3 ms slices ran to 4-5 ms and were the creature step's p99)
 int gPathPlans = 0, gPathFound = 0;     // tests: plans made and routes found
 double gPathMs = 0.0, gPathWorstMs = 0.0; // total ms over all searches; the worst single frame's slice
 
@@ -399,7 +400,7 @@ bool PathStep(std::vector<Vector3>& out, long long frame) {
     bool done = false;
     while (true) {
         if (S.open.empty() || S.expanded >= kPathMaxExpand) { done = true; break; }
-        if ((S.expanded & 15) == 15 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > kPathFrameMs) break;
+        if ((S.expanded & 3) == 3 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > kPathFrameMs) break; // (#1649) checked every 4: an expansion probes 8 cells
         const PathSearch::Node n = S.open.top(); S.open.pop();
         if (S.state[n.i] == 3) continue;
         S.state[n.i] = 3;
@@ -931,14 +932,51 @@ ChunkId ChunkOf(Vector3 p, int si) {
     return { (int)floorf(p.x / SpawnTune::kChunk), (int)floorf(p.y / SpawnTune::kChunk), (int)floorf(p.z / SpawnTune::kChunk), si };
 }
 
+// (#1633) Populations: a cave creature (cave or mouth habitat, and the nests) belongs to the chunk of its home, wherever it
+// has wandered (one that chased the player out was no longer counted, so its chunk spawned another every respawn: a save
+// gathered 294 around the spawn). Around each player a species also has an area budget, and creatures far from every
+// player are let go (their chunk fills again on the next visit).
+bool CavePopulation(int si) {
+    if (si < 0 || si >= (int)species.size()) return false;
+    if (species[si].id == "creature_nest") return true;
+    const CreatureSpec* c = Creature_Spec(species[si].id);
+    return c && (c->habitat == Habitat::Cave || c->habitat == Habitat::Mouth);
+}
+ChunkId HomeChunk(const Animal& a) { return ChunkOf(a.hasHome ? a.home : a.pos, a.species); }
+namespace PopTune {
+    constexpr float kAreaRange = 128.0f;  // the area budget's radius around a player (GUESS)
+    constexpr int kAreaPerSpecies = 8;    // at most this many of one cave species within it (GUESS: four chunks' worth)
+    constexpr float kReleaseRange = 320.0f; // farther than this from every player (past the 300 m simulation): let go
+}
+bool gPopulationCleanup = false; // set by a load: trim the loaded cave creatures once (Animals_Update)
+
 // (#1227) No rock within 40 m over a body-local point (2 m steps): under the open sky.
 // (#1227) The creature facing rules (wind-up holds facing, a turn rate, strikes only in front); RAYLIBGAME_CREATURE_TURN=0: off (A/B).
 static int CreatureTurnMask() { static const int m = getenv("RAYLIBGAME_CREATURE_TURN") ? atoi(getenv("RAYLIBGAME_CREATURE_TURN")) : 7; return m; } // bits: 1 the wind-up hold, 2 the turn rate, 4 strikes in front only
 static bool CreatureTurnRules() { return CreatureTurnMask() != 0; }
+// (#1649) Column probes (open sky over a point, no roof within reach) cached per 1 m cell for a few seconds: a crowd asked
+// them every step (20-79 density samples each; a lurker idling in the open searched for a ceiling every step).
+namespace ColumnCache {
+    constexpr double kKeep = 3.0; // s (sim time): a dug or built column is seen within this
+    std::unordered_map<uint64_t, std::pair<bool, double>> cells;
+    uint64_t Key(const Planetoid& body, Vector3 p, uint64_t kind) {
+        const uint64_t x = (uint64_t)(int64_t)floorf(p.x) & 0xFFFFF, y = (uint64_t)(int64_t)floorf(p.y) & 0xFFFFF, z = (uint64_t)(int64_t)floorf(p.z) & 0xFFFFF;
+        return (x | (y << 20) | (z << 40) | (kind << 60)) ^ ((uint64_t)(uintptr_t)&body * 0x9E3779B97F4A7C15ull);
+    }
+    template <class F> bool Get(const Planetoid& body, Vector3 p, uint64_t kind, F probe) {
+        const double now = SimTime();
+        if (cells.size() > 200000) cells.clear();
+        auto [it, fresh] = cells.try_emplace(Key(body, p, kind), false, -1e9);
+        if (fresh || now - it->second.second > kKeep) it->second = { probe(), now };
+        return it->second.first;
+    }
+}
 static bool OpenSkyOver(const Planetoid& body, Vector3 p) {
-    const Vector3 up = Vector3Normalize(p);
-    for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
-    return true;
+    return ColumnCache::Get(body, p, 0, [&] {
+        const Vector3 up = Vector3Normalize(p);
+        for (float h = 2.0f; h <= 40.0f; h += 2.0f) if (body.densityAt(Vector3Add(p, Vector3Scale(up, h))) >= ISO_LEVEL) return false;
+        return true;
+    });
 }
 
 // An animal placed at a body-local point as it is (a cave floor), not dropped from above as Animals_Spawn does.
@@ -1026,15 +1064,22 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
         for (const SpawnSite& s : sites) if (Spawn_Fits(c, s)) byChunk[ChunkOf(s.floor, si)].push_back(&s);
         for (auto& ck : byChunk) {
             SpawnChunk& ch = spawnChunks[ck.first];
-            int alive = 0;
-            for (const Animal& a : animals) if (a.species == si && a.body == body.name) { const ChunkId id = ChunkOf(a.pos, si); alive += !(id < ck.first) && !(ck.first < id); }
+            int alive = 0, inArea = 0;
+            for (const Animal& a : animals) {
+                if (a.species != si || a.body != body.name) continue;
+                const ChunkId id = HomeChunk(a); // (#1633) by its home, wherever it wandered
+                alive += !(id < ck.first) && !(ck.first < id);
+                inArea += Vector3Distance(a.pos, centre) < PopTune::kAreaRange ? 1 : 0;
+            }
             if (c.nests && nestSi >= 0) {
                 if (!ch.hasNest) // the nest in the chunk's large chamber (none without one)
                     for (const SpawnSite* s : ck.second)
                         if (s->kind == 3 && s->radius >= SpawnTune::kNestChamber) { ch.nest = SpawnAt(body, nestSi, s->floor, Hash((uint64_t)ck.first.x * 73856093u ^ (uint64_t)ck.first.z, 3u)); ch.hasNest = true; break; }
                 if (ch.hasNest && IndexOfNet(ch.nest) < 0) ch.nestDestroyed = true;
             }
-            const int due = Spawn_Due(c, ch, alive, now);
+            int due = Spawn_Due(c, ch, alive, now);
+            due = std::min(due, std::max(0, PopTune::kAreaPerSpecies - inArea)); // (#1633) the area budget around the player
+            inArea += due;
             uint32_t h = Hash(((uint64_t)(uint32_t)ck.first.x << 32) ^ (uint32_t)ck.first.y ^ ((uint64_t)ck.first.z << 16), (uint32_t)(now * 10.0) + (uint32_t)si);
             for (int k = 0; k < due;) {
                 const SpawnSite* s = ck.second[std::min((int)ck.second.size() - 1, (int)(Rand01(h) * ck.second.size()))];
@@ -1070,6 +1115,7 @@ int Animals_Generation(int i) { return i >= 0 && i < (int)animals.size() ? anima
 const std::string& Animals_Ore(int i) { static const std::string none; return i >= 0 && i < (int)animals.size() ? animals[i].ore : none; }
 bool Animals_Thrower(int i) { return i >= 0 && i < (int)animals.size() && animals[i].thrower; }
 void Animals_TestSetGroup(int i, uint64_t group, bool thrower) { if (i >= 0 && i < (int)animals.size()) { animals[i].group = group; animals[i].thrower = thrower; } }
+void Animals_TestProvokeAll() { for (Animal& a : animals) { a.hurtPending = true; a.hurtBy = kPlayerPercept; a.angryUntil = simClock + 30.0; } } // (#1649)
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
@@ -1081,6 +1127,21 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     LoadSpecies();
     ++frameNo;
     simulatedNow = 0;
+    if (gPopulationCleanup && !gAnimalsReplicated) { // (#1633) once after a load: cave creatures from before homes were saved
+        gPopulationCleanup = false;                  // (wanderers with no way back) go, and each chunk keeps its cap
+        std::map<ChunkId, int> kept;
+        int dropped = 0;
+        for (size_t i = 0; i < animals.size();) {
+            const Animal& a = animals[i];
+            bool drop = false;
+            if (CavePopulation(a.species)) {
+                const CreatureSpec* c = Creature_Spec(species[a.species].id);
+                drop = !a.hasHome || ++kept[HomeChunk(a)] > (c ? c->capPerChunk : 1);
+            }
+            if (drop) { animals.erase(animals.begin() + (long)i); ++dropped; } else ++i;
+        }
+        if (dropped) { aimed = -1; printf("animals: let %d cave creatures go after the load (#1633: no home saved, or over their chunk's cap)\n", dropped); }
+    }
     for (Animal& a : animals) { a.prevPos = a.pos; a.prevHeading = a.heading; a.prevValid = true; } // the pose drawing blends from (#315)
     if (gAnimalsReplicated) { // #334: a client - the server runs the animals; each eases toward its latest state, nothing decides here
         const double now = GetTime();
@@ -1242,7 +1303,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
     // predator within 18 m bolts; each herd's centre (same kind within 40 m) for cohesion.
     static double ecoAt = 0.0;
     if (here && SimTime() > ecoAt) {
-        ecoAt = SimTime() + 0.5;
+        ecoAt = SimTime() + 0.5; PROFILE_SCOPE("creatures: ecology"); // (#1649)
         std::vector<int> near;
         for (size_t i = 0; i < animals.size(); ++i)
             if (animals[i].body == here->name && nearestCentre(here, animals[i].pos) < 300.0f) near.push_back((int)i);
@@ -1286,10 +1347,17 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         for (const Tgt& t : targets) if (t.body == body) { const float d = Vector3Distance(a.pos, t.local); if (d < pdist) { pdist = d; tg = &t; } }
         const bool sameBody = tg != nullptr;
         const Vector3 tgLocal = tg ? tg->local : Vector3{};
+        if (dist > PopTune::kReleaseRange && CavePopulation(a.species) && naturalSpawns) { // (#1633) far from every player: let go
+            auto ch = spawnChunks.find(HomeChunk(a));
+            if (ch != spawnChunks.end() && !ch->second.nestDestroyed) ch->second.filled = false; // the next visit fills it again
+            gone.push_back((int)i);
+            continue;
+        }
         if (dist > 300.0f) continue;
         ++simulatedNow; a.simFrame = frameNo;
         float step = dt;
         if (dist > 80.0f) { if ((frameNo + (int)i) % 4) continue; step = dt * 4.0f; }
+        else if (dist > 40.0f) { if ((frameNo + (int)i) % 2) continue; step = dt * 2.0f; } // (#1649) 40-80 m: every other update
         if (Combat1_On() && a.status.any()) { // (#1215) burn, bleed and poison over time (creatures on land: no water to douse)
             a.health -= Status_Step(a.status, step, false, ResistOf(a)); // (#1223: a creature's own resistances)
             if (a.health <= 0.0f) { Kill((int)i); --i; continue; }
@@ -1341,6 +1409,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         int preyIdx = -1;                      // another creature it goes for (infighting)
         Vector3 huntAt = tgLocal; float huntDist = pdist;
         if (cs) {
+            PROFILE_SCOPE("creatures: brain"); // (#1649)
             BrainInput bi;
             bi.now = simClock;
             bi.health01 = s.health > 0.0f ? a.health / s.health : 1.0f;
@@ -1460,8 +1529,9 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                     if (a.clinging) { a.moveSpeed = 0.0f; a.state = State::Rest; continue; } // hanging on: no walking
                 } else if (!hunting && a.fleeTimer <= 0.0f && (bo.mood == Mood::Idle || bo.mood == Mood::Sleep) && simClock - a.lastBite > 5.0) {
                     float up = 0.0f; bool roof = false;
-                    for (float h = 0.5f; h <= 20.0f; h += 0.25f)
-                        if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; }
+                    auto findRoof = [&] { for (float h = 0.5f; h <= 20.0f; h += 0.25f) if (body->densityAt(Vector3Add(a.pos, Vector3Scale(aup, h))) >= ISO_LEVEL) { up = h; roof = true; break; } return roof; };
+                    // (#1649) "no roof here" is cached per cell (in the open it searched 79 samples every step); a roof is found exactly
+                    if (ColumnCache::Get(*body, a.pos, 1, findRoof) && !roof) findRoof();
                     if (roof && up >= 2.2f) {
                         a.clingFloor = a.pos;
                         a.pos = a.prevPos = Vector3Add(a.pos, Vector3Scale(aup, up - 0.3f));
@@ -1663,6 +1733,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         // (#1227, user 2026-11-22) Cave species stay underground: they give up a chase at the cave mouth (a step out under the
         // open sky fails, tryStep below). Only the Lost Miner may come out near a mouth at night; by day, or a cave creature
         // caught outside, it walks back to where it spawned.
+        PROFILE_SCOPE("creatures: move"); // (#1649) the leash, the steps, the path plan (to the end of this animal)
         bool leashed = false, outside = false;
         if (cs && cs->habitat == Habitat::Cave && a.hasHome) {
             leashed = true;
@@ -1730,7 +1801,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         if (gSearch.active && frameNo - gSearch.lastFrame > 30) gSearch.active = false;
         const bool mySearch = gSearch.active && gSearch.owner == (int)i && Vector3Distance(gSearch.from, a.pos) < 3.0f;
         if (!ok && steer && a.path.empty() && (mySearch || (a.planWait <= 0.0f && !gSearch.active)) && plansLeft > 0) {
-            --plansLeft;
+            --plansLeft; PROFILE_SCOPE("creatures: path"); // (#1649)
             if (!mySearch) PathBegin(*body, *field, a.pos, goalPt, height, std::max(reachUp, 0.35f), std::max(reachDown, 0.35f), (int)i, frameNo);
             std::vector<Vector3> route;
             if (!PathStep(route, frameNo)) { a.moveSpeed = 0.0f; continue; } // still searching: wait for it
@@ -1929,9 +2000,12 @@ void MeleeFrame(Scene& world, const PlayerInput& in, Planetoid* here, Vector3 di
         }
         return false;
     };
+    // (#1639) A weapon (knife, sword, mace, spear, two-handed) always swings: what it hits is the sweep's reach against the
+    // hitboxes below, not the crosshair. Tools and axes still swing only at a creature (else LMB mines, digs or fells).
+    const bool weaponInHand = terrainTool.heldTool.rfind("weapon_", 0) == 0 && gMeleeClass != WeaponClass::Axe; // (composed weapons; not parts or machines named like them)
     MeleeInput mi;
     mi.pressed = live && in.hit(Act::Primary) && !gPrimaryLatch.latched &&
-                 (gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
+                 (weaponInHand || gMelee.phase != MeleePhase::Idle || aimed >= 0 || lockIdx >= 0 || inArc());
     mi.held = live && in.down(Act::Primary) && survival.windedLeft <= 0.0f; // (#1218) winded: no heavies
     mi.block = survival.blocking;
     mi.dodge = survival.dodges != gMeleeDodges; // (#1218) a dodge started
@@ -2335,6 +2409,7 @@ void Animals_Save(FILE* f) {
         fprintf(f, "animal %s %s %f %f %f %f %f %f %d %.2f %.2f\n", species[a.species].id.c_str(), a.body.c_str(), a.pos.x, a.pos.y, a.pos.z,
                 a.heading, a.health, a.age, a.fed ? 1 : 0, a.lastBred, a.productReady);
         fprintf(f, "animal_id %llu\n", (unsigned long long)a.netId); // its own line: older builds skip it (#317)
+        if (a.hasHome) fprintf(f, "animal_home %f %f %f\n", a.home.x, a.home.y, a.home.z); // (#1633) a cave creature's home (older builds skip it)
     }
     for (const auto& kv : spawnedTiles) {
         fprintf(f, "animal_tiles %s %zu", kv.first.c_str(), kv.second.size());
@@ -2365,6 +2440,7 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
                 a.netId = NetId_Allocate(NetKind::Animal); // a save from before #317; its "animal_id" line replaces it
                 animals.push_back(a);
                 lastLoaded = (int)animals.size() - 1;
+                gPopulationCleanup = true; // (#1633)
             } else lastLoaded = -1;
         }
         return true;
@@ -2375,6 +2451,11 @@ bool Animals_LoadLine(const char* tok, FILE* f) {
             animals[lastLoaded].netId = (uint64_t)id;
             NetId_Note((uint64_t)id);
         }
+        return true;
+    }
+    if (strcmp(tok, "animal_home") == 0) { // (#1633)
+        Vector3 h{};
+        if (fscanf(f, " %f %f %f", &h.x, &h.y, &h.z) == 3 && lastLoaded >= 0 && lastLoaded < (int)animals.size()) { animals[lastLoaded].home = h; animals[lastLoaded].hasHome = true; }
         return true;
     }
     if (strcmp(tok, "animal_tiles") == 0) {

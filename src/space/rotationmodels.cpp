@@ -109,6 +109,7 @@ void DrawPart(PartType t) {
         break;
     case PartType::SteamEngine: // (#1271 L3) a flywheel, as over the press
     case PartType::Press: // the flywheel over the press
+    case PartType::Lathe: case PartType::Wiremill: // (#1614) the same flywheel (their own models later)
         IB_Cylinder({ 0, -0.04f, 0 }, 0.28f, 0.28f, 0.08f, kSteel);
         IB_Cube({ 0, 0, 0 }, { 0.5f, 0.1f, 0.06f }, kDarkWood);
         IB_Cylinder({ 0, -0.12f, 0 }, 0.04f, 0.04f, 0.24f, kWood);

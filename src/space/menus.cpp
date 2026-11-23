@@ -1,5 +1,6 @@
 #include "menus.h"
 #include "framepacer.h"
+#include "utils/logger.h"
 #include "playerinput.h"
 #include "magic.h" // (#1249) Magic_Enabled: the magic sight key only with magic on
 #include "playerrecord.h"
@@ -68,6 +69,42 @@ namespace {
             return true;
         }
         return false;
+    }
+    // (#1624, the user) The frame cap: a slider whose lowest stop is Uncapped (0), then 1-240, and a number box beside it
+    // that takes any value up to 1000 (click it, type, Enter or a click elsewhere). Returns true when the cap changed.
+    bool FrameCapRow(Rectangle r, int& cap) {
+        static bool editing = false;
+        static char typed[8] = "";
+        const int before = cap;
+        const int fs = (int)(r.height * 0.5f);
+        DrawText("Frame cap", (int)r.x, (int)(r.y + (r.height - fs) * 0.5f), fs, kText);
+        const Rectangle bar = { r.x + r.width * 0.38f, r.y + r.height * 0.4f, r.width * 0.34f, r.height * 0.2f };
+        const float f = std::clamp(cap / 240.0f, 0.0f, 1.0f);
+        DrawRectangleRec(bar, kButton);
+        DrawRectangle((int)bar.x, (int)bar.y, (int)(bar.width * f), (int)bar.height, SKYBLUE);
+        DrawCircle((int)(bar.x + bar.width * f), (int)(bar.y + bar.height * 0.5f), r.height * 0.22f, kText);
+        const Rectangle hit = { bar.x - 10, r.y, bar.width + 20, r.height };
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && CheckCollisionPointRec(GetMousePosition(), hit)) {
+            cap = (int)lroundf(std::clamp((GetMousePosition().x - bar.x) / bar.width, 0.0f, 1.0f) * 240.0f); // the left end: 0, Uncapped
+            editing = false;
+        }
+        const Rectangle box = { bar.x + bar.width + 16, r.y + r.height * 0.1f, r.width - (bar.x + bar.width + 16 - r.x), r.height * 0.8f };
+        const bool overBox = CheckCollisionPointRec(GetMousePosition(), box);
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (overBox && !editing) { editing = true; snprintf(typed, sizeof typed, "%d", cap); while (GetCharPressed() != 0) {} }
+            else if (!overBox && editing) { editing = false; cap = std::clamp(atoi(typed), 0, 1000); }
+        }
+        if (editing) {
+            for (int ch = GetCharPressed(); ch != 0; ch = GetCharPressed())
+                if (ch >= '0' && ch <= '9' && strlen(typed) < 4) { const size_t n = strlen(typed); typed[n] = (char)ch; typed[n + 1] = 0; }
+            if (IsKeyPressed(KEY_BACKSPACE) && typed[0]) typed[strlen(typed) - 1] = 0;
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) { editing = false; cap = std::clamp(atoi(typed), 0, 1000); }
+        }
+        DrawRectangleRounded(box, 0.18f, 6, editing ? kHover : overBox ? Fade(kHover, 0.7f) : kButton);
+        const char* text = editing ? TextFormat("%s_", typed) : cap == 0 ? "Uncapped" : TextFormat("%d fps", cap);
+        const int bfs = (int)(box.height * 0.5f);
+        DrawText(text, (int)(box.x + (box.width - MeasureText(text, bfs)) * 0.5f), (int)(box.y + (box.height - bfs) * 0.5f), bfs, kText);
+        return cap != before;
     }
     bool Toggle(Rectangle r, const char* label, bool& v) {
         const int fs = (int)(r.height * 0.5f);
@@ -216,19 +253,13 @@ namespace {
         case SettingsTab::Graphics: {
             changed |= Slider({ x, y, w, h }, "Field of view", settings.fov, 30.0f, 100.0f, "%.0f deg"); next();
             // Terrain detail (#297): how far out the terrain keeps its finer levels (the LOD factor). Flying drops to Low.
-            // (#1610) "High (lighter)": LOD factor 2.75, ~5% faster than High (GUESS name; for the playtest).
-            static const char* detail[] = { "Low", "Medium", "High (lighter)", "High", "Ultra" };
+            // (#1610) "Balanced": LOD factor 2.75, ~5% faster than High (name: user 2026-11-23).
+            static const char* detail[] = { "Low", "Medium", "Balanced", "High", "Ultra" };
             changed |= Choice({ x, y, w, h }, "Terrain detail", detail, 5, settings.terrainDetail); next();
             changed |= Toggle({ x, y, w, h }, "Foliage", settings.foliage); next();
             changed |= Toggle({ x, y, w, h }, "VSync (no tearing)", settings.vsync); next();
             changed |= Toggle({ x, y, w, h }, "Show FPS", settings.showFps); next(); // on every screen (#572)
-            static const int caps[] = { 0, 60, 144, 240 };
-            static const char* capNames[] = { "Monitor", "60", "144", "240" };
-            int cap = 0;
-            for (int k = 0; k < 4; ++k) if (settings.fpsCap == caps[k]) cap = k;
-            const int capBefore = settings.fpsCap;
-            if (Choice({ x, y, w, h }, "Frame cap", capNames, 4, cap)) { settings.fpsCap = caps[cap]; changed |= capBefore != caps[cap]; }
-            next();
+            changed |= FrameCapRow({ x, y, w, h }, settings.fpsCap); next(); // (#1624) 0 = uncapped
             // #131: how bright light rolls off - Clip (hard white), Knee (today's look; highlights roll off), ACES (filmic).
             static const char* curves[] = { "Clip", "Knee", "ACES" };
             changed |= Choice({ x, y, w, h }, "Tonemap", curves, 3, settings.tonemap); next();
@@ -407,7 +438,7 @@ void Settings_Save() {
     fprintf(f, "difficulty %d\n", settings.difficulty);
     fprintf(f, "xprate %g\n", settings.xpRate); // (#883)
     fprintf(f, "showfps %d\n", settings.showFps ? 1 : 0);
-    { static const int kOld[] = { 0, 1, 2, 2, 3 }; // (#1610) older builds read the four levels (High (lighter) -> High)
+    { static const int kOld[] = { 0, 1, 2, 2, 3 }; // (#1610) older builds read the four levels (Balanced -> High)
       fprintf(f, "terraindetail %d\ncamerasmoothing %d\nspeedvignette %d\n", kOld[std::clamp(settings.terrainDetail, 0, 4)], settings.cameraSmoothing, settings.speedVignette ? 1 : 0); } // (terrain detail was never saved, #297)
     fprintf(f, "terraindetail5 %d\n", settings.terrainDetail); // (#1610) the five levels; after terraindetail, so it wins on load
     fprintf(f, "tonemap %d\n", settings.tonemap); // (#131)
@@ -433,6 +464,25 @@ void Settings_Save() {
     fclose(f);
 }
 
+int Display_MonitorHz() {
+    // (#1624) The refresh rate of the monitor the window is on. The playtest's "Monitor" cap read 60 on a 144 Hz screen: every
+    // reading went through max(60, ...), so a failed one (0) looked like 60. When the window's monitor reads nothing, the
+    // fastest monitor's rate stands in; each new answer is logged with what every monitor reports, for the next look.
+    const int current = GetCurrentMonitor(), count = GetMonitorCount();
+    int hz = current >= 0 && current < count ? GetMonitorRefreshRate(current) : 0;
+    int fastest = 0;
+    for (int m = 0; m < count; ++m) fastest = std::max(fastest, GetMonitorRefreshRate(m));
+    if (hz <= 0) hz = fastest;
+    static int logged = -1;
+    if (hz != logged) {
+        logged = hz;
+        std::string all;
+        for (int m = 0; m < count; ++m) all += TextFormat("%s%d: %d Hz (%s)", m ? ", " : "", m, GetMonitorRefreshRate(m), GetMonitorName(m));
+        LOG_INFO("Display", "refresh rate %d Hz (the window's monitor %d of %d; %s)", hz, current, count, all.c_str());
+    }
+    return hz > 0 ? hz : 60;
+}
+
 void Settings_Apply() {
     player.mouseSensitivity = kDefaultMouse * settings.mouseSensitivity;
     ship.mouseSensitivity = kDefaultShipMouse * settings.mouseSensitivity;
@@ -443,13 +493,15 @@ void Settings_Apply() {
     Subtitles_SetLevel((SubtitleLevel)std::clamp(settings.subtitles, 0, 2)); // (#1244)
     UiPalette_Set((ColorVision)std::clamp(settings.colorVision, 0, 2)); // (#1432)
     foliageEnabled = settings.foliage;
-    { const float kDetail[] = { 2.0f, 2.5f, 2.75f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 4)]; } // #297; (#1610) 2.75: High (lighter)
+    { const float kDetail[] = { 2.0f, 2.5f, 2.75f, 3.0f, 4.0f }; lodSettings.detailFactor = kDetail[std::clamp(settings.terrainDetail, 0, 4)]; } // #297; (#1610) 2.75: Balanced
     lodSettings.preloadRadius = settings.terrainDetail == 0 ? 150.0f : 300.0f; // #302 (user 2026-11-15): Low keeps a smaller spawn ring (VRAM)
     if (Headless()) { FramePacer_SetTarget(kSimHz); SetFrameTarget(kSimHz); } // #326: a server (hidden window) ticks at the sim rate: vsync never throttles a hidden window, so "uncapped" spun a core
     else {
     if (settings.vsync) SetWindowState(FLAG_VSYNC_HINT); else ClearWindowState(FLAG_VSYNC_HINT);
-    { const int fps = settings.fpsCap > 0 ? settings.fpsCap : (settings.vsync ? 0 : std::max(60, GetMonitorRefreshRate(GetCurrentMonitor())));
-      FramePacer_SetTarget(fps); SetFrameTarget(fps, settings.vsync ? GetMonitorRefreshRate(GetCurrentMonitor()) : 0); } // (#545) the budget's target
+    // (#1624) The cap as set: 0 = uncapped (VSync, when on, still holds it to the monitor). It was "Monitor" for 0, which read
+    // 60 on a 144 Hz screen (any failed read became 60): Display_MonitorHz falls back and logs what each monitor reports.
+    { const int fps = std::max(0, settings.fpsCap);
+      FramePacer_SetTarget(fps); SetFrameTarget(fps, settings.vsync ? Display_MonitorHz() : 0); } // (#545) the budget's target
     }
     { static const int kCurve[] = { 2, 0, 1 }; SceneTarget_SetTonemap(kCurve[std::clamp(settings.tonemap, 0, 2)]); } // (#131) Clip, Knee, ACES
     SceneTarget_SetBrightness(settings.brightness); // (#1166)

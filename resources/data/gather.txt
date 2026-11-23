@@ -1,0 +1,48 @@
+# Gathering seconds per raw item (#1614's cost report, report only): what a player spends to get one, with the tools of its
+# tier. GUESS from --test-progression's pace and play; tune after playtests. An item not here and with no recipe counts as
+# 10 s and is listed as unknown in the report.
+oak_log 4
+birch_log 4
+maple_log 4
+pine_log 4
+spruce_log 4
+fibre 2
+stone 2
+granite 3
+basalt 3
+sandstone 2
+limestone 2
+marble 3
+gravel 2
+dirt 1
+sand 1
+clay 3
+water 1
+ice 2
+iron_ore 6
+copper_ore 6
+tin_ore 7
+coal 5
+bauxite_ore 9
+ilmenite_ore 12
+galena_ore 8
+sphalerite_ore 8
+acanthite_ore 10
+magnetite_ore 7
+pentlandite_ore 10
+cinnabar_ore 10
+chromite_ore 14
+wolframite_ore 16
+gold_ore 12
+quartz 10
+rubber 6
+crude_oil 4
+regolith 2
+anorthite 8
+nickel_iron_ore 10
+platinum_ore 20
+iridium_ore 25
+# Wildcard groups (a recipe asking any planks, any log, any stone): one of the group
+any_log 4
+any_planks 1
+any_stone 2
