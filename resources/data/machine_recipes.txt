@@ -237,3 +237,15 @@ mechanical_press | lead_plate 1       | lead_ingot 1              | 100 | 0
 mechanical_press | zinc_plate 1       | zinc_ingot 1              | 100 | 0
 mechanical_press | silver_plate 1     | silver_ingot 1            | 100 | 0
 mechanical_press | nickel_plate 1     | nickel_ingot 1            | 100 | 0
+# (#1612) The vein families' ores smelted at their ladder tiers (each machine's own gate): lead, native gold and silver in
+# the kiln (tier 1, as copper and tin); magnetite in the bloomery as iron ore (tier 2); zinc and nickel sulfides in the
+# blast furnace (tier 3); chromite and wolframite in the arc furnace with coke (late). GUESS yields and times; the LV line
+# above (macerator, washer, centrifuge, furnace) gives more. Cinnabar waits for mercury (a fluid, later).
+kiln             | lead_ingot 1       | galena_ore 2              | 200 | 0
+kiln             | gold_ingot 1       | gold_ore 2                | 240 | 0
+kiln             | silver_ingot 1     | acanthite_ore 2           | 240 | 0
+bloomery         | iron_bloom 1       | magnetite_ore 1, charcoal 1 | 400 | 0
+blast_furnace    | zinc_ingot 1       | sphalerite_ore 2          | 400 | 0
+blast_furnace    | nickel_ingot 1     | pentlandite_ore 2         | 500 | 0
+arc_furnace      | chromium_ingot 1   | chromite_ore 2, coke 1    | 400 | 120
+arc_furnace      | tungsten_ingot 1   | wolframite_ore 2, coke 1  | 600 | 160

@@ -323,3 +323,14 @@ ruin_schematic   | Ruin schematic   | 20  | 200,180,130 | A machine drawing from
 lv_assembler     | LV assembler     | 20  | 120,150,190 | LV (32 V): assembles basic circuits and LV and MV research packs, faster than by hand and without you. Its screen switches it to disassembly (coming with tiered machines).
 compressor       | Compressor       | 20  | 120,125,135 | LV (32 V): presses ingots into plates, faster than the mechanical press and without a shaft.
 cutter           | Cutter           | 20  | 140,120, 95 | LV (32 V): saws logs into planks, faster than the mechanical saw and without a shaft.
+# (#1612) The vein families' ores (ore_families.txt): what each is and what it gives. Smelt the early ones in a kiln or
+# bloomery; an LV ore line (macerator, washer, centrifuge) gives more from all of them.
+galena_ore      | Galena          | 999 |  95, 98,110 | Lead ore: heavy grey cubes in limestone. Smelts to lead in a kiln; found with sphalerite and a little silver.
+sphalerite_ore  | Sphalerite      | 999 | 120, 85, 40 | Zinc ore, brown and resinous. Zinc comes off in a blast furnace; it lies with galena in limestone.
+acanthite_ore   | Acanthite       | 999 |  60, 60, 66 | Silver ore, dark and soft. Smelts to silver in a kiln; a byproduct of lead-zinc and gold veins.
+magnetite_ore   | Magnetite       | 999 |  40, 40, 44 | Black iron ore, magnetic. A bloomery makes iron of it as of iron ore; rich in banded iron and skarns.
+pentlandite_ore | Pentlandite     | 999 | 175,150, 75 | Nickel ore, bronze-yellow, in dark mafic rock. Nickel comes off in a blast furnace.
+cinnabar_ore    | Cinnabar        | 999 | 170, 35, 35 | Bright red mercury ore near old hot springs. Crush it for now; roasting it for mercury comes later.
+chromite_ore    | Chromite        | 999 |  50, 45, 42 | Chromium ore, deep in basalt. An arc furnace with coke reduces it to chromium, for hard steels.
+wolframite_ore  | Wolframite      | 999 |  70, 58, 50 | Tungsten ore in deep granite veins with tin. An arc furnace with coke makes tungsten, the hardest metal.
+gold_ore        | Native gold     | 999 | 230,190, 60 | Gold in quartz veins and copper porphyries. Smelts to gold in a kiln; for circuits and alchemy.

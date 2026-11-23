@@ -74,6 +74,7 @@
 #include "ambience.h"
 #include "waterfalls.h"
 #include "gpumem.h"
+#include "scenetarget.h" // (#1610) SceneTarget_ForceAntiAliasing
 #include "structures.h"
 #include "fishing.h"
 #include "trapping.h"
@@ -1259,6 +1260,11 @@ int main(int argc, char** argv)
 
     bool msaa = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-msaa") msaa = false;
+    if (!msaa) SceneTarget_ForceAntiAliasing(0, false); // (#1610) the scene too, whatever the settings say
+    for (int i = 1; i + 1 < argc; ++i) if (std::string(argv[i]) == "--aa") { // (#1610) --aa off|fxaa|2x|4x: the scene's anti-aliasing (captures, A/Bs)
+        const std::string a = argv[i + 1];
+        SceneTarget_ForceAntiAliasing(a == "4x" ? 4 : a == "2x" ? 2 : 0, a == "fxaa");
+    }
     if (!bench) { Settings_Load(); if (settings.terrainDetail == 0) msaa = false; } // #302 (user 2026-11-15): Low runs without MSAA (VRAM); benches use --no-msaa
     if (!bench && !gLogLevelFromArgs && !settings.logLevel.empty()) {
         LogLevel l;

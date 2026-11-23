@@ -2,6 +2,7 @@
 #include "inventory.h"
 #include "plots.h"
 #include "machinetiers.h"
+#include "ores.h"
 #include "disassembly.h"
 #include "composed.h"
 #include "itemdata.h"
@@ -3499,6 +3500,20 @@ TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     recipesOf[(int)r.machine].pop_back();
     for (int item : wanted) wants[item] = 0;
     plots.clear(); plotIndexDirty = true; pendingStates.clear();
+}
+
+// (#1612) Every ore kind the world places (ores.txt: today's six and the vein families' new ones) is good for something: a
+// machine recipe (or a hand recipe) takes it.
+TEST(Factory, EveryOreKindHasARecipeThatTakesIt) {
+    LoadRecipes();
+    ASSERT_GE(Ores_Count(), 6);
+    for (int k = 0; k < Ores_Count(); ++k) {
+        const std::string item = Ores_Get(k)->item;
+        bool used = false;
+        for (const auto& r : tables.recipes) for (const Stack& s : r.in) used = used || (s.item >= 0 && tables.name(s.item) == item);
+        for (const ::Recipe& r : itemDB.recipes()) for (const auto& in : r.inputs) used = used || ItemMatches(in.first, item);
+        EXPECT_TRUE(used) << item << ": no recipe takes it";
+    }
 }
 
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
