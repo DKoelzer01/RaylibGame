@@ -512,13 +512,19 @@ int RiverNetwork::checkDownstream(float& worstRise, float& worstShrink) const {
         worstRise = std::max(worstRise, L[parent[c]] - L[c]);
         worstShrink = std::max(worstShrink, hw[c] - hw[parent[c]]);
     }
-    for (const Piece& pc : pieces) { worstRise = std::max(worstRise, pc.lb - pc.la); worstShrink = std::max(worstShrink, pc.wa - pc.wb); }
+    for (const Piece& pc : pieces) {
+        worstRise = std::max(worstRise, pc.lb - pc.la);
+        if (!bake) worstShrink = std::max(worstShrink, pc.wa - pc.wb);
+    }
     if (bake) { // bake-native: every node draining into another, and junctions continuous (#607): each piece ends at its outlet's level
         for (int k = 0; k < (int)nodeParent.size(); ++k) {
             const int p = nodeParent[k];
             if (p < 0) continue;
             ++links;
             worstRise = std::max(worstRise, fabsf(pieces[nodePiece[k]].lb - pieces[nodePiece[p]].la)); // a step at the junction
+            // The discharge's width never shrinks downstream; the drawn width may (#637: a river fills ~0.8 of the valley floor
+            // it wore, and narrows where the valley does, into a gorge).
+            worstShrink = std::max(worstShrink, nodeDisc[k] - nodeDisc[p]);
         }
     }
     return links;
@@ -829,6 +835,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // every piece at its natural flow (node k's piece is piece k).
     nodeQ.assign(area.begin(), area.end());
     nodeChildQ.assign(nodeQ.size(), 0.0f);
+    nodeDisc.resize(M);
+    for (int k = 0; k < M; ++k) nodeDisc[k] = discWidthOf(k);
     for (int k = 0; k < M; ++k) if (nodeParent[k] >= 0) nodeChildQ[nodeParent[k]] += std::max(nodeQ[k], 1.0f);
     nodeTopo = topo;
     flowCur.reset(new std::atomic<float>[pieces.size()]);
