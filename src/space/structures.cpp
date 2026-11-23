@@ -652,31 +652,10 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             }
         }
         lastDungeon.roomCentres.push_back({ r.c.x, rf + 1.0f, r.c.z });
-        if (r.tmpl >= 0) { // (#1641) a data template's props, from the room's low corner; none within 2 cells of a wall with a door
-            const Set& T = roomSets[r.tmpl];
-            const Int3 base = cellOf(r.c.x - r.hx, rf + 0.01f, r.c.z - r.hz);
-            std::vector<std::pair<Int3, CellShape>> fp;
-            ++lastDungeon.templateRooms;
-            for (const Part& tp : T.parts) {
-                Part p = tp;
-                p.origin = { base.x + tp.origin.x, base.y + tp.origin.y, base.z + tp.origin.z };
-                Plot::Footprint(tp, fp);
-                bool tooClose = false;
-                for (const auto& c : fp) {
-                    const int cx = c.first.x, cz = c.first.z; // (footprint cells include the part's origin: the template's frame)
-                    if ((r.walls & 1) && cx >= T.room.x - 2) tooClose = true;
-                    if ((r.walls & 2) && cx < 2) tooClose = true;
-                    if ((r.walls & 4) && cz >= T.room.z - 2) tooClose = true;
-                    if ((r.walls & 8) && cz < 2) tooClose = true;
-                }
-                if (tooClose) continue;
-                parts.push_back({ p, "" });
-                ++lastDungeon.templateParts;
-            }
-        }
         if (body.trees) body.trees->addClearing(plot.toBody({ r.c.x, rf + kRoomH, r.c.z }), std::max(r.hx, r.hz) + 2.0f); // (roots)
         // A torch in a corner (light: rooms 8 m down are black), and a chest against the far wall now and then: always in
         // a floor's last room, of rare loot in the deepest.
+        const size_t roomPartsFrom = parts.size(); // the torch, chest and vent go first: template props never take their cells
         parts.push_back({ Part{ PartType::Torch, cellOf(r.c.x + r.hx - 0.4f, rf + 0.1f, r.c.z + r.hz - 0.4f), 0, 0 }, "" });
         const bool deepest = i + 1 == rooms.size(), lastOfFloor = deepest || rooms[i + 1].floor != r.floor;
         if (lastOfFloor || Unit(h) < 0.4f)
@@ -685,6 +664,32 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
         if (i > 0 && !deepest && Unit(h) < (r.floor == 0 ? 0.2f : 0.35f)) {
             parts.push_back({ Part{ PartType::GasVent, cellOf(r.c.x + 0.25f, rf + 0.1f, r.c.z + 0.25f), 0, 0 }, "" });
             ++lastDungeon.vents;
+        }
+        if (r.tmpl >= 0) { // (#1641) a data template's props, from the room's low corner; none within 2 cells of a wall with a door
+            const Set& T = roomSets[r.tmpl];
+            const Int3 base = cellOf(r.c.x - r.hx, rf + 0.01f, r.c.z - r.hz);
+            std::vector<std::pair<Int3, CellShape>> fp;
+            std::unordered_set<Int3> taken; // the cells of this room's torch, chest and vent
+            for (size_t k = roomPartsFrom; k < parts.size(); ++k) { Plot::Footprint(parts[k].first, fp); for (const auto& c : fp) taken.insert(c.first); }
+            ++lastDungeon.templateRooms;
+            for (const Part& tp : T.parts) {
+                Part p = tp;
+                p.origin = { base.x + tp.origin.x, base.y + tp.origin.y, base.z + tp.origin.z };
+                bool tooClose = false;
+                Plot::Footprint(tp, fp);
+                for (const auto& c : fp) {
+                    const int cx = c.first.x, cz = c.first.z; // (footprint cells include the part's origin: the template's frame)
+                    if ((r.walls & 1) && cx >= T.room.x - 2) tooClose = true;
+                    if ((r.walls & 2) && cx < 2) tooClose = true;
+                    if ((r.walls & 4) && cz >= T.room.z - 2) tooClose = true;
+                    if ((r.walls & 8) && cz < 2) tooClose = true;
+                }
+                Plot::Footprint(p, fp);
+                for (const auto& c : fp) if (taken.count(c.first)) tooClose = true;
+                if (tooClose) continue;
+                parts.push_back({ p, "" });
+                ++lastDungeon.templateParts;
+            }
         }
     }
     // (#1641 slice 1, the user: "just rooms carved out of the stone") A built lining, by theme: each room walled, floored and
