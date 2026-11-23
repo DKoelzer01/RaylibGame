@@ -15,6 +15,7 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace {
 constexpr uint64_t kW = 1ull << (int)Act::Forward, kJump = 1ull << (int)Act::Jump;
@@ -111,7 +112,10 @@ SCENARIO("build/tile-ledges") {
         hMax = std::max(hMax, h);
         if (prevHt >= 0.0 && c.T > prevHt && lane != Block1mJump) vUpMax = std::max(vUpMax, (h - prevH) / (c.T - prevHt));
         prevH = h; prevHt = c.T;
-        if (t < 3.5) return false;
+        if (along > kLedgeAt - 2.5 && along < kLedgeAt + 2.5)
+            printf("ledgetrace %d t %.3f along %.3f h %.3f v %.2f grounded %d vel_up %.2f\n", lane, t, along, h, v, (int)player.grounded,
+                   Vector3DotProduct(player.velocity, c.body->dirToWorld(upL)));
+        if (t < 3.5 && along < kLedgeAt + 3.0) return false;
         gFakeHeld = 0;
         const char* n = kName[lane];
         const double hEnd = h, rise = kRise[lane];
