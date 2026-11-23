@@ -63,7 +63,10 @@ SCENARIO("build/ladder-stack") {
             }
             c.camera(eye, target, up); // (flying: the build tool aims from the camera)
             if (phase == 0) { phase = 1; return false; } // the camera in place a frame first
-            if (phase == 1) { PlayerInput in; in.press(Act::Secondary); BuildTool_Update(c.world, in, true); phase = 2; return false; }
+            if (phase == 1) { // (flying never sets the player's body, #1555: the build tool aims on it)
+                player.nearest = c.body;
+                PlayerInput in; in.press(Act::Secondary); BuildTool_Update(c.world, in, true); phase = 2; return false;
+            }
             // the placed ladder: in the column, the row above the last
             const int row = col.y + 1 + placed;
             const int at = plot->partAt({ col.x, row, col.z });
