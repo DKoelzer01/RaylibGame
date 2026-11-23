@@ -409,7 +409,10 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
     SetEnv("RAYLIBGAME_BENCH_WARMUP", "0");
     for (const auto& kv : R.def.env) SetEnv(kv.first, kv.second);
 
-    std::vector<std::string> a = { argv[0], "--bench", "0.1", "--seed", std::to_string(R.def.seed), "--preload", "0", "--cache-verts", "1", "--window", "960", "540" };
+    // RAYLIBGAME_SCENARIO_SEED: another world (a place a playtest saw, its save's seed); results then aren't comparable.
+    const char* seedEnv = getenv("RAYLIBGAME_SCENARIO_SEED");
+    const std::string seed = seedEnv && *seedEnv ? std::string(seedEnv) : std::to_string(R.def.seed);
+    std::vector<std::string> a = { argv[0], "--bench", "0.1", "--seed", seed, "--preload", "0", "--cache-verts", "1", "--window", "960", "540" };
     if (R.def.world == ScenarioWorld::Sandbox) a.push_back("--sandbox");
     if (R.record) {
         // Low-res and every 4th frame, to the run's own folder (local temp): deleted on PASS (scenario.h). Implies a fixed

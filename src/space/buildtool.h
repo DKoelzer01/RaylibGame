@@ -14,7 +14,7 @@ struct Vector3;
 // Placing parts on build plots (milestone 3). G toggles build mode; the wheel picks the part,
 // R turns it about the plot's up axis and V about its east axis; RMB places (on a part face, or on
 // the ground: snapping to a nearby plot's grid or starting a new plot), LMB removes a part and
-// refunds it. Parts cost concrete or iron plate. A part placed against the ground clears the
+// refunds it. Parts cost their material (bricks, planks, iron plate...). A part placed against the ground clears the
 // terrain inside its cells and fills the ground under them, so it neither floats nor sinks.
 struct BuildToolState {
     bool active = false;

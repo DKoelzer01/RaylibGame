@@ -512,13 +512,19 @@ int RiverNetwork::checkDownstream(float& worstRise, float& worstShrink) const {
         worstRise = std::max(worstRise, L[parent[c]] - L[c]);
         worstShrink = std::max(worstShrink, hw[c] - hw[parent[c]]);
     }
-    for (const Piece& pc : pieces) { worstRise = std::max(worstRise, pc.lb - pc.la); worstShrink = std::max(worstShrink, pc.wa - pc.wb); }
+    for (const Piece& pc : pieces) {
+        worstRise = std::max(worstRise, pc.lb - pc.la);
+        if (!bake) worstShrink = std::max(worstShrink, pc.wa - pc.wb);
+    }
     if (bake) { // bake-native: every node draining into another, and junctions continuous (#607): each piece ends at its outlet's level
         for (int k = 0; k < (int)nodeParent.size(); ++k) {
             const int p = nodeParent[k];
             if (p < 0) continue;
             ++links;
             worstRise = std::max(worstRise, fabsf(pieces[nodePiece[k]].lb - pieces[nodePiece[p]].la)); // a step at the junction
+            // The discharge's width never shrinks downstream; the drawn width may (#637: a river fills ~0.8 of the valley floor
+            // it wore, and narrows where the valley does, into a gorge).
+            worstShrink = std::max(worstShrink, nodeDisc[k] - nodeDisc[p]);
         }
     }
     return links;
@@ -765,6 +771,7 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // samples a node.
     if (params.bankHeight) {
         constexpr float kMaxLower = 3.0f;
+        const bool perchedOld = EnvFlag("RAYLIBGAME_RIVER_PERCHED_OLD"); // (#1520) A/B: =1 the 3 m limit everywhere
         const int T = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
         std::vector<std::thread> pool;
         for (int t = 0; t < T; ++t)
@@ -777,15 +784,20 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
                                          : Vector3Normalize(Vector3CrossProduct(pos[k], fabsf(pos[k].y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                     const Vector3 side = Vector3Normalize(Vector3CrossProduct(along, pos[k]));
                     const float half = discWidthOf(k);
-                    float cap = 1e30f;
+                    float capS[2] = { 1e30f, 1e30f }; // per side
                     const Vector3 at[2] = { P, Vector3Scale(Vector3Add(P, Q), 0.5f) };
                     for (int a = 0; a < 2; ++a)
                         for (float off : { half + 2.0f, half + 6.0f }) {
                             if (a == 1 && off > half + 2.0f) continue;
-                            for (int s = -1; s <= 1; s += 2)
-                                cap = std::min(cap, params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, s * off)))) - 0.3f);
+                            for (int s = 0; s < 2; ++s)
+                                capS[s] = std::min(capS[s], params.bankHeight(Vector3Normalize(Vector3Add(at[a], Vector3Scale(side, (s ? 1.0f : -1.0f) * off)))) - 0.3f);
                         }
-                    own[k] = std::max(std::min(own[k], cap), own[k] - kMaxLower);
+                    const float cap = std::min(capS[0], capS[1]);
+                    // (#1520) Both banks far under the level is water perched over falling ground (rapids on gullied slopes stood
+                    // 6-9 m over the ground on both sides, a tilted floating slab): no slope to run along, so it goes all the way
+                    // down to where it would spill. One high bank keeps the limit (a river along a slope: no trench into it).
+                    const bool perched = capS[0] < own[k] - kMaxLower && capS[1] < own[k] - kMaxLower && !perchedOld;
+                    own[k] = perched ? std::min(own[k], cap) : std::max(std::min(own[k], cap), own[k] - kMaxLower);
                 }
             });
         for (auto& th : pool) th.join();
@@ -829,6 +841,8 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
     // every piece at its natural flow (node k's piece is piece k).
     nodeQ.assign(area.begin(), area.end());
     nodeChildQ.assign(nodeQ.size(), 0.0f);
+    nodeDisc.resize(M);
+    for (int k = 0; k < M; ++k) nodeDisc[k] = discWidthOf(k);
     for (int k = 0; k < M; ++k) if (nodeParent[k] >= 0) nodeChildQ[nodeParent[k]] += std::max(nodeQ[k], 1.0f);
     nodeTopo = topo;
     flowCur.reset(new std::atomic<float>[pieces.size()]);
@@ -1039,8 +1053,9 @@ void RiverNetwork::setFlowState(const std::vector<std::pair<int, float>>& cur, c
 }
 
 int RiverNetwork::pieceBeyond(int piece, Vector3 centre, float dist) const {
-    if (piece < 0 || piece >= (int)pieces.size()) return -1;
-    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
+    // Legacy (non-bake) networks never fill nodeParent: no downstream chain to walk (#1673).
+    if (!bake || piece < 0 || piece >= (int)pieces.size() || piece >= (int)nodeParent.size()) return -1;
+    for (int k = nodeParent[piece], j = 0; k >= 0 && k < (int)pieces.size() && k < (int)nodeParent.size() && j < 64; k = nodeParent[k], ++j) // from the next link: this one starts upstream
         if (Vector3Distance(pieces[k].a, centre) > dist) return k;
     return -1;
 }

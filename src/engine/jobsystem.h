@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -71,5 +72,21 @@ private:
     bool stopping = false;
     bool lowPriority = true;           // #387: workers below normal priority (RAYLIBGAME_JOB_PRIORITY=normal: off)
 };
+
+// Runs fn(0) .. fn(parts - 1), spread over the pool and the calling thread, and returns when all are done. Safe to call
+// from inside a pool job (#1671): the caller and the helper jobs pull parts from one counter, so the caller does whatever
+// no worker picks up - with a single worker busy running the caller, or after clearQueued dropped the helpers, it simply
+// runs every part itself instead of waiting forever. A helper that starts late finds nothing left and touches only the
+// shared counters (never the caller's stack). Parts must write disjoint data; which thread runs a part changes nothing.
+inline void ParallelParts(JobSystem& js, int parts, const std::function<void(int)>& fn, float priority, JobTag tag) {
+    if (parts <= 1) { if (parts == 1) fn(0); return; }
+    struct Shared { std::atomic<int> next{ 0 }, done{ 0 }; const std::function<void(int)>* fn = nullptr; };
+    auto sh = std::make_shared<Shared>();
+    sh->fn = &fn;
+    auto pull = [](Shared& s, int n) { for (int p; (p = s.next.fetch_add(1)) < n;) { (*s.fn)(p); s.done.fetch_add(1); } };
+    for (int k = 1; k < parts; ++k) js.submit(priority, [sh, parts, pull] { pull(*sh, parts); }, false, tag);
+    pull(*sh, parts);
+    while (sh->done.load() < parts) std::this_thread::yield(); // only parts a worker is running right now remain
+}
 
 #endif

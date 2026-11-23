@@ -20,6 +20,7 @@
 #include "simclock.h"
 #include "factory.h"
 #include "alchemy.h" // (#1254) phials on vessels, the run on their panel
+#include "structures.h" // (#1641 slice 2c) breakable props
 #include "blueprint.h"
 #include <deque>
 #include "claims.h"
@@ -281,6 +282,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
     if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
+    if (PartUnbreakable(hitPlot->parts[part])) { breakHeld = 0.0f; breakPart = -1; if (in.hit(Act::Primary)) GameUI_Toast(GateLocked(hitPlot->parts[part]) ? "Locked: it needs a dungeon key" : hitPlot->parts[part].type == PartType::Lever ? "The lever will not come loose" : "The portcullis is too heavy to break: look for a lever"); return; } // (#1641) a vault door, a portcullis or a lever: not broken
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
     if (breakHeld < BreakHold()) return;
@@ -303,6 +305,11 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
             if (ir) inventory.add("iridium_ore", ir);
             GameUI_Toast(TextFormat("The meteorite breaks apart: +%d nickel-iron%s%s", n, pt ? ", +2 platinum ore" : "", ir ? ", +1 iridium ore" : ""));
         } else if (!terrainTool.creative) inventory.add(PartItem(removed), PartCostCount(removed.type));
+        if (std::vector<std::pair<std::string, int>> drops; Structures_BreakLoot(*body, hitPlot->id, part, removed, drops)) { // (#1641 slice 2c) a dungeon urn or crate: its loot
+            std::string what;
+            for (const auto& [item, n] : drops) { inventory.add(item.c_str(), n); what += std::string(what.empty() ? "" : ", ") + std::to_string(n) + " " + item; }
+            if (!drops.empty()) GameUI_Toast(("It breaks open: " + what).c_str());
+        }
         Audio_Play(Sfx::Dig, 0.5f, 1.3f);
     }
     breakPart = -1;
@@ -399,7 +406,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     auto centreOn = [&](Plot& pl, Int3 normal, const DVec3& hitBodyLocal, bool onGround = false) {
         std::vector<std::pair<Int3, CellShape>> fp;
         Plot::Footprint(aim.part, fp);
-        if (fp.size() <= 1) return;
+        if (fp.size() <= 1) { aim.part.origin = Plot::SingleCellOrigin(aim.part, aim.part.origin); return; } // (#1630) its one cell where aimed, any orientation
         Int3 lo{ INT32_MAX, INT32_MAX, INT32_MAX }, hi{ INT32_MIN, INT32_MIN, INT32_MIN };
         for (const auto& c : fp) {
             lo = { std::min(lo.x, c.first.x), std::min(lo.y, c.first.y), std::min(lo.z, c.first.z) };
@@ -446,6 +453,11 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (hitPlot && (!terrain || bestPart <= th.distance)) {
         aim.plot = hitPlot;
         faceToward(hitFace.y == 0 ? hitFace : towardViewer(*hitPlot));
+        static const bool stackFacing = !(getenv("RAYLIBGAME_LADDER_STACK_FACING") && getenv("RAYLIBGAME_LADDER_STACK_FACING")[0] == '0'); // (A/B)
+        if (stackFacing && !buildTool.orientManual && aim.part.type == PartType::Ladder && hitFace.y != 0) { // (#1640) stacked on (or under) a ladder: its facing
+            const int on = hitPlot->partAt(hitCell);
+            if (on >= 0 && hitPlot->parts[on].type == PartType::Ladder) { aim.part.orient = hitPlot->parts[on].orient; buildTool.orient = aim.part.orient; }
+        }
         aim.part.origin = { hitCell.x + hitFace.x, hitCell.y + hitFace.y, hitCell.z + hitFace.z };
         centreOn(*hitPlot, hitFace, lo + DVec3(Vector3Scale(ld, bestPart)));
         // A part bigger than a cell grows from its origin, and its rotation can reach back into the block aimed at or stand a
@@ -666,7 +678,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed)) { // cables: their network (#570); beds (#800); shafts (#1269)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -692,6 +704,51 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         return;
     }
     if (machineAim.part < 0 || !in.enabled) return;
+    if (machineAim.type == PartType::Gate) { // (#1641) a vault door: RMB (outside build mode) or E opens it with a dungeon_key, which it takes
+        if (!((!buildTool.active && in.hit(Act::Secondary)) || in.hit(Act::Use))) return;
+        Planetoid* gb = Planetoid::find(machineAim.body);
+        Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
+        if (!gp || machineAim.part >= (int)gp->parts.size() || !GateLocked(gp->parts[machineAim.part])) return;
+        if (!inventory.remove("dungeon_key", 1)) { GameUI_Toast("Locked: it needs a dungeon key"); Audio_Play(Sfx::Error, 0.5f); return; }
+        const Part g = gp->parts[machineAim.part];
+        for (size_t i = 0; i < gp->parts.size(); ++i) { // both gates of the door (stacked: same column, 2 cells apart)
+            const Part q = gp->parts[i];
+            if (!GateLocked(q) || q.origin.x != g.origin.x || q.origin.z != g.origin.z || abs(q.origin.y - g.origin.y) > 2) continue;
+            gp->remove((int)i);
+            Part open = q; open.material = 0;
+            gp->place(open);
+        }
+        GameUI_Toast("The vault door unlocks");
+        Audio_Play(Sfx::Pickup, 0.4f, 0.7f);
+        return;
+    }
+    if (machineAim.type == PartType::Lever) { // (#1641 slice 2c) RMB (outside build mode) or E pulls it: every portcullis within 12 m of it in its plot opens
+        if (!((!buildTool.active && in.hit(Act::Secondary)) || in.hit(Act::Use))) return;
+        Planetoid* lb = Planetoid::find(machineAim.body);
+        Plot* lp = lb && lb->plots ? lb->plots->byId(machineAim.plot) : nullptr;
+        if (!lp || machineAim.part >= (int)lp->parts.size() || lp->parts[machineAim.part].type != PartType::Lever) return;
+        Part lever = lp->parts[machineAim.part];
+        if (lever.material != 0) { GameUI_Toast("The lever is already down"); return; }
+        std::vector<int> gates; // (collected first: opening replaces the parts)
+        for (size_t i = 0; i < lp->parts.size(); ++i) {
+            const Part& q = lp->parts[i];
+            if (!GatePortcullis(q)) continue;
+            const float dx = (float)(q.origin.x - lever.origin.x), dy = (float)(q.origin.y - lever.origin.y), dz = (float)(q.origin.z - lever.origin.z);
+            if (sqrtf(dx * dx + dy * dy + dz * dz) * kCellSize <= 12.0f) gates.push_back((int)i);
+        }
+        lp->remove(machineAim.part); // pulled: the lever is placed again, material 1
+        lever.material = 1;
+        lp->place(lever);
+        for (int i : gates) {
+            Part open = lp->parts[i];
+            lp->remove(i);
+            open.material = 0;
+            lp->place(open);
+        }
+        GameUI_Toast(gates.empty() ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open");
+        Audio_Play(Sfx::Pickup, 0.5f, 0.5f);
+        return;
+    }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
     if (machineAim.type == PartType::Anvil && !buildTool.active && in.down(Act::Secondary)) { // (#1271 L2) hold RMB on an anvil to hammer
         static double nextStrike = 0.0;
@@ -805,6 +862,20 @@ void Machine_DrawHUD() {
         return;
     }
     if (machineAim.part < 0) return;
+    if (machineAim.type == PartType::Lever) { // (#1641 slice 2c)
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 300, 52, Fade(BLACK, 0.55f));
+        DrawText("lever", x, y, 20, SKYBLUE);
+        DrawText("RMB / E to pull it", x, y + 24, 16, RAYWHITE);
+        return;
+    }
+    if (machineAim.type == PartType::Gate) { // (#1641) a vault door
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 340, 52, Fade(BLACK, 0.55f));
+        DrawText("vault door: locked", x, y, 20, SKYBLUE);
+        DrawText(inventory.count("dungeon_key") > 0 ? "RMB / E to unlock with your dungeon key" : "it needs a dungeon key", x, y + 24, 16, RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::HandPump) {
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         const bool pumping = GetTime() - handPumpAt < 0.15; // worked this frame or the last few (#571)

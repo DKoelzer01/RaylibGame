@@ -38,6 +38,7 @@
 #include "claims.h"
 #include "serveradmin.h"
 #include "trees.h"
+#include "structures.h" // (#1641 slice 2c) breakable props
 #include <cmath>
 #include <map>
 #include <ctime>
@@ -1718,6 +1719,7 @@ namespace {
             Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
             if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
             if (q.partIndex >= plot->parts.size() || plot->parts[q.partIndex].type == PartType::Count) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            if (PartUnbreakable(plot->parts[q.partIndex])) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; } // (#1641) a vault door, a portcullis or a lever is opened or pulled, never broken
             const Part removed = plot->parts[q.partIndex];
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
@@ -1735,7 +1737,10 @@ namespace {
                 give.push_back({ "nickel_iron_ore", GameRng_Int(6, 10) });
                 if (GameRng_Int(0, 99) < 35) give.push_back({ "platinum_ore", 2 });
                 if (GameRng_Int(0, 99) < 12) give.push_back({ "iridium_ore", 1 });
-            } else give.push_back({ PartItem(removed), PartCostCount(removed.type) });
+            } else {
+                give.push_back({ PartItem(removed), PartCostCount(removed.type) });
+                Structures_BreakLoot(*p, q.plot, (int)q.partIndex, removed, give); // (#1641 slice 2c) a dungeon urn or crate: its loot too
+            }
             for (const auto& [item, n] : give) { before.emplace(item, rm.inventory.amount(item)); rm.inventory.add(item, n); }
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Remove; out.body = q.body; out.plot = q.plot; out.partIndex = q.partIndex;
             SendToJoined(out);
@@ -1743,7 +1748,7 @@ namespace {
         } else {
             Part part = ToPart(q.part);
             if (IsMachine(part.type)) part.material = (uint8_t)std::clamp((int)part.material, 0, MachineTiers_MaxStep(part.type)); // (#1427 L7a) a machine's variant step
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
             Plot* plot = nullptr;

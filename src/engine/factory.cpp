@@ -2562,7 +2562,7 @@ void Factory::LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines) 
         if (!(ss >> tag >> plot >> part)) continue;
         std::vector<std::string> rest;
         std::string w;
-        while (ss >> w) rest.push_back(w);
+        while (ss >> w) { if (const char* now = RetiredItem(w); *now) w = now; rest.push_back(w); } // #1090: item ids only match it
         pendingStates[{ bodyId, plot, part }] = rest;
     }
 }

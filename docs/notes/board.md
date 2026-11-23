@@ -35,3 +35,15 @@ board's auto-add workflow adds new issues itself, but sets no fields, so:
   ("Type" is reserved by GitHub, hence "Kind".)
 - The gh token needs the `project` scope (added 2026-11-12). If a project command fails on scopes, ask the
   user to run `gh auth refresh -h github.com -s project`.
+
+## Playtest board (coordinator)
+
+- Page: https://claude.ai/artifact/MBu4PbuNrgXXP5khnkWjt9, source `build/playtest-board/index.html` (GROUPS by
+  category). The user's marks live in its db collection `checks`, one doc per item id: `status` (pass/fail/skip),
+  `reason`, `at` (ISO time of the user's last change).
+- **The db is the baseline, not a local copy** (a local baseline missed 39 marks on 2026-11-22). After routing a
+  mark (fail -> the user's words on the issue + a new issue for a new problem; pass -> `playtest confirmed`; a note ->
+  feedback the same way), write `routed` = the doc's `at` into that doc (ArtifactData update, pinned to its version).
+  A doc needs handling when `routed` is missing or differs from `at`.
+- A new build: retests of items that failed get a fresh id (`1157-2`), passed items leave the page, and the old marks
+  are deleted so the page starts clean.

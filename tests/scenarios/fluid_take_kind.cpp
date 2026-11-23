@@ -68,6 +68,36 @@ void Build(ScenarioDef& s, bool water) {
 }
 }
 
+// (#1677) Two takes in one frame from one small pool: both read the same published snapshot, and each was credited in full
+// (0.4 m^3 out of a 0.3 m^3 pool: water made from nothing). Now the second sees what the first reserved.
+SCENARIO("fluid/take-burst") {
+    s.tags = { "fluid" };
+    s.world = ScenarioWorld::Sandbox;
+    s.args = { "--day" };
+    s.timeout = 90.0;
+    s.step("settle", 30.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play and an idle world"); return c.T >= 2.0 && WorldIdle(); });
+    s.step("pour 0.3 m^3 on flat ground", 2.0, [](ScenarioCtx& c) {
+        S = State{};
+        S.home = c.field->findSpawnDir(c.body->seed);
+        S.ax = Vector3Normalize(Vector3CrossProduct(S.home, { 0, 1, 0 })); S.ay = Vector3CrossProduct(S.ax, S.home);
+        S.spot = Vector3Scale(S.home, c.field->radius + c.field->elevation(S.home) + 0.3f);
+        Fluid::Pour(*c.body, S.spot, 0.3f, 0);
+        c.camera(Vector3Add(S.spot, Vector3Add(Vector3Scale(S.home, 4.0f), Vector3Scale(S.ay, -6.0f))), S.spot, S.home);
+        return true;
+    });
+    s.step("two takes in one frame", 10.0, [](ScenarioCtx& c) {
+        c.camera(Vector3Add(S.spot, Vector3Add(Vector3Scale(S.home, 4.0f), Vector3Scale(S.ay, -6.0f))), S.spot, S.home);
+        c.waitingFor("3 s spreading");
+        if (c.t < 3.0) return false;
+        const float pub = Fluid::WaterAt(*c.body, S.spot, 5.0f);
+        const float a = Fluid::Take(*c.body, S.spot, 0.2f, 5.0f, 0), b = Fluid::Take(*c.body, S.spot, 0.2f, 5.0f, 0);
+        c.note(TextFormat("published %.3f m^3; takes credited %.3f + %.3f m^3", pub, a, b));
+        c.gt("the pool was published (m^3)", pub, 0.2f);
+        c.lt("the two takes together got no more than the pool held (m^3)", a + b, pub + 0.005f);
+        return true;
+    });
+}
+
 SCENARIO("fluid/take-kind") { Build(s, false); }
 SCENARIO("fluid/take-kind-cpu") { s.env = { { "FLUID_CPU", "1" } }; Build(s, false); }
 // Water from a finite pool (#1414: buckets and pumps took nothing from one either, and the bucket or the pump made water).
