@@ -18,7 +18,7 @@ kiln 1            = any_stone 16, clay 8, fired_crucible 1
 chest 1           = any_planks 8
 copper_wire 2     = copper_ingot 1
 bronze_plate 1    = bronze_ingot 2
-boiler 1          = bronze_plate 6, any_stone 8
+boiler 1          = bronze_plate 5, valve 1, any_stone 8
 conveyor 4        = bronze_plate 1, rope 2
 cable 4           = copper_wire 4
 pipe 4            = iron_plate 1
@@ -197,11 +197,11 @@ hand_crank 1       = shaft 1, any_planks 3
 stress_gauge 1     = shaft 1, any_planks 2, copper_ingot 1
 millstone 1        = any_stone 8, cogwheel 1, any_planks 4
 mechanical_saw 1   = iron_plate 2, shaft 1, any_planks 4
-mechanical_press 1 = iron_ingot 4, shaft 1, any_planks 4
+mechanical_press 1 = mechanism 1, iron_plate 2, any_planks 4
 water_wheel 1      = any_planks 24, shaft 2
 windmill 1         = any_planks 12, rope 8, shaft 1
 # --- (#1271 L3) Steam on rotation, and the bridge to LV ---
-steam_engine 1     = iron_plate 6, bronze_plate 4, cogwheel 2
+steam_engine 1     = iron_plate 4, piston 2, valve 1, mechanism 1
 dynamo 1           = iron_plate 4, copper_wire 8, shaft 1
 electric_motor 1   = iron_plate 4, copper_wire 8, shaft 1, basic_circuit 1
 # (#1271 L6) the first lab, on a shaft: the tier 2 milestone hands over its recipe (once gating is on)
@@ -214,7 +214,7 @@ clay_mould 1       = clay 2
 tool_pickaxe 1     = bronze_pick_head 1, any_planks 2
 tool_axe 1         = bronze_axe_head 1, any_planks 2
 # (#1271 L6b-2) the steam assembler (unlocked by its research node)
-steam_assembler 1  = iron_plate 4, cogwheel 4, any_planks 8
+steam_assembler 1  = iron_plate 4, mechanism 1, cogwheel 2, any_planks 8
 # (#1271 L6c) the LV assembler (with tier 4)
 lv_assembler 1     = lv_hull 1, basic_circuit 2, copper_wire 8, steel_plate 2
 # (#1427 L7e) the LV successors of the press and the saw
@@ -246,5 +246,9 @@ weapon_greatsword 1  = steel_blade 3, any_planks 2
 weapon_spear 1       = steel_spearhead 1, any_planks 3
 weapon_mace 1        = steel_mace_head 1, any_planks 2
 # (#1614) The steam-age component machines (tier 3)
-lathe 1              = iron_plate 4, cogwheel 2, shaft 1, any_planks 4
-wiremill 1           = iron_plate 4, cogwheel 2, iron_rod 2, any_planks 4
+lathe 1              = iron_plate 4, mechanism 1, shaft 1, any_planks 4
+wiremill 1           = iron_plate 4, mechanism 1, iron_rod 2, any_planks 4
+# (#1614 PR 3) Steam-age assemblies (bronze and iron: the steam engine comes before the blast furnace's steel and zinc)
+mechanism 1          = cogwheel 2, iron_rod 1, iron_screw 2
+piston 1             = bronze_plate 1, iron_rod 2, iron_spring 1
+valve 1              = bronze_plate 1, iron_spring 1, iron_screw 2

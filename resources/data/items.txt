@@ -338,3 +338,7 @@ sulfur      | Sulfur          | 999 | 220,200, 60 | Yellow, from the sulfide ore
 # (#1614) Steam-age component machines (shaft power, as the mechanical press): twice what the hand gets from the metal
 lathe            | Lathe            | 20  | 150,112, 70 | Mechanical power: turns ingots into rods and rods into screws, twice what the hand gets. Needs 16 RPM.
 wiremill         | Wiremill         | 20  | 140,110, 75 | Mechanical power: draws ingots into wire and rods into springs, more than the hand gets. Needs 16 RPM.
+# (#1614 PR 3) Assemblies of the steam age: made by hand (Tab) or in the steam assembler, built into the machines
+mechanism        | Mechanism        | 64  | 150,120, 80 | A small gear train: wooden cogwheels on an iron rod, pinned with screws. The heart of the press, the lathe and the steam engine.
+piston           | Piston           | 64  | 190,140, 70 | A bronze piston on iron rods with a return spring. Steam engines need two.
+valve            | Valve            | 64  | 185,135, 75 | A bronze valve with a spring: lets steam through and holds it back. Boilers and steam engines need one.
