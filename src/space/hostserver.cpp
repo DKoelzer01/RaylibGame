@@ -2336,6 +2336,24 @@ bool Host_Start(uint16_t port, std::string& status) {
         rit->second.inventory.addAmount(item, count, heat);
         if (const uint32_t conn = ConnOf(to)) SendInventoryDeltas(conn, rit->second.inventory, before);
     };
+    // (#1728) a machine finishing a recipe counts for the team whose claim covers its plot (nobody's: an unclaimed plot; what is
+    // taken from it still counts through the taker's inventory). Added to the local-book hook GameUI_InitPickupFeed set.
+    {
+        // The local hook as GameUI_InitPickupFeed set it, captured once: a second Host_Start in this process must not wrap its
+        // own wrapper (each finish would credit the team twice).
+        static const auto local = gFactoryMade;
+        gFactoryMade = [](uint64_t bodyId, uint32_t plotId, const std::string& item, int count) {
+            if (local) local(bodyId, plotId, item, count);
+            for (Planetoid* b : Planetoid::All()) {
+                if (b->id != bodyId) continue;
+                Plot* plot = b->plots ? b->plots->byId(plotId) : nullptr;
+                if (!plot) return;
+                const Claim* c = Claims_At(b->name, plot->toBody(Vector3{ 0.5f * kCellSize, 0.5f * kCellSize, 0.5f * kCellSize }));
+                if (c && c->team) TeamQuests_Made(c->team, item, count);
+                return;
+            }
+        };
+    }
     // (#343) graves: the owner's team by name (#604's teams), and their team's claims keep a grave closed to others
     gSameTeam = [](const std::string& a, const std::string& b) { const int ta = TeamOfName(a); return ta != 0 && ta == TeamOfName(b); };
     gInOwnerTeamClaim = [](const std::string& owner, const std::string& body, const DVec3& local) {

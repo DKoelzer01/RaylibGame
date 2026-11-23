@@ -17,6 +17,7 @@ void TeamQuests_Count(int team, const std::string& event, double n = 1.0);
 void TeamQuests_AtLeast(int team, const std::string& event, double value);
 void TeamQuests_NotePlaced(int team, const std::string& item);
 void TeamQuests_Obtained(int team, const std::string& item, double n);
+void TeamQuests_Made(int team, const std::string& item, double n); // (#1728) a team's machine finished n of item (counts for "get" as the larger of made and obtained)
 // (#338 slice 3) a player of `team` on `body` (body-local unit `up`, radius R) reveals map tiles as the local map does
 // (Nav_RevealTiles); a team's tiles are one set per body (teammates add up, a tile counts once), saved with its book and
 // never sent to clients; "explored" rises to their total.

@@ -263,13 +263,17 @@ static void CellName(ImDrawList* dl, ImVec2 p, ImVec2 q, const std::string& name
 // The stack on the cursor (#192): picked out of its cell, it follows the mouse until it is put down; whatever is still
 // held when the inventory closes goes back in.
 static InvSlot cursorStack;
+// (#1728) The stack came onto the cursor from a machine or chest (CursorSink), which counted it as obtained: coming back in, it
+// must not count again. Cleared whenever the cursor is empty (each frame, and when it goes back in).
+static bool cursorCredited = false;
 static void ReturnCursorStack() {
-    if (cursorStack.empty()) return;
+    if (cursorStack.empty()) { cursorCredited = false; return; }
     ++inventory.muted; // not a pickup (#208)
-    if (cursorStack.hasData()) inventory.addInstance(cursorStack.id, cursorStack.data, cursorStack.heat); // (#1446) one item, record and all
-    else inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat); // still as hot (#580)
+    if (cursorStack.hasData()) inventory.addInstance(cursorStack.id, cursorStack.data, cursorStack.heat, !cursorCredited); // (#1446) one item, record and all
+    else inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat, !cursorCredited); // still as hot (#580)
     --inventory.muted;
     cursorStack = InvSlot{};
+    cursorCredited = false;
 }
 // Getting rid of things when the grid is full (#564). The bin deletes the held stack; the last one binned can be taken
 // back out until another goes in or the window closes. A click outside the window drops the held stack (right-click:
@@ -2036,6 +2040,7 @@ void GameUI_Draw(Scene& world) {
     RecipeBook_Update(); // new recipes: a toast
     RunCraftQueue(); // (#824) queued crafts, window open or not
     if (!inventoryOpen) { SlotRules_Cancel(); ReturnCursorStack(); binned = InvSlot{}; container.open = false; tabWindowJustOpened = true; return; } // a stack still held goes back in (#192); (#1080) placed again when it opens
+    if (cursorStack.empty()) cursorCredited = false; // (#1728)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
     hoverGrid = nullptr; hoverSlot = -1; // (set again as the grids are drawn: #862)
@@ -2234,21 +2239,40 @@ namespace {
 // empty or the same item, else into the inventory.
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data) { // heat: fresh out of a furnace stays hot on the cursor (#580)
     if (count <= 0) return;
+    // (#1728) A take that goes straight onto the cursor never passes addAmount: count it here (a joined client's server already did)
+    const bool count1728 = gNetRole != NetRole::Client;
     if (!data.empty()) { // (#1446) one item with its own record: onto an empty cursor, else into the inventory as it is
-        if (cursorStack.empty()) { cursorStack = InvSlot{}; cursorStack.id = id; cursorStack.centi = 100; cursorStack.heat = heat; cursorStack.data = data; return; }
+        if (cursorStack.empty()) {
+            cursorStack = InvSlot{}; cursorStack.id = id; cursorStack.centi = 100; cursorStack.heat = heat; cursorStack.data = data;
+            if (count1728) inventory.noteObtained(id, 1.0, data);
+            cursorCredited = true;
+            return;
+        }
         ++inventory.muted; inventory.addInstance(id, data, heat); --inventory.muted;
         return;
     }
-    if (cursorStack.empty()) { cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat; return; }
+    if (cursorStack.empty()) {
+        cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat;
+        if (count1728) inventory.noteObtained(id, count);
+        cursorCredited = true;
+        return;
+    }
     if (cursorStack.id == id && !cursorStack.hasData()) {
         const int64_t add = (int64_t)count * 100;
         cursorStack.heat = (float)((cursorStack.heat * cursorStack.centi + heat * add) / (double)(cursorStack.centi + add));
         cursorStack.centi += add;
+        if (count1728) inventory.noteObtained(id, count);
+        cursorCredited = true;
         return;
     }
     ++inventory.muted; inventory.addAmount(id, count, heat); --inventory.muted;
 }
-void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink); }
+void GameUI_InitPickupFeed() {
+    inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink);
+    // (#1728) a machine finishing a recipe counts for this game's own quest book, whether or not anyone takes the item (the local
+    // player's world: single player, and a host's own player; a server's teams are credited by Host_Start's hook on top of this)
+    gFactoryMade = [](uint64_t, uint32_t, const std::string& item, int count) { QuestBook_NoteMade(item, count); };
+}
 
 // (#604) Your teammates on the HUD: each one's name and health (offline ones greyed), on the left under the quests; only
 // when joined to a server and in a team of two or more (non-teammates show no health).

@@ -93,6 +93,12 @@ void TeamQuests_Count(int team, const std::string& event, double n) { With(TeamQ
 void TeamQuests_AtLeast(int team, const std::string& event, double v) { With(TeamQuests_Book(team), [&] { QuestBook_AtLeast(event, v); }); }
 void TeamQuests_NotePlaced(int team, const std::string& item) { With(TeamQuests_Book(team), [&] { QuestBook_NotePlaced(item); }); }
 void TeamQuests_Obtained(int team, const std::string& item, double n) { if (n > 0.0) TeamQuests_Book(team).obtained[item] += n; }
+void TeamQuests_Made(int team, const std::string& item, double n) { // (#1728) capped as the local book (QuestBook_MadeCap): no resend once met
+    if (n <= 0.0) return;
+    const double cap = QuestBook_MadeCap(item);
+    double& m = TeamQuests_Book(team).made[item];
+    if (m < cap) m = std::min(cap, m + n);
+}
 
 void TeamQuests_Update(int team, const std::function<void(const std::string&, int)>& reward, const std::function<void(const std::string&)>& news) {
     QuestBookState& b = TeamQuests_Book(team);
@@ -235,6 +241,7 @@ void TeamQuests_Merge(int from, int into) {
     // Counts and totals take the larger side, not the sum: both sides' work toward one task would count twice.
     for (const auto& [k, v] : src.counts) dst.counts[k] = std::max(dst.counts[k], v);
     for (const auto& [k, v] : src.obtained) dst.obtained[k] = std::max(dst.obtained[k], v);
+    for (const auto& [k, v] : src.made) dst.made[k] = std::max(dst.made[k], v); // (#1728)
     size_t all = 0;
     for (const auto& [body, set] : tiles[from]) tiles[into][body].insert(set.begin(), set.end());
     for (const auto& [body, set] : tiles[into]) all += set.size();

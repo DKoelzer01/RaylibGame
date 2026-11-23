@@ -108,7 +108,12 @@ public:
     void addFractional(const std::string& id, float amount);
     // Returns what did not fit (the grid is full); `overflowed` is set so the game can say so.
     // heat (#580): how hot what comes in is (0 cold .. 1 straight out of a furnace); stacks it joins average it by amount.
-    double addAmount(const std::string& id, double amount, float heat = 0.0f);
+    // credit false (#1728): don't count it in `obtained` (a stack already counted when it went onto the cursor comes back in).
+    double addAmount(const std::string& id, double amount, float heat = 0.0f, bool credit = true);
+    // (#1728) Count what was obtained without adding it to a cell: a machine take that goes straight onto the cursor never passes
+    // addAmount. Credits `obtained` exactly as addAmount / addInstance do (an item with data: one, plus the old tool id a composed
+    // tool counts as); never the pickup feed or onAdded (the cursor take is not a pickup; a server credits its joined players itself).
+    void noteObtained(const std::string& id, double amount, const std::string& data = std::string());
     void cool(float dt);           // hot stacks cool to nothing over kCoolSeconds (#580)
     static constexpr float kCoolSeconds = 90.0f;
     void add(const std::string& id, int count) { if (count > 0) addAmount(id, count); }
@@ -120,7 +125,7 @@ public:
     double amount(const std::string& id) const; // with the fraction
     // (#1446) One item with its own record into an empty cell (a tool prefers an empty hotbar cell, as plain tools do).
     // Returns the cell, or -1 when no cell is free (overflowed is set). data "" adds one plain unit instead.
-    int addInstance(const std::string& id, const std::string& data, float heat = 0.0f);
+    int addInstance(const std::string& id, const std::string& data, float heat = 0.0f, bool credit = true); // credit false (#1728): see addAmount
     InvSlot takeInstance(int cell);             // the cell's item, record and all; the cell is emptied (an empty slot if none)
     int countInstances(const std::string& id) const; // items of `id` that carry data
     int held(const std::string& id) const { return count(id) + countInstances(id); } // (#1449) possession: plain ones and copies with data
