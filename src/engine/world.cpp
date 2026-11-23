@@ -10,6 +10,9 @@
 #include "worldtypes.h"
 #include "factory.h"
 #include "fluid.h"
+#include "saveversion.h"
+#include "savemigrate.h"
+#include "net.h"
 #include "rivers.h"
 #include "terraingpu.h"
 #include "gputimer.h"
@@ -2525,7 +2528,7 @@ bool SaveWorld(Scene& world) {
     const DVec3 tgtWorld = world.renderOrigin + world.camera.target;
     // v4: the system definition is stored in the save, so a save reloads the system it was made in
     // even if bodies.txt has changed since.
-    fprintf(f, "RAYLIBGAME_SAVE 13\n"); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
+    fprintf(f, "RAYLIBGAME_SAVE %d\n", kSaveVersion); // 13 (#346): the player's state in their record (<save>.players/), teams; 12 (#360): ponds' water bricks saved even drained
     fprintf(f, "seed %u\nbodies %zu\n", worldGen.lastSeed, worldGen.system.bodies.size());
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
@@ -2609,21 +2612,69 @@ void BackupSave() {
 static LoadPhases gLastLoad;
 const LoadPhases& LastLoadPhases() { return gLastLoad; }
 
+static std::string gLastLoadError;
+const std::string& LastLoadError() { return gLastLoadError; }
+
 bool LoadWorldSave(Scene& world) {
+    gLastLoadError.clear();
     FILE* f = fopen(SAVE_PATH, "r");
     if (!f) return false;
     int version = 0;
-    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1 || version < 2 || version > 13) {
+    if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1) {
         fclose(f);
-        LOG_ERROR("World", "%s: unsupported save version %d\n", SAVE_PATH, version);
+        gLastLoadError = std::string(SAVE_PATH) + " is not a save file";
+        LOG_ERROR("World", "%s: no save header\n", SAVE_PATH);
         return false;
     }
+    // (#1693) Refuse what this build cannot read before anything is touched: a newer build's save, or one older than 13.
+    {
+        std::string why;
+        if (!Save_VersionSupported(version, why)) {
+            fclose(f);
+            gLastLoadError = why;
+            LOG_ERROR("World", "%s: %s\n", SAVE_PATH, why.c_str());
+            return false;
+        }
+    }
+    // An older save (13 on) is brought to the current format in memory: the backup first (the file on disk stays as it is;
+    // the upgraded save is written by the next save), then the lines go through the migration chain into a temporary file
+    // that the one reader parses. A multiplayer client never migrates: the host's save is the only one.
+    std::string migratedPath, upgradeNote;
+    struct RemoveWhenDone { const std::string& path; ~RemoveWhenDone() { if (!path.empty()) { std::error_code ec; std::filesystem::remove(path, ec); } } } removeMigrated{ migratedPath }; // (every return below has closed `f` first)
+    if (version < kSaveVersion) {
+        if (gNetRole == NetRole::Client) {
+            fclose(f);
+            gLastLoadError = "A multiplayer client does not upgrade saves (this one is version " + std::to_string(version) + ")";
+            LOG_ERROR("World", "%s: %s\n", SAVE_PATH, gLastLoadError.c_str());
+            return false;
+        }
+        fclose(f);
+        BackupSave();
+        std::vector<std::string> lines;
+        MigrateContext ctx;
+        std::string error;
+        migratedPath = SAVE_PATH_STR + ".migrating";
+        if (!Save_ReadLines(SAVE_PATH_STR, lines) || !Save_Migrate(version, lines, ctx, error) || !Save_WriteLines(migratedPath, lines)) {
+            if (error.empty()) error = "could not read or write the save";
+            gLastLoadError = "Could not upgrade this save from version " + std::to_string(version) + ": " + error;
+            LOG_ERROR("World", "%s: %s\n", SAVE_PATH, gLastLoadError.c_str());
+            std::error_code ec;
+            std::filesystem::remove(migratedPath, ec);
+            return false;
+        }
+        upgradeNote = Save_UpgradeNote(ctx);
+        LOG_WARN("World", "%s: %s\n", SAVE_PATH, upgradeNote.c_str());
+        f = fopen(migratedPath.c_str(), "r");
+        if (!f) { gLastLoadError = "could not read the upgraded save"; return false; }
+        if (fscanf(f, "RAYLIBGAME_SAVE %d", &version) != 1) { fclose(f); return false; }
+    }
+    Save_SetLoadingVersion(version);
     Fluid::Reset(); // the save carries its own water
     unsigned int seed = 0;
     SystemDef sys;
     double c[6];
     bool ok = false;
-    if (version >= 4) {
+    {
         // seed, then "bodies N" and N definition lines (same syntax as bodies.txt).
         size_t n = 0;
         ok = fscanf(f, " seed %u bodies %zu", &seed, &n) == 2;
@@ -2642,18 +2693,11 @@ bool LoadWorldSave(Scene& world) {
                 else sys.bodies.push_back(d);
             }
         }
-    } else {
-        // v2/v3 stored the old generator's settings; rebuild the system they described.
-        int count = 1, size = 50;
-        float systemRadius = 0, spin = 0;
-        Vector3 first{};
-        ok = fscanf(f, " seed %u count %d size %d system %f %f first %f %f %f", &seed, &count, &size, &systemRadius, &spin, &first.x, &first.y, &first.z) == 8;
-        if (ok) sys = LegacySystemDef(count, size, systemRadius, spin, first);
     }
     double savedTime = 0.0;
-    if (ok && version >= 5) ok = fscanf(f, " time %lf", &savedTime) == 1;
+    if (ok) ok = fscanf(f, " time %lf", &savedTime) == 1;
     ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
-    if (!ok) { fclose(f); LOG_ERROR("World", "%s: could not read the header\n", SAVE_PATH); return false; }
+    if (!ok) { fclose(f); LOG_ERROR("World", "%s: could not read the header\n", SAVE_PATH); gLastLoadError = std::string(SAVE_PATH) + ": could not read the header"; return false; }
 
     worldTime = savedTime; // before regenerating: orbiting bodies are placed for this time
     worldGen.seed = seed;
@@ -2669,7 +2713,7 @@ bool LoadWorldSave(Scene& world) {
     const double regenMs = lms(lt0);
     world.setCameraWorld(DVec3(c[0], c[1], c[2]), DVec3(c[3], c[4], c[5]));
 
-    if (version >= 3) {
+    {
         char tok[64] = {};
         if (fscanf(f, " %63s", tok) == 1 && std::string(tok) == "extras") {
             if (loadExtrasHook) loadExtrasHook(f); // must consume through "end_extras"
@@ -2687,7 +2731,7 @@ bool LoadWorldSave(Scene& world) {
     char kind[16] = {};
     const std::string dir = RegionDir();
     while (fscanf(f, " planetoid %d", &index) == 1) {
-        // (#346) "netid <id>" since format 13's step 3: the body is found by it; older saves by their place in the list
+        // (#346) "netid <id>" since format 13's step 3: the body is found by it; a save from before it by its place in the list
         unsigned long long netid = 0;
         const long at = ftell(f);
         if (fscanf(f, " netid %llu", &netid) != 1) { fseek(f, at, SEEK_SET); netid = 0; }
@@ -2695,24 +2739,16 @@ bool LoadWorldSave(Scene& world) {
         Planetoid* body = netid ? Planetoid::findNet((NetId)netid) : nullptr;
         if (!body) body = index >= 0 && index < (int)planetoids.size() ? planetoids[index] : nullptr;
         std::shared_ptr<const TerrainDeltas> deltas;
-        if (std::string(kind) == "strokes") {
-            // v7: the deltas are in the region files.
+        if (std::string(kind) != "strokes") { LOG_ERROR("World", "%s: planetoid %d: unknown edit record \"%s\"\n", SAVE_PATH, index, kind); break; }
+        // The deltas are in the region files.
+        {
             const auto rt = lclk::now();
             deltas = LoadRegionsFor(index, dir, editCount);
             regionsMs += lms(rt);
-        } else {
-            // v2-v6: a brush list; fold it into deltas (written out as regions on the next save).
-            TerrainDeltasBuilder b(TerrainDeltas{});
-            for (size_t i = 0; i < editCount; ++i) {
-                TerrainEdit e{};
-                if (fscanf(f, " %f %f %f %f %f", &e.center.x, &e.center.y, &e.center.z, &e.radius, &e.strength) != 5) break;
-                if (body) b.apply(e, *body->field);
-            }
-            deltas = b.finish();
         }
         PlantRemovals plants;
         size_t plantCount = 0;
-        if (version >= 6 && fscanf(f, " plants %zu", &plantCount) == 1) {
+        if (fscanf(f, " plants %zu", &plantCount) == 1) {
             for (size_t i = 0; i < plantCount; ++i) {
                 unsigned long long id = 0;
                 double t = 0.0;
@@ -2720,29 +2756,29 @@ bool LoadWorldSave(Scene& world) {
                 plants[(uint64_t)id] = t;
             }
         }
-        // v8: build plots.
+        // Build plots.
         const auto pt = lclk::now();
         auto plots = std::make_unique<PlotSet>();
-        if (version >= 8 && !plots->load(f)) LOG_ERROR("World", "%s: damaged plot data\n", SAVE_PATH);
+        if (!plots->load(f)) LOG_ERROR("World", "%s: damaged plot data\n", SAVE_PATH);
         if (body) body->plots = plots->plots.empty() ? nullptr : std::move(plots);
-        if (version >= 9) Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
+        Factory::Load(f, body ? body->id : 0); // machine contents, applied when the layouts reach the simulation
         plotsMs += lms(pt);
         const auto ft = lclk::now();
-        if (version >= 11) Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
+        Fluid::Load(f, body ? body->id : 0); // flowing water (classified again as it loads)
         fluidMs += lms(ft);
         if (body) {
             body->edits = deltas;
             body->rotation = rot;
             body->dirtyRegions.clear();
-            body->allRegionsDirty = std::string(kind) != "strokes"; // an old brush-list save: write regions next time
-            body->regionsSavedTo = body->allRegionsDirty ? std::string() : dir;
+            body->allRegionsDirty = false;
+            body->regionsSavedTo = dir;
             if (body->trees) body->trees->setRemovals(plants);
         }
     }
-    // v10: ring rocks with edits or plots (kept as the ring's dormant state until promoted).
+    // Ring rocks with edits or plots (kept as the ring's dormant state until promoted).
     int ringNo = 0, rock = 0;
     size_t rockStrokes = 0;
-    while (version >= 10 && fscanf(f, " ringrock %d %d strokes %zu", &ringNo, &rock, &rockStrokes) == 3) {
+    while (fscanf(f, " ringrock %d %d strokes %zu", &ringNo, &rock, &rockStrokes) == 3) {
         if (ringNo >= 0 && ringNo < (int)gRings.size()) gRings[ringNo]->loadRock(f, rock, rockStrokes, dir);
         else { PlotSet skip; skip.load(f); Factory::ReadSaved(f); }
     }
@@ -2754,6 +2790,7 @@ bool LoadWorldSave(Scene& world) {
     // (#901: the player's record was read in the extras, before the rotation came back, and stood on the wrong ground).
     if (loadDoneHook) loadDoneHook();
     LOG_INFO("World", "loaded %s (seed %u)\n", SAVE_PATH, seed);
+    if (!upgradeNote.empty() && gSaveNoticeHook) gSaveNoticeHook(upgradeNote); // (#1693) the one toast after an upgrade
     return true;
 }
 

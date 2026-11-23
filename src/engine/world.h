@@ -227,7 +227,12 @@ extern std::function<void()> loadDoneHook; // the end of a load, every body back
 // Run by unloadWorld before the old world's bodies are freed (#902): modules that keep a body, plot or hit pointer between
 // frames drop it there - drawing goes on while the next world loads, and a pointer into the freed world crashed a reload.
 void World_AddUnloadHook(std::function<void()> hook);
+// (#1693) Loads the save through the migration chain (savemigrate.h). A save from a newer build, or from before kOldestSaveVersion,
+// is refused with nothing touched: false, and LastLoadError() says why (for the load screen). An older save (13 on) gets the
+// backup first and is upgraded in memory; gSaveNoticeHook then gets "Save upgraded from version N; dropped: ..." (the game toasts it).
 bool LoadWorldSave(Scene& world);
+const std::string& LastLoadError(); // why the last LoadWorldSave failed ("" when it did not, or failed for no stated reason)
+inline std::function<void(const std::string&)> gSaveNoticeHook;
 // (#943) The last LoadWorldSave's phases (ms): the world regenerated from the seed, and the saved edits (region deltas).
 struct LoadPhases { double regenMs = 0.0, regionsMs = 0.0, plotsMs = 0.0, fluidMs = 0.0; };
 const LoadPhases& LastLoadPhases();
