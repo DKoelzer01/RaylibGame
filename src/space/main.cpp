@@ -1920,7 +1920,7 @@ int main(int argc, char** argv)
             std::set<std::string> unknownAll;
             printf("bench: component costs: %-24s %8s %8s\n", "machine", "hand min", "best min");
             for (int t = 0; t < (int)PartType::Count; ++t) {
-                if (!IsMachine((PartType)t)) continue;
+                if (!IsMachine((PartType)t) || LadderMigrate_IsRemovedMachine(t)) continue; // (the retired ones: no recipe by design)
                 const char* item = PartCostItem((PartType)t);
                 if (!item || !itemDB.find(item)) continue;
                 std::vector<std::string> unknown;

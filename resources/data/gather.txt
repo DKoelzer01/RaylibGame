@@ -42,3 +42,7 @@ anorthite 8
 nickel_iron_ore 10
 platinum_ore 20
 iridium_ore 25
+# Wildcard groups (a recipe asking any planks, any log, any stone): one of the group
+any_log 4
+any_planks 1
+any_stone 2

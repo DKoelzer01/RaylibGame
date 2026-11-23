@@ -168,7 +168,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
         for (const FormRecipe& f : Forms_All()) {
             if (!f.machine.empty() || made.count(f.output) || !find(f.output)) continue;
             Recipe r;
-            r.output = f.output; r.outputCount = f.outCount; r.inputs = f.inputs;
+            r.output = f.output; r.outputCount = f.outCount; r.inputs = f.inputs; r.formShape = true;
             bool valid = true;
             for (auto& in : r.inputs) valid = valid && find(in.first) != nullptr;
             if (valid) { recipeList.push_back(r); made.insert(r.output); }

@@ -272,7 +272,7 @@ void LoadRecipes() {
     }
     // (#1427 L7c) The disassembly index, from the forward recipes: hand recipes, then the assembler's (one output each)
     std::vector<DisassemblyRecipe> forward;
-    for (const ::Recipe& h : itemDB.recipes()) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 });
+    for (const ::Recipe& h : itemDB.recipes()) if (!h.formShape) forward.push_back({ h.output, h.outputCount, h.inputs, 0, 0 }); // (#1614: form shapes are raw material to disassembly)
     for (const Recipe& r : tables.recipes) {
         if (r.machine != PartType::LvAssembler || r.out.size() != 1) continue;
         DisassemblyRecipe d{ tables.name(r.out[0].item), r.out[0].count, {}, r.ticks, r.eu };
