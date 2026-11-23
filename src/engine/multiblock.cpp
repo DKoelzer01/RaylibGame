@@ -420,9 +420,69 @@ MbResult Multiblock_Validate(const MbDef& def, const MbCatalog& cat, const std::
     return r;
 }
 
+// ---- (#1429 PR 3) Forming ----
+
+const MbDef* Multiblock_DefForController(const Part& controller) {
+    if (controller.type != PartType::MbController) return nullptr;
+    const std::string item = Multiblock_PartItem(controller.type, controller.material);
+    if (item.empty()) return nullptr;
+    const MbCatalog& cat = Multiblock_All();
+    for (const MbDef& d : cat.defs) {
+        if (d.layers.empty()) continue;
+        const MbLegend* l = d.key(d.layers[d.controller.y][d.controller.z][d.controller.x]);
+        if (l && l->role == MbRole::Controller && l->id == item) return &d;
+    }
+    return nullptr;
+}
+
+MbResult Multiblock_CheckController(const Plot& plot, int partIndex, const MbDef** defOut) {
+    MbResult r;
+    if (defOut) *defOut = nullptr;
+    if (partIndex < 0 || partIndex >= (int)plot.parts.size()) { r.problem = "no controller"; return r; }
+    const Part& part = plot.parts[partIndex];
+    const MbDef* def = Multiblock_DefForController(part);
+    if (!def) { r.problem = "not a multiblock controller"; return r; }
+    if (defOut) *defOut = def;
+    // The part's front is its local +z turned by its orientation (column 2 of the matrix); up or down is no facing.
+    const int* M = Orientation(part.orient);
+    const int fx = M[2], fy = M[5], fz = M[8];
+    if (fy != 0 || (fx == 0) == (fz == 0)) { r.problem = "turn the controller to face sideways"; return r; }
+    // Its cell: the footprint's one cell (a turned lone part sits a cell off its origin, #1630)
+    std::vector<std::pair<Int3, CellShape>> fp;
+    Plot::Footprint(part, fp);
+    const Int3 at = fp.empty() ? part.origin : fp[0].first;
+    const auto lookup = [&plot](MbInt3 c) -> std::string {
+        const int i = plot.partAt({ c.x, c.y, c.z });
+        return i < 0 || i >= (int)plot.parts.size() || plot.parts[i].type == PartType::Count ? std::string() : std::string(PartItem(plot.parts[i]));
+    };
+    return Multiblock_Validate(*def, Multiblock_All(), lookup, { at.x, at.y, at.z }, fx, fz);
+}
+
+bool Multiblock_SetFormed(Plot& plot, int partIndex, bool formed) {
+    auto it = std::lower_bound(plot.formed.begin(), plot.formed.end(), partIndex);
+    const bool has = it != plot.formed.end() && *it == partIndex;
+    if (formed == has) return false;
+    if (formed) plot.formed.insert(it, partIndex); else plot.formed.erase(it);
+    return true;
+}
+
+std::vector<int> Multiblock_Recheck(Plot& plot) {
+    std::vector<int> dropped;
+    std::sort(plot.formed.begin(), plot.formed.end());
+    plot.formed.erase(std::unique(plot.formed.begin(), plot.formed.end()), plot.formed.end());
+    std::vector<int> keep;
+    for (int i : plot.formed) {
+        if (Multiblock_CheckController(plot, i).formed) keep.push_back(i); else dropped.push_back(i);
+    }
+    plot.formed = keep;
+    return dropped;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
 
+#include <cstdio>
+#include <memory>
 #include <tuple>
 
 namespace {
@@ -793,5 +853,156 @@ TEST(Multiblock, ValidatesRealParts) {
     ASSERT_TRUE(Multiblock_ItemPart("fluid_in_hatch", ct, cm));
     parts[{ glassCell.x, glassCell.y, glassCell.z }] = Part{ ct, { glassCell.x, glassCell.y, glassCell.z }, 0, (uint8_t)cm };
     EXPECT_FALSE(Multiblock_Validate(*d, cat, look, at, 0, 1).formed);
+}
+
+namespace {
+// (#1429 PR 3) The large tank (one stretch repeat) as real parts in a plot; the controller (the part with a role of
+// controller) takes orientation `ctlOrient` and the origin that puts its one cell on `at`. Returns the controller's part index.
+int PlaceTank(Plot& plot, MbInt3 at, int fx, int fz, int ctlOrient = 0) {
+    const MbDef* d = Multiblock_All().find("large_tank");
+    World ids;
+    Stamp(ids, *d, at, fx, fz, 1);
+    const int glass = BuildMaterialForItem("glass");
+    for (const auto& [k, id] : ids) {
+        PartType t = PartType::Cube; int m = 0;
+        if (!Multiblock_ItemPart(id, t, m)) m = glass;
+        Part p{ t, { std::get<0>(k), std::get<1>(k), std::get<2>(k) }, 0, (uint8_t)m };
+        if (t == PartType::MbController) { p.orient = (uint8_t)ctlOrient; p.origin = Plot::SingleCellOrigin(p, p.origin); }
+        plot.place(p);
+    }
+    return plot.partAt({ at.x, at.y, at.z });
+}
+int OrientFacing(int fx, int fz) { // a horizontal orientation whose local +z points (fx, fz); -1: none
+    for (int o = 0; o < 24; ++o) { const int* M = Orientation(o); if (M[5] == 0 && M[2] == fx && M[8] == fz) return o; }
+    return -1;
+}
+}
+
+TEST(MultiblockForming, FormsInAllFourFacings) {
+    for (const auto& f : kFacings) {
+        const int o = OrientFacing(f[0], f[1]);
+        ASSERT_GE(o, 0);
+        Plot plot;
+        const int ctl = PlaceTank(plot, { 10, 5, 10 }, f[0], f[1], o);
+        ASSERT_GE(ctl, 0);
+        ASSERT_EQ(plot.parts[ctl].type, PartType::MbController);
+        const MbResult r = Multiblock_CheckController(plot, ctl);
+        EXPECT_TRUE(r.formed) << "facing (" << f[0] << ", " << f[1] << "): " << r.problem;
+        EXPECT_TRUE(Multiblock_SetFormed(plot, ctl, true));
+        EXPECT_FALSE(Multiblock_SetFormed(plot, ctl, true)) << "unique";
+        EXPECT_TRUE(Multiblock_Recheck(plot).empty());
+        EXPECT_EQ(plot.formed.size(), 1u);
+    }
+    // facing up or down: no horizontal facing
+    Plot plot;
+    int up = -1;
+    for (int o = 0; o < 24; ++o) if (Orientation(o)[5] != 0) { up = o; break; }
+    ASSERT_GE(up, 0);
+    const int ctl = PlaceTank(plot, { 10, 5, 10 }, 0, 1, up);
+    const MbResult r = Multiblock_CheckController(plot, ctl);
+    EXPECT_FALSE(r.formed);
+    EXPECT_EQ(r.problem, "turn the controller to face sideways");
+    EXPECT_FALSE(Multiblock_CheckController(plot, plot.partAt({ 9, 5, 9 })).formed) << "a casing is no controller";
+}
+
+TEST(MultiblockForming, RecheckDropsABrokenStructure) {
+    const MbDef* d = Multiblock_All().find("large_tank");
+    ASSERT_NE(d, nullptr);
+    const MbInt3 at{ 10, 5, 10 };
+    { // a casing removed
+        Plot plot;
+        const int ctl = PlaceTank(plot, at, 0, 1);
+        Multiblock_SetFormed(plot, ctl, true);
+        const MbInt3 c = Multiblock_ToWorld(*d, { 0, 0, 0 }, at, 0, 1);
+        ASSERT_TRUE(plot.remove(plot.partAt({ c.x, c.y, c.z })));
+        const std::vector<int> dropped = Multiblock_Recheck(plot);
+        ASSERT_EQ(dropped.size(), 1u);
+        EXPECT_EQ(dropped[0], ctl);
+        EXPECT_TRUE(plot.formed.empty());
+    }
+    { // a part in the air cell inside
+        Plot plot;
+        const int ctl = PlaceTank(plot, at, 0, 1);
+        Multiblock_SetFormed(plot, ctl, true);
+        const MbInt3 c = Multiblock_ToWorld(*d, { 1, 1, 1 }, at, 0, 1);
+        ASSERT_GE(plot.place(Part{ PartType::Cube, { c.x, c.y, c.z }, 0, 0 }), 0);
+        EXPECT_EQ(Multiblock_Recheck(plot).size(), 1u);
+        EXPECT_TRUE(plot.formed.empty());
+    }
+    { // the controller itself gone, and a formed index that was never a controller
+        Plot plot;
+        const int ctl = PlaceTank(plot, at, 0, 1);
+        Multiblock_SetFormed(plot, ctl, true);
+        Multiblock_SetFormed(plot, 0, true);
+        Multiblock_SetFormed(plot, 9999, true);
+        ASSERT_TRUE(plot.remove(ctl));
+        EXPECT_EQ(Multiblock_Recheck(plot).size(), 3u);
+        EXPECT_TRUE(plot.formed.empty());
+    }
+}
+
+TEST(MultiblockForming, NeighboursShareAWall) {
+    const MbDef* d = Multiblock_All().find("large_tank");
+    ASSERT_NE(d, nullptr);
+    Plot plot;
+    const MbInt3 a{ 10, 5, 10 }, b{ 12, 5, 10 };
+    const int ca = PlaceTank(plot, a, 0, 1);
+    const int cb = PlaceTank(plot, b, 0, 1); // shares the column x = 11 (the second tank's cells there are already taken: placed by the first)
+    ASSERT_GE(ca, 0);
+    ASSERT_GE(cb, 0);
+    EXPECT_TRUE(Multiblock_CheckController(plot, ca).formed);
+    EXPECT_TRUE(Multiblock_CheckController(plot, cb).formed);
+    Multiblock_SetFormed(plot, ca, true);
+    Multiblock_SetFormed(plot, cb, true);
+    EXPECT_TRUE(Multiblock_Recheck(plot).empty());
+    const MbInt3 only = Multiblock_ToWorld(*d, { 2, 0, 0 }, b, 0, 1); // x = 13: only the second tank's
+    ASSERT_TRUE(plot.remove(plot.partAt({ only.x, only.y, only.z })));
+    const std::vector<int> dropped = Multiblock_Recheck(plot);
+    ASSERT_EQ(dropped.size(), 1u);
+    EXPECT_EQ(dropped[0], cb);
+    ASSERT_EQ(plot.formed.size(), 1u);
+    EXPECT_EQ(plot.formed[0], ca);
+}
+
+TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
+    const char* path = "multiblock_forming_test.tmp";
+    PlotSet set;
+    auto plot = std::make_unique<Plot>();
+    plot->id = 3; plot->origin = DVec3(0.0, 100.0, 0.0);
+    plot->up = { 0, 1, 0 }; plot->east = { 1, 0, 0 }; plot->north = { 0, 0, 1 };
+    const int ctl = PlaceTank(*plot, { 10, 5, 10 }, 0, 1);
+    Multiblock_SetFormed(*plot, ctl, true);
+    set.plots.push_back(std::move(plot));
+    FILE* f = fopen(path, "w");
+    ASSERT_NE(f, nullptr);
+    set.save(f);
+    fclose(f);
+    std::string text;
+    { std::ifstream in(path); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
+    EXPECT_EQ(text.compare(0, 6, "plots6"), 0);
+    EXPECT_NE(text.find("\nformed 1 " + std::to_string(ctl) + "\n"), std::string::npos);
+    PlotSet back;
+    f = fopen(path, "r");
+    ASSERT_NE(f, nullptr);
+    ASSERT_TRUE(back.load(f));
+    fclose(f);
+    ASSERT_EQ(back.plots.size(), 1u);
+    EXPECT_EQ(back.plots[0]->formed, std::vector<int>{ ctl });
+    // the same text as plots5 (no formed line): nothing formed
+    std::string old = text;
+    old.replace(0, 6, "plots5");
+    const size_t fl = old.find("formed ");
+    ASSERT_NE(fl, std::string::npos);
+    old.erase(fl, old.find('\n', fl) - fl + 1);
+    { std::ofstream out(path, std::ios::binary); out << old; }
+    PlotSet older;
+    f = fopen(path, "r");
+    ASSERT_NE(f, nullptr);
+    ASSERT_TRUE(older.load(f));
+    fclose(f);
+    ASSERT_EQ(older.plots.size(), 1u);
+    EXPECT_TRUE(older.plots[0]->formed.empty());
+    EXPECT_GE(older.plots[0]->partAt({ 10, 5, 10 }), 0);
+    std::remove(path);
 }
 #endif

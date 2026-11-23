@@ -28,6 +28,7 @@
 #include "menus.h"
 #include "net.h"
 #include "hostserver.h" // (#1684) Host_BroadcastPartEdits
+#include "multiblock.h" // (#1429 PR 3)
 #include <ctime>
 
 #include "uipalette.h"
@@ -151,6 +152,44 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part) {
 }
 
 BuildToolNetEdit gBuildToolNetEdit;
+std::function<void(Planetoid& body, Plot& plot, int partIndex)> gFormRequest;
+
+// (#1429 PR 3) "Large tank formed": the toast for a controller going formed or unformed. An unformed controller that was
+// broken itself says nothing (it is gone).
+static void ToastFormed(const Plot& plot, int partIndex, bool formed) {
+    if (partIndex < 0 || partIndex >= (int)plot.parts.size()) return;
+    const MbDef* d = Multiblock_DefForController(plot.parts[partIndex]);
+    if (!d) return;
+    GameUI_Toast(TextFormat("%s %s", d->name.c_str(), formed ? "formed" : "unformed"));
+}
+
+void BuildTool_NoteFormed(const Planetoid& body, const Plot& plot, int partIndex, bool formed) {
+    if (partIndex < 0 || partIndex >= (int)plot.parts.size() || player.nearest != &body) return;
+    const Int3 o = plot.parts[partIndex].origin;
+    const Vector3 at = plot.toBody({ (o.x + 0.5f) * kCellSize, (o.y + 0.5f) * kCellSize, (o.z + 0.5f) * kCellSize });
+    if (Vector3Distance(at, body.toLocalD(player.position).toFloat()) > 48.0f) return; // a structure out of sight: no toast
+    ToastFormed(plot, partIndex, formed);
+}
+
+// After a part was placed or broken in this process's own world (solo, or a host's own player): the structures that no longer
+// validate unform; a host tells its clients (a joined client's server does this, in the order of its edits).
+static void RecheckLocal(Planetoid& body, Plot& plot) {
+    if (plot.formed.empty()) return;
+    for (int idx : Multiblock_Recheck(plot)) {
+        ToastFormed(plot, idx, false);
+        if (gNetRole == NetRole::Host) Host_BroadcastForm(body, plot, idx, false);
+    }
+}
+
+// The wrench on a controller, in this process's own world (solo, or a host's own player).
+static void FormLocally(Planetoid& body, Plot& plot, int partIndex) {
+    const MbResult r = Multiblock_CheckController(plot, partIndex);
+    if (!r.formed) { GameUI_Toast(TextFormat("Can't form: %s", r.problem.c_str())); Audio_Play(Sfx::Error, 0.5f); return; }
+    Multiblock_SetFormed(plot, partIndex, true);
+    ToastFormed(plot, partIndex, true);
+    Audio_Play(Sfx::Build, 0.5f, 1.2f);
+    if (gNetRole == NetRole::Host) Host_BroadcastForm(body, plot, partIndex, true);
+}
 
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
     if (!plot.canPlace(part)) return false;
@@ -261,6 +300,7 @@ bool BuildTool_Place(Planetoid& body, Plot& plot, const Part& placed, bool charg
         return false;
     }
     BuildTool_ApplyPart(body, plot, part);
+    RecheckLocal(body, plot); // (#1429 PR 3) a part in a structure's air cell, or in the way
     if (claim) {
         Claims_SetBanner(claim, plot.id, plot.partAt(part.origin));
         GameUI_Toast(TextFormat("Claimed the land %.0f m across around the banner (the map shows it)", kClaimBannerAcross[ClaimBannerTier(t)]));
@@ -336,6 +376,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     }
     const uint32_t bannerClaim = ClaimBannerTier(removed.type) >= 0 && gNetRole != NetRole::Client ? Claims_OfBanner(body->name, hitPlot->id, part) : 0; // (#900)
     if (hitPlot->remove(part)) {
+        RecheckLocal(*body, *hitPlot); // (#1429 PR 3) a structure that lost a part unforms
         if (bannerClaim) { Claims_Remove(bannerClaim); GameUI_Toast("The banner is down: the land is no longer claimed"); }
         if (removed.type == PartType::Meteorite && !terrainTool.creative) { // (#177) space rock: nickel-iron, now and then platinum or iridium ore
             const int n = GameRng_Int(6, 10), pt = GameRng_Int(0, 99) < 35 ? 2 : 0, ir = GameRng_Int(0, 99) < 12 ? 1 : 0; // the authority rolls (#316)
@@ -717,7 +758,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever || pt == PartType::MbController)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -743,6 +784,16 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
         return;
     }
     if (machineAim.part < 0 || !in.enabled) return;
+    if (machineAim.type == PartType::MbController) { // (#1429 PR 3) the wrench (RMB, outside build mode) forms the structure around a controller; it opens nothing
+        if (buildTool.active || !in.hit(Act::Secondary)) return;
+        Planetoid* mb = Planetoid::find(machineAim.body);
+        Plot* mp = mb && mb->plots ? mb->plots->byId(machineAim.plot) : nullptr;
+        if (!mp || machineAim.part >= (int)mp->parts.size() || mp->parts[machineAim.part].type != PartType::MbController) return;
+        if (Hotbar_Slot(Hotbar_Selected()) != "wrench") { GameUI_Toast("Hold a wrench and right-click the controller to form the structure"); return; }
+        if (gFormRequest) gFormRequest(*mb, *mp, machineAim.part); // joined: the server checks it and tells everyone
+        else FormLocally(*mb, *mp, machineAim.part);
+        return;
+    }
     if (machineAim.type == PartType::Gate) { // (#1641) a vault door: RMB (outside build mode) or E opens it with a dungeon_key, which it takes
         if (!((!buildTool.active && in.hit(Act::Secondary)) || in.hit(Act::Use))) return;
         Planetoid* gb = Planetoid::find(machineAim.body);
@@ -885,6 +936,17 @@ void Machine_DrawHUD() {
         return;
     }
     if (machineAim.part < 0) return;
+    if (machineAim.type == PartType::MbController) { // (#1429 PR 3)
+        const Planetoid* cb = Planetoid::find(machineAim.body);
+        const Plot* cp = cb && cb->plots ? cb->plots->byId(machineAim.plot) : nullptr;
+        const MbDef* cd = cp && machineAim.part < (int)cp->parts.size() ? Multiblock_DefForController(cp->parts[machineAim.part]) : nullptr;
+        const bool on = cp && std::binary_search(cp->formed.begin(), cp->formed.end(), machineAim.part);
+        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, 400, 52, Fade(BLACK, 0.55f));
+        DrawText(TextFormat("%s controller: %s", cd ? cd->name.c_str() : "multiblock", on ? "formed" : "not formed"), x, y, 20, SKYBLUE);
+        DrawText(on ? "break a part of the structure to unform it" : "wrench + RMB to form the structure", x, y + 24, 16, RAYWHITE);
+        return;
+    }
     if (machineAim.type == PartType::Lever) { // (#1641 slice 2c)
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         DrawRectangle(x - 8, y - 6, 300, 52, Fade(BLACK, 0.55f));

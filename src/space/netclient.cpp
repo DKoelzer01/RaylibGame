@@ -24,6 +24,7 @@
 #include "voxel.h"
 #include "plots.h"
 #include "buildtool.h"
+#include "multiblock.h"
 #include "player.h"
 #include "scene.h"
 #include "simclock.h"
@@ -188,6 +189,9 @@ namespace {
                 if (e.op == NetPartOp::Place) {
                     Part part{}; part.type = (PartType)e.part.type; part.origin = { e.part.x, e.part.y, e.part.z }; part.orient = e.part.orient; part.material = e.part.material;
                     BuildTool_ApplyPart(*p, *plot, part);
+                } else if (e.op == NetPartOp::Form) { // (#1429 PR 3) a controller formed or unformed (the server's verdict)
+                    const bool changed = Multiblock_SetFormed(*plot, (int)e.partIndex, e.formed != 0);
+                    if (changed || e.session == c.welcome.session) BuildTool_NoteFormed(*p, *plot, (int)e.partIndex, e.formed != 0); // (our own wrench says so again)
                 } else plot->remove((int)e.partIndex);
                 return;
             }
@@ -686,6 +690,14 @@ uint32_t NetClient_RequestPart(NetClient& c, const Planetoid& body, const Plot* 
     q.part = NetPart{ (uint8_t)part.type, part.origin.x, part.origin.y, part.origin.z, part.orient, part.material };
     q.partIndex = partIndex < 0 ? 0u : (uint32_t)partIndex;
     if (remove && !plot) return 0;
+    SendMsg(c, q);
+    return q.seq;
+}
+
+uint32_t NetClient_RequestForm(NetClient& c, const Planetoid& body, const Plot& plot, int partIndex, bool formed) {
+    if (c.state != NetClient::State::Joined || partIndex < 0) return 0;
+    MsgPartRequest q;
+    q.seq = ++c.partSeq; q.op = NetPartOp::Form; q.body = body.netId; q.plot = plot.id; q.partIndex = (uint32_t)partIndex; q.formed = formed ? 1 : 0;
     SendMsg(c, q);
     return q.seq;
 }

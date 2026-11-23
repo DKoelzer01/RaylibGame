@@ -17,7 +17,7 @@
 #include <functional>
 #include <vector>
 
-constexpr uint32_t kNetProtocol = 51; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c); 48: SetGem, a gem set in a composed copy (#1219); 49: heavy and from-behind flags in AnimalHit (#1509); 50: the lathe and wiremill part types in NetPart (#1614); 51: the multiblock part types (controller, casing, hatch) in NetPart (#1429)
+constexpr uint32_t kNetProtocol = 52; // 1 was the text "join" of #311; 5: world time in Welcome and Pong (#339); 6 (unused); 7: world-gen settings in Welcome (#757); 8: terrain edit requests, refusals, inventory deltas (#329); 9: chat (#326); 10: building (#330); 11 is #776's; 12: player snapshots, delta-coded against acked states (#769); 13: animals (#334); 14: animal actions, damage to a player (#334); 15 (unused); 16: server-side survival (#337); 17: the suit colour in the loadout (#341); 18: beds (#800); 19: graves (#804); 20: the player id (UUID) in the hello (#346); 21: team quest books (#338); 22: crafting on the server (#338); 23: machines on the server (#332); 24 is #604's; 25: crafting from nearby chests, cursor takes (#854); 26 is #604's; 27: plants and farming (#335); 28: claim refusals (#343); 29: MachineAction 8, insert into one chest slot, 9: take some of an item from a chest (#862, landed after 30); 30: claim banners, the claims list (#343); 31: dropped piles in Graves, DropItems, CreativeGive (#865, #866); 32: recursive flag in CraftRequest (#946); 33: SkillState, the player's skills from the server, and SkillSpend (#920); 34: edit kind Till and the till flag (#1085); 35: a campfire's fire in MachineView (#1103); 36: the research lab part types in NetPart (#1193); 37: the magic machines (research table, mana siphon, mana dynamo) in NetPart (#1252); 38: Act bits LockOn and Dodge before MagicSight (#1216, #1218); 39: CreatureFx, creature shots and events to clients (#1343, #1364); 40: TeamState members' session and last seen, the team's claim budget and allies (#828); 41 is the Ladder part's (UI/UX); 42: the alchemy part types (distillery, essence tank, cauldron) in NetPart (#1254); 43: the Ladder part type, after the alchemy ones (#1105; 41 was its number before alchemy merged first); 44: the ladder (#1271): part types in NetPart, assembler mode in MachineView; 45: per-item data in InventoryDelta (#1446); 46: per-slot data in MachineView, data in MachineAction (#1446 step 2b); 47: output-slot data in MachineView (#1446 step 2c); 48: SetGem, a gem set in a composed copy (#1219); 49: heavy and from-behind flags in AnimalHit (#1509); 50: the lathe and wiremill part types in NetPart (#1614); 51: the multiblock part types (controller, casing, hatch) in NetPart (#1429); 52: multiblock forming (NetPartOp Form, the formed flag) (#1429)
 
 enum class NetMsg : uint8_t {
     Hello = 1,     // client -> server: protocol, build, player name, password
@@ -302,15 +302,18 @@ struct MsgInventoryDelta { std::string item; double amount = 0.0; std::string da
 // it, refunds or charges (InventoryDelta), and sends PlotEdits to everyone in its order. A new plot comes first as its
 // own PlotEdit with the server's id and the exact float anchor, so every client makes the same plot.
 struct NetPart { uint8_t type = 0; int32_t x = 0, y = 0, z = 0; uint8_t orient = 0, material = 0; }; // a Part (plots.h)
-enum class NetPartOp : uint8_t { Place = 0, Remove = 1, NewPlot = 2, Count };
+// (#1429 PR 3) Form: a multiblock controller (partIndex) is formed (formed = 1) or unformed (0). As a request the wrench's
+// ask (formed = 1; the server checks the structure); as a PlotEdit the server's verdict, for everyone.
+enum class NetPartOp : uint8_t { Place = 0, Remove = 1, NewPlot = 2, Form = 3, Count };
 struct MsgPartRequest {
     uint32_t seq = 0;
-    NetPartOp op = NetPartOp::Place;  // Place or Remove
+    NetPartOp op = NetPartOp::Place;  // Place, Remove or Form
     uint64_t body = 0;                // NetId
     uint32_t plot = 0;                // 0: place into a new plot at `anchor`
     float anchor[3] = { 0, 0, 0 };    // the new plot's body-local anchor (exact floats: the plot frame is built from them)
     NetPart part;                     // Place
-    uint32_t partIndex = 0;           // Remove
+    uint32_t partIndex = 0;           // Remove, Form
+    uint8_t formed = 1;               // Form (written only for it)
 };
 enum class NetPartRefusal : uint8_t { Reach, Cost, Blocked, NoPlot, NoPart, Body, Kind, Rate, Claim, Count }; // Claim (#343)
 const char* NetPartRefusalText(NetPartRefusal r);
@@ -322,7 +325,8 @@ struct MsgPlotEdit {
     uint32_t plot = 0;
     float anchor[3] = { 0, 0, 0 };    // NewPlot
     NetPart part;                     // Place
-    uint32_t partIndex = 0;           // Remove
+    uint32_t partIndex = 0;           // Remove, Form
+    uint8_t formed = 0;               // Form: 1 formed, 0 unformed (written only for it)
 };
 struct MsgChat { uint32_t from = 0; std::string text; }; // #326: from = the sender's session (0 the server; a client's own is ignored)
 // Join-in-progress sync (#776): at a join the server takes a snapshot of the world's edits (terrain regions, plots) and

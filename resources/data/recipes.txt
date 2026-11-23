@@ -260,3 +260,4 @@ steel_casing 1       = steel_plate 4, steel_screw 4, steel_rod 2
 fluid_in_hatch 1     = bronze_casing 1, valve 1, bronze_plate 2
 fluid_out_hatch 1    = bronze_casing 1, valve 1, bronze_plate 2
 large_tank_controller 1 = bronze_casing 1, mechanism 1, glass 2
+wrench 1             = iron_plate 2, iron_rod 1

@@ -413,12 +413,12 @@ void NetWrite(NetWriter& w, const MsgPartRequest& m) {
     Id(w, NetMsg::PartRequest);
     w.u32(m.seq); w.u8((uint8_t)m.op); w.varu(m.body); w.varu(m.plot);
     if (m.op == NetPartOp::Place) { if (m.plot == 0) { w.f32(m.anchor[0]); w.f32(m.anchor[1]); w.f32(m.anchor[2]); } WritePart(w, m.part); }
-    else w.varu(m.partIndex);
+    else { w.varu(m.partIndex); if (m.op == NetPartOp::Form) w.u8(m.formed); }
 }
 bool NetRead(NetReader& r, MsgPartRequest& m) {
     m.seq = r.u32();
     const uint8_t op = r.u8();
-    if (op > (uint8_t)NetPartOp::Remove) r.ok = false;
+    if (op > (uint8_t)NetPartOp::Remove && op != (uint8_t)NetPartOp::Form) r.ok = false;
     m.op = (NetPartOp)op; m.body = r.varu();
     const uint64_t plot = r.varu();
     if (plot > 0xFFFFFFFFull) r.ok = false;
@@ -428,6 +428,7 @@ bool NetRead(NetReader& r, MsgPartRequest& m) {
         const uint64_t i = r.varu();
         if (i > 0xFFFFFFFFull || m.plot == 0) r.ok = false;
         m.partIndex = (uint32_t)i;
+        if (m.op == NetPartOp::Form) { m.formed = r.u8(); if (m.formed > 1) r.ok = false; }
     }
     return Done(r);
 }
@@ -444,7 +445,7 @@ void NetWrite(NetWriter& w, const MsgPlotEdit& m) {
     w.varu(m.session); w.u32(m.seq); w.u8((uint8_t)m.op); w.varu(m.body); w.varu(m.plot);
     if (m.op == NetPartOp::NewPlot) { w.f32(m.anchor[0]); w.f32(m.anchor[1]); w.f32(m.anchor[2]); }
     else if (m.op == NetPartOp::Place) WritePart(w, m.part);
-    else w.varu(m.partIndex);
+    else { w.varu(m.partIndex); if (m.op == NetPartOp::Form) w.u8(m.formed); }
 }
 bool NetRead(NetReader& r, MsgPlotEdit& m) {
     const uint64_t s = r.varu();
@@ -457,7 +458,7 @@ bool NetRead(NetReader& r, MsgPlotEdit& m) {
     m.plot = (uint32_t)plot;
     if (m.op == NetPartOp::NewPlot) ReadAnchor(r, m.anchor);
     else if (m.op == NetPartOp::Place) ReadPart(r, m.part);
-    else { const uint64_t i = r.varu(); if (i > 0xFFFFFFFFull) r.ok = false; m.partIndex = (uint32_t)i; }
+    else { const uint64_t i = r.varu(); if (i > 0xFFFFFFFFull) r.ok = false; m.partIndex = (uint32_t)i; if (m.op == NetPartOp::Form) { m.formed = r.u8(); if (m.formed > 1) r.ok = false; } }
     return Done(r);
 }
 
@@ -652,6 +653,15 @@ bool NetProto_Test() {
         samples.push_back(s);
         MsgPlotEdit c, d; c.session = 2; c.seq = 4; c.op = NetPartOp::Place; c.body = 2; c.plot = 9; c.part = { 9, 0, 1, 0, 3, 0 };
         check(RoundTrip(c, d, &s) && d.op == NetPartOp::Place && d.part.type == 9 && d.part.y == 1 && d.part.orient == 3, "plot edit (place)");
+        samples.push_back(s);
+        MsgPlotEdit e, g; e.session = 2; e.seq = 5; e.op = NetPartOp::Form; e.body = 2; e.plot = 9; e.partIndex = 40; e.formed = 1; // (#1429)
+        check(RoundTrip(e, g, &s) && g.op == NetPartOp::Form && g.plot == 9 && g.partIndex == 40 && g.formed == 1, "plot edit (form)");
+        samples.push_back(s);
+        e.formed = 0;
+        check(RoundTrip(e, g, &s) && g.op == NetPartOp::Form && g.formed == 0, "plot edit (unform)");
+        samples.push_back(s);
+        MsgPartRequest h, k; h.seq = 6; h.op = NetPartOp::Form; h.body = 2; h.plot = 9; h.partIndex = 40; h.formed = 1;
+        check(RoundTrip(h, k, &s) && k.op == NetPartOp::Form && k.plot == 9 && k.partIndex == 40 && k.formed == 1, "part request (form)");
         samples.push_back(s);
     }
     { MsgChat a{ 3, "hello, world" }, b; std::vector<uint8_t> s; check(RoundTrip(a, b, &s) && b.from == 3 && b.text == "hello, world", "chat"); samples.push_back(s); }

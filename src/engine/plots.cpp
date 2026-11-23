@@ -1187,7 +1187,8 @@ void PlotSet::save(FILE* f) const {
     // saves machine contents by) survive a reload; parts carry their material and plots their rocket
     // fuel. (plots3: live parts only; plots2: no fuel; plots: no materials.)
     // plots5: plots4 plus a "wear" line per plot (rocket part damage by part index).
-    fprintf(f, "plots5 %d\n", live);
+    // plots6 (#1429 PR 3): plots5 plus a "formed <n> <part index>..." line after the wear line (the multiblock controllers whose structure is formed).
+    fprintf(f, "plots6 %d\n", live);
     for (const auto& p : plots) {
         if (p->partCount() == 0) continue;
         fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, (int)p->parts.size(), p->fuel);
@@ -1200,6 +1201,9 @@ void PlotSet::save(FILE* f) const {
         fprintf(f, "wear %d %.2f", worn, p->air); // and the air its life support holds
         for (const auto& kv : p->damage) if (kv.second > 0.0f) fprintf(f, " %d %.3f", kv.first, kv.second);
         fprintf(f, "\n");
+        fprintf(f, "formed %d", (int)p->formed.size());
+        for (int i : p->formed) fprintf(f, " %d", i);
+        fprintf(f, "\n");
     }
 }
 
@@ -1207,8 +1211,9 @@ bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
     char tag[16] = {};
-    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0 && strcmp(tag, "plots5") != 0)) return false;
-    const bool wear = strcmp(tag, "plots5") == 0;
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0 && strcmp(tag, "plots5") != 0 && strcmp(tag, "plots6") != 0)) return false;
+    const bool hasFormed = strcmp(tag, "plots6") == 0; // (#1429 PR 3)
+    const bool wear = strcmp(tag, "plots5") == 0 || hasFormed;
     const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0 || strcmp(tag, "plots4") == 0 || wear;
     const bool slots = strcmp(tag, "plots4") == 0 || wear; // removed parts kept as placeholders
     const Part dead{ PartType::Count, { 0, 0, 0 }, 0, 0 };
@@ -1254,6 +1259,12 @@ bool PlotSet::load(FILE* f) {
             if (fscanf(f, " wear %d %f", &worn, &p->air) != 2) return false;
             for (int k = 0; k < worn; ++k) { int part = 0; float d = 0.0f; if (fscanf(f, " %d %f", &part, &d) != 2) return false; p->damage[part] = d; }
         }
+        if (hasFormed) {
+            int nf = 0;
+            if (fscanf(f, " formed %d", &nf) != 1 || nf < 0) return false;
+            for (int k = 0; k < nf; ++k) { int idx = 0; if (fscanf(f, " %d", &idx) != 1) return false; p->formed.push_back(idx); }
+        }
+        Multiblock_Recheck(*p); // a definition that changed between versions loads unformed (also sorts and dedupes)
         nextId = std::max(nextId, id + 1);
         plots.push_back(std::move(p));
     }

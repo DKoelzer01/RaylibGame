@@ -69,6 +69,11 @@ bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part);
 #include <functional>
 using BuildToolNetEdit = std::function<void(Planetoid& body, Plot* plot, Vector3 newOrigin, const Part& part, bool remove, int partIndex)>;
 extern BuildToolNetEdit gBuildToolNetEdit;
+// (#1429 PR 3) The wrench on a multiblock controller. Set while joined: asks the server to form it (its verdict comes back as
+// a PlotEdit, which calls BuildTool_NoteFormed). Unset (solo, or a host's own player): the player's own game forms it, and a host tells its clients.
+extern std::function<void(Planetoid& body, Plot& plot, int partIndex)> gFormRequest;
+// A controller was formed or unformed: a toast with the structure's name ("Large tank formed") when it is near the player.
+void BuildTool_NoteFormed(const Planetoid& body, const Plot& plot, int partIndex, bool formed);
 // (#1684) A dungeon's vault unlock and lever pull, one edit for solo, the host's own player and the host acting for a client:
 // each part change is recorded (remove an index, or place a part, in order) so a host can send them to every client.
 struct PartEdit { bool remove = false; int index = -1; Part part{}; };
