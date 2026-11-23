@@ -674,6 +674,7 @@ TEST(Multiblock, StretchLayers) {
     const MbDef& d2 = *cat2.find("large_tank");
     World one;
     Stamp(one, d2, at, 0, 1, 1);
+    for (int z = 0; z < 3; ++z) for (int x = 0; x < 3; ++x) Put(one, Cell(d2, { x, 2, z }, at, 0, 1, 0), ""); // top not built yet (it would sit where the 2nd repeat goes)
     r = Multiblock_Validate(d2, cat2, Look(one), at, 0, 1);
     EXPECT_EQ(r.stretch, 1);
     EXPECT_FALSE(r.formed);
