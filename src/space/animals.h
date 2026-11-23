@@ -12,6 +12,7 @@
 // over a day), O collects its product (wool with shears, milk with a bucket, eggs), LMB attacks
 // (meat and hide when it falls).
 
+#include "dvec3.h"
 #include <cstdint>
 #include <functional>
 #include <map>
