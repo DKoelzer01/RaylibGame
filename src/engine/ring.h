@@ -76,6 +76,8 @@ public:
     bool bandRange(Scene& world, double& dmin, double& dmax) const;
 
     DVec3 rockPosition(int index) const; // world space, now
+    // The parent body while it is loaded (else null): frames read it for a demoted rock's pose (Plan 11 F6, #1698).
+    const Planetoid* parentBody() const;
     int promotedCount() const { return (int)promoted.size(); }
     Planetoid* promotedBody(int index) const; // the voxel body of a promoted rock, or null
     int nearestRock(DVec3 world, double* distance = nullptr) const;

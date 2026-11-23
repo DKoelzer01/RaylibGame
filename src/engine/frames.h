@@ -38,6 +38,10 @@ struct BodyPose {
     double R[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
 };
 BodyPose Frames_Pose(const Planetoid& body);
+// (Plan 11 F6, #1698) A frame body's pose by NetId: a loaded body's, or a ring rock's while it is an instance (demoted): its
+// orbit and spin from the clock, as when promoted, so a frame on a rock never dangles. False: no such body.
+bool Frames_PoseOf(uint64_t netId, BodyPose& out);
+bool Frames_RingRockPose(uint64_t netId, BodyPose& out); // the analytic pose alone (tests compare it with the live rock's)
 
 // Conversions through the global frame: position and velocity (Fixed: x_g = c + R x, v_g = v_c + w x (R x) + R v;
 // Centred: x_g = c + x, v_g = v_c + v). False if the frame's body is not loaded.
