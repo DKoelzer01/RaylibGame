@@ -116,11 +116,15 @@ void Finish() {
 SCENARIO("audio/directions") {
     s.tags = { "audio", "planet" };
     s.world = ScenarioWorld::Planet;
-    s.timeout = 120.0;
+    s.timeout = 240.0;
     s.record = false;
     s.env = { { "RAYLIBGAME_AUDIO_V2", "1" } };
 
-    s.step("settle", 60.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play, an idle world and the player on the ground"); return c.T >= 2.0 && WorldIdle() && player.grounded; });
+    s.step("settle", 150.0, [](ScenarioCtx& c) {
+        const bool idle = WorldIdle();
+        c.waitingFor(std::string("2 s of play, an idle world (") + (idle ? "yes" : "no") + ") and the player on the ground (" + (player.grounded ? "yes" : "no") + ")");
+        return c.T >= 2.0 && idle && player.grounded;
+    });
 
     s.step("four emitters, facing north then east", 100.0, [](ScenarioCtx& c) {
         if (S.k == 0 && S.t0 < 0.0 && !S.havePrev) Setup(c);

@@ -1,0 +1,89 @@
+sandbox: c9f-1724-audio-direction at 94d606f5
+built in 275 s; warnings: 80
++ bash tools/fetch_steamaudio.sh /cache/sa 2>&1 | tail -3; export LD_LIBRARY_PATH=/cache/sa/lib/linux-x64; ls $LD_LIBRARY_PATH; RAYLIBGAME_AUDIO_V2=1 $GAME --scenario audio/directions --scenario-out /cache/out/adir --scenario-no-record 2>&1 | grep -v "^\[" | tail -80
+downloading steam audio 4.8.1 ...
+/tmp/tmp.rBy8lgHb5h/sa.zip: OK
+steam audio 4.8.1 in /cache/sa (re-run cmake to copy phonon.dll next to game.exe)
+libphonon.so
+bench: slow frame 27.4 ms (cpu), 27.5 ms wall (0.0 unmarked) at 210.1 s, frame 399: w-gpu-pump 15.4 w-lod 8.0 shadow 1.1
+bench: slow frame 33.1 ms (cpu), 33.2 ms wall (0.0 unmarked) at 210.2 s, frame 405: w-gpu-pump 15.5 w-lod 13.1 shadow 1.4
+bench: slow frame 34.4 ms (cpu), 34.4 ms wall (0.0 unmarked) at 210.3 s, frame 409: w-lod 7.8 shadow 23.5
+bench: slow frame 20.0 ms (cpu), 20.0 ms wall (0.0 unmarked) at 210.3 s, frame 412: w-gpu-pump 6.0 w-lod 9.3 shadow 1.4
+bench: slow frame 29.1 ms (cpu), 29.1 ms wall (0.0 unmarked) at 210.4 s, frame 415: w-gpu-pump 14.8 w-lod 10.7
+bench: slow frame 24.2 ms (cpu), 24.2 ms wall (0.0 unmarked) at 210.4 s, frame 417: w-gpu-pump 4.4 w-lod 7.5 w-trees 7.4 shadow 1.8
+bench: slow frame 43.9 ms (cpu), 43.9 ms wall (0.0 unmarked) at 210.5 s, frame 418: w-gpu-pump 7.8 w-lod 7.7 shadow 1.7 tonemap 23.3
+bench: slow frame 23.6 ms (cpu), 23.6 ms wall (0.0 unmarked) at 210.5 s, frame 422: w-gpu-pump 3.4 w-lod 15.8 shadow 1.3
+bench: slow frame 44.2 ms (cpu), 44.3 ms wall (0.1 unmarked) at 210.6 s, frame 423: w-gpu-pump 33.9 w-lod 5.8 shadow 1.3
+bench: slow frame 27.9 ms (cpu), 27.9 ms wall (0.0 unmarked) at 210.6 s, frame 426: w-gpu-pump 5.3 w-lod 12.5 w-trees 4.1 world+lights 1.1 shadow 1.5
+bench: slow frame 37.5 ms (cpu), 37.6 ms wall (0.0 unmarked) at 210.7 s, frame 427: bench-logic 2.6 w-gpu-pump 3.0 w-uploads 20.3 w-lod 6.5 shadow 1.1 grass 1.3
+bench: slow frame 21.8 ms (cpu), 21.8 ms wall (0.0 unmarked) at 210.7 s, frame 430: w-gpu-pump 7.9 w-lod 6.0 shadow 1.2 near 3.8
+bench: slow frame 42.6 ms (cpu), 42.6 ms wall (0.0 unmarked) at 210.8 s, frame 431: w-gpu-pump 6.5 w-lod 11.1 shadow 22.1
+bench: slow frame 25.1 ms (cpu), 25.1 ms wall (0.0 unmarked) at 210.8 s, frame 434: w-gpu-pump 5.8 w-lod 11.9 shadow 1.4 near 3.0
+bench: slow frame 53.3 ms (cpu), 53.3 ms wall (0.0 unmarked) at 210.9 s, frame 435: w-gpu-pump 3.2 w-lod 41.8 w-trees 4.1 shadow 1.4
+bench: slow frame 49.8 ms (cpu), 49.8 ms wall (0.0 unmarked) at 211.0 s, frame 439: w-gpu-pump 13.5 w-uploads 1.6 w-lod 29.6 w-trees 1.3 shadow 1.2
+bench: slow frame 20.0 ms (cpu), 20.1 ms wall (0.1 unmarked) at 211.0 s, frame 443: w-gpu-pump 8.4 w-lod 7.6 shadow 1.3
+bench: slow frame 38.7 ms (cpu), 38.7 ms wall (0.1 unmarked) at 211.1 s, frame 444: w-gpu-pump 22.9 w-lod 6.9 w-trees 4.2 shadow 1.5
+bench: slow frame 26.5 ms (cpu), 26.6 ms wall (0.0 unmarked) at 211.1 s, frame 446: w-gpu-pump 3.4 w-lod 18.1 shadow 1.6
+bench: slow frame 47.2 ms (cpu), 47.2 ms wall (0.0 unmarked) at 211.2 s, frame 447: w-gpu-pump 40.3 w-lod 3.9
+bench: slow frame 21.8 ms (cpu), 21.9 ms wall (0.0 unmarked) at 211.2 s, frame 450: w-gpu-pump 4.4 w-lod 10.9 shadow 3.3
+bench: slow frame 48.5 ms (cpu), 48.5 ms wall (0.0 unmarked) at 211.3 s, frame 451: bench-logic 1.3 w-gpu-pump 5.7 w-lod 37.3 shadow 1.2
+bench: slow frame 36.4 ms (cpu), 36.5 ms wall (0.0 unmarked) at 211.4 s, frame 457: world+lights 33.5 shadow 1.0
+bench: slow frame 26.3 ms (cpu), 26.3 ms wall (0.0 unmarked) at 211.4 s, frame 464: w-gpu-pump 9.3 w-lod 10.3 shadow 1.3 near 2.7
+bench: slow frame 47.2 ms (cpu), 47.2 ms wall (0.0 unmarked) at 211.5 s, frame 465: w-gpu-pump 5.0 w-lod 10.3 shadow 1.9 grass 26.9
+bench: slow frame 49.3 ms (cpu), 49.3 ms wall (0.0 unmarked) at 211.6 s, frame 470: w-lod 44.0 shadow 1.6
+bench: slow frame 38.5 ms (cpu), 38.5 ms wall (0.0 unmarked) at 211.7 s, frame 475: w-gpu-pump 5.3 w-lod 27.5 shadow 1.7
+bench: slow frame 39.3 ms (cpu), 39.4 ms wall (0.1 unmarked) at 211.8 s, frame 480: w-gpu-pump 1.9 w-lod 31.5 shadow 2.7
+bench: slow frame 26.0 ms (cpu), 26.0 ms wall (0.0 unmarked) at 211.8 s, frame 483: w-gpu-pump 3.5 w-lod 14.8 shadow 4.4
+bench: slow frame 37.0 ms (cpu), 37.1 ms wall (0.0 unmarked) at 211.9 s, frame 484: bench-logic 1.2 w-gpu-pump 5.7 w-lod 14.8 w-trees 11.6 shadow 1.2
+bench: slow frame 24.1 ms (cpu), 24.1 ms wall (0.0 unmarked) at 211.9 s, frame 488: w-gpu-pump 7.6 w-lod 10.7 shadow 1.3 water 1.7
+bench: slow frame 25.6 ms (cpu), 25.6 ms wall (0.0 unmarked) at 212.1 s, frame 502: w-gpu-pump 3.4 w-lod 6.2 w-trees 5.0 shadow 4.7 water 3.4
+bench: slow frame 27.6 ms (cpu), 27.6 ms wall (0.0 unmarked) at 212.1 s, frame 503: w-gpu-pump 5.3 w-lod 14.1 w-trees 3.3 shadow 1.6
+bench: slow frame 29.3 ms (cpu), 29.4 ms wall (0.0 unmarked) at 212.2 s, frame 504: w-lod 24.7 shadow 1.3
+bench: slow frame 24.4 ms (cpu), 24.4 ms wall (0.0 unmarked) at 212.2 s, frame 507: w-gpu-pump 5.7 w-lod 10.8 shadow 4.7
+bench: slow frame 27.8 ms (cpu), 27.8 ms wall (0.0 unmarked) at 212.3 s, frame 509: w-lod 23.0 shadow 1.3
+bench: slow frame 36.7 ms (cpu), 36.7 ms wall (0.0 unmarked) at 212.3 s, frame 512: w-gpu-pump 5.4 w-lod 14.1 w-trees 9.7 shadow 1.7 near 3.3
+bench: slow frame 37.8 ms (cpu), 37.9 ms wall (0.0 unmarked) at 212.4 s, frame 513: w-gpu-pump 6.5 w-lod 25.8 shadow 1.4
+bench: slow frame 22.0 ms (cpu), 22.1 ms wall (0.0 unmarked) at 212.4 s, frame 516: game-update 3.0 w-gpu-pump 1.3 w-lod 10.4 w-trees 3.3 shadow 1.3
+bench: slow frame 44.5 ms (cpu), 44.6 ms wall (0.0 unmarked) at 212.5 s, frame 517: bench-logic 2.2 w-gpu-pump 6.1 w-lod 31.1 shadow 1.7
+bench: slow frame 26.2 ms (cpu), 26.2 ms wall (0.0 unmarked) at 212.5 s, frame 520: w-gpu-pump 7.9 w-lod 7.6 w-trees 5.8 shadow 1.6
+bench: slow frame 22.7 ms (cpu), 22.7 ms wall (0.0 unmarked) at 212.6 s, frame 523: w-gpu-pump 10.4 w-lod 7.4 shadow 1.4
+bench: slow frame 20.1 ms (cpu), 20.1 ms wall (0.0 unmarked) at 212.7 s, frame 528: w-gpu-pump 7.9 w-lod 7.2 shadow 1.5
+bench: slow frame 21.3 ms (cpu), 21.3 ms wall (0.0 unmarked) at 212.7 s, frame 529: w-gpu-pump 8.9 w-lod 7.2 shadow 1.7
+bench: slow frame 20.7 ms (cpu), 20.8 ms wall (0.0 unmarked) at 212.8 s, frame 535: w-gpu-pump 9.1 w-lod 7.2 shadow 1.2
+bench: slow frame 34.3 ms (cpu), 34.3 ms wall (0.0 unmarked) at 212.9 s, frame 542: w-gpu-pump 24.4 w-lod 6.0 shadow 1.1
+bench: slow frame 38.3 ms (cpu), 38.3 ms wall (0.0 unmarked) at 213.0 s, frame 548: w-trees 26.7 shadow 6.9 hud 1.5
+bench: slow frame 52.4 ms (cpu), 52.5 ms wall (0.0 unmarked) at 213.1 s, frame 552: w-gpu-pump 5.4 w-lod 42.8 shadow 1.2
+scenario: audio/directions heartbeat: step 1/2 'settle' t=9.7 s (sim 9.7 s, wall 25 s), waiting for 2 s of play, an idle world and the player on the ground
+WARNING: World ready in 30.52 s (1880 meshes)
+scenario: audio/directions heartbeat: step 1/2 'settle' t=20.7 s (sim 20.7 s, wall 30 s), waiting for 2 s of play, an idle world and the player on the ground
+scenario: audio/directions heartbeat: step 1/2 'settle' t=29.8 s (sim 29.8 s, wall 35 s), waiting for 2 s of play, an idle world and the player on the ground
+scenario: audio/directions heartbeat: step 1/2 'settle' t=38.5 s (sim 38.5 s, wall 40 s), waiting for 2 s of play, an idle world and the player on the ground
+scenario: audio/directions heartbeat: step 1/2 'settle' t=54.2 s (sim 54.2 s, wall 45 s), waiting for 2 s of play, an idle world and the player on the ground
+scenario: audio/directions -> FAIL: step 'settle' passed its deadline of 60 s sim (waiting for 2 s of play, an idle world and the player on the ground) (0 checks, 0 failed; 60.0 s sim, 46.6 s wall)
+profile: 3600 frames, mean 8.82 ms, p50 6.75, p95 19.11, p99 41.67, max 93.83 ms; 150 over 20 ms; peak commit 5223 MB, VRAM 2637 MB
+profile: Build chunk                   18.653 ms/frame  n 7568    p50 2.190 p95 38.211 p99 128.527 max 291.950 ms
+profile: worldUpdate                    4.256 ms/frame  n 3601    p50 0.355 p95 14.733 p99 38.211 max 5377.723 ms
+profile: drawScene                      2.913 ms/frame  n 3601    p50 2.388 p95 4.380 p99 6.194 max 405.449 ms
+profile: UpdateLod                      2.862 ms/frame  n 18005   p50 0.003 p95 0.009 p99 7.366 max 5368.127 ms
+profile: cpu:begin-draw                 2.608 ms/frame  n 3600    p50 2.190 p95 6.194 p99 8.760 max 11.028 ms
+profile: gpu:pre-draw (uploads, updates)   2.136 ms/frame  n 668     p50 9.553 p95 35.040 p99 45.441 max 60.980 ms
+profile: Main pass                      1.857 ms/frame  n 3601    p50 1.302 p95 2.840 p99 4.776 max 405.227 ms
+profile: cpu:w-lod                      1.373 ms/frame  n 3600    p50 0.017 p95 7.366 p99 22.721 max 47.494 ms
+profile: Shadow pass                    1.051 ms/frame  n 3601    p50 0.921 p95 1.842 p99 2.840 max 39.083 ms
+profile: cpu:shadow                     1.002 ms/frame  n 3600    p50 0.921 p95 1.549 p99 1.842 max 39.067 ms
+profile: cpu:w-gpu-pump                 0.908 ms/frame  n 3600    p50 0.001 p95 5.209 p99 11.360 max 74.310 ms
+profile: cpu:near                       0.581 ms/frame  n 3600    p50 0.326 p95 1.842 p99 2.840 max 29.778 ms
+bench: world ready after 30.52 s (1880 chunks, avg build 10.83 ms of which sampling 7.49 ms, 11 worker threads)
+bench: 22 frames in 0.1s | avg 220.0 FPS | avg 4.55 ms | worst 5.17 ms | world update 0.40 ms, draw 2.46 ms (CPU)
+bench: camera drift against the planet over the timed window: 0.00 m (#127)
+bench: gpu per frame (avg of 668): w-sim-pre 0.00 fluid 0.00 pre-draw (uploads, updates) 11.51 clear 0.00 shadow 0.41 sky 0.27 far 0.00 trees 0.50 near 3.04 grass 0.68 water 0.13 draw3d 0.00 tonemap 0.73 hud 0.04 imgui 0.00 2d-flush 0.00 swap+poll 0.00 (between frames) 0.00 | total 17.32 ms
+bench: cpu per frame (avg of 3622): bench-logic 0.05 step: player, survival 0.01 step: farm 0.00 step: animals 0.00 step: weather, factory 0.01 w-sim-pre 0.00 fluid 0.00 step: fluids, waterworks 0.01 game-update 0.02 w-before 0.00 w-gpu-pump 0.90 w-uploads 0.11 w-lod 1.36 w-preload 0.00 w-trees 0.29 world+lights 0.08 pre-draw (uploads, updates) 0.14 clear 0.12 begin-draw 2.60 shadow 1.00 sky 0.16 far 0.11 trees 0.11 near 0.58 grass 0.21 water 0.36 draw3d 0.03 tonemap 0.22 hud 0.20 imgui 0.03 2d-flush 0.00 swap+poll 0.01 | total 8.77 ms
+bench: terrain arena: 3105435 / 4194304 vertices, 11987082 / 25165824 indices, 596.9 chunk draws per multi-draw; uploads 1880 staged, 0 direct
+bench: material palette (#480): chunks by distinct materials: 1:604 2:521 3:286 4:219 5:116 6:57 7:40 8:15 9:9 10:11 11:1 12:1
+bench: terrain gpu: 7009 blocks in 844 batches, avg batch latency 12.50 ms; chunk build avg 10.83 ms (sampling part 7.49 ms)
+bench: streaming: 7568 requests, 7568 built, 0 skipped stale, 0 results dropped; 7568 nodes alive; frame ms p50 4.97 p95 5.12 p99 5.17, 0 frames over 20 ms
+bench: preload: 0 ring nodes, 0 built; cache: 0 nodes, 0 evicted; arena 3.0 M vertices; LOD cross-fades 0
+scenario: results /cache/out/adir/audio/directions/results.json
+bench: cave blocks: 7009 on the GPU, 243 over the 32-segment limit (CPU path)
+exit 0
+(full log: /home/claude/rg-sandbox/logs/20261123-204749-c9f-1724-audio-direction.log)
