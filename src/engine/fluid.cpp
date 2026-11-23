@@ -278,7 +278,13 @@ struct BodyRef {
 };
 std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
-struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind
+struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; uint64_t seq = 0; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind; seq: a take's number
+// Takes promised but not yet in the published snapshot (#1677): Take reads the snapshot, so two takes from one small pool
+// before the next publish were both credited in full (water made from nothing). Each take reserves its amount here until
+// the step that applied it has published (cmdMx).
+std::vector<Command> pendingTakes;
+uint64_t takeSeq = 0;
+std::vector<uint64_t> takesApplied; // the takes this step applied (the step job's own; cleared from pendingTakes after its publish)
 
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
@@ -966,6 +972,10 @@ void ApplyCommand(const Command& c) {
     float want = c.m3 * 255.0f / WaterField::CellVolume();
     const int R = (int)ceilf(c.r / WaterField::CellSize());
     EnsureAround(*s, c.c, c.r, false); // (#1414) the bricks in reach as they are: a take changes no solidity
+    // (#1677) Not classified yet: again after classification, as a pour does (it removed nothing while Take had already
+    // reported the water taken: a free first scoop from an untouched pond).
+    { Brick* b0; int i0; if (!s->cell(ci, cj, ck, b0, i0)) { std::lock_guard<std::mutex> lock(cmdMx); commands.push_back(c); return; } }
+    if (c.seq) takesApplied.push_back(c.seq);
     for (int dk = R; dk >= -R && want > 0.0f; --dk)
         for (int dj = -R; dj <= R && want > 0.0f; ++dj)
             for (int di = -R; di <= R && want > 0.0f; ++di) {
@@ -976,7 +986,15 @@ void ApplyCommand(const Command& c) {
                 // Infinite water gives without running out (Plan 4: sea, rivers and large lakes are infinite): a source, or a
                 // released river reach (#1414: with takes really removing water, a pump at a river's edge drained the reach's
                 // cells there faster than the river refilled them and ran dry after 0.6 m^3; finite ponds drain as they should).
-                if (!(b->flags[i] & kSource) && !b->reach) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                // Only the river's own water is free in a released reach (#1678): its brick flag covered every cell and fluid in
+                // it, so oil or a pit's water there never ran out.
+                bool infinite = (b->flags[i] & kSource) != 0;
+                if (!infinite && b->reach && c.fluid == 0)
+                    for (const Site::Release& rel : s->releases) {
+                        const float dx = (float)(ci + di - rel.ci), dy = (float)(cj + dj - rel.cj);
+                        if (dx * dx + dy * dy < rel.r * rel.r) { infinite = true; break; }
+                    }
+                if (!infinite) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
                 want -= t;
                 Touch(b);
             }
@@ -1011,13 +1029,8 @@ void RunJob() {
         }
     }
     if (!work.empty()) {
-        std::atomic<int> left{ (int)work.size() - 1 };
-        for (size_t k = 1; k < work.size(); ++k) {
-            Work* w = &work[k];
-            JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-3.0f, [w, &left] { Classify(*w->s, *w->b, *w->ref, w->faces); left.fetch_sub(1); });
-        }
-        Classify(*work[0].s, *work[0].b, *work[0].ref, work[0].faces); // this thread takes one too
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), (int)work.size(), [&work](int k) { Work& w = work[k]; Classify(*w.s, *w.b, *w.ref, w.faces); },
+                      -3.0f, JobTag::Fluid); // this thread takes its share; no hang with one worker (#1671)
         static const int d[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
         for (Work& w : work) {
             for (Brick* o : w.b->nbr) if (o) Touch(o); // neighbours wake: water may now flow in or out
@@ -1229,14 +1242,7 @@ void RunJob() {
     {
         const int n = (int)outs.size();
         const int parts = std::max(1, std::min(n / 64, (int)std::thread::hardware_concurrency()));
-        std::atomic<int> left{ parts - 1 };
-        auto run = [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); };
-        for (int part = 1; part < parts; ++part) {
-            JobSystem::tagNext(JobTag::Fluid);
-            WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-        }
-        run(0);
-        while (left.load() > 0) std::this_thread::yield();
+        ParallelParts(WorldJobs(), parts, [&](int part) { for (int k = part; k < n; k += parts) publishBrick(outs[k]); }, -3.0f, JobTag::Fluid); // (#1671)
     }
     for (PubOut& out : outs) {
         const Brick& b = *out.b;
@@ -1270,6 +1276,12 @@ void RunJob() {
         }
     }
     if (snap) WaterField::Publish(std::move(snap), std::move(dirty));
+    if (!takesApplied.empty()) { // (#1677) the takes this step applied are in the snapshot now (or took free water): no longer reserved
+        std::lock_guard<std::mutex> lock(cmdMx);
+        pendingTakes.erase(std::remove_if(pendingTakes.begin(), pendingTakes.end(), [](const Command& p) {
+            return std::find(takesApplied.begin(), takesApplied.end(), p.seq) != takesApplied.end(); }), pendingTakes.end());
+        takesApplied.clear();
+    }
     const auto t2 = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> p(pubMx);
@@ -1563,9 +1575,18 @@ void GpuReadback() {
         std::vector<unsigned> flagsV;
         const unsigned* flags = nullptr;
         const uint32_t* packed = nullptr;
+        bool mapped = false;
         if (G.asyncRb && G.rbFence) {
-            glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // at most 100 ms
+            // Wait again until the copy is done (#1679): skipping this readback is not safe, GpuTick dispatches next and
+            // overwrites lastList, the fence and the mapped buffer, so these results would be lost. A failed wait (a broken
+            // fence) drops to the download path below instead of reading a buffer the copy may not have filled.
+            GLenum waited;
+            do waited = glClientWaitSync((GLsync)G.rbFence, GL_SYNC_FLUSH_COMMANDS_BIT, 100000000ull); // 100 ms a try
+            while (waited == GL_TIMEOUT_EXPIRED);
             glDeleteSync((GLsync)G.rbFence); G.rbFence = nullptr;
+            mapped = waited != GL_WAIT_FAILED;
+        }
+        if (mapped) {
             flags = (const unsigned*)G.rbPtr;
             packed = (const uint32_t*)(G.rbPtr + G.rbFlagsBytes);
             if (G.rbSinkBytes) creditSinks((const unsigned*)(G.rbPtr + G.rbSinkAt), (int)(G.rbSinkBytes / 4)); // #656
@@ -1621,13 +1642,7 @@ void GpuReadback() {
                     drift[li] = br->settled ? SettleDrift(*br) : 0;
                 }
             };
-            std::atomic<int> left{ parts - 1 };
-            for (int part = 1; part < parts; ++part) {
-                JobSystem::tagNext(JobTag::Fluid);
-                WorldJobs().submit(-3.0f, [&unpack, &left, part] { unpack(part); left.fetch_sub(1); });
-            }
-            unpack(0);
-            while (left.load() > 0) std::this_thread::yield();
+            ParallelParts(WorldJobs(), parts, unpack, -3.0f, JobTag::Fluid); // (#1671)
         }
         for (size_t li = 0; li < G.lastList.size(); ++li) {
             const int slot = G.lastList[li];
@@ -1954,14 +1969,7 @@ FluidKernel::Grid cpuGrid;
 template <typename Fn> void ParallelSlots(int count, Fn&& fn) {
     if (count <= 0) return;
     const int parts = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
-    auto run = [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); };
-    std::atomic<int> left{ parts - 1 };
-    for (int part = 1; part < parts; ++part) {
-        JobSystem::tagNext(JobTag::Fluid);
-        WorldJobs().submit(-3.0f, [&run, &left, part] { run(part); left.fetch_sub(1); });
-    }
-    run(0);
-    while (left.load() > 0) std::this_thread::yield();
+    ParallelParts(WorldJobs(), parts, [&fn, count, parts](int part) { for (int i = part; i < count; i += parts) fn(i); }, -3.0f, JobTag::Fluid); // (#1671)
 }
 
 void CpuTick(int n) {
@@ -2103,7 +2111,8 @@ void Fluid::Reset() {
     sites.clear();
     refs.clear();
     stepCount = 0;
-    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); }
+    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); pendingTakes.clear(); } // (#1677) no reservations into a new world
+    takesApplied.clear();
     {
         std::lock_guard<std::mutex> p(pubMx);
         pubStats = Stats{};
@@ -2123,6 +2132,11 @@ Vector3 Fluid::FlowAt(const Planetoid& body, Vector3 local, float radius) {
     std::lock_guard<std::mutex> lk(flowMx);
     const double now = GetTime();
     radius = std::max(0.5f, radius); // as stored: a smaller radius matched no watch and added one every call (#392 review)
+    // The CPU path never resolves watches, so nothing else expires them: same 3 s rule here, or the list only grows (#1680).
+    // Not on the GPU path: GpuFlowResolve erases there, and watchCells is indexed by position until its next resolve.
+    if (!gpuMode)
+        flowWatches.erase(std::remove_if(flowWatches.begin(), flowWatches.end(), [&](const FlowWatch& w) { return now - w.lastAsk > 3.0; }), flowWatches.end());
+    // CPU mode has no flux readout yet (the value stays 0); only the GPU path reads flow back (GpuFlowRead).
     for (FlowWatch& w : flowWatches)
         if (w.body == body.id && fabsf(w.r - radius) < 0.01f && Vector3DistanceSqr(w.local, local) < 0.25f) { w.lastAsk = now; return w.value; }
     FlowWatch w; w.body = body.id; w.local = local; w.r = radius; w.lastAsk = now;
@@ -2154,11 +2168,17 @@ float Fluid::ReleasedNaturalFlow() {
 }
 
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
-    const float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    std::lock_guard<std::mutex> c(cmdMx);
+    // What earlier takes here have already promised and the snapshot doesn't show yet (#1677).
+    for (const Command& p : pendingTakes)
+        if (p.body == body.id && p.fluid == kind && Vector3Distance(p.c, local) < p.r + radius) have -= p.m3;
     const float t = std::min(m3, have);
     if (t <= 0.0f) return 0.0f;
-    std::lock_guard<std::mutex> c(cmdMx);
-    commands.push_back({ 1, body.id, local, radius, t, kind });
+    Command cmd{ 1, body.id, local, radius, t, kind };
+    cmd.seq = ++takeSeq;
+    commands.push_back(cmd);
+    pendingTakes.push_back(cmd);
     return t;
 }
 
@@ -2315,6 +2335,19 @@ void UpdateRiverFlow() {
             const RiverNetwork::PieceBounds b = net->pieceBounds(piece);
             WaterSurface::Invalidate(*pf, Vector3Normalize(b.mid), b.radius);
             RequestRemesh(*body, b.mid, b.radius);
+            // The site bricks already classified on that link took its old flow as their source level: classify them again
+            // (keeping their water) so they follow the new one (#1675). A brick reaches the bounds up to its half diagonal.
+            const float reach = b.radius + 0.5f * 1.7321f * (float)B * WaterField::CellSize();
+            for (auto& s : sites) {
+                if (s->body != bodyId) continue;
+                for (auto& kv : s->bricks) {
+                    Brick* br = kv.second.get();
+                    if (!br->ready) continue;
+                    if (Vector3Distance(s->cellCentre(br->bi * B + B / 2, br->bj * B + B / 2, br->bk * B + B / 2), b.mid) > reach) continue;
+                    br->ready = false; br->keepFill = true;
+                    if (std::find(s->pending.begin(), s->pending.end(), br) == s->pending.end()) s->pending.push_front(br);
+                }
+            }
         }
     }
     static double last = -1.0;
@@ -2332,6 +2365,7 @@ void UpdateRiverFlow() {
     const float simDt = wallTime ? dt : (float)steps * 0.05f / (float)kSubsteps;
     static const bool flowLog = EnvFlag("RAYLIBGAME_RIVERFLOW_LOG"); // diagnostics: each reach's measure once a second
     static std::vector<int> changed;
+    std::vector<std::pair<uint64_t, const RiverNetwork*>> nets; // the distinct networks of the sites
     for (auto& s : sites) {
         Planetoid* body = Planetoid::find(s->body);
         const PlanetField* pf = body ? dynamic_cast<const PlanetField*>(body->field.get()) : nullptr;
@@ -2385,10 +2419,14 @@ void UpdateRiverFlow() {
                 const int up = s->releases[sp.rel].upPiece;
                 sp.scale = up >= 0 ? std::clamp(net->flowOf(up), 0.0f, 1.5f) : 1.0f;
             }
+        if (std::find(nets.begin(), nets.end(), std::make_pair(s->body, net)) == nets.end()) nets.push_back({ s->body, net });
+    }
+    // Each network eases once a tick, however many sites sit on its body (#1676).
+    for (const auto& [bodyId, net] : nets) {
         changed.clear();
         if (!net->stepFlow(std::min(dt, 2.0f), changed)) continue; // a long gap (a load, a stall) must not jump the river: it eases at its speed
         for (int piece : changed)
-            if (refreshQueued.insert({ s->body, piece }).second) refreshQueue.push_back({ s->body, piece });
+            if (refreshQueued.insert({ bodyId, piece }).second) refreshQueue.push_back({ bodyId, piece });
     }
 }
 
@@ -2460,7 +2498,11 @@ void Fluid::Update(Scene& world, float dt) {
     (void)world;
     { std::lock_guard<std::mutex> c(cmdMx); jobCommands.swap(commands); } // this tick's commands: those issued before it (#814)
     running = true;
-    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [] { RunJob(); running = false; });
+    // (#1672) A step dropped before it starts (unloadWorld's clearQueued) still clears `running`: the guard goes with the
+    // dropped job, or WaitIdle (Reset, Save) spun forever and quit-to-menu or load froze.
+    struct StepGuard { bool ran = false; ~StepGuard() { if (!ran) running = false; } };
+    auto guard = std::make_shared<StepGuard>();
+    JobSystem::tagNext(JobTag::Fluid); WorldJobs().submit(-0.5f, [guard] { RunJob(); guard->ran = true; running = false; });
     // Lockstep (tests): the tick finishes before the frame goes on, so what the frame reads (the published water, Asleep)
     // is a given tick's, not whichever the job reached by then (#814: identical simulations, different measurements).
     if (lockstep) WaitIdle();
@@ -2812,7 +2854,8 @@ void Fluid::Load(FILE* f, uint64_t bodyId) {
     }
     // Only with flow state to restore: RiversOf builds the whole river network on first use (~470 ms), which an empty
     // "riverflow 0 0" line made every load pay up front (#737; it is built later anyway, when water first needs it).
-    if (!cur.empty() || !set.empty())
+    // A save at another cell size drops its sites, and the flow state goes with them: the reaches that set it start over (#1674).
+    if (keep && (!cur.empty() || !set.empty()))
         if (const RiverNetwork* net = RiversOf(bodyId)) net->setFlowState(cur, set);
 }
 

@@ -19,6 +19,11 @@ what happened, the cause, and the fix or rule. Read the patterns before you star
 4. **Two instants mixed in one computation.** The body poses advance before the rocket and its substeps, so a frame
    switch or an outside-written state used positions from different instants: 16 m, 13 m, 7.5 m jumps (F5, #1436,
    #1460). Re-express state only at one consistent instant (after the step's last substep).
+6. **Process slips cost more than code bugs (2026-11-22/23).** Wrong PR numbers in reports (about one in five), a
+   retargeted stacked PR that sat an hour with no CI (#1653), a playtest-board baseline that missed 39 marks (old
+   failures never reached their issues), two game runs at once through a session's subagents (#1662). Fixes: quote
+   numbers only from `gh` output; no stacks; update-branch after a retarget; the board's own `routed` field is the
+   baseline (docs/notes/board.md); the guard refuses a second run.
 5. **Don't state an inference as a decision.** The coordinator wrote "composed items disassemble into parts" into
    decisions.md before the user answered; the user chose raw materials (#1495). Mark unconfirmed items "GUESS" or
    ask first.

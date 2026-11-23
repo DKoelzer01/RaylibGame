@@ -149,6 +149,7 @@ private:
     const PlanetErosion* bake = nullptr;
     std::unordered_map<int, int> fineLake;  // bake cell -> lake id
     std::vector<int> nodeCell, nodeParent, nodePiece; // per node: its bake cell, the node it drains to (-1: the sea), its piece
+    std::vector<float> nodeDisc; // per node: the discharge's half width (m), before the valley fill (#637); never shrinks downstream
     // River flow (#656): per node its discharge (as an area at the default runoff), the order sources first, and the state.
     std::vector<float> nodeQ, nodeChildQ; // discharge (as a drainage area), and its tributaries' together
     std::vector<int> nodeTopo;

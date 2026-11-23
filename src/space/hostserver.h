@@ -25,6 +25,9 @@
 #include <vector>
 
 class Scene;
+class Planetoid;
+class Plot;
+struct PartEdit;
 struct NetMessage;
 
 constexpr uint16_t kDefaultHostPort = 27015;
@@ -56,6 +59,7 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // Building (#330): parts placed or removed for players so far (tests); give a player items (the admin "give", tests):
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
+void Host_BroadcastPartEdits(const Planetoid& body, const Plot& plot, const std::vector<PartEdit>& edits); // (#1684) a host's own dungeon edit (vault unlock, lever): sent to every client
 bool Host_Give(uint32_t session, const std::string& item, int count);
 bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an online player's game mode (false: not online)
 // Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every

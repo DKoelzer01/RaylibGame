@@ -16,6 +16,8 @@
 ItemDB itemDB;
 // (inventory: the local PlayerSession's, src/space/playersession.cpp, #313)
 
+const char* RetiredItem(const std::string& id) { return id == "concrete" ? "stone" : ""; }
+
 static std::string Trim(const std::string& s) {
     const size_t a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return "";
@@ -76,7 +78,7 @@ bool ItemDB::loadExtraText(const std::string& text) {
     }
     // Placeable parts named here are blocks, as load() makes them.
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t))
+        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t) && (PartType)t != PartType::Lever)
             if (auto it = byId.find(item); it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
     return true;
 }
@@ -178,7 +180,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     // places (#812): a meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must
     // stay a resource (stone as a block stacked to 256 and lost nothing on death).
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent) continue; else
+        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent || (PartType)t == PartType::Lever) continue; else
         if (const char* item = PartCostItem((PartType)t)) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
@@ -751,6 +753,14 @@ TEST_F(InventoryTest, SavedCellsMoveUpFromNineWideSaves) {
     EXPECT_EQ(Inventory::SavedCell(3, 9), 3);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, 9), Inventory::kGrid);
     EXPECT_EQ(Inventory::SavedCell(Inventory::kOldGrid, Inventory::kCols), Inventory::kOldGrid);
+}
+
+TEST_F(InventoryTest, LunacreteIsGoneAndOldStacksBecomeStone) {
+    EXPECT_EQ(itemDB.find("concrete"), nullptr) << "#1090: no lunacrete on the planet";
+    EXPECT_STREQ(RetiredItem("concrete"), "stone");
+    EXPECT_STREQ(RetiredItem("stone"), "") << "a current item keeps its id";
+    for (const Recipe& r : itemDB.recipes())
+        for (const auto& in : r.inputs) EXPECT_NE(in.first, "concrete") << r.output;
 }
 
 // (#1250) magic_items.txt adds its items after the table; items.txt's own stay as they were.

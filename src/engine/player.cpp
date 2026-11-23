@@ -81,6 +81,9 @@ void Player::update(Scene& world, const PlayerInput& in, float dt) {
     impactSpeed = landingSpeed = 0.0f; // per-frame; cleared before the fly-mode early return too
     jetpackFiring = false;
     if (flyMode) {
+        // (#1555) The body under the player, flying too: this branch returns before the walking path sets it, so a player who
+        // started flying (every scenario does) had none - the build tool, /locate and /tp found "no world" and /tp never landed.
+        nearest = NearestPlanetoid(world, (position - world.renderOrigin).toFloat());
         // Carry the camera with its reference body's motion since recordFly() (after last frame's input).
         bool rotate = false;
         Planetoid* ref = flyFollow ? flyReference(world, rotate) : nullptr;

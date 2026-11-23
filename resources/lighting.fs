@@ -61,6 +61,7 @@ uniform vec3 fogColor;          // linear
 uniform float fogDensity;       // 0 = off
 uniform vec4 fogShell;          // atmosphere: render-space centre + outer radius (w = 0: fog the whole distance)
 uniform float treeDistance;     // real trees are drawn to here (m); the canopy tint takes over near it
+uniform float farCheapFrom;     // (#1610 item 4) the cheap far-terrain path from here (m); 0: off
 uniform float forestFloorAo;   // (#933 layer 2) strength: the forest floor under the real trees takes less sky light (0: off; RAYLIBGAME_FOLIAGE_AO=0, _STRENGTH)
 uniform float farForest;        // #745: 1 = deeper canopy tint, starting earlier and denser (RAYLIBGAME_FAR_FOREST)
 
@@ -244,6 +245,8 @@ void main()
     vec3 localNormal = normalize(fragLocalNormal);
     Triplanar tp = makeTriplanar(fragTexPos, localNormal);
     float farMix = smoothstep(60.0, 280.0, length(viewPos - fragPosition));
+    // (#1610 item 4) Past farCheapFrom (m; 0 off, the default): one fetch per material (the dominant axis) and no blend noise.
+    bool cheapFar = farCheapFrom > 0.0 && length(viewPos - fragPosition) > farCheapFrom;
     Triplanar tpFar = makeTriplanar(fragTexPos * 0.21 + vec3(17.3, 5.1, 9.7), localNormal);
 
     // The base rock / roughness maps feed the asteroid and fantasy palettes; the planet palette takes
@@ -334,13 +337,13 @@ void main()
         float hmax = -1.0;
         // Two octaves of value noise (~1.8 m and ~0.6 m), phased per material id (consistent across triangles), strong
         // enough to move an edge across a whole triangle: the edge then wanders instead of following the mesh's stair steps.
-        float blendNoise = 0.6 * periodicNoise(fragTexPos, 0.55) + 0.4 * periodicNoise(fragTexPos + vec3(7.3), 1.6);
+        float blendNoise = cheapFar ? 0.5 : 0.6 * periodicNoise(fragTexPos, 0.55) + 0.4 * periodicNoise(fragTexPos + vec3(7.3), 1.6);
         for (int k = 0; k < n; k++) {
             cs[k] = vec3(0.0); hw[k] = -1.0;
             float wi = aw[k] / max(total, 0.001);
             if (wi < 0.01) continue;
             int i = min(aid[k], kMaterials - 1);
-            vec3 c = sampleLayer(tp, layerOf[i]);
+            vec3 c = cheapFar ? sampleLayerDominant(tp, layerOf[i]) : sampleLayer(tp, layerOf[i]);
             // Far away the repeat of one scale shows: blend in the same layer ~5x larger.
             if (farMix > 0.01) c = mix(c, sampleLayerDominant(tpFar, layerOf[i]), 0.55 * farMix); // one fetch: the dominant axis (#183)
             cs[k] = c;

@@ -33,6 +33,8 @@ test; add a line when something goes wrong).
   <what>` (run it in the background; it queues you and returns "GO" when the machine is yours), run, then
   `tools/slot.sh free`. A PreToolUse hook refuses game/test runs without the slot. `tools/slot.sh status` shows the
   holder and the queue. At most 15 minutes a hold; batch your runs into one request.
+- **One run at a time, subagents included:** a subagent shares its session's slot, so the guard also refuses a game/test
+  launch while another run is going. A run that needs a host and a client together puts `SLOT_PARALLEL=1` in the command.
 - **quiet** = nobody else compiles or runs (timing, A/B, screenshots). During someone else's quiet window builds are
   refused: `tools/slot.sh wait-quiet` blocks until it ends. Never take a slot while the user playtests (the coordinator
   holds it as `playtest`).
@@ -67,8 +69,11 @@ test; add a line when something goes wrong).
 
 ## Git and PRs
 
-- Branch per batch from `origin/m84-integration` (or `origin/ladder`); PRs target that branch. Stacked PRs: GitHub doesn't
-  retarget the next one - PATCH its base before it merges.
+- Branch per batch from `origin/m84-integration` (or `origin/ladder`); PRs target that branch. **One PR per branch off the
+  base; no stacks** unless a PR truly needs another's code (then say so). Stacked PRs: GitHub doesn't retarget the next
+  one - PATCH its base, then `PUT pulls/N/update-branch` (a retarget alone runs no CI).
+- **Quote a PR or issue number only after `gh` printed it** (the `gh pr create` / `file_issue.sh` output), never from
+  memory: wrong numbers cost a correction round each. Messages to the coordinator: the number + one line.
 - Feature sessions never merge, delete branches, push to main/develop or force-push (not even a fresh branch). Update a
   branch by merging its base in.
 - The coordinator merges: reviewed PRs into m84/ladder get GitHub auto-merge on "CI ok" (#1481); a PR whose evidence is
@@ -77,14 +82,16 @@ test; add a line when something goes wrong).
   before pushing a shared branch. Worktree sessions refuse compound git commands: one per call, or a script under build/.
 - Commit trailers: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` and `Claude-Session: <session link>`; PR
   bodies end with the Claude Code line and the session link.
-- Save-breaking changes are fine (note them in the PR); old region formats (RGN1-3) still load.
+- Save-breaking changes are fine (note them in the PR); only RGN5 terrain edits load (RGN1-4 are skipped);
+  versioned save migration is planned in #1693.
 
 ## Sessions and coordination (user, 2026-11-19 on)
 
 - Sessions: **Lighting and Graphics** (rendering, streaming, combat #1215-#1222, creatures, item data #1446, composed
   tools #1449), **Water** (fluids, Plan 11 body frames #667 P0), **UI/UX and Adventure** (UI, multiplayer, accessibility,
-  scenario harness and CI), **Progression** (the ladder #1271, tiered machines #1427, research #1030), **Audio**, **Magic**,
-  **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
+  scenario harness and CI; also **audio** #1003), **Progression** (the ladder #1271, tiered machines #1427, research
+  #1030). **Magic** (#1001) is split by feature (user, 2026-11-23): crafting, machines and essence logistics go to
+  Progression; spells, rituals and the adventure side to UI/UX and Adventure. **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
   the coordinator.
 - **Messages:** send only what someone needs: reports, questions, PR numbers. No acknowledgements of FYIs ("holding",
   "noted"); a message marked "FYI" needs no reply. Batch your requests.

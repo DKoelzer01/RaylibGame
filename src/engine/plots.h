@@ -61,6 +61,7 @@ enum class PartType : uint8_t {
     ResearchTable, ManaSiphon, ManaDynamo,                           // (#1252, #1327) magic: the research table (no machine: spend items at it), a siphon on a ley node (fills jars), the mana dynamo (jars into EU)
     Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
     Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
+    Lever,                                                           // (#1641 slice 2c) a dungeon floor lever: pulled, it opens the portcullis gates near it (appended: saves and NetPart ids go by order)
     SteamEngine, Dynamo, Motor,                                      // (#1271 L3) a boiler's steam into rotation; rotation into 32 V EU and back
     SteamLab,                                                        // (#1271 L6) the first lab: steam packs into tier 3 research, driven by a shaft
     Bloomery, Bellows, Anvil,                                        // (#211, #1271 L2) iron blooms from ore and charcoal; air for a bloomery or blast furnace (a shaft); the smith's anvil
@@ -87,7 +88,7 @@ constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slop
 constexpr int kShapeCount = (int)(sizeof(kShapes) / sizeof(kShapes[0]));
 const char* PartName(PartType t);
 int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
-const char* PartCostItem(PartType t);       // shapes: concrete (material 0); else the part's own item
+const char* PartCostItem(PartType t);       // shapes: stone brick (material 0); else the part's own item
 const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr
 
 // Building materials: any shape can be built from any of them, costing the material's item.
@@ -107,6 +108,10 @@ struct Part {
     uint8_t material = 0; // shapes: BuildMaterial index
 };
 bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: it shades what is under it (plots.cpp)
+inline bool GateLocked(const Part& p) { return p.type == PartType::Gate && p.material == 1; } // (#1641) a vault door (a dungeon_key opens it): solid, where a plain gate is walked through
+inline bool GatePortcullis(const Part& p) { return p.type == PartType::Gate && p.material == 2; } // (#1641 slice 2c) a dungeon portcullis: solid like a vault door, opened by the lever in its dungeon
+inline bool GateSolid(const Part& p) { return GateLocked(p) || GatePortcullis(p); }                   // a gate people cannot walk through
+inline bool PartUnbreakable(const Part& p) { return GateSolid(p) || p.type == PartType::Lever; }       // vault doors, portcullises and levers are opened, never broken
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces
@@ -150,8 +155,12 @@ public:
     // The cells a part would occupy, with each cell's shape (in plot cell space).
     static void Footprint(const Part& p, std::vector<std::pair<Int3, CellShape>>& out);
     // (#1574) The origin that puts a part flush against a face: every cell in front of the face of hitCell (along `face`, a
-    // unit axis), the nearest ones touching it. Moves it out or back in along the face only.
+    // unit axis), the nearest ones touching it. Moves it out or back in along the face only; a single-cell part goes exactly
+    // into the cell in front (#1630).
     static Int3 FlushAgainstFace(const Part& p, Int3 hitCell, Int3 face);
+    // (#1630) The origin whose one cell is `cell`, whatever the part's orientation (the rotation turns about the origin cell's
+    // corner, which moves a lone cell sideways); a part of more cells keeps its origin.
+    static Int3 SingleCellOrigin(const Part& p, Int3 cell);
     // A beam as the single cubes it is placed as (#200): one per cell of its footprint, same material.
     static void SplitBeam(const Part& beam, std::vector<Part>& out);
     bool canPlace(const Part& p) const;
