@@ -278,7 +278,13 @@ struct BodyRef {
 };
 std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
-struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind
+struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; uint64_t seq = 0; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind; seq: a take's number
+// Takes promised but not yet in the published snapshot (#1677): Take reads the snapshot, so two takes from one small pool
+// before the next publish were both credited in full (water made from nothing). Each take reserves its amount here until
+// the step that applied it has published (cmdMx).
+std::vector<Command> pendingTakes;
+uint64_t takeSeq = 0;
+std::vector<uint64_t> takesApplied; // the takes this step applied (the step job's own; cleared from pendingTakes after its publish)
 
 // Simulation state: owned by the step job while it runs (simMx).
 std::mutex simMx;
@@ -966,6 +972,10 @@ void ApplyCommand(const Command& c) {
     float want = c.m3 * 255.0f / WaterField::CellVolume();
     const int R = (int)ceilf(c.r / WaterField::CellSize());
     EnsureAround(*s, c.c, c.r, false); // (#1414) the bricks in reach as they are: a take changes no solidity
+    // (#1677) Not classified yet: again after classification, as a pour does (it removed nothing while Take had already
+    // reported the water taken: a free first scoop from an untouched pond).
+    { Brick* b0; int i0; if (!s->cell(ci, cj, ck, b0, i0)) { std::lock_guard<std::mutex> lock(cmdMx); commands.push_back(c); return; } }
+    if (c.seq) takesApplied.push_back(c.seq);
     for (int dk = R; dk >= -R && want > 0.0f; --dk)
         for (int dj = -R; dj <= R && want > 0.0f; ++dj)
             for (int di = -R; di <= R && want > 0.0f; ++di) {
@@ -976,7 +986,15 @@ void ApplyCommand(const Command& c) {
                 // Infinite water gives without running out (Plan 4: sea, rivers and large lakes are infinite): a source, or a
                 // released river reach (#1414: with takes really removing water, a pump at a river's edge drained the reach's
                 // cells there faster than the river refilled them and ran dry after 0.6 m^3; finite ponds drain as they should).
-                if (!(b->flags[i] & kSource) && !b->reach) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                // Only the river's own water is free in a released reach (#1678): its brick flag covered every cell and fluid in
+                // it, so oil or a pit's water there never ran out.
+                bool infinite = (b->flags[i] & kSource) != 0;
+                if (!infinite && b->reach && c.fluid == 0)
+                    for (const Site::Release& rel : s->releases) {
+                        const float dx = (float)(ci + di - rel.ci), dy = (float)(cj + dj - rel.cj);
+                        if (dx * dx + dy * dy < rel.r * rel.r) { infinite = true; break; }
+                    }
+                if (!infinite) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
                 want -= t;
                 Touch(b);
             }
@@ -1258,6 +1276,12 @@ void RunJob() {
         }
     }
     if (snap) WaterField::Publish(std::move(snap), std::move(dirty));
+    if (!takesApplied.empty()) { // (#1677) the takes this step applied are in the snapshot now (or took free water): no longer reserved
+        std::lock_guard<std::mutex> lock(cmdMx);
+        pendingTakes.erase(std::remove_if(pendingTakes.begin(), pendingTakes.end(), [](const Command& p) {
+            return std::find(takesApplied.begin(), takesApplied.end(), p.seq) != takesApplied.end(); }), pendingTakes.end());
+        takesApplied.clear();
+    }
     const auto t2 = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> p(pubMx);
@@ -2086,7 +2110,8 @@ void Fluid::Reset() {
     sites.clear();
     refs.clear();
     stepCount = 0;
-    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); }
+    { std::lock_guard<std::mutex> c(cmdMx); commands.clear(); pendingTakes.clear(); } // (#1677) no reservations into a new world
+    takesApplied.clear();
     {
         std::lock_guard<std::mutex> p(pubMx);
         pubStats = Stats{};
@@ -2142,11 +2167,17 @@ float Fluid::ReleasedNaturalFlow() {
 }
 
 float Fluid::Take(Planetoid& body, Vector3 local, float m3, float radius, int kind) {
-    const float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    float have = kind ? FluidAt(body, local, radius, kind) : WaterAt(body, local, radius);
+    std::lock_guard<std::mutex> c(cmdMx);
+    // What earlier takes here have already promised and the snapshot doesn't show yet (#1677).
+    for (const Command& p : pendingTakes)
+        if (p.body == body.id && p.fluid == kind && Vector3Distance(p.c, local) < p.r + radius) have -= p.m3;
     const float t = std::min(m3, have);
     if (t <= 0.0f) return 0.0f;
-    std::lock_guard<std::mutex> c(cmdMx);
-    commands.push_back({ 1, body.id, local, radius, t, kind });
+    Command cmd{ 1, body.id, local, radius, t, kind };
+    cmd.seq = ++takeSeq;
+    commands.push_back(cmd);
+    pendingTakes.push_back(cmd);
     return t;
 }
 
