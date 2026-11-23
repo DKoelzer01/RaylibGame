@@ -3516,6 +3516,30 @@ TEST(Factory, EveryOreKindHasARecipeThatTakesIt) {
     }
 }
 
+// (#1473) The material column's alloys (#1614): each has a machine recipe, made in a machine of its tier or earlier (the
+// kiln is tier 1, the blast furnace tier 3, the arc furnace HV), and the ore chains give every metal they need.
+TEST(Factory, EachAlloyOfTheMaterialColumnIsMadeByItsTier) {
+    LoadRecipes();
+    const struct { const char* alloy; PartType latest; } kAlloys[] = {
+        { "brass_ingot", PartType::Kiln }, { "solder_ingot", PartType::Kiln }, { "electrum_ingot", PartType::Kiln },
+        { "invar_ingot", PartType::BlastFurnace }, { "stainless_steel_ingot", PartType::ArcFurnace }, { "tungstensteel_ingot", PartType::ArcFurnace } };
+    for (const auto& a : kAlloys) {
+        const int id = tables.item(a.alloy);
+        ASSERT_GE(id, 0) << a.alloy << " is an item";
+        bool made = false;
+        for (const auto& r : tables.recipes)
+            for (const Stack& o : r.out) if (o.item == id && r.machine == a.latest) made = true;
+        EXPECT_TRUE(made) << a.alloy << ": made in its tier's machine";
+    }
+    // Their metals come from the ore chains: lead, zinc, silver, nickel, chromium and tungsten each have an ingot recipe
+    for (const char* metal : { "lead_ingot", "zinc_ingot", "silver_ingot", "nickel_ingot", "chromium_ingot", "tungsten_ingot", "gold_ingot" }) {
+        const int id = tables.item(metal);
+        bool made = false;
+        for (const auto& r : tables.recipes) for (const Stack& o : r.out) made = made || o.item == id;
+        EXPECT_TRUE(made) << metal << ": an ore chain makes it";
+    }
+}
+
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     LoadRecipes();
     Disassembly_Build({}, nullptr); // (#1427 L7c) nothing to take apart here (other tests leave their own index)

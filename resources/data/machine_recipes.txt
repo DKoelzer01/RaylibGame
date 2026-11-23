@@ -191,52 +191,59 @@ furnace         | tin_ingot 1        | tin_ore 1                 | 120 | 8
 furnace         | bronze_ingot 4     | copper_ingot 3, tin_ingot 1 | 200 | 12
 furnace         | brick 2            | clay 1                    | 120 | 8
 furnace         | coke 1             | coal 2                    | 200 | 12
-# (#1473) The vein families' new ores: the generic LV line (as bauxite's: macerator, ore washer, centrifuge, then the
-# electric furnace), so every new item is reachable. All values GUESS; GregTech byproducts, the real chains (roasting,
-# reduction, electrolysis) and the ladder tiers come after the playtest.
+# (#1473) The vein families' ores, processed (the LV line: macerator, ore washer, centrifuge, then the furnace). The
+# centrifuge splits each purified ore into its metal's dust and its real byproducts (GregTech style): galena carries
+# silver; sphalerite (marmatite) iron; native gold silver; pentlandite iron; chromite and wolframite iron; the sulfides
+# give sulfur. Chromium and tungsten only reduce in the arc furnace (HV and rocketry in the material column, #1614).
+# GUESS yields and times. Cinnabar waits for mercury (a fluid, later): crushed and washed it gives sulfur.
 macerator       | galena_crushed 3   | galena_ore 2              | 150 | 8
 ore_washer      | galena_purified 4  | galena_crushed 3, water 1 | 300 | 8
-centrifuge      | galena_dust 3, lead_dust 1     | galena_purified 4   | 200 | 10
-furnace         | lead_ingot 1       | galena_dust 2             | 150 | 8
+centrifuge      | lead_dust 4, silver_dust 1, sulfur 1 | galena_purified 4 | 200 | 10
 macerator       | sphalerite_crushed 3 | sphalerite_ore 2          | 150 | 8
 ore_washer      | sphalerite_purified 4 | sphalerite_crushed 3, water 1 | 300 | 8
-centrifuge      | sphalerite_dust 3, zinc_dust 1 | sphalerite_purified 4 | 200 | 10
-furnace         | zinc_ingot 1       | sphalerite_dust 2         | 150 | 8
+centrifuge      | zinc_dust 4, iron_dust 1, sulfur 1 | sphalerite_purified 4 | 200 | 10
 macerator       | acanthite_crushed 3 | acanthite_ore 2           | 150 | 8
 ore_washer      | acanthite_purified 4 | acanthite_crushed 3, water 1 | 300 | 8
-centrifuge      | acanthite_dust 3, silver_dust 1 | acanthite_purified 4 | 200 | 10
-furnace         | silver_ingot 1     | acanthite_dust 2          | 150 | 8
+centrifuge      | silver_dust 4, sulfur 1        | acanthite_purified 4 | 200 | 10
 macerator       | magnetite_crushed 3 | magnetite_ore 2           | 150 | 8
 ore_washer      | magnetite_purified 4 | magnetite_crushed 3, water 1 | 300 | 8
-centrifuge      | magnetite_dust 3, iron_dust 1  | magnetite_purified 4 | 200 | 10
-furnace         | iron_ingot 1       | magnetite_dust 2          | 150 | 8
+centrifuge      | iron_dust 5                    | magnetite_purified 4 | 200 | 10
 macerator       | pentlandite_crushed 3 | pentlandite_ore 2         | 150 | 8
 ore_washer      | pentlandite_purified 4 | pentlandite_crushed 3, water 1 | 300 | 8
-centrifuge      | pentlandite_dust 3, nickel_dust 1 | pentlandite_purified 4 | 200 | 10
-furnace         | nickel_ingot 1     | pentlandite_dust 2        | 150 | 8
+centrifuge      | nickel_dust 4, iron_dust 1, sulfur 1 | pentlandite_purified 4 | 200 | 10
 macerator       | cinnabar_crushed 3 | cinnabar_ore 2            | 150 | 8
 ore_washer      | cinnabar_purified 4 | cinnabar_crushed 3, water 1 | 300 | 8
-centrifuge      | cinnabar_dust 4                | cinnabar_purified 4 | 200 | 10
+centrifuge      | sulfur 2                       | cinnabar_purified 4 | 200 | 10
 macerator       | chromite_crushed 3 | chromite_ore 2            | 150 | 8
 ore_washer      | chromite_purified 4 | chromite_crushed 3, water 1 | 300 | 8
-centrifuge      | chromite_dust 3, chromium_dust 1 | chromite_purified 4 | 200 | 10
-furnace         | chromium_ingot 1   | chromite_dust 2           | 150 | 8
+centrifuge      | chromium_dust 3, iron_dust 1   | chromite_purified 4 | 200 | 10
 macerator       | wolframite_crushed 3 | wolframite_ore 2          | 150 | 8
 ore_washer      | wolframite_purified 4 | wolframite_crushed 3, water 1 | 300 | 8
-centrifuge      | wolframite_dust 3, tungsten_dust 1 | wolframite_purified 4 | 200 | 10
-furnace         | tungsten_ingot 1   | wolframite_dust 2         | 150 | 8
+centrifuge      | tungsten_dust 3, iron_dust 1   | wolframite_purified 4 | 200 | 10
 macerator       | gold_crushed 3     | gold_ore 2                | 150 | 8
 ore_washer      | gold_purified 4    | gold_crushed 3, water 1   | 300 | 8
-centrifuge      | gold_dust 4                    | gold_purified 4     | 200 | 10
+centrifuge      | gold_dust 4, silver_dust 1     | gold_purified 4     | 200 | 10
 furnace         | lead_ingot 1       | lead_dust 1               | 100 | 8
 furnace         | zinc_ingot 1       | zinc_dust 1               | 100 | 8
 furnace         | silver_ingot 1     | silver_dust 1             | 100 | 8
-furnace         | chromium_ingot 1   | chromium_dust 1           | 100 | 8
-furnace         | tungsten_ingot 1   | tungsten_dust 1           | 100 | 8
+arc_furnace     | chromium_ingot 1   | chromium_dust 2, coke 1   | 300 | 120
+arc_furnace     | tungsten_ingot 1   | tungsten_dust 2, coke 1   | 500 | 160
 mechanical_press | lead_plate 1       | lead_ingot 1              | 100 | 0
 mechanical_press | zinc_plate 1       | zinc_ingot 1              | 100 | 0
 mechanical_press | silver_plate 1     | silver_ingot 1            | 100 | 0
 mechanical_press | nickel_plate 1     | nickel_ingot 1            | 100 | 0
+# (#1473) The material column's alloys (#1614: one new alloy per tier), made where their inputs first meet. GUESS ratios
+# and times; their components (rods, wire, gears...) come with the component PRs (#1614).
+kiln             | brass_ingot 4      | copper_ingot 3, zinc_ingot 1 | 400 | 0
+kiln             | solder_ingot 2     | tin_ingot 1, lead_ingot 1    | 200 | 0
+kiln             | electrum_ingot 2   | gold_ingot 1, silver_ingot 1 | 300 | 0
+blast_furnace    | invar_ingot 3      | iron_ingot 2, nickel_ingot 1 | 600 | 0
+arc_furnace      | stainless_steel_ingot 4 | steel_ingot 2, chromium_ingot 1, nickel_ingot 1 | 600 | 120
+arc_furnace      | tungstensteel_ingot 2 | steel_ingot 1, tungsten_ingot 1 | 800 | 160
+mechanical_press | brass_plate 1      | brass_ingot 1             | 100 | 0
+mechanical_press | invar_plate 1      | invar_ingot 1             | 140 | 0
+mechanical_press | stainless_steel_plate 1 | stainless_steel_ingot 1 | 180 | 0
+mechanical_press | tungstensteel_plate 1 | tungstensteel_ingot 1  | 240 | 0
 # (#1612) The vein families' ores smelted at their ladder tiers (each machine's own gate): lead, native gold and silver in
 # the kiln (tier 1, as copper and tin); magnetite in the bloomery as iron ore (tier 2); zinc and nickel sulfides in the
 # blast furnace (tier 3); chromite and wolframite in the arc furnace with coke (late). GUESS yields and times; the LV line
