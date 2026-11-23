@@ -267,6 +267,7 @@ static void UpdateBreak(Scene& world, const PlayerInput& in) {
     if (part < 0) { breakHeld = 0.0f; breakPart = -1; return; }
     breakAiming = true;
     if (!gPrimaryLatch.allows(in.down(Act::Primary))) { breakHeld = std::min(breakHeld, 0.0f); breakPart = -1; return; } // (#895: not after a break, until pressed again)
+    if (GateLocked(hitPlot->parts[part])) { breakHeld = 0.0f; breakPart = -1; if (in.hit(Act::Primary)) GameUI_Toast("Locked: it needs a dungeon key"); return; } // (#1641) a vault door: not broken, only opened with a key
     if (hitPlot != breakPlot || part != breakPart) { breakPlot = hitPlot; breakPart = part; breakHeld = std::max(breakHeld, 0.0f); }
     breakHeld += GameFrameTime();
     if (breakHeld < BreakHold()) return;

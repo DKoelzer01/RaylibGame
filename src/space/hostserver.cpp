@@ -1659,6 +1659,7 @@ namespace {
             Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
             if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
             if (q.partIndex >= plot->parts.size() || plot->parts[q.partIndex].type == PartType::Count) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            if (GateLocked(plot->parts[q.partIndex])) { RefusePart(conn, q.seq, NetPartRefusal::Blocked); return; } // (#1641) a vault door is opened, never broken
             const Part removed = plot->parts[q.partIndex];
             const Vector3 at = plot->toBody({ (removed.origin.x + 0.5f) * kCellSize, (removed.origin.y + 0.5f) * kCellSize, (removed.origin.z + 0.5f) * kCellSize });
             if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
