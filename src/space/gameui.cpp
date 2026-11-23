@@ -2634,6 +2634,7 @@ TEST(GameUiRecipePage, AClickOpensItBesideTheRecipeCraftOneQueuesAndEscClosesItF
 namespace {
 const char* const kRec = "h=bronze;g=wood;b=leather;q=112;s=1;w=37";
 const char* const kRec2 = "h=iron;g=oak;b=leather;q=100;s=0;w=0";
+const char* const kRec3 = "h=copper;g=pine;b=sinew;q=90;s=0;w=5";
 
 struct InventoryMoves : ::testing::Test {
     void SetUp() override {
@@ -2791,11 +2792,11 @@ TEST_F(InventoryMoves, TheBinTheWindowCloseAndAServerTakeKeepTheRecord) {
     // a take from a chest or machine arrives through the cursor sink: with its record, onto an empty cursor
     CursorSink("tool_pickaxe", 1, 0.0f, kRec2);
     EXPECT_EQ(cursorStack.data, kRec2); EXPECT_EQ(cursorStack.centi, 100);
-    CursorSink("tool_pickaxe", 1, 0.0f, kRec); // the cursor is busy: into the inventory as it is
+    CursorSink("tool_pickaxe", 1, 0.0f, kRec3); // the cursor is busy: into the inventory as it is
     EXPECT_EQ(cursorStack.data, kRec2);
     EXPECT_EQ(inventory.countInstances("tool_pickaxe"), 2);
     CellClick(Free(), false, false);
-    EXPECT_EQ(Copies(kRec), 1); EXPECT_EQ(Copies(kRec2), 1);
+    EXPECT_EQ(Copies(kRec), 1); EXPECT_EQ(Copies(kRec2), 1); EXPECT_EQ(Copies(kRec3), 1);
 }
 
 TEST_F(InventoryMoves, DroppedItemsKeepTheirRecordOnTheGroundAndInTheSave) {
