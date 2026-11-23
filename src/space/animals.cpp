@@ -1656,7 +1656,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             }
         }
         if (cs && CreatureTurnRules()) {
-            if (a.windUpAt >= 0.0) a.heading = a.windUpHeading;
+            if (a.windUpAt >= 0.0 && a.state == State::Hunt) a.heading = a.windUpHeading; // (an attack under way: not a thief turned to a pile)
             else if (a.state == State::Hunt) {
                 constexpr float kCreatureTurnRate = 3.14159265f; // rad/s: 180 degrees a second
                 float d = a.heading - a.prevHeading;
