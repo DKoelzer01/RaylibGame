@@ -137,7 +137,9 @@ SCENARIO("audio/directions") {
     s.step("settle", 150.0, [](ScenarioCtx& c) {
         const bool idle = WorldIdle();
         c.waitingFor(std::string("2 s of play, an idle world (") + (idle ? "yes" : "no") + ") and the player on the ground (" + (player.grounded ? "yes" : "no") + ")");
-        return c.T >= 2.0 && idle && player.grounded;
+        static bool stood = false;
+        if (idle && !stood) { stood = true; player.flyMode = false; player.spawnOn(c.world, *c.body, c.spawnDirWorld()); } // stands on the ground, as the player does (the camera is theirs)
+        return stood && c.t >= 3.0 && player.grounded;
     });
 
     s.step("four emitters, facing north then east, the ground turning", 200.0, [](ScenarioCtx& c) {
