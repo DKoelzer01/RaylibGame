@@ -3114,7 +3114,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         // dry side the simulation (rightly) lets none through. Here an open plot cell beside a block, with no wet fluid cell's
         // middle in it, in the open cells beside it or in the one under it, takes no water: triangles are cut along its faces
         // and the part inside it dropped. (Water rounding into a dry cell beside a wet one stays.)
-        if (simKind && !wallPlots.empty()) {
+        if (false && simKind && !wallPlots.empty()) {
             constexpr float kCell = 0.5f; // plots.h (not included here)
             for (const GrassBlockPlot* b : wallPlots) {
                 const Vector3 o = { (float)b->origin.x, (float)b->origin.y, (float)b->origin.z };
