@@ -103,6 +103,8 @@ void TerrainDeltas::chunksIn(Vector3 loPos, Vector3 hiPos, std::vector<std::pair
 
 // #693 A/B: RAYLIBGAME_CARVE_ROUND_OLD=1 = carved points round to the nearest step even when that lands on iso.
 static const bool gCarveRoundOld = [] { const char* s = getenv("RAYLIBGAME_CARVE_ROUND_OLD"); return s && s[0] == '1'; }();
+// (#1791) RAYLIBGAME_BOX_BLOCK_BASE=0: box carves and fills sample the field one point at a time (A/B; tests compare).
+bool gBlockBaseForBoxes = [] { const char* s = getenv("RAYLIBGAME_BOX_BLOCK_BASE"); return !(s && s[0] == '0'); }();
 
 void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field, std::unordered_set<TerrainDeltas::Key>* touched) {
     next->strokes++;
@@ -132,6 +134,34 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
     const int x0 = (int)floorf((e.center.x - ext.x) / kVoxelSize), x1 = (int)ceilf((e.center.x + ext.x) / kVoxelSize); // lattice indices
     const int y0 = (int)floorf((e.center.y - ext.y) / kVoxelSize), y1 = (int)ceilf((e.center.y + ext.y) / kVoxelSize); // lattice indices
     const int z0 = (int)floorf((e.center.z - ext.z) / kVoxelSize), z1 = (int)ceilf((e.center.z + ext.z) / kVoxelSize); // lattice indices
+    // (#1791) A box carve or fill samples the field over its extent in 16^3 blocks (the mesher's fast path, ~30x quicker than
+    // one sample at a time: a structure's pad and interior were ~260 k single samples, ~150 ms). The block path interpolates
+    // its height map, so it can differ a little from a single sample: where that could move the surface (the target near
+    // iso, or the point near the target) the exact sample is taken, so a cut face stays exact (#693, no specks).
+    std::vector<float> blockBase;
+    const int bnx = x1 - x0 + 1, bny = y1 - y0 + 1, bnz = z1 - z0 + 1;
+    const bool useBlock = e.box && csg && gBlockBaseForBoxes;
+    if (useBlock) {
+        constexpr int S = 16;
+        blockBase.resize((size_t)bnx * bny * bnz);
+        std::vector<float> tmp((size_t)S * S * S);
+        for (int bz = z0; bz <= z1; bz += S)
+            for (int by = y0; by <= y1; by += S)
+                for (int bx = x0; bx <= x1; bx += S) {
+                    field.baseDensityBlock({ bx * kVoxelSize, by * kVoxelSize, bz * kVoxelSize }, kVoxelSize, S, 0.0f, tmp.data());
+                    for (int k = 0; k < S && bz + k <= z1; ++k)
+                        for (int j = 0; j < S && by + j <= y1; ++j)
+                            for (int i2 = 0; i2 < S && bx + i2 <= x1; ++i2)
+                                blockBase[((size_t)(bz + k - z0) * bny + (by + j - y0)) * bnx + (bx + i2 - x0)] = tmp[((size_t)k * S + j) * S + i2];
+                }
+    }
+    constexpr float kExactNearIso = 0.15f, kExactNearTarget = 0.1f; // density (0.25 a voxel): ~15 and 10 cm (GUESS; the test checks the block error is under half)
+    auto baseAt = [&](int x, int y, int z, Vector3 p, float target, float now) {
+        if (!useBlock) return field.baseDensity(p);
+        const float b = blockBase[((size_t)(z - z0) * bny + (y - y0)) * bnx + (x - x0)];
+        if (fabsf(target - ISO_LEVEL) < kExactNearIso || fabsf(b + now - target) < kExactNearTarget) return field.baseDensity(p);
+        return b;
+    };
     DeltaChunk* chunk = nullptr;
     TerrainDeltas::Key chunkKey = ~0ull;
     for (int z = z0; z <= z1; ++z)
@@ -217,7 +247,7 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     continue;
                 }
                 if (e.carve) {
-                    const float base = field.baseDensity(p);
+                    const float base = baseAt(x, y, z, p, carveTo, v * kDeltaStep);
                     // Placed ground digs like what it is (placed gravel with a shovel), not the rock below.
                     const int placed = MatOf(chunk->mat(i));
                     const VoxelMaterial was = placed >= 0 ? (VoxelMaterial)placed : base >= ISO_LEVEL ? field.material(p, base) : VoxelMaterial::Regolith;
@@ -233,8 +263,8 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                     }
                     if (fabsf(sd) < kVoxelSize) bareGrass(base); // the points either side of the cut's face: bare dirt, not turf
                 } else if (e.fill) {
-                    const float base = field.baseDensity(p);
                     const float fillTo = ISO_LEVEL - DENSITY_GRADIENT * sd;
+                    const float base = baseAt(x, y, z, p, fillTo, v * kDeltaStep);
                     if (base + v * kDeltaStep < fillTo) {
                         // Placed ground is what was air before (#1097: it is what the fill paid for, 2 items a m^3); ground
                         // that was there already keeps its own material and digs as itself.
@@ -344,6 +374,51 @@ TEST(TerrainDeltas, BigTurnedBoxCarveIsExactAndStaysNearItsShape) {
                 if (outsideClearly && air != (p.y > 0.0f)) ++wrong; // untouched ground: air above y = 0 (the row at 0 is iso: solid)
             }
     EXPECT_EQ(wrong, 0);
+}
+
+// (#1791) On a real planet: the block sampler stays well inside baseAt's exact margins at the surface, and a turned box
+// carve cut into the ground comes out the same (solid or air at every lattice point round it) with block sampling on and off.
+TEST(TerrainDeltas, BoxCarveWithBlockSamplingMatchesSingleSamples) {
+    const PlanetField pf(42, 60000.0f, false);
+    const Vector3 up = pf.findSpawnDir(42);
+    const Vector3 ax = Vector3Normalize(Vector3CrossProduct(up, { 0, 1, 0 })), az = Vector3CrossProduct(ax, up);
+    const Vector3 ground = Vector3Scale(up, pf.radius + pf.elevation(up));
+    // The block error at the surface: a 16^3 block of 0.25 m samples centred on the ground.
+    {
+        constexpr int S = 16;
+        const Vector3 o = { floorf(ground.x / kVoxelSize - S / 2) * kVoxelSize, floorf(ground.y / kVoxelSize - S / 2) * kVoxelSize, floorf(ground.z / kVoxelSize - S / 2) * kVoxelSize };
+        std::vector<float> blk((size_t)S * S * S);
+        pf.baseDensityBlock(o, kVoxelSize, S, 0.0f, blk.data());
+        float worst = 0.0f;
+        for (int k = 0; k < S; ++k) for (int j = 0; j < S; ++j) for (int i = 0; i < S; ++i)
+            worst = std::max(worst, fabsf(blk[((size_t)k * S + j) * S + i] - pf.baseDensity({ o.x + i * kVoxelSize, o.y + j * kVoxelSize, o.z + k * kVoxelSize })));
+        EXPECT_LT(worst, 0.05f) << "block vs single samples (density): baseAt's margins are 0.1 and 0.15";
+    }
+    TerrainEdit e{};
+    e.carve = true; e.box = true;
+    e.half = { 6.0f, 1.5f, 6.0f };
+    e.ax = ax; e.ay = up; e.az = az;
+    e.center = Vector3Subtract(ground, Vector3Scale(up, 1.0f)); // 1 m into the ground, 0.5 m out of it
+    e.radius = Vector3Length(e.half);
+    std::shared_ptr<const TerrainDeltas> with, without;
+    const bool was = gBlockBaseForBoxes;
+    { gBlockBaseForBoxes = true; TerrainDeltas empty; TerrainDeltasBuilder b(empty); b.apply(e, pf); with = b.finish(); }
+    { gBlockBaseForBoxes = false; TerrainDeltas empty; TerrainDeltasBuilder b(empty); b.apply(e, pf); without = b.finish(); }
+    gBlockBaseForBoxes = was;
+    int differ = 0, checked = 0;
+    const float reach = 9.0f;
+    for (float dz = -reach; dz <= reach; dz += kVoxelSize)
+        for (float dy = -3.0f; dy <= 3.0f; dy += kVoxelSize)
+            for (float dx = -reach; dx <= reach; dx += kVoxelSize) {
+                const Vector3 q = Vector3Add(e.center, Vector3Add(Vector3Scale(ax, dx), Vector3Add(Vector3Scale(up, dy), Vector3Scale(az, dz))));
+                const int x = (int)lroundf(q.x / kVoxelSize), y = (int)lroundf(q.y / kVoxelSize), z = (int)lroundf(q.z / kVoxelSize);
+                const float base = pf.baseDensity({ x * kVoxelSize, y * kVoxelSize, z * kVoxelSize });
+                const bool a = base + with->at(x, y, z) >= ISO_LEVEL, b = base + without->at(x, y, z) >= ISO_LEVEL;
+                ++checked;
+                differ += a != b;
+            }
+    EXPECT_GT(checked, 10000);
+    EXPECT_EQ(differ, 0) << "lattice points solid with one sampling and air with the other";
 }
 
 TEST(TerrainDeltas, SphereCarveAndFillAreExact) {
