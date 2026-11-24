@@ -480,7 +480,6 @@ TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
     EXPECT_TRUE(sampler.density(at(kBrick + 4), 0, w)) << "an emptied pond stays empty";
     EXPECT_TRUE(sampler.covered(at(kBrick + 4)));
 }
-#endif
 
 // #1773: water in a corner pen, its two walls meeting only diagonally at the dry cell (6,6). The simulation blocks the
 // flow there; the drawn surface must not cross the corner into that cell either (the blend pulled it in).
@@ -512,3 +511,4 @@ TEST(WaterField, SurfaceStopsAtADiagonalCorner) {
     ASSERT_TRUE(sampler.density(cell(3.5f, 3.5f, 6.9f), 0, w));
     EXPECT_LT(w, ISO_LEVEL) << "over the pen's surface";
 }
+#endif
