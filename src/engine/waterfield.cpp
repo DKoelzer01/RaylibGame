@@ -319,6 +319,12 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
         const float gx = fx - 0.5f, gy = fy - 0.5f;
         const int i0 = (int)floorf(gx), j0 = (int)floorf(gy);
         const float tx = gx - (float)i0, ty = gy - (float)j0;
+        // Only columns the water can reach this one through count (#1773): the blend drew the surface across a solid the
+        // simulation blocks. A diagonal column behind two solid side cells (tiles or ground meeting at a corner) is cut off,
+        // and a dry column takes nothing from a solid side neighbour: that column's surface is the wet side's carried into
+        // the ground to meet the shore, and blended on into the dry side it showed as a sliver beyond a bank or tile.
+        auto solidAt = [&](int i, int j) { uint8_t f, fl; return cellAt(si, i, j, ck, f, fl) && (fl & kSolid); };
+        const bool ownDry = surface(si, ci, cj, ck, kind) <= kNone * 0.5f;
         float sum = 0.0f;
         for (int b = 0; b < 2; ++b)
             for (int a = 0; a < 2; ++a) {
@@ -326,8 +332,12 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
                 const float w = (a ? tx : 1.0f - tx) * (b ? ty : 1.0f - ty);
                 if (w <= 0.0f) continue;
                 const bool same = i == ci && j == cj;
-                const bool known = same || brickAt(si, i, j, ck);
-                sum += w * (same ? own : known ? columnDensity(i, j) : own);
+                bool reached = same || brickAt(si, i, j, ck);
+                if (reached && !same) {
+                    if (i != ci && j != cj) reached = !(solidAt(i, cj) && solidAt(ci, j));
+                    else reached = !(ownDry && solidAt(i, j));
+                }
+                sum += w * (reached && !same ? columnDensity(i, j) : own);
             }
         wd = sum;
         return true;
