@@ -119,7 +119,6 @@ public:
 
 // Builds the next snapshot: copies the chunk map once, and each chunk only the first time a stroke
 // touches it. `touched` collects the chunk keys changed (for region saves).
-extern bool gBlockBaseForBoxes; // (#1791) box edits sample the field in blocks (RAYLIBGAME_BOX_BLOCK_BASE=0: off)
 class TerrainDeltasBuilder {
 public:
     explicit TerrainDeltasBuilder(const TerrainDeltas& from) : next(std::make_shared<TerrainDeltas>(from)) {}
