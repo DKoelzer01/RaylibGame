@@ -37,6 +37,8 @@
 #include <rlgl.h>
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <set>
 
 // (buildTool: the local PlayerSession's, src/space/playersession.cpp, #313)
 
@@ -190,6 +192,103 @@ static void FormLocally(Planetoid& body, Plot& plot, int partIndex) {
     Audio_Play(Sfx::Build, 0.5f, 1.2f);
     if (gNetRole == NetRole::Host) Host_BroadcastForm(body, plot, partIndex, true);
 }
+
+// (#1429 PR 5) The structure ghost: each player's own view, no server state. A controller's ghost shows while a wrench is
+// held after aiming at it, or stays on after E on the controller (E again hides it). Kept by the controller's cell, so a
+// ghost survives the list of parts changing; one whose controller is gone is dropped.
+namespace {
+struct StructureGhost {
+    uint64_t body = 0; uint32_t plot = 0; Int3 cell{ 0, 0, 0 };
+    bool operator==(const StructureGhost& o) const { return body == o.body && plot == o.plot && cell == o.cell; }
+};
+std::vector<StructureGhost> ghostsOn;
+StructureGhost wrenchGhost;
+bool wrenchGhostOn = false;
+
+// The controller part at a ghost's cell, or -1 (with its plot and body).
+int GhostController(const StructureGhost& g, Planetoid*& body, Plot*& plot) {
+    body = Planetoid::find(g.body);
+    plot = body && body->plots ? body->plots->byId(g.plot) : nullptr;
+    if (!plot) return -1;
+    const int i = plot->partAt(g.cell);
+    return i >= 0 && plot->parts[i].type == PartType::MbController ? i : -1;
+}
+
+// Items that other items in `need` are made from (a hatch from a casing) go last, so "Craft missing" crafts the hatch from a
+// casing already carried before counting the casings still to make (GameUI_QueueToHold plans in order).
+std::vector<std::pair<std::string, int>> CraftOrder(const std::map<std::string, int>& need) {
+    const auto& recipes = itemDB.recipes();
+    std::set<std::string> ingredient;
+    for (const Recipe& r : recipes)
+        if (need.count(r.output)) for (const auto& in : r.inputs) if (need.count(in.first) && in.first != r.output) ingredient.insert(in.first);
+    std::vector<std::pair<std::string, int>> out;
+    for (int pass = 0; pass < 2; ++pass)
+        for (const auto& kv : need) if ((ingredient.count(kv.first) != 0) == (pass == 1)) out.push_back(kv);
+    return out;
+}
+
+void CraftMissing(const std::map<std::string, int>& need) {
+    if (need.empty()) { GameUI_Toast("Nothing missing: wrench + RMB on the controller forms it"); return; }
+    const int before = GameUI_CraftQueueLength();
+    const std::vector<std::string> failed = GameUI_QueueToHold(CraftOrder(need));
+    std::string names;
+    for (const std::string& id : failed) {
+        const ItemDef* d = itemDB.find(id);
+        names += (names.empty() ? "" : ", ") + (d ? d->name : id);
+    }
+    const bool queued = GameUI_CraftQueueLength() > before || failed.size() < need.size();
+    if (!failed.empty()) { GameUI_Toast(TextFormat("Can't craft %s: missing materials or recipe", names.c_str())); Audio_Play(Sfx::Error, 0.5f); }
+    else GameUI_Toast(queued ? "Crafting the missing parts" : "You carry every part: build them into the ghost");
+}
+
+// Each shown structure's cells still to build: a part's ghost where one is missing (the layer to build next brighter, the
+// rest faint, so a tall structure builds bottom-up without clutter), red with crosses where a part is wrong or in the way.
+void DrawStructureGhosts(Scene& world) {
+    std::vector<StructureGhost> shown = ghostsOn;
+    if (wrenchGhostOn && std::find(shown.begin(), shown.end(), wrenchGhost) == shown.end()) shown.push_back(wrenchGhost);
+    std::vector<std::vector<Vector3>> faces;
+    CellShapeFaces(CellShape{}, faces); // a full cube, in cell units
+    for (const StructureGhost& g : shown) {
+        Planetoid* body = nullptr; Plot* plot = nullptr;
+        const int ctl = GhostController(g, body, plot);
+        if (ctl < 0 || body != player.nearest) continue;
+        const MbDef* def = nullptr;
+        const MbResult r = Multiblock_CheckController(*plot, ctl, &def);
+        if (!def || r.nextLayer < 0) continue; // formed, or only hatch counts short: nothing to draw
+        const MbPlan plan = Multiblock_Plan(*def, Multiblock_All(), r);
+        rlDrawRenderBatchActive();
+        rlPushMatrix();
+        rlMultMatrixf(MatrixToFloat(plot->cellModel(*body, world.renderOrigin)));
+        rlDisableBackfaceCulling();
+        rlDisableDepthMask();
+        for (size_t i = 0; i < r.cells.size(); ++i) {
+            const MbCellResult& c = r.cells[i];
+            if (c.status == MbCell::Ok) continue;
+            const bool next = c.layer == r.nextLayer;
+            const bool bad = c.status != MbCell::Missing;
+            const ItemDef* item = plan.part[i].empty() ? nullptr : itemDB.find(plan.part[i]);
+            const Color tint = bad ? Ui().bad : item ? item->color : Ui().good;
+            const Color fill = Fade(tint, bad ? 0.30f : next ? 0.32f : 0.05f), edge = Fade(tint, bad || next ? 0.95f : 0.25f);
+            // Shrunk 4 cm each side when missing (it reads as "goes here"), grown 2 cm when wrong (it stands off the part there).
+            const float scale = bad ? 1.0f + 0.04f / kCellSize : 1.0f - 0.08f / kCellSize;
+            const Vector3 lo = { (float)c.world.x, (float)c.world.y, (float)c.world.z };
+            auto toPlot = [&](Vector3 v) {
+                const Vector3 s = Vector3Add(Vector3Scale(Vector3Subtract(v, { 0.5f, 0.5f, 0.5f }), scale), { 0.5f, 0.5f, 0.5f });
+                return Vector3Scale(Vector3Add(lo, s), kCellSize);
+            };
+            for (const auto& poly : faces) {
+                for (size_t k = 1; k + 1 < poly.size(); ++k) DrawTriangle3D(toPlot(poly[0]), toPlot(poly[k]), toPlot(poly[k + 1]), fill);
+                for (size_t k = 0; k < poly.size(); ++k) DrawLine3D(toPlot(poly[k]), toPlot(poly[(k + 1) % poly.size()]), edge);
+                if (bad && poly.size() == 4) { DrawLine3D(toPlot(poly[0]), toPlot(poly[2]), edge); DrawLine3D(toPlot(poly[1]), toPlot(poly[3]), edge); } // (#1432) not by colour alone
+            }
+        }
+        rlDrawRenderBatchActive();
+        rlEnableDepthMask();
+        rlEnableBackfaceCulling();
+        rlPopMatrix();
+    }
+}
+} // namespace
 
 bool BuildTool_ApplyPart(Planetoid& body, Plot& plot, const Part& part) {
     if (!plot.canPlace(part)) return false;
@@ -633,6 +732,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
 }
 
 void BuildTool_Draw3D(Scene& world) {
+    DrawStructureGhosts(world); // (#1429 PR 5) in build mode or out: the parts go in with the build tool
     if (!buildTool.active || !aim.body) return;
     Planetoid& body = *aim.body;
     const Plot* frame = aim.plot;
@@ -744,6 +844,11 @@ namespace {
     double crankAt = -10.0; // (#1269) the last frame a hand crank was turned (GetTime)
 }
 bool BuildTool_AimingCampfire() { return machineAim.part >= 0 && machineAim.type == PartType::Campfire; }
+bool BuildTool_AimingController() { return machineAim.part >= 0 && machineAim.type == PartType::MbController; }
+bool BuildTool_GhostShown(uint64_t body, uint32_t plot, Int3 controllerCell) {
+    const StructureGhost g{ body, plot, controllerCell };
+    return (wrenchGhostOn && wrenchGhost == g) || std::find(ghostsOn.begin(), ghostsOn.end(), g) != ghostsOn.end();
+}
 
 namespace {
 // (#1716) Does RMB on the aimed part do something of its own (open a screen, work a pump, pull a lever...)? Cables and the
@@ -774,6 +879,13 @@ PlayerInput Interact_FilterRmb(const PlayerInput& in) {
 
 void Machine_Update(Scene& world, const PlayerInput& in) {
     MachineInteract(world, in);
+    // (#1429 PR 5) The wrench's ghost: the controller last aimed at with the wrench held, until the wrench is put away.
+    if (Hotbar_Slot(Hotbar_Selected()) != "wrench") wrenchGhostOn = false;
+    else if (machineAim.part >= 0 && machineAim.type == PartType::MbController) {
+        Planetoid* wb = Planetoid::find(machineAim.body);
+        const Plot* wp = wb && wb->plots ? wb->plots->byId(machineAim.plot) : nullptr;
+        if (wp && machineAim.part < (int)wp->parts.size()) { wrenchGhost = { machineAim.body, machineAim.plot, wp->parts[machineAim.part].origin }; wrenchGhostOn = true; }
+    }
     // Latch where a held RMB began, after the aim is known: a press on empty space keeps its item working while held (a
     // shield, a telescope zoom swept over a chest), a press on an interactable stays the interactable's until released.
     if (!in.down(Act::Secondary)) rmbStart = RmbStart::None;
@@ -821,10 +933,24 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.part < 0 || !in.enabled) return;
     if (machineAim.type == PartType::MbController) { // (#1429 PR 3) the wrench (RMB, outside build mode) forms the structure around a controller; it opens nothing
-        if (buildTool.active || !in.hit(Act::Secondary)) return;
         Planetoid* mb = Planetoid::find(machineAim.body);
         Plot* mp = mb && mb->plots ? mb->plots->byId(machineAim.plot) : nullptr;
         if (!mp || machineAim.part >= (int)mp->parts.size() || mp->parts[machineAim.part].type != PartType::MbController) return;
+        if (in.hit(Act::Use)) { // (#1429 PR 5) E, in build mode too: its ghost on or off
+            const StructureGhost g{ machineAim.body, machineAim.plot, mp->parts[machineAim.part].origin };
+            const auto it = std::find(ghostsOn.begin(), ghostsOn.end(), g);
+            const bool show = it == ghostsOn.end();
+            if (show) ghostsOn.push_back(g); else ghostsOn.erase(it);
+            GameUI_Toast(show ? "Structure ghost shown (E on the controller hides it)" : "Structure ghost hidden");
+            return;
+        }
+        if (in.hit(Act::Insert)) { // (#1429 PR 5) I: craft the parts the structure still needs, through the planner
+            const MbDef* def = nullptr;
+            const MbResult r = Multiblock_CheckController(*mp, machineAim.part, &def);
+            if (def) CraftMissing(Multiblock_Plan(*def, Multiblock_All(), r).need);
+            return;
+        }
+        if (buildTool.active || !in.hit(Act::Secondary)) return;
         if (Hotbar_Slot(Hotbar_Selected()) != "wrench") { GameUI_Toast("Hold a wrench and right-click the controller to form the structure"); return; }
         if (gFormRequest) gFormRequest(*mb, *mp, machineAim.part); // joined: the server checks it and tells everyone
         else FormLocally(*mb, *mp, machineAim.part);
@@ -979,9 +1105,33 @@ void Machine_DrawHUD() {
         const MbDef* cd = cp && machineAim.part < (int)cp->parts.size() ? Multiblock_DefForController(cp->parts[machineAim.part]) : nullptr;
         const bool on = cp && std::binary_search(cp->formed.begin(), cp->formed.end(), machineAim.part);
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-        DrawRectangle(x - 8, y - 6, 400, 52, Fade(BLACK, 0.55f));
-        DrawText(TextFormat("%s controller: %s", cd ? cd->name.c_str() : "multiblock", on ? "formed" : "not formed"), x, y, 20, SKYBLUE);
-        DrawText(on ? "break a part of the structure to unform it" : "wrench + RMB to form the structure", x, y + 24, 16, RAYWHITE);
+        if (on || !cd) {
+            DrawRectangle(x - 8, y - 6, 400, 52, Fade(BLACK, 0.55f));
+            DrawText(TextFormat("%s controller: %s", cd ? cd->name.c_str() : "multiblock", on ? "formed" : "not formed"), x, y, 20, SKYBLUE);
+            DrawText(on ? "break a part of the structure to unform it" : "wrench + RMB to form the structure", x, y + 24, 16, RAYWHITE);
+            return;
+        }
+        // (#1429 PR 5) Not formed: its first problem and the parts list, each part against what you carry.
+        const MbResult r = Multiblock_CheckController(*cp, machineAim.part);
+        const MbPlan plan = Multiblock_Plan(*cd, Multiblock_All(), r);
+        constexpr int kRows = 6;
+        const int rows = std::min((int)plan.need.size(), kRows) + ((int)plan.need.size() > kRows ? 1 : 0);
+        DrawRectangle(x - 8, y - 6, 460, 72 + rows * 20 + 22, Fade(BLACK, 0.55f));
+        DrawText(TextFormat("%s controller: not formed", cd->name.c_str()), x, y, 20, SKYBLUE);
+        DrawText(r.problem.c_str(), x, y + 24, 16, Color{ 255, 190, 110, 255 });
+        int ly = y + 48, shown = 0;
+        DrawText(plan.need.empty() ? "every part is in place" : "parts still to place:", x, ly, 16, Fade(RAYWHITE, 0.8f));
+        ly += 20;
+        for (const auto& kv : plan.need) {
+            if (shown++ == kRows) { DrawText(TextFormat("  and %d more kinds", (int)plan.need.size() - kRows), x, ly, 16, Fade(RAYWHITE, 0.7f)); ly += 20; break; }
+            const ItemDef* d = itemDB.find(kv.first);
+            const int have = (int)inventory.count(kv.first);
+            DrawText(TextFormat("  %d  %s", kv.second, d ? d->name.c_str() : kv.first.c_str()), x, ly, 16, RAYWHITE);
+            DrawText(TextFormat("have %d", have), x + 330, ly, 16, have >= kv.second ? Ui().good : Color{ 255, 190, 110, 255 });
+            ly += 20;
+        }
+        const std::string useKey = PlayerInput_KeyName(PlayerInput_Binding(Act::Use)); // a copy: the names share one buffer
+        DrawText(TextFormat("%s: ghost on/off   %s: craft missing   wrench + RMB: form", useKey.c_str(), PlayerInput_KeyName(PlayerInput_Binding(Act::Insert))), x, ly + 4, 16, Fade(RAYWHITE, 0.85f));
         return;
     }
     if (machineAim.type == PartType::Lever) { // (#1641 slice 2c)

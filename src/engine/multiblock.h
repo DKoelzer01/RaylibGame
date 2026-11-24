@@ -69,7 +69,7 @@ MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* er
 const MbCatalog& Multiblock_All(); // resources/data/multiblocks.txt, loaded once (function-local static: thread-safe)
 
 enum class MbCell : uint8_t { Ok, Missing, Wrong, Blocked }; // Missing: empty where a part goes; Wrong: another part; Blocked: something where air must be
-struct MbCellResult { MbInt3 world; int layer = 0; MbCell status = MbCell::Ok; std::string want; }; // want: what goes there (an id or "air"); for the ghost
+struct MbCellResult { MbInt3 world; int layer = 0; MbCell status = MbCell::Ok; std::string want; char key = 0; }; // want: what goes there (an id or "air"); key: its legend key; for the ghost
 
 struct MbResult {
     bool formed = false;
@@ -84,6 +84,15 @@ struct MbResult {
 // controller's front as a horizontal unit vector (fx,fz) in {(0,1),(1,0),(0,-1),(-1,0)}.
 MbResult Multiblock_Validate(const MbDef& def, const MbCatalog& cat, const std::function<std::string(MbInt3)>& lookup,
                              MbInt3 controllerAt, int fx, int fz);
+// (#1429 PR 5) What to build where, for the ghost and the controller's parts list. A hatch spot gets a hatch while the
+// structure is short of that kind's minimum (the catalog's first hatch of the kind), else its fallback casing; a shortfall
+// left when every hatch spot is already filled (with casings) is still counted in `need`, as hatches to swap in.
+struct MbPlan {
+    std::vector<std::string> part;   // parallel to MbResult::cells: the item to place there ("" when Ok or to be cleared)
+    std::map<std::string, int> need; // item -> count still to place (wrong parts count: they are replaced)
+};
+MbPlan Multiblock_Plan(const MbDef& def, const MbCatalog& cat, const MbResult& r);
+
 // (#1429 PR 3) Forming. The controller is the plot's part `partIndex` (an MbController): its definition is the one whose
 // controller legend id is its item, its facing is the part's local +z turned by its orientation (a controller facing up or
 // down has none: not formable), and the world is the plot's cells (the part covering a cell, whatever its footprint).
