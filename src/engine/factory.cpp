@@ -10,6 +10,7 @@
 #include "rotationplot.h"
 #include "rotationsources.h"
 #include "conduitnet.h"
+#include "multiblock.h"
 #include "utils/logger.h"
 #include "worldtypes.h"
 #include "simclock.h"
@@ -343,13 +344,35 @@ struct Machine {
     int disSlot = -1, disTicks = 0, disEu = 0;
     std::map<int, int> disCarry;
     uint32_t disRng = 0;
+    // (#1429 PR 4) Multiblocks. A hatch (MbHatch) is a machine of its own: an item input hatch a buffer conveyors and hands fill
+    // (its inputs), an item output hatch one they empty (its outputs), an energy hatch a consumer on its cables drawing what its
+    // structures ask (hatchDemand, EU a tick) and passing them their share. Every block may be shared (the user, 2026-11-23).
+    uint8_t hatch = 0;                      // kHatch*: its kind (0 not a hatch)
+    long long hatchDemand = 0;              // an energy hatch: its users' EU a tick this step
+    std::map<int, int> reserved;            // an item output hatch: item -> count running recipes will put in it (their room is kept)
+    // A controller (MbController): formed (the plot says so and it validates), the machine whose recipes it runs, its jobs
+    // (parallel recipes: inputs claimed at their start, outputs' room reserved), its hatches (indices into the plot's machines)
+    struct MbJob { int recipe = -1, progress = 0, euCarry = 0; std::vector<std::pair<int, Stack>> res; }; // res: hatch part, its reserved stack
+    bool mbFormed = false;
+    PartType mbMachine = PartType::Count;
+    int mbParallel = 1;
+    std::vector<int> mbHatches;
+    std::vector<MbJob> jobs;
+    long long mbEu = 0;                     // EU its energy hatches passed it this step
 };
+constexpr uint8_t kHatchNone = 0, kHatchItemIn = 1, kHatchItemOut = 2, kHatchEnergy = 3, kHatchOther = 4; // other: fluid, rotation (not in the factory yet)
+uint8_t HatchOf(const std::string& kind) { return kind == "item_in" ? kHatchItemIn : kind == "item_out" ? kHatchItemOut : kind == "energy" ? kHatchEnergy : kHatchOther; }
 // (#1427 L7a) A recipe in a machine: overclocked by the tiers it is under the machine (machine_tiers.txt), its time down
 // and its EU a tick up; and the voltage a machine takes (a tiered variant's, else machines.txt's).
 static int StepsOf(const Machine& m, const Recipe& r) { return std::max(0, MachineTiers_Steps(m.tier, r.tier)); }
 static int TicksOf(const Machine& m, const Recipe& r) { return MachineTiers_Ticks(r.ticks, StepsOf(m, r)); }
 static int EuOf(const Machine& m, const Recipe& r) { return MachineTiers_Eu(r.eu, StepsOf(m, r)); }
-static int VoltsOf(const Machine& m) { const int v = Def(m.type).volts; return MachineTiers_Tiered(m.type) ? std::max(v, MachineTiers_Volts(m.tier)) : v; }
+static int VoltsOf(const Machine& m) {
+    if (m.hatch == kHatchEnergy) return MachineTiers_Volts(m.tier); // (#1429 PR 4) its voltage tier
+    const int v = Def(m.type).volts; return MachineTiers_Tiered(m.type) ? std::max(v, MachineTiers_Volts(m.tier)) : v;
+}
+// (#1429 PR 4) How a machine is powered: an energy hatch draws from its cables (an EU consumer); else its type's.
+static Power PowerOf(const Machine& m) { return m.hatch == kHatchEnergy ? Power::Eu : Def(m.type).power; }
 // EU a tick its job (a recipe, or a disassembly: #1427 L7c) asks for; -1 with no job
 static int JobEu(const Machine& m);
 
@@ -400,6 +423,8 @@ struct PlotSim {
     bool loadedSummary = false; // (#1302) loaded from a save while in the summary sim: far, it goes on there with its saved caps
     long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
     std::vector<std::pair<int, int>> completed;         // (#1728) (item, count) of recipes this plot really finished since the last hand-over (TickPlot only: never the summary sim); emptied under viewMutex
+    bool hasStructures = false;                         // (#1429 PR 4) a formed multiblock: far, it keeps the 20-tick step (not in the summary sim yet)
+    int mbRR = 0;                                       // (#1429 PR 4) the controller (machine index) that tries to start a recipe first next
 };
 
 // (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
@@ -457,7 +482,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
     // (#1302) Loaded from a save in the summary sim and far before 30 s near: it goes on in the summary with its saved caps.
     const bool loaded = ps.loadedSummary;
     ps.loadedSummary = false;
-    if (loaded && !ps.bucketFull && summaryOn) {
+    if (loaded && !ps.bucketFull && summaryOn && !ps.hasStructures) {
         for (Machine& m : ps.machines) { m.capPerWindow = m.nearCap; m.euCap = m.nearEuCap; }
         ps.mode = PlotSim::Mode::Summary;
         ps.lastAdvance = ps.modeSince = t;
@@ -480,6 +505,7 @@ void SetNear(PlotSim& ps, bool near, long long t) {
 // the oracle test holds the summary at or under the full sim).
 void UpdateMode(PlotSim& ps, long long t) {
     if (!summaryOn || ps.mode != PlotSim::Mode::Measuring || t - ps.modeSince < kMeasureTicks) return;
+    if (ps.hasStructures) return; // (#1429 PR 4) not in the summary sim yet: far, it keeps the 20-tick step
     const long long window = t - ps.modeSince;
     for (Machine& m : ps.machines) {
         m.capPerWindow = m.nearCap;
@@ -534,6 +560,11 @@ struct LayoutMsg {
     std::vector<Int3> conveyors, cables;
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
     std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
+    // (#1429 PR 4) per machine its hatch kind (kHatch*; empty: none); and the formed structures: controller part, the machine
+    // whose recipes it runs, its parallel, its voltage tier, its hatches' parts
+    std::vector<uint8_t> machineHatch;
+    struct Structure { int controller = -1; PartType machine = PartType::Count; int parallel = 1, tier = -1; std::vector<int> hatches; };
+    std::vector<Structure> structures;
 };
 struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int count; int amount = 0; uint32_t to = 0; int centi = 0; std::string data; }; // (#1446 2b) data: one item's record (kinds 0, 9: count 1) // (#1102) centi: a fraction (hundredths) more, for a chest // amount: kind 8, how many (0 = all); kind 9, the slot // 0 insert, 1 extract, 2 seed, 3 take (one item from a chest), 4 take slot (item = slot, count: 0 input, 1 output, 2 fuel), 5 drain outputs, 6 insert into the fuel slot, 7 water (count = litres), 8 slot to the cursor, 9 insert into one chest slot (#862)
 
@@ -616,6 +647,7 @@ void GrantTicks(long long n, long long cap) {
 }
 
 std::unordered_map<std::string, uint32_t> sentVersions; // main thread: layouts already sent
+std::unordered_map<std::string, uint64_t> sentFormed;    // (#1429 PR 4) main thread: the formed list each layout was sent with (a hash)
 
 // (#1207) FindPlot through a hash of (body, plot) -> index, rebuilt when the plot list changes (a new plot, a reset, a
 // moved plot: plotIndexDirty); every hit is checked against the plot itself. Sim thread (and callers under simMutex).
@@ -692,7 +724,11 @@ bool Accepts(PartType type, int item) {
 }
 // (#1427 L7c) An assembler set to disassemble takes what it can take apart (`disassemblable`), and nothing else.
 bool Disassembles(int item) { return item >= 0 && item < (int)disassemblable.size() && disassemblable[item] && !tables.fluid(item); }
-bool AcceptsIn(const Machine& m, int item) { return m.mode == 1 && m.type == PartType::LvAssembler ? Disassembles(item) : Accepts(m.type, item); }
+bool AcceptsIn(const Machine& m, int item) {
+    if (m.type == PartType::MbHatch) return m.hatch == kHatchItemIn && item >= 0 && !tables.fluid(item); // (#1429 PR 4) anything a structure might use
+    if (m.type == PartType::MbController) return false;
+    return m.mode == 1 && m.type == PartType::LvAssembler ? Disassembles(item) : Accepts(m.type, item);
+}
 
 // Puts items into a machine: water buckets empty into a boiler's tank (the empty bucket comes back), fuel that no
 // recipe of the machine wants goes to its fuel slot, the rest to its inputs (toFuel: the fuel slot whatever, e.g. logs
@@ -924,6 +960,7 @@ void ApplyLayout(const LayoutMsg& L) {
         m.in.resize(InSlots(m)); // sized by type (a new machine starts empty)
         m.variant = i < L.machineVariant.size() && !L.machineVariant[i].empty() ? tables.item(L.machineVariant[i]) : -1;
         m.tier = i < L.machineTier.size() ? L.machineTier[i] : MachineTiers_PartTier(type, 0, Def(type).volts); // (#1427 L7a)
+        m.hatch = i < L.machineHatch.size() ? L.machineHatch[i] : kHatchNone; // (#1429 PR 4)
         // A loaded save's contents arrive before the layout: apply them once.
         auto pend = pendingStates.find({ L.body, L.plot, part });
         if (pend != pendingStates.end()) {
@@ -966,6 +1003,10 @@ void ApplyLayout(const LayoutMsg& L) {
                     if (r >= 0 && r < (int)tables.recipes.size() && tables.recipes[r].machine == type && !tables.recipes[r].out.empty() && tables.name(tables.recipes[r].out[0].item) == out) m.nearCap[r] = c;
                 }
                 else if (tag == "ecap" && k < s.size()) m.nearEuCap = atoll(s[k++].c_str());
+                else if (tag == "mbjob" && k + 2 < s.size()) { // (#1429 PR 4) a controller's job: recipe (checked by its first output), progress
+                    const int r = atoi(s[k].c_str()); const std::string out = s[k + 1]; const int p = atoi(s[k + 2].c_str()); k += 3;
+                    if (r >= 0 && r < (int)tables.recipes.size() && !tables.recipes[r].out.empty() && tables.name(tables.recipes[r].out[0].item) == out) { Machine::MbJob j; j.recipe = r; j.progress = std::max(0, p); m.jobs.push_back(j); }
+                }
             }
             // Saves from before the fuel slot (#194) kept fuel in the inputs: move fuel no recipe of this machine wants
             // into the fuel slot (#229 review), so an old boiler or furnace still burns it.
@@ -998,8 +1039,35 @@ void ApplyLayout(const LayoutMsg& L) {
         for (int i = 0; i < InSlots(old); ++i) refund(old.in[i]);
         for (int i = 0; i < kSlots; ++i) refund(old.out[i]);
         refund(old.fuel);
+        for (const Machine::MbJob& j : old.jobs) // (#1429 PR 4) a controller's running recipes: the inputs they claimed
+            if (j.recipe >= 0) for (const Stack& s : tables.recipes[j.recipe].in) refund(s);
     }
     ps->machines = std::move(next);
+    // (#1429 PR 4) The formed structures: each controller's machine, parallel, tier and hatches (machine indices); the rest
+    // unformed (they keep their jobs, which wait). The output hatches' reservations are their users' jobs' (a job whose
+    // hatch is gone reserves again when it finishes).
+    ps->hasStructures = !L.structures.empty();
+    for (Machine& m : ps->machines) { m.mbFormed = false; m.mbHatches.clear(); m.reserved.clear(); }
+    for (const LayoutMsg::Structure& s : L.structures) {
+        const auto c = byPart.find(s.controller);
+        if (c == byPart.end()) continue;
+        Machine& m = ps->machines[c->second];
+        if (m.type != PartType::MbController) continue;
+        m.mbFormed = true; m.mbMachine = s.machine; m.mbParallel = std::max(1, s.parallel); m.tier = s.tier;
+        for (int hp : s.hatches) { const auto h = byPart.find(hp); if (h != byPart.end() && ps->machines[h->second].type == PartType::MbHatch) m.mbHatches.push_back(h->second); }
+    }
+    for (Machine& m : ps->machines)
+        for (Machine::MbJob& j : m.jobs) {
+            std::vector<std::pair<int, Stack>> kept;
+            for (auto& [hp, st] : j.res) {
+                const auto h = byPart.find(hp);
+                if (h == byPart.end() || ps->machines[h->second].hatch != kHatchItemOut) continue;
+                Machine& hatch = ps->machines[h->second];
+                hatch.reserved[st.item] += st.count;
+                kept.push_back({ hp, st });
+            }
+            j.res = std::move(kept);
+        }
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
     ps->byPart = std::move(byPart);
     BuildNets(*ps, L);
@@ -1067,6 +1135,8 @@ static bool DisEntryOf(const Stack& s, DisassemblyEntry& e) {
 // tier-1 part is an LV job, not one 4 tiers under it)
 static int DisSteps(const Machine& m, const DisassemblyEntry& e) { return std::max(0, MachineTiers_Steps(m.tier, std::max(e.tier, MachineTiers_First(m.type)))); }
 static int JobEu(const Machine& m) {
+    if (m.hatch == kHatchEnergy) return m.hatchDemand > 0 ? (int)std::min<long long>(m.hatchDemand, INT32_MAX) : -1; // (#1429 PR 4)
+    if (m.type == PartType::MbController) return -1; // (its energy hatches draw for it)
     if (m.mode == 1) return m.disSlot >= 0 ? m.disEu : -1;
     return m.recipe >= 0 ? EuOf(m, tables.recipes[m.recipe]) : -1;
 }
@@ -1180,8 +1250,187 @@ bool AnvilJob(PlotSim& ps, Machine& m, int& active) {
     return true;
 }
 
+// ---- (#1429 PR 4) Multiblocks: a formed structure is one machine, keyed by its controller ----
+// It runs its machine's recipes (multiblocks.txt `machine`), up to its `parallel` at once, at its tier (overclocked as a single
+// machine). A recipe claims all its inputs from the pooled item input hatches when it starts (never half-claimed) and
+// reserves its outputs' room in the output hatches then, so a running recipe always finishes (the user, 2026-11-23). An
+// electric one draws through its energy hatches: a shortfall slows its jobs evenly, and a shared hatch splits what it gets
+// by its users' demand. Shared hatches: the controllers take turns to start, one recipe each a round, the one after the
+// last to start going first (machine index order, the turn kept in the plot: deterministic).
+static bool MbElectric(const Machine& c) { return Def(c.mbMachine).power == Power::Eu; }
+static long long MbNeed(const Machine& c) { // EU a tick its unfinished jobs ask
+    long long n = 0;
+    for (const Machine::MbJob& j : c.jobs) { const Recipe& r = tables.recipes[j.recipe]; if (j.progress < TicksOf(c, r)) n += EuOf(c, r); }
+    return n;
+}
+static void MbHatchesOf(const PlotSim& ps, const Machine& c, uint8_t kind, std::vector<int>& out) {
+    out.clear();
+    for (int h : c.mbHatches) if (ps.machines[h].hatch == kind) out.push_back(h);
+}
+// Its share of each energy hatch's demand: its need split evenly over its energy hatches (the remainder to the first).
+static long long MbShareAt(const Machine& c, const std::vector<int>& energy, size_t k) {
+    const long long need = MbNeed(c), n = (long long)energy.size();
+    return need / n + ((long long)k < need % n ? 1 : 0);
+}
+// Before the power step: what each energy hatch asks its cables for.
+void MbDemand(PlotSim& ps) {
+    std::vector<int> eh;
+    for (Machine& m : ps.machines) if (m.hatch == kHatchEnergy) { m.hatchDemand = 0; m.status = MachineStatus::Idle; }
+    for (Machine& c : ps.machines) {
+        c.mbEu = 0;
+        if (c.type != PartType::MbController || !c.mbFormed || !MbElectric(c)) continue;
+        MbHatchesOf(ps, c, kHatchEnergy, eh);
+        for (size_t k = 0; k < eh.size(); ++k) ps.machines[eh[k]].hatchDemand += MbShareAt(c, eh, k);
+    }
+}
+// After it: each user's share of what its energy hatches received (by its part of each hatch's demand).
+void MbTakePower(PlotSim& ps) {
+    std::vector<int> eh;
+    for (Machine& c : ps.machines) {
+        if (c.type != PartType::MbController || !c.mbFormed || !MbElectric(c)) continue;
+        MbHatchesOf(ps, c, kHatchEnergy, eh);
+        for (size_t k = 0; k < eh.size(); ++k) {
+            const Machine& h = ps.machines[eh[k]];
+            if (h.hatchDemand > 0 && h.received > 0) c.mbEu += (long long)h.received * MbShareAt(c, eh, k) / h.hatchDemand;
+        }
+    }
+}
+// Reserve room for recipe r's outputs in c's output hatches (an output may spread over several), against what is in them and
+// already reserved. False (nothing reserved) when it does not all fit.
+static bool MbReserve(PlotSim& ps, const Machine& c, const Recipe& r, Machine::MbJob& job) {
+    std::vector<int> outs;
+    MbHatchesOf(ps, c, kHatchItemOut, outs);
+    std::map<int, std::map<int, int>> res; // hatch machine -> its reservations with this job's
+    std::vector<std::pair<int, Stack>> plan;
+    for (const Stack& s : r.out) {
+        int left = s.count;
+        for (int h : outs) {
+            if (left <= 0) break;
+            auto rh = res.find(h);
+            if (rh == res.end()) rh = res.emplace(h, ps.machines[h].reserved).first;
+            Stack trial[kSlots];
+            std::copy(ps.machines[h].out, ps.machines[h].out + kSlots, trial);
+            bool over = false;
+            for (const auto& [item, n] : rh->second) over |= AddItems(trial, kSlots, item, n) > 0;
+            if (over) continue;
+            const int after = AddItems(trial, kSlots, s.item, left);
+            if (after == left) continue;
+            Stack put; put.item = s.item; put.count = left - after;
+            rh->second[s.item] += put.count;
+            plan.push_back({ ps.machines[h].part, put });
+            left = after;
+        }
+        if (left > 0) return false;
+    }
+    for (auto& [h, m] : res) ps.machines[h].reserved = m;
+    job.res = std::move(plan);
+    return true;
+}
+// Start one recipe in c if its pooled inputs allow it and its outputs' room can be reserved. outFull: one had its inputs but
+// no room.
+static bool MbStart(PlotSim& ps, Machine& c, bool& outFull) {
+    std::vector<int> ins;
+    MbHatchesOf(ps, c, kHatchItemIn, ins);
+    auto pooled = [&](int item) { int n = 0; for (int h : ins) n += CountItems(ps.machines[h].in.data(), kSlots, item); return n; };
+    for (int ri : recipesOf[(int)c.mbMachine]) {
+        const Recipe& r = tables.recipes[ri];
+        if (MachineTiers_Steps(c.tier, r.tier) < 0 || RecipeLocked(r) || r.in.empty()) continue;
+        bool have = true;
+        for (const Stack& s : r.in) have &= pooled(s.item) >= s.count;
+        if (!have) continue;
+        Machine::MbJob job; job.recipe = ri;
+        if (!MbReserve(ps, c, r, job)) { outFull = true; continue; }
+        for (const Stack& s : r.in) { // claimed now, from the hatches in order
+            int need = s.count;
+            for (int h : ins) {
+                if (need <= 0) break;
+                Machine& hm = ps.machines[h];
+                const int k = std::min(need, CountItems(hm.in.data(), kSlots, s.item));
+                if (k <= 0) continue;
+                TakeItems(hm.in.data(), kSlots, s.item, k);
+                need -= k; hm.dirty = true;
+            }
+        }
+        c.jobs.push_back(std::move(job));
+        return true;
+    }
+    return false;
+}
+// The structures' work this step: jobs progress and finish into their reserved room, then the controllers take turns to start.
+void MbStep(PlotSim& ps, int dt, long long& made, int& active) {
+    std::vector<int> ctl;
+    for (size_t i = 0; i < ps.machines.size(); ++i) if (ps.machines[i].type == PartType::MbController) ctl.push_back((int)i);
+    if (ctl.empty()) return;
+    std::vector<bool> worked(ctl.size(), false), full(ctl.size(), false);
+    for (size_t q = 0; q < ctl.size(); ++q) {
+        Machine& c = ps.machines[ctl[q]];
+        if (!c.mbFormed) continue;
+        int unfinished = 0;
+        for (const Machine::MbJob& j : c.jobs) unfinished += j.progress < TicksOf(c, tables.recipes[j.recipe]);
+        int k = 0;
+        for (Machine::MbJob& j : c.jobs) {
+            const Recipe& r = tables.recipes[j.recipe];
+            const int rTicks = TicksOf(c, r), rEu = EuOf(c, r);
+            if (j.progress >= rTicks) continue;
+            int ticks = dt;
+            if (MbElectric(c) && rEu > 0) { // its even share of the EU its hatches passed it (the remainder to the first)
+                const long long share = c.mbEu / unfinished + (k == 0 ? c.mbEu % unfinished : 0);
+                ++k;
+                const long long eu = share + j.euCarry;
+                ticks = (int)std::min<long long>(eu / rEu, rTicks);
+                j.euCarry = (int)(eu % rEu);
+            }
+            j.progress = std::min(rTicks, j.progress + ticks);
+            if (ticks > 0) worked[q] = true;
+        }
+        for (size_t ji = 0; ji < c.jobs.size();) {
+            Machine::MbJob& j = c.jobs[ji];
+            const Recipe& r = tables.recipes[j.recipe];
+            if (j.progress < TicksOf(c, r)) { ++ji; continue; }
+            // A job loaded from a save, or whose hatch was removed, reserves its room now (or waits for it).
+            bool held = !j.res.empty();
+            for (const auto& [hp, st] : j.res) { const auto h = ps.byPart.find(hp); held &= h != ps.byPart.end() && ps.machines[h->second].hatch == kHatchItemOut; }
+            if (!held) {
+                for (const auto& [hp, st] : j.res) { const auto h = ps.byPart.find(hp); if (h != ps.byPart.end()) { auto& rv = ps.machines[h->second].reserved; if ((rv[st.item] -= st.count) <= 0) rv.erase(st.item); } }
+                j.res.clear();
+                if (!MbReserve(ps, c, r, j)) { full[q] = true; ++ji; continue; }
+            }
+            for (const auto& [hp, st] : j.res) {
+                Machine& h = ps.machines[ps.byPart.at(hp)];
+                if ((h.reserved[st.item] -= st.count) <= 0) h.reserved.erase(st.item);
+                AddItems(h.out, kSlots, st.item, st.count);
+                h.dirty = true;
+            }
+            for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); if (ps.completed.size() < 4096) ps.completed.emplace_back(s.item, s.count); }
+            for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
+            ++c.crafts[j.recipe];
+            c.jobs.erase(c.jobs.begin() + (std::ptrdiff_t)ji);
+        }
+    }
+    // Starts: rounds of one recipe per controller, from the one after the last to start.
+    for (bool any = true; any;) {
+        any = false;
+        const int n = (int)ctl.size(), first = ps.mbRR % n;
+        for (int s = 0; s < n; ++s) {
+            const int q = (first + s) % n;
+            Machine& c = ps.machines[ctl[q]];
+            if (!c.mbFormed || (int)c.jobs.size() >= c.mbParallel) continue;
+            bool outFull = false;
+            if (MbStart(ps, c, outFull)) { any = true; ps.mbRR = (q + 1) % n; }
+            else if (outFull) full[q] = true;
+        }
+    }
+    for (size_t q = 0; q < ctl.size(); ++q) {
+        Machine& c = ps.machines[ctl[q]];
+        c.status = !c.mbFormed ? MachineStatus::Idle : worked[q] ? MachineStatus::Working : full[q] ? MachineStatus::OutputFull
+                 : MbElectric(c) && !c.jobs.empty() ? MachineStatus::NoPower : MachineStatus::Idle;
+        if (worked[q]) ++active;
+    }
+}
+
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
+    MbDemand(ps); // (#1429 PR 4) what the energy hatches ask
     RotationStep(ps, dt); // (#1269)
     // Power: generators burn fuel into EU at their voltage; batteries buffer; consumers on a network
     // above their voltage refuse it.
@@ -1194,7 +1443,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             if (def.power == Power::Battery) {
                 batteryAvail += std::min(m.energy, kBatteryRate * dt);
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
-            } else if (def.power == Power::Eu) {
+            } else if (PowerOf(m) == Power::Eu) {
                 if (VoltsOf(m) < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
                 if (JobEu(m) >= 0) demand += (long long)JobEu(m) * dt;
             } else if (def.power == Power::Motor) { // (#1271 L3) a motor draws while its shaft network has work
@@ -1222,7 +1471,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     const long long can = (long long)Rotation::kDynamoEuPerTick * dt * std::min(1000, ps.rot.ProgressPermille(m.part)) / 1000;
                     sources.push_back({ node, can }); srcMachine.push_back(mi);
                 } else if (def.power == Power::Battery) sources.push_back({ node, (long long)std::min(m.energy, kBatteryRate * dt) }), srcMachine.push_back(-1);
-                else if (def.power == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) { sinks.push_back({ node, (long long)JobEu(m) * dt }); sinkMachine.push_back(mi); }
+                else if (PowerOf(m) == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) { sinks.push_back({ node, (long long)JobEu(m) * dt }); sinkMachine.push_back(mi); }
                 else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) { sinks.push_back({ node, (long long)Rotation::kMotorEuPerTick * dt }); sinkMachine.push_back(mi); }
             }
             std::vector<int64_t> srcFlow;
@@ -1257,7 +1506,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 const Machine& m = ps.machines[mi];
                 if (!m.powerNodes.empty()) continue;
                 const MachineDef& def = Def(m.type);
-                if (def.power == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) capped += (long long)JobEu(m) * dt;
+                if (PowerOf(m) == Power::Eu && VoltsOf(m) >= net.voltage && JobEu(m) >= 0) capped += (long long)JobEu(m) * dt;
                 else if (def.power == Power::Motor && VoltsOf(m) >= net.voltage && ps.rot.NetHasLoad(m.part)) capped += (long long)Rotation::kMotorEuPerTick * dt;
             }
         }
@@ -1289,7 +1538,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Eu && JobEu(m) >= 0 && VoltsOf(m) >= net.voltage) {
+            if (PowerOf(m) == Power::Eu && JobEu(m) >= 0 && VoltsOf(m) >= net.voltage) {
                 const long long need = (long long)JobEu(m) * dt;
                 const long long cap = m.reach >= 0 ? std::min(need, m.reach) : need; // (#1620 C2b) what its cables bring it
                 m.received = (int)(capped <= avail ? cap : cap * avail / std::max(1LL, capped));
@@ -1312,9 +1561,15 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             m.status = m.energy > 0 ? MachineStatus::Working : MachineStatus::Idle;
         }
     }
+    MbTakePower(ps); // (#1429 PR 4) the structures' share of their energy hatches'
+    MbStep(ps, dt, made, active);
     // Machines: start recipes, progress (EU received, fuel burnt, or by themselves), finish into
     // the outputs.
     for (Machine& m : ps.machines) {
+        if (m.type == PartType::MbController || m.type == PartType::MbHatch) { // (#1429 PR 4) stepped above; a hatch is a buffer
+            if (m.hatch == kHatchEnergy && m.status != MachineStatus::Overvoltage) m.status = m.received > 0 ? MachineStatus::Working : MachineStatus::Idle;
+            continue;
+        }
         const MachineDef& def = Def(m.type);
         if (def.power == Power::Generator || def.power == Power::Battery || def.power == Power::Storage) {
             // A generator on no network still lights: a boiler warms up and banks its fire (#229).
@@ -1875,6 +2130,10 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.status = m.status;
     if (m.recipe >= 0) { v.progress = m.progress; v.duration = TicksOf(m, tables.recipes[m.recipe]); }
     else if (m.mode == 1 && m.disSlot >= 0 && m.disTicks > 0) { v.progress = m.progress; v.duration = m.disTicks; } // (#1427 L7c)
+    else if (!m.jobs.empty()) { // (#1429 PR 4) a structure: its first job's progress
+        const Machine::MbJob& j = m.jobs[0];
+        v.progress = j.progress; v.duration = TicksOf(m, tables.recipes[j.recipe]);
+    }
     v.energy = m.energy;
     v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
     v.hasFuelSlot = HasFuelSlot(m.type);
@@ -2216,6 +2475,7 @@ void Factory::Reset() {
     layoutQueue.clear();
     itemQueue.clear();
     sentVersions.clear();
+    sentFormed.clear();
     RotationSources_Reset(); // (#1270)
 }
 
@@ -2230,13 +2490,45 @@ void Factory::Sync(Scene& world) {
         for (auto& pl : body->plots->plots) {
             const std::string key = PlotKey(body->id, pl->id);
             auto sv = sentVersions.find(key);
-            if (sv == sentVersions.end() || sv->second != pl->version) {
+            // (#1429 PR 4) forming or unforming a structure changes no part (no version): its list resends the layout too
+            uint64_t formedHash = 1469598103934665603ULL;
+            for (int f : pl->formed) formedHash = (formedHash ^ (uint64_t)(uint32_t)f) * 1099511628211ULL;
+            if (sv == sentVersions.end() || sv->second != pl->version || sentFormed[key] != formedHash) {
+                sentFormed[key] = formedHash;
                 LayoutMsg L{ body->id, pl->id, pl->version, {}, {}, {}, {}, {} };
                 L.refundTo = pl->refundTo; pl->refundTo = 0; // (#854)
                 std::vector<std::pair<Int3, CellShape>> fp;
+                for (int c : pl->formed) { // (#1429 PR 4) each formed structure that still validates: what it runs and its hatches
+                    MbMachine mb;
+                    if (!Multiblock_Members(*pl, c, mb) || mb.def->machine.empty()) continue;
+                    LayoutMsg::Structure s;
+                    s.controller = c; s.machine = MachineByName(mb.def->machine); s.parallel = mb.def->parallel;
+                    if (s.machine == PartType::Count) continue;
+                    // Its tier: the lowest voltage of its energy hatches and casings that have one (#1429 design, decided);
+                    // none (a steam-age structure): its machine's own tier, as a single block of it.
+                    s.tier = MachineTiers_PartTier(s.machine, 0, Def(s.machine).volts);
+                    bool capped = false;
+                    for (const std::string& v : mb.volts) { const int t = MachineTiers_ByName(v); if (t >= 0) { s.tier = capped ? std::min(s.tier, t) : t; capped = true; } }
+                    for (const auto& h : mb.hatches) s.hatches.push_back(h.first);
+                    L.structures.push_back(std::move(s));
+                }
                 for (size_t i = 0; i < pl->parts.size(); ++i) {
                     const Part& part = pl->parts[i];
                     if (part.type == PartType::Count) continue;
+                    if (part.type == PartType::MbController || part.type == PartType::MbHatch) { // (#1429 PR 4) machines of the factory
+                        Plot::Footprint(part, fp);
+                        std::vector<Int3> cells;
+                        for (auto& c : fp) cells.push_back(c.first);
+                        const std::string hid = part.type == PartType::MbHatch ? Multiblock_PartItem(part.type, part.material) : "";
+                        const auto hv = Multiblock_All().volts.find(hid);
+                        L.machines.push_back({ (int)i, part.type });
+                        L.machineCells.push_back(std::move(cells));
+                        L.machineVariant.push_back("");
+                        L.machineTier.push_back(hv != Multiblock_All().volts.end() ? MachineTiers_ByName(hv->second) : 0);
+                        L.machineHatch.resize(L.machines.size() - 1, kHatchNone);
+                        L.machineHatch.push_back(part.type == PartType::MbHatch ? HatchOf(Multiblock_HatchKind(part.material)) : kHatchNone);
+                        continue;
+                    }
                     if (IsMachine(part.type)) {
                         Plot::Footprint(part, fp);
                         std::vector<Int3> cells;
@@ -2656,6 +2948,8 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
             if (m.disSlot >= 0) fprintf(f, " dis %d %d", m.disSlot, m.progress);
             if (m.disRng != 0) fprintf(f, " drng %u", m.disRng);
             for (const auto& [id, c] : m.disCarry) if (c > 0) fprintf(f, " dc %s %d", tables.name(id).c_str(), c);
+            for (const Machine::MbJob& j : m.jobs) // (#1429 PR 4) a structure's running recipes (their inputs are claimed)
+                if (j.recipe >= 0 && !tables.recipes[j.recipe].out.empty()) fprintf(f, " mbjob %d %s %d", j.recipe, tables.name(tables.recipes[j.recipe].out[0].item).c_str(), j.progress);
             // (#1302) a plot in the summary sim: its caps (recipe index with its first output, to check it on load), so loaded
             // far it goes on in the summary at once instead of measuring for a minute
             if (summary) {
@@ -3964,5 +4258,190 @@ TEST(Factory, AHigherTierMachineOverclocksALowerRecipeAndALowerOneRefusesAHigher
     EXPECT_EQ(TicksOf(mv, *iron), iron->ticks) << "at its own tier: no overclock";
     iron->tier = was;
     plots.clear(); plotIndexDirty = true;
+}
+
+// ---- (#1429 PR 4) Multiblocks in the factory ----
+namespace {
+// A plot of one-cell machines in a row along x (part = index, cell (2i, 0, 0)), each with its hatch kind, and the structures.
+LayoutMsg MbLayout(uint32_t plotId, const std::vector<std::pair<PartType, uint8_t>>& parts, const std::vector<LayoutMsg::Structure>& structures, const std::vector<Int3>& cables = {}) {
+    LayoutMsg L{};
+    L.body = 9; L.plot = plotId; L.version = 1;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        L.machines.push_back({ (int)i, parts[i].first }); L.machineCells.push_back({ { 2 * (int)i, 0, 0 } }); L.machineVariant.push_back("");
+        L.machineTier.push_back(parts[i].second == kHatchEnergy ? 0 : MachineTiers_PartTier(parts[i].first, 0, Def(parts[i].first).volts)); // (an LV energy hatch)
+        L.machineHatch.push_back(parts[i].second);
+    }
+    L.cables = cables;
+    L.structures = structures;
+    return L;
+}
+LayoutMsg::Structure MbOf(int controller, PartType machine, int parallel, std::vector<int> hatches, int tier = -1) {
+    LayoutMsg::Structure s; s.controller = controller; s.machine = machine; s.parallel = parallel; s.hatches = std::move(hatches);
+    s.tier = tier >= 0 ? tier : MachineTiers_PartTier(machine, 0, Def(machine).volts);
+    return s;
+}
+const Recipe* RecipeFor(PartType machine, const char* input) {
+    for (const Recipe& r : tables.recipes) if (r.machine == machine && !r.in.empty() && r.in[0].item == tables.item(input) && !r.out.empty()) return &r;
+    return nullptr;
+}
+void MbReset() { plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear(); }
+} // namespace
+
+// A coke oven battery (parallel 2) takes coal from two input hatches as one pool: inputs claimed at the start, two cokes at
+// once into the output hatch. Not formed, it does nothing.
+TEST(Factory, AFormedStructureRunsParallelRecipesFromItsPooledHatches) {
+    LoadRecipes();
+    MbReset();
+    const auto* coke = RecipeFor(PartType::CokeOven, "coal");
+    ASSERT_TRUE(coke);
+    const std::vector<std::pair<PartType, uint8_t>> parts = { { PartType::MbController, kHatchNone }, { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemOut } };
+    ApplyLayout(MbLayout(1, parts, {}));
+    PlotSim& ps = *FindPlot(9, 1);
+    auto M = [&](int part) -> Machine& { return ps.machines[ps.byPart.at(part)]; };
+    int b = 0;
+    const int need = coke->in[0].count; // per craft, split over the two hatches
+    InsertInto(M(1), tables.item("coal"), need, false, b);
+    InsertInto(M(2), tables.item("coal"), need, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 40; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_TRUE(M(0).jobs.empty()) << "unformed: nothing starts";
+    EXPECT_EQ(CountItems(M(1).in.data(), kSlots, tables.item("coal")), need);
+    ApplyLayout(MbLayout(1, parts, { MbOf(0, PartType::CokeOven, 2, { 1, 2, 3 }) }));
+    TickPlot(ps, 1, made, active);
+    EXPECT_EQ((int)M(0).jobs.size(), 2) << "two recipes at once from the pooled coal";
+    EXPECT_EQ(CountItems(M(1).in.data(), kSlots, tables.item("coal")) + CountItems(M(2).in.data(), kSlots, tables.item("coal")), 0) << "inputs claimed at the start";
+    for (int t = 0; t < coke->ticks + 5; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(M(3).out, kSlots, coke->out[0].item), 2 * coke->out[0].count) << "both finished into the output hatch in one recipe's time";
+    EXPECT_TRUE(M(0).jobs.empty());
+    MbReset();
+}
+
+// Two structures share one input hatch: with coal for one recipe at a time, they start in turn.
+TEST(Factory, StructuresSharingAnInputHatchStartInTurn) {
+    LoadRecipes();
+    MbReset();
+    const auto* coke = RecipeFor(PartType::CokeOven, "coal");
+    ASSERT_TRUE(coke);
+    ApplyLayout(MbLayout(2, { { PartType::MbController, kHatchNone }, { PartType::MbController, kHatchNone }, { PartType::MbHatch, kHatchItemIn },
+                              { PartType::MbHatch, kHatchItemOut }, { PartType::MbHatch, kHatchItemOut } },
+                         { MbOf(0, PartType::CokeOven, 1, { 2, 3 }), MbOf(1, PartType::CokeOven, 1, { 2, 4 }) }));
+    PlotSim& ps = *FindPlot(9, 2);
+    auto M = [&](int part) -> Machine& { return ps.machines[ps.byPart.at(part)]; };
+    long long made = 0; int active = 0;
+    std::vector<int> starters;
+    for (int round = 0; round < 4; ++round) {
+        int b = 0;
+        InsertInto(M(2), tables.item("coal"), coke->in[0].count, false, b);
+        TickPlot(ps, 1, made, active);
+        starters.push_back(!M(0).jobs.empty() ? 0 : !M(1).jobs.empty() ? 1 : -1);
+        for (int t = 0; t < coke->ticks + 5; ++t) TickPlot(ps, 1, made, active);
+    }
+    EXPECT_EQ(starters, (std::vector<int>{ 0, 1, 0, 1 })) << "round-robin per recipe start";
+    EXPECT_EQ(CountItems(M(3).out, kSlots, coke->out[0].item), CountItems(M(4).out, kSlots, coke->out[0].item));
+    MbReset();
+}
+
+// A recipe reserves its outputs' room when it starts: with room for one craft's coke, only one of two parallel recipes starts,
+// and nothing put in the output hatch later takes the room the running one holds.
+TEST(Factory, AStructureReservesItsOutputsRoomAtTheStart) {
+    LoadRecipes();
+    MbReset();
+    const auto* coke = RecipeFor(PartType::CokeOven, "coal");
+    ASSERT_TRUE(coke);
+    ApplyLayout(MbLayout(3, { { PartType::MbController, kHatchNone }, { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemOut } },
+                         { MbOf(0, PartType::CokeOven, 2, { 1, 2 }) }));
+    PlotSim& ps = *FindPlot(9, 3);
+    auto M = [&](int part) -> Machine& { return ps.machines[ps.byPart.at(part)]; };
+    const int cokeId = coke->out[0].item, cap = tables.cap(cokeId);
+    // Three slots full of stone, the fourth holding coke with room for exactly one craft.
+    for (int s = 0; s < kSlots - 1; ++s) { M(2).out[s].item = tables.item("stone"); M(2).out[s].count = tables.cap(tables.item("stone")); }
+    M(2).out[kSlots - 1].item = cokeId; M(2).out[kSlots - 1].count = cap - coke->out[0].count;
+    int b = 0;
+    InsertInto(M(1), tables.item("coal"), 2 * coke->in[0].count, false, b);
+    long long made = 0; int active = 0;
+    TickPlot(ps, 1, made, active);
+    EXPECT_EQ((int)M(0).jobs.size(), 1) << "room for one craft: one starts";
+    EXPECT_EQ(CountItems(M(1).in.data(), kSlots, tables.item("coal")), coke->in[0].count) << "the other's coal stays in the hatch";
+    for (int t = 0; t < coke->ticks + 5; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(M(2).out[kSlots - 1].count, cap) << "the first finished into its reserved room";
+    EXPECT_EQ(M(0).status, MachineStatus::OutputFull) << "the second waits for room";
+    MbReset();
+}
+
+// Two macerator structures behind one LV energy hatch, wanting twice what its generator makes: each gets half (evenly).
+TEST(Factory, AnEnergyHatchSharedByTwoStructuresSlowsBothEvenly) {
+    LoadRecipes();
+    MbReset();
+    const auto* iron = RecipeFor(PartType::Macerator, "iron_ore");
+    ASSERT_TRUE(iron);
+    const int parallel = std::max(1, 32 / std::max(1, iron->eu)); // each alone could use the generator's whole 32 EU/t
+    ApplyLayout(MbLayout(4, { { PartType::Generator, kHatchNone }, { PartType::MbHatch, kHatchEnergy }, { PartType::MbController, kHatchNone }, { PartType::MbController, kHatchNone },
+                              { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemOut }, { PartType::MbHatch, kHatchItemOut } },
+                         { MbOf(2, PartType::Macerator, parallel, { 1, 4, 6 }, 0), MbOf(3, PartType::Macerator, parallel, { 1, 5, 7 }, 0) },
+                         Row(0, 2, -1)));
+    PlotSim& ps = *FindPlot(9, 4);
+    auto M = [&](int part) -> Machine& { return ps.machines[ps.byPart.at(part)]; };
+    int b = 0;
+    InsertInto(M(0), tables.item("coal"), 64, true, b);
+    InsertInto(M(4), tables.item("iron_ore"), 256, false, b);
+    InsertInto(M(5), tables.item("iron_ore"), 256, false, b);
+    long long made = 0; int active = 0;
+    const int ticks = 4 * iron->ticks;
+    for (int t = 0; t < ticks; ++t) TickPlot(ps, 1, made, active);
+    const int a = CountItems(M(6).out, kSlots, iron->out[0].item), c = CountItems(M(7).out, kSlots, iron->out[0].item);
+    const int full = ticks / iron->ticks * parallel * iron->out[0].count; // one alone at full power
+    EXPECT_GT(a, 0);
+    EXPECT_NEAR(a, c, parallel * iron->out[0].count) << "evenly: within one round of crafts";
+    EXPECT_LE(a + c, full + parallel * iron->out[0].count) << "together no more than the generator's 32 EU/t allows";
+    EXPECT_GE(a + c, full * 3 / 4) << "and most of it";
+    MbReset();
+}
+
+// A structure's running recipes save with it and finish after a load; a removed controller gives back what its recipes claimed.
+TEST(Factory, AStructuresJobsSaveAndARemovedControllerGivesBackItsClaimedInputs) {
+    LoadRecipes();
+    MbReset();
+    const auto* coke = RecipeFor(PartType::CokeOven, "coal");
+    ASSERT_TRUE(coke);
+    const std::vector<std::pair<PartType, uint8_t>> parts = { { PartType::MbController, kHatchNone }, { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemOut } };
+    const LayoutMsg L = MbLayout(5, parts, { MbOf(0, PartType::CokeOven, 1, { 1, 2 }) });
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(9, 5);
+    int b = 0;
+    InsertInto(ps->machines[ps->byPart.at(1)], tables.item("coal"), coke->in[0].count, false, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < coke->ticks / 2; ++t) TickPlot(*ps, 1, made, active);
+    ASSERT_EQ((int)ps->machines[ps->byPart.at(0)].jobs.size(), 1);
+    const int progress = ps->machines[ps->byPart.at(0)].jobs[0].progress;
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_mb_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    MbReset();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(L);
+    ps = FindPlot(9, 5);
+    ASSERT_TRUE(ps);
+    Machine& c = ps->machines[ps->byPart.at(0)];
+    ASSERT_EQ((int)c.jobs.size(), 1) << "the job came back";
+    EXPECT_EQ(c.jobs[0].progress, progress);
+    for (int t = 0; t < coke->ticks; ++t) TickPlot(*ps, 1, made, active);
+    EXPECT_EQ(CountItems(ps->machines[ps->byPart.at(2)].out, kSlots, coke->out[0].item), coke->out[0].count) << "and finished (its room reserved again)";
+    // Claim again, then break the controller: the claimed coal comes back.
+    InsertInto(ps->machines[ps->byPart.at(1)], tables.item("coal"), coke->in[0].count, false, b);
+    TickPlot(*ps, 1, made, active);
+    ASSERT_EQ((int)ps->machines[ps->byPart.at(0)].jobs.size(), 1);
+    refunds.clear();
+    LayoutMsg gone = MbLayout(5, { { PartType::MbHatch, kHatchItemIn }, { PartType::MbHatch, kHatchItemOut } }, {});
+    gone.machines = { { 1, PartType::MbHatch }, { 2, PartType::MbHatch } };
+    ApplyLayout(gone);
+    int back = 0;
+    for (const ItemOut& r : refunds) if (r.item == tables.item("coal")) back += r.count;
+    EXPECT_EQ(back, coke->in[0].count);
+    MbReset();
 }
 #endif
