@@ -10,19 +10,20 @@
 #include "player.h"
 #include "playerinput.h"
 #include "playersession.h"
+#include "statusbar.h"
 #include "survival.h"
 #include "world.h"
 #include <raymath.h>
 
 namespace {
-struct St { Vector3 start{}; float stamina0 = 0.0f; int dodges0 = 0; long frame0 = 0; bool hitDuring = false; } S;
+struct St { Vector3 start{}; float stamina0 = 0.0f; int dodges0 = 0; long frame0 = 0; bool hitDuring = false; double tapAt = -1.0; } S;
 constexpr uint64_t kRmb = 1ull << (int)Act::Secondary, kRight = 1ull << (int)Act::Right;
 
 Vector3 FeetLocal(ScenarioCtx& c) { return c.body->toLocal((player.position - c.world.renderOrigin).toFloat()); }
 
 // A hit from 2 m in front of the player.
-DamageResult HitFromFront(float amount) {
-    DamageEvent e; e.amount = amount; e.kind = DamageKind::Melee; e.hasSource = true;
+DamageResult HitFromFront(float amount, DamageKind kind = DamageKind::Melee) {
+    DamageEvent e; e.amount = amount; e.kind = kind; e.hasSource = true;
     const Vector3 flat = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
     e.source = player.position + DVec3(Vector3Scale(flat, 2.0f));
     return Combat_Damage(LocalSession(), e);
@@ -49,15 +50,17 @@ SCENARIO("combat/parry-dodge") {
     s.step("parry: raised just before the hit", 5.0, [](ScenarioCtx& c) {
         if (c.t < 0.5) return false; // standing
         if (!(gFakeHeld & kRmb)) { gFakeHeld |= kRmb; S.frame0 = c.frame; return false; }
-        if (!survival.blocking) { c.waitingFor("the block to go up: rmbBlocks " + std::to_string(LocalSession().terrainTool.rmbBlocks) + " off " + LocalSession().inventory.offHand().id + " rmb held " + std::to_string((PlayerInput_Step().held >> (int)Act::Secondary) & 1) + " stamina " + std::to_string(survival.stamina)); return false; }
+        if (!survival.parrying) { c.waitingFor("the parry window to open (#1776: the press): rmbBlocks " + std::to_string(LocalSession().terrainTool.rmbBlocks) + " off " + LocalSession().inventory.offHand().id + " rmb held " + std::to_string((PlayerInput_Step().held >> (int)Act::Secondary) & 1) + " stamina " + std::to_string(survival.stamina)); return false; }
         if (c.frame < S.frame0 + 4) return false; // ~50 ms after the raise
         survival.health = 100.0f; survival.stamina = 100.0f;
         const int parries0 = survival.parries;
+        c.check("the PARRY bar shows the window (#1777)", StatusBar_Active("parry"), TextFormat("%.2f left", StatusBar_Remaining("parry")));
         const DamageResult r = HitFromFront(20.0f);
         c.check("parried", r.parried);
         c.near("no damage", 100.0f - survival.health, 0.0, 1e-4);
         c.near("no stamina", 100.0f - survival.stamina, 0.0, 1e-4);
         c.eq("counted", survival.parries - parries0, 1);
+        c.check("the bar goes when the parry lands", !StatusBar_Active("parry"));
         return true;
     });
     s.step("held past the window: an ordinary block", 3.0, [](ScenarioCtx& c) {
@@ -70,6 +73,30 @@ SCENARIO("combat/parry-dodge") {
         gFakeHeld &= ~kRmb;
         return true;
     });
+    // (#1776, user) A tap parries (RMB already up again); a parry turns a blow whose live span overlaps its window, even
+    // just after the window closed; a hit well after it lands; a projectile is parried too (no damage). Each tap waits out
+    // the recovery first. `when` is the hit's time after the tap, as a share of the window plus seconds.
+    struct TapCase { const char* name; float windowShare; float extra; DamageKind kind; bool parried; };
+    static const TapCase kTaps[] = {
+        { "a tap parries, RMB already up", 0.5f, 0.0f, DamageKind::Melee, true },
+        { "the window just closed, the blow still live", 1.0f, 0.08f, DamageKind::Melee, true },
+        { "a hit well after the window lands", 1.0f, 0.5f, DamageKind::Melee, false },
+        { "a projectile is parried", 0.5f, 0.0f, DamageKind::Projectile, true },
+    };
+    for (const TapCase& tc : kTaps)
+        s.step(tc.name, 5.0, [tc](ScenarioCtx& c) {
+            if (c.t < 1.0) { S.tapAt = -1.0; return false; } // the recovery and stamina back
+            if (S.tapAt < 0.0) { gFakeHeld |= kRmb; S.tapAt = SimTime(); S.frame0 = c.frame; return false; }
+            if (c.frame == S.frame0 + 3) gFakeHeld &= ~kRmb; // a tap: up again after 3 frames
+            if (SimTime() - S.tapAt < survival.shieldParryWindow * tc.windowShare + tc.extra) return false;
+            gFakeHeld &= ~kRmb;
+            survival.health = 100.0f; survival.stamina = 100.0f;
+            const DamageResult r = HitFromFront(20.0f, tc.kind);
+            c.check("parried as expected", r.parried == tc.parried, TextFormat("parried %d, %.2f s after the tap, window %.2f s", (int)r.parried, SimTime() - S.tapAt, survival.shieldParryWindow));
+            c.check("no block (RMB is up)", !r.blocked);
+            c.near("damage", 100.0f - survival.health, tc.parried ? 0.0 : 20.0, 1e-3);
+            return true;
+        });
     s.step("dodge: double-tap D, a hit passes through", 5.0, [](ScenarioCtx& c) {
         if (c.t < 1.2) { S.dodges0 = survival.dodges; S.hitDuring = false; return false; } // the block down, stamina back
         const long f = c.frame;

@@ -2338,27 +2338,7 @@ static void DrawTierBanner() {
     DrawText(text.c_str(), (w - std::min(MeasureText(text.c_str(), fsText), tw)) / 2, ty, fsText, Fade(Color{ 200, 206, 216, 255 }, alpha));
 }
 
-// (#1713) While the shield is up: a ring round the crosshair, gold with "PARRY" during the parry window (a melee hit or a bite
-// landing now is parried: the attacker staggers), then grey while it only blocks. The window is the shield's (0.22-0.45 s).
-static void DrawBlockRing() {
-    if (!survival.blocking) return;
-    const float s = GameUI_HudScale();
-    const float cx = GetScreenWidth() * 0.5f, cy = GetScreenHeight() * 0.5f, r = 26.0f * s;
-    const double since = SimTime() - survival.blockStartedAt;
-    const bool parry = since >= 0.0 && since <= survival.shieldParryWindow;
-    if (parry) {
-        const float left = 1.0f - (float)(since / std::max(0.01f, survival.shieldParryWindow)); // the window running out: the arc shrinks
-        DrawRing({ cx, cy }, r - 3.0f * s, r, -90.0f, -90.0f + 360.0f * left, 48, Color{ 255, 205, 70, 235 });
-        const int fs = (int)(16 * s);
-        const char* t = "PARRY";
-        DrawText(t, (int)(cx - MeasureText(t, fs) * 0.5f), (int)(cy + r + 4.0f * s), fs, Color{ 255, 205, 70, 235 });
-    } else {
-        DrawRing({ cx, cy }, r - 2.0f * s, r, 0.0f, 360.0f, 48, Fade(LIGHTGRAY, 0.55f));
-    }
-}
-
 void GameUI_DrawHUD(Scene& world) {
-    DrawBlockRing(); // (#1713)
     DrawTeamStrip();
     DrawTierBanner(); // (#226)
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
@@ -2477,7 +2457,7 @@ static void DrawKeyHints(int x, int y) {
     }
     auto K = [](Act a) { return std::string(PlayerInput_KeyName(PlayerInput_Binding(a))); }; // (a copy: the name comes back in one shared buffer)
     // (#1713, playtest: "can't find how to parry") A weapon swings; a shield in the off hand blocks with RMB, and raised just
-    // before a hit, parries (the ring round the crosshair shows the window: DrawBlockRing).
+    // before a hit, parries (#1776: a tap; the status bar shows the window).
     const bool weapon = terrainTool.heldTool.rfind("weapon_", 0) == 0;
     std::string line = terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush"
                      : std::string(weapon ? "LMB swing" : "LMB mine/chop") + (terrainTool.rmbBlocks ? "  RMB block (just before a hit: parry)" : "  RMB place");

@@ -861,11 +861,11 @@ void StepProjectiles(Scene& world, float dt) {
                     DamageEvent e;
                     e.amount = p.damage * Difficulty_ThreatScale();
                     e.kind = DamageKind::Projectile; e.type = (p.spear || p.dart) ? DamageType::Pierce : DamageType::Blunt;
-                    e.parryable = false; e.hasSource = true;
+                    e.parryable = true; e.hasSource = true; // (#1776) a parry turns it (no damage, no stagger)
                     e.source = body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f)))); // where it came from
                     e.knockback = 2.0f; e.sourceId = p.owner;
                     const DamageResult r = Combat_Damage(LocalSession(), e);
-                    GameUI_Toast(p.dart ? (r.dodged ? "You dodge a dart" : r.blocked ? "Your shield takes a dart" : "A dart hits you!") : r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
+                    GameUI_Toast(r.parried ? (p.dart ? "You parry a dart" : "You parry a thrown stone") : p.dart ? (r.dodged ? "You dodge a dart" : r.blocked ? "Your shield takes a dart" : "A dart hits you!") : r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
                     ++projectileHits;
                     gone = true;
                 }
@@ -876,7 +876,7 @@ void StepProjectiles(Scene& world, float dt) {
                     if (Planetoid::findNet(t.body) != body || !t.vulnerable) continue;
                     const Vector3 tu = Vector3Normalize(t.local);
                     if (Melee_SegmentDistance(before, p.pos, t.local, Vector3Add(t.local, Vector3Scale(tu, 1.7f))) >= 0.45f) continue;
-                    DamageEvent e; e.amount = p.damage * Difficulty_ThreatScale(); e.kind = DamageKind::Projectile; e.parryable = false;
+                    DamageEvent e; e.amount = p.damage * Difficulty_ThreatScale(); e.kind = DamageKind::Projectile; e.parryable = true; // (#1776)
                     e.hasSource = true; e.source = body->toWorldD(DVec3(before)); e.knockback = 2.0f; e.sourceId = p.owner;
                     if (gAnimalDamageRemote) gAnimalDamageRemote(t.session, e);
                     ++projectileHits;
