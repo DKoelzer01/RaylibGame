@@ -56,31 +56,32 @@ static std::string ExpandShaderIncludes(const std::string& path, std::vector<std
 }
 
 // (#1769) A raylib Shader around an already linked program (a cached binary): the locations LoadShaderFromMemory sets, the
-// same way (raylib 5.5 rcore.c). The default attributes were bound before the original link and the binary keeps them.
+// same way (raylib 5.5 rcore.c, its names from config.h, which raylib keeps to itself). The default attributes were bound before
+// the original link and the binary keeps them.
 static Shader ShaderFromProgram(unsigned id) {
     Shader s{};
     if (id == 0) return s;
     s.id = id;
     s.locs = (int*)RL_CALLOC(RL_MAX_SHADER_LOCATIONS, sizeof(int)); // UnloadShader frees it with RL_FREE
     for (int i = 0; i < RL_MAX_SHADER_LOCATIONS; i++) s.locs[i] = -1;
-    s.locs[SHADER_LOC_VERTEX_POSITION] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_POSITION);
-    s.locs[SHADER_LOC_VERTEX_TEXCOORD01] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_TEXCOORD);
-    s.locs[SHADER_LOC_VERTEX_TEXCOORD02] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_TEXCOORD2);
-    s.locs[SHADER_LOC_VERTEX_NORMAL] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_NORMAL);
-    s.locs[SHADER_LOC_VERTEX_TANGENT] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_TANGENT);
-    s.locs[SHADER_LOC_VERTEX_COLOR] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_COLOR);
-    s.locs[SHADER_LOC_VERTEX_BONEIDS] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_BONEIDS);
-    s.locs[SHADER_LOC_VERTEX_BONEWEIGHTS] = rlGetLocationAttrib(id, RL_DEFAULT_SHADER_ATTRIB_NAME_BONEWEIGHTS);
-    s.locs[SHADER_LOC_MATRIX_MVP] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_MVP);
-    s.locs[SHADER_LOC_MATRIX_VIEW] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_VIEW);
-    s.locs[SHADER_LOC_MATRIX_PROJECTION] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_PROJECTION);
-    s.locs[SHADER_LOC_MATRIX_MODEL] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_MODEL);
-    s.locs[SHADER_LOC_MATRIX_NORMAL] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_NORMAL);
-    s.locs[SHADER_LOC_BONE_MATRICES] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_BONE_MATRICES);
-    s.locs[SHADER_LOC_COLOR_DIFFUSE] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_UNIFORM_NAME_COLOR);
-    s.locs[SHADER_LOC_MAP_DIFFUSE] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_SAMPLER2D_NAME_TEXTURE0);
-    s.locs[SHADER_LOC_MAP_SPECULAR] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_SAMPLER2D_NAME_TEXTURE1);
-    s.locs[SHADER_LOC_MAP_NORMAL] = rlGetLocationUniform(id, RL_DEFAULT_SHADER_SAMPLER2D_NAME_TEXTURE2);
+    s.locs[SHADER_LOC_VERTEX_POSITION] = rlGetLocationAttrib(id, "vertexPosition");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD01] = rlGetLocationAttrib(id, "vertexTexCoord");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD02] = rlGetLocationAttrib(id, "vertexTexCoord2");
+    s.locs[SHADER_LOC_VERTEX_NORMAL] = rlGetLocationAttrib(id, "vertexNormal");
+    s.locs[SHADER_LOC_VERTEX_TANGENT] = rlGetLocationAttrib(id, "vertexTangent");
+    s.locs[SHADER_LOC_VERTEX_COLOR] = rlGetLocationAttrib(id, "vertexColor");
+    s.locs[SHADER_LOC_VERTEX_BONEIDS] = rlGetLocationAttrib(id, "vertexBoneIds");
+    s.locs[SHADER_LOC_VERTEX_BONEWEIGHTS] = rlGetLocationAttrib(id, "vertexBoneWeights");
+    s.locs[SHADER_LOC_MATRIX_MVP] = rlGetLocationUniform(id, "mvp");
+    s.locs[SHADER_LOC_MATRIX_VIEW] = rlGetLocationUniform(id, "matView");
+    s.locs[SHADER_LOC_MATRIX_PROJECTION] = rlGetLocationUniform(id, "matProjection");
+    s.locs[SHADER_LOC_MATRIX_MODEL] = rlGetLocationUniform(id, "matModel");
+    s.locs[SHADER_LOC_MATRIX_NORMAL] = rlGetLocationUniform(id, "matNormal");
+    s.locs[SHADER_LOC_BONE_MATRICES] = rlGetLocationUniform(id, "boneMatrices");
+    s.locs[SHADER_LOC_COLOR_DIFFUSE] = rlGetLocationUniform(id, "colDiffuse");
+    s.locs[SHADER_LOC_MAP_DIFFUSE] = rlGetLocationUniform(id, "texture0");
+    s.locs[SHADER_LOC_MAP_SPECULAR] = rlGetLocationUniform(id, "texture1");
+    s.locs[SHADER_LOC_MAP_NORMAL] = rlGetLocationUniform(id, "texture2");
     return s;
 }
 
