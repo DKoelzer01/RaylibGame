@@ -452,7 +452,18 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // from the side - a tunnel into a bank, a hollow in built rock: fed like a dug cell, and a sealed cave stays dry.
                 if (!solid && kind && kind != 5 && z <= coveredTo && r - hc < level && r > bed - hc) fl |= kDug;
                 uint8_t tg = 0;
-                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc) {
+                // (#1520) A cell an edit changed holds the generated water only if it held it before the edit: the level over
+                // the ORIGINAL ground (the height map's bed) in this cell. A dig beside a river took the sand out of cells
+                // straddling its level, and they turned into river sources up to the level - an infinite source in the hole,
+                // under where the bank had stood over the water ("hidden water voxels in the sand": the hole flooded with no
+                // path to the river). Such space is fed only by flow from the river's own cells; a cell that was river water
+                // (a channel cut into the river's mouth) still fills to the level as its neighbours do, or the water never
+                // sleeps (fluid/flow). Unedited cells are as before.
+                static const bool genOnOriginal = !(getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND") && getenv("RAYLIBGAME_GEN_ORIGINAL_GROUND")[0] == '0'); // A/B: =0 before #1520
+                bool wasWater = true;
+                if (genOnOriginal && kind && ref.edits && r - hc < level && r > bed - hc && fabsf(dc - ref.field->density(c, nullptr)) > 1e-4f)
+                    wasWater = level > std::max(r - hc, bed);
+                if (!solid && kind && z > coveredTo && r - hc < level && r > bed - hc && wasWater) {
                     tg = (uint8_t)std::clamp((int)lroundf((level - (r - hc)) / cs * 255.0f), 0, 255);
                     if ((int)tg - sh > 0 && kind != 5) fl |= released == 1 ? kDug : released == 2 ? (kSource | kStatic | kSink) : (kSource | kStatic);
                     if (tg > 0 && kind == 5) {
@@ -2653,34 +2664,105 @@ float Fluid::VolumeAbove(const Planetoid& body, Vector3 local, float radius, flo
     return (float)vol;
 }
 
+namespace {
+    // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry): 0, 10 (a spring) or 100.
+    float GeneratedWaterAt(const Planetoid& body, Vector3 local, float radius) {
+        if (WaterField::CellFill(*WaterField::Current(), body.id, local, 0) >= 0) return 0.0f;
+        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
+        if (!pf) return 0.0f;
+        const float d = Vector3Length(local);
+        const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
+        float level = pf->seaLevelRadius();
+        const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
+        if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
+        if (d - radius < level && pf->radius + pf->elevation(dir) < level) return ws.kind == 3 ? 10.0f : 100.0f;
+        return 0.0f;
+    }
+
+    // Every published cell of a site within `radius` (a cube of cells) of a body-local point: fn(fill, flags). Walks the
+    // site's bricks, not its cells (#1736: a 16 m query looped a 129^3 cube of quarter-metre cells, ~2.1 M lookups a site,
+    // 118 ms every half second from the cave audio): a site whose bricks don't reach the cube, and every missing brick in
+    // it, cost nothing. The same cells as the cell-by-cell walk.
+    template <typename Fn> void ForCellsNear(const WaterField::Site& s, Vector3 local, float radius, Fn&& fn) {
+        if (local.x + radius < s.lo.x || local.x - radius > s.hi.x || local.y + radius < s.lo.y || local.y - radius > s.hi.y ||
+            local.z + radius < s.lo.z || local.z - radius > s.hi.z) return; // (the cube's corners stay within radius * sqrt 3 of the point)
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
+        const int R = (int)ceilf(radius / WaterField::CellSize());
+        for (int bk = FloorDiv(ck - R, B); bk <= FloorDiv(ck + R, B); ++bk)
+            for (int bj = FloorDiv(cj - R, B); bj <= FloorDiv(cj + R, B); ++bj)
+                for (int bi = FloorDiv(ci - R, B); bi <= FloorDiv(ci + R, B); ++bi) {
+                    const WaterField::Brick* b = s.brick(bi, bj, bk);
+                    if (!b) continue;
+                    for (int k = std::max(ck - R, bk * B); k <= std::min(ck + R, bk * B + B - 1); ++k)
+                        for (int j = std::max(cj - R, bj * B); j <= std::min(cj + R, bj * B + B - 1); ++j)
+                            for (int i = std::max(ci - R, bi * B); i <= std::min(ci + R, bi * B + B - 1); ++i) {
+                                const int idx = ((k - bk * B) * B + (j - bj * B)) * B + (i - bi * B);
+                                fn(b->fill[idx], b->flags[idx]);
+                            }
+                }
+    }
+}
+
+bool Fluid::AnyWaterNear(const Planetoid& body, Vector3 local, float radius, float minVolume) {
+    // (#1736) WaterAt's cube is (2 * radius / 0.25 m)^3 cells per site (2 M at 16 m): too slow for a yes/no every 0.5 s.
+    // Here: only the bricks the cube touches (a handful of hash lookups), only those the solver says hold water (kinds
+    // bit 0), and at most kCellBudget cell reads in all. A budget that runs out with a wet brick in reach answers yes
+    // (this is a "look first" test; a false yes only costs the caller its precise follow-up).
+    constexpr int kCellBudget = 20000;
+    const WaterField::SnapshotPtr snapNow = WaterField::Current();
+    int budget = kCellBudget;
+    float total = 0.0f;
+    const float cellVol = WaterField::CellVolume();
+    for (const WaterField::Site& s : snapNow->sites) {
+        if (s.body != body.id) continue;
+        // Site bounds (body-local, axis-aligned) against the query box.
+        if (local.x + radius < s.lo.x || local.x - radius > s.hi.x || local.y + radius < s.lo.y || local.y - radius > s.hi.y ||
+            local.z + radius < s.lo.z || local.z - radius > s.hi.z) continue;
+        float fx, fy, fz;
+        s.frame(local, fx, fy, fz);
+        const int R = (int)ceilf(radius / WaterField::CellSize());
+        const int ci0 = (int)floorf(fx) - R, cj0 = (int)floorf(fy) - R, ck0 = (int)floorf(fz) - R;
+        const int ci1 = (int)floorf(fx) + R, cj1 = (int)floorf(fy) + R, ck1 = (int)floorf(fz) + R;
+        for (int bk = FloorDiv(ck0, B); bk <= FloorDiv(ck1, B); ++bk)
+            for (int bj = FloorDiv(cj0, B); bj <= FloorDiv(cj1, B); ++bj)
+                for (int bi = FloorDiv(ci0, B); bi <= FloorDiv(ci1, B); ++bi) {
+                    const WaterField::Brick* b = s.brick(bi, bj, bk);
+                    if (!b || !(b->kinds & 1)) continue; // no water (kind 0) in the brick
+                    const int i0 = std::max(ci0, bi * B), i1 = std::min(ci1, bi * B + B - 1);
+                    const int j0 = std::max(cj0, bj * B), j1 = std::min(cj1, bj * B + B - 1);
+                    const int k0 = std::max(ck0, bk * B), k1 = std::min(ck1, bk * B + B - 1);
+                    for (int k = k0; k <= k1; ++k)
+                        for (int j = j0; j <= j1; ++j)
+                            for (int i = i0; i <= i1; ++i) {
+                                const int ix = ((k - bk * B) * B + (j - bj * B)) * B + (i - bi * B);
+                                const uint8_t fl = b->flags[ix];
+                                if (CellKind(fl) != 0) continue;
+                                total += (fl & kSource) ? 100.0f : b->fill[ix] / 255.0f * cellVol;
+                                if (total > minVolume) return true;
+                            }
+                    budget -= (i1 - i0 + 1) * (j1 - j0 + 1) * (k1 - k0 + 1);
+                    if (budget <= 0) return true;
+                }
+    }
+    // Generated water, as WaterAt's fallback (cheap: one elevation sample).
+    return total <= 0.0f && GeneratedWaterAt(body, local, radius) > minVolume;
+}
+
 float Fluid::WaterAt(const Planetoid& body, Vector3 local, float radius) {
     float total = 0.0f;
     {
         const WaterField::SnapshotPtr snapNow = WaterField::Current();
-    for (const WaterField::Site& s : snapNow->sites) {
+        for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
-            const int R = (int)ceilf(radius / WaterField::CellSize());
-            for (int dk = -R; dk <= R; ++dk)
-                for (int dj = -R; dj <= R; ++dj)
-                    for (int di = -R; di <= R; ++di) {
-                        const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
-                        uint8_t f, fl;
-                        if (PubCell(s, q, 0, f, fl) && CellKind(fl) == 0) total += (fl & kSource) ? 100.0f : f / 255.0f * WaterField::CellVolume();
-                    }
+            ForCellsNear(s, local, radius, [&](uint8_t f, uint8_t fl) {
+                if (CellKind(fl) == 0) total += (fl & kSource) ? 100.0f : f / 255.0f * WaterField::CellVolume();
+            });
         }
     }
     // Generated water where no simulated cell decides (#360: a drained pond's cells are simulated and dry).
-    if (total <= 0.0f && WaterField::CellFill(*WaterField::Current(), body.id, local, 0) < 0) {
-        const auto* pf = dynamic_cast<const PlanetField*>(body.field.get());
-        if (pf) {
-            const float d = Vector3Length(local);
-            const Vector3 dir = Vector3Scale(local, 1.0f / std::max(d, 1.0f));
-            float level = pf->seaLevelRadius();
-            const PlanetField::WaterSource ws = pf->waterSourceAt(dir);
-            if (ws.kind) level = std::max(level, pf->seaLevelRadius() + ws.level);
-            if (d - radius < level && pf->radius + pf->elevation(dir) < level) total = ws.kind == 3 ? 10.0f : 100.0f;
-        }
-    }
+    if (total <= 0.0f) total = GeneratedWaterAt(body, local, radius);
     return total;
 }
 
@@ -2689,16 +2771,11 @@ namespace {
     void FluidVolumes(const Planetoid& body, Vector3 local, float radius, float out[8]) {
         for (int k = 0; k < 8; ++k) out[k] = 0.0f;
         const WaterField::SnapshotPtr snapNow = WaterField::Current();
-    for (const WaterField::Site& s : snapNow->sites) {
+        for (const WaterField::Site& s : snapNow->sites) {
             if (s.body != body.id) continue;
-            const int R = (int)ceilf(radius / WaterField::CellSize());
-            for (int dk = -R; dk <= R; ++dk)
-                for (int dj = -R; dj <= R; ++dj)
-                    for (int di = -R; di <= R; ++di) {
-                        const Vector3 q = Vector3Add(local, Vector3Add(Vector3Add(Vector3Scale(s.e, di * WaterField::CellSize()), Vector3Scale(s.n, dj * WaterField::CellSize())), Vector3Scale(s.u, dk * WaterField::CellSize())));
-                        uint8_t f, fl;
-                        if (PubCell(s, q, 0, f, fl) && !(fl & (kSolid | kSource))) out[CellKind(fl)] += f / 255.0f * WaterField::CellVolume();
-                    }
+            ForCellsNear(s, local, radius, [&](uint8_t f, uint8_t fl) { // (#1736) brick by brick
+                if (!(fl & (kSolid | kSource))) out[CellKind(fl)] += f / 255.0f * WaterField::CellVolume();
+            });
         }
     }
 }
@@ -2988,9 +3065,10 @@ std::string Fluid::DebugCell(const Planetoid& body, Vector3 local) {
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;
-        uint8_t f, fl;
-        if (!PubCell(s, local, 0, f, fl)) continue;
-        return TextFormat("fill %d flags %s%s%s%s%s", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "");
+        uint8_t f, fl, sh = 0;
+        if (!PubCell(s, local, 0, f, fl, nullptr, &sh)) continue;
+        // shut: the cell's ground share (#454), last so the older "fill N flags X" prefix still parses (#1520)
+        return TextFormat("fill %d flags %s%s%s%s%s shut %d", f, (fl & kSolid) ? "S" : "", (fl & kSource) ? "R" : "", (fl & kStatic) ? "T" : "", (fl & kDug) ? "D" : "", (fl & WaterField::kSink) ? "K" : "", sh);
     }
     return "no site";
 }
