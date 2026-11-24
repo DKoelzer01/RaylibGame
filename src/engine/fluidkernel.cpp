@@ -699,7 +699,7 @@ struct Pass {
             if (f == 0 && nf > 0) kind = inKind;
             if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c)); // a sink's net intake (#656, #875: the columns counted none)
             if (fl & SOURCE) nf = (int)TG(c);
-            else if (p.evaporate && nf > 0 && nf <= 2 && g.delta[gi] == 0 && onGround(slot, x, y, z)) nf = 0;
+            else if (p.evaporate && nf > 0 && nf < p.minSpread[kind] && g.delta[gi] == 0 && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // resting films dry up (#454)
             // Changed against the cell before this substep (A, as the face rules compare), not after the vertical pass: water
             // that only fell inside a brick left it unflagged, so the unpack skipped it and the fall was lost (#680: the leak
             // test's sim volume fell 103 -> 55 m^3 in 60 s with nothing reaching the channel).
@@ -758,7 +758,7 @@ struct Pass {
         // counts against.
         if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) g.sinkOut[slot] += (uint32_t)(nf - (int)TG(c));
         if (fl & SOURCE) nf = (int)TG(c);
-        else if (p.evaporate && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0;
+        else if (p.evaporate && nf > 0 && nf < p.minSpread[kind] && moving == 0u && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // resting films dry up (#454)
         const uint32_t old = outC[gi];
         const uint32_t res = Pack((uint32_t)nf, (fl & 31u) | (kind << 5), c);
         if (F(old) != (uint32_t)nf) g.flags[slot] |= 1u;
