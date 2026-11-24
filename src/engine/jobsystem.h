@@ -12,7 +12,7 @@
 #include <vector>
 
 // What a job is (#387: the per-second job mix in --perf-log).
-enum class JobTag : uint8_t { Other = 0, ChunkPrep, ChunkMesh, RingCollect, WaterRebuild, Trees, Fluid, FarSphere, NavMap, Count };
+enum class JobTag : uint8_t { Other = 0, ChunkPrep, ChunkMesh, RingCollect, WaterRebuild, Trees, Fluid, FarSphere, NavMap, TerrainFold, Count };
 const char* JobTagName(JobTag t);
 
 // Fixed-size worker pool with a priority queue. Lower priority value runs first; equal

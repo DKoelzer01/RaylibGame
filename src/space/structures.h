@@ -44,6 +44,8 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
 struct StructureInterior { std::string set, skip; int cells = 0, solid = 0; }; // skip: why it wasn't built (cells -1)
 std::vector<StructureInterior> Structures_TestInteriors(Scene& world, Planetoid& body, Vector3 nearLocal);
 int Structures_SitesBuilt();          // tests: sites built by the world placement
+int Structures_JobsPending();         // tests: sites whose ground or parts are still going in (#1791)
+double Structures_LastUpdateMs();     // tests (#1791): main-thread ms of the last Structures_Update
 // (#1641 slice 2c) A breakable prop of a dungeon room (a template part with "loot <table>") was just broken: the items its table
 // gives, rolled now (false: it was no prop). The authority calls it; the caller hands the items to the breaker.
 bool Structures_BreakLoot(Planetoid& body, uint32_t plotId, int part, const Part& removed, std::vector<std::pair<std::string, int>>& out);
