@@ -566,7 +566,7 @@ TEST(WaterField, SurfaceStopsAtADiagonalCornerOnBrickBorders) {
                             if (ci >= c - 6 && ci < c && cj >= c - 6 && cj < c && ck < 6) b->fill[i] = b->drawn[i] = ck < 5 ? 255 : 200; // level 5.78
                         }
                 b->kinds = 1;
-                s.bricks[BrickKey(bi, 0, bj)] = b;
+                s.bricks[BrickKey(bi, bj, 0)] = b;
             }
         snap.sites.push_back(s);
         ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { 2 * side, side, 2 * side });
@@ -578,7 +578,7 @@ TEST(WaterField, SurfaceStopsAtADiagonalCornerOnBrickBorders) {
                 for (float k = 4.05f; k < 5.75f; k += 0.1f)
                     if (sampler.density(cell(c + di, c + dj, k), 0, w) && w >= ISO_LEVEL) { ++wet; break; }
         EXPECT_EQ(wet, 0) << "corner at cell " << c << ": water drawn past it";
-        ASSERT_TRUE(sampler.density(cell(c - 0.5f, c - 0.5f, 5.0f), 0, w));
+        ASSERT_TRUE(sampler.density(cell(c - 0.5f, c - 0.5f, 5.0f), 0, w)) << c;
         EXPECT_GT(w, ISO_LEVEL) << "corner at cell " << c << ": the pen's corner holds water";
     }
 }
