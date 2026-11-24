@@ -35,8 +35,9 @@ SCENARIO("terrain/mine-fragment-yield") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
     s.step("mine a floating gravel fragment away: yield = its volume, then nothing", 100.0, [](ScenarioCtx& c) {
-        c.waitingFor("the player standing on the sandbox");
-        if (c.T < 1.0) return false;
+        c.waitingFor("the player standing on the sandbox, the world built");
+        // and an idle world: on a slow start (cold shader compiles, #1769) the ground isn't built after 1 s of play
+        if (c.T < 1.0 || !WorldIdle()) return false;
         terrainTool.creative = false;
         terrainTool.heldTool = "stone_shovel";
         Player& pl = LocalSession().player;
