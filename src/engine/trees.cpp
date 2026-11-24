@@ -611,11 +611,27 @@ void TreeSystem::request(const TreeTileKey& key, TreeTile& tile, float priority)
 }
 
 void TreeSystem::onEdit(Vector3 c, float r, std::shared_ptr<const TerrainDeltas> snapshot) {
+    onEdits({ Vector4{ c.x, c.y, c.z, r } }, std::move(snapshot));
+}
+
+void TreeSystem::onEdits(const std::vector<Vector4>& spheres, std::shared_ptr<const TerrainDeltas> snapshot) {
     edits = std::move(snapshot);
-    for (auto& kv : tiles)
-        if (Vector3Distance(kv.second.centre.x != 0.0f || kv.second.centre.y != 0.0f || kv.second.centre.z != 0.0f
-                                ? kv.second.centre : Vector3Scale(TreeTileCentreDir(kv.first, radius), radius), c) < r + kTreeTileSize)
-            request(kv.first, kv.second, 0.0f); // the old trees stay until the rebuild arrives
+    if (spheres.empty()) return;
+    // Their bounding sphere first (a structure site's hundreds of cuts lie within a few tiles).
+    Vector3 lo = { spheres[0].x, spheres[0].y, spheres[0].z }, hi = lo;
+    for (const Vector4& s : spheres) { lo = Vector3Min(lo, { s.x - s.w, s.y - s.w, s.z - s.w }); hi = Vector3Max(hi, { s.x + s.w, s.y + s.w, s.z + s.w }); }
+    const Vector3 bc = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+    const float br = 0.5f * Vector3Distance(lo, hi);
+    for (auto& kv : tiles) {
+        const Vector3 tc = kv.second.centre.x != 0.0f || kv.second.centre.y != 0.0f || kv.second.centre.z != 0.0f
+                               ? kv.second.centre : Vector3Scale(TreeTileCentreDir(kv.first, radius), radius);
+        if (Vector3Distance(tc, bc) >= br + kTreeTileSize) continue;
+        for (const Vector4& s : spheres)
+            if (Vector3Distance(tc, { s.x, s.y, s.z }) < s.w + kTreeTileSize) {
+                request(kv.first, kv.second, 0.0f); // the old trees stay until the rebuild arrives
+                break;
+            }
+    }
 }
 
 void TreeSystem::update(Planetoid& body, Vector3 camLocal) {

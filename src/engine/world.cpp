@@ -2021,8 +2021,10 @@ static void AfterTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t cou
     { PROFILE_SCOPE("edits: remesh");
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
     }
-    if (p.trees) { PROFILE_SCOPE("edits: trees");
-        for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits); }
+    if (p.trees) { PROFILE_SCOPE("edits: trees"); // (#1791) one pass, each tile once: per stroke it was 24 ms for a site
+        std::vector<Vector4> spheres(count);
+        for (size_t i = 0; i < count; ++i) spheres[i] = { edits[i].center.x, edits[i].center.y, edits[i].center.z, edits[i].radius };
+        p.trees->onEdits(spheres, p.edits); }
     // Flowing water: wake it, or start it where the edit opens space next to water.
     PROFILE_SCOPE("edits: fluid");
     for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64))

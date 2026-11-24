@@ -58,7 +58,7 @@ SCENARIO("world/structure-site-stall") {
         const double ms = Structures_LastUpdateMs();
         if (ms > worstMs) { worstMs = ms; worstAt = c.t; }
         c.waitingFor(TextFormat("the site built (%d -> %d) and its job done (%d pending)", sites0, Structures_SitesBuilt(), Structures_JobsPending()));
-        if (c.t < 3.0 || Structures_SitesBuilt() <= sites0 || Structures_JobsPending() > 0) return false;
+        if (c.t < 3.0 || Structures_SitesBuilt() <= sites0 || Structures_JobsPending() > 0 || frames.ms.size() <= 60) return false;
         c.note(TextFormat("built in %.1f s; worst Structures_Update %.2f ms at %.1f s", c.t, worstMs, worstAt));
         c.gt("sites built by walking in", Structures_SitesBuilt() - sites0, 0.0);
         c.gt("site strokes in the body's edits", (double)(c.body->edits->strokes - strokes0), 0.0);
