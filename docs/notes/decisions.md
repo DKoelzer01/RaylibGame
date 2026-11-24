@@ -158,7 +158,7 @@ Rulings 2026-11-22 (user)
 - Conduits (#1620, sub of #1429): 1/8-cell sub-grid, straight/right-angle runs, no crossing; amps by cross-section
   (1x1 = 1 A .. 4x4 = 16 A), voltage by material tier; overload trips a breaker at the source, manual reset; no loss
   inside a plot, poles + transformers between plots; pipes carry one fluid, limited by material temperature and
-  diameter; conveyors stay cells. All 9 design recommendations accepted.
+  diameter; conveyors stay cells (superseded 2026-11-23 by #1735: thin belts). All 9 design recommendations accepted.
 - Anvil quality (#1613, sub of #1219): quality = tier-gated materials + smithing skill + a voxel-forging minigame
   (2D 12x8 height grid); 75-130% with grades Crude / Common / Fine (>=110) / Masterwork (>=125); machines make composed
   items at a fixed 100%; re-forging at a better anvil raises quality (costs head material, resets wear). All 8 design
@@ -170,6 +170,75 @@ Rulings 2026-11-22 (user)
   cave mouths at night and returns underground by day (#1227).
 - RMB placing ground from a stack in the off hand stays (#836), even with a tool in the main hand (#1577).
 - LOD selection stays distance-based (detail setting scales it), no screen-space-error metric (#1603, #1607).
+
+Rulings 2026-11-23 (user)
+- Creature sim (#1650): all 5 accepted: 200 active within 300 m / 30 engaged; 2 ms mean / 4 ms p99 on the user's PC; the
+  same budget on the host for 4 players far apart, far creatures sent at 2 Hz; far creatures (past ~60 m) may move
+  less accurately; slices 2-3 (tiers + threads) before slice 5 (new AI/combat patterns).
+- Creature lifecycle (#1740): cave creatures spawn only with a player underground, 24-64 m away, out of sight, in the
+  dark (light grid near zero; before #1739: no torch within ~12 m and no sky); beyond ~96 m or an unloaded chunk they are
+  removed and counted back into their home cave, which refills slowly (a few minutes each) up to its cap; only tamed,
+  named, guardian and boss creatures persist when far. Light-shy creatures flee lit areas, light-drawn ones come.
+- Point-light shadows (#1576, 2026-11-22): cube shadow maps; the held light + the 3 nearest torches/lamps/campfires, and
+  **creatures and players cast shadows too** (changed from the recommendation). Anti-aliasing default **MSAA 2x** (#1617);
+  the 2.75 detail level is named **Balanced** (#1618). #1739 narrows the cube shadows to the held light.
+- Light grid (#1739): static lights through a 1 m RGB-coloured grid, smoothed when sampled, smooth falloff (no bands);
+  range candles ~6 m, torches ~12, lamps ~20, big lights ~30 (GUESS, tune), light bends around corners losing strength.
+  All extras in: crops and saplings need light (sky light counts), creatures react to light, a light-level readout at
+  the aimed spot, sky light flows a short way into caves. Held/dynamic lights stay point lights.
+- Terrain cost (#1610): items 3 (shadows) and 4 (far terrain shader) both done behind switches with before/after captures
+  for the user to judge; **item 3 then dropped** (far cascade caching saves at most 0.3 ms even body-local; avoid the
+  every-other-frame cascade that flickered, #1163). Item 2 (upload byte budget) measured: does not pay off, no PR.
+- Plan 11 rendering track (#1703): shadows, particles, creature render/cull/light, wind and network interest move to
+  body-local space (one per-body transform at draw time); Lighting does it, Water owns the Plan 11 core.
+- Armour (#166): three-part armour and per-material resistance profiles, **cap ~95% (not 60%)**, later (space-age) tech
+  stacks mitigation further; early armour must matter: **~50-60% for a full hide set or equivalent**. Load classes cost
+  stamina only, **no speed penalty** (medium/heavy cost more). Gems as recommended (armour gems give the matching
+  resistance; gem weapons split 80/20); weakness discovery after the first hit; order: armour + stats, load classes,
+  gems, UI, tech modules.
+- Progression walkthrough (#1694): all 3 accepted (~7 h to the first EBF; time costs measured from one 20-min recording
+  of T1-T2 play; report-only).
+- Logistics (#1695): all 5 accepted: tubes on the conduit sub-grid; storage without type limits; one logistics step per
+  tier; cross-plot storage later at EV; the slowest belt sets the budget.
+- Power ladder (#1696): solar at LV, ~4x fuel values per tier, pipe-fed steam turbines at MV, the loss numbers as
+  proposed. **Added: fission; liquid and gas fuels in generators/turbines; physical power plants** (heat pipes -> heat
+  exchangers -> boiling -> steam -> turbines through the rotation system -> electricity; several heat/steam sources =
+  several automation chains); **late-game hydro** (a large-scale dam). Closed-loop condensers with an optional open loop;
+  heat pipes short runs, coolant loops for distance; uranium a deep ore (~1.5 km, #1465); dams on infinite rivers capped
+  by flow and head. **Fission (changed from the recommendation): meltdowns, radiation and explosions are allowed** for
+  poorly managed or high-output reactors, **and safe designs that cannot melt down must exist** (~40% output). Also: 12 m
+  crater cap; other players' builds safe by default (server setting); far reactors SCRAM unless steady; contamination
+  always decays (debris ~1 week, corium ~1 month); river-carried contamination later; creatures avoid and take damage,
+  no mutations for now. (Turbine -> shaft -> alternator was taken as accepted; the liquid-combustion generator stays the
+  simple MV option.)
+- Perf budgets (#1690): after the report-only week, a miss of up to ~10-20% over target only flags; more blocks the merge
+  (a PR may raise a budget in the same diff with a reason).
+- POI pointers (#1692) and versioned saves (#1693; saves before 13 are dropped): all accepted as recommended.
+- Multiblock sharing (#1429): GTNH-style wall sharing, everything shareable (casings, frames and hatches may serve more
+  than one structure; the validator must not assume one block = one structure; breaking a shared block unforms every
+  structure using it). Shared energy hatch shortfall: everyone slows evenly (proportional); shared output hatch: reserve
+  space at recipe start; shared input hatch: both pull from one buffer, round-robin per recipe start.
+- Anvil interaction (#1613): RMB with an item in hand puts it on the anvil, RMB with an empty hand takes it off (the
+  workpiece sits in the world); using the anvil needs a crafted hammer and **every stroke costs hammer durability**
+  (Quick forge charges a fixed number of strokes' wear).
+- Thin belts (#1620, #1735): one lane per belt; a belt is **half a cell wide, 1/8 cell tall with 1/8 open space above**
+  (a 1/4-cell placement box); **players never ride them**, not even later. Deterministic client sim + checksums; old
+  conveyors auto-convert. **This supersedes "conveyors stay full cells"** (#1620 ruling, 2026-11-22).
+- Rotation machines (#1734): all 4 accepted: rotary pump, trip hammer, rotary sieve, mixer now; drill/elevator/fan later;
+  the trip hammer does bloom -> ingot but never heads; the rotary pump follows the electric pump's draining rules; mixer
+  alloy dust at equal yield.
+- Shape-mode digging (#1722): aligns to a nearby plot, else a fixed body-local grid (deterministic; digging never creates
+  a plot); **Alt+Scroll** cycles Free -> 1x1 -> 2x2 (larger with better tools); **first-person free look moves to the
+  middle mouse button; lock-on is unbound by default** (stays rebindable; today's MMB lock-on #1216 moves).
+- Tool assembly window (#1723): a pop-out beside crafting; unusable materials greyed with what is missing; forged heads
+  come from the anvil (the window never forges); old per-material recipes removed; mods slot hidden until mods exist; a
+  'same again' button. **No taking apart in the window**: only the disassembler, into raw materials.
+- Map zoom (#1725): all 6 accepted: a rotatable globe; unexplored = dark sphere with silhouette and day/night; telescope
+  'sketching'; bodies discovered by telescope or orbit; team maps shared; the Map item still required, a star chart for
+  the system level.
+- Static models (#1719): the user wants CC0 packs (e.g. opengameart.org) as placeholders; plan accepted ("your suggestions
+  work"): .glb in assets/models/<pack>/, THIRDPARTY entry per asset.
+- Sessions (CLAUDE.md, PR #1699): audio moved to UI/UX; magic split by feature.
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

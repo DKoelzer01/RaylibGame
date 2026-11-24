@@ -72,3 +72,27 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   SSE2 `SimplexNoise::noise4` is bit-identical to `noise()` (`--profile-density` checks it); static water feeds only
   dug cells, and ponds are taken over by the fluid sim (`PlanetField::claimPond`) and become finite.
 
+
+## Saves and migrations (#1693)
+
+- **One version**: `kSaveVersion` in `src/engine/saveversion.h`, written as the world file's first line (`RAYLIBGAME_SAVE 13`); the
+  player record has its own `kPlayerRecordVersion` (`RAYLIBGAME_PLAYER 1`). `kOldestSaveVersion` (13) is the oldest world file
+  that opens; older ones are refused ("This save is from an older build (version N); saves from version 13 on load."), as is a
+  newer one ("made by a newer build ... reads up to 13"). Both refuse before anything is touched; `LastLoadError()` has the
+  message (the menu's load toast shows it).
+- **The readers know only the current format.** Section tags (`plots5`, `planetoid`, `extras`...) stay as checks, not versions.
+  `Save_LoadingVersion()` is the format being parsed (after migration, the current one).
+- **Loading an older save** (`LoadWorldSave`): the existing backup is taken first, as `<save>.backups/pre-v<from>-<date-time>/` (the newest-5 rotation never prunes `pre-v` folders), the file's lines go through
+  `Save_Migrate` (`src/engine/savemigrate.cpp`, the table `kWorldSteps`) into `<save>.migrating`, which the one reader parses and
+  then deletes. The file on disk is untouched; the upgraded save is written by the next normal save. Data a step makes meaningless
+  is removed with `ctx.drop("what")`: logged, and one toast after the load ("Save upgraded from version N; dropped: ...").
+  A multiplayer client (`gNetRole == Client`) never migrates and never autosaves (the autosave in main.cpp is gated on it): the host's
+  save is the only one. Player records: `PlayerRecord_Migrate`, same shape (`ReadRecordInto` runs it for a record below the
+  current number; a record from a newer build is not read and the next save keeps it as a `.bak`).
+- **To bump the version**: change the format; add a step `{ N, "what it does", Step_N_to_N1 }` to `kWorldSteps` (the commented example
+  in savemigrate.cpp), a function over the text lines that turns format N into N+1 (rewrite lines, `ctx.drop` what no longer means
+  anything); set `kSaveVersion` to N+1; reserve nothing else. Binary region files keep their own magic (RGN5; older ones skipped
+  with a warning): a region change adds its step beside the world file's. Then make a golden save with the new build:
+  `$GAME --seed 42 --scenario saves/golden-write --scenario-out <dir>` and commit `<dir>/saves/golden-write/golden-vN/` as
+  `tests/saves/vN/`. `saves/golden-load` (scenario, runner or local) loads every `tests/saves/v*/` through the chain and checks the
+  facts in each `facts.txt`; keep the old directories, they are the test that old saves still open.
