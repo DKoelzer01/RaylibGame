@@ -7,6 +7,9 @@ Player and building (2026-11-14)
   doorways and tunnels must pass.
 - Parts face automatically (from the hit face and view) until the player presses R/V.
 - The Help tab is a Factoriopedia-style database; its "Discovered only" choice is saved per world.
+- Building (user, 2026-11-24, #1771): a part placed on bare ground starts a new plot at the exact aim point, facing the
+  player's heading (or turned with the rotate key), not the body's cardinal grid. Near an existing plot, placement snaps
+  to it as before.
 
 Controls and tools
 - Hotbar starts empty; an empty slot is bare hands (no "Hands" item). Ground items (dirt, sand,
@@ -56,6 +59,8 @@ World and rendering
   variant rides in scale + 10*variant), 7 per m^2, darker lower half, drawn to 100 m; trees to 2 km,
   bushes 300 m. The user trades a few FPS for view distance (walk bench ~220 FPS). Draw distances are
   runtime values (--grass-dist, --tree-dist); the terrain canopy tint follows treeDistance.
+- Grass under water (user, 2026-11-24, #1774): grass that stays under water turns to dirt. Grass, then tall grass, regrow
+  after a delay once the water is gone. Trees never regrow under water.
 
 GL features and streaming (2026-11-13, stack #287-#293)
 - The driver hands out a 4.3 core context with newer features as extensions; src/engine/glcaps.* (`GL_Caps()`)
@@ -241,6 +246,23 @@ Rulings 2026-11-23 (user)
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.
+
+## Rulings 2026-11-24 (user)
+
+- Lighting (user, 2026-11-24): sky light seeded through cave mouths (#1739 PR 3) is deferred to #1765. Rendering already
+  darkens caves; crops use block light plus their own sun check.
+- Combat (user, 2026-11-24, #1776): parry rework. An RMB tap parries and holding blocks. A parry succeeds when its window
+  overlaps the attack's hit window. A parried projectile or melee hit does no damage, and a parried melee hit staggers.
+  The parry window shows as a draining bar in a reusable status-effect widget at the left edge (#1777).
+- Process (user, 2026-11-24): the coordinator sets board priorities itself, without "GUESS" marks; the user reassigns when
+  they want.
+- Merges (user, 2026-11-24, #1744): sessions label finished PRs `ready` (plus `runner-evidence` when the proof is a runner
+  run), and the deweyserver merge bot merges them. The coordinator keeps m84 -> develop -> main and ladder -> m84.
+- Pace (user, 2026-11-23): until a weekly budget reset, every session still finishes a few items a day, infrastructure first.
+- Sandbox (user, 2026-11-24, #1744): slot 2 has no load gate (the load is our own runners while the user develops). Sandbox
+  jobs get CPU priority over the runners.
+- Runner PR runs (user, 2026-11-24, #1768, "implement all 4 now"): PR runs skip the parity check, perf budgets and pose
+  twins; those run nightly or on m84.
 
 ## Art pass (branch art-pass-5, 2026-11-12, Plan 5 light items)
 
