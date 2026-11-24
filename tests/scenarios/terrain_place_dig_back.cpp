@@ -33,8 +33,10 @@ SCENARIO("terrain/place-dig-back") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 90.0;
     s.step("place three strokes, dig the spot back: no filler gained", 40.0, [](ScenarioCtx& c) {
-        c.waitingFor("the player standing on the sandbox");
-        if (c.T < 1.0) return false;
+        c.waitingFor("the player standing on the sandbox, the world built");
+        // (#1769) and an idle world: a slow start (cold shader compiles) left the ground unbuilt after 1 s, and 3 of the 4
+        // cases placed nothing (the runner's 6-of-12 failures)
+        if (c.T < 1.0 || !WorldIdle()) return false;
         terrainTool.creative = false;
         SkillState& sk = LocalSession().skills;
         const SkillState saved = sk;
