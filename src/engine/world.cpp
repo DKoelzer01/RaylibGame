@@ -1,4 +1,5 @@
 #include "world.h"
+#include "profiler.h"
 #include "frames.h"
 #include "netid.h"
 #include "gamerng.h"
@@ -1961,11 +1962,14 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     if (count == 0) return;
     // Fold the strokes into the delta lattice: a new snapshot sharing every untouched chunk (the
     // old one may still be in use by worker builds).
-    TerrainDeltasBuilder b(*p.edits);
-    std::unordered_set<TerrainDeltas::Key> touchedChunks;
-    for (size_t i = 0; i < count; ++i) b.apply(edits[i], *p.field, &touchedChunks);
-    p.edits = b.finish();
-    for (TerrainDeltas::Key k : touchedChunks) p.dirtyRegions.insert(TerrainDeltas::RegionOf(k));
+    {
+        PROFILE_SCOPE("edits: fold"); // (#1791) the parts of a big edit, by name in a profile
+        TerrainDeltasBuilder b(*p.edits);
+        std::unordered_set<TerrainDeltas::Key> touchedChunks;
+        for (size_t i = 0; i < count; ++i) b.apply(edits[i], *p.field, &touchedChunks);
+        p.edits = b.finish();
+        for (TerrainDeltas::Key k : touchedChunks) p.dirtyRegions.insert(TerrainDeltas::RegionOf(k));
+    }
     p.lodDirty = true;
 
     // Rebuild every existing node (any level) whose samples or normals the strokes reach. Nodes
@@ -1983,10 +1987,13 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
         if (count == 1 && DistanceToBox(edits[0].center, nlo, nhi) > margin) continue;
         touched.push_back(k);
     }
+    { PROFILE_SCOPE("edits: remesh");
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
-    if (p.trees)
-        for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits);
+    }
+    if (p.trees) { PROFILE_SCOPE("edits: trees");
+        for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits); }
     // Flowing water: wake it, or start it where the edit opens space next to water.
+    PROFILE_SCOPE("edits: fluid");
     for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64))
         Fluid::OnTerrainEdit(p, edits[i].center, edits[i].radius, !edits[i].carve && edits[i].strength > 0.0f); // adding ground: may dam a river (#361)
 }
@@ -2565,6 +2572,7 @@ bool Region_Install(Planetoid& p, TerrainDeltas::Key region, const uint8_t* data
         }
         if (at != size) return false;
     }
+    PROFILE_SCOPE("edits: fold"); // (#1791) the parts of a big edit, by name in a profile
     TerrainDeltasBuilder b(*p.edits);
     for (auto it = b.state().chunks.begin(); it != b.state().chunks.end();)
         it = TerrainDeltas::RegionOf(it->first) == region ? b.state().chunks.erase(it) : std::next(it);
