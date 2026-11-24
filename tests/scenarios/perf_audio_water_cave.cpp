@@ -100,32 +100,32 @@ SCENARIO("perf/audio-water-cave") {
         c.lt("AnyWaterNear(16 m) ms", newMs, 2.0);
         return true;
     });
-    // The dense case: inside simulated water every brick within 16 m exists, so a brick walk still reads the whole cube.
-    // The wet brick with the most bricks within 4 (the 16 m cube at 0.25 m cells) anywhere on the body; both calls at its centre.
+    // The dense case: inside simulated water (a flooded cave, a dug pond) every brick within 16 m exists, so a brick walk
+    // still reads the whole cube. A site of 9^3 full water bricks (the 16 m cube at 0.25 m cells) is published around a
+    // point for the two calls and the previous snapshot put back. Built here so it doesn't depend on the world having a site.
     s.step("old call against new, in water", 5.0, [](ScenarioCtx& c) {
-        const WaterField::SnapshotPtr snap = WaterField::Current();
-        const WaterField::Site* best = nullptr; int bi = 0, bj = 0, bk = 0, bestN = -1;
-        for (const WaterField::Site& s : snap->sites) {
-            if (s.body != c.body->id) continue;
-            for (const auto& kv : s.bricks) {
-                if (!kv.second || !(kv.second->kinds & 1)) continue;
-                const int i = (int)(kv.first >> 22) - 1024, j = (int)((kv.first >> 11) & 2047) - 1024, k = (int)(kv.first & 2047) - 1024;
-                int n = 0;
-                for (int dk = -4; dk <= 4; ++dk) for (int dj = -4; dj <= 4; ++dj) for (int di = -4; di <= 4; ++di) n += s.brick(i + di, j + dj, k + dk) != nullptr;
-                if (n > bestN) { bestN = n; best = &s; bi = i; bj = j; bk = k; }
-            }
-        }
-        if (!best) { c.note("no simulated water on the body: the in-water case is skipped"); return true; }
-        Vector3 lo, hi;
-        best->brickBounds(bi, bj, bk, lo, hi);
-        const Vector3 here = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+        using namespace WaterField;
+        const SnapshotPtr prev = Current();
+        auto wet = std::make_shared<Brick>();
+        wet->fill.fill(255); wet->drawn.fill(255); wet->kinds = 1; // every cell water (kind 0, open)
+        const Vector3 here = Vector3Scale(S.dir, c.field->radius + 500.0f); // in the air: no real site near
+        const float side = kBrick * CellSize();
+        Site site;
+        site.body = c.body->id; site.e = { 1, 0, 0 }; site.n = { 0, 0, 1 }; site.u = { 0, 1, 0 };
+        site.origin = Vector3Subtract(here, { 4.5f * side, 4.5f * side, 4.5f * side });
+        site.lo = site.origin; site.hi = Vector3Add(site.origin, { 9 * side, 9 * side, 9 * side });
+        for (int k = 0; k < 9; ++k) for (int j = 0; j < 9; ++j) for (int i = 0; i < 9; ++i) site.bricks[BrickKey(i, j, k)] = wet;
+        auto snap = std::make_shared<Snapshot>(*prev);
+        snap->sites.push_back(std::move(site));
+        Publish(snap, {});
         const auto t0 = std::chrono::steady_clock::now();
         const float wat = Fluid::WaterAt(*c.body, here, 16.0f);
         const double oldMs = Ms(t0);
         const auto t1 = std::chrono::steady_clock::now();
         const bool any = Fluid::AnyWaterNear(*c.body, here, 16.0f, 0.2f);
         const double newMs = Ms(t1);
-        c.metric("in water: bricks in the 16 m cube (of 729)", bestN, "", false);
+        Publish(prev, {});
+        c.check("in water: WaterAt saw the block", wat > 1000.0f, std::to_string(wat) + " m^3");
         c.metric("in water: water within 16 m (m^3)", wat, "m^3", false);
         c.metric("in water: WaterAt(16 m), the old look", oldMs, "ms", false);
         c.metric("in water: AnyWaterNear(16 m), the new look", newMs, "ms", false);
