@@ -115,6 +115,11 @@ void BuildTool_EndFoundationBatch(Planetoid& body) {
     else if (!foundationBatch.empty()) ApplyTerrainEdits(body, foundationBatch.data(), foundationBatch.size());
     foundationBatch.clear();
 }
+void BuildTool_TakeFoundationBatch(std::vector<TerrainEdit>& out) {
+    foundationBatching = false;
+    out.insert(out.end(), foundationBatch.begin(), foundationBatch.end());
+    foundationBatch.clear();
+}
 int BuildTool_PendingFoundations() { return (int)foundationsPending.size(); }
 void BuildTool_ApplyPendingFoundations(double budgetMs) {
     if (foundationsPending.empty()) return;

@@ -5,10 +5,16 @@
 
 #include <raylib.h>
 #include <rlgl.h>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <random>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 extern "C" {
     typedef void (*PfnMemoryBarrier)(unsigned int);
@@ -17,6 +23,21 @@ extern "C" {
     extern PfnBindBuffer glad_glBindBuffer;
     typedef void (*PfnDispatchComputeIndirect)(long long);
     extern PfnDispatchComputeIndirect glad_glDispatchComputeIndirect;
+    // (#1769) program binaries (GL 4.1 core)
+    typedef void (*PfnGetProgramiv)(unsigned, unsigned, int*);
+    extern PfnGetProgramiv glad_glGetProgramiv;
+    typedef void (*PfnGetProgramBinary)(unsigned, int, int*, unsigned*, void*);
+    extern PfnGetProgramBinary glad_glGetProgramBinary;
+    typedef void (*PfnProgramBinary)(unsigned, unsigned, const void*, int);
+    extern PfnProgramBinary glad_glProgramBinary;
+    typedef unsigned (*PfnCreateProgram)(void);
+    extern PfnCreateProgram glad_glCreateProgram;
+    typedef void (*PfnDeleteProgram)(unsigned);
+    extern PfnDeleteProgram glad_glDeleteProgram;
+    typedef void (*PfnGetIntegerv)(unsigned, int*);
+    extern PfnGetIntegerv glad_glGetIntegerv;
+    typedef const unsigned char* (*PfnGetString)(unsigned);
+    extern PfnGetString glad_glGetString;
 }
 #if RAYLIBGAME_HEADLESS_PLATFORM
 extern "C" int RaylibHeadless_GLMode(void); // src/platform/rcore_headless.c: 2 = the null GL (no GPU)
@@ -79,7 +100,94 @@ std::string ComputeSource(const std::string& p) {
 }
 // (#1047) Compiles started early by Compute_Prewarm, by path; load() takes its program from here.
 std::unordered_map<std::string, std::pair<AsyncProgram, double>> gPending; // the program, when it was started
+
+// (#1769) The linked program's binary on disk, keyed by the expanded source and the driver: a cold driver cache made every
+// scenario process (and the runner, and a fresh install) compile fluid_step.comp (~8 s) and terrain_density.comp (~5 s) again.
+// A binary the driver refuses (a driver update) is deleted and the shader compiled. RAYLIBGAME_SHADER_CACHE = a directory, or
+// "0" for none; default cache/shaders. RAYLIBGAME_COLD_SHADERS runs (#1047) neither read nor write it.
+namespace BinCache {
+constexpr unsigned kLinkStatus = 0x8B82, kBinaryLength = 0x8741, kNumBinaryFormats = 0x87FE;
+constexpr unsigned kVendor = 0x1F00, kRenderer = 0x1F01, kVersion = 0x1F02;
+constexpr uint32_t kMagic = 0x32424352; // "RCB2": magic, format, length, checksum, then the binary
+
+std::string Dir() {
+    static const std::string d = [] {
+        const char* e = getenv("RAYLIBGAME_SHADER_CACHE");
+        if (e && (!strcmp(e, "0") || !strcmp(e, "off") || !strcmp(e, "false"))) return std::string();
+        if (getenv("RAYLIBGAME_COLD_SHADERS") && getenv("RAYLIBGAME_COLD_SHADERS")[0] == '1') return std::string();
+        return std::string(e && e[0] ? e : "cache/shaders");
+    }();
+    return d;
 }
+bool Usable() {
+    if (Dir().empty() || !glad_glGetProgramBinary || !glad_glProgramBinary || !glad_glGetProgramiv || !glad_glCreateProgram) return false;
+    static const int formats = [] { int n = 0; if (glad_glGetIntegerv) glad_glGetIntegerv(kNumBinaryFormats, &n); return n; }();
+    return formats > 0;
+}
+uint64_t Fnv(uint64_t h, const std::string& s) { for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; } return h; }
+uint32_t Checksum(const std::vector<char>& b) { uint64_t h = 14695981039346656037ull; for (char c : b) { h ^= (unsigned char)c; h *= 1099511628211ull; } return (uint32_t)(h ^ (h >> 32)); }
+std::string GlString(unsigned name) { const unsigned char* s = glad_glGetString ? glad_glGetString(name) : nullptr; return s ? (const char*)s : ""; }
+// The file for a shader: its name and a hash of the driver and the source as compiled.
+std::string PathFor(const std::string& shaderPath, const std::string& src) {
+    static const std::string driver = GlString(kVendor) + "|" + GlString(kRenderer) + "|" + GlString(kVersion);
+    const uint64_t h = Fnv(Fnv(14695981039346656037ull, driver), src);
+    const size_t slash = shaderPath.find_last_of("/\\");
+    return Dir() + "/" + shaderPath.substr(slash == std::string::npos ? 0 : slash + 1) + "-" + TextFormat("%016llx", (unsigned long long)h) + ".bin";
+}
+unsigned Load(const std::string& file) {
+    FILE* f = fopen(file.c_str(), "rb");
+    if (!f) return 0;
+    uint32_t head[4] = {}; // magic, format, length, checksum
+    std::vector<char> bin;
+    bool ok = fread(head, sizeof head, 1, f) == 1 && head[0] == kMagic && head[2] > 0 && head[2] < (64u << 20);
+    if (ok) { bin.resize(head[2]); ok = fread(bin.data(), 1, bin.size(), f) == bin.size() && Checksum(bin) == head[3]; }
+    fclose(f);
+    if (!ok) { // short, damaged or an older layout: never given to the driver; deleted (a rename on Windows may not replace it)
+        std::error_code ec;                                    // and compiled, then saved again
+        std::filesystem::remove(file, ec);
+        return 0;
+    }
+    const unsigned prog = glad_glCreateProgram();
+    glad_glProgramBinary(prog, head[1], bin.data(), (int)bin.size());
+    int linked = 0;
+    glad_glGetProgramiv(prog, kLinkStatus, &linked);
+    if (linked) return prog;
+    if (glad_glDeleteProgram) glad_glDeleteProgram(prog);
+    std::error_code ec;
+    std::filesystem::remove(file, ec); // refused (another driver): compiled and written again
+    return 0;
+}
+void Save(const std::string& file, unsigned prog) {
+    int len = 0;
+    glad_glGetProgramiv(prog, kBinaryLength, &len);
+    if (len <= 0) return;
+    std::vector<char> bin((size_t)len);
+    unsigned format = 0;
+    int got = 0;
+    glad_glGetProgramBinary(prog, len, &got, &format, bin.data());
+    if (got <= 0) return;
+    std::error_code ec;
+    std::filesystem::create_directories(Dir(), ec);
+    bin.resize((size_t)got);
+    // Written aside under a name of its own, then renamed over the file: scenario processes run side by side (#1768) and may
+    // fill a cold cache with the same shader at once; a reader sees the old file, the new one or none, never half of one.
+    // (Where a rename can't replace an existing file, the one already there stays: the same program.)
+    const std::string tmp = file + TextFormat(".%08x%08x.tmp", (unsigned)std::random_device{}(), (unsigned)time(nullptr));
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return;
+    const uint32_t head[4] = { kMagic, format, (uint32_t)got, Checksum(bin) };
+    const bool ok = fwrite(head, sizeof head, 1, f) == 1 && fwrite(bin.data(), 1, bin.size(), f) == bin.size();
+    if (fclose(f) != 0 || !ok) { std::filesystem::remove(tmp, ec); return; }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
+}
+} // namespace BinCache
+}
+
+bool ProgramCache_Usable() { return BinCache::Usable(); }
+std::string ProgramCache_Path(const std::string& name, const std::string& src) { return BinCache::PathFor(name, src); }
+unsigned ProgramCache_Load(const std::string& file) { return BinCache::Load(file); }
+void ProgramCache_Save(const std::string& file, unsigned program) { BinCache::Save(file, program); }
 
 int Compute_Prewarm(const std::vector<std::string>& paths) {
     if (!Compute_Available() || !ShaderAsync_Available()) return 0;
@@ -88,6 +196,7 @@ int Compute_Prewarm(const std::vector<std::string>& paths) {
         if (gPending.count(p)) continue;
         const std::string src = ComputeSource(p);
         if (src.empty()) continue;
+        if (BinCache::Usable() && std::filesystem::exists(BinCache::PathFor(p, src))) continue; // (#1769) load() reads its binary
         AsyncProgram a = ShaderAsync_BeginCompute(src);
         if (a.started()) { gPending[p] = { a, GetTime() }; ++n; }
     }
@@ -103,6 +212,20 @@ int Compute_PrewarmPending() {
 
 bool ComputeProgram::load(const std::string& p) {
     if (!Compute_Available()) return false;
+    const bool cache = BinCache::Usable();
+    std::string src;
+    if (cache && !gPending.count(p)) { // (#1769) a binary from an earlier run
+        src = ComputeSource(p);
+        if (src.empty()) return false;
+        const double t0 = GetTime();
+        if (const unsigned prog = BinCache::Load(BinCache::PathFor(p, src))) {
+            if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Compute shader %s: cached binary loaded in %.0f ms", p.c_str(), ms);
+            unload();
+            id = prog;
+            path = p;
+            return true;
+        }
+    }
     if (auto it = gPending.find(p); it != gPending.end()) { // (#1047) started early: usually done by now
         const double t0 = GetTime();
         const bool wasDone = ShaderAsync_Done(it->second.first);
@@ -113,12 +236,13 @@ bool ComputeProgram::load(const std::string& p) {
             TraceLog(LOG_WARNING, "Compute shader %s: background compile %s; waited %.0f ms for it (started %.0f ms before)", p.c_str(),
                      wasDone ? "done" : "not done yet", waitedMs, sinceMs);
         if (prog == 0) { TraceLog(LOG_WARNING, "Compute shader %s failed to compile", p.c_str()); return false; }
+        if (cache) { if (src.empty()) src = ComputeSource(p); if (!src.empty()) BinCache::Save(BinCache::PathFor(p, src), prog); }
         unload();
         id = prog;
         path = p;
         return true;
     }
-    const std::string src = ComputeSource(p);
+    if (src.empty()) src = ComputeSource(p);
     if (src.empty()) return false;
     const double t0 = GetTime();
     const unsigned int sh = rlCompileShader(src.c_str(), RL_COMPUTE_SHADER);
@@ -127,6 +251,7 @@ bool ComputeProgram::load(const std::string& p) {
     if (prog == 0) { LOG_ERROR("Compute", "compute shader %s failed to link\n", p.c_str()); return false; }
     // (#1047) a slow compile stalls its frame: a driver with a cold shader cache took seconds a shader
     if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Compute shader %s: compiled and linked in %.0f ms", p.c_str(), ms);
+    if (cache) BinCache::Save(BinCache::PathFor(p, src), prog);
     unload();
     id = prog;
     path = p;

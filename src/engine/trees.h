@@ -137,6 +137,8 @@ public:
     void setShadowSun(Vector3 dirLocal) { if (dirLocal.x * shadowSunLocal.x + dirLocal.y * shadowSunLocal.y + dirLocal.z * shadowSunLocal.z < 0.99985f) { shadowSunLocal = dirLocal; batchDirty = true; } }
     // A terrain edit: rebuild tiles it reaches (trees lose their ground, new ground may grow some).
     void onEdit(Vector3 localCentre, float radius, std::shared_ptr<const TerrainDeltas> edits);
+    // (#1791) Many at once (spheres: centre xyz, radius w): one pass over the tiles, each rebuilt once.
+    void onEdits(const std::vector<Vector4>& spheres, std::shared_ptr<const TerrainDeltas> edits);
     // Trunks within `range` of a body-local point.
     void trunksNear(Vector3 local, float range, std::vector<Trunk>& out) const;
     void plantsNear(Vector3 local, float range, std::vector<Plant>& out) const; // trees, bushes and stones (tests)

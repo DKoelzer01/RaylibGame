@@ -69,6 +69,11 @@ std::string Composed_AddWear(const std::string& id, const std::string& data, int
 // item; 0: any hammer): Ok, NoHammer (none in hand, or worn out), TooWeak (its tier is under the metal's).
 enum class AnvilStrike { Ok, NoHammer, TooWeak };
 AnvilStrike Composed_AnvilStrike(const std::string& heldId, const std::string& heldData, int metalTier);
+// (#1613) A forged head is a part item with its own record ("q=<quality %>", from the anvil); hafting it gives the tool
+// that quality. Whether an item is the class's head part (bronze_pick_head for tool_pickaxe), and a part record's q
+// (clamped to 75..130; 100 for a plain part).
+bool Composed_IsHeadPartOf(const std::string& cls, const std::string& itemId);
+int Composed_PartQuality(const std::string& partData);
 // (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
 bool Composed_IsGem(const std::string& id);
 std::string Composed_GemText(const std::string& id);
