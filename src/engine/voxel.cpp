@@ -3779,7 +3779,11 @@ namespace {
 VeinDeposit PlanetField::depositOf(int cx, int cy, int cz) const {
     struct Key { const PlanetField* f; uint32_t seed; int x, y, z; bool operator==(const Key& o) const { return f == o.f && seed == o.seed && x == o.x && y == o.y && z == o.z; } };
     struct KeyHash { size_t operator()(const Key& k) const { return (size_t)OreVeins_Hash(k.x, k.y, k.z, k.seed ^ (uint32_t)(uintptr_t)k.f); } };
-    static thread_local std::unordered_map<Key, VeinDeposit, KeyHash> cache;
+    // (#1802) Never destroyed: a thread_local with a destructor crashed at thread exit under MinGW (#485), and its
+    // __cxa_thread_atexit pulls a second __imp__assert into the link (w64devkit: logger.cpp's override then collides).
+    thread_local std::unordered_map<Key, VeinDeposit, KeyHash>* cacheP = nullptr;
+    if (!cacheP) cacheP = new std::unordered_map<Key, VeinDeposit, KeyHash>();
+    auto& cache = *cacheP;
     const Key key{ this, oreSeed, cx, cy, cz };
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     if (cache.size() > 65536) cache.clear();
