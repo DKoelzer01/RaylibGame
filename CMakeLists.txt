@@ -9,6 +9,29 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Precompiled headers (#1758): src/pch.h (raylib + the standard headers) is force-included in engine, game_objs, game and
+# game_tests. One PCH per target (their flags and defines differ, so REUSE_FROM does not apply).
+option(RAYLIBGAME_PCH "Precompiled headers (src/pch.h) for faster builds" ON)
+# ccache only caches a PCH build with these sloppiness settings (and GCC's -fpch-preprocess, below): add them when the
+# launcher is ccache (the sandbox passes CMAKE_CXX_COMPILER_LAUNCHER=ccache).
+if(RAYLIBGAME_PCH AND CMAKE_CXX_COMPILER_LAUNCHER MATCHES "ccache" AND NOT CMAKE_CXX_COMPILER_LAUNCHER MATCHES "CCACHE_SLOPPINESS")
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CMAKE_COMMAND} -E env CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime ${CMAKE_CXX_COMPILER_LAUNCHER})
+endif()
+# Files that include <windows.h> / <winsock2.h> before raylib's names (Rectangle, CloseWindow...) cannot take the force-included raylib.h.
+set(PCH_SKIP_FILES src/engine/dynlib.cpp src/engine/profiler.cpp src/engine/utils/logger.cpp src/space/hostprocess.cpp src/space/scenarioproc.cpp)
+function(raylibgame_pch target)
+    if(NOT RAYLIBGAME_PCH)
+        return()
+    endif()
+    target_precompile_headers(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fpch-preprocess>)
+    endif()
+endfunction()
+foreach(f ${PCH_SKIP_FILES})
+    set_source_files_properties("${CMAKE_SOURCE_DIR}/${f}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endforeach()
+
 option(USE_SYSTEM_RAYLIB "Link a prebuilt raylib at RAYLIB_PATH instead of fetching raylib 5.5" OFF)
 set(RAYLIB_PATH "C:/raylib/raylib" CACHE PATH "raylib source tree containing src/libraylib.a (USE_SYSTEM_RAYLIB only)")
 option(ENABLE_TRACY "Build with the Tracy profiler client (connect with tracy-profiler v0.11.1)" OFF)
@@ -110,6 +133,7 @@ endif()
 # ---------------------------------------------------------------------------------------------
 file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS src/engine/*.cpp)
 add_library(engine STATIC ${ENGINE_SOURCES})
+raylibgame_pch(engine)
 target_include_directories(engine PUBLIC src/engine)
 target_link_libraries(engine PUBLIC raylib imgui)
 target_compile_definitions(engine PUBLIC PLATFORM_DESKTOP)
@@ -165,6 +189,7 @@ function(add_game target dir)
     # without compiling them twice. The exe still gets every object (object libraries are never dropped by the linker).
     list(FILTER GAME_SOURCES EXCLUDE REGEX "/main\\.cpp$")
     add_library(${target}_objs OBJECT ${GAME_SOURCES})
+    raylibgame_pch(${target}_objs)
     target_include_directories(${target}_objs PUBLIC ${dir})
     target_link_libraries(${target}_objs PUBLIC engine)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -174,6 +199,7 @@ function(add_game target dir)
     # exe itself (not the object library's archive, whose unreferenced members game_tests' linker would drop).
     file(GLOB SCENARIO_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tests/scenarios/*.cpp)
     add_executable(${target} ${dir}/main.cpp ${SCENARIO_SOURCES})
+    raylibgame_pch(${target})
     target_include_directories(${target} PRIVATE ${dir})
     target_link_libraries(${target} PRIVATE ${target}_objs engine)
     # Version for the window title (#501): branch + commit, regenerated at every build (cmake/game_version.cmake).
@@ -242,6 +268,7 @@ if(RAYLIBGAME_UNIT_TESTS)
     add_library(game_space STATIC $<TARGET_OBJECTS:game_objs>) # the game's objects as a library (no recompile)
     add_executable(game_tests ${UNIT_TEST_SOURCES} tests/unit/unit_helpers.cpp "${CMAKE_BINARY_DIR}/generated/game_version.cpp")
     add_dependencies(game_tests game_version) # kGameVersion (menus.cpp)
+    raylibgame_pch(game_tests)
     target_compile_definitions(game_tests PRIVATE RAYLIBGAME_UNIT_TESTS=1)
     target_include_directories(game_tests PRIVATE src/engine src/space tests/unit)
     # The game objects and the engine refer to each other: rescan both until every symbol resolves.
