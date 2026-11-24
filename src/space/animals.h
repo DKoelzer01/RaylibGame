@@ -71,6 +71,9 @@ float Animals_Heading(int index); // (#1717 tests) radians from east toward nort
 void Animals_TestSetHeading(int index, float heading); // (#1717 tests) also its previous heading (no turn from the old one)
 int Animals_CaveSpawned();
 int Animals_CaveSites();
+// (#1740, #1739) A cave spawn site is dark: no fire, lamp or carried light within 12 m, and the light grid 1 m over its floor
+// at most SpawnTune::kDarkLevel (torches and lamps round corners and down tunnels). floor, up: body-local.
+bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up);
 void Animals_CaveSpawnNow();
 void Animals_ResetCaveSpawns();
 void Animals_Reset();

@@ -15,6 +15,7 @@
 #include "footsteps.h" // (#1240) step noise for creature hearing
 #include "avatar.h" // (#1225) humanoid creatures
 #include "locallights.h"
+#include "lightlevel.h"
 #include "toolwear.h" // (#1226) an ooze corrodes tools
 #include "claims.h"
 #include "headless.h"
@@ -1178,8 +1179,7 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             if (Vector3Distance(floor, player) < SpawnTune::kMinFromPlayer) { ++nNear; continue; }
             if (CaveLifecycleOn()) { // (#1740)
                 if (Vector3Distance(floor, player) > SpawnTune::kMaxFromPlayer) { ++nFar; continue; }
-                Vector3 lit{};
-                if (NearFire(floor, SpawnTune::kDarkFromLight, lit)) { ++nLit; continue; } // interim darkness: no fire, lamp or carried light near
+                if (!Animals_CaveSiteDark(body, floor, up)) { ++nLit; continue; }
                 // Out of the player's sight: rock somewhere on the line from their eye to the site (1 m steps).
                 const Vector3 at = Vector3Add(floor, Vector3Scale(up, 1.0f));
                 const float len = Vector3Distance(eye, at);
@@ -1272,6 +1272,11 @@ float Animals_Heading(int i) { return i >= 0 && i < (int)animals.size() ? animal
 void Animals_TestSetHeading(int i, float h) { if (i >= 0 && i < (int)animals.size()) { animals[i].heading = animals[i].prevHeading = h; } } // (#1717)
 double Animals_Clock() { return simClock; }
 int Animals_CaveSites() { return caveSites; }
+bool Animals_CaveSiteDark(const Planetoid& body, Vector3 floor, Vector3 up) {
+    Vector3 lit{};
+    if (NearFire(floor, SpawnTune::kDarkFromLight, lit)) return false;
+    return LightLevel_At(body, Vector3Add(floor, Vector3Scale(up, 1.0f))).level <= SpawnTune::kDarkLevel;
+}
 void Animals_CaveSpawnNow() { lastCaveSpawn = -1e9; }
 void Animals_ResetCaveSpawns() { spawnChunks.clear(); caveSpawned = 0; caveSites = 0; lastCaveSpawn = -1e9; }
 

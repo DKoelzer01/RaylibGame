@@ -211,6 +211,7 @@ struct SpawnChunk { double nextAt = 0.0; bool filled = false; bool hasNest = fal
 int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now);
 namespace SpawnTune { constexpr float kChunk = 64.0f, kMinFromPlayer = 24.0f, kNestChamber = 5.0f;
     constexpr float kMaxFromPlayer = 64.0f, kDarkFromLight = 12.0f; // (#1740) sites 24-64 m from an underground player, 12 m from any light
+    constexpr int kDarkLevel = 16; // (#1739) and the light grid at the site at most this (0-255, 8 a metre: "light <= 1" of 15 on the issue)
     constexpr float kReleaseRange = 96.0f; constexpr double kReturnEvery = 20.0; // (#1740) gone home past 96 m; back one at a time (GUESS 20 s)
     constexpr double kPass = 2.0; }
 

@@ -119,7 +119,12 @@ SCENARIO("creatures/cave-spawn") {
             player.spawnOn(c.world, *c.body, c.body->dirToWorld(Vector3Normalize(Vector3Add(S.chamber, Vector3Scale(side, 150.0f)))));
             return false;
         }
-        if (c.t < 3.0) return false;
+        // (#1756) The move brings up a loading screen and animals do not update under it (main.cpp: !loading): wait for the
+        // world to be idle, then 2 s of updates (past 80 m they run every 4th frame), not 3 s of sim time from the move.
+        static double idleAt = -1.0;
+        c.waitingFor("the terrain at the new spot built (an idle world), then 2 s");
+        if (idleAt < 0.0 && c.t > 0.5 && WorldIdle()) idleAt = c.t;
+        if (idleAt < 0.0 || c.t < idleAt + 2.0) return false;
         int left = 0;
         for (int i = S.count0; i < Animals_Count(); ++i) left += Animals_Body(i) == c.body->name && Animals_SpeciesOf(i).first == "hornhide";
         c.eq("cave dwellers left after the player went 150 m away", left, 0);

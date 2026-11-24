@@ -1,5 +1,6 @@
 #include "lightlevel.h"
 #include "envflag.h"
+#include "headless.h"
 #include "locallights.h"
 #include "player.h"
 #include "plots.h"
@@ -206,7 +207,7 @@ void LightLevel_Update(Scene& world, bool inGame) {
     const int camCell[3] = { FloorI(cam.x), FloorI(cam.y), FloorI(cam.z) };
     const int anchor[3] = { (camCell[0] >> 7) << 7, (camCell[1] >> 7) << 7, (camCell[2] >> 7) << 7 };
     const Matrix model = body->localModel(DVec3(anchor[0], anchor[1], anchor[2]), world.renderOrigin);
-    LocalLights_UploadGrid(&g, camCell, anchor, MatrixInvert(model), kGain);
+    if (!gHeadless) LocalLights_UploadGrid(&g, camCell, anchor, MatrixInvert(model), kGain); // a server keeps the grid (spawns, crops), draws nothing
 
     S.stats.sources = (int)want.size();
     S.stats.bricks = (int)g.BrickCount();
