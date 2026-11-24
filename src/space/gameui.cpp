@@ -40,6 +40,7 @@
 #include "menus.h"
 #include "playerrecord.h"
 #include "combat.h"
+#include "statusbar.h"
 #include "playersession.h"
 #include "avatar.h"
 #include "netclient.h"
@@ -2173,6 +2174,7 @@ void GameUI_DrawHUD(Scene& world) {
     }
     if (inventory.overflowed) { GameUI_Toast("Inventory full: some items were lost"); inventory.overflowed = false; }
     DrawPickups(); // #208
+    StatusBar_Draw(); // (#1777) status effects, left edge (also while piloting)
     if (ship.piloted) {
         DrawText(TextFormat("SHIP  %.0f m/s", relSpeed(ship.velocity)), w - 220, 70, 20, SKYBLUE);
         if (GetTime() < toastUntil) { const int fs = (int)(20 * GameUI_HudScale()); DrawText(toast.c_str(), (GetScreenWidth() - MeasureText(toast.c_str(), fs)) / 2, (int)(GetScreenHeight() * 0.70f), fs, YELLOW); } // (#891: at the scale, above the hotbar)
