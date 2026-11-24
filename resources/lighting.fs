@@ -537,7 +537,7 @@ void main()
         float open = smoothstep(0.55, 0.85, fragSky);
         direct += albedo * lights[0].color.rgb * (0.25 * sunUp * facingDown * open);
     }
-    direct += albedo * localLights(fragPosition, normal); // lamps, campfires, glowing machines (#139)
+    direct += albedo * (localLights(fragPosition, normal) + gridLight(fragPosition, normal)); // lamps, campfires, glowing machines (#139); placed lights through the grid (#1739)
 
     // Ambient occlusion (#132) darkens the ambient term only: dug holes and crevices read under flat sky light.
     float occlusionAO = 1.0 - 0.75 * clamp(fragOcclusion, 0.0, 1.0);

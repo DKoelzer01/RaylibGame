@@ -1063,10 +1063,28 @@ bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#
     return false;
 }
 
-bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const {
+bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    if (contacts) contacts->count = 0;
     if (cells.empty()) return false;
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
-    const float rc = r / kCellSize;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    bodyCentre = toBody(Vector3Scale(p, kCellSize));
+    return true;
+}
+
+bool Plot::collideSphereD(const DVec3& bodyCentre, float r, Vector3& pushOut, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    if (contacts) contacts->count = 0;
+    if (cells.empty()) return false;
+    const Vector3 p0 = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units: plot-relative, small, exact enough
+    Vector3 p = p0;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    const Vector3 d = Vector3Scale(Vector3Subtract(p, p0), kCellSize);
+    pushOut = Vector3Add(Vector3Add(Vector3Scale(east, d.x), Vector3Scale(up, d.y)), Vector3Scale(north, d.z));
+    return true;
+}
+
+bool Plot::collideCells(Vector3& p, float rc, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
     bool hit = false;
     Vector3 nSum = { 0, 0, 0 };
     // Deepest overlap first, then measure again: pushing out of cells in grid order let a
@@ -1089,14 +1107,17 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut) const
                     if (depth > deepest) { deepest = depth; bestN = len > 0.0f ? Vector3Scale(d, 1.0f / len) : d; }
                 }
         if (deepest <= 0.0f) break;
+        if (edgeWallCos > 0.0f && bestN.y > 0.0f && bestN.y < edgeWallCos) { // (plot y is up) out level, as from a wall face
+            const float level = sqrtf(bestN.x * bestN.x + bestN.z * bestN.z);
+            if (level > 1e-3f) { deepest = std::min(deepest / level, rc); bestN = { bestN.x / level, 0.0f, bestN.z / level }; }
+        }
         p = Vector3Add(p, Vector3Scale(bestN, deepest));
         nSum = Vector3Add(nSum, bestN);
+        if (contacts) contacts->n[contacts->count++] = toBodyDir(bestN); // (at most 4 passes)
         hit = true;
     }
     if (!hit) return false;
-    bodyCentre = toBody(Vector3Scale(p, kCellSize));
-    const Vector3 n = Vector3Normalize(nSum);
-    normalOut = Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z)));
+    normalOut = toBodyDir(Vector3Normalize(nSum));
     return true;
 }
 

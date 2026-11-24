@@ -216,6 +216,8 @@ private:
     // agree), a sphere whose distance, less how far it has moved since, is still beyond its radius + 5 cm can't touch: it is not
     // measured again (each measurement is 7 density samples). Any edit (a new snapshot) or another body clears it.
     struct CollideCache { Vector3 centre[8]{}; float dist[8]{}; bool valid[8]{}; const void* body = nullptr; const void* edits = nullptr; } collideCache;
+    // One body's terrain and parts against the capsule (resolveCollisions: the nearest, then any other in reach, #1698).
+    bool collideBody(Planetoid& p, const float* offsets, int kSamples, Vector3& feet, Vector3 frameVel, float& pushBudget, CollideCache* cache, const DVec3& renderOrigin);
     void collideTrunks(Vector3& feet); // tree trunks: vertical capsules on the nearest body
     // Velocity of the terrain being collided with, in the frame `velocity` is in: zero while grounded
     // (velocity is then relative to the surface), the surface velocity while airborne (world frame).

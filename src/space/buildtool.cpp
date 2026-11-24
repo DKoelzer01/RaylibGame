@@ -745,7 +745,43 @@ namespace {
 }
 bool BuildTool_AimingCampfire() { return machineAim.part >= 0 && machineAim.type == PartType::Campfire; }
 
+namespace {
+// (#1716) Does RMB on the aimed part do something of its own (open a screen, work a pump, pull a lever...)? Cables and the
+// look-only rotation parts (shafts, cogs, gauges) do nothing on RMB, so the held item's RMB may fire at them (a block placed
+// against a shaft). In build mode RMB places parts instead, and no interactable takes it.
+bool AimTakesRmb() {
+    if (buildTool.active || machineAim.part < 0) return false;
+    if (machineAim.type == PartType::Cable) return false;
+    return !(IsRotationPart(machineAim.type) && !IsMachine(machineAim.type));
+}
+enum class RmbStart { None, Empty, Interactable };
+RmbStart rmbStart = RmbStart::None; // where the RMB press that is still held began (as of the last Machine_Update)
+void MachineInteract(Scene& world, const PlayerInput& in);
+}
+
+bool Interact_RmbConsumed() {
+    if (rmbStart == RmbStart::None) return AimTakesRmb(); // not held at the last update: a press now lands on what is aimed
+    return rmbStart == RmbStart::Interactable;
+}
+
+PlayerInput Interact_FilterRmb(const PlayerInput& in) {
+    PlayerInput out = in;
+    if (!Interact_RmbConsumed()) return out;
+    const uint64_t rmb = 1ull << (int)Act::Secondary;
+    out.held &= ~rmb; out.pressed &= ~rmb; out.released &= ~rmb;
+    return out;
+}
+
 void Machine_Update(Scene& world, const PlayerInput& in) {
+    MachineInteract(world, in);
+    // Latch where a held RMB began, after the aim is known: a press on empty space keeps its item working while held (a
+    // shield, a telescope zoom swept over a chest), a press on an interactable stays the interactable's until released.
+    if (!in.down(Act::Secondary)) rmbStart = RmbStart::None;
+    else if (rmbStart == RmbStart::None) rmbStart = AimTakesRmb() ? RmbStart::Interactable : RmbStart::Empty;
+}
+
+namespace {
+void MachineInteract(Scene& world, const PlayerInput& in) {
     machineAim = MachineAim{};
     farmAim = FarmAim{};
     Planetoid* body = player.nearest;
@@ -896,6 +932,7 @@ void Machine_Update(Scene& world, const PlayerInput& in) {
     }
     if (in.hit(Act::Extract)) { MachineAct_Extract(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Pickup, 0.4f, 1.2f); }
 }
+} // namespace
 
 // A ", "-separated item list as lines at most maxW px wide (font size `size`), the first starting with `prefix`; past
 // maxLines the last line ends with "+N more" (#567).
