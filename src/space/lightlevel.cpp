@@ -80,7 +80,10 @@ void FillOpacity(int bx, int by, int bz, uint8_t* out) {
         for (int y = 0; y < 16; ++y)
             for (int x = 0; x < 16; ++x, ++i) {
                 float d = dens[i];
-                if (edited) d += ed->sample({ o.x + x, o.y + y, o.z + z });
+                // Cell centres (n + 0.5 m) sit on the 0.25 m delta lattice: the trilinear sample is that one point (the 1 m
+                // comparison build, RAYLIBGAME_VOXEL_1M, samples between points).
+                if (edited) d += kVoxelSize == 0.25f ? ed->at((int)std::lround((o.x + x) * 4.0f), (int)std::lround((o.y + y) * 4.0f), (int)std::lround((o.z + z) * 4.0f))
+                                                     : ed->sample({ o.x + x, o.y + y, o.z + z });
                 out[i] = d >= ISO_LEVEL ? 1 : 0;
             }
     const uint64_t key = BrickKey(bx, by, bz);
@@ -99,6 +102,7 @@ void Reset(const Planetoid* body) {
     S.bodyId = body ? body->id : 0;
     S.edits = body ? body->edits : nullptr;
     if (body && body->field) S.grid = std::make_unique<LightGrid>(FillOpacity);
+    if (S.grid) S.grid->SetNewBrickCap(2); // a brick read is a terrain block: the time check comes between them
 }
 
 void RebuildPlot(const Planetoid& body, Plot& plot, PlotCache& c, std::vector<uint64_t>& changedBricks) {
