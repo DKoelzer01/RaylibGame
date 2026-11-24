@@ -1,0 +1,286 @@
+#include "beltsim.h"
+
+#include <algorithm>
+#include <cstdlib>
+
+// Items are kept front first, so a step is one pass from the front: each item's limit is the end (front item) or the
+// item ahead minus the gap. Moving never reorders items, and an item never moves backward.
+
+BeltLine Belt_MakeLine(const ConduitRun& run, int speed) {
+    BeltLine l;
+    l.id = run.id;
+    l.length = Conduit_Length(run) * kBeltSub;
+    l.speed = speed;
+    return l;
+}
+
+bool Belt_HasRoom(const BeltLine& line, int64_t pos) {
+    if (pos < 0 || pos > line.length) return false;
+    for (const BeltItem& it : line.items)
+        if (std::llabs(it.pos - pos) < kBeltGap) return false;
+    return true;
+}
+
+bool Belt_TryInsert(BeltLine& line, int item, int64_t pos) {
+    if (!Belt_HasRoom(line, pos)) return false;
+    // keep front first: insert before the first item behind pos
+    auto at = std::find_if(line.items.begin(), line.items.end(), [&](const BeltItem& it) { return it.pos < pos; });
+    BeltItem b;
+    b.item = item;
+    b.pos = pos;
+    line.items.insert(at, b);
+    line.asleep = false;
+    return true;
+}
+
+void Belt_Wake(BeltLine& line) { line.asleep = false; }
+
+void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink) {
+    std::vector<char> changed(lines.size(), 0);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        BeltLine& L = lines[i];
+        if (L.asleep) continue;
+        if (L.items.empty()) { L.asleep = true; continue; }
+        bool moved = false;
+
+        // The front item leaves first when it is at the end, so the items behind it can close up this same tick.
+        if (L.items.front().pos >= L.length) {
+            const int item = L.items.front().item;
+            bool left = false;
+            if (L.end == BeltEnd::Sink && sink) {
+                left = sink(L.sink, item);
+            } else if (L.end == BeltEnd::Belt && L.outLine >= 0 && (size_t)L.outLine < lines.size() && (size_t)L.outLine != i) {
+                left = Belt_TryInsert(lines[L.outLine], item, L.outPos); // the target's own items have the right of way
+                if (left) changed[L.outLine] = 1;
+            }
+            if (left) {
+                L.items.erase(L.items.begin());
+                moved = true;
+            }
+        }
+
+        int64_t limit = L.length;
+        for (BeltItem& it : L.items) {
+            const int64_t to = std::max(it.pos, std::min(it.pos + L.speed, limit));
+            if (to != it.pos) { it.pos = to; moved = true; }
+            limit = it.pos - kBeltGap;
+        }
+        if (moved) changed[i] = 1;
+        else L.asleep = true;
+    }
+    // A line that changed may have made room for the lines merging into it.
+    for (size_t i = 0; i < lines.size(); ++i) {
+        BeltLine& L = lines[i];
+        if (L.asleep && L.end == BeltEnd::Belt && L.outLine >= 0 && (size_t)L.outLine < lines.size() && changed[L.outLine])
+            L.asleep = false;
+    }
+}
+
+uint32_t Belt_Checksum(const BeltLine& line) {
+    uint32_t h = 2166136261u;
+    auto mix = [&](uint64_t v) {
+        for (int b = 0; b < 8; ++b) { h ^= (uint32_t)(v & 0xff); h *= 16777619u; v >>= 8; }
+    };
+    mix((uint64_t)(int64_t)line.id);
+    mix(line.items.size());
+    for (const BeltItem& it : line.items) { mix((uint64_t)(int64_t)it.item); mix((uint64_t)it.pos); }
+    return h;
+}
+
+CInt3 Belt_PointAt(const ConduitRun& run, int64_t pos) {
+    if (run.points.empty()) return {};
+    auto scaled = [](CInt3 p) { return CInt3{ p.x * kBeltSub, p.y * kBeltSub, p.z * kBeltSub }; };
+    if (pos <= 0) return scaled(run.points.front());
+    int64_t base = 0;
+    for (size_t i = 1; i < run.points.size(); ++i) {
+        const CInt3 a = scaled(run.points[i - 1]), b = scaled(run.points[i]);
+        const int64_t len = (int64_t)std::abs(b.x - a.x) + std::abs(b.y - a.y) + std::abs(b.z - a.z);
+        if (pos <= base + len) {
+            const int64_t t = pos - base;
+            auto step = [&](int from, int to) { return (int)(from + (to > from ? t : to < from ? -t : 0)); };
+            return { step(a.x, b.x), step(a.y, b.y), step(a.z, b.z) };
+        }
+        base += len;
+    }
+    return scaled(run.points.back());
+}
+
+int64_t Belt_PosOf(const ConduitRun& run, CInt3 slot) {
+    int64_t base = 0;
+    for (size_t i = 1; i < run.points.size(); ++i) {
+        const CInt3 a = run.points[i - 1], b = run.points[i];
+        const bool inX = std::min(a.x, b.x) <= slot.x && slot.x <= std::max(a.x, b.x);
+        const bool inY = std::min(a.y, b.y) <= slot.y && slot.y <= std::max(a.y, b.y);
+        const bool inZ = std::min(a.z, b.z) <= slot.z && slot.z <= std::max(a.z, b.z);
+        if (inX && inY && inZ)
+            return (base + std::abs(slot.x - a.x) + std::abs(slot.y - a.y) + std::abs(slot.z - a.z)) * kBeltSub;
+        base += (int64_t)std::abs(b.x - a.x) + std::abs(b.y - a.y) + std::abs(b.z - a.z);
+    }
+    return -1;
+}
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+
+namespace {
+BeltLine Line(int id, int64_t length, int speed) {
+    BeltLine l;
+    l.id = id;
+    l.length = length;
+    l.speed = speed;
+    return l;
+}
+std::vector<int64_t> Positions(const BeltLine& l) {
+    std::vector<int64_t> p;
+    for (const BeltItem& it : l.items) p.push_back(it.pos);
+    return p;
+}
+const BeltSinkFn kRefuse = [](int, int) { return false; };
+} // namespace
+
+TEST(BeltSim, InsertNeedsAGap) {
+    BeltLine l = Line(1, 64, 6);
+    EXPECT_TRUE(Belt_TryInsert(l, 7, 0));
+    EXPECT_FALSE(Belt_TryInsert(l, 7, 0));
+    EXPECT_FALSE(Belt_TryInsert(l, 7, 15));
+    EXPECT_TRUE(Belt_TryInsert(l, 8, 16));
+    EXPECT_TRUE(Belt_TryInsert(l, 9, 40));
+    EXPECT_FALSE(Belt_TryInsert(l, 9, 65));   // past the end
+    EXPECT_FALSE(Belt_TryInsert(l, 9, -1));
+    EXPECT_EQ(Positions(l), (std::vector<int64_t>{ 40, 16, 0 })); // front first
+    EXPECT_EQ(l.items[0].item, 9);
+}
+
+TEST(BeltSim, MovesAndBacksUp) {
+    // one cell of belt, speed 6, the end refuses: items stop at the end and queue at the gap behind it
+    std::vector<BeltLine> lines = { Line(1, 64, 6) };
+    lines[0].end = BeltEnd::Sink;
+    lines[0].sink = 3;
+    int ticks = 0;
+    for (; ticks < 200; ++ticks) {
+        Belt_TryInsert(lines[0], 1, 0);
+        Belt_Step(lines, kRefuse);
+    }
+    EXPECT_EQ(Positions(lines[0]), (std::vector<int64_t>{ 64, 48, 32, 16, 0 })); // 5 items: 4 per cell plus one at the start
+    EXPECT_TRUE(lines[0].asleep);
+    // the sink opens: one item a tick at most, and the rest close up behind it
+    int taken = 0;
+    const BeltSinkFn take = [&](int s, int) { EXPECT_EQ(s, 3); ++taken; return true; };
+    Belt_Step(lines, take);
+    EXPECT_EQ(taken, 0); // asleep until woken
+    Belt_Wake(lines[0]);
+    Belt_Step(lines, take);
+    EXPECT_EQ(taken, 1);
+    EXPECT_EQ(Positions(lines[0]), (std::vector<int64_t>{ 54, 38, 22, 6 }));
+}
+
+TEST(BeltSim, Throughput) {
+    // a long belt into a sink that always takes: items/s = speed * 20 / gap once it is full
+    std::vector<BeltLine> lines = { Line(1, 64 * 8, 6) };
+    lines[0].end = BeltEnd::Sink;
+    int taken = 0;
+    const BeltSinkFn take = [&](int, int) { ++taken; return true; };
+    for (int t = 0; t < 400; ++t) { Belt_TryInsert(lines[0], 1, 0); Belt_Step(lines, take); }
+    const int before = taken;
+    for (int t = 0; t < 800; ++t) { Belt_TryInsert(lines[0], 1, 0); Belt_Step(lines, take); }
+    // 800 ticks at 6/16 items a tick = 300 (the insert can only happen every ceil(16/6) = 3 ticks: 266)
+    EXPECT_GE(taken - before, 260);
+    EXPECT_LE(taken - before, 300);
+}
+
+TEST(BeltSim, EndToEndAndMergeYield) {
+    // line 0 (main) runs into a refusing sink; line 1 merges into its side at 32; line 2 continues line 1's start... keep simple:
+    std::vector<BeltLine> lines = { Line(10, 128, 4), Line(11, 64, 4) };
+    lines[0].end = BeltEnd::Sink;
+    lines[1].end = BeltEnd::Belt;
+    lines[1].outLine = 0;
+    lines[1].outPos = 32;
+    // fill the side belt, nothing on the main: items merge at 32 and travel on
+    for (int t = 0; t < 60; ++t) { Belt_TryInsert(lines[1], 2, 0); Belt_Step(lines, kRefuse); }
+    ASSERT_FALSE(lines[0].items.empty());
+    for (const BeltItem& it : lines[0].items) EXPECT_EQ(it.item, 2);
+    // the main belt backs up past the merge point: the side belt can't put anything in and sleeps
+    for (int t = 0; t < 400; ++t) { Belt_TryInsert(lines[1], 2, 0); Belt_Step(lines, kRefuse); }
+    EXPECT_TRUE(lines[0].asleep);
+    EXPECT_TRUE(lines[1].asleep);
+    for (size_t k = 1; k < lines[0].items.size(); ++k) EXPECT_GE(lines[0].items[k - 1].pos - lines[0].items[k].pos, kBeltGap);
+    // the main's sink takes one: the main moves, which wakes the side belt
+    bool once = true;
+    const BeltSinkFn takeOne = [&](int, int) { if (!once) return false; once = false; return true; };
+    Belt_Wake(lines[0]);
+    Belt_Step(lines, takeOne);
+    EXPECT_FALSE(lines[0].asleep);
+    EXPECT_FALSE(lines[1].asleep);
+
+    // yield: main items passing the merge point have the right of way. Main carries item 1 continuously; the side gets in
+    // only where the main has a gap.
+    std::vector<BeltLine> m = { Line(20, 256, 4), Line(21, 64, 4) };
+    m[0].end = BeltEnd::Sink;
+    m[1].end = BeltEnd::Belt;
+    m[1].outLine = 0;
+    m[1].outPos = 64;
+    int fromSide = 0, fromMain = 0;
+    const BeltSinkFn count = [&](int, int item) { (item == 2 ? fromSide : fromMain)++; return true; };
+    for (int t = 0; t < 2000; ++t) {
+        Belt_TryInsert(m[0], 1, 0); // saturated main
+        Belt_TryInsert(m[1], 2, 0);
+        Belt_Step(m, count);
+        for (size_t k = 1; k < m[0].items.size(); ++k) ASSERT_GE(m[0].items[k - 1].pos - m[0].items[k].pos, kBeltGap);
+    }
+    EXPECT_GT(fromMain, 400);
+    EXPECT_EQ(fromSide, 0); // a full main belt never lets the side in
+}
+
+TEST(BeltSim, Deterministic) {
+    auto run = [] {
+        std::vector<BeltLine> lines = { Line(1, 200, 6), Line(2, 120, 4), Line(3, 300, 6) };
+        lines[0].end = BeltEnd::Belt; lines[0].outLine = 2; lines[0].outPos = 0;
+        lines[1].end = BeltEnd::Belt; lines[1].outLine = 2; lines[1].outPos = 96;
+        lines[2].end = BeltEnd::Sink; lines[2].sink = 0;
+        uint32_t seed = 12345;
+        int accepted = 0;
+        const BeltSinkFn sink = [&](int, int) { seed = seed * 1664525u + 1013904223u; if (seed >> 30) { ++accepted; return true; } return false; };
+        std::vector<uint32_t> sums;
+        for (int t = 0; t < 1500; ++t) {
+            Belt_TryInsert(lines[0], t % 5, 0);
+            if (t % 3 == 0) Belt_TryInsert(lines[1], 100 + t % 7, 0);
+            Belt_Step(lines, sink);
+            if (t % 50 == 0) for (BeltLine& l : lines) Belt_Wake(l); // a sink freeing room now and then
+            if (t % 100 == 99) for (const BeltLine& l : lines) sums.push_back(Belt_Checksum(l));
+        }
+        sums.push_back((uint32_t)accepted);
+        return sums;
+    };
+    const std::vector<uint32_t> a = run(), b = run();
+    EXPECT_EQ(a, b);
+    EXPECT_GT(a.back(), 0u);
+    // the checksum sees a moved item
+    BeltLine l = Line(1, 64, 6);
+    Belt_TryInsert(l, 1, 0);
+    const uint32_t before = Belt_Checksum(l);
+    l.items[0].pos = 1;
+    EXPECT_NE(Belt_Checksum(l), before);
+}
+
+TEST(BeltSim, Geometry) {
+    ConduitRun r;
+    r.id = 5; r.kind = ConduitKind::Belt; r.material = "basic"; r.size = kBeltWidth;
+    r.points = { { 2, 0, 4 }, { 18, 0, 4 }, { 18, 0, 20 } };
+    const BeltLine l = Belt_MakeLine(r, 6);
+    EXPECT_EQ(l.id, 5);
+    EXPECT_EQ(l.length, 32 * kBeltSub);
+    EXPECT_EQ(Belt_PointAt(r, 0), (CInt3{ 16, 0, 32 }));
+    EXPECT_EQ(Belt_PointAt(r, 8), (CInt3{ 24, 0, 32 }));
+    EXPECT_EQ(Belt_PointAt(r, 16 * kBeltSub), (CInt3{ 144, 0, 32 }));      // the corner
+    EXPECT_EQ(Belt_PointAt(r, 16 * kBeltSub + 3), (CInt3{ 144, 0, 35 }));
+    EXPECT_EQ(Belt_PointAt(r, 9999), (CInt3{ 144, 0, 160 }));             // clamped
+    EXPECT_EQ(Belt_PosOf(r, { 2, 0, 4 }), 0);
+    EXPECT_EQ(Belt_PosOf(r, { 10, 0, 4 }), 8 * kBeltSub);
+    EXPECT_EQ(Belt_PosOf(r, { 18, 0, 12 }), 24 * kBeltSub);
+    EXPECT_EQ(Belt_PosOf(r, { 10, 0, 5 }), -1);
+    for (int64_t p = 0; p <= l.length; p += 8) {                           // round trip on slot positions
+        const CInt3 q = Belt_PointAt(r, p);
+        EXPECT_EQ(Belt_PosOf(r, { q.x / kBeltSub, q.y / kBeltSub, q.z / kBeltSub }), p);
+    }
+}
+#endif
