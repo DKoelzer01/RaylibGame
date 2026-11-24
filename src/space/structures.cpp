@@ -909,6 +909,9 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
     for (const Part& p : parts) { Footprint(p, fp); for (auto& c : fp) { mn.x = std::min(mn.x, c.first.x); mn.z = std::min(mn.z, c.first.z); mx.x = std::max(mx.x, c.first.x); mx.z = std::max(mx.z, c.first.z); } }
     const int dyGround = (int)floorf((lo - e) / kCellSize) - (int)lroundf(S.bury / kCellSize);
     const int dy = dyGround + S.yOffset; // parts below the ground (wonders) keep their depth
+    // (#1778) The site's ground edits (carves, the pad, the interior, the doorways) go in as one snapshot: one at a time,
+    // each copied the edit map and queued its remesh (a site took 410 ms on the sandbox).
+    std::vector<TerrainEdit> siteEdits;
     // Wonders shape the ground first (#164): each carve turned with the site, from the site's centre at ground level.
     for (const auto& c : S.carves) {
         Vector3 o = c.first;
@@ -917,7 +920,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
         ce.center = plot->toBody({ o.x, o.y + dyGround * kCellSize, o.z });
         ce.radius = c.second;
         ce.carve = true;
-        ApplyTerrainEdit(body, ce);
+        siteEdits.push_back(ce);
     }
     const Int3 shift = { -(mn.x + mx.x + 1) / 2, dy, -(mn.z + mx.z + 1) / 2 };
     // The ground pad (#164 design): over the footprint and a metre round it, ground more than 0.5 m above the floor is
@@ -934,7 +937,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
         pad.half = { 0.5f * (x1 - x0), 0.75f, 0.5f * (z1 - z0) };
         pad.ax = plot->east; pad.ay = plot->up; pad.az = plot->north;
         pad.radius = Vector3Length(pad.half);
-        ApplyTerrainEdit(body, pad);
+        siteEdits.push_back(pad);
         // (#1637, the user: structures kept terrain inside their rooms) The pad stops 2 m up: on a slope the hill stood inside
         // taller rooms. The whole interior is air - the footprint inset a cell from its walls, from the floor row to the top -
         // and each doorway (a gap at the foot of a wall with wall beside it) is cut 2 m out, so the way in is open. The
@@ -948,7 +951,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
             cut.half = { 0.5f * (ax1 - ax0), 0.5f * (ay1 - ay0), 0.5f * (az1 - az0) };
             cut.ax = plot->east; cut.ay = plot->up; cut.az = plot->north;
             cut.radius = Vector3Length(cut.half);
-            ApplyTerrainEdit(body, cut);
+            siteEdits.push_back(cut);
         };
         const float cs = kCellSize, yb = (float)dy * cs, yt = (float)(dy + S.size.y) * cs;
         static const bool interiors = !(getenv("RAYLIBGAME_STRUCTURE_INTERIORS") && getenv("RAYLIBGAME_STRUCTURE_INTERIORS")[0] == '0'); // (A/B: 0 = the pad only)
@@ -970,6 +973,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
                 else box(x == mn.x ? cx0 - out : cx0, x == mn.x ? cx1 : cx1 + out, yb, y1, cz0, cz1);
             }
     }
+    if (!siteEdits.empty()) { PROFILE_SCOPE("st: site edits"); ApplyTerrainEdits(body, siteEdits.data(), siteEdits.size()); }
     // The parts to place (decayed, moved, in the biome's stone), each chest with its loot table. They go down in a build
     // job, a few a frame (PlaceJobs): placing a site's 60-180 parts with their foundations at once was a 0.4 s frame.
     BuildJob job;
@@ -995,7 +999,7 @@ int BuildSite(Scene* world, Planetoid& body, const PlanetField& pf, uint64_t til
     lastDungeonArgs = { (float)(dyGround + (int)lroundf(S.bury / kCellSize)) * kCellSize, half, BiomeStone(BuildMaterialForItem("stone_brick"), biome) };
     uint32_t dh = Hash((uint64_t)site.seed ^ 0xd0d0ull);
     if (S.dungeon > 0.0f && DungeonsOn() && !noDungeons && (forceDungeon || Unit(dh) < S.dungeon)) // a dungeon under it (#719)
-        PlanDungeon(job, body, pf, *plot, lastDungeonArgs.floorY, lastDungeonArgs.half, site.seed, lastDungeonArgs.stone);
+        { PROFILE_SCOPE("st: PlanDungeon"); PlanDungeon(job, body, pf, *plot, lastDungeonArgs.floorY, lastDungeonArgs.half, site.seed, lastDungeonArgs.stone); }
     const int planned = (int)job.parts.size();
     jobs.push_back(std::move(job));
     if (force) { RunJob(body, jobs.back(), 1e9); jobs.pop_back(); } // tests (forced sites): all at once
