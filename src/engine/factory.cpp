@@ -1379,6 +1379,7 @@ void MbStep(PlotSim& ps, int dt, long long& made, int& active) {
                 const long long eu = share + j.euCarry;
                 ticks = (int)std::min<long long>(eu / rEu, rTicks);
                 j.euCarry = (int)(eu % rEu);
+                if (share > 0) worked[q] = true; // (EU short of a whole tick still works: slowed, not stopped)
             }
             j.progress = std::min(rTicks, j.progress + ticks);
             if (ticks > 0) worked[q] = true;
@@ -4392,6 +4393,7 @@ TEST(Factory, AnEnergyHatchSharedByTwoStructuresSlowsBothEvenly) {
     const int a = crafts(M(2)), c = crafts(M(3));
     EXPECT_GT(a, 0);
     EXPECT_NEAR(a, c, parallel) << "evenly: within one round of crafts";
+    EXPECT_GE(a + c, (int)(32LL * ticks / ((long long)iron->eu * iron->ticks)) - 2 * parallel) << "DIAG a " << a << " c " << c << " parallel " << parallel << " eu " << iron->eu << " ticks " << iron->ticks << " jobs " << M(2).jobs.size();
     EXPECT_EQ(M(2).status, MachineStatus::Working);
     const Series& used = ps.stats.euUsed[(int)PartType::MbHatch];
     const long long eu = used.total + used.acc;
