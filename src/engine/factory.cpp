@@ -423,7 +423,7 @@ struct PlotSim {
     bool loadedSummary = false; // (#1302) loaded from a save while in the summary sim: far, it goes on there with its saved caps
     long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
     std::vector<std::pair<int, int>> completed;         // (#1728) (item, count) of recipes this plot really finished since the last hand-over (TickPlot only: never the summary sim); emptied under viewMutex
-    bool hasStructures = false;                         // (#1429 PR 4) a formed multiblock: far, it keeps the 20-tick step (not in the summary sim yet)
+    bool hasStructures = false;                         // (#1429 PR 4) a formed multiblock: far, it keeps the 20-tick step (not in the summary sim yet: #1763)
     int mbRR = 0;                                       // (#1429 PR 4) the controller (machine index) that tries to start a recipe first next
 };
 
