@@ -1,3 +1,4 @@
+#include "profiler.h"
 #include "structures.h"
 #include "magicdiscovery.h" // (#1250) First Sight pages only in chests near a ley line
 #include "buildtool.h"
@@ -1124,10 +1125,10 @@ void Structures_SetEnabled(bool on) { structuresOn = on; }
 
 void Structures_Update(Scene& world) {
     if (!structuresOn) return;
-    PlaceJobs(); // every frame: a site's parts go down a few at a time
+    { PROFILE_SCOPE("st: PlaceJobs"); PlaceJobs(); } // every frame: a site's parts go down a few at a time
     if (GetTime() - lastCheck < 1.0) return;
     lastCheck = GetTime();
-    Ensure();
+    { PROFILE_SCOPE("st: Ensure"); Ensure(); }
     if (sets.empty()) return;
     Planetoid* body = player.nearest;
     const bool onFoot = body && !player.flyMode;
@@ -1135,12 +1136,12 @@ void Structures_Update(Scene& world) {
     // Only the authority generates (#164 design, MP): a client gets the structures as plot and terrain edits. It builds
     // round the local player and every interest centre (#318: a server's players).
     if (Net_IsAuthority()) {
-        if (onFoot) BuildAround(world, *body, me);
+        if (onFoot) { PROFILE_SCOPE("st: BuildAround"); BuildAround(world, *body, me); }
         for (const InterestCentre& ic : gInterestCentres)
             if (Planetoid* b = Planetoid::find(ic.body)) BuildAround(world, *b, ic.local);
     }
     if (!onFoot) return;
-    DiscoverNear(world, *body, me);
+    { PROFILE_SCOPE("st: DiscoverNear"); DiscoverNear(world, *body, me); }
     // Chests near the player get their loot (the factory knows the chest by now: it was built at least a second ago).
     for (size_t i = 0; i < pending.size();) {
         const PendingLoot& L = pending[i];

@@ -2,6 +2,7 @@
 #include "uipalette.h"
 #include "playerinput.h"
 #include "navigation.h"
+#include "profiler.h"
 #include "claims.h"
 #include "combat.h"
 #include "survival.h"
@@ -320,25 +321,27 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         if (PlayerInput_BindingPressed(Act::ZoomIn) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
         if (miniZoom != was) minimapForce = true;
     }
-    const Here h = Locate(world);
+    Here h;
+    { PROFILE_SCOPE("nav: locate"); h = Locate(world); }
     // Reveal the ground around the player a few times a second.
     if (h.body && SimTime() - lastReveal > 0.3) {
         lastReveal = SimTime();
         TileSet& set = explored[h.body->name];
         const size_t before = set.size();
-        Nav_RevealTiles(h.up, h.field->radius, set);
+        { PROFILE_SCOPE("nav: reveal"); Nav_RevealTiles(h.up, h.field->radius, set); }
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
     // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
     // around the circle), every 2 s while moving, or when new ground shows.
-    minimap.take();
+    { PROFILE_SCOPE("nav: minimap take"); minimap.take(); }
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
         const bool moved = !minimap.shown || minimapBody != h.body->name ||
                            Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f * MiniZoom() || minimapForce ||
                            (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
+            PROFILE_SCOPE("nav: minimap start"); // (#1778) copies the explored tiles
             minimap.pending = StartImage(h, h.up, kMiniMetres * MiniZoom() / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
             minimapForce = false;
             minimapAt = GetTime();
