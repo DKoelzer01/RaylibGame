@@ -2,6 +2,8 @@
 #include "uipalette.h"
 #include "playerinput.h"
 #include "navigation.h"
+#include "mapfeatures.h"
+#include "itemicons.h"
 #include "profiler.h"
 #include "claims.h"
 #include "combat.h"
@@ -120,6 +122,7 @@ struct MapImage {
     float mpp = 1.0f;                   // metres per pixel
     int W = 0, H = 0;
     bool circle = false;                // alpha 0 outside the inscribed circle (the minimap)
+    std::shared_ptr<const MapPlots> plots; // (#1795) the plot footprints under it, or null
     std::vector<unsigned char> px;
     std::atomic<int> rowsDone{ 0 };
 };
@@ -162,6 +165,11 @@ void RenderRows(MapImage& m, int y0, int y1) {
             }
             const float shade = water ? 1.0f : std::clamp(0.55f + 0.75f * Vector3DotProduct(n, light), 0.35f, 1.25f);
             c = Vector3Scale(c, shade * 1.6f); // a little brighter than the lit terrain: a map, not a photo
+            Color pc;
+            if (m.plots && MapFeatures_Sample(*m.plots, DVec3(dir) * (double)(f.radius + h), m.east, m.north, m.mpp, pc)) { // (#1795) flat, unshaded
+                p[0] = pc.r; p[1] = pc.g; p[2] = pc.b; p[3] = 255;
+                continue;
+            }
             p[0] = Enc(c.x); p[1] = Enc(c.y); p[2] = Enc(c.z); p[3] = 255;
         }
     m.rowsDone.fetch_add(y1 - y0);
@@ -200,6 +208,7 @@ std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, i
     auto tiles = std::make_shared<TileSet>();
     if (it != explored.end()) TilesUnder(it->second, centre, m->east, m->north, h.field->radius, mpp, W, H, *tiles);
     m->tiles = std::move(tiles);
+    m->plots = MapFeatures_PlotsNear(*h.body, DVec3(centre) * (double)h.field->radius, 0.75f * std::max(W, H) * mpp);
     m->circle = circle;
     m->px.assign((size_t)W * H * 4, 0);
     const int block = 16;
@@ -241,8 +250,11 @@ Shader miniMask{};           // discards outside the minimap circle (the image i
 bool mapOpen = false;
 Vector3 mapCentre{ 0, 0, 0 };          // body-local unit direction
 std::string mapBody;
-int mapZoom = 1;                       // index into kZooms (4 m a pixel)
-const float kZooms[] = { 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
+int mapZoom = 5;                       // index into kZooms (4 m a pixel)
+// (#1795) down to 1/8 m a pixel: a plot's parts (0.5 m cells, 1 m machines) and their icons show from 1/2 m a pixel in
+const float kZooms[] = { 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
+bool plotsDirtyMini = false, plotsDirtyBig = false; // (#1795) a plot footprint landed: each map re-renders (at most once a second)
+double bigMapAt = -1e9;                // when the last big map render started
 constexpr int kMapPixels = 640;
 constexpr int kMiniPixels = 256;             // the minimap image: a margin around the view (it shifts as you move)
 constexpr float kMiniMetres = 440.0f;        // ...metres across
@@ -299,6 +311,7 @@ void Nav_Reset() {
     hasStart = false;
     minimap.reset();
     bigMap.reset();
+    MapFeatures_Reset();
     mapOpen = false;
 }
 
@@ -360,18 +373,22 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
+    // (#1795) Plot footprints: rebuilt on the workers when a plot changes; the maps re-render when one lands.
+    if (h.body && HasMap() && MapFeatures_Update(*h.body)) plotsDirtyMini = plotsDirtyBig = true;
+    const bool plotsDue = plotsDirtyMini && GetTime() - minimapAt > 1.0;
     // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
-    // around the circle), every 2 s while moving, or when new ground shows.
+    // around the circle), every 2 s while moving, when new ground shows, or when a plot changed.
     { PROFILE_SCOPE("nav: minimap take"); minimap.take(); }
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
-        const bool moved = !minimap.shown || minimapBody != h.body->name ||
+        const bool moved = !minimap.shown || minimapBody != h.body->name || plotsDue ||
                            Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f * MiniZoom() || minimapForce ||
                            (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
             PROFILE_SCOPE("nav: minimap start"); // (#1778) copies the explored tiles
             minimap.pending = StartImage(h, h.up, kMiniMetres * MiniZoom() / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
             minimapForce = false;
+            plotsDirtyMini = false;
             minimapAt = GetTime();
             minimapBody = h.body->name;
             minimapTilesVersion = ver;
@@ -433,10 +450,12 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         }
         if (IsKeyPressed(KEY_C)) { mapCentre = h.up; mapDirtyAt = GetTime(); } // back to the player
     }
+    if (plotsDirtyBig && mapDirtyAt < 0.0 && GetTime() - bigMapAt > 1.0) { mapDirtyAt = GetTime(); plotsDirtyBig = false; }
     // Re-render after the view settles (a short pause, so dragging doesn't queue a render a frame).
     if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.05 && !bigMap.pending) {
         bigMap.pending = StartImage(h, mapCentre, kZooms[mapZoom], kMapPixels, kMapPixels, false);
         mapDirtyAt = -1.0;
+        bigMapAt = GetTime();
     }
 }
 
@@ -596,6 +615,17 @@ void Nav_DrawMap(Scene& world) {
             DrawCircleLinesV(cp, rp, Fade(col, 0.9f));
             if (rp > 14.0f) { const char* t = TextFormat("%s%s", c.teamName.c_str(), c.ours ? " (yours)" : c.allowed ? " (ally)" : ""); DrawText(t, (int)(cp.x - MeasureText(t, 14) * 0.5f), (int)cp.y - 7, 14, Fade(RAYWHITE, 0.85f)); }
         }
+        // (#1795) Machine icons over their footprints, once a machine is big enough on screen to read one.
+        if (m.plots)
+            for (const auto& pm : m.plots->plots)
+                for (const MapIcon& ic : pm->icons) {
+                    const float s = ic.size / m.mpp * k / scale;
+                    if (s < 10.0f || !ItemIcons_Has(ic.item)) continue;
+                    const Vector2 c = toScreen(ic.dir);
+                    if (!CheckCollisionPointRec(c, r)) continue;
+                    const float d = s * 0.8f;
+                    ItemIcons_Draw(ic.item, { c.x - d * 0.5f, c.y - d * 0.5f, d, d });
+                }
         if (hasStart && startBody == h.body->name) DrawMarker(toScreen(startDir), Ui().good, "Start", 7.0f);
         for (const Waypoint& w : waypoints) if (w.body == h.body->name) { // (#828) a grave: a headstone, and when it opens to others
             std::string g;
@@ -619,6 +649,16 @@ void Nav_DrawMap(Scene& world) {
         DrawLine(bx, by - 5, bx, by + 5, RAYWHITE);
         DrawLine(bx + bw, by - 5, bx + bw, by + 5, RAYWHITE);
         DrawText(bar >= 1000.0f ? TextFormat("%.1f km", bar / 1000.0f) : TextFormat("%.0f m", bar), bx, by - 16, 14, RAYWHITE);
+        if (m.plots) { // (#1795) the plot colours' legend, bottom right
+            const int n = (int)MapKind::Count - 1, lw = 116, lx = (int)(r.x + r.width) - lw - 10, ly = (int)(r.y + r.height) - 10 - n * 18;
+            DrawRectangle(lx - 6, ly - 6, lw + 6, n * 18 + 8, Fade(BLACK, 0.5f));
+            for (int i = 0; i < n; ++i) {
+                const MapKind kd = (MapKind)(i + 1);
+                DrawRectangle(lx, ly + i * 18 + 2, 12, 12, m.plots->colour[(int)kd]);
+                DrawRectangleLines(lx, ly + i * 18 + 2, 12, 12, BLACK);
+                DrawText(MapKindName(kd), lx + 18, ly + i * 18, 14, RAYWHITE);
+            }
+        }
     }
     if (bigMap.pending) DrawText("drawing...", (int)(r.x + r.width) - 90, (int)r.y + 8, 16, Fade(RAYWHITE, 0.7f));
     DrawText(TextFormat("MAP  %s", h.body ? h.body->name.c_str() : ""), (int)r.x, (int)r.y - 30, 22, RAYWHITE);
