@@ -13,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
+#include <atomic>
 #include <memory>
 #include <cstdio>
 #include <functional>
@@ -176,6 +177,18 @@ const WorldStats& GetWorldStats();
 bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit);
 void ApplyTerrainEdit(Planetoid& planetoid, const TerrainEdit& edit); // local-space brush
 void ApplyTerrainEdits(Planetoid& planetoid, const TerrainEdit* edits, size_t count); // many strokes, one snapshot
+// (#1791) A big batch folded off the main thread (a structure site's cuts took 150-420 ms): FoldTerrainEditsAsync folds
+// the strokes from the body's current snapshot on a worker; once `done`, PublishTerrainFold (main thread) swaps the
+// result in and rebuilds what it reaches, exactly as ApplyTerrainEdits would. It returns false, changing nothing, when
+// another edit landed since the fold began (the result would drop it): fold again from the new snapshot.
+struct TerrainFold {
+    std::vector<TerrainEdit> edits;
+    std::shared_ptr<const TerrainDeltas> base, result;
+    std::unordered_set<TerrainDeltas::Key> touched;
+    std::atomic<bool> done{ false };
+};
+std::shared_ptr<TerrainFold> FoldTerrainEditsAsync(Planetoid& planetoid, std::vector<TerrainEdit> edits);
+bool PublishTerrainFold(Planetoid& planetoid, TerrainFold& fold);
 // Rebuild the chunks (every level) around a body-local point: water claimed by the simulation (fluid.h).
 // strideReach: extra reach in strides of each level's nodes (their own features reach that far, e.g. static water: #251).
 void RequestRemesh(Planetoid& planetoid, Vector3 localCentre, float radius, float strideReach = 1.0f);
