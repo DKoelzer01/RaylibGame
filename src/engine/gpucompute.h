@@ -16,6 +16,14 @@ bool Compute_Available();
 // Expands `#include "file"` lines (relative to the including file); the included paths are appended.
 std::string LoadShaderSource(const std::string& path, std::vector<std::string>& includes);
 
+// (#1769) Linked GL programs on disk (cache/shaders, RAYLIBGAME_SHADER_CACHE): a cold driver cache made every process compile
+// its shaders again (~16 s of each scenario's start). The file is keyed by the source and the driver; a binary the driver
+// refuses is deleted (Load returns 0 and the caller compiles, then saves).
+bool ProgramCache_Usable();
+std::string ProgramCache_Path(const std::string& name, const std::string& src);
+unsigned ProgramCache_Load(const std::string& file); // a linked program, or 0
+void ProgramCache_Save(const std::string& file, unsigned program);
+
 struct ComputeBuffer;
 struct ComputeProgram {
     unsigned int id = 0;

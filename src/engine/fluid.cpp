@@ -268,6 +268,18 @@ struct PartSolid {
         }
         return false;
     }
+    // (#1772) A part near c (within `margin` m of a plot's solid cells), and whether a point lies in a solid part cell: the
+    // ground share of an open fluid cell counts part tops too, or a film on a tile stood at the cell's floor, inside the tile.
+    bool near(Vector3 c, float margin) const {
+        for (const PlotSnap& p : plots)
+            if (!p.solid.empty() && Vector3DistanceSqr(c, p.centre) <= (p.radius + margin) * (p.radius + margin)) return true;
+        return false;
+    }
+    bool pointSolid(Vector3 q) const {
+        for (const PlotSnap& p : plots)
+            if (!p.solid.empty() && Vector3DistanceSqr(q, p.centre) <= (p.radius + 1.0f) * (p.radius + 1.0f) && p.cellSolid(q)) return true;
+        return false;
+    }
 };
 
 struct BodyRef {
@@ -420,10 +432,14 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                 // How much of an open cell is ground (#454), in cells near the surface: 16 points (2 x 2 across, 4 heights)
                 // interpolated from the density at the cell's 8 corners - as marching cubes draws the ground. The corners
                 // are sampled once and shared with the neighbouring cells (16 field samples a cell cost ~40 ms of a step).
+                // (#1772) Built parts count the same way: a fluid cell (0.25 m) straddling a tile's top stays open, and a film on
+                // the tile stood at the cell's floor - up to a cell under the top, drawn inside it or in patches.
                 int sh = 0;
-                if (!solid && ShutOn() && r < top && dc > ISO_LEVEL - 0.75f * DENSITY_GRADIENT / kVoxelSize) {
-                    float d8[8];
-                    for (int k = 0; k < 8; ++k) {
+                const bool nearGround = !solid && ShutOn() && r < top && dc > ISO_LEVEL - 0.75f * DENSITY_GRADIENT / kVoxelSize;
+                const bool nearPart = !solid && ShutOn() && ref.parts && ref.parts->near(c, cs);
+                if (nearGround || nearPart) {
+                    float d8[8] = {};
+                    for (int k = 0; k < 8 && nearGround; ++k) {
                         const int ax = x + (k & 1), ay = y + ((k >> 1) & 1), az = z + (k >> 2);
                         float& d = corner[(az * (B + 1) + ay) * (B + 1) + ax];
                         if (std::isnan(d)) {
@@ -437,10 +453,15 @@ void Classify(const Site& s, Brick& b, const BodyRef& ref, uint8_t& faces) {
                         for (int bb = 0; bb < 2; ++bb)
                             for (int h = 0; h < 4; ++h) {
                                 const float tx = a ? 0.75f : 0.25f, ty = bb ? 0.75f : 0.25f, tz = 0.125f + 0.25f * h;
-                                const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
-                                const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
-                                const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
-                                n += lo + (hi - lo) * tz >= ISO_LEVEL ? 1 : 0;
+                                bool g = false;
+                                if (nearGround) {
+                                    const float d00 = d8[0] + (d8[1] - d8[0]) * tx, d10 = d8[2] + (d8[3] - d8[2]) * tx;
+                                    const float d01 = d8[4] + (d8[5] - d8[4]) * tx, d11 = d8[6] + (d8[7] - d8[6]) * tx;
+                                    const float lo = d00 + (d10 - d00) * ty, hi = d01 + (d11 - d01) * ty;
+                                    g = lo + (hi - lo) * tz >= ISO_LEVEL;
+                                }
+                                if (!g && nearPart) g = ref.parts->pointSolid(s.cellPoint((float)ci + tx, (float)cj + ty, (float)(b.bk * B + z) + tz));
+                                n += g ? 1 : 0;
                             }
                     sh = std::min(kMaxShut, n * 255 / 16);
                 }
