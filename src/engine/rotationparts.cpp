@@ -1,4 +1,5 @@
 #include "rotationparts.h"
+#include <cstddef>
 #include <map>
 #include <tuple>
 
