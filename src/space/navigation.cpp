@@ -217,10 +217,15 @@ struct MapView {
     std::shared_ptr<MapImage> pending;  // being rendered
     void take() {
         if (!pending || pending->rowsDone.load() < pending->H) return;
-        Image img{ pending->px.data(), pending->W, pending->H, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-        if (tex.id) UnloadTexture(tex);
-        tex = LoadTextureFromImage(img);
-        SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+        // (#1778) The same size again (the minimap, every 2 s while moving): new pixels into the texture it has; a new
+        // texture each time stalled the main thread up to 294 ms on the sandbox's GL.
+        if (tex.id && tex.width == pending->W && tex.height == pending->H) UpdateTexture(tex, pending->px.data());
+        else {
+            Image img{ pending->px.data(), pending->W, pending->H, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+            if (tex.id) UnloadTexture(tex);
+            tex = LoadTextureFromImage(img);
+            SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+        }
         std::vector<unsigned char>().swap(pending->px);
         shown = pending;
         pending.reset();

@@ -1072,10 +1072,12 @@ void BuildAround(Scene& world, Planetoid& body, Vector3 me) {
     auto& done = builtTiles[body.name];
     auto consider = [&](uint64_t tile, Vector3 centre) {
         if (done.count(tile)) return;
-        const Site site = SiteOf(*pf, tile, centre, pf->radius, start);
+        Site site;
+        { PROFILE_SCOPE("st: SiteOf"); site = SiteOf(*pf, tile, centre, pf->radius, start); }
         if (!site.any) { done.insert(tile); return; }
         if (Vector3Distance(Vector3Scale(site.dir, pf->radius + pf->elevation(site.dir)), me) > kBuildRange) return; // not yet
         done.insert(tile);
+        PROFILE_SCOPE("st: BuildSite");
         if (BuildSite(&world, body, *pf, tile, site, false) >= 0) ++sitesBuilt;
     };
     for (int k = 0; k < 25; ++k) { // a 5 x 5 grid 125 m apart: every 512 m tile within build range gets a sample
