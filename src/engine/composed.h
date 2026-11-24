@@ -34,10 +34,14 @@ struct ComposedStats {
     float weight = 0.0f;           // kg
     int sockets = 0;
     std::vector<std::string> gems; // (#1219) set in its sockets ("j="), at most sockets
-    float quality = 1.0f;          // the anvil's quality (q %, 90-110)
+    float quality = 1.0f;          // the anvil's quality (q %, 75-130, #1613; machines make 100)
+    int qualityPct = 100;          // q clamped, for the grade (Forge_Grade: Crude, Common, Fine, Masterwork)
     int wear = 0;                  // strokes used (w)
     std::string name;              // "Bronze pickaxe"
 };
+
+// (#1613) The quality range: hand-forging scores 75..130 (Forge_Quality); a record's q is clamped to it.
+constexpr int kComposedQualityMin = 75, kComposedQualityMax = 130;
 
 bool Composed_Load(const char* classesPath = "resources/data/composed_classes.txt", const char* materialsPath = "resources/data/part_materials.txt");
 bool Composed_Is(const std::string& id);                    // a composed class

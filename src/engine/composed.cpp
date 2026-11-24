@@ -1,4 +1,5 @@
 #include "composed.h"
+#include "forge.h"
 #include "itemdata.h"
 #include "inventory.h"
 #include "utils/logger.h"
@@ -165,7 +166,8 @@ ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
     const PartMaterial* handle = Composed_Material(s.handle.empty() ? std::string("wood") : s.handle);
     const PartMaterial* binding = Composed_Material(s.binding.empty() ? DefaultBinding(s.head) : s.binding);
     s.valid = true;
-    s.quality = std::clamp(ItemData::GetInt(data, "q", 100), 90, 110) / 100.0f;
+    s.qualityPct = std::clamp(ItemData::GetInt(data, "q", 100), kComposedQualityMin, kComposedQualityMax);
+    s.quality = s.qualityPct / 100.0f;
     s.wear = std::max(0, ItemData::GetInt(data, "w", 0));
     const float hf = handle ? handle->factor : 1.0f, bf = binding ? binding->factor : 1.0f;
     s.tool.type = ToolTypeOf(c->toolType);
@@ -255,7 +257,10 @@ std::string Composed_PartsText(const std::string& id, const std::string& data) {
     char buf[160];
     if (s.tool.type != ToolType::Hands) { snprintf(buf, sizeof buf, "\nTier %d (%s)", s.tool.tier, ToolTierName(s.tool.tier)); t += buf; }
     snprintf(buf, sizeof buf, "\nDurability %d / %d", std::max(0, s.durability - s.wear), s.durability); t += buf;
-    if (s.quality != 1.0f) { snprintf(buf, sizeof buf, "   Quality %+.0f%%", (s.quality - 1.0f) * 100.0f); t += buf; }
+    // (#1613) the grade always (a machine-made item reads Common), the percentage when it isn't 100
+    if (s.qualityPct != 100) snprintf(buf, sizeof buf, "   %s %+d%%", Forge_Grade(s.qualityPct), s.qualityPct - 100);
+    else snprintf(buf, sizeof buf, "   %s", Forge_Grade(s.qualityPct));
+    t += buf;
     if (s.sockets > 0) {
         snprintf(buf, sizeof buf, "   Sockets %d/%d", (int)s.gems.size(), s.sockets); t += buf; // (#1219) set / free
         if (!s.gems.empty()) {
@@ -304,7 +309,16 @@ TEST(Composed, StatsFollowTheParts) {
     const ComposedStats good = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 110));
     EXPECT_NEAR(good.durability, plain.durability * 1.1f, 1.0f);
     EXPECT_NEAR(good.damage, plain.damage * 1.1f, 1e-3f);
-    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 300)).quality, 1.1f) << "clamped to 110 %";
+    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 300)).quality, 1.3f) << "clamped to 130 %";
+    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 10)).qualityPct, 75) << "clamped to 75 %";
+    // (#1613) the full range reaches the stats: a Masterwork 128 % lasts 128/80 as long as a Crude 80 %
+    const ComposedStats crude = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 80));
+    const ComposedStats master = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 128));
+    EXPECT_NEAR(master.durability, crude.durability * 128.0f / 80.0f, 2.0f);
+    EXPECT_NEAR(master.damage, crude.damage * 1.6f, 1e-3f);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze", {}, {}, 80)).find("Crude -20%"), std::string::npos);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze", {}, {}, 128)).find("Masterwork +28%"), std::string::npos);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze")).find("Common"), std::string::npos);
     // Sockets: bronze one, steel two; weapons have no tool type.
     EXPECT_EQ(plain.sockets, 1);
     const ComposedStats sword = Composed_Stats("weapon_sword", Composed_MakeData("steel"));
@@ -374,7 +388,7 @@ TEST(Composed, NamesAndPartsForTheUi) {
     EXPECT_NE(t.find("Binding: Leather"), std::string::npos) << t;
     EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;
     EXPECT_NE(t.find("Durability 380 / 420"), std::string::npos) << t; // 400 x 1.05 quality, 40 used
-    EXPECT_NE(t.find("Quality +5%"), std::string::npos) << t;
+    EXPECT_NE(t.find("Common +5%"), std::string::npos) << t;
     EXPECT_NE(t.find("Sockets 0/1"), std::string::npos) << t; // (#1219: set / sockets)
 }
 
