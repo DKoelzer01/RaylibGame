@@ -121,6 +121,9 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
         gFakeHeld = kW;
         if (lane == Block1mJump && !jumped && along >= kLedgeAt - 1.6) { gFakeHeld |= kJump; jumped = true; } // ~0.8 m short of it
         hMax = std::max(hMax, h);
+        if (lane == Cube && along > kLedgeAt - 2.0 && t < 2.0)
+            TraceLog(LOG_INFO, "ledgetrace t %.3f along %.4f h %.4f vx %.2f vy %.2f vz %.2f grounded %d pv_up %.2f gn_up %.3f", t, along, h, vel.x, vel.y, vel.z,
+                     (int)player.grounded, Vector3DotProduct(player.velocity, c.body->dirToWorld(upL)), Vector3DotProduct(player.groundNormal, c.body->dirToWorld(upL)));
         // At the obstruction: from 0.1 s after the feet come within a radius (0.45 m) of its face, while they stay below its top.
         if (tHit < 0.0 && along >= kLedgeAt - 1.0) tHit = t;
         if (tHit >= 0.0 && t > tHit + 0.1 && h < 0.2) {
