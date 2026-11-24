@@ -136,4 +136,4 @@ static void BuildLongFall(ScenarioDef& s) {
 
 SCENARIO("frames/long-fall") { BuildLongFall(s); }
 // Plan 11 F2b (#1146): the same with RAYLIBGAME_FRAMES=1 (the player's velocity in the Fixed frame, Frames_Acceleration's spin forces).
-SCENARIO("frames/long-fall-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; BuildLongFall(s); }
+SCENARIO("frames/long-fall-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; BuildLongFall(s); s.tags = { "pose" }; }
