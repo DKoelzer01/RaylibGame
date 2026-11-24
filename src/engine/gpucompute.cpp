@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <random>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -104,7 +105,7 @@ std::unordered_map<std::string, std::pair<AsyncProgram, double>> gPending; // th
 namespace BinCache {
 constexpr unsigned kLinkStatus = 0x8B82, kBinaryLength = 0x8741, kNumBinaryFormats = 0x87FE;
 constexpr unsigned kVendor = 0x1F00, kRenderer = 0x1F01, kVersion = 0x1F02;
-constexpr uint32_t kMagic = 0x31424352; // "RCB1"
+constexpr uint32_t kMagic = 0x32424352; // "RCB2": magic, format, length, checksum, then the binary
 
 std::string Dir() {
     static const std::string d = [] {
@@ -121,6 +122,7 @@ bool Usable() {
     return formats > 0;
 }
 uint64_t Fnv(uint64_t h, const std::string& s) { for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; } return h; }
+uint32_t Checksum(const std::vector<char>& b) { uint64_t h = 14695981039346656037ull; for (char c : b) { h ^= (unsigned char)c; h *= 1099511628211ull; } return (uint32_t)(h ^ (h >> 32)); }
 std::string GlString(unsigned name) { const unsigned char* s = glad_glGetString ? glad_glGetString(name) : nullptr; return s ? (const char*)s : ""; }
 // The file for a shader: its name and a hash of the driver and the source as compiled.
 std::string PathFor(const std::string& shaderPath, const std::string& src) {
@@ -132,12 +134,16 @@ std::string PathFor(const std::string& shaderPath, const std::string& src) {
 unsigned Load(const std::string& file) {
     FILE* f = fopen(file.c_str(), "rb");
     if (!f) return 0;
-    uint32_t head[3] = {}; // magic, format, length
+    uint32_t head[4] = {}; // magic, format, length, checksum
     std::vector<char> bin;
     bool ok = fread(head, sizeof head, 1, f) == 1 && head[0] == kMagic && head[2] > 0 && head[2] < (64u << 20);
-    if (ok) { bin.resize(head[2]); ok = fread(bin.data(), 1, bin.size(), f) == bin.size(); }
+    if (ok) { bin.resize(head[2]); ok = fread(bin.data(), 1, bin.size(), f) == bin.size() && Checksum(bin) == head[3]; }
     fclose(f);
-    if (!ok) return 0;
+    if (!ok) { // short, damaged or an older layout: never given to the driver; deleted (a rename on Windows may not replace it)
+        std::error_code ec;                                    // and compiled, then saved again
+        std::filesystem::remove(file, ec);
+        return 0;
+    }
     const unsigned prog = glad_glCreateProgram();
     glad_glProgramBinary(prog, head[1], bin.data(), (int)bin.size());
     int linked = 0;
@@ -159,15 +165,18 @@ void Save(const std::string& file, unsigned prog) {
     if (got <= 0) return;
     std::error_code ec;
     std::filesystem::create_directories(Dir(), ec);
-    // Written aside, then renamed: scenario processes run side by side and may race on the same shader.
-    const std::string tmp = file + TextFormat(".%d.%lld.tmp", (int)(GetTime() * 1e6) & 0xffffff, (long long)time(nullptr));
+    bin.resize((size_t)got);
+    // Written aside under a name of its own, then renamed over the file: scenario processes run side by side (#1768) and may
+    // fill a cold cache with the same shader at once; a reader sees the old file, the new one or none, never half of one.
+    // (Where a rename can't replace an existing file, the one already there stays: the same program.)
+    const std::string tmp = file + TextFormat(".%08x%08x.tmp", (unsigned)std::random_device{}(), (unsigned)time(nullptr));
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return;
-    const uint32_t head[3] = { kMagic, format, (uint32_t)got };
-    const bool ok = fwrite(head, sizeof head, 1, f) == 1 && fwrite(bin.data(), 1, (size_t)got, f) == (size_t)got;
-    fclose(f);
-    if (ok) std::filesystem::rename(tmp, file, ec);
-    if (!ok || ec) std::filesystem::remove(tmp, ec);
+    const uint32_t head[4] = { kMagic, format, (uint32_t)got, Checksum(bin) };
+    const bool ok = fwrite(head, sizeof head, 1, f) == 1 && fwrite(bin.data(), 1, bin.size(), f) == bin.size();
+    if (fclose(f) != 0 || !ok) { std::filesystem::remove(tmp, ec); return; }
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) std::filesystem::remove(tmp, ec);
 }
 } // namespace BinCache
 }
