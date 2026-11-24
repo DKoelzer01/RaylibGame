@@ -71,7 +71,10 @@ bool HotShader::reloadIfChanged(bool force) {
     const std::string vsSrc = ExpandShaderIncludes(vsPath, incs), fsSrc = ExpandShaderIncludes(fsPath, incs);
     includes = incs;
     for (const std::string& inc : includes) fsTime = std::max(fsTime, GetFileModTime(inc.c_str()));
+    const double t0 = GetTime();
     Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
+    // (#1769) a slow compile stalls its frame and every scenario's start (a cold driver cache)
+    if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Shader %s: compiled and linked in %.0f ms", fsPath.c_str(), ms);
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
         LOG_ERROR("Shader", "Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());
