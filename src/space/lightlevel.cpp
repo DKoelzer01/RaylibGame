@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <memory>
 #include <tuple>
 #include <unordered_map>
@@ -23,8 +24,13 @@
 namespace {
 constexpr float kTorchReach = 12.0f, kLampReach = 20.0f; // m (GUESS)
 constexpr float kGain = 2.0f;                            // GUESS
-constexpr int kRelightBudget = 20000;                    // cells a frame
-constexpr float kPlotRange = 160.0f;                     // m: plots whose lights and walls the grid takes
+// (#1739 profile b39ba4fb: 8 ms runs while hovering, 42-45 ms after big moves) The work a frame is bounded in time, not
+// cells: brick reads (a terrain density block each) and relight slices until kWorkMs is spent; the rest waits.
+constexpr double kWorkMs = 1.0;                          // ms a frame (GUESS)
+constexpr int kRelightSlice = 256;                       // cells between time checks
+// Plots join within kPlotEnter of the camera and leave past kPlotLeave: without the gap, hovering at the edge took a
+// plot's lights out and back every few frames, each time a full relight.
+constexpr float kPlotEnter = 160.0f, kPlotLeave = 200.0f; // m
 
 uint64_t BrickKey(int bx, int by, int bz) {
     const uint64_t m = (1u << 21) - 1;
@@ -52,6 +58,7 @@ struct State {
     std::shared_ptr<const TerrainDeltas> edits;   // the snapshot the grid's opacity was read from
     std::unordered_map<uint32_t, PlotCache> plots;
     std::map<Source, int> current;                // sources in the grid, with their counts
+    std::set<uint64_t> refresh;                   // bricks whose walls changed, to re-read (a few a frame)
     LightLevelStats stats;
 };
 State S;
@@ -86,6 +93,7 @@ void FillOpacity(int bx, int by, int bz, uint8_t* out) {
 void Reset(const Planetoid* body) {
     S.plots.clear();
     S.current.clear();
+    S.refresh.clear();
     S.grid.reset();
     S.body = body;
     S.bodyId = body ? body->id : 0;
@@ -150,7 +158,7 @@ void LightLevel_Update(Scene& world, bool inGame) {
     if (body->plots) {
         for (auto& kv : S.plots) kv.second.inRange = false;
         for (auto& plot : body->plots->plots) {
-            if (Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > kPlotRange) continue;
+            if (Vector3Distance(plot->toBody({ 0, 0, 0 }), cam) > (S.plots.count(plot->id) ? kPlotLeave : kPlotEnter)) continue;
             PlotCache& c = S.plots[plot->id];
             c.inRange = true;
             if (c.version != plot->version) RebuildPlot(*body, *plot, c, changed);
@@ -162,12 +170,7 @@ void LightLevel_Update(Scene& world, bool inGame) {
             it = S.plots.erase(it);
         }
     } else S.plots.clear();
-    std::sort(changed.begin(), changed.end());
-    changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
-    for (uint64_t k : changed) {
-        const int bx = (int)((int64_t)(k << 43) >> 43), by = (int)((int64_t)(k >> 21 << 43) >> 43), bz = (int)((int64_t)(k >> 42 << 43) >> 43);
-        g.RefreshOpacity(bx * 16, by * 16, bz * 16, bx * 16 + 15, by * 16 + 15, bz * 16 + 15);
-    }
+    for (uint64_t k : changed) S.refresh.insert(k); // re-read below, in the frame's time budget
     // Sources: the difference between what the plots hold and what the grid has.
     for (auto it = S.current.begin(); it != S.current.end();) {
         const int have = it->second, need = want.count(it->first) ? want[it->first] : 0;
@@ -188,8 +191,11 @@ void LightLevel_Update(Scene& world, bool inGame) {
             int cx, cy, cz;
             TerrainDeltas::Unpack(k, cx, cy, cz);
             const float span = kDeltaChunk * kVoxelSize;
-            g.RefreshOpacity(FloorI(cx * span) - 1, FloorI(cy * span) - 1, FloorI(cz * span) - 1,
-                             FloorI((cx + 1) * span) + 1, FloorI((cy + 1) * span) + 1, FloorI((cz + 1) * span) + 1);
+            // The bricks the grid has that the chunk (and one cell round it) overlaps; the others read the new terrain when made.
+            for (int bz = (FloorI(cz * span) - 1) >> 4; bz <= (FloorI((cz + 1) * span) + 1) >> 4; ++bz)
+                for (int by = (FloorI(cy * span) - 1) >> 4; by <= (FloorI((cy + 1) * span) + 1) >> 4; ++by)
+                    for (int bx = (FloorI(cx * span) - 1) >> 4; bx <= (FloorI((cx + 1) * span) + 1) >> 4; ++bx)
+                        if (g.HasBrick(bx, by, bz)) S.refresh.insert(BrickKey(bx, by, bz));
         };
         if (now) for (auto& kv : now->chunks) {
             if (!was) { refresh(kv.first); continue; }
@@ -199,7 +205,15 @@ void LightLevel_Update(Scene& world, bool inGame) {
         if (was) for (auto& kv : was->chunks) if (!now || !now->chunks.count(kv.first)) refresh(kv.first);
     }
 
-    g.Update(kRelightBudget);
+    // The frame's work, bounded in time: changed bricks re-read (each a terrain density block), then relight slices.
+    const double tEnd = GetTime() + kWorkMs / 1000.0;
+    while (!S.refresh.empty() && GetTime() < tEnd) {
+        const uint64_t k = *S.refresh.begin();
+        S.refresh.erase(S.refresh.begin());
+        const int bx = (int)((int64_t)(k << 43) >> 43), by = (int)((int64_t)(k >> 21 << 43) >> 43), bz = (int)((int64_t)(k >> 42 << 43) >> 43);
+        g.RefreshOpacity(bx * 16, by * 16, bz * 16, bx * 16 + 15, by * 16 + 15, bz * 16 + 15);
+    }
+    while (g.Busy() && GetTime() < tEnd) g.Update(kRelightSlice);
 
     // The GPU window: anchored at a multiple of 128 m near the camera (the texture wraps the same way), so the matrix
     // carries small numbers; localModel's translation is computed in double.

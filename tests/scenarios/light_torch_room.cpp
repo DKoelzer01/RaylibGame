@@ -30,6 +30,7 @@ struct State {
         return e;
     }
     int torches = 0;
+    float worstMs = 0.0f;
 } S;
 constexpr float kFloor = -10.0f, kCeil = -6.0f; // m under the surface
 int Level(Vector3 local) { return LightLevel_At(*player.nearest, local).level; }
@@ -60,8 +61,12 @@ SCENARIO("light/torch-room") {
     s.step("meshed and relit", 30.0, [](ScenarioCtx& c) {
         c.camera(S.pt(-11.0f, -11.0f, kFloor + 1.7f), S.pt(4.0f, 4.0f, kFloor + 0.5f), S.home);
         const LightLevelStats st = LightLevel_Stats();
+        S.worstMs = std::max(S.worstMs, st.ms); // (#1739 profile: one relight took 42-45 ms in a frame) spread over frames now
         c.waitingFor("an idle world and the grid relit: " + std::to_string(st.sources) + " sources, busy " + std::to_string(st.busy));
-        return c.t > 1.0 && WorldIdle() && !st.busy && st.sources > 0;
+        if (!(c.t > 1.0 && WorldIdle() && !st.busy && st.sources > 0)) return false;
+        c.metric("light grid: worst frame while 36 torches lit up (ms)", S.worstMs, "ms", false);
+        c.check("the relight is spread over frames (worst frame <= 3 ms)", S.worstMs <= 3.0f, TextFormat("%.2f ms", S.worstMs));
+        return true;
     });
     s.step("the room is lit, the rock is not", 1.0, [](ScenarioCtx& c) {
         const LightLevelStats st = LightLevel_Stats();
