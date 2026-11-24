@@ -14018,6 +14018,7 @@ int main(int argc, char** argv)
                     ++loadFrames;
                     Soundscape_PreloadStep(); // (#1241) one procedural ambience bed a frame behind the bar, not mid-play
                     const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
+                    if (bench) { static double dbgAt = 0.0; static long long last[16] = {}; if (GetTime() - dbgAt > 1.0) { dbgAt = GetTime(); std::string s; for (int k = 0; k < (int)JobTag::Count; ++k) { const long long n = WorldJobs().submittedOf((JobTag)k); s += TextFormat(" %s+%lld(q%lld)", JobTagName((JobTag)k), n - last[k], WorldJobs().queuedOf((JobTag)k)); last[k] = n; } printf("DBG1787 loading %.1f s: idle=%d preparing=%d fly=%d nearest=%s jobs:%s\n", GetTime() - loadStart, (int)WorldIdle(), (int)preparing, (int)player.flyMode, player.nearest ? player.nearest->name.c_str() : "-", s.c_str()); } }
                     if (built) barClosing = true; // fill to the end first (a few frames), then close
                     const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
                     if ((barClosing && barShown >= 0.999f) || timedOut) {
