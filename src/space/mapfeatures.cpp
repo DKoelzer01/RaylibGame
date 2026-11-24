@@ -571,4 +571,27 @@ TEST(MapFeatures, PlotFootprintAtItsHeadingInKindColours) {
     EXPECT_EQ(MapKindOf(PartType::MbCasing), MapKind::Machine);
     EXPECT_EQ(MapKindOf(PartType::Count), MapKind::None);
 }
+
+// (#1795 part 2) An edit tile's columns: each column's direction falls back in its own tile and column (random tiles, a
+// cube edge and corner), and neighbouring columns are about 0.5 m apart on a 60 km planet.
+TEST(MapFeatures, EditTileColumnsMapBackToThemselves) {
+    const float R = 60000.0f;
+    std::vector<Vector3> dirs = { Vector3Normalize({ 1.0f, 1.0f, 1.0f }), Vector3Normalize({ 1.0f, 1.0f, 0.2f }), { 0, 1, 0 } };
+    for (int k = 0; k < 6; ++k) dirs.push_back(Vector3Normalize({ sinf(k * 1.7f), cosf(k * 2.3f), sinf(k * 0.9f + 1.0f) }));
+    for (const Vector3 d : dirs) {
+        const uint64_t key = EditKey(d, R);
+        int bad = 0;
+        float worstGap = 0.0f;
+        for (int cv = 0; cv < kEditCols; cv += 7)
+            for (int cu = 0; cu < kEditCols; cu += 7) {
+                const Vector3 c = EditColumnDir(key, R, cu, cv);
+                float fu, fv;
+                if (EditKey(c, R, &fu, &fv) != key || (int)(fu * kEditCols) != cu || (int)(fv * kEditCols) != cv) ++bad;
+                if (cu + 1 < kEditCols) worstGap = std::max(worstGap, Vector3Distance(c, EditColumnDir(key, R, cu + 1, cv)) * R);
+            }
+        EXPECT_EQ(bad, 0) << "columns that map elsewhere, near " << d.x << " " << d.y << " " << d.z;
+        EXPECT_LT(worstGap, 0.6f);
+        EXPECT_GT(worstGap, 0.3f);
+    }
+}
 #endif
