@@ -29,7 +29,7 @@ struct State {
     Vector3 at(float x, float y, float z) const { return plot->toBody({ x, y, z }); } // plot metres -> body-local
     float topY() const { return (base.y + 1) * kCellSize; }
 } S;
-void Camera(ScenarioCtx& c) { // over a corner of the pad, looking at its middle
+void PadCamera(ScenarioCtx& c) { // over a corner of the pad, looking at its middle
     const float mid = (S.base.x + kPad * 0.5f) * kCellSize, midz = (S.base.z + kPad * 0.5f) * kCellSize;
     c.world.camera.position = c.body->toWorld(S.at(mid - 3.5f, S.topY() + 2.5f, midz - 3.5f));
     c.world.camera.target = c.body->toWorld(S.at(mid, S.topY(), midz));
@@ -56,11 +56,11 @@ SCENARIO("water/film-on-tiles") {
             for (int z = 0; z < kPad; ++z) placed += S.plot->place(Part{ PartType::Cube, { S.base.x + x, S.base.y, S.base.z + z }, 0, mat }) >= 0;
         c.eq("pad cubes placed", placed, kPad * kPad);
         gScenarioCamera = true;
-        Camera(c);
+        PadCamera(c);
         return true;
     });
     s.step("pour onto the pad and measure the drawn film (8 s)", 40.0, [](ScenarioCtx& c) {
-        Camera(c);
+        PadCamera(c);
         const float mid = (S.base.x + kPad * 0.5f) * kCellSize, midz = (S.base.z + kPad * 0.5f) * kCellSize;
         if (c.t >= S.nextPour && c.t < 8.0) { S.nextPour = c.t + 0.1; S.poured += Fluid::Pour(*c.body, S.at(mid, S.topY() + 0.3f, midz), 0.05f); }
         if (c.t < 2.0 || c.t > 8.0) return c.t > 8.0;
