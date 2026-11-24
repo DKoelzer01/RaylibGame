@@ -110,6 +110,35 @@ SCENARIO("water/diagonal-corner") {
             }
             c.note(TextFormat("fluid cells at the corner (x right, z down): %s", grid.c_str()));
         }
+        if (S.checks == 12) { // DIAG
+            for (const auto& site : snap->sites) {
+                if (site.body != c.body->id) continue;
+                float fx, fy, fz;
+                site.frame(S.at(CornerX(), S.floorTop(), CornerZ()), fx, fy, fz);
+                c.note(TextFormat("DIAG corner in site cells %.3f %.3f %.3f; e %.3f %.3f %.3f", fx, fy, fz, site.e.x, site.e.y, site.e.z));
+            }
+            for (float h = -0.1f; h < 0.6f; h += 0.125f) {
+                std::string grid;
+                for (int k = -2; k < 2; ++k) {
+                    for (int i = -2; i < 2; ++i) {
+                        uint8_t fl = 0;
+                        const int f = WaterField::CellFill(*snap, c.body->id, S.at(CornerX() + (i + 0.5f) * WaterField::CellSize(), S.floorTop() + h, CornerZ() + (k + 0.5f) * WaterField::CellSize()), 0, nullptr, &fl);
+                        grid += (fl & WaterField::kSolid) ? 's' : (char)('0' + std::min(9, f * 10 / 256));
+                    }
+                    grid += "/";
+                }
+                std::string drawn;
+                for (int k = 0; k < 6; ++k) {
+                    for (int i = 0; i < 6; ++i) {
+                        float wd;
+                        const bool ok = cs.density(S.at(CornerX() + (i - 2.5f) * 0.05f, S.floorTop() + h, CornerZ() + (k - 2.5f) * 0.05f), 0, wd);
+                        drawn += !ok ? '?' : wd >= ISO_LEVEL ? 'W' : '.';
+                    }
+                    drawn += "/";
+                }
+                c.note(TextFormat("DIAG h %.3f cells %s drawn(5cm) %s", h, grid.c_str(), drawn.c_str()));
+            }
+        }
         return false;
     });
     s.step("report", 1.0, [](ScenarioCtx& c) {
