@@ -14019,10 +14019,11 @@ int main(int argc, char** argv)
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
                     Soundscape_PreloadStep(); // (#1241) one procedural ambience bed a frame behind the bar, not mid-play
-                    // (#1787) A spawn also ends once the ground is built while jobs keep running: moving water near the spot (a
+                    // (#1787) Either also ends once the ground is built while jobs keep running: moving water near the spot (a
                     // river, a pond still filling) keeps remeshing its chunks and stepping, so the world is never idle, and every
-                    // spawn or teleport beside it showed the screen for its full 20 s.
-                    const bool built = !preparing && (spawnLoad ? (WorldIdle() || WorldTerrainReady(world)) && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
+                    // spawn, teleport or load beside it showed the screen for its full 20 s.
+                    const bool ground = WorldIdle() || WorldTerrainReady(world);
+                    const bool built = !preparing && (spawnLoad ? ground && loadFrames >= 3 : ground && GetTime() - loadStart > 0.5);
                     if (built) barClosing = true; // fill to the end first (a few frames), then close
                     const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
                     if ((barClosing && barShown >= 0.999f) || timedOut) {
