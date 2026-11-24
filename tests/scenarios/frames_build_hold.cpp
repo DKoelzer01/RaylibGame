@@ -15,6 +15,8 @@
 #include <raymath.h>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
+#include <cstdint>
 
 namespace {
 constexpr double kHoldSeconds = 10.0;
@@ -27,8 +29,18 @@ struct HoldState {
     // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
     DVec3 feet0{}, cam0{}, aim0{}; Vector3 fwd0{};
     double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0, aimWob = 0.0; // m, m, deg, m
+    int maxSteps = 0; // the new plot origin's largest move on one axis, in float steps (ulps) of that coordinate
 };
 HoldState st;
+
+// How many representable floats lie between a and b (0: equal, 1: neighbours). Same-sign values only (body-local coordinates
+// of a point 3 m from a player 60 km out keep their signs).
+int FloatSteps(float a, float b) {
+    int32_t ia, ib; std::memcpy(&ia, &a, 4); std::memcpy(&ib, &b, 4);
+    if ((ia < 0) != (ib < 0)) return a == b ? 0 : 1 << 20; // (a sign change: far beyond any rounding)
+    const int64_t d = (int64_t)ia - (int64_t)ib;
+    return (int)std::min<int64_t>(d < 0 ? -d : d, 1 << 20);
+}
 
 void Build(ScenarioDef& s) {
     s.tags = { "frames", "build" };
@@ -86,7 +98,10 @@ void Build(ScenarioDef& s) {
             if (!same) ++st.changed;
             // A visible flip: another plot, or another cell of the same one (what #551 looked like).
             if (plot != st.plot || (plot && (origin.x != st.origin.x || origin.y != st.origin.y || origin.z != st.origin.z))) ++st.cellFlips;
-            if (!plot) st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
+            if (!plot) {
+                st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
+                st.maxSteps = std::max({ st.maxSteps, FloatSteps(newOrigin.x, st.newOrigin.x), FloatSteps(newOrigin.y, st.newOrigin.y), FloatSteps(newOrigin.z, st.newOrigin.z) });
+            }
         }
         c.waitingFor("10 s holding still");
         if (c.T - st.t0 < kHoldSeconds) return false;
@@ -102,11 +117,14 @@ void Build(ScenarioDef& s) {
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
-        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving under
-        // 5 mm. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing, interpolation; F4 #1412),
-        // and rounding a wobbling value flips between neighbouring floats (3.9 mm apart at 60 km) now and then, either way.
+        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving no more
+        // than one float step on any axis. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing,
+        // interpolation; F4 #1412), and rounding a wobbling value flips between neighbouring floats (1.95-3.9 mm apart at
+        // 16-60 km) now and then. (#1759) A 5 mm bound on the distance failed ~1 run in 10: one step on each of two axes is
+        // 5.5 mm. A real wander is many steps.
         c.lt("plot or cell flips while still", st.cellFlips, 1);
-        c.lt("a new plot's origin moved while still (m)", st.maxMove, 0.005);
+        c.metric("new plot origin movement (float steps, largest axis)", st.maxSteps, "ulp");
+        c.lt("a new plot's origin moved more than one float step on an axis while still", st.maxSteps, 2);
         buildTool.active = false;
         return true;
     });
