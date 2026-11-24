@@ -119,9 +119,19 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
         const float ox = std::max(lx, 0.0f), oy = std::max(ly, 0.0f), oz = std::max(lz, 0.0f);
         return sqrtf(ox * ox + oy * oy + oz * oz) + std::min(std::max(lx, std::max(ly, lz)), 0.0f);
     };
-    const int x0 = (int)floorf((e.center.x - r) / kVoxelSize), x1 = (int)ceilf((e.center.x + r) / kVoxelSize); // lattice indices
-    const int y0 = (int)floorf((e.center.y - r) / kVoxelSize), y1 = (int)ceilf((e.center.y + r) / kVoxelSize); // lattice indices
-    const int z0 = (int)floorf((e.center.z - r) / kVoxelSize), z1 = (int)ceilf((e.center.z + r) / kVoxelSize); // lattice indices
+    // (#1791) A box's lattice range is its own (oriented) extent plus the 1 m shell, not the cube round its bounding
+    // sphere: a structure's flat 20 x 1.5 x 20 m ground pad walked ~1.8 M points of that cube, each a terrain density sample
+    // (420 ms on the main thread).
+    Vector3 ext = { r, r, r };
+    if (e.box) {
+        const float m = csg ? 1.0f : 0.0f;
+        ext = { std::min(r, fabsf(e.ax.x) * e.half.x + fabsf(e.ay.x) * e.half.y + fabsf(e.az.x) * e.half.z + m),
+                std::min(r, fabsf(e.ax.y) * e.half.x + fabsf(e.ay.y) * e.half.y + fabsf(e.az.y) * e.half.z + m),
+                std::min(r, fabsf(e.ax.z) * e.half.x + fabsf(e.ay.z) * e.half.y + fabsf(e.az.z) * e.half.z + m) };
+    }
+    const int x0 = (int)floorf((e.center.x - ext.x) / kVoxelSize), x1 = (int)ceilf((e.center.x + ext.x) / kVoxelSize); // lattice indices
+    const int y0 = (int)floorf((e.center.y - ext.y) / kVoxelSize), y1 = (int)ceilf((e.center.y + ext.y) / kVoxelSize); // lattice indices
+    const int z0 = (int)floorf((e.center.z - ext.z) / kVoxelSize), z1 = (int)ceilf((e.center.z + ext.z) / kVoxelSize); // lattice indices
     DeltaChunk* chunk = nullptr;
     TerrainDeltas::Key chunkKey = ~0ull;
     for (int z = z0; z <= z1; ++z)
@@ -137,6 +147,9 @@ void TerrainDeltasBuilder::apply(const TerrainEdit& e, const DensityField& field
                 float add = e.strength * t * t * (3.0f - 2.0f * t);
                 float carveTo = 0.0f; // carve: the density this point may have at most
                 const float sd = csg ? shapeDist(dx, dy, dz, dist) : 0.0f;
+                // (#1791) A box's points more than the 1 m shell outside it: a carve's clamp there leaves them solid and a fill's
+                // leaves them air, so the meshed surface cannot change (a sphere's r is its own radius + 1 m already).
+                if (csg && e.box && sd >= 1.0f) continue;
                 // #693: an eighth of a storage step (8 mm) under the shape's own surface. Ground exactly at iso (a point within float
                 // precision of the ground, a few mm at a planet's radius, reads exactly 0.5 = solid) just outside a face
                 // flush with the ground stayed solid over the cut: specks of ground in a lattice pattern.
@@ -294,6 +307,43 @@ TEST(TerrainDeltas, FlushBoxCarveLeavesNoSolidPointInside) {
         EXPECT_GT(inside, 100);
         EXPECT_EQ(solidInside, 0) << "box top " << off << " m over the ground";
     }
+}
+
+// (#1791) A big turned box (a structure's ground pad) carves exactly its shape: over the box and 3 m round it, a lattice
+// point is air exactly when it is inside the box or over the ground. Its walk is its own extent plus the 1 m shell, not the
+// cube round its bounding sphere, so it touches only the delta chunks near it.
+TEST(TerrainDeltas, BigTurnedBoxCarveIsExactAndStaysNearItsShape) {
+    const FlatField field;
+    TerrainDeltas empty;
+    TerrainDeltasBuilder b(empty);
+    TerrainEdit e{};
+    e.carve = true; e.box = true;
+    e.half = { 10.0f, 0.75f, 10.0f };                      // a 20 x 1.5 x 20 m pad
+    const float c = cosf(0.5f), s = sinf(0.5f);            // turned about the vertical
+    e.ax = { c, 0, s }; e.ay = { 0, 1, 0 }; e.az = { -s, 0, c };
+    e.center = { 0.3f, -0.4f, 0.1f };
+    e.radius = Vector3Length(e.half);
+    std::unordered_set<TerrainDeltas::Key> touched;
+    b.apply(e, field, &touched);
+    const auto d = b.finish();
+    const float span = kDeltaChunk * kVoxelSize;            // m a delta chunk
+    const int across = (int)ceilf((2.0f * (10.0f * (c + s)) + 2.0f) / span) + 1; // chunks the turned box + shell spans
+    EXPECT_LE((int)touched.size(), across * across * 2) << "chunks touched far from the box";
+    int wrong = 0;
+    const int R = (int)((13.0f * (c + s) + 3.0f) / kVoxelSize);
+    for (int z = -R; z <= R; z += 2)
+        for (int y = -20; y <= 12; ++y)
+            for (int x = -R; x <= R; x += 2) {
+                const Vector3 p = { x * kVoxelSize, y * kVoxelSize, z * kVoxelSize };
+                const Vector3 q = Vector3Subtract(p, e.center);
+                const float lx = fabsf(Vector3DotProduct(q, e.ax)), ly = fabsf(Vector3DotProduct(q, e.ay)), lz = fabsf(Vector3DotProduct(q, e.az));
+                const bool inside = lx <= e.half.x && ly <= e.half.y && lz <= e.half.z;
+                const bool outsideClearly = lx > e.half.x + kVoxelSize || ly > e.half.y + kVoxelSize || lz > e.half.z + kVoxelSize;
+                const bool air = LatticeDensity(*d, field, x, y, z) < ISO_LEVEL;
+                if (inside && !air) ++wrong;
+                if (outsideClearly && air != (p.y > 0.0f)) ++wrong; // untouched ground: air above y = 0 (the row at 0 is iso: solid)
+            }
+    EXPECT_EQ(wrong, 0);
 }
 
 TEST(TerrainDeltas, SphereCarveAndFillAreExact) {
