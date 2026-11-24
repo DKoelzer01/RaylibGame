@@ -10743,8 +10743,8 @@ int main(int argc, char** argv)
             GpuTimer_Mark("fluid");                              // its GPU step dispatches and readback (#642 perf)
             Waterworks_Update(world, simDt);                     // pumps send water down pipes to outlets
             GpuTimer_CpuMark("step: fluids, waterworks");
-            Objectives_Update(world);
-            LadderTasks_Update(world); // (#1271 L5) tier 2's wheel-driven press
+            { PROFILE_SCOPE("gu: Objectives_Update"); Objectives_Update(world); }
+            { PROFILE_SCOPE("gu: LadderTasks_Update"); LadderTasks_Update(world); } // (#1271 L5) tier 2's wheel-driven press
         }
         PlayerInput_EndStep();
         SimClock_EndStep();
@@ -10752,12 +10752,12 @@ int main(int argc, char** argv)
         if (gameState == 1) {
             // Per frame: the view, the HUD's helpers and client-only effects (not simulation, #315).
             if (ship.piloted) ship.applyChaseCamera(world);
-            if (!loading) Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); // exploration, the map, the minimap zoom (#278)
-            if (!loading) MachineAct_Update(); // (#854) a joined client's cursor takes from machines
-            if (!loading) Viewmodel_Update(world, Combat_HitStop(LocalSession(), settings.reduceMotion) ? 0.0f : frameDt); // hit-stop (#165)
-            if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
-            if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted && !Interact_RmbConsumed()); // (#176)
-            if (!loading) Trapping_Update(world); // snares (#176)
+            if (!loading) { PROFILE_SCOPE("gu: Nav_Update"); Nav_Update(world, !bench && Nav_MapOpen(), !bench && gameInput && !Nav_MapOpen()); } // exploration, the map, the minimap zoom (#278)
+            if (!loading) { PROFILE_SCOPE("gu: MachineAct_Update"); MachineAct_Update(); } // (#854) a joined client's cursor takes from machines
+            if (!loading) { PROFILE_SCOPE("gu: Viewmodel_Update"); Viewmodel_Update(world, Combat_HitStop(LocalSession(), settings.reduceMotion) ? 0.0f : frameDt); } // hit-stop (#165)
+            if (!loading) { PROFILE_SCOPE("gu: Structures_Update"); Structures_Update(world); } // ruins, wrecks and wonders near the player (#164)
+            if (!loading) { PROFILE_SCOPE("gu: Fishing_Update"); Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted && !Interact_RmbConsumed()); } // (#176)
+            if (!loading) { PROFILE_SCOPE("gu: Trapping_Update"); Trapping_Update(world); } // snares (#176)
             // (#822) Q: the off hand's food (eaten, when not full) or consumable (an oxygen canister, a power cell), one at a time
             if (!loading && gameInput && alive && !GameUI_InventoryOpen() && PlayerInput_BindingPressed(Act::OffHandUse)) {
                 const std::string id = inventory.offHand().id;
@@ -10767,8 +10767,8 @@ int main(int argc, char** argv)
                 else if (id == "telescope" && !ship.piloted) { Telescope_SetActive(world, !telescope.active); Audio_Play(Sfx::Build, 0.25f, telescope.active ? 1.6f : 1.3f); } // (#534)
                 else GameUI_Toast(TextFormat("%s uses food, a consumable, a bucket or the telescope from the off hand", PlayerInput_KeyName(PlayerInput_Binding(Act::OffHandUse))));
             }
-            if (!loading) DungeonTraps_Update(world); // dungeon traps (#719)
-            if (!loading) Events_Update(world, frameDt); // meteor showers (#177)
+            if (!loading) { PROFILE_SCOPE("gu: DungeonTraps_Update"); DungeonTraps_Update(world); } // dungeon traps (#719)
+            if (!loading) { PROFILE_SCOPE("gu: Events_Update"); Events_Update(world, frameDt); } // meteor showers (#177)
             if (!hostSave.empty()) { GpuTimer_CpuMark("frame: view, events"); Host_Update(world); } // --host (#311): answer joins (its own marks: #348)
             // #348 soak window (a host with RAYLIBGAME_SOAK_PLAYERS=N): from when N players are online until one leaves (or
             // RAYLIBGAME_SOAK_SECONDS), the frame work time (mean, p99, max), the per-system CPU breakdown and the traffic per client.
@@ -10879,14 +10879,14 @@ int main(int argc, char** argv)
                     else if (MpBots_Update(world)) { NetClient_Disconnect(gJoin); windowKeepAlive = false; }
                 }
             }
-            if (!loading) Ambience_Update(world, frameDt); // rain splashes, fireflies, machine smoke
-            if (!loading) Waterfalls_Update(world, frameDt); // falls near the camera: sheets, mist and spray (#540)
-            Particles_Update(world, frameDt); // smoke, dust, exhaust, splashes (particles.h)
+            if (!loading) { PROFILE_SCOPE("gu: Ambience_Update"); Ambience_Update(world, frameDt); } // rain splashes, fireflies, machine smoke
+            if (!loading) { PROFILE_SCOPE("gu: Waterfalls_Update"); Waterfalls_Update(world, frameDt); } // falls near the camera: sheets, mist and spray (#540)
+            { PROFILE_SCOPE("gu: Particles_Update"); Particles_Update(world, frameDt); } // smoke, dust, exhaust, splashes (particles.h)
             // Autosave every 5 minutes of play (incremental: only regions changed since the last save).
             static double lastAutosave = GetTime();
             if (!bench && alive && gNetRole != NetRole::Client && GetTime() - lastAutosave > 300.0) { // (a client saves nothing: the server owns the world)
                 lastAutosave = GetTime();
-                if (SaveWorld(world)) GameUI_Toast("Autosaved");
+                PROFILE_SCOPE("gu: autosave"); if (SaveWorld(world)) GameUI_Toast("Autosaved");
             }
             if (bench && lookDown && !ship.piloted) {
                 const Vector3 t = Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up)));
@@ -10895,8 +10895,8 @@ int main(int argc, char** argv)
             if (!ship.piloted && !Rocket_Boarded()) { if (!gScenarioCamera) player.applyToCamera(world); Combat_ShakeCamera(world, LocalSession(), settings.reduceMotion); } // hit shake (#165); a scenario's own camera (#1105)
             else if (Rocket_Boarded()) Rocket_View(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), SimAlpha());
             if (bench && benchTelescope > 0.0f && !ship.piloted) AimAtTelescopeTarget(world); // after the camera is placed (#1337)
-            Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // after the camera: aims with this frame's view (#285, as #222)
-            Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); // aboard, T moves fuel
+            { PROFILE_SCOPE("gu: Machine_Update"); Machine_Update(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); } // after the camera: aims with this frame's view (#285, as #222)
+            { PROFILE_SCOPE("gu: Telescope_Update"); Telescope_Update(world, gameInput && alive && !Rocket_Boarded(), !ship.piloted && !player.flyMode && alive && !buildTool.active); } // aboard, T moves fuel
             if (bench && benchTelescope > 0.0f) { Telescope_SetActive(world, true); telescope.zoom = benchTelescope; Telescope_Update(world, false, !ship.piloted); }
         }
 
