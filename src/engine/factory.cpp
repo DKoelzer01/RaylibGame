@@ -4388,12 +4388,15 @@ TEST(Factory, AnEnergyHatchSharedByTwoStructuresSlowsBothEvenly) {
     long long made = 0; int active = 0;
     const int ticks = 4 * iron->ticks;
     for (int t = 0; t < ticks; ++t) TickPlot(ps, 1, made, active);
-    const int a = CountItems(M(6).out, kSlots, iron->out[0].item), c = CountItems(M(7).out, kSlots, iron->out[0].item);
-    const int full = ticks / iron->ticks * parallel * iron->out[0].count; // one alone at full power
+    auto crafts = [](const Machine& m) { int n = 0; for (const auto& kv : m.crafts) n += kv.second; return n; };
+    const int a = crafts(M(2)), c = crafts(M(3));
     EXPECT_GT(a, 0);
-    EXPECT_NEAR(a, c, parallel * iron->out[0].count) << "evenly: within one round of crafts";
-    EXPECT_LE(a + c, full + parallel * iron->out[0].count) << "together no more than the generator's 32 EU/t allows";
-    EXPECT_GE(a + c, full * 3 / 4) << "and most of it";
+    EXPECT_NEAR(a, c, parallel) << "evenly: within one round of crafts";
+    EXPECT_EQ(M(2).status, MachineStatus::Working);
+    const Series& used = ps.stats.euUsed[(int)PartType::MbHatch];
+    const long long eu = used.total + used.acc;
+    EXPECT_LE(eu, 32LL * ticks) << "the hatch passed no more than the generator's 32 EU/t";
+    EXPECT_GE(eu, 32LL * ticks * 9 / 10) << "and nearly all of it (the demand is twice that)";
     MbReset();
 }
 
