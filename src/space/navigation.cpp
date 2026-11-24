@@ -235,8 +235,7 @@ struct MapView {
             tex = LoadTextureFromImage(img);
             SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
         }
-        std::vector<unsigned char>().swap(pending->px);
-        shown = pending;
+        shown = pending; // (keeps its pixels: 1.6 MB at most, read by Nav_MapPixel)
         pending.reset();
     }
     void reset() { if (tex.id) UnloadTexture(tex); tex = Texture2D{}; shown.reset(); pending.reset(); }
@@ -333,6 +332,34 @@ bool Nav_MinimapReady() { return minimap.tex.id != 0; }
 static double minimapDrawnAt = -1.0; // (#932) when the minimap last drew
 bool Nav_MinimapShown() { return GetTime() - minimapDrawnAt < 0.25; } // (#937: 0.25 s, so one slow frame does not blink the readout)
 bool Nav_MapImageReady() { return bigMap.tex.id != 0 && !bigMap.pending; }
+
+bool Nav_MapPixel(bool big, Vector3 localDir, Color& out) {
+    const MapView& v = big ? bigMap : minimap;
+    if (!v.shown || v.shown->px.empty()) return false;
+    const MapImage& m = *v.shown;
+    const Vector2 p = OnImage(m, Vector3Normalize(localDir));
+    const int x = (int)floorf(p.x + m.W * 0.5f), y = (int)floorf(p.y + m.H * 0.5f);
+    if (x < 0 || y < 0 || x >= m.W || y >= m.H) return false;
+    const unsigned char* q = &m.px[((size_t)y * m.W + x) * 4];
+    out = { q[0], q[1], q[2], q[3] };
+    return true;
+}
+
+float Nav_MapMetresPerPixel(bool big) {
+    const MapView& v = big ? bigMap : minimap;
+    return v.shown ? v.shown->mpp : 0.0f;
+}
+
+void Nav_OpenMapAt(Vector3 localDir, float mpp) {
+    mapOpen = HasMap();
+    if (!mapOpen) return;
+    mapCentre = Vector3Normalize(localDir);
+    mapBody.clear(); // (set by the next update; a different body name would re-centre it on the player)
+    int best = 0;
+    for (int i = 0; i < (int)(sizeof(kZooms) / sizeof(kZooms[0])); ++i) if (fabsf(logf(kZooms[i] / mpp)) < fabsf(logf(kZooms[best] / mpp))) best = i;
+    mapZoom = best;
+    mapDirtyAt = 0.0;
+}
 
 void Nav_AddWaypoint(const std::string& body, Vector3 dir, const std::string& name, bool byPlayer) {
     waypoints.push_back({ body, name, Vector3Normalize(dir) });

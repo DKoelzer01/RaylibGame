@@ -22,6 +22,7 @@ enum class PartType : uint8_t;
 enum class MapKind : uint8_t { None = 0, Structure, Machine, Transport, Storage, Power, Farm, Other, Count };
 MapKind MapKindOf(PartType t);
 const char* MapKindName(MapKind k);
+Color MapFeatures_Colour(MapKind k); // (main thread, after the first MapFeatures_Update)
 
 struct MapIcon {
     std::string item;  // the machine's item (its icon)

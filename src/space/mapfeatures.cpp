@@ -299,6 +299,11 @@ std::shared_ptr<const PlotMap> MapFeatures_BuildNow(const Plot& plot) {
 
 void MapFeatures_Reset() { cache.clear(); }
 
+Color MapFeatures_Colour(MapKind k) {
+    if (!coloursLoaded) LoadColours();
+    return colours[(int)k];
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
 // (#1795) A plot at a 30 degree heading on a 60 km planet: a floor of cubes, a furnace on it and a row of conveyors. Each
