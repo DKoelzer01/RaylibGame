@@ -3163,12 +3163,12 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     const int tv[3] = { work[t], work[t + 1], work[t + 2] };
                     Vector3 pc[3], lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
                     for (int e = 0; e < 3; ++e) { pc[e] = plotCells(wv[tv[e]]); lo = Vector3Min(lo, pc[e]); hi = Vector3Max(hi, pc[e]); }
-                    constexpr float kEps = 1e-4f; // a piece touching a cell's face is not in it
+                    constexpr float kEps = 1e-4f, kGrow = 0.02f; // a piece touching the cut box is not in it; the box reaches 1 cm into the blocks around (the cut no longer lies on their faces: specks)
                     Int3 dryCell{};
                     bool found = false;
-                    for (int z = (int)floorf(lo.z + kEps); z <= (int)floorf(hi.z - kEps) && !found; ++z)
-                        for (int y = (int)floorf(lo.y + kEps); y <= (int)floorf(hi.y - kEps) && !found; ++y)
-                            for (int x = (int)floorf(lo.x + kEps); x <= (int)floorf(hi.x - kEps) && !found; ++x)
+                    for (int z = (int)floorf(lo.z - kGrow + kEps); z <= (int)floorf(hi.z + kGrow - kEps) && !found; ++z)
+                        for (int y = (int)floorf(lo.y - kGrow + kEps); y <= (int)floorf(hi.y + kGrow - kEps) && !found; ++y)
+                            for (int x = (int)floorf(lo.x - kGrow + kEps); x <= (int)floorf(hi.x + kGrow - kEps) && !found; ++x)
                                 if (dryBeside({ x, y, z })) { dryCell = { x, y, z }; found = true; }
                     if (!found) { kept.insert(kept.end(), { tv[0], tv[1], tv[2] }); continue; }
                     // Cut by the cell's six faces: the part outside each goes back on the list (it may reach another dry cell),
@@ -3176,7 +3176,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     poly = { { tv[0], pc[0] }, { tv[1], pc[1] }, { tv[2], pc[2] } };
                     for (int f = 0; f < 6 && poly.size() >= 3; ++f) {
                         const int ax = f >> 1;
-                        const float bound = (float)(ax == 0 ? dryCell.x : ax == 1 ? dryCell.y : dryCell.z) + (f & 1 ? 1.0f : 0.0f);
+                        const float bound = (float)(ax == 0 ? dryCell.x : ax == 1 ? dryCell.y : dryCell.z) + (f & 1 ? 1.0f + kGrow : -kGrow);
                         auto side = [&](const Vector3& c) { const float v = ax == 0 ? c.x : ax == 1 ? c.y : c.z; return f & 1 ? bound - v : v - bound; }; // >= 0: inside
                         in.clear(); outP.clear();
                         for (size_t k = 0; k < poly.size(); ++k) {
