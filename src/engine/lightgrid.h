@@ -63,10 +63,14 @@ public:
     // Applies queued work, at most `budget` cells (<= 0: everything). Returns true when nothing is left queued.
     bool Update(int budget = 0);
     bool Busy() const { return removeHead_ < removeQ_.size() || addHead_ < addQ_.size(); }
+    // At most this many new bricks per Update call (each reads its opacity: a terrain density block), so a caller timing
+    // its slices sees a brick's cost before the next; 0: no cap.
+    void SetNewBrickCap(int cap) { newBrickCap_ = cap; }
 
     LightCell At(int x, int y, int z) const;            // unlit where no brick exists
     bool OpaqueAt(int x, int y, int z) const;           // false where no brick exists (not read yet)
     size_t BrickCount() const { return bricks_.size(); }
+    bool HasBrick(int bx, int by, int bz) const { return Find(bx, by, bz) != nullptr; }
     size_t MemoryBytes() const { return bricks_.size() * sizeof(Brick); }
 
     // One brick's cells (kBrickCells, x fastest), or null where none exists.
@@ -104,6 +108,7 @@ private:
     std::vector<Cell> addQ_;
     size_t addHead_ = 0;
     std::vector<Brick*> dirty_;
+    int newBrickCap_ = 0, newBricks_ = 0;
 };
 
 #endif

@@ -26,7 +26,7 @@ namespace {
     float gridMat[16] = {};
     float gridInfo[4] = {};
     int gridSent = 0;
-    struct GridSlot { int bx = 0, by = 0, bz = 0; bool valid = false; };
+    struct GridSlot { int bx = 0, by = 0, bz = 0; bool valid = false, zero = true; }; // zero: the slot holds no light (the texture starts so)
     GridSlot gridSlots[kGridBricks * kGridBricks * kGridBricks];
     std::unordered_set<uint64_t> gridPending;   // bricks whose light changed and are not sent yet
     std::vector<int> gridDirty;
@@ -82,9 +82,11 @@ void LocalLights_UploadGrid(LightGrid* grid, const int cam[3], const int anchor[
                     const bool here = s.valid && s.bx == bx && s.by == by && s.bz == bz;
                     if (here && !gridPending.count(key)) continue;
                     const LightCell* data = grid->BrickLight(bx, by, bz);
-                    if (!data && here) { gridPending.erase(key); continue; }
+                    // A dark brick into a slot that is already dark: only the bookkeeping moves (flying over unlit ground sent
+                    // 64 zero bricks per brick crossed, #1739 profile).
+                    if (!data && (here || s.zero)) { s.bx = bx; s.by = by; s.bz = bz; s.valid = true; gridPending.erase(key); continue; }
                     glTexSubImage3D(GL_TEXTURE_3D, 0, sx * 16, sy * 16, sz * 16, 16, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, data ? data : zero);
-                    s = { bx, by, bz, true };
+                    s = { bx, by, bz, true, data == nullptr };
                     gridPending.erase(key);
                     ++gridSent;
                 }
