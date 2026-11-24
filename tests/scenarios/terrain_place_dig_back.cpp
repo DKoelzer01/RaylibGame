@@ -33,12 +33,13 @@ SCENARIO("terrain/place-dig-back") {
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 90.0;
     s.step("place three strokes, dig the spot back: no filler gained", 40.0, [](ScenarioCtx& c) {
-        c.waitingFor("the player standing on the sandbox, the ground at every test spot built");
-        // (#1769) and the ground at all eight spots (9 m left to 12 m right) aimable: on a slow start (cold shader compiles) the
-        // chunks to the sides were still streaming, and the 3 cases placing off to the side placed nothing (the runner's
-        // 6-of-12 failures; the one placing straight ahead passed)
+        c.waitingFor("the player standing on the sandbox, the ground at the four placing spots built");
+        // (#1769) and the ground at the four placing spots (6 m left, ahead, 6 and 12 m right) aimable: on a slow start (cold
+        // shader compiles) the chunks to the sides were still streaming, and the 3 cases placing off to the side placed nothing
+        // (the runner's 6-of-12 failures; the one placing straight ahead passed). The control spots between them may be out of
+        // the aim's reach; a control that hits nothing counts 0, as before.
         if (c.T < 1.0 || !WorldIdle()) return false;
-        for (float side = -9.0f; side <= 12.0f; side += 3.0f) if (!AimAhead(c, side)) return false;
+        for (float side = -6.0f; side <= 12.0f; side += 6.0f) if (!AimAhead(c, side)) return false;
         terrainTool.creative = false;
         SkillState& sk = LocalSession().skills;
         const SkillState saved = sk;
