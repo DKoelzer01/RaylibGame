@@ -7,6 +7,7 @@
 #include "audioscene.h"
 #include "audiosynth.h"
 #include "subtitles.h"
+#include "world.h"
 
 #include <raylib.h>
 #include <algorithm>
@@ -63,12 +64,17 @@ namespace {
         std::atomic<float> air[3] = { 1.0f, 1.0f, 1.0f };
         std::atomic<float> send{ 0.0f };    // (#1294) how much of the dry sound goes to the reverb
         uint64_t sendCursor = 0;            // audio thread: where its next block lands in the send ring
+        // (#1724) Test hook (Audio_DebugLR): the energy of the left and right output, summed by the audio thread.
+        std::atomic<float> dbgL{ 0.0f }, dbgR{ 0.0f };
+        std::atomic<uint32_t> dbgN{ 0 };
+        std::atomic<bool> dbgClear{ false };
     };
     VoiceDsp dsp[AudioMixer::kVoices];
     AudioStream voiceStream[AudioMixer::kVoices] = {};
     std::shared_ptr<const AudioScene> worldScene; // (#1293) the ground and parts around the listener (Audio_SetWorld)
     static_assert(SteamAudio::kMaxVoices == AudioMixer::kVoices, "one Steam Audio source per voice");
     bool steam = false;                 // Steam Audio loaded: every voice is stereo and goes through its effects
+    std::atomic<bool> debugLR{ false }; // (#1724) the voices sum their output energy (Audio_DebugLR)
     // (#1294) The reverb: the voices' sends summed in a ring, a stream of its own running Steam Audio's reverb on them.
     bool reverbLive = false;
     AudioSendRing sendRing;
@@ -96,6 +102,7 @@ namespace {
         int emitter = -1;               // the emitter it plays for, -1 a one-shot
         bool positional = false;
         DVec3 pos{};
+        AudioAnchor anchor{};           // (#1724) pos on its body: resolved each update, so it turns with the ground
         AudioAttenuation att{};
         float gain = -1.0f, pan = -1.0f, alpha = -1.0f, pitch = -1.0f; // last values handed to raylib
     };
@@ -104,6 +111,7 @@ namespace {
     AudioMixer mixer;
     AudioEmitters emitters;
     AudioListener listener;
+    AudioAnchor emAnchor[AudioEmitters::kMax] = {};   // (#1724) where each emitter set by a global position is, on its body
     bool emFramed[AudioEmitters::kMax] = {};
     FramePos emFrame[AudioEmitters::kMax] = {};
     std::vector<AudioEmitters::Action> actions;
@@ -147,6 +155,14 @@ namespace {
         const float a = d.alpha.load(std::memory_order_relaxed);
         if (a < 1.0f)
             for (int i = 0; i < n; ++i) { d.lp += a * (d.left[i] - d.lp); d.left[i] = d.lp; d.lpR += a * (d.right[i] - d.lpR); d.right[i] = d.lpR; }
+        if (debugLR.load(std::memory_order_relaxed)) {
+            if (d.dbgClear.exchange(false)) { d.dbgL.store(0.0f); d.dbgR.store(0.0f); d.dbgN.store(0); }
+            float el = 0.0f, er = 0.0f;
+            for (int i = 0; i < n; ++i) { el += d.left[i] * d.left[i]; er += d.right[i] * d.right[i]; }
+            d.dbgL.store(d.dbgL.load() + el);
+            d.dbgR.store(d.dbgR.load() + er);
+            d.dbgN.store(d.dbgN.load() + (uint32_t)n);
+        }
         d.fifo.fill(d.left, d.right);
     }
     void FillVoiceStereo(VoiceDsp& d, float* out, unsigned int frames) {
@@ -281,6 +297,10 @@ namespace {
                 for (int k = 1; k <= 6; ++k) s += sinf(6.2832f * 55.0f * k * t) / k * (k % 2 ? 1.0f : 0.5f);
                 return 0.3f * s * (1.0f + 0.1f * sinf(6.2832f * 0.5f * t));
             });
+            return true;
+        }
+        if (name == "test_noise") { // white noise: broadband, so the HRTF's level difference between the ears shows (audio/directions, #1724)
+            out = Synth(2.0f, [&](float, float) { return 0.3f * n(rng); });
             return true;
         }
         if (name == "wind") { // low-passed noise with a slowly moving cutoff and gusts
@@ -449,7 +469,7 @@ namespace {
     AudioSpatial VoiceSpatial(int v) {
         const VoiceState& s = vs[v];
         if (s.emitter >= 0) if (const AudioEmitters::Emitter* e = emitters.get(s.emitter)) return e->spatial;
-        return s.positional ? Audio_Spatialize(listener, s.pos, s.att) : Audio_Spatialize2D(listener);
+        return s.positional ? Audio_Spatialize(listener, Audio_AnchorPos(s.anchor, s.pos), s.att) : Audio_Spatialize2D(listener);
     }
 
     void PlayOneShot(int sound, AudioBus bus, AudioPriority priority, float volume, float pitch, const DVec3* pos, const AudioAttenuation& att) {
@@ -461,7 +481,7 @@ namespace {
         StartVoice(v, sound, false, pitch);
         vs[v].emitter = -1;
         vs[v].positional = pos != nullptr;
-        if (pos) { vs[v].pos = *pos; vs[v].att = att; }
+        if (pos) { vs[v].pos = *pos; vs[v].anchor = Audio_AnchorOf(*pos); vs[v].att = att; }
         ApplyVoice(v, mixer.gain(v), VoiceSpatial(v), mixer.voice(v).pitch);
         Subtitles_OnSound(d.name, pos, listener); // (#1244)
     }
@@ -583,11 +603,14 @@ void Audio_Update() {
         }
     }
     // Emitters: places in a body's frame follow the body; then voices are taken and given back.
+    // (#1724) Every placed sound is resolved to global here, at the listener's instant: the ground turns under a global
+    // position kept as it was set (about 100 m/s on this planet), so it would drift west.
     for (int e = 0; e < AudioEmitters::kMax; ++e) {
-        if (!emFramed[e]) continue;
         AudioEmitters::Emitter* em = emitters.get(e);
+        if (!em) continue;
         DVec3 pg, vg;
-        if (em && Frames_ToGlobal(emFrame[e], pg, vg)) em->pos = pg;
+        if (emFramed[e]) { if (Frames_ToGlobal(emFrame[e], pg, vg)) em->pos = pg; }
+        else if (emAnchor[e].body) em->pos = Audio_AnchorPos(emAnchor[e], em->pos);
     }
     actions.clear();
     emitters.update(mixer, listener, now, dt, actions);
@@ -619,7 +642,7 @@ void Audio_Update() {
                 const AudioEmitters::Emitter* em = emitters.get(vs[v].emitter);
                 if (!em || !em->positional) continue;
                 sv[v] = { true, em->pos };
-            } else if (vs[v].positional) sv[v] = { true, vs[v].pos };
+            } else if (vs[v].positional) sv[v] = { true, Audio_AnchorPos(vs[v].anchor, vs[v].pos) };
         }
         const float ahead[3] = { listener.forward.x, listener.forward.y, listener.forward.z }, up[3] = { listener.up.x, listener.up.y, listener.up.z };
         SteamAudio::SetSimInputs(worldScene, listener.pos, ahead, up, sv);
@@ -704,7 +727,7 @@ void Audio_PlaySoundAt(int sound, const DVec3& posGlobal, AudioBus bus, AudioPri
 int Audio_EmitterCreate(int sound, AudioBus bus, AudioPriority priority, const AudioAttenuation& att, bool positional) {
     if (!V2Ready() || sound < 0 || sound >= (int)table.size() || table[sound].missing) return -1;
     const int e = emitters.create(sound, bus, priority, att, positional && !table[sound].stream); // streams play centred
-    if (e >= 0) emFramed[e] = false;
+    if (e >= 0) { emFramed[e] = false; emAnchor[e] = {}; }
     return e;
 }
 
@@ -712,11 +735,11 @@ void Audio_EmitterDestroy(int e) {
     if (!V2Ready() || e < 0) return;
     const int v = emitters.destroy(mixer, e);
     if (v >= 0 && vs[v].emitter == e) StopVoiceRaw(v);
-    if (e < AudioEmitters::kMax) emFramed[e] = false;
+    if (e < AudioEmitters::kMax) { emFramed[e] = false; emAnchor[e] = {}; }
 }
 
 void Audio_EmitterSetPosition(int e, const DVec3& posGlobal) {
-    if (AudioEmitters::Emitter* em = V2Ready() ? emitters.get(e) : nullptr) { em->pos = posGlobal; emFramed[e] = false; }
+    if (AudioEmitters::Emitter* em = V2Ready() ? emitters.get(e) : nullptr) { em->pos = posGlobal; emFramed[e] = false; emAnchor[e] = Audio_AnchorOf(posGlobal); }
 }
 
 void Audio_EmitterSetFrame(int e, const FramePos& p) {
@@ -790,4 +813,53 @@ const char* Audio_SpatialBackend() {
         }
     }
     return s.c_str();
+}
+
+// ---- Test hooks (#1724) ----
+
+void Audio_DebugLR(bool on) { debugLR.store(on); }
+
+int Audio_DebugEmitterVoice(int e) {
+    const AudioEmitters::Emitter* em = V2Ready() ? emitters.get(e) : nullptr;
+    return em && em->voice >= 0 && mixer.voice(em->voice).active && mixer.voice(em->voice).seq == em->voiceSeq ? em->voice : -1;
+}
+
+bool Audio_DebugVoiceLR(int voice, float* l, float* r, bool reset) {
+    if (!V2Ready() || !steam || voice < 0 || voice >= AudioMixer::kVoices) return false;
+    VoiceDsp& d = dsp[voice];
+    const uint32_t n = d.dbgN.load();
+    if (n == 0) return false;
+    if (l) *l = sqrtf(d.dbgL.load() / (float)n);
+    if (r) *r = sqrtf(d.dbgR.load() / (float)n);
+    if (reset) d.dbgClear.store(true);
+    return true;
+}
+
+// ---- Anchors (#1724) ----
+
+AudioAnchor Audio_AnchorOf(const DVec3& g) {
+    AudioAnchor a;
+    Planetoid* best = nullptr;
+    double bestD = 1e300;
+    for (Planetoid* p : Planetoid::All()) {
+        if (!p || !p->field || p->vehicle) continue;
+        const double reach = (double)p->field->maxRadius() * p->scale + 3000.0; // on or near it
+        const double d = (g - p->worldPos).length();
+        if (d < reach && d < bestD) { best = p; bestD = d; }
+    }
+    if (!best) return a; // in space: global
+    a.body = best->id;
+    a.local = best->toLocalD(g);
+    return a;
+}
+
+DVec3 Audio_AnchorPos(const AudioAnchor& a, const DVec3& fallback) {
+    if (!a.body) return fallback;
+    const Planetoid* b = Planetoid::find(a.body);
+    return b ? b->toWorldD(a.local) : fallback;
+}
+
+DVec3 Audio_DebugEmitterPos(int e) {
+    const AudioEmitters::Emitter* em = V2Ready() ? emitters.get(e) : nullptr;
+    return em ? em->pos : DVec3{};
 }

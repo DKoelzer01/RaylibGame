@@ -60,6 +60,20 @@ void Audio_EmitterSetPitch(int e, float pitch);
 void Audio_EmitterStats(int& count, int& voiced);
 // (#1292) How sounds are placed: "steam audio 4.8.1, HRTF", or our own panning and why (not found, off, ...).
 const char* Audio_SpatialBackend();
+// (#1724) Where a placed sound is: on a body, in its local frame, so it turns and moves with the ground (a global position
+// kept as set would drift: the planet spins 100 m/s under it, the sound lagging west). Callers still pass global
+// positions; the engine anchors them (the nearest body within its field's reach + 3 km, else global: space) and
+// resolves them again at each update, the listener's instant.
+struct AudioAnchor { uint64_t body = 0; DVec3 local{}; };   // body = Planetoid::id, 0 = none (global)
+AudioAnchor Audio_AnchorOf(const DVec3& posGlobal);
+DVec3 Audio_AnchorPos(const AudioAnchor& a, const DVec3& fallbackGlobal);   // now, in global coordinates
+// (#1724) Test hooks: with Steam Audio running and Audio_DebugLR(true), each voice sums the energy of the left and right
+// samples it renders (after the HRTF and the low-pass; before raylib's volume and pan). Audio_DebugVoiceLR gives the RMS
+// since the last reset (false: none, or no Steam Audio); Audio_DebugEmitterVoice: the voice an emitter holds now, or -1.
+void Audio_DebugLR(bool on);
+DVec3 Audio_DebugEmitterPos(int e);   // where the emitter was last resolved to (global)
+int Audio_DebugEmitterVoice(int e);
+bool Audio_DebugVoiceLR(int voice, float* l, float* r, bool reset = true);
 
 // Master volume 0..1 (applies to every sound). Default 0.35: the procedural effects are loud at full.
 void Audio_SetMasterVolume(float v);
