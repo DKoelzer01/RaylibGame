@@ -1007,6 +1007,58 @@ TEST(MultiblockForming, NeighboursShareAWall) {
     EXPECT_EQ(plot.formed[0], ca);
 }
 
+// (#1429 PR 4) The factory's view: a definition's machine and parallel, volts on casings and hatches, and a formed
+// structure's hatches with their kinds.
+TEST(Multiblock, MachineParallelAndVoltsParse) {
+    std::vector<std::string> errors;
+    const MbCatalog cat = Multiblock_Parse(std::string(kDecl) +
+        "casing hot_casing tier 4 volts MV\n"
+        "hatch mv_energy_hatch kind energy tier 5 volts MV\n"
+        "multiblock oven | Oven | tier 3\n"
+        "  machine coke_oven\n"
+        "  parallel 4\n"
+        "  legend C controller:oven_controller\n"
+        "  legend c casing:hot_casing\n"
+        "  layer cCc\n"
+        "end\n"
+        "multiblock bad | Bad | tier 3\n"
+        "  parallel 0\n"
+        "  legend C controller:bad_controller\n"
+        "  layer C\n"
+        "end\n", &errors);
+    ASSERT_EQ(errors.size(), 1u) << "parallel 0 is refused";
+    const MbDef* d = cat.find("oven");
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(d->machine, "coke_oven");
+    EXPECT_EQ(d->parallel, 4);
+    EXPECT_EQ(cat.find("bad"), nullptr);
+    EXPECT_EQ(cat.volts.at("hot_casing"), "MV");
+    EXPECT_EQ(cat.volts.at("mv_energy_hatch"), "MV");
+    EXPECT_EQ(cat.hatches.at("mv_energy_hatch").first, "energy");
+    EXPECT_EQ(cat.volts.count("bronze_casing"), 0u) << "no volts: no cap";
+    const MbDef* tank = Multiblock_All().find("large_tank");
+    ASSERT_NE(tank, nullptr);
+    EXPECT_TRUE(tank->machine.empty()) << "a tank runs no recipes";
+    EXPECT_EQ(tank->parallel, 1);
+}
+
+TEST(MultiblockForming, MembersListTheHatchesOnce) {
+    Plot plot;
+    const int ctl = PlaceTank(plot, { 10, 5, 10 }, 0, 1);
+    MbMachine mb;
+    ASSERT_TRUE(Multiblock_Members(plot, ctl, mb));
+    ASSERT_NE(mb.def, nullptr);
+    EXPECT_EQ(mb.def->id, "large_tank");
+    ASSERT_EQ(mb.hatches.size(), 2u) << "the tank's two hatch cells";
+    std::vector<std::string> kinds;
+    for (const auto& h : mb.hatches) { EXPECT_EQ(plot.parts[h.first].type, PartType::MbHatch); kinds.push_back(h.second); }
+    std::sort(kinds.begin(), kinds.end());
+    EXPECT_EQ(kinds, (std::vector<std::string>{ "fluid_in", "fluid_out" }));
+    EXPECT_TRUE(mb.volts.empty()) << "bronze casings: no voltage cap";
+    plot.remove(mb.hatches[0].first);
+    EXPECT_FALSE(Multiblock_Members(plot, ctl, mb)) << "broken: not a machine";
+}
+
 TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
     const char* path = "multiblock_forming_test.tmp";
     PlotSet set;

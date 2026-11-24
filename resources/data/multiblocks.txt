@@ -1,21 +1,31 @@
 # Multiblock structures (#1429) definitions. The parts exist now (placeable: Part::material = the index in the casing /
-# hatch / controller lists below, in file order); forming comes next.
+# hatch / controller lists below, in file order). A wrench on the controller forms a structure; formed, it runs in the
+# factory as one machine (#1429 PR 4).
 #
-# casing <part id> tier <n>                       a casing part; a cell asking for a casing accepts any casing of >= tier
-# hatch <part id> kind <kind> tier <n>            a hatch part; kinds: item_in item_out fluid_in fluid_out energy rotation
+# casing <part id> tier <n> [volts <V>]           a casing part; a cell asking for a casing accepts any casing of >= tier
+# hatch <part id> kind <kind> tier <n> [volts <V>]  a hatch part; kinds: item_in item_out fluid_in fluid_out energy rotation
+#   volts: a voltage tier (machine_tiers.txt, "LV"). A formed structure runs at the lowest volts of its casings and energy
+#   hatches (none: its machine's own tier, as one block of it); an energy hatch draws from its cables at its volts.
 #
 # multiblock <id> | <Display name> | tier <n>     ... end
 #   legend <key> controller:<id> | casing:<id> | part:<id> | hatch:<kinds> [casing:<id>] | air | any
 #       (one non-space key; '/', '*', '#' are not allowed. hatch: any hatch of those kinds, or the fallback casing)
 #   hatches <kind> <min>..<max>                   hatch count limits in the formed structure
+#   machine <machines.txt machine>                formed, it runs that machine's recipes (none: e.g. a tank)
+#   parallel <n>                                  up to n recipes at once: each claims its inputs from the pooled input
+#                                                 hatches and reserves its outputs' room when it starts; shared hatches
+#                                                 serve their structures in turn
 #   stretch <min>..<max>                          the layer marked * repeats min..max times (vertically)
 #   layer <row> / <row> / ...  [*]                layers bottom to top; rows north to south; columns west to east;
 #                                                 the controller faces south (+z)
 
 casing bronze_casing tier 3
-casing steel_casing tier 4
+casing steel_casing tier 4 volts LV
 hatch fluid_in_hatch kind fluid_in tier 3
 hatch fluid_out_hatch kind fluid_out tier 3
+hatch item_in_hatch kind item_in tier 3
+hatch item_out_hatch kind item_out tier 3
+hatch lv_energy_hatch kind energy tier 4 volts LV
 
 multiblock large_tank | Large tank | tier 3
   legend C controller:large_tank_controller

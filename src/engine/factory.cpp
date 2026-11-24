@@ -4393,7 +4393,8 @@ TEST(Factory, AnEnergyHatchSharedByTwoStructuresSlowsBothEvenly) {
     const int a = crafts(M(2)), c = crafts(M(3));
     EXPECT_GT(a, 0);
     EXPECT_NEAR(a, c, parallel) << "evenly: within one round of crafts";
-    EXPECT_GE(a + c, (int)(32LL * ticks / ((long long)iron->eu * iron->ticks)) - 2 * parallel) << "DIAG a " << a << " c " << c << " parallel " << parallel << " eu " << iron->eu << " ticks " << iron->ticks << " jobs " << M(2).jobs.size();
+    // (32 EU/t buys this many crafts in the window; the last round of each job may finish just after it ends)
+    EXPECT_GE(a + c, (int)(32LL * ticks / ((long long)iron->eu * iron->ticks)) - 2 * parallel) << "crafts " << a << " + " << c;
     EXPECT_EQ(M(2).status, MachineStatus::Working);
     const Series& used = ps.stats.euUsed[(int)PartType::MbHatch];
     const long long eu = used.total + used.acc;

@@ -259,6 +259,9 @@ bronze_casing 1      = bronze_plate 4, bronze_screw 4, bronze_rod 2
 steel_casing 1       = steel_plate 4, steel_screw 4, steel_rod 2
 fluid_in_hatch 1     = bronze_casing 1, valve 1, bronze_plate 2
 fluid_out_hatch 1    = bronze_casing 1, valve 1, bronze_plate 2
+item_in_hatch 1      = bronze_casing 1, conveyor 2, mechanism 1
+item_out_hatch 1     = bronze_casing 1, conveyor 2, mechanism 1
+lv_energy_hatch 1    = steel_casing 1, cable 4, basic_circuit 1
 large_tank_controller 1 = bronze_casing 1, mechanism 1, glass 2
 wrench 1             = iron_plate 2, iron_rod 1
 # (#1614 PR 6) MV and HV assemblies, from the metals the ladder has at those tiers: invar (nickel from the LV ore line) and
