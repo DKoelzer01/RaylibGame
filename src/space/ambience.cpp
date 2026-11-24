@@ -1,4 +1,5 @@
 #include "ambience.h"
+#include "lightlevel.h"
 #include "machinemodels.h"
 #include "weather.h"
 #include "particles.h"
@@ -299,6 +300,7 @@ void Ambience_GatherLights(Scene& world) {
             }
         }
         for (const Spot& s : c.spots) {
+            if ((s.kind == 0 || s.kind == 4) && LightLevel_On()) continue; // (#1739) lamps and torches light through the grid
             const Vector3 at = plot->toBody(s.centre);
             if (Vector3Distance(at, cam) > 110.0f) continue;
             LocalLight L;

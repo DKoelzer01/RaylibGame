@@ -43,6 +43,13 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
   report always shows the numbers and fails only on +15% mean frame time or a new hitch over 30 ms against recent passes.
   In play (not a scenario), `RAYLIBGAME_PROFILE=1` writes the session's summary on quit to saves/logs/profile-<date-time>.txt and
   .json (#886): zones, GPU passes, the frame histogram, and every hitch with its game time, top zones and what was going on.
+- **Perf budgets (#1690):** four reference scenes tagged `budget` (`perf/planet-view`, `perf/creatures-60`, `perf/water-shore`,
+  `perf/factory-base`: 5 s warm-up, ~20 s on a fixed camera path; metrics "frame mean", "frame p95" and the scene's own cost).
+  The runner's "Perf budgets" step runs them 3 times under `gpu_lock.sh exclusive` and `tools/ci/perf_budgets.sh` judges the
+  medians against `tools/ci/perf_budgets.txt` (runner-only limits: today's median x1.25 for means, x1.35 for p95; 0 = not judged
+  yet). Up to 20% over a limit only flags (a warning); more than 20% over blocks once `PERF_BUDGETS_ENFORCE=1` (user ruling
+  2026-11-23: the first week is report-only, and the step is `continue-on-error`). A lock timeout reports "not judged". A PR may
+  raise a limit in the same diff with a reason. Not done yet: rerunning only the failing scene before failing.
 - **Record what you verify (user, 2026-11-15, #478):** when verifying a graphical change (rendering, shaders,
   lighting, UI, animation, terrain or water look) or a behaviour change that shows on screen (movement, camera,
   physics, animals, machines, tools), record the test run with the `capture` skill (the in-game recorder, `--record`)

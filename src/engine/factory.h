@@ -133,6 +133,7 @@ namespace Factory {
     // View() follows one machine at a time (the open machine screen) - never call it for many machines.
     bool Working(uint64_t bodyId, uint32_t plotId, int part);
     FactoryStats Stats();
+    void ResetTickStats();   // the tick-time ring starts empty (a timed window: mean, p99 and worst then cover only it)
     // (#1199) The production statistics over a window: every simulated plot (onePlot false) or one plot. Waits for the tick.
     FactoryStatsView StatsView(StatWindow window, bool onePlot = false, uint64_t bodyId = 0, uint32_t plotId = 0);
     // Player item transfers (queued for the next tick).

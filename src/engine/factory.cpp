@@ -436,6 +436,7 @@ struct TickTimes { float total = 0, cmd = 0, tick = 0, view = 0; };
 constexpr size_t kTickRing = 1200;
 std::array<TickTimes, kTickRing> tickRing{};
 size_t tickRingAt = 0;
+std::atomic<bool> tickRingClear{ false }; // ResetTickStats: a timed window starts (the scene's own setup ticks leave the ring)
 
 // Once a second: each count's second into the rings, minutes and 10 minutes as they complete.
 void RollSeries(Series& s) {
@@ -1662,6 +1663,7 @@ void SimLoop() {
             const float cmdMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
             const float tickMs = std::chrono::duration<float, std::milli>(t2 - t1).count();
             const float viewMs = std::chrono::duration<float, std::milli>(t3 - t2).count();
+            if (tickRingClear.exchange(false)) tickRingAt = 0;
             tickRing[tickRingAt++ % kTickRing] = { cmdMs + tickMs + viewMs, cmdMs, tickMs, viewMs };
             if ((t + 1) % kTicksPerSecond == 0) {
                 const size_t n = std::min<size_t>(tickRingAt, kTickRing);
@@ -1813,6 +1815,8 @@ CableView Factory::Cable(uint64_t body, uint32_t plot, Int3 cell) {
     if (cableKey != key) { cableKey = key; return CableView{}; } // filled from the next tick on
     return cableView;
 }
+
+void Factory::ResetTickStats() { tickRingClear = true; }
 
 FactoryStats Factory::Stats() {
     std::lock_guard<std::mutex> v(viewMutex);

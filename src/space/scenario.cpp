@@ -600,6 +600,7 @@ void ScenarioCtx::camera(Vector3 eyeLocal, Vector3 targetLocal, Vector3 upLocal)
 }
 
 // ---- Visual checks against baselines (#870 visual tier) ----
+std::string Scenario_RunDir() { return R.runDir; }
 std::string Scenario_BaselineDir() {
     const char* e = getenv("RAYLIBGAME_BASELINES");
     return e && *e ? e : "//DEWEYSERVER/files/claude-media/raylib-baselines";

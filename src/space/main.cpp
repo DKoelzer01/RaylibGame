@@ -62,6 +62,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "lightlevel.h"
 #include "waterfalls.h"
 #include "gpumem.h"
 #include "structures.h"
@@ -1459,6 +1460,7 @@ int main(int argc, char** argv)
                fresh, g0.strength, g0.color.r, g0.color.g, g0.color.b, mixed, stone, cooled, inv.grid()[0].heat, g1.strength, ok ? "PASS" : "FAIL");
     }
     GameSave_Register();
+    gSaveNoticeHook = [](const std::string& note) { GameUI_Toast(note.c_str()); }; // (#1693) a save upgraded on load: one toast
     // (#902) Pointers into a world being unloaded (a body, a plot, a hit) dropped before its bodies go: frames go on drawing
     // while the next world loads, and a reload crashed in TerrainTool_Draw3D / Wind_Bind on the old, freed planet.
     World_AddUnloadHook([] { TerrainTool_ForgetWorld(); BuildTool_ForgetWorld(); Fishing_Reset(); Animals_Reset(); });
@@ -10885,6 +10887,7 @@ int main(int argc, char** argv)
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
+        LightLevel_Update(world, gameState == 1); // (#1739) torches and lamp blocks through the light grid
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
         if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
@@ -13816,7 +13819,7 @@ int main(int argc, char** argv)
                 case MenuAction::LoadGame:
                     SetWorldSavePath(m.path.c_str());
                     if (LoadWorldSave(world)) { worldFresh = false; enterGame(); }
-                    else GameUI_Toast(TextFormat("Could not load %s", m.path.c_str()));
+                    else GameUI_Toast(LastLoadError().empty() ? TextFormat("Could not load %s", m.path.c_str()) : LastLoadError().c_str()); // (#1693) a newer or pre-13 save says so
                     break;
                 case MenuAction::Resume: { const bool wasLoading = loading; enterGame(false); loading = wasLoading; break; } // a pause during loading (#388) keeps the loading screen
                 case MenuAction::Save: GameUI_Toast(SaveWorld(world) ? "Saved" : "Save failed"); break;

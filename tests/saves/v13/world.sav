@@ -1,0 +1,68 @@
+RAYLIBGAME_SAVE 13
+seed 42
+bodies 6
+planet terra radius=60000 position=0,0,0 day=3600
+moon luna radius=10000 orbit=terra,500000,30 day=86400
+ring rock radius=25 count=60000 size=0.1,1 extent=3000 flatten=0.2 maxspin=3 orbit=terra,50000,0 thickness=60
+asteroid goliath radius=330 orbit=terra,48240,20 day=5400 gravity=1.6
+asteroid bastion radius=420 orbit=terra,51820,150 day=7200 gravity=1.9
+asteroid pebble radius=220 orbit=terra,50000,260 day=3600 gravity=1.3
+time 0.016667
+camera -51874.885742 28943.308594 -8828.619931 -51874.021957 28942.826582 -8828.473172
+extras
+netid_next 1
+game_rng 9764936759624929227
+grave_counter 0
+events_meteor 0 -1.000 -1.000 0 0
+rocket none
+difficulty 1
+xp_rate 1
+owner d1dad008-0a60-48b7-b038-0b63f7ece38d
+team 1 000000 player
+team_member 1 d1dad008-0a60-48b7-b038-0b63f7ece38d
+team_owner 1 d1dad008-0a60-48b7-b038-0b63f7ece38d
+team_quests 1
+quest 0
+obtained map 1.00
+obtained telescope 1.00
+quest_flags 0 0 0
+quest_count explored 16.00
+quest_count penned 0.00
+team_quests_end
+end_extras
+planetoid 0 netid 72057594037927936 rot 0.000000 0.001667 0.000000 strokes 1
+plants 0
+plots5 1
+plot 1 -51872.7500 28941.1387 -8817.6279 2 0.0
+9 0 0 0 0 0
+14 4 0 0 0 0
+wear 0 0.00
+machines 2
+m 1 0 -1 0 0 0 2 iron_ingot 40 copper_ingot 7 0
+m 1 1 -1 0 0 0 0 0 f coal 3
+water 0 cell 0.2500
+riverflow 0 0
+planetoid 1 netid 72057594037927937 rot 0.000000 0.000069 0.000000 strokes 0
+plants 0
+plots 0
+machines 0
+water 0 cell 0.2500
+riverflow 0 0
+planetoid 2 netid 72057594037927938 rot 0.000000 0.001111 0.000000 strokes 0
+plants 0
+plots 0
+machines 0
+water 0 cell 0.2500
+riverflow 0 0
+planetoid 3 netid 72057594037927939 rot 0.000000 0.000833 0.000000 strokes 0
+plants 0
+plots 0
+machines 0
+water 0 cell 0.2500
+riverflow 0 0
+planetoid 4 netid 72057594037927940 rot 0.000000 0.001667 0.000000 strokes 0
+plants 0
+plots 0
+machines 0
+water 0 cell 0.2500
+riverflow 0 0
