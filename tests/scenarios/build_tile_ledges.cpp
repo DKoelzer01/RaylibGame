@@ -16,7 +16,6 @@
 #include <memory>
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 
 namespace {
 constexpr uint64_t kW = 1ull << (int)Act::Forward, kJump = 1ull << (int)Act::Jump;
@@ -30,20 +29,30 @@ double floorH = 0.0;
 int lane = 0, phase = 0;
 double t0 = 0.0, tHit = -1.0, backMin = 1e9, sideMax = 0.0, upMax = -1e9, slideMin = 1e9, hMax = -1e9;
 bool jumped = false;
-DVec3 prevFeet{}; double prevT = -1.0; Vector3 vel{}; // the feet's motion in plot axes (x along the lane, y up, z across), m/s
+double pvUpMax = -1e9; int airFrames = 0;
+double prevT = -1.0; Vector3 vel{}; // the feet's motion in plot axes (x along the lane, y up, z across), m/s
 
 Vector3 Feet(ScenarioCtx& c) { return c.body->toLocalD(player.position).toFloat(); }
 Vector3 AtM(float x, float y, float z) { return plot->toBody({ x, y, z }); }
 double Height(ScenarioCtx& c) { return Vector3DotProduct(Feet(c), upL) - floorH; } // above the floor's top (m)
 double Along(ScenarioCtx& c) { return plot->toPlot(Feet(c)).x / kCellSize - base.x; } // cells along the lane
-void Measure(ScenarioCtx& c) { // doubles: 60 km out a float position steps ~4 mm, a 0.25 m/s error at 60 Hz
+// Over the last 0.1 s, in doubles: the feet's position wobbles ~1 mm a frame even walking freely (0.1-0.2 m/s frame to
+// frame), below anything felt; a bounce lasts longer than a frame. (prevT < 0: start over.)
+constexpr int kRing = 8; DVec3 ringP[kRing]; double ringT[kRing]; int ringN = 0;
+void Measure(ScenarioCtx& c) {
     const DVec3 now = c.body->toLocalD(player.position);
-    if (prevT >= 0.0 && c.T > prevT) {
-        const DVec3 d = now - prevFeet; const double dt = c.T - prevT;
-        auto dot = [&](Vector3 a) { return (float)((d.x * a.x + d.y * a.y + d.z * a.z) / dt); };
-        vel = { dot(xL), dot(upL), dot(zL) };
-    }
-    prevFeet = now; prevT = c.T;
+    if (prevT < 0.0) ringN = 0;
+    prevT = c.T;
+    for (int i = 0; i < ringN; ++i)
+        if (c.T - ringT[i] >= 0.1 - 1e-6) { // the newest sample at least 0.1 s old (the ring is oldest first)
+            int k = i; while (k + 1 < ringN && c.T - ringT[k + 1] >= 0.1 - 1e-6) ++k;
+            const DVec3 d = now - ringP[k]; const double dt = c.T - ringT[k];
+            auto dot = [&](Vector3 a) { return (float)((d.x * a.x + d.y * a.y + d.z * a.z) / dt); };
+            vel = { dot(xL), dot(upL), dot(zL) };
+            break;
+        }
+    if (ringN == kRing) { for (int i = 1; i < kRing; ++i) { ringP[i - 1] = ringP[i]; ringT[i - 1] = ringT[i]; } --ringN; }
+    ringP[ringN] = now; ringT[ringN] = c.T; ++ringN;
 }
 void FollowCam(ScenarioCtx& c) { // behind and beside the player, so the obstruction and the feet are both in view
     const Vector3 feet = Feet(c);
@@ -111,7 +120,7 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
             player.flyMode = false;
             const float z = (LaneZ(lane) + (lane == Oblique ? 1.0f : kWid * 0.5f)) * kCellSize;
             player.placeAt(c.world, *c.body, c.body->toWorld(AtM((base.x + kLedgeAt - 6) * kCellSize, (base.y + 1) * kCellSize + 0.3f, z)));
-            prevT = -1.0; vel = {}; tHit = -1.0; backMin = 1e9; sideMax = 0.0; upMax = -1e9; slideMin = 1e9; hMax = -1e9; jumped = false;
+            prevT = -1.0; vel = {}; tHit = -1.0; pvUpMax = -1e9; airFrames = 0; backMin = 1e9; sideMax = 0.0; upMax = -1e9; slideMin = 1e9; hMax = -1e9; jumped = false;
             phase = 1; t0 = c.t;
             return false;
         }
@@ -122,16 +131,17 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
         gFakeHeld = kW;
         if (lane == Block1mJump && !jumped && along >= kLedgeAt - 1.6) { gFakeHeld |= kJump; jumped = true; } // ~0.8 m short of it
         hMax = std::max(hMax, h);
-        if (lane == Cube && along > kLedgeAt - 2.0 && t < 2.0)
-            printf("ledgetrace t %.3f along %.4f h %.4f vx %.2f vy %.2f vz %.2f grounded %d pv_up %.2f gn_up %.3f\n", t, along, h, vel.x, vel.y, vel.z,
-                     (int)player.grounded, Vector3DotProduct(player.velocity, c.body->dirToWorld(upL)), Vector3DotProduct(player.groundNormal, c.body->dirToWorld(upL)));
-        // At the obstruction: from 0.1 s after the feet come within a radius (0.45 m) of its face, while they stay below its top.
+        // At the obstruction: from 0.2 s after the feet come within a radius (0.45 m) of its face, while they stay below its top.
         if (tHit < 0.0 && along >= kLedgeAt - 1.0) tHit = t;
-        if (tHit >= 0.0 && t > tHit + 0.1 && h < 0.2) {
+        if (tHit >= 0.0 && t > tHit + 0.2 && h < 0.2) {
             backMin = std::min(backMin, (double)vel.x);
             sideMax = std::max(sideMax, (double)fabsf(vel.z));
             upMax = std::max(upMax, (double)vel.y);
             slideMin = std::min(slideMin, (double)vel.z);
+            // The player's own velocity (ground-relative while grounded): before the fix it held +0.41 m/s up against a wall
+            // and the grounded flag flickered, the sum of the floor's and the wall's normals tilting the walk up it.
+            if (player.grounded) pvUpMax = std::max(pvUpMax, (double)Vector3DotProduct(player.velocity, c.body->dirToWorld(upL)));
+            else ++airFrames;
         }
         if (lane == Slab) upMax = std::max(upMax, (double)vel.y); // (stepped onto: the rise rate is the launch)
         const bool slidOff = lane == Oblique && tHit >= 0.0 && t > tHit + 1.2; // (~3.5 m along its 7 m wall)
@@ -148,6 +158,8 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
         } else {
             c.gt(TextFormat("%s: never pushed back (m/s)", n), backMin, -0.05);
             c.check(TextFormat("%s: no upward kick (<= 0.3 m/s)", n), upMax <= 0.3, TextFormat("%.2f m/s", upMax));
+            c.check(TextFormat("%s: the walk isn't turned up the wall (velocity up <= 0.05 m/s)", n), pvUpMax <= 0.05, TextFormat("%.2f m/s", pvUpMax));
+            c.eq(TextFormat("%s: stays grounded at it (frames off the ground)", n), airFrames, 0);
             if (lane == Oblique) {
                 c.metric("1 m wall at 31 deg: min slide along it (m/s)", slideMin, "m/s", false);
                 c.check("1 m wall at 31 deg: keeps sliding along it (>= 1 m/s)", slideMin >= 1.0, TextFormat("%.2f m/s", slideMin));
