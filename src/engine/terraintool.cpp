@@ -543,6 +543,14 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
     const float step = r / 4.0f;
     const float cell = step * step * step * p.scale * p.scale * p.scale;
     const Vector3 surfN = p.field->normal(hitLocal, p.edits.get()); // the face being dug: materials as drawn (#636)
+    std::shared_ptr<const TerrainDeltas> after; // the ground once this stroke is folded in (the caller applies the stroke itself)
+    {
+        TerrainEdit e{};
+        e.center = centre; e.radius = r; e.carve = true; e.softOnly = softOnly;
+        TerrainDeltasBuilder b(p.edits ? *p.edits : TerrainDeltas{});
+        b.apply(e, *p.field);
+        after = b.finish();
+    }
     bool grass = false;
     const char* stoneKindAt = nullptr;
     bool swampHere = false; // Plan 5 B: digging swamp ground turns up peat
@@ -555,8 +563,10 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
             for (int x = -4; x <= 4; ++x) {
                 if (x * x + y * y + z * z > 16) continue;
                 const Vector3 q = Vector3Add(centre, { x * step, y * step, z * step });
+                // (#1718) Only what the stroke takes out pays: solid now and air once it is folded in. A sample the carve can't
+                // reach (ground it doesn't edit, rock under a shovel) yields nothing however often it is swung at.
                 const float d = p.densityAt(q);
-                if (d < ISO_LEVEL || !p.field->editable(q)) continue;
+                if (d < ISO_LEVEL || !p.field->editable(q) || p.field->density(q, after.get()) >= ISO_LEVEL) continue;
                 const VoxelMaterial m = p.materialAt(q, surfN);
                 if (softOnly && !IsSoft(m)) continue;
                 // (#1097) Placed ground gives back at most what it cost (2 of its filler a m^3, as a fill pays) and nothing more:
