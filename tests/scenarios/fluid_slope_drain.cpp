@@ -1,5 +1,5 @@
 // fluid/slope-drain (#454, playtest 2026-11-24: "Water clings to slopes as a thin film after all water has flowed away"): on the
-// bench planet, the steepest open slope (15-30 degrees, still falling 8 m down) within 40 m of the spawn; 0.5 m^3 poured at its
+// bench planet, the steepest open slope (9-35 degrees each 2 m, still falling 8 m down) within 80 m of the spawn; 0.5 m^3 poured at its
 // top runs down. A film under the spread limit (~1 cm) never moves, and the bricks fall asleep after 2-3 s, so their films
 // stayed for good. Checked: the water left on the slope (the simulation's cells in a box over its upper 6 m, 2 m wide) 150 s
 // later is under 2 litres. The amount at 20 s (runoff done, films left) is reported for comparison.
@@ -34,19 +34,19 @@ SCENARIO("fluid/slope-drain") {
         const Vector3 n = Vector3CrossProduct(me, e);
         auto dirAt = [&](float x, float y) { return Vector3Normalize(Vector3Add(me, Vector3Add(Vector3Scale(e, x / R), Vector3Scale(n, y / R)))); };
         float best = 0.0f;
-        for (float x = -40.0f; x <= 40.0f; x += 2.0f)
-            for (float y = -40.0f; y <= 40.0f; y += 2.0f)
+        for (float x = -80.0f; x <= 80.0f; x += 4.0f)
+            for (float y = -80.0f; y <= 80.0f; y += 4.0f)
                 for (int a = 0; a < 8; ++a) {
                     const float ang = a * PI / 4.0f, dx = cosf(ang), dy = sinf(ang);
                     const float h0 = c.field->elevation(dirAt(x, y));
                     if (h0 < 1.0f) continue; // over the sea's level
-                    // Falling all the way down 8 m, each 2 m by a 15-30 degree grade.
+                    // Falling all the way down 8 m, each 2 m by a 9-35 degree grade.
                     bool ok = true;
                     float prev = h0;
                     for (int k = 1; k <= 4 && ok; ++k) {
                         const float h = c.field->elevation(dirAt(x + dx * 2.0f * k, y + dy * 2.0f * k));
                         const float g = (prev - h) / 2.0f;
-                        ok = g > 0.27f && g < 0.58f;
+                        ok = g > 0.15f && g < 0.7f;
                         prev = h;
                     }
                     const float g = (h0 - prev) / 8.0f;
@@ -59,7 +59,7 @@ SCENARIO("fluid/slope-drain") {
                     S.side = Vector3CrossProduct(S.up, S.down);
                     S.grade = g;
                 }
-        c.gt("a 15-30 degree slope found within 40 m (grade)", best, 0.0f);
+        c.gt("a 9-35 degree slope found within 80 m (grade)", best, 0.0f);
         if (best <= 0.0f) return true;
         c.note(TextFormat("slope grade %.2f (%.0f degrees)", S.grade, atanf(S.grade) * RAD2DEG));
         return true;
