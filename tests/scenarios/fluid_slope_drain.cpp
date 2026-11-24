@@ -7,6 +7,7 @@
 #include "fluid.h"
 #include "player.h"
 #include "world.h"
+#include "waterfield.h"
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
@@ -85,6 +86,26 @@ SCENARIO("fluid/slope-drain") {
         if (S.grade <= 0.0f) return true;
         const double left = SlopeWater(c);
         c.note(TextFormat("%.2f m^3 poured; on the slope %.4f m^3 at 20 s, %.4f m^3 at 150 s", S.poured, S.at20, left));
+        // What is left, by depth (the published cells, 0.25 m apart over the box): films under the spread limit (10) dry; deeper
+        // water should have run on.
+        {
+            const WaterField::SnapshotPtr snap = WaterField::Current();
+            int n[4] = {}, worst = 0;
+            const Vector3 mid = Vector3Add(S.top, Vector3Scale(S.down, 3.0f));
+            const float hz = 1.5f + 3.0f * S.grade;
+            for (float u = -3.0f; u <= 3.0f; u += 0.25f)
+                for (float v = -1.0f; v <= 1.0f; v += 0.25f)
+                    for (float w = -hz; w <= hz; w += 0.25f) {
+                        const Vector3 p = Vector3Add(mid, Vector3Add(Vector3Scale(S.down, u), Vector3Add(Vector3Scale(S.side, v), Vector3Scale(S.up, w))));
+                        const int f = WaterField::CellFill(*snap, c.body->id, p, 0);
+                        if (f <= 0) continue;
+                        ++n[f <= 2 ? 0 : f < 10 ? 1 : f < 40 ? 2 : 3];
+                        worst = std::max(worst, f);
+                    }
+            const Fluid::Stats st = Fluid::GetStats();
+            c.note(TextFormat("wet cells on the slope by fill: 1-2 %d, 3-9 %d, 10-39 %d, 40+ %d (deepest %d); bricks %d, awake %d, steady %d, settled %d",
+                              n[0], n[1], n[2], n[3], worst, st.bricks, st.activeBricks, st.steadyBricks, st.settled));
+        }
         c.metric("water left on the slope at 150 s", (float)(left * 1000.0), "litres");
         c.gt("water poured", S.poured, 0.4f);
         c.lt("the films on the slope dried (litres left at 150 s)", (float)(left * 1000.0), 2.0f);
