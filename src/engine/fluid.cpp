@@ -60,6 +60,8 @@ inline int SiteBricks() {
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry up (user 2026-11-16: puddles should last a while)
 constexpr unsigned kEvapEvery = 1200;   // specks soak away on one step in this many (~10 s on the GPU): only the ones that stay put (#454)
+constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting films lose a unit (#454: a 9 mm film is gone in ~20 s)
+std::atomic<bool> gFilmDryDue{ false }; // (#454) set by Update, taken by the next publish
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
 constexpr float kGpuSubstepSeconds = 0.05f / (2 * kSubsteps); // the GPU runs twice the CPU's substeps: 120 a second (GpuTick)
@@ -1113,8 +1115,29 @@ void RunJob() {
             if (kv.second->ready) outs.push_back({ s.get(), kv.first, kv.second.get() });
         }
     }
+    const bool filmDry = gFilmDryDue.exchange(false); // (#454) this publish dries sleeping bricks' films (Update sets it every 2 s)
     auto publishBrick = [&](PubOut& out) {
             Brick& b = *out.b;
+            // (#454) Films dry in sleeping bricks too: a film under the spread limit never moves, and the kernels' evaporation
+            // (every ~10 s) only reaches awake bricks - one asleep after 2-3 s kept its films on a slope for good
+            // ("water clings to slopes as a thin film after all water has flowed away"). The same rule here, every 2 s: resting
+            // films on the ground lose a unit, specks of 2 or less go. Puddles (the spread limit or more) stay.
+            static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // (tests: water accounting)
+            if (!b.active && !noEvap && filmDry) {
+                bool dried = false;
+                for (int z = 0; z < B; ++z)
+                    for (int y = 0; y < B; ++y)
+                        for (int x = 0; x < B; ++x) {
+                            const int i = Idx(x, y, z), f = b.fill[i];
+                            if (f == 0 || (b.flags[i] & (kSolid | kSource)) || f >= kindMinSpread[CellKind(b.flags[i])]) continue;
+                            const bool ground = b.shut[i] > 0 || (z > 0 ? (b.flags[Idx(x, y, z - 1)] & kSolid) != 0
+                                                                        : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
+                            if (!ground) continue;
+                            b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
+                            dried = true;
+                        }
+                if (dried) { b.changed = true; b.statSet = false; if (gpuMode && b.slot >= 0) b.upload = true; }
+            }
             if (b.changed || !b.statSet) { // kinds in the brick (bit k), wet cells, volumes: recounted when it changed
                 uint8_t kindsHere = 0;
                 int wet = 0, vol = 0, other = 0, solid = 0;
@@ -2503,6 +2526,10 @@ void Fluid::Update(Scene& world, float dt) {
             for (const Site::Spring& sp : s->springs) if (!work && SpringWants(*s, sp)) work = true; // #645: inflow continues while everything sleeps
             if (work) break;
         }
+        // (#454) Every 2 s a pass dries the films in sleeping bricks (publishBrick): the job runs for it though all sleep.
+        static int filmDryTicks = 0;
+        static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP");
+        if (!noEvap && ++filmDryTicks >= kFilmDryTicks) { filmDryTicks = 0; gFilmDryDue = true; if (!sites.empty()) work = true; }
         UpdateRiverFlow(); // #656
         if (!work) return;
         // Snapshot the bodies the job may touch (fields are immutable; edits are copy-on-write).
