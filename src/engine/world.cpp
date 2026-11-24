@@ -1961,6 +1961,9 @@ bool RaycastTerrain(Scene& world, Ray ray, float maxDistance, TerrainHit& hit) {
 
 void ApplyTerrainEdit(Planetoid& p, const TerrainEdit& edit) { ApplyTerrainEdits(p, &edit, 1); }
 
+// After a new snapshot is in: everything that shows the strokes rebuilds (nodes, trees, flowing water).
+static void AfterTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count);
+
 void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     if (count == 0) return;
     // Fold the strokes into the delta lattice: a new snapshot sharing every untouched chunk (the
@@ -1973,6 +1976,34 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
         p.edits = b.finish();
         for (TerrainDeltas::Key k : touchedChunks) p.dirtyRegions.insert(TerrainDeltas::RegionOf(k));
     }
+    AfterTerrainEdits(p, edits, count);
+}
+
+std::shared_ptr<TerrainFold> FoldTerrainEditsAsync(Planetoid& p, std::vector<TerrainEdit> edits) {
+    auto fold = std::make_shared<TerrainFold>();
+    fold->edits = std::move(edits);
+    fold->base = p.edits;
+    // The worker holds the field and the base snapshot (both immutable), so the body may go (a world change) meanwhile.
+    std::shared_ptr<const DensityField> field = p.field;
+    WorldJobs().submit(-2.0f, [fold, field] { // ahead of chunk builds: a site's parts wait on it
+        TerrainDeltasBuilder b(*fold->base);
+        for (const TerrainEdit& e : fold->edits) b.apply(e, *field, &fold->touched);
+        fold->result = b.finish();
+        fold->done.store(true, std::memory_order_release);
+    }, false, JobTag::TerrainFold);
+    return fold;
+}
+
+bool PublishTerrainFold(Planetoid& p, TerrainFold& fold) {
+    if (!fold.done.load(std::memory_order_acquire) || p.edits != fold.base) return false;
+    PROFILE_SCOPE("edits: publish");
+    p.edits = fold.result;
+    for (TerrainDeltas::Key k : fold.touched) p.dirtyRegions.insert(TerrainDeltas::RegionOf(k));
+    if (!fold.edits.empty()) AfterTerrainEdits(p, fold.edits.data(), fold.edits.size());
+    return true;
+}
+
+static void AfterTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     p.lodDirty = true;
 
     // Rebuild every existing node (any level) whose samples or normals the strokes reach. Nodes
@@ -1993,8 +2024,10 @@ void ApplyTerrainEdits(Planetoid& p, const TerrainEdit* edits, size_t count) {
     { PROFILE_SCOPE("edits: remesh");
     for (const NodeKey& k : touched) RequestNode(p, k, -1.0f - (float)k.level * 0.01f); // ahead of background work
     }
-    if (p.trees) { PROFILE_SCOPE("edits: trees");
-        for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64)) p.trees->onEdit(edits[i].center, edits[i].radius, p.edits); }
+    if (p.trees) { PROFILE_SCOPE("edits: trees"); // (#1791) one pass, each tile once: per stroke it was 24 ms for a site
+        std::vector<Vector4> spheres(count);
+        for (size_t i = 0; i < count; ++i) spheres[i] = { edits[i].center.x, edits[i].center.y, edits[i].center.z, edits[i].radius };
+        p.trees->onEdits(spheres, p.edits); }
     // Flowing water: wake it, or start it where the edit opens space next to water.
     PROFILE_SCOPE("edits: fluid");
     for (size_t i = 0; i < count; i += std::max<size_t>(1, count / 64))

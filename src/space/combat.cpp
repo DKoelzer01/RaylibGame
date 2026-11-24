@@ -639,7 +639,7 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         char id[64] = {};
         std::string data; // (#1730) "id|record"
         if (const char* bar = strchr(tok, '|')) { snprintf(id, sizeof id, "%.*s", (int)(bar - tok), tok); data = bar + 1; if (!ItemData::Valid(data)) data.clear(); }
-        else snprintf(id, sizeof id, "%.63s", tok); // (#1816) an id is short; GCC -O2 refused the unbounded copy
+        else snprintf(id, sizeof id, "%.63s", tok); // (#1815) bounded: -O1's -Wformat-truncation rejected "%s" of a 512-byte token
         if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
         if (itemDB.find(id) && c > 0) { InvSlot s{ id, (int64_t)c }; s.data = data; g.items.push_back(s); }
         else if ((int)i == g.offHand) g.offHand = -1;

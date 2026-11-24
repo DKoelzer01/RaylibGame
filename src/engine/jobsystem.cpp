@@ -38,7 +38,7 @@ JobSystem::~JobSystem() {
 }
 
 const char* JobTagName(JobTag t) {
-    static const char* names[(int)JobTag::Count] = { "other", "chunk-prep", "chunk-mesh", "ring-collect", "water", "trees", "fluid", "farsphere", "navmap" };
+    static const char* names[(int)JobTag::Count] = { "other", "chunk-prep", "chunk-mesh", "ring-collect", "water", "trees", "fluid", "farsphere", "navmap", "terrain-fold" };
     return (int)t < (int)JobTag::Count ? names[(int)t] : "?";
 }
 
