@@ -753,7 +753,7 @@ void main() {
         if (f == 0 && nf > 0) kind = inKind;
         if ((fl & (SOURCE | SINK)) == (SOURCE | SINK)) atomicAdd(sinkOut[slot], uint(nf - int(TG(c)))); // a sink's net intake (#656, #875: the columns counted none)
         if ((fl & SOURCE) != 0u) nf = int(TG(c));
-        else if (evaporate != 0 && nf > 0 && nf <= 2 && col[g].delta == 0 && onGround(slot, x, y, z)) nf = 0;
+        else if (evaporate != 0 && nf > 0 && nf < minSpread[kind] && col[g].delta == 0 && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // resting films dry up (#454)
         if (F(outC[g]) != uint(nf)) atomicOr(flagsOut[slot], 1u);
         outC[g] = pack(uint(nf), (fl & 31u) | (kind << 5), c);
         if (useGroups != 0 && nf > 0) atomicOr(gmask[slot * 6u + uint(maskCur) * 2u + (local >> 11u)], 1u << ((local >> 6u) & 31u));
@@ -823,7 +823,7 @@ void main() {
     // A resting speck on the ground soaks away (one in a moving film does not: erasing a sliding film's thin edge every
     // substep lost ~12% of a draining pond, #454); on water it is that water's surface and stays (#454: a body over cells that hold
     // little lost the remainder of every fall into them, ~15% of a draining pond).
-    else if (evaporate != 0 && nf > 0 && nf <= 2 && moving == 0u && onGround(slot, x, y, z)) nf = 0; // only the thinnest specks (user: puddles last)
+    else if (evaporate != 0 && nf > 0 && nf < minSpread[kind] && moving == 0u && onGround(slot, x, y, z)) nf = nf <= 2 ? 0 : nf - 1; // specks go, films under the spread limit thin a unit a time (#454; user: puddles last)
     uint old = outC[g];                                                   // this substep's start (A)
     uint res = pack(uint(nf), (fl & 31u) | (kind << 5), c);
     if (F(old) != uint(nf)) atomicOr(flagsOut[slot], 1u);
