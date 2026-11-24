@@ -11,6 +11,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <map>
 #include <set>
 #include <memory>
@@ -42,6 +43,7 @@ struct Source { int x, y, z; LightCell l; };
 bool operator<(const Source& a, const Source& b) {
     return std::tie(a.x, a.y, a.z, a.l.level, a.l.r, a.l.g, a.l.b) < std::tie(b.x, b.y, b.z, b.l.level, b.l.r, b.l.g, b.l.b);
 }
+struct SourceOp { bool add; Source s; };
 
 // One plot's contribution, rebuilt when its version changes: its light sources and its opaque 1 m cells by brick.
 struct PlotCache {
@@ -59,12 +61,14 @@ struct State {
     std::unordered_map<uint32_t, PlotCache> plots;
     std::map<Source, int> current;                // sources in the grid, with their counts
     std::set<uint64_t> refresh;                   // bricks whose walls changed, to re-read (a few a frame)
+    std::deque<SourceOp> ops;                     // sources to add or take out of the grid (a few a frame)
     LightLevelStats stats;
 };
 State S;
 
 void FillOpacity(int bx, int by, int bz, uint8_t* out) {
     const Planetoid* body = S.body;
+    const double tRead = GetTime();
     float dens[LightGrid::kBrickCells];
     const Vector3 o = { bx * 16 + 0.5f, by * 16 + 0.5f, bz * 16 + 0.5f };   // cell centres
     body->field->baseDensityBlock(o, 1.0f, 16, 0.0f, dens);
@@ -91,18 +95,20 @@ void FillOpacity(int bx, int by, int bz, uint8_t* out) {
         auto it = kv.second.opaque.find(key);
         if (it != kv.second.opaque.end()) for (uint16_t i : it->second) out[i] = 1;
     }
+    S.stats.brickMsMax = std::max(S.stats.brickMsMax, (float)((GetTime() - tRead) * 1000.0));
 }
 
 void Reset(const Planetoid* body) {
     S.plots.clear();
     S.current.clear();
     S.refresh.clear();
+    S.ops.clear();
     S.grid.reset();
     S.body = body;
     S.bodyId = body ? body->id : 0;
     S.edits = body ? body->edits : nullptr;
     if (body && body->field) S.grid = std::make_unique<LightGrid>(FillOpacity);
-    if (S.grid) S.grid->SetNewBrickCap(2); // a brick read is a terrain block: the time check comes between them
+    if (S.grid) S.grid->SetNewBrickCap(1); // a brick read is a terrain block: the time check comes between them
 }
 
 void RebuildPlot(const Planetoid& body, Plot& plot, PlotCache& c, std::vector<uint64_t>& changedBricks) {
@@ -178,12 +184,12 @@ void LightLevel_Update(Scene& world, bool inGame) {
     // Sources: the difference between what the plots hold and what the grid has.
     for (auto it = S.current.begin(); it != S.current.end();) {
         const int have = it->second, need = want.count(it->first) ? want[it->first] : 0;
-        for (int k = need; k < have; ++k) g.RemoveSource(it->first.x, it->first.y, it->first.z, it->first.l);
+        for (int k = need; k < have; ++k) S.ops.push_back({ false, it->first }); // applied below, in the time budget
         if (need == 0) it = S.current.erase(it); else { it->second = std::min(have, need); ++it; }
     }
     for (auto& kv : want) {
         int& have = S.current[kv.first];
-        for (int k = have; k < kv.second; ++k) g.AddSource(kv.first.x, kv.first.y, kv.first.z, kv.first.l);
+        for (int k = have; k < kv.second; ++k) S.ops.push_back({ true, kv.first });
         have = kv.second;
     }
 
@@ -217,6 +223,12 @@ void LightLevel_Update(Scene& world, bool inGame) {
         const int bx = (int)((int64_t)(k << 43) >> 43), by = (int)((int64_t)(k >> 21 << 43) >> 43), bz = (int)((int64_t)(k >> 42 << 43) >> 43);
         g.RefreshOpacity(bx * 16, by * 16, bz * 16, bx * 16 + 15, by * 16 + 15, bz * 16 + 15);
     }
+    // Source changes (each may make a brick: a terrain block read), then relight slices.
+    while (!S.ops.empty() && GetTime() < tEnd) {
+        const SourceOp op = S.ops.front();
+        S.ops.pop_front();
+        if (op.add) g.AddSource(op.s.x, op.s.y, op.s.z, op.s.l); else g.RemoveSource(op.s.x, op.s.y, op.s.z, op.s.l);
+    }
     while (g.Busy() && GetTime() < tEnd) g.Update(kRelightSlice);
 
     // The GPU window: anchored at a multiple of 128 m near the camera (the texture wraps the same way), so the matrix
@@ -228,7 +240,7 @@ void LightLevel_Update(Scene& world, bool inGame) {
 
     S.stats.sources = (int)want.size();
     S.stats.bricks = (int)g.BrickCount();
-    S.stats.busy = g.Busy();
+    S.stats.busy = g.Busy() || !S.ops.empty() || !S.refresh.empty();
     S.stats.uploaded = LocalLights_GridBricksUploaded();
     S.stats.ms = (float)((GetTime() - t0) * 1000.0);
 }
