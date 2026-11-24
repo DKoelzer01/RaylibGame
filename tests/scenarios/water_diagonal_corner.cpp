@@ -16,6 +16,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <memory>
+#include <string>
 
 namespace {
 constexpr int kFloor = 10; // floor cells across (5 m)
@@ -78,8 +79,8 @@ SCENARIO("water/diagonal-corner") {
         const Vector3 lo = S.at(CornerX() - 1.5f, S.floorTop() - 0.5f, CornerZ() - 1.5f);
         const Vector3 hi = S.at(CornerX() + 1.5f, S.floorTop() + 1.5f, CornerZ() + 1.5f);
         WaterField::ChunkSampler cs(snap.get(), c.body->id, Vector3Min(lo, hi), Vector3Max(lo, hi));
-        auto drawnTop = [&](float x, float z) { // the highest wet point of the vertical from 0.9 m over the floor down to 2 cm over it
-            for (float h = 0.9f; h >= 0.02f; h -= 0.01f) {
+        auto drawnTop = [&](float x, float z) { // the highest wet point of the vertical, 2.5 cm steps from 0.9 m over the floor down to it
+            for (float h = 0.9f; h > 0.0f; h -= 0.025f) {
                 float wd;
                 if (cs.density(S.at(x, S.floorTop() + h, z), 0, wd) && wd >= ISO_LEVEL) return h;
             }
@@ -87,8 +88,9 @@ SCENARIO("water/diagonal-corner") {
         };
         // The pen holds water (its corner cell, inside).
         if (drawnTop(CornerX() - 0.25f, CornerZ() - 0.25f) > 0.0f) ++S.penWet;
-        for (float dx = 0.02f; dx < 0.75f; dx += 0.05f)
-            for (float dz = 0.02f; dz < 0.75f; dz += 0.05f) {
+        // The sliver is a centimetre or two at the corner: 5 mm steps over the 0.3 m by it.
+        for (float dx = 0.0025f; dx < 0.3f; dx += 0.005f)
+            for (float dz = 0.0025f; dz < 0.3f; dz += 0.005f) {
                 ++S.samples;
                 const float x = CornerX() + dx, z = CornerZ() + dz;
                 const float top = drawnTop(x, z);
@@ -96,6 +98,18 @@ SCENARIO("water/diagonal-corner") {
                 for (float h = 0.05f; h < 0.9f; h += 0.1f)
                     if (WaterField::CellFill(*snap, c.body->id, S.at(x, S.floorTop() + h, z), 0) > 0) { ++S.simWet; break; }
             }
+        if (S.checks == 1) { // the fluid cells at the corner, 0.1 m over the floor (s = solid, w = water, . = dry): the walls must meet diagonally
+            std::string grid;
+            for (int k = -2; k < 2; ++k) {
+                for (int i = -2; i < 2; ++i) {
+                    uint8_t fl = 0;
+                    const int f = WaterField::CellFill(*snap, c.body->id, S.at(CornerX() + (i + 0.5f) * WaterField::CellSize(), S.floorTop() + 0.1f, CornerZ() + (k + 0.5f) * WaterField::CellSize()), 0, nullptr, &fl);
+                    grid += (fl & WaterField::kSolid) ? 's' : f > 0 ? 'w' : '.';
+                }
+                grid += k < 1 ? "/" : "";
+            }
+            c.note(TextFormat("fluid cells at the corner (x right, z down): %s", grid.c_str()));
+        }
         return false;
     });
     s.step("report", 1.0, [](ScenarioCtx& c) {
