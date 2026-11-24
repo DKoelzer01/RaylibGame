@@ -4,10 +4,11 @@
 # Kinds: structure (shapes, fences, gates, ladders), machine (incl. multiblocks), transport (conveyors, cables, pipes,
 # shafts and gears), storage (chests, tanks), power (generators, boilers, batteries, wheels, engines), farm (farmland,
 # snares), other (rocket parts, torches, beds, banners...).
+# No blue: the maps draw water blue (power was sky blue and read as a pond).
 structure | 176,176,170
 machine   | 230,159,0
 transport | 240,228,66
 storage   | 204,121,167
-power     | 86,180,233
+power     | 213,94,0
 farm      | 0,158,115
-other     | 213,94,0
+other     | 240,240,240

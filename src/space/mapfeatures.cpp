@@ -181,7 +181,7 @@ bool coloursLoaded = false;
 void LoadColours() {
     coloursLoaded = true;
     colours = { Color{ 0, 0, 0, 0 }, { 176, 176, 170, 255 }, { 230, 159, 0, 255 }, { 240, 228, 66, 255 },
-                { 204, 121, 167, 255 }, { 86, 180, 233, 255 }, { 0, 158, 115, 255 }, { 213, 94, 0, 255 } };
+                { 204, 121, 167, 255 }, { 213, 94, 0, 255 }, { 0, 158, 115, 255 }, { 240, 240, 240, 255 } }; // (no blue: water is blue)
     std::ifstream f("resources/data/map_colours.txt");
     std::string line;
     while (std::getline(f, line)) {

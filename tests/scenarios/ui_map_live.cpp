@@ -4,8 +4,10 @@
 // part in its kind's colour at its place; the conveyor row along the plot's own east, not along the body's east (the
 // heading); and the ground, not the plot, just past its edge. Then a close-up at 1/16 m a pixel, and a 2.5 m pit dug beside
 // the plot: within the refresh window its edit tile is re-sampled (its depth) and the map draws it as dug earth (part 2).
+// Then 12 m^3 poured into it: the simulation's pond is sampled and drawn as water (part 3).
 // The recording shows the HUD: the minimap, then the big map.
 #include "scenario.h"
+#include "fluid.h"
 #include "inventory.h"
 #include "mapfeatures.h"
 #include "navigation.h"
@@ -25,8 +27,10 @@ Plot* plot = nullptr;
 Vector3 e0{}, n0{}; // the body's east and north at the plot (unturned)
 double tBuilt = 0.0, tDug = 0.0;
 bool opened = false;
-Vector3 pitDir{};
+Vector3 pitDir{}, pitCentre{};
 Color pitBefore{};
+double tFlood = -1.0, nextPour = 0.0;
+float poured = 0.0f;
 
 // A body-local direction at plot cell (u, v) (continuous cells), on the floor's top.
 Vector3 AtCell(float u, float v) { return Vector3Normalize(plot->toBody({ u * kCellSize, kCellSize, v * kCellSize })); }
@@ -128,6 +132,7 @@ SCENARIO("ui/map-live") {
         e.radius = 2.5f;
         e.carve = true;
         ApplyTerrainEdit(*c.body, e);
+        pitCentre = e.center;
         tDug = c.T;
         return true;
     });
@@ -151,6 +156,32 @@ SCENARIO("ui/map-live") {
         const bool sampled = MapFeatures_EditedAt(*edits, away, el2, ch2);
         c.check("untouched ground beside it keeps its height", !sampled || fabsf(ch2) < 0.25f, TextFormat("change %.2f m", ch2));
         c.grab("big-map-pit");
+        tFlood = -1.0;
+        poured = 0.0f;
+        return true;
+    });
+    s.step("the flooded pit shows water on the map", 40.0, [](ScenarioCtx& c) {
+        // (part 3) 1 m^3 every 0.1 s into the pit's bottom, 12 m^3 in all: the simulation's water, not generated water.
+        if (poured < 12.0f && c.t >= nextPour) {
+            nextPour = c.t + 0.1;
+            poured += Fluid::Pour(*c.body, Vector3Subtract(pitCentre, Vector3Scale(pitDir, 1.5f)), 1.0f);
+            if (poured >= 12.0f) tFlood = c.T;
+        }
+        c.waitingFor("the pit's water sampled and drawn");
+        if (tFlood < 0.0) return false;
+        const auto water = MapFeatures_Water(*c.body);
+        float depth = 0.0f;
+        int kind = -1;
+        const float ground = c.field->radius + c.field->elevation(pitDir, 0.5f) - 2.4f; // about the pit's floor
+        if (!water || !MapFeatures_WaterAt(*water, Vector3Scale(pitDir, ground), depth, kind) || depth < 0.3f) return false;
+        Color now;
+        if (!Nav_MapPixel(true, pitDir, now) || !(now.b > now.r && now.b > now.g)) return false; // drawn as water (blue)
+        c.metric("pond on the map after", c.T - tFlood, "s");
+        c.lt("pond drawn within the refresh window (s)", c.T - tFlood, 25.0);
+        c.eq("its fluid is water", kind, 0);
+        c.gt("its sampled depth over the pit floor (m)", depth, 0.3);
+        c.check("the pond is drawn as water", true, TextFormat("%d,%d,%d", now.r, now.g, now.b));
+        c.grab("big-map-pond");
         return true;
     });
     s.step("hold for the recording", 3.0, [](ScenarioCtx& c) {
@@ -158,7 +189,7 @@ SCENARIO("ui/map-live") {
         Nav_CloseMap();
         // The maps' main-thread work over the whole run (plot builds landing, renders started and uploaded): never a
         // millisecond in one frame (#1795). Timing gates are only reported on the runner.
-        for (const char* z : { "gu: Nav_Update", "nav: plots", "nav: edits", "nav: map start", "nav: map take", "nav: minimap start", "nav: minimap take" }) {
+        for (const char* z : { "gu: Nav_Update", "nav: plots", "nav: edits", "nav: water", "nav: map start", "nav: map take", "nav: minimap start", "nav: minimap take" }) {
             const double ms = Profiler_ZoneMaxMs(z);
             if (ms >= 0.0) c.timingLt(std::string(z) + " max (ms)", ms, 1.0);
         }
