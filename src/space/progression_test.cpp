@@ -394,10 +394,12 @@ namespace {
             if (!fed) { fed = true; if (!Craft("clay_mould", 1)) return false; Give("kiln", "clay_mould", 1); Give("kiln", "any_log", 1); }
             return Collect("kiln", "fired_mould", 1);
         });
-        add("cast a rough hammer head in the kiln", [] {
+        add("cast a rough hammer head in the kiln", [] { // (picked on its screen: a mould and one ingot also cast a blade)
             static bool fed = false;
-            if (!fed) { fed = true; Give("kiln", "fired_mould", 1); Give("kiln", "bronze_ingot", 1); Give("kiln", "any_log", 1); }
-            return Collect("kiln", "rough_bronze_hammer_head", 1);
+            if (!fed) { fed = true; Factory::SetPick(body->id, plot->id, parts["kiln"], "rough_bronze_hammer_head"); Give("kiln", "fired_mould", 1); Give("kiln", "bronze_ingot", 1); Give("kiln", "any_log", 1); }
+            if (!Collect("kiln", "rough_bronze_hammer_head", 1)) return false;
+            Factory::SetPick(body->id, plot->id, parts["kiln"], ""); // (back to any)
+            return true;
         });
         add("finish it at the anvil; haft a bronze hammer", [] {
             static bool fed = false;
