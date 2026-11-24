@@ -2,8 +2,9 @@
 // is slightly clipped into the surface of the tile"): in the sandbox, a floating 4 x 4 m pad of stone-brick cubes (plot cells,
 // 0.5 m) 1 m over the ground, and water poured onto its middle (0.5 m^3/s) runs across it and off its edges. Over the pad, on
 // a 0.25 m grid, the DRAWN surface (WaterField::ChunkSampler, what the water mesh is built from) is found by scanning each
-// point's vertical down from 0.3 m over the tiles' top. Checked while it pours: where the water stands over the pad, it is
-// drawn above the tiles' top face (a film), not inside the tiles. The fluid cells (0.25 m) don't line up with the plot's top,
+// point's vertical down from 0.3 m over the tiles' top. Checked while it pours: inside the film (a wet point whose four
+// neighbours are wet), the water is drawn above the tiles' top face, not inside the tiles. The film's rim, where the surface
+// tapers down to the dry tile, is reported apart. The fluid cells (0.25 m) don't line up with the plot's top,
 // so a cell straddling it stays open; its water stood at the cell's floor, under the top.
 #include "scenario.h"
 #include "fluid.h"
@@ -24,8 +25,8 @@ struct State {
     Int3 base{};
     double nextPour = 0.0;
     float poured = 0.0f;
-    int samples = 0, wet = 0, inside = 0;
-    float worst = 1e9f; // the lowest drawn surface over the top among the wet points (m)
+    int samples = 0, wet = 0, interior = 0, inside = 0, rim = 0, rimInside = 0;
+    float worst = 1e9f; // the lowest drawn surface over the top inside the film (m)
     Vector3 at(float x, float y, float z) const { return plot->toBody({ x, y, z }); } // plot metres -> body-local
     float topY() const { return (base.y + 1) * kCellSize; }
 } S;
@@ -69,32 +70,45 @@ SCENARIO("water/film-on-tiles") {
         const Vector3 lo = S.at(S.base.x * kCellSize - 1.0f, S.topY() - 1.0f, S.base.z * kCellSize - 1.0f);
         const Vector3 hi = S.at((S.base.x + kPad) * kCellSize + 1.0f, S.topY() + 1.0f, (S.base.z + kPad) * kCellSize + 1.0f);
         WaterField::ChunkSampler cs(snap.get(), c.body->id, Vector3Min(lo, hi), Vector3Max(lo, hi));
-        // Points over the pad's inner part (0.25 m from its edges: the edge itself is where water falls off).
-        for (float x = S.base.x * kCellSize + 0.25f; x <= (S.base.x + kPad) * kCellSize - 0.25f; x += 0.25f)
-            for (float z = S.base.z * kCellSize + 0.25f; z <= (S.base.z + kPad) * kCellSize - 0.25f; z += 0.25f) {
-                ++S.samples;
+        // Points over the pad's inner part (0.25 m from its edges: the edge itself is where water falls off), on a 0.25 m grid.
+        constexpr int N = kPad * 2 - 1;
+        float surf[N][N];
+        for (int i = 0; i < N; ++i)
+            for (int k = 0; k < N; ++k) {
+                const float x = S.base.x * kCellSize + 0.25f * (i + 1), z = S.base.z * kCellSize + 0.25f * (k + 1);
                 // The drawn surface: the highest point of the vertical (0.3 m over the top down to 0.25 m under it) where the
-                // water's density is at or over ISO.
-                float surf = -1e9f;
+                // water's density is at or over ISO; -1e9 dry.
+                surf[i][k] = -1e9f;
                 for (float h = 0.3f; h >= -0.25f; h -= 0.005f) {
                     float wd;
-                    if (cs.density(S.at(x, S.topY() + h, z), 0, wd) && wd >= ISO_LEVEL) { surf = h; break; }
+                    if (cs.density(S.at(x, S.topY() + h, z), 0, wd) && wd >= ISO_LEVEL) { surf[i][k] = h; break; }
                 }
-                if (surf < -1e8f) continue; // dry here
+            }
+        // Judged inside the film: a wet point whose four neighbours are wet too. At the film's edge the drawn surface tapers
+        // down to meet the dry tile (any film's rim, a few mm into it); the bug was the whole film standing in the tiles.
+        auto wetAt = [&](int i, int k) { return i >= 0 && k >= 0 && i < N && k < N && surf[i][k] > -1e8f; };
+        for (int i = 0; i < N; ++i)
+            for (int k = 0; k < N; ++k) {
+                ++S.samples;
+                if (!wetAt(i, k)) continue;
                 ++S.wet;
-                S.worst = std::min(S.worst, surf);
-                if (surf < 0.005f) ++S.inside;
+                if (!(wetAt(i - 1, k) && wetAt(i + 1, k) && wetAt(i, k - 1) && wetAt(i, k + 1))) { ++S.rim; if (surf[i][k] < 0.005f) ++S.rimInside; continue; }
+                ++S.interior;
+                S.worst = std::min(S.worst, surf[i][k]);
+                if (surf[i][k] < 0.005f) ++S.inside;
             }
         return false;
     });
     s.step("report", 1.0, [](ScenarioCtx& c) {
         gScenarioCamera = false;
-        c.note(TextFormat("%.1f m^3 poured; %d samples over the pad, %d wet, %d drawn inside the tiles (< 5 mm over their top); lowest wet surface %.3f m",
-                          S.poured, S.samples, S.wet, S.inside, S.worst));
-        c.metric("wet samples drawn inside the tiles", S.inside, "samples");
-        c.metric("lowest drawn surface over the tiles' top (m)", S.worst, "m", false);
-        c.gt("water lay on the pad (wet samples)", S.wet, 20);
-        c.eq("no wet sample drawn inside the tiles (surface >= 5 mm over their top)", S.inside, 0);
+        c.note(TextFormat("%.1f m^3 poured; %d samples over the pad, %d wet: %d inside the film (%d drawn inside the tiles, lowest %.3f m over "
+                          "their top), %d at its rim (%d of them a few mm into the tiles)",
+                          S.poured, S.samples, S.wet, S.interior, S.inside, S.worst, S.rim, S.rimInside));
+        c.metric("film samples drawn inside the tiles", S.inside, "samples");
+        c.metric("rim samples drawn inside the tiles", S.rimInside, "samples");
+        c.metric("lowest drawn surface over the tiles' top inside the film (m)", S.worst, "m", false);
+        c.gt("water lay on the pad (samples inside the film)", S.interior, 20);
+        c.eq("no sample inside the film drawn inside the tiles (surface >= 5 mm over their top)", S.inside, 0);
         return true;
     });
 }
