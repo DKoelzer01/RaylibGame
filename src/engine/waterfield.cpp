@@ -481,3 +481,34 @@ TEST(WaterField, GeneratedSeaColumnsAreDrawnAsGeneratedWater) {
     EXPECT_TRUE(sampler.covered(at(kBrick + 4)));
 }
 #endif
+
+// #1773: water in a corner pen, its two walls meeting only diagonally at the dry cell (6,6). The simulation blocks the
+// flow there; the drawn surface must not cross the corner into that cell either (the blend pulled it in).
+TEST(WaterField, SurfaceStopsAtADiagonalCorner) {
+    auto b = std::make_shared<Brick>();
+    for (int cj = 0; cj < kBrick; ++cj)
+        for (int ci = 0; ci < kBrick; ++ci)
+            for (int ck = 0; ck < 8; ++ck) {
+                const int i = CellIdx(ci, cj, ck);
+                const bool wall = (ci == 6 && cj < 6) || (cj == 6 && ci < 6);
+                if (ck < 4 || wall) { b->flags[i] = kSolid; continue; } // the ground, and the walls (tiles) on it
+                if (ci < 6 && cj < 6 && ck < 7) b->fill[i] = b->drawn[i] = ck < 6 ? 255 : 128; // the pen: its surface at 6.5 cells
+            }
+    b->kinds = 1;
+    Snapshot snap;
+    Site s;
+    s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 }; // cells: i = x, j = z, k = y
+    const float cs = CellSize(), side = kBrick * cs;
+    s.lo = { 0, 0, 0 }; s.hi = { side, side, side };
+    s.bricks[BrickKey(0, 0, 0)] = b;
+    snap.sites.push_back(s);
+    ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { side, side, side });
+    auto cell = [&](float i, float j, float k) { return Vector3{ i * cs, k * cs, j * cs }; };
+    float w = 0.0f;
+    ASSERT_TRUE(sampler.density(cell(6.05f, 6.05f, 6.1f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "under the pen's level just past the corner: the dry cell stays dry";
+    ASSERT_TRUE(sampler.density(cell(5.95f, 5.95f, 6.1f), 0, w));
+    EXPECT_GT(w, ISO_LEVEL) << "the pen's own corner cell is still water";
+    ASSERT_TRUE(sampler.density(cell(3.5f, 3.5f, 6.9f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "over the pen's surface";
+}
