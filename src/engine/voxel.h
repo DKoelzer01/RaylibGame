@@ -472,6 +472,10 @@ struct ChunkWaterCache {
 long long ChunkWaterCacheBytes();
 // Water mesh phase times (ns, summed over workers): sampling, marching cubes, shore clip, vertex output (#381),
 void ChunkWaterPhases(long long out[6]); // + exact density samples, all samples
+// (#1773) Test probe: water builds on `body` record their vertices inside [lo, hi] (body-local); Take hands over (and clears)
+// what they recorded since. Scenarios check the drawn water mesh with it.
+void WaterVertexProbe_Set(uint64_t body, Vector3 lo, Vector3 hi);
+void WaterVertexProbe_Take(std::vector<Vector3>& out);
 void ChunkWaterFlowStats(long long out[3]); // moving simulated water vertices: all, steep, steep drawn running down their surface (#677)
 constexpr long long kChunkWaterCacheCap = 128ll << 20;
 

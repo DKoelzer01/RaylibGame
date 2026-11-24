@@ -2866,6 +2866,23 @@ static std::atomic<long long> gSimFlowVerts[3];
 // RAYLIBGAME_FLOW_SURFACE=0: the current stays level and simulated water keeps its gradient normal (before #677/#696), for A/B.
 static const bool kFlowSurface = [] { const char* e = getenv("RAYLIBGAME_FLOW_SURFACE"); return !(e && e[0] == '0'); }();
 void ChunkWaterFlowStats(long long out[3]) { for (int i = 0; i < 3; ++i) out[i] = gSimFlowVerts[i].load(); }
+// (#1773) Test probe: the water vertices builds put inside a box (body-local), for scenarios that check the drawn mesh.
+static struct { std::atomic<bool> on{ false }; uint64_t body = 0; Vector3 lo{}, hi{}; std::mutex mx; std::vector<Vector3> got; } gWaterProbe;
+static void WaterProbeAdd(Vector3 p) {
+    if (p.x < gWaterProbe.lo.x || p.y < gWaterProbe.lo.y || p.z < gWaterProbe.lo.z || p.x > gWaterProbe.hi.x || p.y > gWaterProbe.hi.y || p.z > gWaterProbe.hi.z) return;
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    gWaterProbe.got.push_back(p);
+}
+void WaterVertexProbe_Set(uint64_t body, Vector3 lo, Vector3 hi) {
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    gWaterProbe.body = body; gWaterProbe.lo = lo; gWaterProbe.hi = hi; gWaterProbe.got.clear();
+    gWaterProbe.on = true;
+}
+void WaterVertexProbe_Take(std::vector<Vector3>& out) {
+    std::lock_guard<std::mutex> lock(gWaterProbe.mx);
+    out.swap(gWaterProbe.got);
+    gWaterProbe.got.clear();
+}
 // RAYLIBGAME_WATER_COARSE=0: sample every water density point (no coarse-first skipping), for A/B.
 static const bool kWaterCoarse = [] { const char* e = getenv("RAYLIBGAME_WATER_COARSE"); return !(e && e[0] == '0'); }();
 static long long NowNs() { return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -2903,6 +2920,15 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         if (grid && pf && pf->gridSurface(*grid, point, e, col)) return e;
         return pf->elevation(dir, stride);
     };
+    // (#1773) The plots near this chunk with whole blocks in them: simulated water stays on its cells' side of them (below).
+    std::shared_ptr<const GrassBlockers> wallSnap;
+    std::vector<const GrassBlockPlot*> wallPlots;
+    if (kinds && stride <= 1.0f && (wallSnap = Grass_BlockersOf(&field))) {
+        const Vector3 cc = Vector3AddValue(origin, 0.5f * out.key.size());
+        const float reach = 0.8660254f * out.key.size() + 1.0f;
+        for (const GrassBlockPlot& b : *wallSnap)
+            if (!b.full.empty() && (DVec3{ cc.x, cc.y, cc.z } - b.origin).length() <= reach + b.radius) wallPlots.push_back(&b);
+    }
     std::vector<float> wd((size_t)S * S * S);
     std::vector<Vector3> wv;
     std::vector<int> wi;
@@ -3041,6 +3067,35 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                 for (int y = 0; y < cells; ++y)
                     for (int x = 0; x < cells; ++x)
                         marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
+        }
+        // (#1773) Placed blocks: the fluid cells (0.25 m, in the site's own frame) don't line up with a plot's blocks, so a cell
+        // the simulation counts as open can reach past a block's face, and at two blocks meeting only along an edge (a diagonal
+        // corner) its water showed on the far side, where the simulation (rightly) lets none through. A vertex in the open whose
+        // way back to the middle of its own cell crosses a whole block is pulled back to where that way enters the block
+        // (1-2 cm in, hidden), so the surface ends inside the block instead.
+        if (simKind && !wallPlots.empty()) {
+            constexpr float kCell = 0.5f, kStep = 0.05f; // plots.h's cell (m, not included here); the walk, in cells (2.5 cm)
+            for (Vector3& v : wv) {
+                const Vector3 p = Vector3Add(origin, Vector3Scale(v, stride));
+                Vector3 mid;
+                if (!sim.cellMiddle(p, mid)) continue;
+                for (const GrassBlockPlot* b : wallPlots) {
+                    auto cells = [&](Vector3 q) {
+                        const DVec3 d = DVec3{ q.x, q.y, q.z } - b->origin;
+                        const Vector3 l = { (float)d.x, (float)d.y, (float)d.z };
+                        return Vector3{ Vector3DotProduct(l, b->east) / kCell, Vector3DotProduct(l, b->up) / kCell, Vector3DotProduct(l, b->north) / kCell };
+                    };
+                    auto whole = [&](Vector3 c) { return b->full.count(Int3{ (int)floorf(c.x), (int)floorf(c.y), (int)floorf(c.z) }) > 0; };
+                    const Vector3 a = cells(mid), c = cells(p);
+                    if (whole(c)) continue; // already inside a block: hidden
+                    const int steps = (int)ceilf(Vector3Distance(a, c) / kStep);
+                    int hit = -1;
+                    for (int s = 0; s < steps && hit < 0; ++s) if (whole(Vector3Lerp(a, c, (float)s / steps))) hit = s;
+                    if (hit < 0) continue;
+                    v = Vector3Scale(Vector3Subtract(Vector3Lerp(mid, p, (float)hit / steps), origin), 1.0f / stride);
+                    break;
+                }
+            }
         }
         phase(1);
         // The shore (#423): a triangle crossing the ground keeps only its part out of the ground, cut where its edges
@@ -3197,6 +3252,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
                         depth = std::max(0.0f, surfaceE - groundAt(bp, radial));
                     }
+                    if (gWaterProbe.on.load(std::memory_order_relaxed) && out.planetoidId == gWaterProbe.body) WaterProbeAdd(bp);
                     out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                     out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind + (genVert ? 0.25f : 0.0f) }); // +0.25: generated (fragKind rounds it away)

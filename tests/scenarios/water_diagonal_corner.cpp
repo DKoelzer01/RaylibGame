@@ -1,10 +1,12 @@
 // water/diagonal-corner (#1773, playtest: "Water will slightly visibly clip through diagonal corners, but wont flow through"):
 // in the sandbox, a floating 5 x 5 m floor of stone-brick cubes (plot cells, 0.5 m) with a 2 x 2 m pen on it, walled 1 m high
 // on all four sides, whose two inner walls meet only diagonally at one corner: the cells beside the corner are wall, the
-// corner cell itself is floor outside the pen. Water poured into the pen (0.5 m^3/s for 4 s) fills it about 0.5 m deep.
-// Checked while it settles, over the floor outside that corner (a 0.75 m square at the corner, on a 5 cm grid): the DRAWN
-// surface (WaterField::ChunkSampler, what the water mesh is built from) shows no water under the pen's level, and the
-// simulation put none there (so a drawn sliver is the mesher's, not a leak).
+// corner cell itself is floor outside the pen. Water poured into the pen (0.5 m^3/s for 4 s) fills it about 0.45 m deep.
+// The fluid site's cells (0.25 m) are turned against the plot here (its frame comes from the first water near it), so pen cells
+// reach past the corner: the drawn water poked out there as a wedge (capture 2026-11-24 diag-corner-1773-shift).
+// Checked while it settles: the water MESH (WaterVertexProbe: every vertex the water builds put near the corner) has no vertex
+// over the floor outside the corner, it has some in the pen, and the simulation put no water outside the corner either (so
+// a drawn wedge is the mesher's, not a leak).
 #include "scenario.h"
 #include "fluid.h"
 #include "waterfield.h"
@@ -16,7 +18,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <memory>
-#include <string>
+#include <vector>
 
 namespace {
 constexpr int kFloor = 10; // floor cells across (5 m)
@@ -26,14 +28,14 @@ struct State {
     Int3 base{};
     double nextPour = 0.0;
     float poured = 0.0f;
-    int checks = 0, samples = 0, drawnWet = 0, simWet = 0, penWet = 0;
-    float worst = -1.0f; // the highest drawn water outside the corner, over the floor (m)
+    int checks = 0, simWet = 0, penVerts = 0, pastVerts = 0, verts = 0;
+    float worst = 0.0f; // the farthest a vertex lay past the corner (m, the nearer of its two distances from the walls' faces)
     Vector3 at(float x, float y, float z) const { return plot->toBody({ x, y, z }); } // plot metres -> body-local
     float floorTop() const { return (base.y + 1) * kCellSize; }
 } S;
 float CornerX() { return (S.base.x + kPen) * kCellSize; } // the open corner cell's near edges (plot metres)
 float CornerZ() { return (S.base.z + kPen) * kCellSize; }
-void CornerCamera(ScenarioCtx& c) { // close outside the open corner, looking into it (the sliver is a few cm)
+void CornerCamera(ScenarioCtx& c) { // close outside the open corner, looking into it (the wedge is a few cm)
     c.world.camera.position = c.body->toWorld(S.at(CornerX() + 0.8f, S.floorTop() + 0.7f, CornerZ() + 0.8f));
     c.world.camera.target = c.body->toWorld(S.at(CornerX(), S.floorTop() + 0.2f, CornerZ()));
     c.world.camera.up = c.body->dirToWorld(Vector3Normalize(Vector3Subtract(S.at(0, 1, 0), S.at(0, 0, 0))));
@@ -64,6 +66,13 @@ SCENARIO("water/diagonal-corner") {
                 if (i > 0 && i < kPen) { put(kPen, y, i); put(i, y, kPen); } // the inner walls, not at (kPen, kPen)
             }
         c.eq("cubes placed", placed, want);
+        // The probe: a box (body-local) around the corner, 0.6 m each way.
+        Vector3 lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+        for (int k = 0; k < 8; ++k) {
+            const Vector3 q = S.at(CornerX() + (k & 1 ? 0.6f : -0.6f), S.floorTop() + (k & 2 ? 1.0f : -0.2f), CornerZ() + (k & 4 ? 0.6f : -0.6f));
+            lo = Vector3Min(lo, q); hi = Vector3Max(hi, q);
+        }
+        WaterVertexProbe_Set(c.body->id, lo, hi);
         gScenarioCamera = true;
         CornerCamera(c);
         return true;
@@ -72,85 +81,38 @@ SCENARIO("water/diagonal-corner") {
         CornerCamera(c);
         const float mid = (S.base.x + kPen * 0.5f + 0.5f) * kCellSize, midz = (S.base.z + kPen * 0.5f + 0.5f) * kCellSize;
         if (c.t >= S.nextPour && c.t < 4.0) { S.nextPour = c.t + 0.1; S.poured += Fluid::Pour(*c.body, S.at(mid, S.floorTop() + 0.3f, midz), 0.05f); }
-        if (c.t < 3.0 || c.t > 12.0) return c.t > 12.0;
-        if ((int)(c.t * 60.0) % 30 != 0) return false; // twice a second
+        if (c.t > 12.0) return true;
+        if (c.t < 3.0 || (int)(c.t * 60.0) % 30 != 0) return false; // twice a second
         ++S.checks;
+        std::vector<Vector3> got;
+        WaterVertexProbe_Take(got);
+        for (const Vector3& v : got) {
+            const Vector3 q = S.plot->toPlot(v);
+            const float h = q.y - S.floorTop(), dx = q.x - CornerX(), dz = q.z - CornerZ();
+            if (h < 0.01f || h > 1.0f) continue; // in the floor (hidden) or over the walls
+            ++S.verts;
+            if (dx < -0.05f && dz < -0.05f) ++S.penVerts;
+            if (dx > 0.005f && dz > 0.005f) { ++S.pastVerts; S.worst = std::max(S.worst, std::min(dx, dz)); }
+        }
+        // The simulation's cells over the floor outside the corner (5 cm grid, 0.3 m square, up to 0.9 m over the floor).
         const WaterField::SnapshotPtr snap = WaterField::Current();
-        const Vector3 lo = S.at(CornerX() - 1.5f, S.floorTop() - 0.5f, CornerZ() - 1.5f);
-        const Vector3 hi = S.at(CornerX() + 1.5f, S.floorTop() + 1.5f, CornerZ() + 1.5f);
-        WaterField::ChunkSampler cs(snap.get(), c.body->id, Vector3Min(lo, hi), Vector3Max(lo, hi));
-        auto drawnTop = [&](float x, float z) { // the highest wet point of the vertical, 2.5 cm steps from 0.9 m over the floor down to it
-            for (float h = 0.9f; h > 0.0f; h -= 0.025f) {
-                float wd;
-                if (cs.density(S.at(x, S.floorTop() + h, z), 0, wd) && wd >= ISO_LEVEL) return h;
-            }
-            return -1.0f;
-        };
-        // The pen holds water (its corner cell, inside).
-        if (drawnTop(CornerX() - 0.25f, CornerZ() - 0.25f) > 0.0f) ++S.penWet;
-        // The sliver is a centimetre or two at the corner: 5 mm steps over the 0.3 m by it.
-        for (float dx = 0.0025f; dx < 0.3f; dx += 0.005f)
-            for (float dz = 0.0025f; dz < 0.3f; dz += 0.005f) {
-                ++S.samples;
-                const float x = CornerX() + dx, z = CornerZ() + dz;
-                const float top = drawnTop(x, z);
-                if (top > 0.0f) { ++S.drawnWet; S.worst = std::max(S.worst, top); }
+        for (float dx = 0.025f; dx < 0.3f; dx += 0.05f)
+            for (float dz = 0.025f; dz < 0.3f; dz += 0.05f)
                 for (float h = 0.05f; h < 0.9f; h += 0.1f)
-                    if (WaterField::CellFill(*snap, c.body->id, S.at(x, S.floorTop() + h, z), 0) > 0) { ++S.simWet; break; }
-            }
-        if (S.checks == 1) { // the fluid cells at the corner, 0.1 m over the floor (s = solid, w = water, . = dry): the walls must meet diagonally
-            std::string grid;
-            for (int k = -2; k < 2; ++k) {
-                for (int i = -2; i < 2; ++i) {
-                    uint8_t fl = 0;
-                    const int f = WaterField::CellFill(*snap, c.body->id, S.at(CornerX() + (i + 0.5f) * WaterField::CellSize(), S.floorTop() + 0.1f, CornerZ() + (k + 0.5f) * WaterField::CellSize()), 0, nullptr, &fl);
-                    grid += (fl & WaterField::kSolid) ? 's' : f > 0 ? 'w' : '.';
-                }
-                grid += k < 1 ? "/" : "";
-            }
-            c.note(TextFormat("fluid cells at the corner (x right, z down): %s", grid.c_str()));
-        }
-        if (S.checks == 12) { // DIAG
-            for (const auto& site : snap->sites) {
-                if (site.body != c.body->id) continue;
-                float fx, fy, fz;
-                site.frame(S.at(CornerX(), S.floorTop(), CornerZ()), fx, fy, fz);
-                c.note(TextFormat("DIAG corner in site cells %.3f %.3f %.3f; e %.3f %.3f %.3f", fx, fy, fz, site.e.x, site.e.y, site.e.z));
-            }
-            for (float h = -0.1f; h < 0.6f; h += 0.125f) {
-                std::string grid;
-                for (int k = -2; k < 2; ++k) {
-                    for (int i = -2; i < 2; ++i) {
-                        uint8_t fl = 0;
-                        const int f = WaterField::CellFill(*snap, c.body->id, S.at(CornerX() + (i + 0.5f) * WaterField::CellSize(), S.floorTop() + h, CornerZ() + (k + 0.5f) * WaterField::CellSize()), 0, nullptr, &fl);
-                        grid += (fl & WaterField::kSolid) ? 's' : (char)('0' + std::min(9, f * 10 / 256));
-                    }
-                    grid += "/";
-                }
-                std::string drawn;
-                for (int k = 0; k < 6; ++k) {
-                    for (int i = 0; i < 6; ++i) {
-                        float wd;
-                        const bool ok = cs.density(S.at(CornerX() + (i - 2.5f) * 0.05f, S.floorTop() + h, CornerZ() + (k - 2.5f) * 0.05f), 0, wd);
-                        drawn += !ok ? '?' : wd >= ISO_LEVEL ? 'W' : '.';
-                    }
-                    drawn += "/";
-                }
-                c.note(TextFormat("DIAG h %.3f cells %s drawn(5cm) %s", h, grid.c_str(), drawn.c_str()));
-            }
-        }
+                    if (WaterField::CellFill(*snap, c.body->id, S.at(CornerX() + dx, S.floorTop() + h, CornerZ() + dz), 0) > 0) { ++S.simWet; break; }
         return false;
     });
     s.step("report", 1.0, [](ScenarioCtx& c) {
         gScenarioCamera = false;
-        c.note(TextFormat("%.1f m^3 poured; pen wet in %d of %d checks; outside the corner %d samples: %d drawn wet (highest %.3f m over the "
-                          "floor), %d with simulated water",
-                          S.poured, S.penWet, S.checks, S.samples, S.drawnWet, S.worst, S.simWet));
-        c.metric("drawn water outside the corner", S.drawnWet, "samples");
+        WaterVertexProbe_Set(0, { 1, 1, 1 }, { 0, 0, 0 }); // (an empty box: records nothing)
+        c.note(TextFormat("%.1f m^3 poured; %d checks; water mesh vertices by the corner %d: %d in the pen, %d past the corner (farthest "
+                          "%.3f m); %d samples outside the corner with simulated water",
+                          S.poured, S.checks, S.verts, S.penVerts, S.pastVerts, S.worst, S.simWet));
+        c.metric("water vertices past the corner", S.pastVerts, "vertices");
         c.metric("simulated water outside the corner", S.simWet, "samples");
-        c.gt("the pen held water", S.penWet, S.checks / 2);
+        c.gt("the pen's water was drawn by the corner", S.penVerts, 0);
         c.eq("the simulation keeps the water in the pen", S.simWet, 0);
-        c.eq("no water drawn past the diagonal corner", S.drawnWet, 0);
+        c.eq("no water drawn past the diagonal corner", S.pastVerts, 0);
         return true;
     });
 }
