@@ -45,5 +45,10 @@ int Nav_WaypointCount();
 bool Nav_MinimapReady();
 bool Nav_MinimapShown(); // (#932) the minimap is on screen (it drew within the last 0.25 s)
 bool Nav_MapImageReady();
+// (#1795) Tests: the colour of the shown minimap or big map image at a body-local direction (false off the image or before
+// one); the image's metres a pixel; open the big map centred on a direction at the zoom nearest mpp (needs a Map).
+bool Nav_MapPixel(bool big, Vector3 localDir, Color& out);
+float Nav_MapMetresPerPixel(bool big);
+void Nav_OpenMapAt(Vector3 localDir, float mpp);
 
 #endif
