@@ -62,6 +62,24 @@ int Forge_CoolRate(int metalTier) {
     return 14;
 }
 
+int Forge_MetalTier(const std::string& itemOrMaterial) {
+    std::string s = itemOrMaterial;
+    if (s.compare(0, 6, "rough_") == 0) s = s.substr(6);
+    const std::string m = s.substr(0, s.find('_'));
+    if (m == "copper" || m == "tin" || m == "bronze") return 1;
+    if (m == "iron") return 2;
+    if (m == "steel") return 3;
+    if (m == "titanium" || m == "tungsten") return 4;
+    return 0;
+}
+
+int Forge_JobTier(const std::string& jobItem) {
+    const int t = Forge_MetalTier(jobItem);
+    const std::string suffix = "_hammer_head";
+    const bool hammerHead = jobItem.size() > suffix.size() && jobItem.compare(jobItem.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return std::max(0, hammerHead ? t - 1 : t);
+}
+
 bool Forge_Apply(ForgeState& s, const ForgeMove& m, int coolPerSecondPermille, int hammerTier, int metalTier) {
     // Time first. Ticks never go backwards.
     const uint32_t t = m.tick < s.tick ? s.tick : m.tick;
@@ -625,14 +643,26 @@ TEST(Forge, Scoring) {
     EXPECT_STREQ(Forge_Grade(110), "Fine");
     EXPECT_STREQ(Forge_Grade(124), "Fine");
     EXPECT_STREQ(Forge_Grade(125), "Masterwork");
+    EXPECT_EQ(Forge_MetalTier("bronze"), 1);
+    EXPECT_EQ(Forge_MetalTier("rough_bronze_mace_head"), 1);
+    EXPECT_EQ(Forge_MetalTier("iron_bloom"), 2);
+    EXPECT_EQ(Forge_MetalTier("iron_ingot"), 2);
+    EXPECT_EQ(Forge_MetalTier("steel_hammer_head"), 3);
+    EXPECT_EQ(Forge_MetalTier("tungsten_steel_ingot"), 4);
+    EXPECT_EQ(Forge_MetalTier("weapon_sword"), 0);
+    EXPECT_EQ(Forge_MetalTier(""), 0);
+    EXPECT_EQ(Forge_JobTier("steel_pick_head"), 3);
+    EXPECT_EQ(Forge_JobTier("steel_hammer_head"), 2) << "a bronze or iron hammer makes the steel one";
+    EXPECT_EQ(Forge_JobTier("rough_bronze_hammer_head"), 0);
+    EXPECT_EQ(Forge_JobTier("iron_ingot"), 2);
     EXPECT_EQ(Forge_QuickQuality(), 95);
     EXPECT_STREQ(Forge_Grade(Forge_QuickQuality()), "Common");
 }
 
 TEST(Forge, PatternsParse) {
     const std::vector<ForgePattern>& all = Forge_AllPatterns();
-    EXPECT_EQ(all.size(), 7u);
-    for (const char* id : { "pick_head", "axe_head", "shovel_head", "hoe_head", "blade", "spearhead", "mace_head" }) {
+    EXPECT_EQ(all.size(), 8u);
+    for (const char* id : { "pick_head", "axe_head", "shovel_head", "hoe_head", "blade", "spearhead", "mace_head", "hammer_head" }) {
         const ForgePattern* p = Forge_Pattern(id);
         ASSERT_NE(p, nullptr) << id;
         EXPECT_EQ(p->units(), p->ingots * kForgeUnitsPerIngot) << id;
@@ -687,7 +717,7 @@ TEST(Forge, PatternsParse) {
 }
 
 TEST(Forge, SolverReachesEveryPattern) {
-    ASSERT_EQ(Forge_AllPatterns().size(), 7u);
+    ASSERT_EQ(Forge_AllPatterns().size(), 8u);
     for (const ForgePattern& p : Forge_AllPatterns()) {
         const int tier = 2;
         const std::vector<ForgeMove> moves = Forge_Solve(p, tier);

@@ -243,6 +243,12 @@ weapon_sword 1       = steel_blade 2, any_planks 1
 weapon_greatsword 1  = steel_blade 3, any_planks 2
 weapon_spear 1       = steel_spearhead 1, any_planks 3
 weapon_mace 1        = steel_mace_head 1, any_planks 2
+# (#1613) The smith's hammer: a stone head by hand to start (it works bronze); better heads from the kiln and the anvil.
+stone_hammer_head 1  = any_stone 2
+tool_hammer 1        = stone_hammer_head 1, any_planks 1, fibre 2
+tool_hammer 1        = bronze_hammer_head 1, any_planks 1
+tool_hammer 1        = iron_hammer_head 1, any_planks 1
+tool_hammer 1        = steel_hammer_head 1, any_planks 1
 # (#1614) The steam-age component machines (tier 3)
 lathe 1              = iron_plate 4, mechanism 1, shaft 1, any_planks 4
 wiremill 1           = iron_plate 4, mechanism 1, iron_rod 2, any_planks 4

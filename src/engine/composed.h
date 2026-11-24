@@ -37,6 +37,7 @@ struct ComposedStats {
     float quality = 1.0f;          // the anvil's quality (q %, 75-130, #1613; machines make 100)
     int qualityPct = 100;          // q clamped, for the grade (Forge_Grade: Crude, Common, Fine, Masterwork)
     int wear = 0;                  // strokes used (w)
+    int headTier = 0;              // (#1613) the head material's tier, also for classes with no tool type (a hammer)
     std::string name;              // "Bronze pickaxe"
 };
 
@@ -57,6 +58,17 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
 // handle / binding (wood_handle, leather_binding); the material is a part_materials.txt row. Other ingredients are ignored.
 // A missing handle or binding takes the head's default; no head: "" (the recipe is wrong: the item stays plain).
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct = 100);
+// (#1613) The smith's hammer (tool_hammer): forging at an anvil needs one in hand whose tier is at least the metal's
+// (Forge_Apply's hammerTier). Its tier is its head's (stone 1 works copper and bronze, bronze and iron 2 work iron, steel 3
+// works steel); 0 when the item isn't a hammer or is worn out.
+int Composed_HammerTier(const std::string& id, const std::string& data);
+// Wears a composed copy by `strokes` (a forging stroke each, a tool use each): the record with w raised. *broken is set
+// when that used it up (wear >= durability; the caller removes the item, as a broken tool). "" if it isn't a valid copy.
+std::string Composed_AddWear(const std::string& id, const std::string& data, int strokes, bool* broken = nullptr);
+// Whether a player holding (heldId, heldData) may strike an anvil whose job is metalTier (Forge_MetalTier of the job's
+// item; 0: any hammer): Ok, NoHammer (none in hand, or worn out), TooWeak (its tier is under the metal's).
+enum class AnvilStrike { Ok, NoHammer, TooWeak };
+AnvilStrike Composed_AnvilStrike(const std::string& heldId, const std::string& heldData, int metalTier);
 // (#1613) A forged head is a part item with its own record ("q=<quality %>", from the anvil); hafting it gives the tool
 // that quality. Whether an item is the class's head part (bronze_pick_head for tool_pickaxe), and a part record's q
 // (clamped to 75..130; 100 for a plain part).

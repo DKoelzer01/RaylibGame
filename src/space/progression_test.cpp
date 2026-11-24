@@ -127,6 +127,20 @@ namespace {
         failed = 1;
         return false;
     }
+    // (#1613) A player holding RMB on the anvil with a smith's hammer of that head in hand (the check and the wear are the
+    // game's: BuildTool_StrikeAnvil); the tool held before is held again after. A refusal is said once and retried (the
+    // anvil's view lags a tick behind a new job); a lasting one times the step out.
+    bool StrikeWith(const std::string& hammerHead) {
+        const std::string cls = heldClass, mat = heldMaterial;
+        if (!Hold("tool_hammer", hammerHead)) return false;
+        const AnvilStrike r = BuildTool_StrikeAnvil(body->id, plot->id, parts["anvil"]);
+        if (!cls.empty() && cls != "tool_hammer") Hold(cls, mat);
+        if (r == AnvilStrike::Ok) return true;
+        static std::set<std::string> said;
+        if (said.insert(hammerHead + (r == AnvilStrike::NoHammer ? ":none" : ":weak")).second)
+            printf("bench: progression: the anvil refused a %s hammer (%s)\n", hammerHead.c_str(), r == AnvilStrike::NoHammer ? "no hammer" : "too weak");
+        return false;
+    }
     // Dig points around the start at a depth until `want` of an item are held.
     bool DigFor(const std::string& item, int want, float depth) {
         static std::mt19937 rng(5);
@@ -366,11 +380,32 @@ namespace {
             return Collect("kiln", "rough_bronze_pick_head", 1);
         });
         add("craft and place an anvil", [] { return Craft("anvil", 1) && Place("anvil", PartType::Anvil, { 0, 0, 12 }); });
+        // (#1613) Hammering needs a smith's hammer: a stone one by hand works bronze.
+        add("shape a stone hammer head; haft a stone hammer", [] { return Craft("stone_hammer_head", 1) && Craft("tool_hammer", 1, "stone_hammer_head"); });
         add("hammer the head at the anvil; haft a bronze pickaxe", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("anvil", "rough_bronze_pick_head", 1); }
-            Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
+            if (!StrikeWith("stone")) return false;
             return Collect("anvil", "bronze_pick_head", 1) && Craft("tool_pickaxe", 1, "bronze_pick_head") && Hold("tool_pickaxe", "bronze");
+        });
+        // (#1613) Iron needs a bronze hammer or better: a second mould casts its head, the stone hammer finishes it.
+        add("mould and fire a second mould", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; if (!Craft("clay_mould", 1)) return false; Give("kiln", "clay_mould", 1); Give("kiln", "any_log", 1); }
+            return Collect("kiln", "fired_mould", 1);
+        });
+        add("cast a rough hammer head in the kiln", [] { // (picked on its screen: a mould and one ingot also cast a blade)
+            static bool fed = false;
+            if (!fed) { fed = true; Factory::SetPick(body->id, plot->id, parts["kiln"], "rough_bronze_hammer_head"); Give("kiln", "fired_mould", 1); Give("kiln", "bronze_ingot", 1); Give("kiln", "any_log", 1); }
+            if (!Collect("kiln", "rough_bronze_hammer_head", 1)) return false;
+            Factory::SetPick(body->id, plot->id, parts["kiln"], ""); // (back to any)
+            return true;
+        });
+        add("finish it at the anvil; haft a bronze hammer", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Give("anvil", "rough_bronze_hammer_head", 1); }
+            if (!StrikeWith("stone")) return false;
+            return Collect("anvil", "bronze_hammer_head", 1) && Craft("tool_hammer", 1, "bronze_hammer_head");
         });
         // Tier 2 (#1271): charcoal, a bloomery, ingots at the anvil; a windmill turns a press.
         add("burn 198 logs into charcoal in the campfire (coal under them)", [] {
@@ -383,7 +418,7 @@ namespace {
         add("hammer 16 blooms into iron at the anvil", [] {
             static bool fed = false;
             if (!fed) { fed = true; Give("anvil", "iron_bloom", 16); }
-            Factory::Strike(body->id, plot->id, parts["anvil"]);
+            if (!StrikeWith("bronze")) return false;
             return Collect("anvil", "iron_ingot", 16);
         });
         add("craft a press, a windmill and shafts; set them up in the wind", [] {
@@ -682,16 +717,23 @@ namespace {
         add("make 163 steel", Run("blast_furnace", { { "iron_ingot", 163 }, { "coke", 163 } }, "steel_ingot", 163));
         // Bauxite needs an iron pickaxe, ilmenite a steel one. (#1449 T2) Their heads are forged at the anvil: the head picked
         // on its screen (iron ingots also make blades and mace heads there), then struck.
-        auto forge = [](const char* head, const char* ingot, int n) {
+        auto forge = [](const char* head, const char* ingot, int n, const char* hammer) {
             return [=] {
                 static std::set<std::string> fed;
                 if (!fed.count(head)) { fed.insert(head); Factory::SetPick(body->id, plot->id, parts["anvil"], head); Give("anvil", ingot, n); }
-                Factory::Strike(body->id, plot->id, parts["anvil"]); // (a player holding RMB on it)
+                if (!StrikeWith(hammer)) return false; // (#1613) a hammer of the metal's tier
                 return Collect("anvil", head, 1);
             };
         };
-        add("forge an iron pick head at the anvil", forge("iron_pick_head", "iron_ingot", 3));
-        add("forge a steel pick head at the anvil", forge("steel_pick_head", "steel_ingot", 3));
+        add("forge an iron pick head at the anvil", forge("iron_pick_head", "iron_ingot", 3, "bronze"));
+        // (#1613) Steel needs a steel hammer; the bronze one forges its head (a hammer head is a tier easier).
+        add("forge a steel hammer head; haft a steel hammer", [] {
+            static bool fed = false;
+            if (!fed) { fed = true; Factory::SetPick(body->id, plot->id, parts["anvil"], "steel_hammer_head"); Give("anvil", "steel_ingot", 1); }
+            if (!StrikeWith("bronze")) return false;
+            return Collect("anvil", "steel_hammer_head", 1) && Craft("tool_hammer", 1, "steel_hammer_head");
+        });
+        add("forge a steel pick head at the anvil", forge("steel_pick_head", "steel_ingot", 3, "steel"));
         add("haft iron and steel pickaxes; mine bauxite and ilmenite", [] {
             Factory::SetPick(body->id, plot->id, parts["anvil"], ""); // (back to any)
             if (!Craft("tool_pickaxe", 1, "iron_pick_head") || !Hold("tool_pickaxe", "iron")) return false;
