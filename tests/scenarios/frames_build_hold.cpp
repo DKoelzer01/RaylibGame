@@ -15,6 +15,7 @@
 #include <raymath.h>
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 
 namespace {
 constexpr double kHoldSeconds = 10.0;
@@ -27,8 +28,17 @@ struct HoldState {
     // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
     DVec3 feet0{}, cam0{}, aim0{}; Vector3 fwd0{};
     double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0, aimWob = 0.0; // m, m, deg, m
+    double maxGrains = 0.0; // the new plot origin's largest move on one axis, in float steps of its largest coordinate
 };
 HoldState st;
+
+// The float grain of a body-local point: the spacing of floats at its largest coordinate (3.9 mm at 32-64 km, 1.95 mm at
+// 16-32 km). The transforms that make the point round all three axes at about that size, so a still point flips by up to one
+// grain on any axis - a small coordinate's own (much finer) ulps say nothing about it.
+double Grain(Vector3 p) {
+    const float m = std::max({ fabsf(p.x), fabsf(p.y), fabsf(p.z) });
+    return (double)nextafterf(m, INFINITY) - (double)m;
+}
 
 void Build(ScenarioDef& s) {
     s.tags = { "frames", "build" };
@@ -86,7 +96,11 @@ void Build(ScenarioDef& s) {
             if (!same) ++st.changed;
             // A visible flip: another plot, or another cell of the same one (what #551 looked like).
             if (plot != st.plot || (plot && (origin.x != st.origin.x || origin.y != st.origin.y || origin.z != st.origin.z))) ++st.cellFlips;
-            if (!plot) st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
+            if (!plot) {
+                st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
+                const Vector3 d = Vector3Subtract(newOrigin, st.newOrigin);
+                st.maxGrains = std::max(st.maxGrains, std::max({ fabsf(d.x), fabsf(d.y), fabsf(d.z) }) / Grain(st.newOrigin));
+            }
         }
         c.waitingFor("10 s holding still");
         if (c.T - st.t0 < kHoldSeconds) return false;
@@ -102,11 +116,14 @@ void Build(ScenarioDef& s) {
         c.metric("aim changes while still", st.changed, "frames");
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
-        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving under
-        // 5 mm. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing, interpolation; F4 #1412),
-        // and rounding a wobbling value flips between neighbouring floats (3.9 mm apart at 60 km) now and then, either way.
+        // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving no more
+        // than one float grain (Grain) on any axis. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye
+        // smoothing, interpolation; F4 #1412), and rounding a wobbling value flips between neighbouring floats now and then.
+        // (#1759) A 5 mm bound on the distance failed ~1 run in 10: one grain (3.9 mm) on each of two axes is 5.5 mm.
         c.lt("plot or cell flips while still", st.cellFlips, 1);
-        c.lt("a new plot's origin moved while still (m)", st.maxMove, 0.005);
+        c.metric("new plot origin movement (float grains, largest axis)", st.maxGrains, "grains");
+        c.note(TextFormat("the new plot origin's grain: %.2f mm; it moved up to %.2f grains on an axis", Grain(st.newOrigin) * 1000.0, st.maxGrains));
+        c.lt("a new plot's origin moved more than one float grain on an axis while still", st.maxGrains, 1.01);
         buildTool.active = false;
         return true;
     });
@@ -114,4 +131,4 @@ void Build(ScenarioDef& s) {
 }
 
 SCENARIO("frames/build-hold") { Build(s); }
-SCENARIO("frames/build-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); }
+SCENARIO("frames/build-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }

@@ -185,8 +185,9 @@ LOCAL_ONLY_TAGS="perf visual fx light local" # local: needs the PC's real-time r
 WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
-if [ -z "$part1" ] || [ -z "$part2" ]; then
-    echo "::error file=$WF::static check 5: the two headless scenario tag lists were not found in the workflow"
+part3=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 3p | sed 's/--scenario //; s/tag://g; s/,/ /g')
+if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ]; then
+    echo "::error file=$WF::static check 5: the three headless scenario tag lists (part 1, part 2, pose twins) were not found in the workflow"
     errors=$((errors + 1))
 else
     unplaced=""
@@ -194,21 +195,22 @@ else
         name=$(grep -o 'SCENARIO("[^"]*")' "$f" | head -1 | sed 's/SCENARIO("\(.*\)")/\1/')
         [ -n "$name" ] || continue
         tags=$(grep -o 's.tags = {[^}]*}' "$f" | head -1 | grep -o '"[a-z0-9_-]*"' | tr -d '"' | tr '\n' ' ')
-        in1=0; in2=0; local=0
+        in1=0; in2=0; in3=0; local=0
         for t in $tags; do
             for x in $part1; do [ "$t" = "$x" ] && in1=1; done
             for x in $part2; do [ "$t" = "$x" ] && in2=1; done
+            for x in $part3; do [ "$t" = "$x" ] && in3=1; done
             for x in $LOCAL_ONLY_TAGS; do [ "$t" = "$x" ] && local=1; done
         done
-        if [ $in1 = 1 ] && [ $in2 = 1 ]; then
-            echo "::error file=$f::scenario $name matches both runner scenario steps (tags: $tags): it would run twice"
+        if [ $((in1 + in2 + in3)) -gt 1 ]; then
+            echo "::error file=$f::scenario $name matches more than one runner scenario step (tags: $tags): it would run twice"
             errors=$((errors + 1))
-        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $local = 0 ]; then
+        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $local = 0 ]; then
             echo "::error file=$f::scenario $name matches neither runner scenario step (tags: $tags): add a tag to a list in $WF or a local-only tag ($LOCAL_ONLY_TAGS)"
             errors=$((errors + 1)); unplaced="$unplaced $name"
         fi
     done
-    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
+    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
 fi
 
 # ---- 6. kNetProtocol is reserved (#1480) ----

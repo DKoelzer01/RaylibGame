@@ -21,7 +21,7 @@ constexpr int kSampleRate = 44100;
 constexpr int kMaxVoices = 32;      // AudioMixer::kVoices
 
 // Loads the library, creates the context and the default HRTF. False (and the fallback) when it isn't there.
-bool Load();
+bool Load(bool offline = false);   // offline: also on the headless platform build (tests that drive Process with no device, #1724)
 void Shutdown();
 bool Active();
 const char* Status();               // "4.8.1, HRTF" / "not found (phonon.dll)" / "off (RAYLIBGAME_STEAM_AUDIO=0)"

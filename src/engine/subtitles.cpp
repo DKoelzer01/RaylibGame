@@ -141,19 +141,22 @@ void Subtitles_Draw(float scale) {
     std::vector<const SubtitleLog::Line*> shown;
     logLines.visible(level, shown);
     if (shown.empty()) return;
-    const int fs = (int)(18 * scale), pad = (int)(6 * scale), lineH = fs + 2 * pad;
+    // (#1635) The pickup feed's size (gameui.cpp DrawPickups: 20 px text, 26 px lines, a 0.35 box, 30 px from the right edge), at
+    // the HUD scale; the list sits above the feed's six lines.
+    const int fs = (int)(20 * scale), lineH = (int)(26 * scale), pad = (int)(7 * scale);
     const int sw = GetScreenWidth(), sh = GetScreenHeight();
-    int y = sh - (int)(150 * scale);
+    int y = sh - (int)(140 * scale) - 6 * lineH - (int)(8 * scale) - (int)shown.size() * lineH; // the top line (the list grows upward)
     std::string l, r;
-    for (const SubtitleLog::Line* line : shown) { // newest at the bottom
+    for (auto it = shown.rbegin(); it != shown.rend(); ++it) { // newest at the bottom
+        const SubtitleLog::Line* line = *it;
         Subtitle_Arrows(line->directional ? line->angle : 0.0f, l, r);
         const std::string s = l + line->text + r;
         const int w = MeasureText(s.c_str(), fs);
         const float fade = (float)std::clamp((SubtitleLog::kShowSeconds - (now - line->last)) / 0.5, 0.0, 1.0);
-        const int x = sw - w - 2 * pad - (int)(20 * scale);
-        DrawRectangle(x - pad, y - lineH + pad, w + 2 * pad, lineH, Fade(BLACK, 0.55f * fade));
-        DrawText(s.c_str(), x, y - lineH + 2 * pad, fs, Fade(line->important ? Color{ 255, 220, 120, 255 } : RAYWHITE, fade));
-        y -= lineH + (int)(2 * scale);
+        const int x = sw - 30 - w;
+        DrawRectangle(x - pad, y, w + 2 * pad, lineH - 2, Fade(BLACK, 0.35f * fade));
+        DrawText(s.c_str(), x, y + 2, fs, Fade(line->important ? Color{ 255, 220, 120, 255 } : RAYWHITE, fade));
+        y += lineH;
         // Important sounds out of view: an arc at the screen's edge toward them (0 = ahead = the top of the screen).
         if (line->important && line->directional && fabsf(line->angle) > 35.0f && now - line->last < 1.5) {
             const float a = line->angle - 90.0f;
@@ -233,3 +236,11 @@ TEST(Subtitles, LogMergesFiltersAndExpires) {
     EXPECT_EQ((int)v.size(), SubtitleLog::kMaxLines);
 }
 #endif
+
+bool Subtitles_DebugLine(const std::string& text, float* angleDeg, bool* directional) {
+    const SubtitleLog::Line* l = logLines.find(text);
+    if (!l) return false;
+    if (angleDeg) *angleDeg = l->angle;
+    if (directional) *directional = l->directional;
+    return true;
+}

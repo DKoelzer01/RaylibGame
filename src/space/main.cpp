@@ -14161,7 +14161,7 @@ int main(int argc, char** argv)
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 Weather_DrawHUD();
-                Subtitles_Draw(GameUI_Scale()); // (#1244) sound captions and edge arcs; (#1635) with either audio engine
+                Subtitles_Draw(GameUI_HudScale()); // (#1244) sound captions and edge arcs; (#1635) with either audio engine; (#1724) HUD size
                 Magic_DrawDebugHUD(world); // (#1248) RAYLIBGAME_MAGIC=1 RAYLIBGAME_MANA_DEBUG=1
                 MagicSight_DrawHUD(world); // (#1249) RAYLIBGAME_MAGIC=1
                 if (!ship.piloted && !telescope.active && !buildTool.active && !Rocket_Boarded()) { TerrainTool_DrawHUD(); Fishing_DrawHUD(); }

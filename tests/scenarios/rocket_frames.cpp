@@ -243,8 +243,8 @@ static void StationHold(ScenarioDef& s) {
 }
 
 SCENARIO("rocket/orbit-closure") { OrbitClosure(s); }
-SCENARIO("rocket/orbit-closure-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; OrbitClosure(s); }
+SCENARIO("rocket/orbit-closure-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; OrbitClosure(s); s.tags = { "pose", "local" }; }
 SCENARIO("rocket/soi-trip") { SoiTrip(s); }
-SCENARIO("rocket/soi-trip-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; SoiTrip(s); }
+SCENARIO("rocket/soi-trip-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; SoiTrip(s); s.tags = { "pose", "local" }; }
 SCENARIO("rocket/station-hold") { StationHold(s); }
-SCENARIO("rocket/station-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; StationHold(s); }
+SCENARIO("rocket/station-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; StationHold(s); s.tags = { "pose", "local" }; }

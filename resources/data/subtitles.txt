@@ -22,3 +22,4 @@ creature_death*    all         Creature dies
 creature_*         all         Creature calling
 alarm_*            important   Alarm
 mech_*             all         Machinery turning
+test_noise all Test noise

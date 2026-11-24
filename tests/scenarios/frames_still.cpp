@@ -103,4 +103,5 @@ SCENARIO("frames/still") { Build(s, 0.0); }
 SCENARIO("frames/still-pose") {
     s.env = { { "RAYLIBGAME_FRAMES", "1" } };
     Build(s, 0.001);
+    s.tags = { "pose" }; // nightly-only twin: left out of the PR run's tag:frames selection (#1768)
 }

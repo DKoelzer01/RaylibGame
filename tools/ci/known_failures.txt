@@ -14,3 +14,4 @@ fluid/pond                             | #1447 | the runner's GPU fluid step is 
 bench: flow: reached the channel end   | #1512 | --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
 fluid/u-bend -> FAIL                   | #1168 | the two pits stand 1.77 m apart (want < 0.15); the same on the m84 tip (e5715641) without #1664
 fluid/u-bend-cpu -> FAIL               | #1168 | the CPU twin of fluid/u-bend, same check
+frames/build-hold -> FAIL                | #1759 | 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
