@@ -190,8 +190,10 @@ SCENARIO("input/rmb-shield") {
     s.tags = { "input", "rmb", "world" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 120.0;
-    static const Spec sp = { "shield", "", "wooden_shield", 20, [](ScenarioCtx&) {}, [] { return survival.blocking; } };
-    s.step("RMB with a shield in the off hand: an aimed interactable takes it (no block); bare ground raises it", 90.0, [](ScenarioCtx& c) { return Drive(c, sp); });
+    // (#1776) RMB opens the shield's parry window first (0.33 s for the wooden one, longer than the 20-frame hold) and blocks
+    // once held past it: either is the shield's RMB firing.
+    static const Spec sp = { "shield", "", "wooden_shield", 20, [](ScenarioCtx&) {}, [] { return survival.blocking || survival.parrying; } };
+    s.step("RMB with a shield in the off hand: an aimed interactable takes it (no parry or block); bare ground raises it", 90.0, [](ScenarioCtx& c) { return Drive(c, sp); });
 }
 
 SCENARIO("input/rmb-ground") {
