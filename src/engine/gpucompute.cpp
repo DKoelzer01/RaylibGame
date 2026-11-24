@@ -172,6 +172,11 @@ void Save(const std::string& file, unsigned prog) {
 } // namespace BinCache
 }
 
+bool ProgramCache_Usable() { return BinCache::Usable(); }
+std::string ProgramCache_Path(const std::string& name, const std::string& src) { return BinCache::PathFor(name, src); }
+unsigned ProgramCache_Load(const std::string& file) { return BinCache::Load(file); }
+void ProgramCache_Save(const std::string& file, unsigned program) { BinCache::Save(file, program); }
+
 int Compute_Prewarm(const std::vector<std::string>& paths) {
     if (!Compute_Available() || !ShaderAsync_Available()) return 0;
     int n = 0;
