@@ -29,6 +29,25 @@
 #include "net.h"
 #include "hostserver.h" // (#1684) Host_BroadcastPartEdits
 #include "multiblock.h" // (#1429 PR 3)
+#include "composed.h"   // (#1613) the smith's hammer an anvil needs
+#include "forge.h"
+#include "toolwear.h"
+
+AnvilStrike BuildTool_StrikeAnvil(uint64_t body, uint32_t plot, int part) {
+    // (#1613) A smith's hammer in hand of the job's metal tier or better; every strike on work wears it. Creative: free.
+    const MachineView v = Factory::View(body, plot, part);
+    std::string job = v.output.substr(0, v.output.find(' ')); // the recipe in progress, else the one picked, else its first input
+    if (job.empty()) job = v.pick;
+    if (job.empty()) for (const auto& s : v.inSlots) if (!s.first.empty()) { job = s.first; break; }
+    if (!terrainTool.creative && !job.empty()) {
+        const std::string& held = terrainTool.heldTool;
+        const AnvilStrike ok = Composed_AnvilStrike(held, ToolWear_HeldData(held), Forge_JobTier(job));
+        if (ok != AnvilStrike::Ok) return ok;
+        ToolWear_OnStroke(held, 1);
+    }
+    Factory::Strike(body, plot, part);
+    return AnvilStrike::Ok;
+}
 #include <ctime>
 
 #include "uipalette.h"
@@ -987,8 +1006,14 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
     }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
     if (machineAim.type == PartType::Anvil && !buildTool.active && in.down(Act::Secondary)) { // (#1271 L2) hold RMB on an anvil to hammer
-        static double nextStrike = 0.0;
-        if (GetTime() >= nextStrike) { Factory::Strike(machineAim.body, machineAim.plot, machineAim.part); Audio_Play(Sfx::Build, 0.45f, 1.6f); nextStrike = GetTime() + 0.45; }
+        static double nextStrike = 0.0, nextHint = 0.0;
+        if (GetTime() < nextStrike) return;
+        const AnvilStrike r = BuildTool_StrikeAnvil(machineAim.body, machineAim.plot, machineAim.part);
+        if (r == AnvilStrike::Ok) { Audio_Play(Sfx::Build, 0.45f, 1.6f); nextStrike = GetTime() + 0.45; }
+        else if (GetTime() >= nextHint) {
+            GameUI_Toast(r == AnvilStrike::NoHammer ? "Hammering needs a smith's hammer in hand (craft one: Tab)" : "This metal needs a better hammer");
+            nextHint = GetTime() + 2.0;
+        }
         return;
     }
     if (machineAim.type == PartType::HandCrank) { // (#1269) hold RMB (outside build mode) to turn it

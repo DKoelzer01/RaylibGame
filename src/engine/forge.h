@@ -55,6 +55,13 @@ bool Forge_Apply(ForgeState& s, const ForgeMove& m, int coolPerSecondPermille, i
 
 // Permille per second: tier 1 (copper, bronze) 20, tier 2 (iron) 17, tier 3+ (steel and up) 14.
 int Forge_CoolRate(int metalTier);
+// (#1613) The forging tier of a metal or of an item named after one ("bronze", "rough_bronze_blade", "iron_bloom",
+// "steel_ingot"): copper, tin and bronze 1, iron 2, steel 3, titanium and tungsten 4; 0 for anything else (any hammer).
+// A hammer works metal up to its own tier (Composed_HammerTier).
+int Forge_MetalTier(const std::string& itemOrMaterial);
+// The hammer tier an anvil job needs: its metal's tier, one less for a hammer head (a smith makes the next hammer with
+// the one they have: a bronze hammer forges a steel hammer head; GUESS), never under 0.
+int Forge_JobTier(const std::string& jobItem);
 
 // Scoring: 75..130, capped by the anvil and the player's skill (the caps come in later PRs; pass 130 for none).
 int Forge_Quality(const ForgeState& s, const ForgePattern& p, int anvilCap, int skillCap);

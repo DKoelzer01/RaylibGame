@@ -65,6 +65,10 @@ int Composed_HammerTier(const std::string& id, const std::string& data);
 // Wears a composed copy by `strokes` (a forging stroke each, a tool use each): the record with w raised. *broken is set
 // when that used it up (wear >= durability; the caller removes the item, as a broken tool). "" if it isn't a valid copy.
 std::string Composed_AddWear(const std::string& id, const std::string& data, int strokes, bool* broken = nullptr);
+// Whether a player holding (heldId, heldData) may strike an anvil whose job is metalTier (Forge_MetalTier of the job's
+// item; 0: any hammer): Ok, NoHammer (none in hand, or worn out), TooWeak (its tier is under the metal's).
+enum class AnvilStrike { Ok, NoHammer, TooWeak };
+AnvilStrike Composed_AnvilStrike(const std::string& heldId, const std::string& heldData, int metalTier);
 // (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
 bool Composed_IsGem(const std::string& id);
 std::string Composed_GemText(const std::string& id);

@@ -127,6 +127,12 @@ std::string Composed_AddWear(const std::string& id, const std::string& data, int
     return ItemData::SetInt(data, "w", w);
 }
 
+AnvilStrike Composed_AnvilStrike(const std::string& heldId, const std::string& heldData, int metalTier) {
+    const int t = Composed_HammerTier(heldId, heldData);
+    if (t <= 0) return AnvilStrike::NoHammer;
+    return t >= metalTier ? AnvilStrike::Ok : AnvilStrike::TooWeak;
+}
+
 bool Composed_IsGem(const std::string& id) { return id == "ruby" || id == "sapphire" || id == "emerald" || id == "amethyst" || id == "quartz"; }
 
 std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem) {
@@ -373,6 +379,17 @@ TEST(Composed, HammerTierAndWear) {
     EXPECT_EQ(Composed_HammerTier("tool_hammer", d), 0) << "a worn-out hammer forges nothing";
     EXPECT_EQ(Composed_AddWear("tool_hammer", "", 1, &broken), "");
     EXPECT_FALSE(broken);
+
+    // striking an anvil: a hammer of the metal's tier or better (bronze is tier 1 to forge, iron 2, steel 3)
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 1), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 2), AnvilStrike::TooWeak);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("bronze"), 2), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("bronze"), 3), AnvilStrike::TooWeak);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("steel"), 3), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 0), AnvilStrike::Ok) << "a repair: any hammer";
+    EXPECT_EQ(Composed_AnvilStrike("tool_pickaxe", Composed_MakeData("steel"), 1), AnvilStrike::NoHammer);
+    EXPECT_EQ(Composed_AnvilStrike("", "", 0), AnvilStrike::NoHammer);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", d, 1), AnvilStrike::NoHammer) << "worn out";
 }
 
 // (#1449 part 2) Old tools in an inventory become composed ones, their wear moved into the first copy of each.
