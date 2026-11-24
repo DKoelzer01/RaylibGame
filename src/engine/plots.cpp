@@ -995,9 +995,25 @@ bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#
 bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
     if (contacts) contacts->count = 0;
     if (cells.empty()) return false;
-    auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
     Vector3 p = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units
-    const float rc = r / kCellSize;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    bodyCentre = toBody(Vector3Scale(p, kCellSize));
+    return true;
+}
+
+bool Plot::collideSphereD(const DVec3& bodyCentre, float r, Vector3& pushOut, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    if (contacts) contacts->count = 0;
+    if (cells.empty()) return false;
+    const Vector3 p0 = Vector3Scale(toPlot(bodyCentre), 1.0f / kCellSize); // cell units: plot-relative, small, exact enough
+    Vector3 p = p0;
+    if (!collideCells(p, r / kCellSize, normalOut, contacts, edgeWallCos)) return false;
+    const Vector3 d = Vector3Scale(Vector3Subtract(p, p0), kCellSize);
+    pushOut = Vector3Add(Vector3Add(Vector3Scale(east, d.x), Vector3Scale(up, d.y)), Vector3Scale(north, d.z));
+    return true;
+}
+
+bool Plot::collideCells(Vector3& p, float rc, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
+    auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
     bool hit = false;
     Vector3 nSum = { 0, 0, 0 };
     // Deepest overlap first, then measure again: pushing out of cells in grid order let a
@@ -1030,7 +1046,6 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Conta
         hit = true;
     }
     if (!hit) return false;
-    bodyCentre = toBody(Vector3Scale(p, kCellSize));
     normalOut = toBodyDir(Vector3Normalize(nSum));
     return true;
 }

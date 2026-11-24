@@ -676,7 +676,7 @@ bool Player::roomAbove(Scene& world, float toHeight) const {
 // One body's terrain and build parts against the capsule spheres at `offsets` (#255): deepest contact first, one push a pass,
 // each push measured and the frame's total capped (pushBudget, shared across bodies). `frameVel` is the body's surface motion
 // there (impacts are against it). `cache`: the nearest body's sphere cache (#768), or null. True if standing on it.
-bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vector3& feet, Vector3 frameVel, float& pushBudget, CollideCache* cache) {
+bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vector3& feet, Vector3 frameVel, float& pushBudget, CollideCache* cache, const DVec3& renderOrigin) {
     bool onGround = false;
     auto solid = [&](Vector3 c) { return p.densityAt(p.toLocal(c)) >= ISO_LEVEL; };
     constexpr float kClearMargin = 0.05f; // m
@@ -740,13 +740,14 @@ bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vecto
         for (int iter = 0; iter < 2; ++iter)
             for (int si = 0; si < kSamples; ++si)
                 for (auto& pl : p.plots->plots) {
-                    const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, offsets[si])));
-                    Vector3 c = before, nl;
+                    // From a double body-local centre (#1732): a float one 60 km out steps ~4 mm, and its round trip jittered
+                    // the pushes by that much a frame (kicks of 0.1-0.4 m/s against a wall).
+                    const DVec3 centre = p.toLocalRenderD(Vector3Add(feet, Vector3Scale(up, offsets[si])), renderOrigin);
+                    Vector3 moved, nl;
                     Plot::Contacts hits;
                     // The spheres above the feet meet a part's top edge as a wall (#1732); the feet sphere keeps its slope
                     // over a lip, which steps up onto a slab.
-                    if (!pl->collideSphere(c, radius / p.scale, nl, &hits, si > 0 ? walkableCos : 0.0f)) continue;
-                    const Vector3 moved = Vector3Subtract(c, before);
+                    if (!pl->collideSphereD(centre, radius / p.scale, moved, nl, &hits, si > 0 ? walkableCos : 0.0f)) continue;
                     const float len = Vector3Length(moved) * p.scale;
                     if (len > 1e-6f) feet = Vector3Add(feet, Vector3Scale(p.dirToWorld(Vector3Normalize(moved)), len));
                     // Each surface touched on its own (#1732): the sum of a floor's and a wall's normals is a 45-degree
@@ -795,7 +796,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
     static const bool useCache = !(getenv("RAYLIBGAME_COLLIDE_CACHE") && atoi(getenv("RAYLIBGAME_COLLIDE_CACHE")) == 0);
     CollideCache& cc = collideCache;
     if (cc.body != &p || cc.edits != p.edits.get()) { for (bool& v : cc.valid) v = false; cc.body = &p; cc.edits = p.edits.get(); }
-    onGround = collideBody(p, offsets, kSamples, feet, collideFrameVel, pushBudget, useCache ? &cc : nullptr) || onGround;
+    onGround = collideBody(p, offsets, kSamples, feet, collideFrameVel, pushBudget, useCache ? &cc : nullptr, world.renderOrigin) || onGround;
     // (Plan 11 F6, #1698) Every other body the capsule reaches, not only the nearest: two promoted ring rocks side by side, a
     // rock beside a station - the player went through the one that wasn't nearest. Each with its own surface motion for
     // the impact; the sphere cache stays the nearest body's (#768). A body is in reach when the capsule touches its bounding
@@ -805,7 +806,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
         auto* other = dynamic_cast<Planetoid*>(obj.get());
         if (!other || other == &p || other->flat || (other->vehicle && !other->freeFall)) continue; // not a flying rocket (as frames.cpp)
         if (Vector3Distance(mid, other->position) > other->radius * other->scale + 0.5f * height + radius) continue;
-        onGround = collideBody(*other, offsets, kSamples, feet, other->surfaceVelocity(mid), pushBudget, nullptr) || onGround;
+        onGround = collideBody(*other, offsets, kSamples, feet, other->surfaceVelocity(mid), pushBudget, nullptr, world.renderOrigin) || onGround;
     }
     if (p.plots) {
         // Standing on a part: a probe just below the feet sphere.
