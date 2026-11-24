@@ -92,7 +92,7 @@ namespace {
     void SimulatedFlow(Planetoid& p, const DVec3& local) {
         // Only where the simulation holds water nearby (a cheap look first).
         const Vector3 lf = local.toFloat();
-        const bool any = Fluid::WaterAt(p, lf, 16.0f) > 0.2f;
+        const bool any = Fluid::AnyWaterNear(p, lf, 16.0f, 0.2f); // (WaterAt at 16 m read 2 M cells a site, #1736)
         AudioAttenuation att;
         att.refDistance = 2.0f;
         att.maxDistance = 40.0f;
@@ -186,10 +186,10 @@ void WaterCaves_Update(Scene& world, float dt) {
     const double now = GetTime();
     if (now >= nextScan) { // rivers and simulated flow twice a second
         nextScan = now + 0.5;
-        Rivers(*p, *pf, local);
-        SimulatedFlow(*p, local);
+        { PROFILE_SCOPE("audio:rivers"); Rivers(*p, *pf, local); }
+        { PROFILE_SCOPE("audio:flow"); SimulatedFlow(*p, local); }
     }
-    Caves(world, *p, *pf, local, -Soundscape_HeightAboveGround(), Soundscape_Air());
+    { PROFILE_SCOPE("audio:caves"); Caves(world, *p, *pf, local, -Soundscape_HeightAboveGround(), Soundscape_Air()); }
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
