@@ -351,6 +351,9 @@ bronze_casing    | Bronze casing    | 64  | 150,115, 80 | A bronze machine casin
 steel_casing     | Steel casing     | 64  | 130,135,145 | A steel machine casing: the walls of electric-age multiblocks.
 fluid_in_hatch   | Fluid input hatch | 64 | 100,130,170 | A casing with a fluid input: pipes feed a multiblock through it.
 fluid_out_hatch  | Fluid output hatch | 64 | 170,130,100 | A casing with a fluid output: a multiblock empties into pipes through it.
+item_in_hatch    | Item input hatch | 64  | 110,150,110 | A casing with a small hold: conveyors and hands fill it, a formed multiblock takes its inputs from it.
+item_out_hatch   | Item output hatch | 64 | 150,120,100 | A casing with a small hold a formed multiblock puts its products in; conveyors empty it.
+lv_energy_hatch  | LV energy hatch  | 64  | 190,170, 90 | Takes LV power from cables into a formed multiblock; several structures may share one.
 large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
 wrench           | Wrench           | tool | 150,150,160 | Hold it and right-click a multiblock controller to form the structure around it.
 # (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)

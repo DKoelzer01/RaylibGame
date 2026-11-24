@@ -54,6 +54,11 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   motion behind (3 m hops at the moon).
 - Factory (#997): machines sleep when idle (`RAYLIBGAME_FACTORY_SLEEP=0` = off), distant factories run as a summary
   sim (`RAYLIBGAME_FACTORY_SUMMARY=0` = off), worker threads <= 4 and <= half the cores (`RAYLIBGAME_FACTORY_WORKERS`).
+- Multiblocks in the factory (#1429 PR 4): controllers and hatches are factory machines. `Factory::Sync` sends each formed
+  structure (`Multiblock_Members`: its hatches, its tier from `volts`) in the layout; a formed or unformed list resends it
+  (it changes no part version). `MbStep` runs a structure's jobs (parallel recipes): inputs claimed and output room
+  reserved at the start, energy through energy hatches (`MbDemand` before the power step, `MbTakePower` after), shared
+  hatches in round-robin. A plot with a formed structure stays out of the summary sim (far: the 20-tick step).
 - Weather captures: `RAYLIBGAME_WEATHER_FORCE=0..3` (clear .. storm).
 - Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
   together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
