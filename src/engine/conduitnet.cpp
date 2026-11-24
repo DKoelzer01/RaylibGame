@@ -9,6 +9,7 @@
 #include <utility>
 
 int64_t Conduit_RunCapacity(const ConduitRun& run, const ConduitMaterial& mat) {
+    if (run.kind == ConduitKind::Belt) return mat.speed; // one lane: the size is the width, not more lanes
     const int64_t s2 = (int64_t)run.size * run.size;
     return (run.kind == ConduitKind::Cable ? (int64_t)mat.volts : (int64_t)mat.flow) * s2;
 }
@@ -59,7 +60,7 @@ ConduitGraph Conduit_BuildGraph(const std::vector<ConduitRun>& runsIn, const Con
     std::vector<std::string> key(runs.size());
     for (size_t i = 0; i < runs.size(); i++) {
         slots[i] = Conduit_Slots(*runs[i]);
-        key[i] = std::string(runs[i]->kind == ConduitKind::Cable ? "c:" : "p:") + runs[i]->material;
+        key[i] = std::string(runs[i]->kind == ConduitKind::Cable ? "c:" : runs[i]->kind == ConduitKind::Pipe ? "p:" : "b:") + runs[i]->material;
     }
 
     std::map<NodeKey, int> nodeOf;

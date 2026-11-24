@@ -1,4 +1,9 @@
 # (#1620) Conduit materials. cable <id> | item <item id> | units <slots per item at 1x1> | volts <EU/t per amp>
 #                            pipe  <id> | item <item id> | units <n> | flow <L/t at 1x1> | maxtemp <C>
+#                            belt  <id> | item <item id> | units <slots of belt length per item> | speed <1/64 cell per tick>
+# (#1735) Thin belts, one lane, items at least a quarter cell (16/64) apart. Factory ticks are 20 Hz, so items/s =
+# speed * 20 / 16: basic 6 = 1.875 cells/s, 7.5 items/s (GUESS; today's network budget is 8). Faster tiers (about
+# 2x and 4x) come with their items.
 cable copper   | item cable | units 8 | volts 32
 pipe  iron     | item pipe  | units 8 | flow 40 | maxtemp 250
+belt  basic    | item conveyor | units 8 | speed 6

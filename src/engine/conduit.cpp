@@ -64,17 +64,35 @@ void AddBlock(CInt3 c, int axis, int size, std::vector<CInt3>& out) {
     for (int da = lo; da <= hi; ++da)
         for (int db = lo; db <= hi; ++db) out.push_back(Add(Add(c, ca, da), cb, db));
 }
-void SegSlots(const CInt3& a, const CInt3& b, int axis, int size, std::vector<CInt3>& out) {
+// A belt's cross-section around one centreline slot of a horizontal segment: kBeltWidth across, kBeltHeight up.
+void AddBeltBlock(CInt3 c, int axis, std::vector<CInt3>& out) {
+    const int cross = axis == 0 ? 2 : 0;
+    const int lo = -(kBeltWidth / 2);
+    for (int d = lo; d < lo + kBeltWidth; ++d)
+        for (int h = 0; h < kBeltHeight; ++h) out.push_back(Add(Add(c, cross, d), 1, h));
+}
+void AddRunBlock(const ConduitRun& run, CInt3 c, int axis, std::vector<CInt3>& out) {
+    if (run.kind == ConduitKind::Belt) AddBeltBlock(c, axis, out);
+    else AddBlock(c, axis, run.size, out);
+}
+void SegSlots(const ConduitRun& run, const CInt3& a, const CInt3& b, int axis, std::vector<CInt3>& out) {
     const int dir = Get(b, axis) > Get(a, axis) ? 1 : -1;
     const int len = std::abs(Get(b, axis) - Get(a, axis));
-    for (int t = 0; t <= len; ++t) AddBlock(Add(a, axis, dir * t), axis, size, out);
+    for (int t = 0; t <= len; ++t) AddRunBlock(run, Add(a, axis, dir * t), axis, out);
 }
 
 int FloorDiv8(int v) { return (v >= 0 ? v : v - 7) / 8; }
 
+const char* const kKindNames[] = { "cable", "pipe", "belt" };
+bool ParseKind(const std::string& s, ConduitKind& k) {
+    for (int i = 0; i < 3; ++i) if (s == kKindNames[i]) { k = (ConduitKind)i; return true; }
+    return false;
+}
+
 const char* const kPortKinds[] = { "power_in", "power_out", "fluid_in", "fluid_out", "item_in", "item_out", "rotation" };
 bool PortKindFits(ConduitKind run, ConduitPortKind port) {
     if (run == ConduitKind::Cable) return port == ConduitPortKind::PowerIn || port == ConduitPortKind::PowerOut;
+    if (run == ConduitKind::Belt) return port == ConduitPortKind::ItemIn || port == ConduitPortKind::ItemOut;
     return port == ConduitPortKind::FluidIn || port == ConduitPortKind::FluidOut;
 }
 } // namespace
@@ -99,8 +117,7 @@ ConduitCatalog Conduit_ParseMaterials(const std::string& text, std::vector<std::
         const std::vector<std::string> parts = Split(line, '|');
         const std::vector<std::string> head = Words(parts[0]);
         ConduitMaterial m;
-        if (head.size() != 2 || (head[0] != "cable" && head[0] != "pipe")) { err("expected 'cable <id>' or 'pipe <id>'"); continue; }
-        m.kind = head[0] == "cable" ? ConduitKind::Cable : ConduitKind::Pipe;
+        if (head.size() != 2 || !ParseKind(head[0], m.kind)) { err("expected 'cable <id>', 'pipe <id>' or 'belt <id>'"); continue; }
         m.id = head[1];
         bool ok = true;
         for (size_t i = 1; i < parts.size() && ok; ++i) {
@@ -113,10 +130,12 @@ ConduitCatalog Conduit_ParseMaterials(const std::string& text, std::vector<std::
             else if (kv[0] == "volts" && m.kind == ConduitKind::Cable) m.volts = n;
             else if (kv[0] == "flow" && m.kind == ConduitKind::Pipe) m.flow = n;
             else if (kv[0] == "maxtemp" && m.kind == ConduitKind::Pipe) m.maxTempC = n;
+            else if (kv[0] == "speed" && m.kind == ConduitKind::Belt) m.speed = n;
             else { err("unknown field '" + kv[0] + "' for this kind"); ok = false; }
         }
         if (!ok) continue;
         if (m.item.empty()) { err("missing 'item'"); continue; }
+        if (m.kind == ConduitKind::Belt && m.speed < 1) { err("a belt needs 'speed' of at least 1"); continue; }
         if (m.unitsPerItem < 1) { err("'units' must be at least 1"); continue; }
         if (cat.find(m.id)) { err("duplicate material '" + m.id + "'"); continue; }
         cat.mats.push_back(m);
@@ -147,6 +166,14 @@ bool Conduit_ValidRun(const ConduitRun& run, std::string* why) {
         prevAxis = axis;
         prevDir = dir;
     }
+    if (run.kind == ConduitKind::Belt) {
+        if (run.size != kBeltWidth) return fail("a belt's size must be " + std::to_string(kBeltWidth));
+        for (const CInt3& p : run.points) {
+            if (p.y != run.points[0].y) return fail("a belt is horizontal");
+            if (p.y - Conduit_CellOf(p).y * 8 != 0) return fail("a belt lies on a cell floor (y a multiple of 8)");
+            if ((p.x & 1) || (p.z & 1)) return fail("a belt's points are on the quarter-cell grid (even x and z)");
+        }
+    }
     return true;
 }
 
@@ -154,7 +181,7 @@ std::vector<CInt3> Conduit_Slots(const ConduitRun& run) {
     std::vector<CInt3> out;
     if (!Conduit_ValidRun(run, nullptr)) return out;
     for (size_t i = 1; i < run.points.size(); ++i)
-        SegSlots(run.points[i - 1], run.points[i], AxisOf(run.points[i - 1], run.points[i]), run.size, out);
+        SegSlots(run, run.points[i - 1], run.points[i], AxisOf(run.points[i - 1], run.points[i]), out);
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
@@ -172,7 +199,7 @@ int64_t Conduit_Length(const ConduitRun& run) {
 
 int Conduit_Cost(const ConduitRun& run, const ConduitMaterial& mat) {
     const int64_t units = mat.unitsPerItem > 0 ? mat.unitsPerItem : 1;
-    const int64_t need = Conduit_Length(run) * run.size * run.size;
+    const int64_t need = run.kind == ConduitKind::Belt ? Conduit_Length(run) : Conduit_Length(run) * run.size * run.size;
     return (int)((need + units - 1) / units);
 }
 
@@ -223,20 +250,29 @@ ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupa
     ConduitPlaceResult res;
     if (!Conduit_ValidRun(run, &res.why)) return res;
 
+    const bool belt = run.kind == ConduitKind::Belt;
     auto compatible = [&](int id) {
         auto it = runs.find(id);
-        return it != runs.end() && it->second.kind == run.kind && it->second.material == run.material;
+        if (it == runs.end() || it->second.kind != run.kind) return false;
+        return belt || it->second.material == run.material; // belts of any material join (merges)
     };
 
-    // The two ends: the point, the axis of its segment, its cap (the size x size block at the end).
-    struct End { CInt3 pt; std::set<CInt3> cap; int owner = 0; bool portOk = false; };
+    // The two ends: the point, the axis of its segment, its cap (the size x size block at the end; a belt's reaches
+    // kBeltWidth / 2 slots back along the run so an end on another belt's centreline covers that belt's near half).
+    struct End { CInt3 pt; std::set<CInt3> cap; int owner = 0; bool portOk = false; CInt3 portCell; };
     End ends[2];
     for (int e = 0; e < 2; ++e) {
         const size_t n = run.points.size();
         const CInt3 pt = e == 0 ? run.points[0] : run.points[n - 1];
         const CInt3 other = e == 0 ? run.points[1] : run.points[n - 2];
+        const int axis = AxisOf(pt, other);
         std::vector<CInt3> cap;
-        AddBlock(pt, AxisOf(pt, other), run.size, cap);
+        if (belt) {
+            const int back = Get(other, axis) > Get(pt, axis) ? 1 : -1;
+            for (int t = 0; t < kBeltWidth / 2; ++t) AddBeltBlock(Add(pt, axis, back * t), axis, cap);
+        } else {
+            AddBlock(pt, axis, run.size, cap);
+        }
         ends[e].pt = pt;
         ends[e].cap.insert(cap.begin(), cap.end());
         ends[e].owner = occ.ownerAt(pt);
@@ -244,8 +280,19 @@ ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupa
         if (ends[e].owner != 0 && compatible(ends[e].owner)) res.joinsRuns.push_back(ends[e].owner);
         for (size_t i = 0; i < ports.size(); ++i) {
             const ConduitPortAt& p = ports[i];
-            if (!(p.slot == pt) || !PortKindFits(run.kind, p.kind) || run.size > p.maxSize) continue;
+            if (!PortKindFits(run.kind, p.kind)) continue;
+            if (belt) {
+                // The port's slot moved down to its cell's floor: belts enter a machine at floor level, under the face centre.
+                // The cross axis may be off by one: a face centre (u = 4) on N and E is the odd slot 3 (7 - u), and belt
+                // points are even.
+                const int cross = axis == 0 ? 2 : 0;
+                if (p.face >= 4 || pt.y != Conduit_CellOf(p.slot).y * 8 || Get(pt, axis) != Get(p.slot, axis)
+                    || std::abs(Get(pt, cross) - Get(p.slot, cross)) > 1) continue;
+            } else if (!(p.slot == pt) || run.size > p.maxSize) {
+                continue;
+            }
             ends[e].portOk = true;
+            ends[e].portCell = Conduit_CellOf(p.slot);
             res.portIdx.push_back((int)i);
             break;
         }
@@ -260,9 +307,16 @@ ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupa
                 if (e.owner == o && compatible(o) && e.cap.count(s)) meets = true;
             if (!meets) { blocked.insert(s); continue; }
         }
-        if (solidCell && solidCell(Conduit_CellOf(s))) {
+        const CInt3 cell = Conduit_CellOf(s);
+        if (solidCell && solidCell(cell)) {
             bool exempt = false;
             for (const End& e : ends) if (e.portOk && e.cap.count(s)) exempt = true;
+            if (!exempt) blocked.insert(s);
+        }
+        // A belt lies on something: the cell under its floor layer is solid (the ground or a part's top).
+        if (belt && solidCell && s.y == cell.y * 8 && !solidCell({ cell.x, cell.y - 1, cell.z })) {
+            bool exempt = false;
+            for (const End& e : ends) if (e.portOk && e.portCell == cell) exempt = true;
             if (!exempt) blocked.insert(s);
         }
     }
@@ -351,7 +405,7 @@ CInt3 Conduit_PortSlot(CInt3 partCell, int partFacing, const ConduitPortDef& por
 std::string Conduit_SaveRuns(const std::vector<ConduitRun>& runs) {
     std::ostringstream os;
     for (const ConduitRun& r : runs) {
-        os << "run " << r.id << ' ' << (r.kind == ConduitKind::Cable ? "cable" : "pipe") << ' ' << r.material << ' ' << r.size
+        os << "run " << r.id << ' ' << kKindNames[(int)r.kind] << ' ' << r.material << ' ' << r.size
            << ' ' << r.points.size();
         for (const CInt3& p : r.points) os << ' ' << p.x << ' ' << p.y << ' ' << p.z;
         os << '\n';
@@ -374,9 +428,7 @@ bool Conduit_LoadRuns(const std::string& text, std::vector<ConduitRun>& out, std
         int n = 0;
         if (w.size() < 6 || w[0] != "run") return fail("expected 'run <id> <kind> <material> <size> <n> ...'");
         if (!ParseInt(w[1], r.id)) return fail("bad id");
-        if (w[2] == "cable") r.kind = ConduitKind::Cable;
-        else if (w[2] == "pipe") r.kind = ConduitKind::Pipe;
-        else return fail("kind must be cable or pipe");
+        if (!ParseKind(w[2], r.kind)) return fail("kind must be cable, pipe or belt");
         r.material = w[3];
         if (!ParseInt(w[4], r.size)) return fail("bad size");
         if (!ParseInt(w[5], n) || n < 0) return fail("bad point count");
@@ -724,5 +776,159 @@ TEST(Conduit, FromCells) {
     const std::vector<ConduitRun> v = Conduit_FromCells({ {0, 1, 0}, {0, 0, 0}, {0, 1, 0} }, ConduitKind::Cable, "copper", 1);
     ASSERT_EQ(v.size(), 1u);
     EXPECT_TRUE((v[0].points == std::vector<CInt3>{ {4, 4, 4}, {4, 12, 4} }));
+}
+
+// ---- belts (#1735) ----
+namespace {
+ConduitRun Belt(int id, std::vector<CInt3> pts, const std::string& mat = "basic") { return MakeRun(id, ConduitKind::Belt, mat, kBeltWidth, std::move(pts)); }
+const std::function<bool(CInt3)> kGround = [](CInt3 c) { return c.y < 0; }; // solid below y = 0
+} // namespace
+
+TEST(Conduit, BeltMaterialParses) {
+    std::vector<std::string> errors;
+    std::ifstream f("resources/data/conduits.txt");
+    ASSERT_TRUE(f.good()) << "run from the repo root";
+    std::stringstream ss;
+    ss << f.rdbuf();
+    const ConduitCatalog cat = Conduit_ParseMaterials(ss.str(), &errors);
+    for (const std::string& e : errors) ADD_FAILURE() << e;
+    ASSERT_NE(cat.find("basic"), nullptr);
+    EXPECT_EQ(cat.find("basic")->kind, ConduitKind::Belt);
+    EXPECT_EQ(cat.find("basic")->item, "conveyor");
+    EXPECT_GT(cat.find("basic")->speed, 0);
+    errors.clear();
+    Conduit_ParseMaterials("belt a | item conveyor\nbelt b | item conveyor | speed 2 | volts 3\ncable c | item cable | speed 2\n", &errors);
+    EXPECT_EQ(errors.size(), 3u); // no speed; volts on a belt; speed on a cable
+}
+
+TEST(Conduit, BeltValidAndSlots) {
+    std::string why;
+    EXPECT_TRUE(Conduit_ValidRun(Belt(1, { {2, 0, 4}, {20, 0, 4}, {20, 0, 30} }), &why)) << why;
+    EXPECT_TRUE(Conduit_ValidRun(Belt(1, { {-6, -8, 4}, {-30, -8, 4} }), &why)) << why;
+    EXPECT_FALSE(Conduit_ValidRun(Belt(1, { {2, 0, 4}, {2, 8, 4} }), &why));        // vertical
+    EXPECT_FALSE(Conduit_ValidRun(Belt(1, { {2, 2, 4}, {20, 2, 4} }), &why));       // off the floor layer
+    EXPECT_FALSE(Conduit_ValidRun(Belt(1, { {3, 0, 4}, {21, 0, 4} }), &why));       // odd x
+    EXPECT_FALSE(Conduit_ValidRun(Belt(1, { {2, 0, 4}, {20, 0, 4}, {20, 8, 4}, {30, 8, 4} }), &why)); // climbs
+    ConduitRun wide = Belt(1, { {2, 0, 4}, {20, 0, 4} });
+    wide.size = 2;
+    EXPECT_FALSE(Conduit_ValidRun(wide, &why));
+
+    // along x at z 4: z 2..5 across, y 0..1 up
+    const std::vector<CInt3> s = Conduit_Slots(Belt(1, { {0, 0, 4}, {8, 0, 4} }));
+    EXPECT_EQ(s.size(), 9u * kBeltWidth * kBeltHeight);
+    EXPECT_TRUE(Has(s, { 0, 0, 2 }));
+    EXPECT_TRUE(Has(s, { 8, 1, 5 }));
+    EXPECT_FALSE(Has(s, { 3, 2, 4 }));   // the 6 slots above stay free for conduits
+    EXPECT_FALSE(Has(s, { 3, 0, 6 }));   // half a cell wide
+    // along z: the cross axis is x
+    const std::vector<CInt3> t = Conduit_Slots(Belt(1, { {4, 0, 0}, {4, 0, 2} }));
+    EXPECT_TRUE(Has(t, { 2, 1, 2 }));
+    EXPECT_FALSE(Has(t, { 4, 2, 0 }));
+    // a cell holds two belts side by side
+    ConduitOccupancy occ;
+    occ.add(Belt(1, { {0, 0, 2}, {6, 0, 2} }));
+    occ.add(Belt(2, { {0, 0, 6}, {6, 0, 6} }));
+    EXPECT_EQ(occ.ownerAt({ 3, 0, 3 }), 1);
+    EXPECT_EQ(occ.ownerAt({ 3, 0, 4 }), 2);
+    EXPECT_EQ(occ.cellCount(), 1u);
+
+    const ConduitMaterial m = *Conduit_ParseMaterials("belt t | item conveyor | units 8 | speed 6\n", nullptr).find("t");
+    EXPECT_EQ(Conduit_Cost(Belt(1, { {0, 0, 4}, {16, 0, 4} }), m), 2); // one conveyor per cell of length, not per slot of area
+    EXPECT_EQ(Conduit_Cost(Belt(1, { {0, 0, 4}, {2, 0, 4} }), m), 1);
+}
+
+TEST(Conduit, BeltPlace) {
+    Plot plot;
+    plot.put(Belt(1, { {0, 0, 4}, {30, 0, 4} }));
+    auto check = [&](const ConduitRun& r, const std::function<bool(CInt3)>& solid = kGround, const std::vector<ConduitPortAt>& ports = {}) {
+        return Conduit_CheckPlace(r, plot.occ, plot.runs, solid, ports);
+    };
+
+    // on the ground, clear: ok; in the air: every floor slot is blocked
+    ConduitPlaceResult r = check(Belt(2, { {0, 0, 12}, {30, 0, 12} }));
+    EXPECT_TRUE(r.ok) << r.why;
+    r = check(Belt(2, { {0, 8, 12}, {30, 8, 12} }));
+    EXPECT_FALSE(r.ok);
+    EXPECT_TRUE(Has(r.blocked, { 5, 8, 12 }));
+    EXPECT_FALSE(Has(r.blocked, { 5, 9, 12 })); // the open layer above needs nothing under it
+
+    // a cable and a pipe run above the belt in the same cells
+    plot.put(Cable(10, 1, { {0, 4, 4}, {30, 4, 4} }));
+    r = check(Pipe(11, 2, { {0, 6, 2}, {30, 6, 2} }));
+    EXPECT_TRUE(r.ok) << r.why;
+    // ...but not in the open slot right above the belt, where items ride
+    r = check(Cable(12, 1, { {0, 1, 4}, {30, 1, 4} }), kNoSolid);
+    EXPECT_FALSE(r.ok);
+
+    // a side belt ending on belt 1's centreline merges into it
+    r = check(Belt(2, { {10, 0, 20}, {10, 0, 4} }));
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.joinsRuns, std::vector<int>({ 1 }));
+    // of another material too
+    r = check(Belt(2, { {10, 0, 20}, {10, 0, 4} }, "steel"));
+    EXPECT_TRUE(r.ok) << r.why;
+    // ending past the centreline crosses the far half: blocked
+    r = check(Belt(2, { {10, 0, 20}, {10, 0, 2} }));
+    EXPECT_FALSE(r.ok);
+    // crossing through belt 1
+    r = check(Belt(2, { {10, 0, 20}, {10, 0, -10} }));
+    EXPECT_FALSE(r.ok);
+    // end to end, continuing along x
+    r = check(Belt(2, { {30, 0, 4}, {50, 0, 4} }));
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.joinsRuns, std::vector<int>({ 1 }));
+    // a belt end onto a cable is no meeting
+    r = check(Cable(13, 1, { {10, 1, 20}, {10, 1, 4} }), kNoSolid);
+    EXPECT_FALSE(r.ok);
+}
+
+TEST(Conduit, BeltPorts) {
+    Plot plot;
+    // a machine in cell (5, 0, 0): slots x 40..47; its W face item_in at face centre (z = u = 4)
+    const std::function<bool(CInt3)> solid = [](CInt3 c) { return c.y < 0 || c == CInt3{ 5, 0, 0 }; };
+    ConduitPortDef def; def.face = 3; def.kind = ConduitPortKind::ItemIn;
+    ConduitPortAt w; w.slot = Conduit_PortSlot({ 5, 0, 0 }, 0, def); w.face = 3; w.kind = ConduitPortKind::ItemIn;
+    EXPECT_EQ(w.slot, (CInt3{ 40, 4, 4 }));
+    // its N face item_out: x = 7 - u = 3, an odd slot
+    def.face = 0; def.kind = ConduitPortKind::ItemOut;
+    ConduitPortAt n; n.slot = Conduit_PortSlot({ 5, 0, 0 }, 0, def); n.face = 0; n.kind = ConduitPortKind::ItemOut;
+    EXPECT_EQ(n.slot, (CInt3{ 43, 4, 0 }));
+    ConduitPortAt power = w; power.kind = ConduitPortKind::PowerIn;
+    const std::vector<ConduitPortAt> ports = { power, w, n };
+
+    ConduitPlaceResult r = Conduit_CheckPlace(Belt(1, { {10, 0, 4}, {40, 0, 4} }), plot.occ, plot.runs, solid, ports);
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.portIdx, std::vector<int>({ 1 }));
+    // the N port: the belt's centreline x 44 or 42 is within one slot of 43
+    r = Conduit_CheckPlace(Belt(2, { {44, 0, 0}, {44, 0, -20} }), plot.occ, plot.runs, solid, ports);
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.portIdx, std::vector<int>({ 2 }));
+    r = Conduit_CheckPlace(Belt(2, { {42, 0, 0}, {42, 0, -20} }), plot.occ, plot.runs, solid, ports);
+    EXPECT_EQ(r.portIdx, std::vector<int>({ 2 }));
+    // one slot short of the face: no port, and not into the machine either
+    r = Conduit_CheckPlace(Belt(1, { {10, 0, 4}, {38, 0, 4} }), plot.occ, plot.runs, solid, ports);
+    EXPECT_TRUE(r.ok);
+    EXPECT_TRUE(r.portIdx.empty());
+    // into the machine past its face: blocked
+    r = Conduit_CheckPlace(Belt(1, { {10, 0, 4}, {42, 0, 4} }), plot.occ, plot.runs, solid, ports);
+    EXPECT_FALSE(r.ok);
+    // a belt never connects to a power port
+    const std::vector<ConduitPortAt> onlyPower = { power };
+    r = Conduit_CheckPlace(Belt(1, { {10, 0, 4}, {40, 0, 4} }), plot.occ, plot.runs, solid, onlyPower);
+    EXPECT_FALSE(r.ok);
+    EXPECT_TRUE(r.portIdx.empty());
+}
+
+TEST(Conduit, BeltSaveLoad) {
+    const std::vector<ConduitRun> runs = { Belt(4, { {2, 0, 4}, {20, 0, 4}, {20, 0, 30} }), Cable(5, 1, { {0, 4, 4}, {9, 4, 4} }) };
+    const std::string text = Conduit_SaveRuns(runs);
+    EXPECT_EQ(text.substr(0, 25), "run 4 belt basic 4 3 2 0 ");
+    std::vector<ConduitRun> back;
+    std::string why;
+    ASSERT_TRUE(Conduit_LoadRuns(text, back, &why)) << why;
+    ASSERT_EQ(back.size(), 2u);
+    EXPECT_EQ(back[0].kind, ConduitKind::Belt);
+    EXPECT_TRUE(back[0].points == runs[0].points);
+    EXPECT_EQ(back[1].kind, ConduitKind::Cable);
 }
 #endif

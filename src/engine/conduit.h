@@ -29,16 +29,22 @@ struct CInt3 {
 // The cell holding a slot (floor division: the cell of slot -1 is -1).
 CInt3 Conduit_CellOf(CInt3 slot);
 
-enum class ConduitKind : uint8_t { Cable, Pipe };
+// (#1735) Belt: a thin conveyor lying on a cell floor. Its cross-section is kBeltWidth slots across (half a cell) and
+// kBeltHeight slots up: the belt's own slot layer plus one open slot above for the items it carries (a quarter-cell
+// placement box). Cables and pipes run in the 6 slots above. A belt run's points are its centreline on that floor layer.
+enum class ConduitKind : uint8_t { Cable, Pipe, Belt };
+constexpr int kBeltWidth = 4;
+constexpr int kBeltHeight = 2;
 
 struct ConduitMaterial {
     std::string id;
     ConduitKind kind = ConduitKind::Cable;
     std::string item;          // the item one unit of conduit costs
-    int unitsPerItem = 8;      // slots of 1x1 conduit per item
+    int unitsPerItem = 8;      // slots of 1x1 conduit per item (belt: slots of belt length per item)
     int volts = 0;             // cable: EU/t per amp
     int flow = 0;              // pipe: L/t at 1x1
     int maxTempC = 0;          // pipe
+    int speed = 0;             // belt: 1/64-cell units an item moves per factory tick
 };
 
 struct ConduitCatalog {
@@ -54,17 +60,20 @@ struct ConduitRun {
     int id = 0;
     ConduitKind kind = ConduitKind::Cable;
     std::string material;
-    int size = 1;                // 1..4: the cross-section is size x size slots
+    int size = 1;                // 1..4: the cross-section is size x size slots (belt: always kBeltWidth)
     std::vector<CInt3> points;   // centreline corners
 };
 
 // >= 2 points; size 1..4; consecutive points differ in exactly one axis; no segment reverses straight back onto the previous.
+// A belt also: size kBeltWidth, horizontal segments only, every point on one floor layer (y a multiple of 8) and on the
+// quarter-cell grid (x and z even).
 bool Conduit_ValidRun(const ConduitRun& run, std::string* why);
 // Every occupied slot, no duplicates, sorted. For a centreline slot c: c + (a, b) on the two cross axes, a, b in
-// [lo, lo + size - 1] with lo = -(size / 2).
+// [lo, lo + size - 1] with lo = -(size / 2). A belt: the horizontal cross axis spans [c - 2, c + 1], y spans [c.y, c.y + 1].
 std::vector<CInt3> Conduit_Slots(const ConduitRun& run);
 int64_t Conduit_Length(const ConduitRun& run);                          // the centreline length in slots
-int Conduit_Cost(const ConduitRun& run, const ConduitMaterial& mat);    // ceil(length * size * size / unitsPerItem)
+// ceil(length * size * size / unitsPerItem); a belt: ceil(length / unitsPerItem).
+int Conduit_Cost(const ConduitRun& run, const ConduitMaterial& mat);
 
 class ConduitOccupancy {
 public:
@@ -107,6 +116,11 @@ struct ConduitPlaceResult {
 // An end of the new run may meet (end-to-end or end-to-side) a run of the same kind and material: only the end's own
 // size x size cap may overlap that run. Any other overlap, or any overlap with another kind or material, is blocked.
 // Solid cells are blocked except the cap of an end that sits exactly on a fitting port's slot.
+// Belts (#1735): a belt meets any belt (any material: a side belt merges into the other); its end cap reaches
+// kBeltWidth / 2 slots back from the end point, so an end on another belt's centreline overlaps that belt's near half.
+// A belt end connects to a side face's item port when the end point is the port's slot moved down to the floor of the
+// port's cell (the cross axis within one slot: face centres on N and E are odd slots).
+// Every floor-layer slot of a belt needs a solid cell under it (the ground or a part's top), except in a port's cell.
 ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupancy& occ, const std::map<int, ConduitRun>& runs,
                                       const std::function<bool(CInt3 cell)>& solidCell, const std::vector<ConduitPortAt>& ports);
 
@@ -118,7 +132,7 @@ std::vector<ConduitPortDef> Conduit_DefaultPorts(bool eu, bool generator, bool f
 // partFacing 0..3 rotates the faces N E S W around +y (1 = 90 degrees clockwise seen from above: N becomes E).
 CInt3 Conduit_PortSlot(CInt3 partCell, int partFacing, const ConduitPortDef& port);
 
-// "run <id> <cable|pipe> <material> <size> <n> x y z x y z ..." one run per line.
+// "run <id> <cable|pipe|belt> <material> <size> <n> x y z x y z ..." one run per line.
 std::string Conduit_SaveRuns(const std::vector<ConduitRun>& runs);
 bool Conduit_LoadRuns(const std::string& text, std::vector<ConduitRun>& out, std::string* why);
 

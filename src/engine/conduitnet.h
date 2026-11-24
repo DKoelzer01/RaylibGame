@@ -23,7 +23,7 @@ struct ConduitGraph {
 };
 
 ConduitGraph Conduit_BuildGraph(const std::vector<ConduitRun>& runs, const ConduitCatalog& cat, const std::vector<ConduitPortHit>& ports);
-int64_t Conduit_RunCapacity(const ConduitRun&, const ConduitMaterial&); // cable: volts * size^2 (EU/t); pipe: flow * size^2 (L/t)
+int64_t Conduit_RunCapacity(const ConduitRun&, const ConduitMaterial&); // cable: volts * size^2 (EU/t); pipe: flow * size^2 (L/t); belt: speed
 
 struct ConduitFlowNode { int node; int64_t amount; };   // a source's supply or a sink's demand this step (>= 0)
 // Max flow from sources to sinks over the graph's edges (undirected: each edge carries up to its capacity * ticks in
