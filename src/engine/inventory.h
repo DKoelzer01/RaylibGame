@@ -139,8 +139,8 @@ public:
     bool canCraft(const Recipe& r) const;
     bool craft(const Recipe& r);
     // (#1613) Takes n of a composed class's head part: forged heads (with a record) first, the best quality first (then the
-    // lowest cell), then plain ones. Returns the quality the tool gets (the first head taken; 100 for a plain one), or -1
-    // (nothing taken) when there aren't n.
+    // lowest cell), then plain ones. Returns the quality the tool gets (the average of the heads taken, a plain one 100,
+    // rounded down; a sword takes 2 blades), or -1 (nothing taken) when there aren't n.
     int takeHeadParts(const std::string& id, int n);
     void clear() {
         if (journal) for (const InvSlot& s : slots) if (!s.empty() && s.hasData()) instanceLog.push_back({ s.id, -1, s.data, {} }); // (#1446)

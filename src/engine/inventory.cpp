@@ -458,10 +458,11 @@ int Inventory::takeHeadParts(const std::string& id, int n) {
     });
     const int fromForged = std::min(n, (int)forged.size());
     if (fromForged + count(id) < n) return -1;
-    const int q = fromForged > 0 ? Composed_PartQuality(slots[forged[0]].data) : 100;
+    int sum = 100 * (n - fromForged); // plain heads count as 100 %
+    for (int k = 0; k < fromForged; ++k) sum += Composed_PartQuality(slots[forged[k]].data);
     for (int k = 0; k < fromForged; ++k) takeInstance(forged[k]);
     if (n > fromForged) removeAmount(id, n - fromForged);
-    return q;
+    return sum / n;
 }
 
 bool Inventory::canCraft(const Recipe& r) const {
@@ -728,34 +729,37 @@ TEST_F(InventoryTest, HaftingAHeadMakesAComposedWeapon) {
     const int cell = inv.findInstance("weapon_sword", Composed_MakeData("bronze"));
     EXPECT_GE(cell, 0) << "a bronze head, the default handle and binding";
 
-    // (#1613) A forged blade carries its quality into the sword: the best one goes first, then plain blades.
+    // (#1613) Forged blades carry their quality into the sword (2 blades: the average): the best go first, then plain ones.
+    ASSERT_EQ(sword->inputs[0].second, 2) << "a sword takes 2 blades";
     auto give = [&](Inventory& v) { for (const auto& in : sword->inputs) if (in.first != "bronze_blade") v.add(ItemMatches(in.first, "oak_planks") ? "oak_planks" : in.first, in.second); };
     Inventory forged;
     give(forged);
-    forged.add("bronze_blade", 1);
+    forged.add("bronze_blade", 3);
     forged.addInstance("bronze_blade", "q=112");
     forged.addInstance("bronze_blade", "q=127");
-    EXPECT_EQ(forged.held("bronze_blade"), 3);
+    forged.addInstance("bronze_blade", "q=90");
+    EXPECT_EQ(forged.held("bronze_blade"), 6);
     ASSERT_TRUE(forged.craft(*sword));
-    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 127)), 0) << "the Masterwork blade went first";
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 119)), 0) << "127 and 112 went first: 119";
     EXPECT_EQ(forged.countInstances("bronze_blade"), 1);
-    EXPECT_EQ(forged.count("bronze_blade"), 1) << "the plain blade stays";
+    EXPECT_EQ(forged.count("bronze_blade"), 3) << "the plain blades stay";
     give(forged);
     ASSERT_TRUE(forged.craft(*sword));
-    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 112)), 0);
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 95)), 0) << "90 and a plain 100: 95";
     give(forged);
     ASSERT_TRUE(forged.craft(*sword));
-    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze")), 0) << "a plain blade: 100 %";
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze")), 0) << "plain blades: 100 %";
     give(forged);
     EXPECT_FALSE(forged.canCraft(*sword)) << "no blades left";
 
-    // only a forged blade (no plain one): it still counts, and its record is the sword's quality
+    // only forged blades (no plain ones): they still count
     Inventory only;
     give(only);
     only.addInstance("bronze_blade", "q=80");
-    ASSERT_TRUE(only.canCraft(*sword));
+    EXPECT_FALSE(only.canCraft(*sword)) << "one blade is not two";
+    only.addInstance("bronze_blade", "q=84");
     ASSERT_TRUE(only.craft(*sword));
-    EXPECT_GE(only.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 80)), 0) << "a Crude blade makes a Crude sword";
+    EXPECT_GE(only.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 82)), 0) << "Crude blades make a Crude sword";
     EXPECT_EQ(only.held("bronze_blade"), 0);
 }
 
