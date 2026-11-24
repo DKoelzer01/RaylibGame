@@ -8,6 +8,7 @@
 #include "player.h"
 #include "world.h"
 #include <raymath.h>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -33,13 +34,16 @@ SCENARIO("fluid/slope-drain") {
         const Vector3 e = Vector3Normalize(Vector3CrossProduct(me, fabsf(me.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
         const Vector3 n = Vector3CrossProduct(me, e);
         auto dirAt = [&](float x, float y) { return Vector3Normalize(Vector3Add(me, Vector3Add(Vector3Scale(e, x / R), Vector3Scale(n, y / R)))); };
-        float best = 0.0f;
+        float best = 0.0f, steepest = 0.0f;
+        int low = 0, wet = 0, tried = 0;
         for (float x = -80.0f; x <= 80.0f; x += 4.0f)
             for (float y = -80.0f; y <= 80.0f; y += 4.0f)
                 for (int a = 0; a < 8; ++a) {
                     const float ang = a * PI / 4.0f, dx = cosf(ang), dy = sinf(ang);
                     const float h0 = c.field->elevation(dirAt(x, y));
-                    if (h0 < 1.0f) continue; // over the sea's level
+                    ++tried;
+                    steepest = std::max(steepest, (h0 - c.field->elevation(dirAt(x + dx * 8.0f, y + dy * 8.0f))) / 8.0f);
+                    if (h0 < 1.0f) { ++low; continue; } // over the sea's level
                     // Falling all the way down 8 m, each 2 m by a 9-35 degree grade.
                     bool ok = true;
                     float prev = h0;
@@ -50,7 +54,8 @@ SCENARIO("fluid/slope-drain") {
                         prev = h;
                     }
                     const float g = (h0 - prev) / 8.0f;
-                    if (!ok || g <= best || Fluid::AnyWaterNear(*c.body, Vector3Scale(dirAt(x, y), R + h0), 10.0f)) continue;
+                    if (!ok || g <= best) continue;
+                    if (Fluid::AnyWaterNear(*c.body, Vector3Scale(dirAt(x, y), R + h0), 10.0f)) { ++wet; continue; }
                     best = g;
                     S.top = Vector3Scale(dirAt(x, y), R + h0);
                     const Vector3 low = Vector3Scale(dirAt(x + dx * 8.0f, y + dy * 8.0f), R + prev);
@@ -59,6 +64,8 @@ SCENARIO("fluid/slope-drain") {
                     S.side = Vector3CrossProduct(S.up, S.down);
                     S.grade = g;
                 }
+        c.note(TextFormat("slope search: %d tried, %d under 1 m over the sea's level, %d by water; the steepest 8 m grade %.2f, elevation here %.1f m",
+                          tried, low, wet, steepest, c.field->elevation(me)));
         c.gt("a 9-35 degree slope found within 80 m (grade)", best, 0.0f);
         if (best <= 0.0f) return true;
         c.note(TextFormat("slope grade %.2f (%.0f degrees)", S.grade, atanf(S.grade) * RAD2DEG));
