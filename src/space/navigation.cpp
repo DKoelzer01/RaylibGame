@@ -167,16 +167,39 @@ void RenderRows(MapImage& m, int y0, int y1) {
     m.rowsDone.fetch_add(y1 - y0);
 }
 
+// (#1778) The explored tiles a W x H image at mpp round `centre` can show (PixelDir's frame), into `out`: its area sampled
+// at a quarter tile (tiles shrink a little near the cube's edges), half a side past the corners. When the samples would
+// outnumber the set (a far-out big map), the whole set.
+void TilesUnder(const TileSet& all, Vector3 centre, Vector3 east, Vector3 north, float R, float mpp, int W, int H, TileSet& out) {
+    out.clear();
+    if (all.empty()) return;
+    const float half = 0.75f * std::max(W, H) * mpp, step = 0.25f * kTileSize;
+    const int n = (int)ceilf(2.0f * half / step) + 1;
+    if ((size_t)n * (size_t)n >= all.size()) { out = all; return; }
+    for (int iy = 0; iy < n; ++iy)
+        for (int ix = 0; ix < n; ++ix) {
+            const Vector3 p = Vector3Add(Vector3Scale(centre, R), Vector3Add(Vector3Scale(east, -half + ix * step), Vector3Scale(north, -half + iy * step)));
+            const uint64_t k = TileKey(Vector3Normalize(p), R);
+            if (all.count(k)) out.insert(k);
+        }
+}
+
 std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, int W, int H, bool circle) {
     auto m = std::make_shared<MapImage>();
     m->field = h.field;
     m->body = h.body->id;
-    auto it = explored.find(h.body->name);
-    m->tiles = std::make_shared<const TileSet>(it != explored.end() ? it->second : TileSet{});
     m->centre = centre;
     if (!Frame(centre, m->east, m->north)) { m->east = { 1, 0, 0 }; m->north = Vector3Normalize(Vector3CrossProduct(centre, m->east)); }
     m->mpp = mpp;
     m->W = W; m->H = H;
+    // The workers read the explored tiles while the main thread adds more: they get their own copy. (#1778) Only the tiles
+    // under the image: copying the whole set every 2 s while moving grew with play (19 ms after 5 min on the sandbox, the
+    // user's 100-790 ms stalls on a long-explored save). The image's area sampled at a quarter tile; a far-out big map whose
+    // samples would outnumber the set copies the set as before.
+    auto it = explored.find(h.body->name);
+    auto tiles = std::make_shared<TileSet>();
+    if (it != explored.end()) TilesUnder(it->second, centre, m->east, m->north, h.field->radius, mpp, W, H, *tiles);
+    m->tiles = std::move(tiles);
     m->circle = circle;
     m->px.assign((size_t)W * H * 4, 0);
     const int block = 16;
@@ -647,3 +670,40 @@ int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {
         }
     return (int)(set.size() - before);
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+#include <random>
+// (#1778) The minimap's copy of the explored tiles is only the tiles under the image: every explored tile a pixel of the
+// image lands on must be in it (else that ground would draw as unexplored), at random spots, near a cube edge included.
+TEST(Navigation, TilesUnderAnImageHoldEveryExploredTileItsPixelsShow) {
+    const float R = 60000.0f, mpp = 4.0f;
+    const int W = 256, H = 256;
+    std::mt19937 rng(1778);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    std::vector<Vector3> centres = { Vector3Normalize({ 1.0f, 1.0f, 0.3f }), Vector3Normalize({ 1.0f, 1.0f, 1.0f }) }; // a cube edge, a corner
+    for (int k = 0; k < 6; ++k) centres.push_back(Vector3Normalize({ u(rng), u(rng), u(rng) }));
+    for (const Vector3 c : centres) {
+        Vector3 east, north;
+        if (!Frame(c, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(c, east)); }
+        auto dirAt = [&](float x, float y) { // PixelDir's frame
+            return Vector3Normalize(Vector3Add(Vector3Scale(c, R), Vector3Add(Vector3Scale(east, (x - W * 0.5f) * mpp), Vector3Scale(north, (H * 0.5f - y) * mpp))));
+        };
+        // Explored: about half the tiles under the image, and many far away (so the sampled path runs, not the whole copy).
+        TileSet all;
+        for (int y = 0; y < H; y += 8)
+            for (int x = 0; x < W; x += 8) { const uint64_t key = TileKey(dirAt(x + 0.5f, y + 0.5f), R); if (key % 2 == 0) all.insert(key); }
+        for (int k = 0; k < 4000; ++k) all.insert(TileKey(Vector3Normalize({ u(rng), u(rng), u(rng) }), R));
+        TileSet under;
+        TilesUnder(all, c, east, north, R, mpp, W, H, under);
+        EXPECT_LT(under.size(), all.size() / 10) << "a small copy, not the set";
+        int missing = 0;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const uint64_t key = TileKey(dirAt(x + 0.5f, y + 0.5f), R);
+                if (all.count(key) && !under.count(key)) ++missing;
+            }
+        EXPECT_EQ(missing, 0) << "pixels whose explored tile was left out, centre " << c.x << " " << c.y << " " << c.z;
+    }
+}
+#endif
