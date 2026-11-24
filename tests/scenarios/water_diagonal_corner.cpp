@@ -52,7 +52,7 @@ SCENARIO("water/diagonal-corner") {
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
         S.plot = c.body->plots->plotFor(feet, 0.0f, true);
         S.base = S.plot->cellAt(S.plot->toPlot(feet));
-        S.base.x += 4; S.base.y += 2; S.base.z -= kFloor / 2; // ahead of the player, 1 m up (clear of the ground)
+        S.base.x += 4; S.base.y += 2; S.base.z -= kFloor / 2 + 3; // ahead of the player, 1 m up (clear of the ground)
         const uint8_t mat = (uint8_t)std::max(0, BuildMaterialForItem("stone_brick"));
         int placed = 0, want = 0;
         auto put = [&](int x, int y, int z) { ++want; placed += S.plot->place(Part{ PartType::Cube, { S.base.x + x, S.base.y + y, S.base.z + z }, 0, mat }) >= 0; };

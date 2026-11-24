@@ -542,4 +542,44 @@ TEST(WaterField, SurfaceStopsAtADiagonalCorner) {
     ASSERT_TRUE(sampler.density(cell(3.5f, 3.5f, 6.9f), 0, w));
     EXPECT_LT(w, ISO_LEVEL) << "over the pen's surface";
 }
+
+// #1773: the same pen with walls two cells thick (0.5 m tiles), its open corner at cell (c, c) in a 2 x 2 brick site, at and
+// beside the bricks' border (the playtest's sliver came and went with where the corner fell). Fine samples outside the corner,
+// under the pen's level: none is water.
+TEST(WaterField, SurfaceStopsAtADiagonalCornerOnBrickBorders) {
+    for (int c : { 8, 15, 16, 17 }) {
+        Snapshot snap;
+        Site s;
+        s.body = 7; s.origin = { 0, 0, 0 }; s.e = { 1, 0, 0 }; s.n = { 0, 0, 1 }; s.u = { 0, 1, 0 }; // cells: i = x, j = z, k = y
+        const float cs = CellSize(), side = kBrick * cs;
+        s.lo = { 0, 0, 0 }; s.hi = { 2 * side, side, 2 * side };
+        for (int bj = 0; bj < 2; ++bj)
+            for (int bi = 0; bi < 2; ++bi) {
+                auto b = std::make_shared<Brick>();
+                for (int lj = 0; lj < kBrick; ++lj)
+                    for (int li = 0; li < kBrick; ++li)
+                        for (int ck = 0; ck < 8; ++ck) {
+                            const int ci = bi * kBrick + li, cj = bj * kBrick + lj, i = CellIdx(li, lj, ck);
+                            const bool inner = (ci >= c && ci < c + 2 && cj >= c - 6 && cj < c) || (cj >= c && cj < c + 2 && ci >= c - 6 && ci < c);
+                            const bool outer = (ci >= c - 8 && ci < c - 6 && cj >= c - 8 && cj < c + 2) || (cj >= c - 8 && cj < c - 6 && ci >= c - 8 && ci < c + 2);
+                            if (ck < 4 || inner || outer) { b->flags[i] = kSolid; continue; }
+                            if (ci >= c - 6 && ci < c && cj >= c - 6 && cj < c && ck < 6) b->fill[i] = b->drawn[i] = ck < 5 ? 255 : 200; // level 5.78
+                        }
+                b->kinds = 1;
+                s.bricks[BrickKey(bi, 0, bj)] = b;
+            }
+        snap.sites.push_back(s);
+        ChunkSampler sampler(&snap, 7, { 0, 0, 0 }, { 2 * side, side, 2 * side });
+        auto cell = [&](float i, float j, float k) { return Vector3{ i * cs, k * cs, j * cs }; };
+        int wet = 0;
+        float w = 0.0f;
+        for (float di = 0.01f; di < 1.5f; di += 0.02f)
+            for (float dj = 0.01f; dj < 1.5f; dj += 0.02f)
+                for (float k = 4.05f; k < 5.75f; k += 0.1f)
+                    if (sampler.density(cell(c + di, c + dj, k), 0, w) && w >= ISO_LEVEL) { ++wet; break; }
+        EXPECT_EQ(wet, 0) << "corner at cell " << c << ": water drawn past it";
+        ASSERT_TRUE(sampler.density(cell(c - 0.5f, c - 0.5f, 5.0f), 0, w));
+        EXPECT_GT(w, ISO_LEVEL) << "corner at cell " << c << ": the pen's corner holds water";
+    }
+}
 #endif
