@@ -743,7 +743,9 @@ bool Player::collideBody(Planetoid& p, const float* offsets, int kSamples, Vecto
                     const Vector3 before = p.toLocal(Vector3Add(feet, Vector3Scale(up, offsets[si])));
                     Vector3 c = before, nl;
                     Plot::Contacts hits;
-                    if (!pl->collideSphere(c, radius / p.scale, nl, &hits)) continue;
+                    // The spheres above the feet meet a part's top edge as a wall (#1732); the feet sphere keeps its slope
+                    // over a lip, which steps up onto a slab.
+                    if (!pl->collideSphere(c, radius / p.scale, nl, &hits, si > 0 ? walkableCos : 0.0f)) continue;
                     const Vector3 moved = Vector3Subtract(c, before);
                     const float len = Vector3Length(moved) * p.scale;
                     if (len > 1e-6f) feet = Vector3Add(feet, Vector3Scale(p.dirToWorld(Vector3Normalize(moved)), len));

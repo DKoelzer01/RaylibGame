@@ -992,7 +992,7 @@ bool Plot::touchesPart(Vector3 bodyCentre, float r, PartType type) const { // (#
     return false;
 }
 
-bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts) const {
+bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Contacts* contacts, float edgeWallCos) const {
     if (contacts) contacts->count = 0;
     if (cells.empty()) return false;
     auto toBodyDir = [&](Vector3 n) { return Vector3Normalize(Vector3Add(Vector3Add(Vector3Scale(east, n.x), Vector3Scale(up, n.y)), Vector3Scale(north, n.z))); };
@@ -1020,6 +1020,10 @@ bool Plot::collideSphere(Vector3& bodyCentre, float r, Vector3& normalOut, Conta
                     if (depth > deepest) { deepest = depth; bestN = len > 0.0f ? Vector3Scale(d, 1.0f / len) : d; }
                 }
         if (deepest <= 0.0f) break;
+        if (edgeWallCos > 0.0f && bestN.y > 0.0f && bestN.y < edgeWallCos) { // (plot y is up) out level, as from a wall face
+            const float level = sqrtf(bestN.x * bestN.x + bestN.z * bestN.z);
+            if (level > 1e-3f) { deepest = std::min(deepest / level, rc); bestN = { bestN.x / level, 0.0f, bestN.z / level }; }
+        }
         p = Vector3Add(p, Vector3Scale(bestN, deepest));
         nSum = Vector3Add(nSum, bestN);
         if (contacts) contacts->n[contacts->count++] = toBodyDir(bestN); // (at most 4 passes)

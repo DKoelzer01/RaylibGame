@@ -5,7 +5,7 @@
 // into at ~31 degrees. The player walks (W through the real input path) into each. The velocity is the feet's motion in the
 // plot's axes (ground-relative). Checks: against a wall the velocity stays in its plane - never pushed back (>= -0.05 m/s),
 // no sideways kick head-on (|side| <= 0.15 m/s), no upward kick (<= 0.3 m/s) - the angled walk keeps sliding along the wall;
-// a slab is stepped onto without a launch (feet rise at most 2 m/s); the jump lands on the blocks.
+// a slab is stepped onto without a launch (the feet never pass its top); the jump lands on the blocks. A 0.5 m cube is a wall.
 #include "scenario.h"
 #include "player.h"
 #include "plots.h"
@@ -138,7 +138,7 @@ void BuildTileLedges(ScenarioDef& s, ScenarioWorld world) {
         c.metric(TextFormat("%s: max upward speed at it (m/s)", n), upMax, "m/s", true);
         if (lane == Slab) {
             c.check("slab: stepped onto", h > 0.2 && along > kLedgeAt + 1.0, TextFormat("feet %.2f m over the floor at cell %.1f", h, along));
-            c.check("slab: no launch (feet rise <= 2 m/s)", upMax <= 2.0, TextFormat("%.2f m/s", upMax));
+            c.check("slab: no launch (the feet never pass its top by > 5 cm)", hMax <= 0.25 + 0.05, TextFormat("highest %.2f m, rising at up to %.2f m/s", hMax, upMax));
         } else if (lane == Block1mJump) {
             c.check("block 1 m, jumped: lands on it", h > 0.9 && along > kLedgeAt + 0.5, TextFormat("feet %.2f m over the floor at cell %.1f", h, along));
         } else {

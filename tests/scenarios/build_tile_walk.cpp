@@ -1,5 +1,5 @@
 // build/tile-walk (#1732, the user: the player bounces off placed plot tiles instead of stepping onto them or sliding along):
-// in the sandbox, a floor of one-cell stone-brick blocks (3 cells wide, 36 long), a 1-tile (0.5 m) step at its far end (a
+// in the sandbox, a floor of one-cell stone-brick blocks (3 cells wide, 36 long), a slab (0.25 m) step (a 0.5 m cube is a wall: jumped, see build/tile-ledges) at its far end (a
 // second layer, 2 cells deep, across the width) and a 2-cell wall along one long side. The player walks (W, scripted through
 // the real input path) straight along the floor and up the step, then diagonally into the wall along it. Checks: no catch on
 // the floor's seams, the step is climbed, no bounce (never moving backwards), and the wall is slid along.
@@ -86,7 +86,7 @@ void BuildTileWalk(ScenarioDef& s, ScenarioWorld world) {
         for (int x = 0; x < kLen; ++x)
             for (int z = 0; z < kWid; ++z) {
                 floor += plot->place(Part{ PartType::Cube, { base.x + x, base.y, base.z + z }, 0, (uint8_t)mat }) >= 0;
-                if (x >= kLen - kStepDeep) step += plot->place(Part{ PartType::Cube, { base.x + x, base.y + 1, base.z + z }, 0, (uint8_t)mat }) >= 0;
+                if (x >= kLen - kStepDeep) step += plot->place(Part{ PartType::Slab, { base.x + x, base.y + 1, base.z + z }, 0, (uint8_t)mat }) >= 0;
             }
         for (int x = 0; x < kLen; ++x)
             for (int y = 0; y < 3; ++y) // (the floor's row and the two cells above it)
@@ -129,7 +129,8 @@ void BuildTileWalk(ScenarioDef& s, ScenarioWorld world) {
         c.check("no catch on seams: speed stays >= 70% of steady across the floor", flatMin >= 0.7 * steady,
                 TextFormat("min %.2f m/s of steady %.2f m/s", flatMin, steady));
         c.metric("step: rise within 2 s of reaching it (m)", stepRise, "m", false);
-        c.gt("the step is climbed: feet rise (m, want >= 0.4)", stepRise, 0.4);
+        c.gt("the step is climbed: feet rise (m, want >= 0.2)", stepRise, 0.2);
+        c.check("no pop over the step: feet rise <= 0.35 m", stepRise <= 0.35, TextFormat("%.2f m", stepRise));
         c.metric("walk: min speed along the walk (m/s)", allMin, "m/s", false);
         c.gt("no bounce: speed along the walk never negative (m/s)", allMin, -0.05);
         c.note(TextFormat("walk: steady %.2f m/s, min over seams %.2f, min overall %.2f, step rise %.2f m", steady, flatMin, allMin, stepRise));

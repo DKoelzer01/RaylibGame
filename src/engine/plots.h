@@ -172,7 +172,9 @@ public:
     // a wall gets the 45-degree diagonal, no real surface); `contacts` (optional, up to 4) gets each push's own normal,
     // body-local, for clipping a velocity against every surface touched (#1732).
     struct Contacts { Vector3 n[4]; int count = 0; };
-    bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut, Contacts* contacts = nullptr) const;
+    // edgeWallCos > 0: a push along a normal tilted up less than that (the sphere's centre over a part's top edge) is made
+    // level, as from a wall face: a capsule's upper spheres over an edge were lifted and the player rose and fell at walls.
+    bool collideSphere(Vector3& bodyLocalCentre, float radius, Vector3& normalOut, Contacts* contacts = nullptr, float edgeWallCos = 0.0f) const;
     bool touchesPart(Vector3 bodyLocalCentre, float radius, PartType type) const; // (#1105) a sphere overlapping a cell of that part type (ladders)
     // Ray (body-local) against part cells: the nearest hit cell, its face normal (plot space), distance.
     bool raycast(Vector3 o, Vector3 d, float maxDist, Int3& cell, Int3& faceNormal, float& dist) const;
