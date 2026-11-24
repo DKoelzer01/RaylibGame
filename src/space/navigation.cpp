@@ -2,6 +2,7 @@
 #include "uipalette.h"
 #include "playerinput.h"
 #include "navigation.h"
+#include "profiler.h"
 #include "claims.h"
 #include "combat.h"
 #include "survival.h"
@@ -166,16 +167,39 @@ void RenderRows(MapImage& m, int y0, int y1) {
     m.rowsDone.fetch_add(y1 - y0);
 }
 
+// (#1778) The explored tiles a W x H image at mpp round `centre` can show (PixelDir's frame), into `out`: its area sampled
+// at a quarter tile (tiles shrink a little near the cube's edges), half a side past the corners. When the samples would
+// outnumber the set (a far-out big map), the whole set.
+void TilesUnder(const TileSet& all, Vector3 centre, Vector3 east, Vector3 north, float R, float mpp, int W, int H, TileSet& out) {
+    out.clear();
+    if (all.empty()) return;
+    const float half = 0.75f * std::max(W, H) * mpp, step = 0.25f * kTileSize;
+    const int n = (int)ceilf(2.0f * half / step) + 1;
+    if ((size_t)n * (size_t)n >= all.size()) { out = all; return; }
+    for (int iy = 0; iy < n; ++iy)
+        for (int ix = 0; ix < n; ++ix) {
+            const Vector3 p = Vector3Add(Vector3Scale(centre, R), Vector3Add(Vector3Scale(east, -half + ix * step), Vector3Scale(north, -half + iy * step)));
+            const uint64_t k = TileKey(Vector3Normalize(p), R);
+            if (all.count(k)) out.insert(k);
+        }
+}
+
 std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, int W, int H, bool circle) {
     auto m = std::make_shared<MapImage>();
     m->field = h.field;
     m->body = h.body->id;
-    auto it = explored.find(h.body->name);
-    m->tiles = std::make_shared<const TileSet>(it != explored.end() ? it->second : TileSet{});
     m->centre = centre;
     if (!Frame(centre, m->east, m->north)) { m->east = { 1, 0, 0 }; m->north = Vector3Normalize(Vector3CrossProduct(centre, m->east)); }
     m->mpp = mpp;
     m->W = W; m->H = H;
+    // The workers read the explored tiles while the main thread adds more: they get their own copy. (#1778) Only the tiles
+    // under the image: copying the whole set every 2 s while moving grew with play (19 ms after 5 min on the sandbox, the
+    // user's 100-790 ms stalls on a long-explored save). The image's area sampled at a quarter tile; a far-out big map whose
+    // samples would outnumber the set copies the set as before.
+    auto it = explored.find(h.body->name);
+    auto tiles = std::make_shared<TileSet>();
+    if (it != explored.end()) TilesUnder(it->second, centre, m->east, m->north, h.field->radius, mpp, W, H, *tiles);
+    m->tiles = std::move(tiles);
     m->circle = circle;
     m->px.assign((size_t)W * H * 4, 0);
     const int block = 16;
@@ -193,10 +217,15 @@ struct MapView {
     std::shared_ptr<MapImage> pending;  // being rendered
     void take() {
         if (!pending || pending->rowsDone.load() < pending->H) return;
-        Image img{ pending->px.data(), pending->W, pending->H, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
-        if (tex.id) UnloadTexture(tex);
-        tex = LoadTextureFromImage(img);
-        SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+        // (#1778) The same size again (the minimap, every 2 s while moving): new pixels into the texture it has; a new
+        // texture each time stalled the main thread up to 294 ms on the sandbox's GL.
+        if (tex.id && tex.width == pending->W && tex.height == pending->H) UpdateTexture(tex, pending->px.data());
+        else {
+            Image img{ pending->px.data(), pending->W, pending->H, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+            if (tex.id) UnloadTexture(tex);
+            tex = LoadTextureFromImage(img);
+            SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+        }
         std::vector<unsigned char>().swap(pending->px);
         shown = pending;
         pending.reset();
@@ -320,25 +349,27 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         if (PlayerInput_BindingPressed(Act::ZoomIn) || IsKeyPressed(KEY_KP_ADD)) miniZoom = std::max(miniZoom - 1, 0);
         if (miniZoom != was) minimapForce = true;
     }
-    const Here h = Locate(world);
+    Here h;
+    { PROFILE_SCOPE("nav: locate"); h = Locate(world); }
     // Reveal the ground around the player a few times a second.
     if (h.body && SimTime() - lastReveal > 0.3) {
         lastReveal = SimTime();
         TileSet& set = explored[h.body->name];
         const size_t before = set.size();
-        Nav_RevealTiles(h.up, h.field->radius, set);
+        { PROFILE_SCOPE("nav: reveal"); Nav_RevealTiles(h.up, h.field->radius, set); }
         if (set.size() != before) ++exploredVersion[h.body->name];
         if (set.size() != before) { size_t all = 0; for (const auto& kv : explored) all += kv.second.size(); QuestBook_AtLeast("explored", (double)all); }
     }
     // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
     // around the circle), every 2 s while moving, or when new ground shows.
-    minimap.take();
+    { PROFILE_SCOPE("nav: minimap take"); minimap.take(); }
     if (h.body && HasMap() && !minimap.pending) {
         const int ver = exploredVersion[h.body->name];
         const bool moved = !minimap.shown || minimapBody != h.body->name ||
                            Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 40.0f * MiniZoom() || minimapForce ||
                            (GetTime() - minimapAt > 2.0 && Vector3Distance(minimap.shown->centre, h.up) * h.field->radius > 1.0f);
         if (moved || ver != minimapTilesVersion) {
+            PROFILE_SCOPE("nav: minimap start"); // (#1778) copies the explored tiles
             minimap.pending = StartImage(h, h.up, kMiniMetres * MiniZoom() / kMiniPixels, kMiniPixels, kMiniPixels, false); // square: masked when drawn
             minimapForce = false;
             minimapAt = GetTime();
@@ -644,3 +675,40 @@ int Nav_RevealTiles(Vector3 up, float R, std::unordered_set<uint64_t>& set) {
         }
     return (int)(set.size() - before);
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+#include <random>
+// (#1778) The minimap's copy of the explored tiles is only the tiles under the image: every explored tile a pixel of the
+// image lands on must be in it (else that ground would draw as unexplored), at random spots, near a cube edge included.
+TEST(Navigation, TilesUnderAnImageHoldEveryExploredTileItsPixelsShow) {
+    const float R = 60000.0f, mpp = 4.0f;
+    const int W = 256, H = 256;
+    std::mt19937 rng(1778);
+    std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+    std::vector<Vector3> centres = { Vector3Normalize({ 1.0f, 1.0f, 0.3f }), Vector3Normalize({ 1.0f, 1.0f, 1.0f }) }; // a cube edge, a corner
+    for (int k = 0; k < 6; ++k) centres.push_back(Vector3Normalize({ u(rng), u(rng), u(rng) }));
+    for (const Vector3 c : centres) {
+        Vector3 east, north;
+        if (!Frame(c, east, north)) { east = { 1, 0, 0 }; north = Vector3Normalize(Vector3CrossProduct(c, east)); }
+        auto dirAt = [&](float x, float y) { // PixelDir's frame
+            return Vector3Normalize(Vector3Add(Vector3Scale(c, R), Vector3Add(Vector3Scale(east, (x - W * 0.5f) * mpp), Vector3Scale(north, (H * 0.5f - y) * mpp))));
+        };
+        // Explored: about half the tiles under the image, and many far away (so the sampled path runs, not the whole copy).
+        TileSet all;
+        for (int y = 0; y < H; y += 8)
+            for (int x = 0; x < W; x += 8) { const uint64_t key = TileKey(dirAt(x + 0.5f, y + 0.5f), R); if (key % 2 == 0) all.insert(key); }
+        for (int k = 0; k < 4000; ++k) all.insert(TileKey(Vector3Normalize({ u(rng), u(rng), u(rng) }), R));
+        TileSet under;
+        TilesUnder(all, c, east, north, R, mpp, W, H, under);
+        EXPECT_LT(under.size(), all.size() / 10) << "a small copy, not the set";
+        int missing = 0;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const uint64_t key = TileKey(dirAt(x + 0.5f, y + 0.5f), R);
+                if (all.count(key) && !under.count(key)) ++missing;
+            }
+        EXPECT_EQ(missing, 0) << "pixels whose explored tile was left out, centre " << c.x << " " << c.y << " " << c.z;
+    }
+}
+#endif
