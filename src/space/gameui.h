@@ -2,6 +2,9 @@
 #define GAMEUI_H
 
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 class Scene;
 
@@ -22,6 +25,10 @@ void GameUI_PrepareFrame(Scene& world);  // (#822) before ImGui, after the world
 bool GameUI_PreviewDrawn();              // (#822) the preview was rendered this frame (tests)
 void GameUI_QueueCraft(int recipe, int count);   // (#824) into the crafting queue (one every 0.3 s, through Crafting_Request)
 bool GameUI_QueueRecursive(int recipe, int count, int* steps = nullptr); // (#928) with its missing intermediates first; false: can't
+// (#1429 PR 5) Queue what it takes to hold each (item, count), in the list's order, each planned (recursively) on what the
+// ones before leave: put items that others are made from last. Returns the items it can't plan (no known hand recipe, or
+// not enough raw material).
+std::vector<std::string> GameUI_QueueToHold(const std::vector<std::pair<std::string, int>>& hold);
 int GameUI_CraftQueueLength();                    // crafts still queued
 void GameUI_SelectRecipe(int recipe);             // the Crafting screen's selected recipe
 bool GameUI_ClosePopout();                     // (#921) Esc: closes an open pop-out (a recipe's page, a quest tier); false: none was open

@@ -2434,6 +2434,37 @@ bool GameUI_QueueRecursive(int recipe, int count, int* steps) { // (#928) as the
     if (p.ok && !Crafting_RequestRecursive(recipe, count)) QueuePlan(p); // (#946: joined, the server plans and crafts it)
     return p.ok;
 }
+std::vector<std::string> GameUI_QueueToHold(const std::vector<std::pair<std::string, int>>& hold) { // (#1429 PR 5)
+    const auto& recipes = itemDB.recipes();
+    std::set<std::string> machineMade;
+    for (const auto& ri : Factory::RecipeList()) for (const auto& o : ri.out) machineMade.insert(o.first);
+    std::map<std::string, int> carried;
+    for (const auto& kv : inventory.all()) carried[kv.first] = kv.second;
+    const std::function<bool(int)> known = [&](int k) { return k >= 0 && k < (int)recipes.size() && RecipeBook_Known(recipes[k]); };
+    std::vector<std::string> failed;
+    for (const auto& h : hold) {
+        const int shortBy = h.second - carried[h.first];
+        if (shortBy <= 0) continue;
+        int rec = -1;
+        for (int k = 0; k < (int)recipes.size() && rec < 0; ++k)
+            if (recipes[k].output == h.first && !recipes[k].formShape && known(k)) rec = k;
+        if (rec < 0) { failed.push_back(h.first); continue; }
+        const int times = (shortBy + std::max(1, recipes[rec].outputCount) - 1) / std::max(1, recipes[rec].outputCount);
+        const CraftPlan p = CraftPlan_Make(recipes, known, carried, rec, times, machineMade);
+        if (!p.ok) { failed.push_back(h.first); continue; }
+        // What it uses and makes, so the next item plans on what this one leaves (the queue crafts them in this order). A
+        // group input (any_planks) is charged under the group's name: approximate, and the queue skips what fails.
+        for (const CraftStep& s : p.steps) {
+            for (const auto& in : recipes[s.recipe].inputs) carried[in.first] -= in.second * s.times;
+            carried[recipes[s.recipe].output] += recipes[s.recipe].outputCount * s.times;
+        }
+        // Joined: requests of at most 64 crafts, the server plans each on its inventory in this same order (#946).
+        if (Crafting_RequestRecursive(rec, std::min(times, 64))) {
+            for (int left = times - 64; left > 0; left -= 64) Crafting_RequestRecursive(rec, std::min(left, 64));
+        } else QueuePlan(p);
+    }
+    return failed;
+}
 int GameUI_CraftQueueLength() { int n = 0; for (const QueuedCraft& c : craftQueue) n += c.left; return n; }
 void GameUI_SelectRecipe(int recipe) { selectedRecipe = recipe; recipePageOpen = recipe >= 0; } // (#921: its page open)
 bool GameUI_ClosePopout() { // (#921) Esc: a pop-out closes before the window does

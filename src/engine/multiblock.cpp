@@ -315,6 +315,7 @@ MbResult Multiblock_Validate(const MbDef& def, const MbCatalog& cat, const std::
                 c.world = Multiblock_ToWorld(def, { x, defY, z }, controllerAt, fx, fz, extra);
                 c.world.y += yAdd;
                 c.layer = layerIdx;
+                c.key = l->key;
                 const std::string p = lookup(c.world);
                 c.status = MbCell::Ok;
                 switch (l->role) {
@@ -432,6 +433,53 @@ MbResult Multiblock_Validate(const MbDef& def, const MbCatalog& cat, const std::
     }
     r.formed = r.problem.empty();
     return r;
+}
+
+// ---- (#1429 PR 5) The ghost's parts and the parts list ----
+
+MbPlan Multiblock_Plan(const MbDef& def, const MbCatalog& cat, const MbResult& r) {
+    MbPlan plan;
+    plan.part.resize(r.cells.size());
+    auto hatchOf = [&](const std::string& kind) -> std::string { // the catalog's first hatch of a kind (file order: deterministic)
+        for (const std::string& id : cat.hatchIds) {
+            const auto h = cat.hatches.find(id);
+            if (h != cat.hatches.end() && h->second.first == kind) return id;
+        }
+        return std::string();
+    };
+    std::map<std::string, int> shortBy; // hatch kind -> hatches still needed to reach its minimum
+    for (const auto& lim : def.hatchLimits) {
+        const auto it = r.hatchCount.find(lim.first);
+        const int have = it == r.hatchCount.end() ? 0 : it->second;
+        if (have < lim.second.first) shortBy[lim.first] = lim.second.first - have;
+    }
+    for (size_t i = 0; i < r.cells.size(); ++i) {
+        const MbCellResult& c = r.cells[i];
+        if (c.status != MbCell::Missing && c.status != MbCell::Wrong) continue; // Ok, or Blocked: only clearing to do
+        const MbLegend* l = def.key(c.key);
+        if (!l || l->role == MbRole::Air || l->role == MbRole::Any) continue;
+        std::string id = l->id;
+        if (l->role == MbRole::Hatch) {
+            id.clear();
+            for (const std::string& k : l->hatchKinds) {
+                auto s = shortBy.find(k);
+                if (s == shortBy.end() || s->second <= 0) continue;
+                id = hatchOf(k);
+                if (!id.empty()) { --s->second; break; }
+            }
+            if (id.empty()) id = l->fallbackCasing;
+            if (id.empty() && !l->hatchKinds.empty()) id = hatchOf(l->hatchKinds[0]); // no fallback: a hatch of its first kind
+        }
+        if (id.empty()) continue;
+        plan.part[i] = id;
+        ++plan.need[id];
+    }
+    for (const auto& s : shortBy) // spots already filled with casings: hatches to swap in
+        if (s.second > 0) {
+            const std::string id = hatchOf(s.first);
+            if (!id.empty()) plan.need[id] += s.second;
+        }
+    return plan;
 }
 
 // ---- (#1429 PR 3) Forming ----
@@ -672,6 +720,53 @@ TEST(Multiblock, RotationForTheFourFacings) {
     World w;
     Stamp(w, d, at, 1, 0);
     EXPECT_FALSE(Multiblock_Validate(d, cat, Look(w), at, 0, 1).formed);
+}
+
+// (#1429 PR 5) The parts list: an empty site needs every part, hatch spots get the hatches the minimums ask for (the rest
+// their fallback casing), and the ghost's per-cell parts add up to the list.
+TEST(Multiblock, PlanCountsTheParts) {
+    std::vector<std::string> errors;
+    const MbCatalog cat = Multiblock_Parse(Tank(), &errors);
+    ASSERT_TRUE(errors.empty());
+    const MbDef& d = *cat.find("large_tank");
+    const MbInt3 at{ 10, 5, 10 };
+    World w;
+    Put(w, at, "large_tank_controller");
+    MbResult r = Multiblock_Validate(d, cat, Look(w), at, 0, 1);
+    ASSERT_FALSE(r.formed);
+    MbPlan p = Multiblock_Plan(d, cat, r);
+    ASSERT_EQ(p.part.size(), r.cells.size());
+    EXPECT_EQ(p.need["bronze_casing"], 15); // 7 round the controller, 8 on top
+    EXPECT_EQ(p.need["tank_glass"], 8);
+    EXPECT_EQ(p.need["fluid_in_hatch"], 1);
+    EXPECT_EQ(p.need["fluid_out_hatch"], 1);
+    EXPECT_EQ(p.need.count("large_tank_controller"), 0u); // it is there
+    EXPECT_EQ(p.need.size(), 4u);
+    std::map<std::string, int> sum;
+    for (size_t i = 0; i < r.cells.size(); ++i) {
+        if (!p.part[i].empty()) ++sum[p.part[i]];
+        if (r.cells[i].want == "air") EXPECT_TRUE(p.part[i].empty());
+    }
+    EXPECT_EQ(sum, p.need);
+
+    // Built with casings in both hatch spots: nothing to place, two hatches to swap in.
+    World cased;
+    Stamp(cased, d, at, 0, 1, 1, {});
+    r = Multiblock_Validate(d, cat, Look(cased), at, 0, 1);
+    ASSERT_FALSE(r.formed);
+    p = Multiblock_Plan(d, cat, r);
+    for (const std::string& s : p.part) EXPECT_TRUE(s.empty());
+    EXPECT_EQ(p.need, (std::map<std::string, int>{ { "fluid_in_hatch", 1 }, { "fluid_out_hatch", 1 } }));
+
+    // A casing where a glass goes: one glass (the casing is replaced); formed: nothing.
+    World wrong;
+    Stamp(wrong, d, at, 0, 1);
+    Put(wrong, Cell(d, { 0, 1, 0 }, at, 0, 1), "bronze_casing");
+    p = Multiblock_Plan(d, cat, Multiblock_Validate(d, cat, Look(wrong), at, 0, 1));
+    EXPECT_EQ(p.need, (std::map<std::string, int>{ { "tank_glass", 1 } }));
+    World whole;
+    Stamp(whole, d, at, 0, 1);
+    EXPECT_TRUE(Multiblock_Plan(d, cat, Multiblock_Validate(d, cat, Look(whole), at, 0, 1)).need.empty());
 }
 
 TEST(Multiblock, MissingWrongBlocked) {
