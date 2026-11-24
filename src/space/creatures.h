@@ -206,8 +206,12 @@ struct SpawnSite { Vector3 floor{}, up{}; int kind = 0; float radius = 0.0f, dep
 bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s);
 // One species in one 64 m chunk: what has spawned there. The first visit fills it to the cap; after that one more every
 // respawn seconds while below the cap, and none once a nest there was destroyed (species with nests=1; decided).
-struct SpawnChunk { double nextAt = 0.0; bool filled = false; bool hasNest = false; bool nestDestroyed = false; uint64_t nest = 0; };
+struct SpawnChunk { double nextAt = 0.0; bool filled = false; bool hasNest = false; bool nestDestroyed = false; uint64_t nest = 0;
+    int returned = 0; double returnAt = 0.0; }; // (#1740) creatures that went home (the player left): back one every kReturnEvery
 int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now);
-namespace SpawnTune { constexpr float kChunk = 64.0f, kMinFromPlayer = 24.0f, kNestChamber = 5.0f; constexpr double kPass = 2.0; }
+namespace SpawnTune { constexpr float kChunk = 64.0f, kMinFromPlayer = 24.0f, kNestChamber = 5.0f;
+    constexpr float kMaxFromPlayer = 64.0f, kDarkFromLight = 12.0f; // (#1740) sites 24-64 m from an underground player, 12 m from any light
+    constexpr float kReleaseRange = 96.0f; constexpr double kReturnEvery = 20.0; // (#1740) gone home past 96 m; back one at a time (GUESS 20 s)
+    constexpr double kPass = 2.0; }
 
 #endif

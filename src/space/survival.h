@@ -145,6 +145,9 @@ struct QuestBookState {
     // a team book keeps its own, the sum of what its members obtained on the server.
     bool ownObtained = false;
     std::unordered_map<std::string, double> obtained;
+    // (#1728) What the book's machines finished (a recipe's outputs, whether or not anyone took them). A "get" task counts the larger
+    // of obtained and made per item (an item both made and taken counts once). Saved as "made" lines (old saves: empty).
+    std::unordered_map<std::string, double> made;
 };
 QuestBookState& QuestBook_LocalState();
 void QuestBook_Select(QuestBookState* book);         // nullptr: the local one again
@@ -157,6 +160,8 @@ inline std::function<void(const std::string& text)> gQuestNews;
 inline std::function<bool(int tier)> gQuestTierGate;
 void QuestBook_Update();
 void QuestBook_NotePlaced(const std::string& item);
+void QuestBook_NoteMade(const std::string& item, double n = 1.0); // (#1728) a machine of this book finished n of item
+double QuestBook_MadeCap(const std::string& item);                 // (#1728) the most any "get" task or node asks of it (0: none)
 // Events counted for "do <event> <n>" tasks (eat, feed, penned, till, plant, harvest, waypoint, modules, explored).
 void QuestBook_Count(const std::string& event, double n = 1.0);
 void QuestBook_AtLeast(const std::string& event, double value); // a running maximum (penned animals, modules fitted)

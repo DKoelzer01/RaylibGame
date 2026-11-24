@@ -253,6 +253,9 @@ namespace Factory {
 inline std::function<void(std::vector<Factory::RecipeInfo>& out)> gFactoryExtraRecipes;
 // Server: results for a player (Extract / TakeSlot / Take / leftovers with `to`) go here instead of this game's inventory.
 inline std::function<void(uint32_t to, const std::string& item, double amount, float heat, const std::string& data)> gFactoryDeliver; // (#1102: an amount: a chest's fraction too; #1446: data, one item's record)
+// (#1728) A machine finished a recipe (called from Factory::Sync on the main thread, once per finished output stack, in plot order;
+// never for the far summary sim's production): quests count it for the plot's owner without anyone taking the item.
+inline std::function<void(uint64_t bodyId, uint32_t plotId, const std::string& item, int count)> gFactoryMade;
 // Client (#332): the machine the screen or look-at panel views changed (Factory::View with SetRemote): ask the server for it.
 inline std::function<void(uint64_t bodyId, uint32_t plotId, int part)> gFactoryRemoteWatch;
 

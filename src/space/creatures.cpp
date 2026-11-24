@@ -392,9 +392,15 @@ bool Spawn_Fits(const CreatureSpec& c, const SpawnSite& s) {
 }
 
 int Spawn_Due(const CreatureSpec& c, SpawnChunk& ch, int alive, double now) {
-    if (alive >= c.capPerChunk) return 0;
+    if (alive >= c.capPerChunk) { ch.returned = 0; return 0; }
     if (!ch.filled) { ch.filled = true; ch.nextAt = now + c.respawn; return c.capPerChunk - alive; }
     if (c.nests && ch.hasNest && ch.nestDestroyed) return 0;      // the nest is gone: the chunk stays clear
+    // (#1740) the ones that went home when the player left come back one at a time, not all at once
+    if (ch.returned > 0) {
+        if (now < ch.returnAt) return 0;
+        --ch.returned; ch.returnAt = now + SpawnTune::kReturnEvery;
+        return 1;
+    }
     if (now < ch.nextAt) return 0;
     ch.nextAt = now + c.respawn;
     return 1;
@@ -575,6 +581,13 @@ TEST(Creatures, SpawnFitsAndDue) {
     EXPECT_EQ(Spawn_Due(c, ch, 1, 700.0), 0);
     ch.hasNest = true; ch.nestDestroyed = true;
     EXPECT_EQ(Spawn_Due(c, ch, 0, 5000.0), 0);
+    // (#1740) Two went home when the player left: back one every kReturnEvery, not at once (and not before the first is due).
+    SpawnChunk back; back.filled = true; back.nextAt = 1e9; back.returned = 2; back.returnAt = 100.0;
+    EXPECT_EQ(Spawn_Due(c, back, 0, 50.0), 0);
+    EXPECT_EQ(Spawn_Due(c, back, 0, 100.0), 1);
+    EXPECT_EQ(Spawn_Due(c, back, 1, 101.0), 0);
+    EXPECT_EQ(Spawn_Due(c, back, 1, 100.0 + SpawnTune::kReturnEvery), 1);
+    EXPECT_EQ(back.returned, 0);
 }
 
 // #1224: a blind hunter (sight 0) goes by sound alone: a heard player is chased, a silent one (sneaking) is not.

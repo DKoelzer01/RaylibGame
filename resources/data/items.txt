@@ -353,3 +353,10 @@ fluid_in_hatch   | Fluid input hatch | 64 | 100,130,170 | A casing with a fluid 
 fluid_out_hatch  | Fluid output hatch | 64 | 170,130,100 | A casing with a fluid output: a multiblock empties into pipes through it.
 large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
 wrench           | Wrench           | tool | 150,150,160 | Hold it and right-click a multiblock controller to form the structure around it.
+# (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)
+mv_motor         | MV motor         | 64  | 140,150,150 | An MV motor: invar rods, a heavy copper winding. MV machines that move have one or two.
+mv_pump          | MV pump          | 64  | 120,145,165 | An MV motor driving a valve: electrolyzers, chemical reactors, MV ore washers.
+mv_heating_coil  | MV heating coil  | 64  | 200,190,140 | A nickel heating coil. The MV electric furnace has two.
+hv_motor         | HV motor         | 64  | 170,185,200 | An HV motor: steel rods, an aluminium winding. HV machines that move have one or two.
+hv_pump          | HV pump          | 64  | 150,170,195 | An HV motor driving a valve: refineries, HV chemistry.
+hv_heating_coil  | HV heating coil  | 64  | 210,200,160 | A nickel coil on an aluminium former: the arc furnace and the HV electric furnace.

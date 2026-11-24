@@ -263,13 +263,17 @@ static void CellName(ImDrawList* dl, ImVec2 p, ImVec2 q, const std::string& name
 // The stack on the cursor (#192): picked out of its cell, it follows the mouse until it is put down; whatever is still
 // held when the inventory closes goes back in.
 static InvSlot cursorStack;
+// (#1728) The stack came onto the cursor from a machine or chest (CursorSink), which counted it as obtained: coming back in, it
+// must not count again. Cleared whenever the cursor is empty (each frame, and when it goes back in).
+static bool cursorCredited = false;
 static void ReturnCursorStack() {
-    if (cursorStack.empty()) return;
+    if (cursorStack.empty()) { cursorCredited = false; return; }
     ++inventory.muted; // not a pickup (#208)
-    if (cursorStack.hasData()) inventory.addInstance(cursorStack.id, cursorStack.data, cursorStack.heat); // (#1446) one item, record and all
-    else inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat); // still as hot (#580)
+    if (cursorStack.hasData()) inventory.addInstance(cursorStack.id, cursorStack.data, cursorStack.heat, !cursorCredited); // (#1446) one item, record and all
+    else inventory.addAmount(cursorStack.id, cursorStack.amount(), cursorStack.heat, !cursorCredited); // still as hot (#580)
     --inventory.muted;
     cursorStack = InvSlot{};
+    cursorCredited = false;
 }
 // Getting rid of things when the grid is full (#564). The bin deletes the held stack; the last one binned can be taken
 // back out until another goes in or the window closes. A click outside the window drops the held stack (right-click:
@@ -309,28 +313,30 @@ static int64_t CreativeTake(const std::string& id, int64_t centi, InvSlot& held)
 }
 // The player's cells (grid, hotbar, off hand). Moves among them change no totals, so they stay here even when joined; what
 // goes to or comes from a container is a request (MachineAct_*), what is dropped a pile at the feet (Combat_Drop).
+static int64_t ContainerPutRecord(const InvSlot& item); // (#1730) below, once the container's grid exists
 struct PlayerGrid : SlotGrid {
     int size() const override { return Inventory::kCells; }
     InvSlot at(int i) const override { return inventory.grid()[i]; }
     int64_t room(int i, const std::string& id) const override {
         const InvSlot& c = inventory.grid()[i];
-        if (!c.empty() && c.id != id) return 0;
+        if (!c.empty() && (c.id != id || c.hasData())) return 0; // (#1730) an item with its own record never takes more
         return (int64_t)StackLimit(id) * 100 - (c.empty() ? 0 : c.centi);
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
         InvSlot& c = inventory.grid()[i];
-        const int64_t k = std::min(centi, room(i, held.id));
+        int64_t k = std::min(centi, room(i, held.id));
+        if (held.hasData()) { if (!c.empty()) return 0; k = std::min<int64_t>(k, 100); } // (#1730) one item, its record goes along, into an empty cell only
         if (k <= 0) return 0;
-        if (c.empty()) { c.id = held.id; c.centi = 0; c.heat = 0.0f; }
+        if (c.empty()) { c.id = held.id; c.centi = 0; c.heat = 0.0f; c.data = held.data; }
         c.heat = (float)((c.heat * c.centi + held.heat * k) / (double)(c.centi + k)); // by amount, as merges do (#580)
         c.centi += k;
         return k;
     }
     int64_t take(int i, int64_t centi, InvSlot& held) override {
         InvSlot& c = inventory.grid()[i];
-        if (c.empty() || (!held.empty() && held.id != c.id)) return 0;
+        if (c.empty() || (!held.empty() && (held.id != c.id || held.hasData() || c.hasData()))) return 0; // (#1730) items with a record never stack
         const int64_t k = std::min(centi, c.centi);
-        if (held.empty()) { held.id = c.id; held.centi = 0; held.heat = c.heat; }
+        if (held.empty()) { held.id = c.id; held.centi = 0; held.heat = c.heat; held.data = c.data; } // (#1730) the record comes with it
         held.heat = (float)((held.heat * held.centi + c.heat * k) / (double)(held.centi + k));
         held.centi += k;
         c.centi -= k;
@@ -365,6 +371,7 @@ struct PlayerGrid : SlotGrid {
         InvSlot& c = inventory.grid()[i];
         if (c.empty()) return;
         if (GameUI_ContainerOpen()) {
+            if (c.hasData()) { if (ContainerPutRecord(c) > 0) c = InvSlot{}; return; } // (#1730) one item, record and all, into a free chest slot
             const std::string id = c.id;
             if (!ContainerTakes(id)) { GameUI_Toast(TextFormat("The %s doesn't take %s", PartName(container.type), itemDB.find(id) ? itemDB.find(id)->name.c_str() : id.c_str())); return; }
             const int64_t amount = std::min(centi, c.centi);
@@ -384,7 +391,7 @@ struct PlayerGrid : SlotGrid {
         for (int pass = 0; pass < 2 && left > 0; ++pass) // onto the same item first, then an empty cell
             for (int k = from; k < to && left > 0; ++k) {
                 const InvSlot& t = inventory.grid()[k];
-                if (pass == 0 ? (t.empty() || t.id != c.id) : !t.empty()) continue;
+                if (pass == 0 ? (t.empty() || t.id != c.id || t.hasData() || c.hasData()) : !t.empty()) continue;
                 const int64_t n = put(k, c, std::min(left, room(k, c.id)));
                 left -= n; c.centi -= n;
             }
@@ -394,7 +401,7 @@ struct PlayerGrid : SlotGrid {
     // other part (grid <-> hotbar).
     void pullIn(int i, int64_t centi) override {
         const InvSlot c = inventory.grid()[i];
-        if (c.empty()) return;
+        if (c.empty() || c.hasData()) return; // (#1730) an item with a record is not pulled in by id (one of a kind)
         if (GameUI_ContainerOpen()) {
             if (container.type == PartType::Chest) MachineAct_Take(container.body, container.plot, container.part, c.id, (int)std::max<int64_t>(1, centi / 100));
             return;
@@ -403,7 +410,7 @@ struct PlayerGrid : SlotGrid {
         const int from = fromHotbar ? Inventory::kGrid : 0, to = fromHotbar ? Inventory::kSlots : Inventory::kGrid;
         for (int k = from; k < to; ++k) {
             InvSlot& s = inventory.grid()[k];
-            if (s.empty() || s.id != c.id) continue;
+            if (s.empty() || s.id != c.id || s.hasData()) continue;
             const int64_t n = std::min({ centi, s.centi, room(i, c.id) });
             if (n <= 0) return;
             InvSlot part = s; part.centi = n;
@@ -452,7 +459,7 @@ struct ContainerGrid : SlotGrid {
             const auto fuels = Factory::FuelsOf(container.type);
             if (std::find(fuels.begin(), fuels.end(), id) == fuels.end()) return 0;
         } else if (!ContainerTakes(id)) return 0;
-        if (container.type == PartType::Chest || which == 2) { if (!s.empty() && s.id != id) return 0; return (int64_t)StackLimit(id) * 100 - s.centi; }
+        if (container.type == PartType::Chest || which == 2) { if (!s.empty() && (s.id != id || s.hasData())) return 0; return (int64_t)StackLimit(id) * 100 - s.centi; } // (#1730) a slot with a record takes nothing more
         return (int64_t)StackLimit(id) * 100; // a machine routes its inputs (Insert): any input slot click puts it in
     }
     int64_t put(int i, const InvSlot& held, int64_t centi) override {
@@ -503,7 +510,7 @@ struct ContainerGrid : SlotGrid {
     }
     void pullIn(int i, int64_t centi) override { // that item from the inventory into this slot
         const InvSlot s = at(i);
-        if (s.empty() || which == 1) return;
+        if (s.empty() || s.hasData() || which == 1) return; // (#1730) a slot with a record is one of a kind
         const int n = (int)std::min<double>(std::max<int64_t>(1, centi / 100), std::floor(inventory.count(s.id)));
         if (n <= 0 || !inventory.remove(s.id, n)) return;
         InvSlot h = s; h.centi = (int64_t)n * 100;
@@ -514,11 +521,12 @@ struct ContainerGrid : SlotGrid {
         InvSlot& c = inventory.grid()[cell];
         const InvSlot s = at(i);
         if (!c.empty() && room(i, c.id) <= 0 && s.empty()) return;
+        if (c.hasData() && !s.empty()) return; // (#1730) a record can only go into an empty slot, and the slot's answer comes a tick later
         if (!s.empty()) MachineAct_TakeSlot(container.body, container.plot, container.part, i, which);
         if (!c.empty() && which != 1) {
             const InvSlot moving = c;
             c = InvSlot{};
-            if (put(i, moving, moving.centi) < moving.centi) { ++inventory.muted; inventory.addAmount(moving.id, moving.amount(), moving.heat); --inventory.muted; }
+            if (put(i, moving, moving.centi) < moving.centi) { ++inventory.muted; if (moving.hasData()) inventory.addInstance(moving.id, moving.data, moving.heat); else inventory.addAmount(moving.id, moving.amount(), moving.heat); --inventory.muted; }
         }
     }
 };
@@ -542,6 +550,16 @@ struct CatalogGrid : SlotGrid {
 };
 static PlayerGrid playerGrid;
 static ContainerGrid containerIn(0), containerOut(1), containerFuel(2);
+// (#1730) Shift-click of an item with its own record onto the open container: the first free chest slot (a machine routes it).
+static int64_t ContainerPutRecord(const InvSlot& item) {
+    int slot = 0;
+    if (container.type == PartType::Chest) {
+        slot = -1;
+        for (int k = 0; k < containerIn.size() && slot < 0; ++k) if (containerIn.at(k).empty()) slot = k;
+        if (slot < 0) return 0;
+    }
+    return containerIn.put(slot, item, 100);
+}
 static CatalogGrid catalogGrid;
 // The slot under the mouse this frame (set while the grids are drawn, read once after: GameUI_Draw).
 static SlotGrid* hoverGrid = nullptr;
@@ -2036,6 +2054,7 @@ void GameUI_Draw(Scene& world) {
     RecipeBook_Update(); // new recipes: a toast
     RunCraftQueue(); // (#824) queued crafts, window open or not
     if (!inventoryOpen) { SlotRules_Cancel(); ReturnCursorStack(); binned = InvSlot{}; container.open = false; tabWindowJustOpened = true; return; } // a stack still held goes back in (#192); (#1080) placed again when it opens
+    if (cursorStack.empty()) cursorCredited = false; // (#1728)
     if (cursorStack.heat > 0.0f) cursorStack.heat = std::max(0.0f, cursorStack.heat - GameFrameTime() / Inventory::kCoolSeconds); // held, it cools as in a cell (#580)
     CheckContainer(world);
     hoverGrid = nullptr; hoverSlot = -1; // (set again as the grids are drawn: #862)
@@ -2234,21 +2253,40 @@ namespace {
 // empty or the same item, else into the inventory.
 static void CursorSink(const std::string& id, int count, float heat, const std::string& data) { // heat: fresh out of a furnace stays hot on the cursor (#580)
     if (count <= 0) return;
+    // (#1728) A take that goes straight onto the cursor never passes addAmount: count it here (a joined client's server already did)
+    const bool count1728 = gNetRole != NetRole::Client;
     if (!data.empty()) { // (#1446) one item with its own record: onto an empty cursor, else into the inventory as it is
-        if (cursorStack.empty()) { cursorStack = InvSlot{}; cursorStack.id = id; cursorStack.centi = 100; cursorStack.heat = heat; cursorStack.data = data; return; }
+        if (cursorStack.empty()) {
+            cursorStack = InvSlot{}; cursorStack.id = id; cursorStack.centi = 100; cursorStack.heat = heat; cursorStack.data = data;
+            if (count1728) inventory.noteObtained(id, 1.0, data);
+            cursorCredited = true;
+            return;
+        }
         ++inventory.muted; inventory.addInstance(id, data, heat); --inventory.muted;
         return;
     }
-    if (cursorStack.empty()) { cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat; return; }
+    if (cursorStack.empty()) {
+        cursorStack.id = id; cursorStack.centi = (int64_t)count * 100; cursorStack.heat = heat;
+        if (count1728) inventory.noteObtained(id, count);
+        cursorCredited = true;
+        return;
+    }
     if (cursorStack.id == id && !cursorStack.hasData()) {
         const int64_t add = (int64_t)count * 100;
         cursorStack.heat = (float)((cursorStack.heat * cursorStack.centi + heat * add) / (double)(cursorStack.centi + add));
         cursorStack.centi += add;
+        if (count1728) inventory.noteObtained(id, count);
+        cursorCredited = true;
         return;
     }
     ++inventory.muted; inventory.addAmount(id, count, heat); --inventory.muted;
 }
-void GameUI_InitPickupFeed() { inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink); }
+void GameUI_InitPickupFeed() {
+    inventory.onAdded = OnPickup; Factory::SetCursorSink(CursorSink);
+    // (#1728) a machine finishing a recipe counts for this game's own quest book, whether or not anyone takes the item (the local
+    // player's world: single player, and a host's own player; a server's teams are credited by Host_Start's hook on top of this)
+    gFactoryMade = [](uint64_t, uint32_t, const std::string& item, int count) { QuestBook_NoteMade(item, count); };
+}
 
 // (#604) Your teammates on the HUD: each one's name and health (offline ones greyed), on the left under the quests; only
 // when joined to a server and in a team of two or more (non-teammates show no health).
@@ -2298,7 +2336,27 @@ static void DrawTierBanner() {
     DrawText(text.c_str(), (w - std::min(MeasureText(text.c_str(), fsText), tw)) / 2, ty, fsText, Fade(Color{ 200, 206, 216, 255 }, alpha));
 }
 
+// (#1713) While the shield is up: a ring round the crosshair, gold with "PARRY" during the parry window (a melee hit or a bite
+// landing now is parried: the attacker staggers), then grey while it only blocks. The window is the shield's (0.22-0.45 s).
+static void DrawBlockRing() {
+    if (!survival.blocking) return;
+    const float s = GameUI_HudScale();
+    const float cx = GetScreenWidth() * 0.5f, cy = GetScreenHeight() * 0.5f, r = 26.0f * s;
+    const double since = SimTime() - survival.blockStartedAt;
+    const bool parry = since >= 0.0 && since <= survival.shieldParryWindow;
+    if (parry) {
+        const float left = 1.0f - (float)(since / std::max(0.01f, survival.shieldParryWindow)); // the window running out: the arc shrinks
+        DrawRing({ cx, cy }, r - 3.0f * s, r, -90.0f, -90.0f + 360.0f * left, 48, Color{ 255, 205, 70, 235 });
+        const int fs = (int)(16 * s);
+        const char* t = "PARRY";
+        DrawText(t, (int)(cx - MeasureText(t, fs) * 0.5f), (int)(cy + r + 4.0f * s), fs, Color{ 255, 205, 70, 235 });
+    } else {
+        DrawRing({ cx, cy }, r - 2.0f * s, r, 0.0f, 360.0f, 48, Fade(LIGHTGRAY, 0.55f));
+    }
+}
+
 void GameUI_DrawHUD(Scene& world) {
+    DrawBlockRing(); // (#1713)
     DrawTeamStrip();
     DrawTierBanner(); // (#226)
     // Speeds against the body you are near (its co-rotating surface frame, as the rocket HUD's "surface" speed): the
@@ -2410,7 +2468,11 @@ static void DrawKeyHints(int x, int y) {
         if (alpha <= 0.01f) return;
     }
     auto K = [](Act a) { return std::string(PlayerInput_KeyName(PlayerInput_Binding(a))); }; // (a copy: the name comes back in one shared buffer)
-    std::string line = terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush" : "LMB mine/chop  RMB place";
+    // (#1713, playtest: "can't find how to parry") A weapon swings; a shield in the off hand blocks with RMB, and raised just
+    // before a hit, parries (the ring round the crosshair shows the window: DrawBlockRing).
+    const bool weapon = terrainTool.heldTool.rfind("weapon_", 0) == 0;
+    std::string line = terrainTool.terraform ? "LMB dig  RMB fill  Ctrl+wheel brush"
+                     : std::string(weapon ? "LMB swing" : "LMB mine/chop") + (terrainTool.rmbBlocks ? "  RMB block (just before a hit: parry)" : "  RMB place");
     line += TextFormat("  %s build  1-0 hotbar  %s inventory  %s telescope  %s lamp", K(Act::BuildMode).c_str(), K(Act::Inventory).c_str(), K(Act::Telescope).c_str(), K(Act::Headlamp).c_str());
     if (terrainTool.creative) line += TextFormat("  %s fly", K(Act::Fly).c_str()); // fly is creative only (#531)
     line += TextFormat("  %s save  %s commands", K(Act::Save).c_str(), K(Act::Chat).c_str());
@@ -2609,5 +2671,216 @@ TEST(GameUiRecipePage, AClickOpensItBesideTheRecipeCraftOneQueuesAndEscClosesItF
     craftQueue.clear(); selectedRecipe = -1;
     GameUI_ToggleInventory();
     terrainTool.creative = creative0;
+}
+#endif
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1730): an item's own record (InvSlot::data) survives every move ----
+#include "unit_helpers.h"
+#include <cstring>
+
+namespace {
+const char* const kRec = "h=bronze;g=wood;b=leather;q=112;s=1;w=37";
+const char* const kRec2 = "h=iron;g=oak;b=leather;q=100;s=0;w=0";
+const char* const kRec3 = "h=copper;g=pine;b=sinew;q=90;s=0;w=5";
+
+struct InventoryMoves : ::testing::Test {
+    void SetUp() override {
+        UnitTest::EnsureItemDB();
+        cursorStack = InvSlot{}; binned = InvSlot{};
+        SlotRules_SetHeld(&cursorStack);
+        inventory.clear();
+    }
+    void TearDown() override { cursorStack = InvSlot{}; binned = InvSlot{}; inventory.clear(); SlotRules_SetHeld(nullptr); SlotRules_SetGrids({}); }
+    // Every place a copy can be: the cells, the cursor, the bin. A move must leave exactly one.
+    static int Copies(const std::string& rec) {
+        int n = 0;
+        for (const InvSlot& s : inventory.grid()) if (!s.empty() && s.data == rec) ++n;
+        if (cursorStack.data == rec && !cursorStack.empty()) ++n;
+        if (binned.data == rec && !binned.empty()) ++n;
+        return n;
+    }
+    static int Put(const char* id, const char* rec) { ++inventory.muted; const int c = inventory.addInstance(id, rec); --inventory.muted; return c; }
+    static int Free() { for (int k = 0; k < Inventory::kGrid; ++k) if (inventory.grid()[k].empty()) return k; return -1; }
+    static int FreeAfter(int not1, int not2 = -1) { for (int k = 0; k < Inventory::kGrid; ++k) if (inventory.grid()[k].empty() && k != not1 && k != not2) return k; return -1; }
+    static int Holding(const std::string& rec) { for (int k = 0; k < Inventory::kCells; ++k) if (!inventory.grid()[k].empty() && inventory.grid()[k].data == rec) return k; return -1; }
+};
+}
+
+TEST_F(InventoryMoves, CursorPickDropAndSwapKeepTheRecord) {
+    const int a = Put("tool_pickaxe", kRec);
+    ASSERT_GE(a, 0);
+    CellClick(a, false, false);
+    EXPECT_EQ(cursorStack.id, "tool_pickaxe");
+    EXPECT_EQ(cursorStack.data, kRec) << "the pick-up took the record with it (#1730)";
+    EXPECT_EQ(cursorStack.centi, 100);
+    EXPECT_TRUE(inventory.grid()[a].empty());
+    const int b = Free();
+    CellClick(b, false, false);
+    EXPECT_EQ(inventory.grid()[b].data, kRec);
+    EXPECT_TRUE(cursorStack.empty());
+    EXPECT_EQ(Copies(kRec), 1);
+
+    // onto another item: they trade places
+    ++inventory.muted; inventory.add("stone", 10); --inventory.muted;
+    int c = -1; for (int k = 0; k < Inventory::kCells; ++k) if (inventory.grid()[k].id == "stone") c = k;
+    ASSERT_GE(c, 0);
+    CellClick(b, false, false); CellClick(c, false, false);
+    EXPECT_EQ(cursorStack.id, "stone"); EXPECT_EQ(cursorStack.centi, 1000); EXPECT_TRUE(cursorStack.data.empty());
+    EXPECT_EQ(inventory.grid()[c].data, kRec);
+    CellClick(b, false, false);
+    EXPECT_EQ(inventory.count("stone"), 10);
+    EXPECT_EQ(Copies(kRec), 1);
+
+    // onto another copy of the same item with another record: a swap, never a merge
+    const int d = Put("tool_pickaxe", kRec2);
+    ASSERT_GE(d, 0);
+    CellClick(c, false, false); CellClick(d, false, false);
+    EXPECT_EQ(cursorStack.data, kRec2); EXPECT_EQ(inventory.grid()[d].data, kRec);
+    CellClick(c, false, false);
+    EXPECT_EQ(Copies(kRec), 1); EXPECT_EQ(Copies(kRec2), 1);
+    EXPECT_EQ(inventory.grid()[c].data, kRec2);
+    EXPECT_EQ(inventory.countInstances("tool_pickaxe"), 2);
+}
+
+TEST_F(InventoryMoves, RightClickAndDragsNeverSplitOrDuplicateIt) {
+    const int a = Put("tool_pickaxe", kRec);
+    CellClick(a, true, false); // right-click: "half" of one unit is the whole item
+    EXPECT_EQ(cursorStack.data, kRec); EXPECT_EQ(cursorStack.centi, 100);
+    EXPECT_TRUE(inventory.grid()[a].empty());
+    const int b = Free();
+    CellClick(b, true, false); // right-click holding: one down
+    EXPECT_EQ(inventory.grid()[b].data, kRec); EXPECT_TRUE(cursorStack.empty());
+
+    // a left drag across three cells and a right drag: the one item lands once
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool right = pass == 1;
+        const int from = Holding(kRec);
+        CellClick(from, false, false);
+        ASSERT_EQ(cursorStack.data, kRec);
+        const int f0 = Free(), f1 = FreeAfter(f0), f2 = FreeAfter(f0, f1);
+        SlotRules_SetGrids({ &playerGrid });
+        SlotInput p; (right ? p.rPress : p.lPress) = true; (right ? p.rDown : p.lDown) = true;
+        SlotRules_Frame(p, &playerGrid, f0);
+        SlotInput m; (right ? m.rDown : m.lDown) = true;
+        SlotRules_Frame(m, &playerGrid, f1); SlotRules_Frame(m, &playerGrid, f2);
+        SlotInput r; (right ? r.rRelease : r.lRelease) = true;
+        SlotRules_Frame(r, &playerGrid, f2);
+        EXPECT_EQ(Copies(kRec), 1) << (right ? "right drag" : "left drag");
+        EXPECT_TRUE(cursorStack.empty());
+        EXPECT_GE(Holding(kRec), 0);
+    }
+}
+
+TEST_F(InventoryMoves, ItemsWithARecordNeverMergeOrGather) {
+    const int s = Put("stone", kRec);
+    ++inventory.muted; inventory.add("stone", 10); --inventory.muted;
+    int plain = -1; for (int k = 0; k < Inventory::kCells; ++k) if (inventory.grid()[k].id == "stone" && !inventory.grid()[k].hasData()) plain = k;
+    ASSERT_GE(s, 0); ASSERT_GE(plain, 0);
+    // the record's stone onto the plain stack: a swap, not a stack of 11
+    CellClick(s, false, false); CellClick(plain, false, false);
+    EXPECT_EQ(cursorStack.data, ""); EXPECT_EQ(cursorStack.centi, 1000);
+    EXPECT_EQ(inventory.grid()[plain].data, kRec); EXPECT_EQ(inventory.grid()[plain].centi, 100);
+    CellClick(s, false, false); // the plain stack down again
+    // the plain stack onto the record's stone, with right-click
+    CellClick(s, false, false); CellClick(plain, true, false);
+    EXPECT_EQ(cursorStack.data, kRec); EXPECT_EQ(cursorStack.centi, 100);
+    EXPECT_EQ(inventory.grid()[plain].centi, 1000);
+    EXPECT_TRUE(inventory.grid()[plain].data.empty());
+    // a double click while holding it gathers nothing
+    SlotRules_SetGrids({ &playerGrid });
+    SlotInput dbl; dbl.lPress = dbl.lDown = dbl.lDouble = true;
+    SlotRules_Frame(dbl, &playerGrid, plain);
+    EXPECT_EQ(cursorStack.data, kRec); EXPECT_EQ(cursorStack.centi, 100);
+    EXPECT_EQ(inventory.grid()[plain].centi, 1000);
+    EXPECT_EQ(Copies(kRec), 1);
+}
+
+TEST_F(InventoryMoves, ShiftClickAndHotbarKeysKeepTheRecord) {
+    const int tool = Put("tool_pickaxe", kRec);   // a tool lands on the hotbar
+    ASSERT_GE(tool, Inventory::kGrid);
+    CellClick(tool, false, true);                  // Shift-click: hotbar -> grid
+    int g = Holding(kRec);
+    ASSERT_GE(g, 0); EXPECT_LT(g, Inventory::kGrid);
+    CellClick(g, false, true);                     // and back
+    g = Holding(kRec);
+    EXPECT_GE(g, Inventory::kGrid);
+    EXPECT_EQ(Copies(kRec), 1);
+
+    const int s = Put("stone", kRec2);
+    ASSERT_GE(s, 0);
+    CellClick(s, false, true);
+    EXPECT_EQ(Copies(kRec2), 1);
+
+    // the 1-0 keys and the off-hand key swap the cell with that cell
+    SlotRules_SetGrids({ &playerGrid });
+    const int from = Holding(kRec2);
+    SlotInput k; k.hotbarKey = 3;
+    SlotRules_Frame(k, &playerGrid, from);
+    EXPECT_EQ(inventory.grid()[Inventory::kGrid + 3].data, kRec2);
+    SlotInput o; o.offHandKey = true;
+    SlotRules_Frame(o, &playerGrid, Inventory::kGrid + 3);
+    EXPECT_EQ(inventory.grid()[Inventory::kOffHand].data, kRec2);
+    EXPECT_EQ(Copies(kRec2), 1);
+    EXPECT_EQ(Copies(kRec), 1);
+}
+
+TEST_F(InventoryMoves, TheBinTheWindowCloseAndAServerTakeKeepTheRecord) {
+    const int a = Put("tool_pickaxe", kRec);
+    CellClick(a, false, false);
+    BinClick();
+    EXPECT_TRUE(cursorStack.empty()); EXPECT_EQ(binned.data, kRec);
+    BinClick();
+    EXPECT_EQ(cursorStack.data, kRec); EXPECT_TRUE(binned.empty());
+    ReturnCursorStack(); // the window closes
+    EXPECT_TRUE(cursorStack.empty());
+    EXPECT_EQ(Copies(kRec), 1);
+    EXPECT_GE(Holding(kRec), 0);
+
+    // a take from a chest or machine arrives through the cursor sink: with its record, onto an empty cursor
+    CursorSink("tool_pickaxe", 1, 0.0f, kRec2);
+    EXPECT_EQ(cursorStack.data, kRec2); EXPECT_EQ(cursorStack.centi, 100);
+    CursorSink("tool_pickaxe", 1, 0.0f, kRec3); // the cursor is busy: into the inventory as it is
+    EXPECT_EQ(cursorStack.data, kRec2);
+    EXPECT_EQ(inventory.countInstances("tool_pickaxe"), 2);
+    CellClick(Free(), false, false);
+    EXPECT_EQ(Copies(kRec), 1); EXPECT_EQ(Copies(kRec2), 1); EXPECT_EQ(Copies(kRec3), 1);
+}
+
+TEST_F(InventoryMoves, DroppedItemsKeepTheirRecordOnTheGroundAndInTheSave) {
+    Combat_Reset();
+    InvSlot a; a.id = "tool_pickaxe"; a.centi = 100; a.data = kRec;
+    InvSlot b = a; b.data = kRec2;
+    InvSlot plain; plain.id = "stone"; plain.centi = 300;
+    const DVec3 spot{ 0.0, 60000.0, 0.0 };
+    ASSERT_TRUE(Combat_DropFor("terra", spot, a, ""));
+    ASSERT_TRUE(Combat_DropFor("terra", spot, b, "")) << "same item, another record: its own entry in the pile";
+    ASSERT_TRUE(Combat_DropFor("terra", spot, plain, ""));
+    ASSERT_TRUE(Combat_DropFor("terra", spot, plain, ""));
+    EXPECT_EQ(Combat_DroppedPiles(), 1);
+
+    // the pile survives a save and a load
+    const std::string path = UnitTest::ScratchDir() + "/pile.txt";
+    FILE* f = fopen(path.c_str(), "w+b");
+    ASSERT_NE(f, nullptr);
+    Combat_Save(f);
+    fflush(f); rewind(f);
+    Combat_Reset();
+    char tok[64];
+    while (fscanf(f, " %63s", tok) == 1) Combat_LoadLine(tok, f);
+    fclose(f);
+    EXPECT_EQ(Combat_DroppedPiles(), 1);
+
+    // walking away arms it, walking back takes everything: both records, one each, and the plain stone together
+    Inventory inv;
+    const DVec3 away{ 0.0, 60000.0, 50.0 };
+    Combat_PickUpGravesFor("terra", away, inv, "", false, false);
+    EXPECT_TRUE(Combat_PickUpGravesFor("terra", spot, inv, "", false, false));
+    EXPECT_EQ(inv.countInstances("tool_pickaxe"), 2);
+    EXPECT_GE(inv.findInstance("tool_pickaxe", kRec), 0);
+    EXPECT_GE(inv.findInstance("tool_pickaxe", kRec2), 0);
+    EXPECT_EQ(inv.count("stone"), 6);
+    EXPECT_EQ(Combat_DroppedPiles(), 0);
+    Combat_Reset();
 }
 #endif

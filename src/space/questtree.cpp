@@ -144,6 +144,12 @@ void QuestTree_Update() {
 
 void QuestTree_Reset() { Load(); Done().clear(); }
 int QuestTree_NodeCount() { Load(); return (int)nodes.size(); }
+double QuestTree_GetCap(const std::string& item) { // (#1728) the most any "get" node asks of the item (wildcards match)
+    Load();
+    double cap = 0.0;
+    for (const Node& n : nodes) if (n.kind == "get" && ItemMatches(n.target, item)) cap = std::max(cap, n.n);
+    return cap;
+}
 bool QuestTree_IsDone(const std::string& id) { return Done().count(id) > 0; }
 bool QuestTree_IsOpen(const std::string& id) { const Node* n = Find(id); return n && !Done().count(id) && ReqsDone(*n); }
 

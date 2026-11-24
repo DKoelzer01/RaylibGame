@@ -399,6 +399,7 @@ struct PlotSim {
     long long lastAdvance = 0; // (Summary) the tick its buffers were last advanced to
     bool loadedSummary = false; // (#1302) loaded from a save while in the summary sim: far, it goes on there with its saved caps
     long long bucketSince = 0; bool bucketFull = false; // (#1261) the near crafts' current 30 s bucket began; a whole one before it
+    std::vector<std::pair<int, int>> completed;         // (#1728) (item, count) of recipes this plot really finished since the last hand-over (TickPlot only: never the summary sim); emptied under viewMutex
 };
 
 // (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
@@ -555,6 +556,8 @@ bool RecipeLocked(const Recipe& r) { if (lockedSim.empty()) return false; for (c
 struct ItemOut { int item = 0, count = 0; uint32_t to = 0; int centi = 0; std::string data; }; // (#1446 2b) data: one item's record (count 1) // (#1102) centi: a fraction more (from a chest) // (#332) to: the player it goes to (0: this game's own inventory)
 std::vector<ItemOut> results;     // sim -> main: (item, count) back to the inventory
 std::vector<ItemOut> cursorResults; // sim -> main: (item, count) onto the cursor (#192)
+struct MadeOut { uint64_t body = 0; uint32_t plot = 0; int item = 0, count = 0; };
+std::vector<MadeOut> madeResults; // (#1728) sim -> main: recipes machines finished, in plot order (a hand-over to gFactoryMade by Sync)
 void (*cursorSink)(const std::string&, int, float, const std::string&) = nullptr; // (#1446) data: one item's record
 std::vector<ItemOut> refunds;     // sim thread: contents of removed machines (to results)
 
@@ -1423,7 +1426,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             m.quality = 100; // (#1446 2c) used
             for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
-            for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); } // (#1199)
+            for (const Stack& s : r.out) { made += s.count; ps.stats.items[s.item].made.add(s.count); if (ps.completed.size() < 4096) ps.completed.emplace_back(s.item, s.count); } // (#1199; #1728 completed: counts for the owner's quests)
             for (const Stack& s : r.in) ps.stats.items[s.item].used.add(s.count);
             ++m.crafts[m.recipe]; // (#1261) the measuring window
             if (ps.mode == PlotSim::Mode::Near) ++m.nearCur[m.recipe]; // (and the near minute)
@@ -2092,6 +2095,10 @@ void SimLoop() {
                 FillCableView();
                 for (auto& r : back) results.push_back(r);
                 for (auto& r : toCursor) cursorResults.push_back(r);
+                for (PlotSim& ps : plots) { // (#1728) finished recipes, in plot order (deterministic); a full queue drops the newest
+                    for (const auto& [item, count] : ps.completed) if (madeResults.size() < 65536) madeResults.push_back({ ps.body, ps.plot, item, count });
+                    ps.completed.clear();
+                }
                 pumpView.clear();
                 for (const auto& [k, n] : drained) if (auto pit = pumpPending.find(k); pit != pumpPending.end() && (pit->second -= n) <= 0) pumpPending.erase(pit);
                 if (reset) pumpPending.clear();
@@ -2278,6 +2285,12 @@ void Factory::Sync(Scene& world) {
         std::lock_guard<std::mutex> v(viewMutex);
         cur.swap(cursorResults);
     }
+    std::vector<MadeOut> finished; // (#1728) recipes the machines completed since the last Sync: the owner's quests count them (nobody need take them)
+    {
+        std::lock_guard<std::mutex> v(viewMutex);
+        finished.swap(madeResults);
+    }
+    if (gFactoryMade) for (const MadeOut& f : finished) gFactoryMade(f.body, f.plot, tables.name(f.item & ~kHotItem), f.count);
     // kHotItem marks what came out of a heating machine's output (#580): it arrives hot, in the inventory or on the cursor.
     for (auto& r : back) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; const double amount = r.count + r.centi / 100.0; /* (#1102) */ if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, amount, h, r.data); else if (!r.data.empty()) inventory.addInstance(id, r.data, h); else inventory.addAmount(id, amount, h); } // (#332) a server: to that player
     for (auto& r : cur) { const std::string id = tables.name(r.item & ~kHotItem); const float h = (r.item & kHotItem) ? 1.0f : 0.0f; if (r.to && gFactoryDeliver) gFactoryDeliver(r.to, id, r.count, h, r.data); else if (cursorSink) cursorSink(id, r.count, h, r.data); else if (!r.data.empty()) inventory.addInstance(id, r.data, h); else inventory.addAmount(id, r.count, h); }

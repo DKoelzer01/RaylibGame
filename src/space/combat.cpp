@@ -10,6 +10,7 @@
 #include "navigation.h"
 #include "gameui.h"
 #include "net.h"
+#include "itemdata.h"
 
 #include "raymath.h"
 #include "rlgl.h"
@@ -448,7 +449,7 @@ bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& sta
     ++graveVersion; // (#865: a server's clients see it)
     for (Grave& g : graves) // onto a pile this player just dropped here
         if (g.dropped && !g.armed && g.owner == who && g.body == body && (g.local - at).length() < kDropMerge) {
-            auto it = std::find_if(g.items.begin(), g.items.end(), [&](const InvSlot& c) { return c.id == stack.id; });
+            auto it = std::find_if(g.items.begin(), g.items.end(), [&](const InvSlot& c) { return c.id == stack.id && !c.hasData() && !stack.hasData(); }); // (#1730) a record never merges
             if (it != g.items.end()) it->centi += stack.centi; else g.items.push_back(stack);
             g.diedAt = WallNow();
             return true;
@@ -469,7 +470,9 @@ bool Combat_Drop(PlayerSession& s, const InvSlot& stack) {
     if (stack.empty() || !s.player.nearest) return false;
     if (gNetRole == NetRole::Client) { // (#865) the server drops it from the inventory it keeps; its delta takes it from ours
         if (!gDropRequest) return false;
-        ++s.inventory.muted; s.inventory.addAmount(stack.id, stack.amount(), stack.heat); --s.inventory.muted; // (back first, as MachineAct_Insert)
+        ++s.inventory.muted; // (back first, as MachineAct_Insert; #1730: an item with a record goes back as itself)
+        if (stack.hasData()) s.inventory.addInstance(stack.id, stack.data, stack.heat); else s.inventory.addAmount(stack.id, stack.amount(), stack.heat);
+        --s.inventory.muted;
         gDropRequest(stack.id, stack.centi, stack.data);
         return true;
     }
@@ -560,17 +563,21 @@ void Combat_DrawGraves(Scene& world) {
 
 void Combat_Reset() { graves.clear(); graveCounter = 0; }
 
+// (#1730) A pile's or grave's item as one save token: "id", or "id|record" for an item with its own data (ItemData
+// records hold no spaces or '|'; older saves have only the id, so they still load).
+static std::string SavedItemToken(const InvSlot& it) { return it.hasData() ? it.id + "|" + it.data : it.id; }
+
 void Combat_Save(FILE* f) {
     fprintf(f, "grave_counter %d\n", graveCounter);
     for (const Grave& g : graves) {
         if (g.dropped) { // #564
             fprintf(f, "dropped %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.armed ? 1 : 0, g.items.size());
-            for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
+            for (const InvSlot& it : g.items) fprintf(f, " %s %lld", SavedItemToken(it).c_str(), (long long)it.centi);
             fprintf(f, "\n");
             continue;
         }
         fprintf(f, "grave %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.offHand, g.items.size());
-        for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
+        for (const InvSlot& it : g.items) fprintf(f, " %s %lld", SavedItemToken(it).c_str(), (long long)it.centi);
         fprintf(f, " %s\n", g.name.c_str()); // last: the name has a space in it
         // (#804) whose, when, the stone: a line of its own after the grave's (older saves lack it: anyone's, now)
         fprintf(f, "grave_mp %u %lld %lld %d %s\n", g.id, (long long)g.diedAt, (long long)g.ownerSeen, (int)g.style, g.owner.empty() ? "-" : g.owner.c_str());
@@ -599,11 +606,15 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
     if (dropped) { g.dropped = true; g.armed = flag != 0; } else g.offHand = flag;
     g.body = body;
     for (size_t i = 0; i < n; ++i) {
-        char id[64] = {};
+        char tok[512] = {};
         long long c = 0;
-        if (fscanf(f, " %63s %lld", id, &c) != 2) return true;
+        if (fscanf(f, " %511s %lld", tok, &c) != 2) return true;
+        char id[64] = {};
+        std::string data; // (#1730) "id|record"
+        if (const char* bar = strchr(tok, '|')) { snprintf(id, sizeof id, "%.*s", (int)(bar - tok), tok); data = bar + 1; if (!ItemData::Valid(data)) data.clear(); }
+        else snprintf(id, sizeof id, "%s", tok);
         if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
-        if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
+        if (itemDB.find(id) && c > 0) { InvSlot s{ id, (int64_t)c }; s.data = data; g.items.push_back(s); }
         else if ((int)i == g.offHand) g.offHand = -1;
     }
     if (!dropped) { // a pile has no name

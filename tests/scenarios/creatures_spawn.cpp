@@ -1,6 +1,6 @@
 // creatures/cave-spawn (#1223, Plan 12 spawn statistics): cave creatures spawn in the cave graph near the player, by its
 // rules. A test row makes the hornhide a cave dweller (habitat=cave, 6 m+ deep, dark, 2 a chunk, nests); the player stands
-// on the surface over seed 42's nearest chamber. Within a few passes: sites were found and creatures placed, every one of
+// on the surface over seed 42's nearest chamber (#1740: none spawn there), then in it. Within a few passes: sites were found and creatures placed, every one of
 // them underground (6 m+ under the surface), standing in open space, never within 24 m of the player, and no chunk over its
 // cap. On peaceful (forgotten chunks, a fresh pass), none spawn. The counts are reported (deterministic from the seed).
 #include "scenario.h"
@@ -43,9 +43,27 @@ SCENARIO("creatures/cave-spawn") {
         S.count0 = Animals_Count();
         return true;
     });
-    s.step("a few spawn passes", 60.0, [](ScenarioCtx& c) {
+    // (#1740) On the surface over the chamber: nothing spawns (the player is not underground).
+    s.step("on the surface over it: none spawn", 60.0, [](ScenarioCtx& c) {
         c.waitingFor("the terrain over the chamber built, then 5 s (two passes)");
         static double idleAt = -1.0;
+        if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) { idleAt = c.t; S.spawned0 = Animals_CaveSpawned(); Animals_CaveSpawnNow(); }
+        if (idleAt < 0.0 || c.t < idleAt + 5.0) return false;
+        c.eq("no cave creatures while the player is on the surface", Animals_CaveSpawned() - S.spawned0, 0);
+        return true;
+    });
+    // (#1740) Down in the chamber (its floor under the centre): now they spawn, 24-64 m away, unseen, underground.
+    s.step("in the chamber: a few spawn passes", 60.0, [](ScenarioCtx& c) {
+        static double idleAt = -1.0;
+        if (c.t < 0.05) {
+            const Vector3 up = Vector3Normalize(S.chamber);
+            Vector3 feet = S.chamber;
+            for (float d = 0.0f; d < 40.0f; d += 0.25f) { const Vector3 q = Vector3Subtract(S.chamber, Vector3Scale(up, d)); if (c.body->densityAt(q) >= ISO_LEVEL) { feet = Vector3Add(q, Vector3Scale(up, 0.3f)); break; } }
+            player.placeAt(c.world, *c.body, c.body->toWorld(feet));
+            idleAt = -1.0;
+            return false;
+        }
+        c.waitingFor("the chamber built, then 5 s (two passes)");
         if (idleAt < 0.0 && c.t > 1.0 && WorldIdle()) { idleAt = c.t; Animals_CaveSpawnNow(); }
         if (idleAt < 0.0 || c.t < idleAt + 5.0) return false;
         c.metric("spawn sites in the last pass", Animals_CaveSites(), "", false);
@@ -53,7 +71,7 @@ SCENARIO("creatures/cave-spawn") {
         c.gt("spawn sites found around the chamber", Animals_CaveSites(), 0.5);
         c.gt("cave creatures spawned", Animals_CaveSpawned(), 0.5);
         const Vector3 me = FeetLocal(c);
-        int under = 0, open = 0, far = 0, n = 0;
+        int under = 0, open = 0, far = 0, within = 0, n = 0;
         std::map<std::tuple<int, int, int>, int> perChunk;
         for (int i = S.count0; i < Animals_Count(); ++i) {
             if (Animals_Body(i) != c.body->name || (Animals_SpeciesOf(i).first != "hornhide" && Animals_SpeciesOf(i).first != "creature_nest")) continue; // (the cave dwellers and nests only)
@@ -64,12 +82,14 @@ SCENARIO("creatures/cave-spawn") {
             under += depth >= 5.5f;
             open += c.body->densityAt(Vector3Add(p, Vector3Scale(dir, 0.6f))) < ISO_LEVEL;
             far += Vector3Distance(p, me) >= 23.5f;
+            within += Vector3Distance(p, me) <= 64.5f || Animals_SpeciesOf(i).first == "creature_nest";
             ++perChunk[{ (int)floorf(p.x / 64.0f), (int)floorf(p.y / 64.0f), (int)floorf(p.z / 64.0f) }];
         }
         c.metric("new animals", n, "", false);
         c.eq("all underground (6 m+)", under, n);
         c.eq("all in open space", open, n);
         c.eq("none within 24 m of the player", far, n);
+        c.eq("all within 64 m of the player (or nests)", within, n);
         int worst = 0; for (const auto& kv : perChunk) worst = std::max(worst, kv.second);
         c.lt("most in one chunk (cap 2 plus a nest)", worst, 3.5);
         return true;
@@ -87,6 +107,22 @@ SCENARIO("creatures/cave-spawn") {
         }
         c.metric("cave creatures after 20 s", n, "", false);
         c.eq("all still underground (3 m+) after 20 s", under, n);
+        return true;
+    });
+    // (#1740) The player leaves (150 m away, on the surface): the cave dwellers go home (the nests stay).
+    s.step("far away: they go home", 30.0, [](ScenarioCtx& c) {
+        static bool moved = false;
+        if (!moved) {
+            moved = true;
+            const Vector3 up = Vector3Normalize(S.chamber);
+            const Vector3 side = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+            player.spawnOn(c.world, *c.body, c.body->dirToWorld(Vector3Normalize(Vector3Add(S.chamber, Vector3Scale(side, 150.0f)))));
+            return false;
+        }
+        if (c.t < 3.0) return false;
+        int left = 0;
+        for (int i = S.count0; i < Animals_Count(); ++i) left += Animals_Body(i) == c.body->name && Animals_SpeciesOf(i).first == "hornhide";
+        c.eq("cave dwellers left after the player went 150 m away", left, 0);
         return true;
     });
     s.step("peaceful: none", 15.0, [](ScenarioCtx& c) {

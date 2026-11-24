@@ -313,7 +313,7 @@ void Inventory::cool(float dt) {
     for (InvSlot& s : slots) if (s.heat > 0.0f) s.heat = std::max(0.0f, s.heat - dt / kCoolSeconds);
 }
 
-double Inventory::addAmount(const std::string& id, double amount, float heat) {
+double Inventory::addAmount(const std::string& id, double amount, float heat, bool credit) {
     if (amount <= 0.0 || id.empty()) return 0.0;
     if (IsWildcardItem(id)) return amount; // a recipe tag (any_planks), never an item you hold (#269)
     heat = std::clamp(heat, 0.0f, 1.0f);
@@ -343,9 +343,17 @@ double Inventory::addAmount(const std::string& id, double amount, float heat) {
     if (!tool) fill(kGrid, kSlots);
     if (left > 0) overflowed = true;
     const double added = (KindOf(id) == ItemKind::Resource ? ToCenti(amount) : (int64_t)floor(amount + 1e-6) * 100) / 100.0 - left / 100.0;
-    obtained[id] += added;
+    if (credit) obtained[id] += added;
     if (onAdded && muted <= 0 && added > 0.0) onAdded(id, added); // the pickup feed (#208)
     return left / 100.0;
+}
+
+void Inventory::noteObtained(const std::string& id, double amount, const std::string& data) {
+    if (id.empty() || IsWildcardItem(id)) return;
+    if (data.empty()) { if (amount > 0.0) obtained[id] += amount; return; }
+    obtained[id] += 1.0; // as addInstance: one, and the old tool id a composed tool also counts as
+    const std::string legacy = Composed_LegacyId(id, data);
+    if (!legacy.empty()) obtained[legacy] += 1.0;
 }
 
 bool Inventory::removeAmount(const std::string& id, double amount) {
@@ -389,9 +397,9 @@ int Inventory::countInstances(const std::string& id) const {
     return n;
 }
 
-int Inventory::addInstance(const std::string& id, const std::string& data, float heat) {
+int Inventory::addInstance(const std::string& id, const std::string& data, float heat, bool credit) {
     if (id.empty() || IsWildcardItem(id)) return -1;
-    if (data.empty()) { const bool fit = addAmount(id, 1, heat) <= 0.0; return fit ? 0 : -1; }
+    if (data.empty()) { const bool fit = addAmount(id, 1, heat, credit) <= 0.0; return fit ? 0 : -1; }
     auto findFree = [&](int from, int to) { for (int i = from; i < to; ++i) if (slots[i].empty()) return i; return -1; };
     const bool tool = KindOf(id) == ItemKind::Tool;
     int cell = tool ? findFree(kGrid, kSlots) : -1;
@@ -401,11 +409,11 @@ int Inventory::addInstance(const std::string& id, const std::string& data, float
     InvSlot& s = slots[cell];
     s.id = id; s.centi = 100; s.heat = std::clamp(heat, 0.0f, 1.0f); s.data = data;
     if (journal) instanceLog.push_back({ id, +1, data, {} });
-    obtained[id] += 1.0;
+    if (credit) obtained[id] += 1.0;
     // (#1449 T1) a composed tool also counts as the old tool its head makes it (tasks say "get stone_pickaxe 1"); the
     // pickup line and a team's book (onAdded) get that name: "Stone pickaxe"
     const std::string legacy = Composed_LegacyId(id, data);
-    if (!legacy.empty()) obtained[legacy] += 1.0;
+    if (credit && !legacy.empty()) obtained[legacy] += 1.0;
     if (onAdded && muted <= 0) onAdded(legacy.empty() ? id : legacy, 1.0);
     return cell;
 }
@@ -726,6 +734,26 @@ TEST_F(InventoryTest, HaftingAHeadMakesAComposedToolThatCountsAsTheOldOne) {
     EXPECT_EQ(Composed_LegacyId("tool_hoe", Composed_MakeData("bronze")), "") << "there was no bronze hoe";
     EXPECT_EQ(Composed_LegacyId("tool_pickaxe", Composed_MakeData("flint")), "");
     EXPECT_EQ(Composed_LegacyId("weapon_sword", Composed_MakeData("steel")), "");
+}
+
+TEST_F(InventoryTest, NoteObtainedCreditsLikeAddAmountAndACreditedStackDoesNotDoubleOnReturn) { // (#1728)
+    Inventory a, b;
+    a.addAmount("stone", 3.0);
+    b.noteObtained("stone", 3.0);
+    EXPECT_DOUBLE_EQ(b.obtainedTotal("stone"), a.obtainedTotal("stone")) << "noteObtained credits as addAmount does";
+    EXPECT_EQ(b.count("stone"), 0) << "and puts nothing in a cell";
+    bool fed = false;
+    b.onAdded = [&](const std::string&, double) { fed = true; };
+    b.noteObtained("stone", 2.0);
+    EXPECT_FALSE(fed) << "not a pickup";
+    EXPECT_DOUBLE_EQ(b.obtainedTotal("stone"), 5.0);
+    b.noteObtained("stone", 0.0); b.noteObtained("", 4.0);
+    EXPECT_DOUBLE_EQ(b.obtainedTotal("stone"), 5.0) << "nothing for a zero amount or no item";
+    b.addAmount("stone", 5.0, 0.0f, false); // the credited cursor stack coming back in
+    EXPECT_DOUBLE_EQ(b.obtainedTotal("stone"), 5.0) << "credit=false: not counted twice";
+    EXPECT_EQ(b.count("stone"), 5);
+    b.addAmount("stone", 1.0);
+    EXPECT_DOUBLE_EQ(b.obtainedTotal("stone"), 6.0) << "the default still credits";
 }
 
 TEST_F(InventoryTest, CraftNeedsRoomForTheOutput) {
