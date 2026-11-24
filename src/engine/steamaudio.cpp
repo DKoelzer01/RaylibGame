@@ -217,13 +217,13 @@ struct VoiceFx {
     float occ = 1.0f, trans[3] = { 1, 1, 1 };
 };
 
-bool Load() {
+bool Load(bool offline) {
     if (active) return true;
 #if RAYLIBGAME_HEADLESS_PLATFORM
     status = "off (server build)";
-    if ((true)) return false;
+    if (!offline) return false; // (offline: a test drives the effects with no device, #1724)
 #endif
-    if (const char* e = getenv("RAYLIBGAME_STEAM_AUDIO"); e && e[0] == '0') { status = "off (RAYLIBGAME_STEAM_AUDIO=0)"; return false; }
+    if (const char* e = getenv("RAYLIBGAME_STEAM_AUDIO"); !offline && e && e[0] == '0') { status = "off (RAYLIBGAME_STEAM_AUDIO=0)"; return false; }
 #if defined(_WIN32)
     lib = DynLib_Open("phonon.dll");
     if (!lib) { status = "not found (phonon.dll: tools/fetch_steamaudio.sh)"; return false; }

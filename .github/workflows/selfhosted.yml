@@ -199,7 +199,7 @@ jobs:
           RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
         run: |
           set +e
-          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario tag:craft,tag:skills,tag:world,tag:caves,tag:combat,tag:creatures,tag:audio --scenario-no-record --scenario-out "$RUN/scenarios/part2" \
             > scenarios-2.log 2>&1
           rc=$?
           set -e
