@@ -16,7 +16,6 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
-#include <cstdint>
 
 namespace {
 constexpr double kHoldSeconds = 10.0;
@@ -29,17 +28,16 @@ struct HoldState {
     // What the aim is made from, in the body's frame and double: how far each wandered from its first value while still.
     DVec3 feet0{}, cam0{}, aim0{}; Vector3 fwd0{};
     double feetWob = 0.0, camWob = 0.0, fwdWob = 0.0, aimWob = 0.0; // m, m, deg, m
-    int maxSteps = 0; // the new plot origin's largest move on one axis, in float steps (ulps) of that coordinate
+    double maxGrains = 0.0; // the new plot origin's largest move on one axis, in float steps of its largest coordinate
 };
 HoldState st;
 
-// How many representable floats lie between a and b (0: equal, 1: neighbours). Same-sign values only (body-local coordinates
-// of a point 3 m from a player 60 km out keep their signs).
-int FloatSteps(float a, float b) {
-    int32_t ia, ib; std::memcpy(&ia, &a, 4); std::memcpy(&ib, &b, 4);
-    if ((ia < 0) != (ib < 0)) return a == b ? 0 : 1 << 20; // (a sign change: far beyond any rounding)
-    const int64_t d = (int64_t)ia - (int64_t)ib;
-    return (int)std::min<int64_t>(d < 0 ? -d : d, 1 << 20);
+// The float grain of a body-local point: the spacing of floats at its largest coordinate (3.9 mm at 32-64 km, 1.95 mm at
+// 16-32 km). The transforms that make the point round all three axes at about that size, so a still point flips by up to one
+// grain on any axis - a small coordinate's own (much finer) ulps say nothing about it.
+double Grain(Vector3 p) {
+    const float m = std::max({ fabsf(p.x), fabsf(p.y), fabsf(p.z) });
+    return (double)nextafterf(m, INFINITY) - (double)m;
 }
 
 void Build(ScenarioDef& s) {
@@ -100,7 +98,8 @@ void Build(ScenarioDef& s) {
             if (plot != st.plot || (plot && (origin.x != st.origin.x || origin.y != st.origin.y || origin.z != st.origin.z))) ++st.cellFlips;
             if (!plot) {
                 st.maxMove = std::max(st.maxMove, (double)Vector3Distance(newOrigin, st.newOrigin));
-                st.maxSteps = std::max({ st.maxSteps, FloatSteps(newOrigin.x, st.newOrigin.x), FloatSteps(newOrigin.y, st.newOrigin.y), FloatSteps(newOrigin.z, st.newOrigin.z) });
+                const Vector3 d = Vector3Subtract(newOrigin, st.newOrigin);
+                st.maxGrains = std::max(st.maxGrains, std::max({ fabsf(d.x), fabsf(d.y), fabsf(d.z) }) / Grain(st.newOrigin));
             }
         }
         c.waitingFor("10 s holding still");
@@ -118,13 +117,13 @@ void Build(ScenarioDef& s) {
         c.metric("new plot origin movement", st.maxMove * 1000.0, "mm");
         c.check("the build tool aimed at the ground", st.aimed);
         // (#1381, re-scoped) gated on what shows: no flip to another plot or cell, and a new plot's ghost box moving no more
-        // than one float step on any axis. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye smoothing,
-        // interpolation; F4 #1412), and rounding a wobbling value flips between neighbouring floats (1.95-3.9 mm apart at
-        // 16-60 km) now and then. (#1759) A 5 mm bound on the distance failed ~1 run in 10: one step on each of two axes is
-        // 5.5 mm. A real wander is many steps.
+        // than one float grain (Grain) on any axis. Bit-exact equality was too strict: a still camera wobbles ~0.06 mm (eye
+        // smoothing, interpolation; F4 #1412), and rounding a wobbling value flips between neighbouring floats now and then.
+        // (#1759) A 5 mm bound on the distance failed ~1 run in 10: one grain (3.9 mm) on each of two axes is 5.5 mm.
         c.lt("plot or cell flips while still", st.cellFlips, 1);
-        c.metric("new plot origin movement (float steps, largest axis)", st.maxSteps, "ulp");
-        c.lt("a new plot's origin moved more than one float step on an axis while still", st.maxSteps, 2);
+        c.metric("new plot origin movement (float grains, largest axis)", st.maxGrains, "grains");
+        c.note(TextFormat("the new plot origin's grain: %.2f mm; it moved up to %.2f grains on an axis", Grain(st.newOrigin) * 1000.0, st.maxGrains));
+        c.lt("a new plot's origin moved more than one float grain on an axis while still", st.maxGrains, 1.01);
         buildTool.active = false;
         return true;
     });
