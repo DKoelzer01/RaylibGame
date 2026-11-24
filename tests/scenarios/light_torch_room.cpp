@@ -5,6 +5,7 @@
 // and the open air on the surface above stay dark (no light through rock); a tunnel dug out of the room lights up along
 // its first metres (terrain edits relight). Views from a corner and the middle are kept for a person to judge.
 #include "scenario.h"
+#include "animals.h"
 #include "lightlevel.h"
 #include "player.h"
 #include "plots.h"
@@ -89,7 +90,7 @@ SCENARIO("light/torch-room") {
         if (!dug) {
             dug = true;
             c.check("the tunnel's rock is dark first", Level(S.pt(14.0f, 2.0f, kFloor + 1.0f)) == 0);
-            TerrainEdit t = S.box(11.0f, 20.0f, 1.0f, 3.0f, kFloor, kFloor + 2.5f);
+            TerrainEdit t = S.box(11.0f, 34.0f, 1.0f, 3.0f, kFloor, kFloor + 2.5f); // 22 m past the room: its far end is out of every torch's reach
             ApplyTerrainEdits(*c.body, &t, 1);
         }
         c.camera(S.pt(6.0f, 2.0f, kFloor + 1.7f), S.pt(20.0f, 2.0f, kFloor + 1.0f), S.home);
@@ -102,6 +103,11 @@ SCENARIO("light/torch-room") {
             checked = true;
             const int in = Level(S.pt(14.0f, 2.0f, kFloor + 1.0f));
             c.check("3 m into the tunnel is lit", in >= 20, TextFormat("level %d", in));
+            // (#1739 PR 4) the cave spawn rule reads it: no spawn in the lit room, one possible at the dark far end
+            const Vector3 up = Vector3Normalize(S.home);
+            c.check("a cave spawn site in the room is not dark", !Animals_CaveSiteDark(*c.body, S.pt(2.0f, 2.0f, kFloor + 0.1f), up));
+            c.check("a site at the tunnel's far end is dark", Animals_CaveSiteDark(*c.body, S.pt(32.0f, 2.0f, kFloor + 0.1f), up),
+                    TextFormat("level %d", Level(S.pt(32.0f, 2.0f, kFloor + 1.1f))));
         }
         c.camera(S.pt(6.0f, 2.0f, kFloor + 1.7f), S.pt(20.0f, 2.0f, kFloor + 1.0f), S.home);
         return c.t > 2.0;

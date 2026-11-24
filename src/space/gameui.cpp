@@ -1,4 +1,5 @@
 #include "gameui.h"
+#include "lightlevel.h"
 #include "claims.h"
 #include "machineact.h"
 #include "playerinput.h"
@@ -2426,6 +2427,11 @@ void GameUI_DrawHUD(Scene& world) {
         const char* biome = Survival_BiomeName();
         const bool weather = Weather_Here().kind != WeatherKind::Clear && biome[0];
         if (biome[0]) { line(weather ? TextFormat("%s   %s", biome, Weather_Name(Weather_Here().kind)) : biome, Fade(RAYWHITE, 0.8f)); }
+        if (terrainTool.creative && player.nearest && LightLevel_On()) { // (#1739) the light grid at head height (creative: a debugging readout)
+            const Vector3 feet = player.nearest->toLocalOf(player.position, world.renderOrigin);
+            const LightCell l = LightLevel_At(*player.nearest, Vector3Add(feet, Vector3Scale(Vector3Normalize(feet), 1.5f)));
+            line(TextFormat("light %d (%.1f m)%s", l.level, l.level / (float)LightGrid::kStep, l.level <= 16 ? "  dark" : ""), Fade(RAYWHITE, 0.8f));
+        }
         if (player.jetpackAccel > 0.0f) // only with a jetpack: nothing else uses them (#531)
             line(TextFormat("dampeners %s (B)", player.dampeners ? "on" : "off"), player.dampeners ? RAYWHITE : ORANGE);
     }
