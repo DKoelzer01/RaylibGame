@@ -18,7 +18,7 @@ SCENARIO("ui/status-bar") {
     s.step("two effects: 1 s and 2 s", 1.0, [](ScenarioCtx& c) {
         StatusBar_Clear();
         StatusBar_Add("test_short", 1.0f, "SHORT", GOLD);
-        StatusBar_Add("test_long", 2.0f, "LONG", SKYBLUE, "tool_pickaxe");
+        StatusBar_Add("test_long", 2.0f, "LONG", SKYBLUE, "telescope"); // with an item icon (one every build has)
         t0 = c.T;
         c.eq("two entries showing", StatusBar_Count(), 2);
         c.check("both start full", StatusBar_Remaining("test_short") > 0.97f && StatusBar_Remaining("test_long") > 0.97f);
