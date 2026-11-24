@@ -249,9 +249,11 @@ Shader miniMask{};           // discards outside the minimap circle (the image i
 bool mapOpen = false;
 Vector3 mapCentre{ 0, 0, 0 };          // body-local unit direction
 std::string mapBody;
-int mapZoom = 5;                       // index into kZooms (4 m a pixel)
-// (#1795) down to 1/8 m a pixel: a plot's parts (0.5 m cells, 1 m machines) and their icons show from 1/2 m a pixel in
-const float kZooms[] = { 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
+std::string hereBody;                  // the body the player was on at the last update ("" none)
+int mapZoom = 6;                       // index into kZooms (4 m a pixel)
+// (#1795) down to 1/16 m a pixel (40 m across: a factory close up): a plot's parts (0.5 m cells) show from 1/2 m a pixel in,
+// their outlines from 1/8, and machine icons once a 1 m machine is 10 screen pixels (1/16 in a 960 x 540 window)
+const float kZooms[] = { 0.0625f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f };
 bool plotsDirtyMini = false, plotsDirtyBig = false; // (#1795) a plot footprint landed: each map re-renders (at most once a second)
 double bigMapAt = -1e9;                // when the last big map render started
 constexpr int kMapPixels = 640;
@@ -354,7 +356,7 @@ void Nav_OpenMapAt(Vector3 localDir, float mpp) {
     mapOpen = HasMap();
     if (!mapOpen) return;
     mapCentre = Vector3Normalize(localDir);
-    mapBody.clear(); // (set by the next update; a different body name would re-centre it on the player)
+    mapBody = hereBody; // the body the player is on (another name would re-centre the map on the player)
     int best = 0;
     for (int i = 0; i < (int)(sizeof(kZooms) / sizeof(kZooms[0])); ++i) if (fabsf(logf(kZooms[i] / mpp)) < fabsf(logf(kZooms[best] / mpp))) best = i;
     mapZoom = best;
@@ -391,6 +393,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     }
     Here h;
     { PROFILE_SCOPE("nav: locate"); h = Locate(world); }
+    if (h.body) hereBody = h.body->name;
     // Reveal the ground around the player a few times a second.
     if (h.body && SimTime() - lastReveal > 0.3) {
         lastReveal = SimTime();
@@ -422,7 +425,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
         }
     }
     // The full map: pan (drag), zoom (wheel), waypoints (click, right-click removes).
-    bigMap.take();
+    { PROFILE_SCOPE("nav: map take"); bigMap.take(); }
     if (!mapOpen) return;
     if (!h.body || !HasMap()) { Nav_CloseMap(); return; }
     if (mapBody != h.body->name || Vector3LengthSqr(mapCentre) < 0.5f) { mapBody = h.body->name; mapCentre = h.up; mapDirtyAt = 0.0; }
@@ -480,6 +483,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     if (plotsDirtyBig && mapDirtyAt < 0.0 && GetTime() - bigMapAt > 1.0) { mapDirtyAt = GetTime(); plotsDirtyBig = false; }
     // Re-render after the view settles (a short pause, so dragging doesn't queue a render a frame).
     if (mapDirtyAt >= 0.0 && GetTime() - mapDirtyAt > 0.05 && !bigMap.pending) {
+        PROFILE_SCOPE("nav: map start");
         bigMap.pending = StartImage(h, mapCentre, kZooms[mapZoom], kMapPixels, kMapPixels, false);
         mapDirtyAt = -1.0;
         bigMapAt = GetTime();
@@ -666,10 +670,10 @@ void Nav_DrawMap(Scene& world) {
         DrawTriangle(Vector2Add(p, Vector2Scale(f, 12.0f)), Vector2Subtract(Vector2Subtract(p, Vector2Scale(f, 7.0f)), Vector2Scale(sd, 7.0f)),
                      Vector2Add(Vector2Subtract(p, Vector2Scale(f, 7.0f)), Vector2Scale(sd, 7.0f)), SKYBLUE);
         EndScissorMode();
-        // Scale bar: 100 m .. 10 km.
+        // Scale bar: 1 m .. 50 km, a round length (1, 2, 5 x 10^n) at least 80 screen pixels long.
         const float metresPerScreenPx = kZooms[mapZoom] * scale;
-        float bar = 100.0f;
-        while (bar / metresPerScreenPx < 80.0f) bar *= 2.0f;
+        float bar = 1.0f;
+        for (int i = 0; bar / metresPerScreenPx < 80.0f && i < 15; ++i) bar *= (i % 3 == 1) ? 2.5f : 2.0f; // 1 2 5 10 20 50...
         const int bw = (int)(bar / metresPerScreenPx), bx = (int)r.x + 16, by = (int)(r.y + r.height) - 24;
         DrawRectangle(bx - 6, by - 18, bw + 12, 30, Fade(BLACK, 0.5f));
         DrawLine(bx, by, bx + bw, by, RAYWHITE);

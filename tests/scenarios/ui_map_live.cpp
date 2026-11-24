@@ -9,6 +9,7 @@
 #include "navigation.h"
 #include "player.h"
 #include "plots.h"
+#include "profiler.h"
 #include "world.h"
 #include <raymath.h>
 #include <cmath>
@@ -104,11 +105,26 @@ SCENARIO("ui/map-live") {
         c.check("big map: the same offsets along the body's axes are off the plot", cardinal == MapKind::None, "got " + Name(cardinal));
         c.grab("big-map");
         c.keepCapture("the plot on both maps (#1795)");
+        Nav_OpenMapAt(AtCell(8.0f, 4.0f), 0.0625f); // the next step's close-up
+        return true;
+    });
+    s.step("zoomed in to 1/16 m a pixel: outlines and machine icons", 15.0, [](ScenarioCtx& c) {
+        c.waitingFor("the big map at 1/16 m a pixel");
+        if (!Nav_MapImageReady() || fabsf(Nav_MapMetresPerPixel(true) - 0.0625f) > 1e-4f) return false;
+        const MapKind k = MapKindAt(true, AtCell(3.0f, 3.0f));
+        c.check("close up: the furnace is machine", k == MapKind::Machine, "got " + Name(k));
+        c.grab("big-map-close");
         return true;
     });
     s.step("hold for the recording", 3.0, [](ScenarioCtx& c) {
         if (c.t < 2.0) return false;
         Nav_CloseMap();
+        // The maps' main-thread work over the whole run (plot builds landing, renders started and uploaded): never a
+        // millisecond in one frame (#1795). Timing gates are only reported on the runner.
+        for (const char* z : { "gu: Nav_Update", "nav: plots", "nav: map start", "nav: map take", "nav: minimap start", "nav: minimap take" }) {
+            const double ms = Profiler_ZoneMaxMs(z);
+            if (ms >= 0.0) c.timingLt(std::string(z) + " max (ms)", ms, 1.0);
+        }
         return true;
     });
 }
