@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "dvec3.h"
 
@@ -57,6 +58,27 @@ std::shared_ptr<const MapPlots> MapFeatures_PlotsNear(const Planetoid& body, con
 // Any thread: the colour of the plots at body-local `p` in an image of `mpp` m a pixel with body-local axes east, north.
 // False where no part is.
 bool MapFeatures_Sample(const MapPlots& s, const DVec3& p, Vector3 east, Vector3 north, float mpp, Color& out);
+// ---- Terrain edits (#1795 part 2) ----
+// The ground the player dug or filled, re-sampled from the edited density (the field plus the edit lattice) in 32 m tiles
+// of 0.5 m columns. A worker scans the body's edit snapshot when it changes (at most every 2 s) and hashes each tile's delta
+// chunks; a tile whose hash changed is dirty and is re-sampled on a worker, at most every kEditResampleS seconds (the first
+// time at once). The maps draw these heights (hillshade) and tint dug ground darker, filled ground grey.
+constexpr double kEditResampleS = 15.0;
+struct EditTile {
+    uint64_t key = 0;
+    std::vector<float> elev;   // per column: the edited surface's elevation (m over the field radius)
+    std::vector<float> change; // per column: elev minus the generated surface's (m; < 0 dug, > 0 filled)
+};
+struct MapEdits {
+    float radius = 0.0f;
+    std::unordered_map<uint64_t, std::shared_ptr<const EditTile>> tiles;
+};
+// Main thread, each frame: scans and re-samples as above. True when a re-sampled tile landed (the maps re-render).
+bool MapFeatures_UpdateEdits(const Planetoid& body, double now);
+std::shared_ptr<const MapEdits> MapFeatures_Edits(const Planetoid& body); // the sampled tiles (null if none)
+// Any thread: the edited elevation and its change at a body-local unit direction; false outside sampled tiles.
+bool MapFeatures_EditedAt(const MapEdits& e, Vector3 dir, float& elev, float& change);
+
 // Tests: a footprint from a plot's parts, built at once on this thread.
 std::shared_ptr<const PlotMap> MapFeatures_BuildNow(const class Plot& plot);
 void MapFeatures_Reset();

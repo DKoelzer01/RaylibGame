@@ -302,12 +302,191 @@ std::shared_ptr<const PlotMap> MapFeatures_BuildNow(const Plot& plot) {
     return Build(Take(plot));
 }
 
-void MapFeatures_Reset() { cache.clear(); }
-
 Color MapFeatures_Colour(MapKind k) {
     if (!coloursLoaded) LoadColours();
     return colours[(int)k];
 }
+
+// ---------------------------------------------------------------------------------------------
+// Terrain edits (#1795 part 2)
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+constexpr float kEditTile = 32.0f; // m: an edit tile's side on the cube-sphere grid
+constexpr int kEditCols = 64;      // columns along a tile's side (0.5 m)
+const Vector3 kFaceN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+const Vector3 kFaceU[6] = { { 0, 1, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, 0, 1 }, { 1, 0, 0 }, { 1, 0, 0 } };
+const Vector3 kFaceV[6] = { { 0, 0, 1 }, { 0, 0, -1 }, { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
+
+int TilesPerFace(float R) { return std::max(1, (int)ceilf(0.5f * PI * R / kEditTile)); }
+
+// A direction's tile (face, i, j) and its place in the tile (0..1 along each side), as navigation's TileKey splits faces.
+uint64_t EditKey(Vector3 dir, float R, float* fu = nullptr, float* fv = nullptr) {
+    int face = 0;
+    float best = -2.0f;
+    for (int f = 0; f < 6; ++f) { const float d = Vector3DotProduct(dir, kFaceN[f]); if (d > best) { best = d; face = f; } }
+    const int n = TilesPerFace(R);
+    const float da = 0.5f * PI / n;
+    const float a = (atanf(Vector3DotProduct(dir, kFaceU[face]) / best) + 0.25f * PI) / da, b = (atanf(Vector3DotProduct(dir, kFaceV[face]) / best) + 0.25f * PI) / da;
+    const int i = std::clamp((int)floorf(a), 0, n - 1), j = std::clamp((int)floorf(b), 0, n - 1);
+    if (fu) *fu = std::clamp(a - i, 0.0f, 0.99999f);
+    if (fv) *fv = std::clamp(b - j, 0.0f, 0.99999f);
+    return ((uint64_t)face << 48) | ((uint64_t)i << 24) | (uint64_t)j;
+}
+
+Vector3 EditColumnDir(uint64_t key, float R, int cu, int cv) {
+    const int face = (int)(key >> 48), i = (int)((key >> 24) & 0xFFFFFF), j = (int)(key & 0xFFFFFF);
+    const float da = 0.5f * PI / TilesPerFace(R);
+    const float a = -0.25f * PI + (i + (cu + 0.5f) / kEditCols) * da, b = -0.25f * PI + (j + (cv + 0.5f) / kEditCols) * da;
+    return Vector3Normalize(Vector3Add(kFaceN[face], Vector3Add(Vector3Scale(kFaceU[face], tanf(a)), Vector3Scale(kFaceV[face], tanf(b)))));
+}
+
+// Per tile, an order-free hash of the delta chunks reaching it (their keys and the snapshot's chunk pointers: an edit makes
+// a new chunk, untouched chunks are shared between snapshots). A chunk marks the tiles under its 8 corners.
+std::unordered_map<uint64_t, uint64_t> ScanTiles(const TerrainDeltas& d, float R) {
+    std::unordered_map<uint64_t, uint64_t> h;
+    const float side = kDeltaChunk * kVoxelSize;
+    for (const auto& kv : d.chunks) {
+        int cx, cy, cz;
+        TerrainDeltas::Unpack(kv.first, cx, cy, cz);
+        uint64_t v = kv.first * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)kv.second.get();
+        v ^= v >> 29; v *= 0xBF58476D1CE4E5B9ull; v ^= v >> 32;
+        uint64_t seen[8];
+        int n = 0;
+        for (int c = 0; c < 8; ++c) {
+            const Vector3 p = { (cx + (c & 1)) * side, (cy + ((c >> 1) & 1)) * side, (cz + (c >> 2)) * side };
+            const float len = Vector3Length(p);
+            if (len < 1.0f) continue;
+            const uint64_t k = EditKey(Vector3Scale(p, 1.0f / len), R);
+            bool dup = false;
+            for (int q = 0; q < n; ++q) dup |= seen[q] == k;
+            if (dup) continue;
+            seen[n++] = k;
+            h[k] ^= v;
+        }
+    }
+    return h;
+}
+
+// The edited surface down each column: from just over the generated ground, down through air (a pit) or up through solid
+// (a fill) in 1 m steps to the first crossing, then 6 halvings (~1.5 cm).
+std::shared_ptr<const EditTile> SampleTile(uint64_t key, const DensityField& field, const PlanetField& pf, const TerrainDeltas* d) {
+    auto t = std::make_shared<EditTile>();
+    t->key = key;
+    const float R = pf.radius;
+    t->elev.resize((size_t)kEditCols * kEditCols);
+    t->change.resize(t->elev.size());
+    for (int cv = 0; cv < kEditCols; ++cv)
+        for (int cu = 0; cu < kEditCols; ++cu) {
+            const Vector3 dir = EditColumnDir(key, R, cu, cv);
+            const float g = pf.elevation(dir, 0.5f);
+            auto solid = [&](float e) { return field.density(Vector3Scale(dir, R + e), d) >= ISO_LEVEL; };
+            float lo, hi;
+            float e = g + 1.0f;
+            if (solid(e)) { // filled over the ground: climb to the air
+                int k = 0;
+                while (k < 24 && solid(e + 1.0f)) { e += 1.0f; ++k; }
+                lo = e; hi = e + 1.0f;
+            } else {        // the ground or a pit: descend to the solid
+                int k = 0;
+                while (k < 40 && !solid(e - 1.0f)) { e -= 1.0f; ++k; }
+                hi = e; lo = e - 1.0f;
+            }
+            for (int s = 0; s < 6; ++s) { const float m = 0.5f * (lo + hi); if (solid(m)) lo = m; else hi = m; }
+            const size_t i = (size_t)cv * kEditCols + cu;
+            t->elev[i] = 0.5f * (lo + hi);
+            t->change[i] = t->elev[i] - g;
+        }
+    return t;
+}
+
+struct ScanSlot { std::atomic<bool> done{ false }; std::unordered_map<uint64_t, uint64_t> hashes; };
+struct TileSlot { std::atomic<bool> done{ false }; std::shared_ptr<const EditTile> tile; };
+struct EditTileState {
+    uint64_t hash = 0, sampledHash = 0;
+    double sampledAt = -1e18;
+    std::shared_ptr<TileSlot> building;
+    std::shared_ptr<const EditTile> tile;
+};
+struct EditState {
+    const TerrainDeltas* scanned = nullptr; // the snapshot the last scan read
+    double scanAt = -1e18;
+    std::shared_ptr<ScanSlot> scanning;
+    std::unordered_map<uint64_t, EditTileState> tiles;
+    std::shared_ptr<const MapEdits> set;
+};
+std::unordered_map<uint64_t, EditState> editStates; // body id -> its edit tiles (main thread)
+
+} // namespace
+
+bool MapFeatures_UpdateEdits(const Planetoid& body, double now) {
+    PROFILE_SCOPE("nav: edits");
+    auto pf = std::dynamic_pointer_cast<const PlanetField>(body.field);
+    if (!pf) return false;
+    EditState& st = editStates[body.id];
+    const std::shared_ptr<const TerrainDeltas> snap = body.edits;
+    // A scan of a newer snapshot, at most every 2 s.
+    if (st.scanning && st.scanning->done.load()) {
+        for (auto& kv : st.scanning->hashes) st.tiles[kv.first].hash = kv.second;
+        for (auto& kv : st.tiles) if (!st.scanning->hashes.count(kv.first)) kv.second.hash = 0; // its edits went (a reload)
+        st.scanning.reset();
+    }
+    if (!st.scanning && snap && snap.get() != st.scanned && now - st.scanAt >= 2.0) {
+        auto slot = std::make_shared<ScanSlot>();
+        st.scanning = slot;
+        st.scanned = snap.get();
+        st.scanAt = now;
+        const float R = pf->radius;
+        JobSystem::tagNext(JobTag::NavMap);
+        WorldJobs().submit(150.0f, [slot, snap, R] { slot->hashes = ScanTiles(*snap, R); slot->done.store(true); });
+    }
+    // Re-sample the dirty tiles (a changed hash), each at most every kEditResampleS seconds.
+    bool landed = false;
+    for (auto& kv : st.tiles) {
+        EditTileState& t = kv.second;
+        if (t.building && t.building->done.load()) {
+            t.tile = t.building->tile;
+            t.building.reset();
+            landed = true;
+        }
+        if (t.building || t.hash == t.sampledHash || now - t.sampledAt < kEditResampleS || !snap) continue;
+        auto slot = std::make_shared<TileSlot>();
+        t.building = slot;
+        t.sampledHash = t.hash;
+        t.sampledAt = now;
+        const uint64_t key = kv.first;
+        auto field = body.field;
+        JobSystem::tagNext(JobTag::NavMap);
+        WorldJobs().submit(150.0f, [slot, key, field, pf, snap] { slot->tile = SampleTile(key, *field, *pf, snap.get()); slot->done.store(true); });
+    }
+    if (landed || (!st.set && !st.tiles.empty())) {
+        auto set = std::make_shared<MapEdits>();
+        set->radius = pf->radius;
+        for (const auto& kv : st.tiles) if (kv.second.tile) set->tiles[kv.first] = kv.second.tile;
+        st.set = set;
+    }
+    return landed;
+}
+
+std::shared_ptr<const MapEdits> MapFeatures_Edits(const Planetoid& body) {
+    auto it = editStates.find(body.id);
+    if (it == editStates.end() || !it->second.set || it->second.set->tiles.empty()) return nullptr;
+    return it->second.set;
+}
+
+bool MapFeatures_EditedAt(const MapEdits& e, Vector3 dir, float& elev, float& change) {
+    float fu, fv;
+    const uint64_t key = EditKey(dir, e.radius, &fu, &fv);
+    const auto it = e.tiles.find(key);
+    if (it == e.tiles.end()) return false;
+    const size_t i = (size_t)(int)(fv * kEditCols) * kEditCols + (size_t)(int)(fu * kEditCols);
+    elev = it->second->elev[i];
+    change = it->second->change[i];
+    return true;
+}
+
+void MapFeatures_Reset() { cache.clear(); editStates.clear(); }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"

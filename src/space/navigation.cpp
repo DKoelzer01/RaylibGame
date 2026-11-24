@@ -123,6 +123,7 @@ struct MapImage {
     int W = 0, H = 0;
     bool circle = false;                // alpha 0 outside the inscribed circle (the minimap)
     std::shared_ptr<const MapPlots> plots; // (#1795) the plot footprints under it, or null
+    std::shared_ptr<const MapEdits> edits; // (#1795) the body's sampled edit tiles, or null
     std::vector<unsigned char> px;
     std::atomic<int> rowsDone{ 0 };
 };
@@ -142,8 +143,15 @@ void RenderRows(MapImage& m, int y0, int y1) {
     const int rows = y1 - y0 + 2;
     std::vector<float> e((size_t)rows * (W + 2));
     auto E = [&](int x, int y) -> float& { return e[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)]; };
+    // (#1795) Where the player dug or filled, the edited ground's sampled height instead of the generator's, and how far it moved.
+    std::vector<float> chg(m.edits ? e.size() : 0, 0.0f);
     for (int y = y0 - 1; y <= y1; ++y)
-        for (int x = -1; x <= W; ++x) E(x, y) = f.elevation(PixelDir(m, x + 0.5f, y + 0.5f), m.mpp);
+        for (int x = -1; x <= W; ++x) {
+            const Vector3 d = PixelDir(m, x + 0.5f, y + 0.5f);
+            float el, ch;
+            if (m.edits && MapFeatures_EditedAt(*m.edits, d, el, ch)) { E(x, y) = el; chg[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)] = ch; }
+            else E(x, y) = f.elevation(d, m.mpp);
+        }
     const Vector3 light = Vector3Normalize({ -0.6f, 0.75f, 0.6f }); // from the north-west, as maps are lit
     for (int y = y0; y < y1; ++y)
         for (int x = 0; x < W; ++x) {
@@ -159,6 +167,11 @@ void RenderRows(MapImage& m, int y0, int y1) {
             const float slope = 1.0f - n.y;
             bool water = false;
             Vector3 c = SurfaceAlbedo(f, dir, h, slope, f.foliage, f.foliageSeed, water);
+            if (!chg.empty()) { // (#1795) dug ground toward bare earth, filled ground toward grey, by how far it moved
+                const float ch = chg[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)];
+                if (ch < -0.25f) c = Vector3Lerp(c, { 0.20f, 0.13f, 0.07f }, std::min(1.0f, -ch / 1.5f) * 0.8f);
+                else if (ch > 0.25f) c = Vector3Lerp(c, { 0.42f, 0.41f, 0.39f }, std::min(1.0f, ch / 1.5f) * 0.8f);
+            }
             if (!water && f.inlandWaterNear(dir, 0.0f, m.mpp)) {
                 const float w = f.waterElevation(dir, m.mpp);
                 if (w != PlanetField::kNoWater && w > h && Fluid::GeneratedWaterValid(m.body, Vector3Scale(dir, f.radius + w - 0.2f))) { c = { 0.04f, 0.16f, 0.30f }; water = true; } // not a drained pond (#360)
@@ -209,6 +222,7 @@ std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, i
     if (it != explored.end()) TilesUnder(it->second, centre, m->east, m->north, h.field->radius, mpp, W, H, *tiles);
     m->tiles = std::move(tiles);
     m->plots = MapFeatures_PlotsNear(*h.body, DVec3(centre) * (double)h.field->radius, 0.75f * std::max(W, H) * mpp);
+    m->edits = MapFeatures_Edits(*h.body);
     m->circle = circle;
     m->px.assign((size_t)W * H * 4, 0);
     const int block = 16;
@@ -405,6 +419,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     }
     // (#1795) Plot footprints: rebuilt on the workers when a plot changes; the maps re-render when one lands.
     if (h.body && HasMap() && MapFeatures_Update(*h.body)) plotsDirtyMini = plotsDirtyBig = true;
+    if (h.body && HasMap() && MapFeatures_UpdateEdits(*h.body, GetTime())) plotsDirtyMini = plotsDirtyBig = true; // (#1795) re-sampled dug ground
     const bool plotsDue = plotsDirtyMini && GetTime() - minimapAt > 1.0;
     // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
     // around the circle), every 2 s while moving, when new ground shows, or when a plot changed.
