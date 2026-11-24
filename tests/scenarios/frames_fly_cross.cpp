@@ -100,4 +100,4 @@ void Build(ScenarioDef& s) {
 }
 
 SCENARIO("frames/fly-cross") { Build(s); }
-SCENARIO("frames/fly-cross-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); }
+SCENARIO("frames/fly-cross-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }
