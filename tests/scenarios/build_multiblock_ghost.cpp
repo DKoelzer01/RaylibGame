@@ -47,6 +47,7 @@ void PressOnController(ScenarioCtx& c, Act a) {
     Machine_Update(c.world, in);
     player.flyMode = true;
 }
+// (The controller's HUD can't be recorded here: the scenario camera flies, and the machine aim works only on foot.)
 void LookAtController(ScenarioCtx& c) {
     c.camera(At(ctl.x + 0.5f, ctl.y + 1.5f, ctl.z + 4.5f), At(ctl.x + 0.5f, ctl.y + 0.5f, ctl.z + 0.5f), Up());
 }
