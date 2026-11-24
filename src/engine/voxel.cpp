@@ -3073,7 +3073,7 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
         // corner) its water showed on the far side, where the simulation (rightly) lets none through. A vertex in the open whose
         // way back to the middle of its own cell crosses a whole block is pulled back to where that way enters the block
         // (1-2 cm in, hidden), so the surface ends inside the block instead.
-        if (simKind && !wallPlots.empty()) {
+        if (false && simKind && !wallPlots.empty()) {
             constexpr float kCell = 0.5f, kStep = 0.05f; // plots.h's cell (m, not included here); the walk, in cells (2.5 cm)
             for (Vector3& v : wv) {
                 const Vector3 p = Vector3Add(origin, Vector3Scale(v, stride));
