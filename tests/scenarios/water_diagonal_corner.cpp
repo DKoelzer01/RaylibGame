@@ -33,9 +33,9 @@ struct State {
 } S;
 float CornerX() { return (S.base.x + kPen) * kCellSize; } // the open corner cell's near edges (plot metres)
 float CornerZ() { return (S.base.z + kPen) * kCellSize; }
-void CornerCamera(ScenarioCtx& c) { // outside the open corner, over it, looking at it and into the pen
-    c.world.camera.position = c.body->toWorld(S.at(CornerX() + 2.0f, S.floorTop() + 2.2f, CornerZ() + 2.0f));
-    c.world.camera.target = c.body->toWorld(S.at(CornerX() - 0.3f, S.floorTop() + 0.3f, CornerZ() - 0.3f));
+void CornerCamera(ScenarioCtx& c) { // close outside the open corner, looking into it (the sliver is a few cm)
+    c.world.camera.position = c.body->toWorld(S.at(CornerX() + 0.8f, S.floorTop() + 0.7f, CornerZ() + 0.8f));
+    c.world.camera.target = c.body->toWorld(S.at(CornerX(), S.floorTop() + 0.2f, CornerZ()));
     c.world.camera.up = c.body->dirToWorld(Vector3Normalize(Vector3Subtract(S.at(0, 1, 0), S.at(0, 0, 0))));
 }
 }

@@ -307,10 +307,27 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
             return sf <= kNone * 0.5f ? ISO_LEVEL - DENSITY_GRADIENT * 0.5f * cs : ISO_LEVEL + DENSITY_GRADIENT * (sf - fz) * cs; // cells -> m
         };
         const float own = columnDensity(ci, cj);
+        // Water carried into a solid cell (to meet the shore) stops 2.5 cm short of a face the cell shares with an open cell the
+        // water does not reach (#1773): it ended exactly on that face, and where two tiles meet only along an edge (a diagonal
+        // corner) it showed there as a line of water on the dry side. Inside ground the terrain cuts it anyway.
+        auto cutAtDryFaces = [&](float v) {
+            uint8_t f, fl;
+            if (v < ISO_LEVEL || !cellAt(si, ci, cj, ck, f, fl) || !(fl & kSolid)) return v;
+            constexpr float kGap = 0.1f; // cells
+            static const int side[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+            for (const auto& d : side) {
+                const float gap = d[0] > 0 ? ci + 1 - fx : d[0] < 0 ? fx - ci : d[1] > 0 ? cj + 1 - fy : fy - cj;
+                if (gap >= kGap) continue;
+                uint8_t fn, fln;
+                if (cellAt(si, ci + d[0], cj + d[1], ck, fn, fln) && !(fln & kSolid) && surface(si, ci + d[0], cj + d[1], ck, kind) <= kNone * 0.5f)
+                    return ISO_LEVEL - DENSITY_GRADIENT * 0.5f * cs;
+            }
+            return v;
+        };
         // Far from its column's surface (2.5 m+ over or under it), the blend can't put the sample on the other side
         // (only neighbours 2.5 m higher or lower could: a waterfall's step stays a little sharper): its own value does
         // (#381: the blend made a water rebuild 1.7x dearer; most samples are well above or below the surface).
-        if (!blend || fabsf(own - ISO_LEVEL) > DENSITY_GRADIENT * 2.5f) { wd = own; return true; }
+        if (!blend || fabsf(own - ISO_LEVEL) > DENSITY_GRADIENT * 2.5f) { wd = cutAtDryFaces(own); return true; }
         // Blended across the four nearest columns (#423): each 1 m column was a flat-topped box, so the water showed 1 m
         // steps and square blobs. Linear weights from the cell centres slope the surface evenly between columns (smoothstep
         // weights put each column's whole step at its border: a 1 m grid of ripples on a draining pond), and a dry
@@ -339,7 +356,7 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
                 }
                 sum += w * (reached && !same ? columnDensity(i, j) : own);
             }
-        wd = sum;
+        wd = cutAtDryFaces(sum);
         return true;
     }
     return false;
@@ -518,6 +535,10 @@ TEST(WaterField, SurfaceStopsAtADiagonalCorner) {
     EXPECT_LT(w, ISO_LEVEL) << "under the pen's level just past the corner: the dry cell stays dry";
     ASSERT_TRUE(sampler.density(cell(5.95f, 5.95f, 6.1f), 0, w));
     EXPECT_GT(w, ISO_LEVEL) << "the pen's own corner cell is still water";
+    ASSERT_TRUE(sampler.density(cell(6.97f, 5.5f, 6.1f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "in the wall by the corner, at its face with the dry cell: the water carried into the wall stops short";
+    ASSERT_TRUE(sampler.density(cell(6.97f, 3.5f, 6.1f), 0, w));
+    EXPECT_LT(w, ISO_LEVEL) << "in the wall, at its outer face";
     ASSERT_TRUE(sampler.density(cell(3.5f, 3.5f, 6.9f), 0, w));
     EXPECT_LT(w, ISO_LEVEL) << "over the pen's surface";
 }
