@@ -345,14 +345,16 @@ bool ChunkSampler::density(Vector3 p, int kind, float& wd) {
     return false;
 }
 
-bool ChunkSampler::cellMiddle(Vector3 p, Vector3& mid) const {
+bool ChunkSampler::wetCellMiddle(Vector3 p, int kind, Vector3& mid) const {
     for (int si = 0; si < (int)sites.size(); ++si) {
         const Site& s = *sites[si];
         float fx, fy, fz;
         s.frame(p, fx, fy, fz);
         const int ci = (int)floorf(fx), cj = (int)floorf(fy), ck = (int)floorf(fz);
-        if (!brickAt(si, ci, cj, ck)) continue;
-        const float cs = CellSize(), mx = (ci + 0.5f) * cs, my = (cj + 0.5f) * cs, mz = fz * cs;
+        uint8_t fill, flags;
+        if (!cellAt(si, ci, cj, ck, fill, flags)) continue;
+        if ((flags & kSolid) || fill == 0 || CellKind(flags) != kind) return false;
+        const float cs = CellSize(), mx = (ci + 0.5f) * cs, my = (cj + 0.5f) * cs, mz = (ck + 0.5f) * cs;
         mid = { s.origin.x + s.e.x * mx + s.n.x * my + s.u.x * mz, s.origin.y + s.e.y * mx + s.n.y * my + s.u.y * mz,
                 s.origin.z + s.e.z * mx + s.n.z * my + s.u.z * mz };
         return true;

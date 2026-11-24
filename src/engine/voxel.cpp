@@ -2866,19 +2866,20 @@ static std::atomic<long long> gSimFlowVerts[3];
 // RAYLIBGAME_FLOW_SURFACE=0: the current stays level and simulated water keeps its gradient normal (before #677/#696), for A/B.
 static const bool kFlowSurface = [] { const char* e = getenv("RAYLIBGAME_FLOW_SURFACE"); return !(e && e[0] == '0'); }();
 void ChunkWaterFlowStats(long long out[3]) { for (int i = 0; i < 3; ++i) out[i] = gSimFlowVerts[i].load(); }
-// (#1773) Test probe: the water vertices builds put inside a box (body-local), for scenarios that check the drawn mesh.
+// (#1773) Test probe: the water triangles builds put (a corner) inside a box (body-local), for scenarios that check the drawn mesh.
 static struct { std::atomic<bool> on{ false }; uint64_t body = 0; Vector3 lo{}, hi{}; std::mutex mx; std::vector<Vector3> got; } gWaterProbe;
-static void WaterProbeAdd(Vector3 p) {
-    if (p.x < gWaterProbe.lo.x || p.y < gWaterProbe.lo.y || p.z < gWaterProbe.lo.z || p.x > gWaterProbe.hi.x || p.y > gWaterProbe.hi.y || p.z > gWaterProbe.hi.z) return;
+static void WaterProbeAdd(Vector3 a, Vector3 b, Vector3 c) {
+    auto inBox = [](Vector3 p) { return p.x >= gWaterProbe.lo.x && p.y >= gWaterProbe.lo.y && p.z >= gWaterProbe.lo.z && p.x <= gWaterProbe.hi.x && p.y <= gWaterProbe.hi.y && p.z <= gWaterProbe.hi.z; };
+    if (!inBox(a) && !inBox(b) && !inBox(c)) return;
     std::lock_guard<std::mutex> lock(gWaterProbe.mx);
-    gWaterProbe.got.push_back(p);
+    gWaterProbe.got.insert(gWaterProbe.got.end(), { a, b, c });
 }
-void WaterVertexProbe_Set(uint64_t body, Vector3 lo, Vector3 hi) {
+void WaterTriangleProbe_Set(uint64_t body, Vector3 lo, Vector3 hi) {
     std::lock_guard<std::mutex> lock(gWaterProbe.mx);
     gWaterProbe.body = body; gWaterProbe.lo = lo; gWaterProbe.hi = hi; gWaterProbe.got.clear();
     gWaterProbe.on = true;
 }
-void WaterVertexProbe_Take(std::vector<Vector3>& out) {
+void WaterTriangleProbe_Take(std::vector<Vector3>& out) {
     std::lock_guard<std::mutex> lock(gWaterProbe.mx);
     out.swap(gWaterProbe.got);
     gWaterProbe.got.clear();
@@ -3068,35 +3069,6 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     for (int x = 0; x < cells; ++x)
                         marchCube(x, y, z, wd, S, wv, wi, cache, ISO_LEVEL);
         }
-        // (#1773) Placed blocks: the fluid cells (0.25 m, in the site's own frame) don't line up with a plot's blocks, so a cell
-        // the simulation counts as open can reach past a block's face, and at two blocks meeting only along an edge (a diagonal
-        // corner) its water showed on the far side, where the simulation (rightly) lets none through. A vertex in the open whose
-        // way back to the middle of its own cell crosses a whole block is pulled back to where that way enters the block
-        // (1-2 cm in, hidden), so the surface ends inside the block instead.
-        if (simKind && !wallPlots.empty()) {
-            constexpr float kCell = 0.5f, kStep = 0.05f; // plots.h's cell (m, not included here); the walk, in cells (2.5 cm)
-            for (Vector3& v : wv) {
-                const Vector3 p = Vector3Add(origin, Vector3Scale(v, stride));
-                Vector3 mid;
-                if (!sim.cellMiddle(p, mid)) continue;
-                for (const GrassBlockPlot* b : wallPlots) {
-                    auto cells = [&](Vector3 q) {
-                        const DVec3 d = DVec3{ q.x, q.y, q.z } - b->origin;
-                        const Vector3 l = { (float)d.x, (float)d.y, (float)d.z };
-                        return Vector3{ Vector3DotProduct(l, b->east) / kCell, Vector3DotProduct(l, b->up) / kCell, Vector3DotProduct(l, b->north) / kCell };
-                    };
-                    auto whole = [&](Vector3 c) { return b->full.count(Int3{ (int)floorf(c.x), (int)floorf(c.y), (int)floorf(c.z) }) > 0; };
-                    const Vector3 a = cells(mid), c = cells(p);
-                    if (whole(c)) continue; // already inside a block: hidden
-                    const int steps = (int)ceilf(Vector3Distance(a, c) / kStep);
-                    int hit = -1;
-                    for (int s = 0; s < steps && hit < 0; ++s) if (whole(Vector3Lerp(a, c, (float)s / steps))) hit = s;
-                    if (hit < 0) continue;
-                    v = Vector3Scale(Vector3Subtract(Vector3Lerp(mid, p, (float)hit / steps), origin), 1.0f / stride);
-                    break;
-                }
-            }
-        }
         phase(1);
         // The shore (#423): a triangle crossing the ground keeps only its part out of the ground, cut where its edges
         // cross the terrain's iso level (linear in the terrain density), so the waterline is a continuous curve instead
@@ -3136,6 +3108,96 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
             }
             wi.swap(clipped);
         }
+        // (#1773) Placed blocks: the fluid cells (0.25 m, in the site's own frame) don't line up with a plot's blocks, so cells the
+        // simulation counts as open reach past a block's face. Inside a block that is hidden, but where two blocks meet only
+        // along an edge (a diagonal corner) the surface between them crossed the open cell beyond, and the water showed on the
+        // dry side the simulation (rightly) lets none through. Here an open plot cell beside a block, with no wet fluid cell's
+        // middle in it, in the open cells beside it or in the one under it, takes no water: triangles are cut along its faces
+        // and the part inside it dropped. (Water rounding into a dry cell beside a wet one stays.)
+        if (simKind && !wallPlots.empty()) {
+            constexpr float kCell = 0.5f; // plots.h (not included here)
+            for (const GrassBlockPlot* b : wallPlots) {
+                const Vector3 o = { (float)b->origin.x, (float)b->origin.y, (float)b->origin.z };
+                auto plotCells = [&](Vector3 g) { // chunk sample coordinates -> plot cells (affine, so cuts interpolate alike)
+                    const Vector3 l = Vector3Subtract(Vector3Add(origin, Vector3Scale(g, stride)), o);
+                    return Vector3{ Vector3DotProduct(l, b->east) / kCell, Vector3DotProduct(l, b->up) / kCell, Vector3DotProduct(l, b->north) / kCell };
+                };
+                auto whole = [&](Int3 c) { return b->full.count(c) > 0; };
+                std::unordered_map<Int3, char> wetMemo, dryMemo;
+                auto holdsWet = [&](Int3 c) { // a wet fluid cell's middle lies in plot cell c (4 x 4 x 4 probes, 12.5 cm apart)
+                    auto it = wetMemo.find(c);
+                    if (it != wetMemo.end()) return (bool)it->second;
+                    bool wet = false;
+                    for (int k = 0; k < 64 && !wet; ++k) {
+                        const Vector3 q = { c.x + ((k & 3) + 0.5f) * 0.25f, c.y + (((k >> 2) & 3) + 0.5f) * 0.25f, c.z + ((k >> 4) + 0.5f) * 0.25f };
+                        const Vector3 p = Vector3Add(o, Vector3Add(Vector3Add(Vector3Scale(b->east, q.x * kCell), Vector3Scale(b->up, q.y * kCell)), Vector3Scale(b->north, q.z * kCell)));
+                        Vector3 mid;
+                        if (!sim.wetCellMiddle(p, kind, mid)) continue;
+                        const Vector3 l = Vector3Subtract(mid, o);
+                        wet = (int)floorf(Vector3DotProduct(l, b->east) / kCell) == c.x && (int)floorf(Vector3DotProduct(l, b->up) / kCell) == c.y &&
+                              (int)floorf(Vector3DotProduct(l, b->north) / kCell) == c.z;
+                    }
+                    wetMemo[c] = wet;
+                    return wet;
+                };
+                auto dryBeside = [&](Int3 c) { // an open cell by a block, with no water of its own or beside it
+                    auto it = dryMemo.find(c);
+                    if (it != dryMemo.end()) return (bool)it->second;
+                    static const Int3 kN[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 }, { 0, -1, 0 }, { 0, 1, 0 } };
+                    bool byBlock = false;
+                    for (const Int3& d : kN) byBlock = byBlock || whole({ c.x + d.x, c.y + d.y, c.z + d.z });
+                    bool dry = !whole(c) && byBlock && !holdsWet(c);
+                    for (int i = 0; i < 5 && dry; ++i) { // the four sides and the cell under it
+                        const Int3 n = { c.x + kN[i].x, c.y + kN[i].y, c.z + kN[i].z };
+                        dry = whole(n) || !holdsWet(n);
+                    }
+                    dryMemo[c] = dry;
+                    return dry;
+                };
+                struct PV { int i; Vector3 c; }; // a polygon vertex: its index in wv, its plot cell coordinates
+                std::vector<int> work(wi.begin(), wi.end()), kept;
+                kept.reserve(wi.size());
+                std::vector<PV> poly, in, outP;
+                for (size_t t = 0; t + 2 < work.size(); t += 3) {
+                    if (work.size() > wi.size() * 4 + 3000) { kept.insert(kept.end(), work.begin() + t, work.end()); break; } // (a bound: never loops)
+                    const int tv[3] = { work[t], work[t + 1], work[t + 2] };
+                    Vector3 pc[3], lo{ 1e30f, 1e30f, 1e30f }, hi{ -1e30f, -1e30f, -1e30f };
+                    for (int e = 0; e < 3; ++e) { pc[e] = plotCells(wv[tv[e]]); lo = Vector3Min(lo, pc[e]); hi = Vector3Max(hi, pc[e]); }
+                    constexpr float kEps = 1e-4f; // a piece touching a cell's face is not in it
+                    Int3 dryCell{};
+                    bool found = false;
+                    for (int z = (int)floorf(lo.z + kEps); z <= (int)floorf(hi.z - kEps) && !found; ++z)
+                        for (int y = (int)floorf(lo.y + kEps); y <= (int)floorf(hi.y - kEps) && !found; ++y)
+                            for (int x = (int)floorf(lo.x + kEps); x <= (int)floorf(hi.x - kEps) && !found; ++x)
+                                if (dryBeside({ x, y, z })) { dryCell = { x, y, z }; found = true; }
+                    if (!found) { kept.insert(kept.end(), { tv[0], tv[1], tv[2] }); continue; }
+                    // Cut by the cell's six faces: the part outside each goes back on the list (it may reach another dry cell),
+                    // the part inside goes on to the next face; what is left at the end is inside the cell: dropped.
+                    poly = { { tv[0], pc[0] }, { tv[1], pc[1] }, { tv[2], pc[2] } };
+                    for (int f = 0; f < 6 && poly.size() >= 3; ++f) {
+                        const int ax = f >> 1;
+                        const float bound = (float)(ax == 0 ? dryCell.x : ax == 1 ? dryCell.y : dryCell.z) + (f & 1 ? 1.0f : 0.0f);
+                        auto side = [&](const Vector3& c) { const float v = ax == 0 ? c.x : ax == 1 ? c.y : c.z; return f & 1 ? bound - v : v - bound; }; // >= 0: inside
+                        in.clear(); outP.clear();
+                        for (size_t k = 0; k < poly.size(); ++k) {
+                            const PV& a = poly[k];
+                            const PV& bb = poly[(k + 1) % poly.size()];
+                            const float da = side(a.c), db = side(bb.c);
+                            if (da >= 0.0f) in.push_back(a); else outP.push_back(a);
+                            if ((da >= 0.0f) != (db >= 0.0f)) {
+                                const float s = da / (da - db);
+                                wv.push_back(Vector3Lerp(wv[a.i], wv[bb.i], s));
+                                const PV cut = { (int)wv.size() - 1, Vector3Lerp(a.c, bb.c, s) };
+                                in.push_back(cut); outP.push_back(cut);
+                            }
+                        }
+                        for (size_t k = 1; k + 1 < outP.size(); ++k) work.insert(work.end(), { outP[0].i, outP[k].i, outP[k + 1].i });
+                        poly.swap(in);
+                    }
+                }
+                wi.swap(kept);
+            }
+        }
         phase(2);
         std::vector<int> remap(wv.size(), -1);
         for (size_t t = 0; t + 2 < wi.size(); t += 3) {
@@ -3165,6 +3227,10 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                     const float tl = Vector3Length(tn);
                     if (wl > 1.0f && tl > 1e-9f && fabsf(Vector3DotProduct(tn, wc)) < 0.7f * tl * wl) continue;
                 }
+            }
+            if (gWaterProbe.on.load(std::memory_order_relaxed) && out.planetoidId == gWaterProbe.body) {
+                auto at = [&](int e) { return Vector3Add(origin, Vector3Scale(wv[wi[t + e]], stride)); };
+                WaterProbeAdd(at(0), at(1), at(2));
             }
             for (int e = 0; e < 3; ++e) {
                 int& r = remap[wi[t + e]];
@@ -3252,7 +3318,6 @@ static void MeshChunkWater(const DensityField& field, ChunkMeshData& out, const 
                         const float surfaceE = Vector3Length(bp) - sea; // the water surface's height above sea level
                         depth = std::max(0.0f, surfaceE - groundAt(bp, radial));
                     }
-                    if (gWaterProbe.on.load(std::memory_order_relaxed) && out.planetoidId == gWaterProbe.body) WaterProbeAdd(bp);
                     out.waterPositions.insert(out.waterPositions.end(), { lp.x, lp.y, lp.z });
                     out.waterNormals.insert(out.waterNormals.end(), { n.x, n.y, n.z });
                     out.waterDepth.insert(out.waterDepth.end(), { depth, (float)kind + (genVert ? 0.25f : 0.0f) }); // +0.25: generated (fragKind rounds it away)

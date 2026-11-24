@@ -129,9 +129,9 @@ public:
     // The debug view (#695): the solver's own flow at a point (the cell there or the one under it, the faster), direction
     // (body-local, unit) and speed (m/s); false where no published flow covers it.
     bool simFlow(Vector3 p, Vector3& dir, float& speed) const;
-    // The middle of the published cell holding a point, at the point's own height in that cell (body-local); false where none
-    // does. The water drawn at the point is that cell's (#1773: the mesher keeps it on the cell's side of placed blocks).
-    bool cellMiddle(Vector3 p, Vector3& mid) const;
+    // The middle (body-local) of the published cell holding a point, if that cell is open and holds fluid of `kind` (#1773: the
+    // mesher draws water near placed blocks only where such middles are).
+    bool wetCellMiddle(Vector3 p, int kind, Vector3& mid) const;
 private:
     std::vector<const Site*> sites;
     uint8_t kindMask = 0;
