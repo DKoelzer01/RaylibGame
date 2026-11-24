@@ -79,6 +79,25 @@ std::shared_ptr<const MapEdits> MapFeatures_Edits(const Planetoid& body); // the
 // Any thread: the edited elevation and its change at a body-local unit direction; false outside sampled tiles.
 bool MapFeatures_EditedAt(const MapEdits& e, Vector3 dir, float& elev, float& change);
 
+// ---- Simulated water (#1795 part 3) ----
+// The fluid simulation's water (floods, dug ponds, channels) from its published snapshot: per site, per column of cells,
+// the water's top and depth (films under 10 cm left out). Sampled on a worker when the body first has simulated water,
+// then when the snapshot changed, at most every kWaterResampleS seconds.
+constexpr double kWaterResampleS = 10.0;
+struct MapWaterSite {
+    Vector3 origin{}, e{}, n{}, u{}, lo{}, hi{}; // the site's frame and the body-local bounds of its bricks
+    struct Col { float top = -1e9f; float depth = 0.0f; uint8_t kind = 0; }; // top: in cells along u from the origin; depth m
+    std::unordered_map<int64_t, Col> cols;       // key: column (i, j) packed
+};
+struct MapWater {
+    std::vector<MapWaterSite> sites;
+};
+bool MapFeatures_UpdateWater(const Planetoid& body, double now); // main thread; true when a new sample landed
+std::shared_ptr<const MapWater> MapFeatures_Water(const Planetoid& body); // null when the body has no simulated water
+// Any thread: simulated water over the body-local ground point p (its surface at most 0.3 m below p counts): its depth
+// over p (m) and fluid kind.
+bool MapFeatures_WaterAt(const MapWater& w, Vector3 p, float& depth, int& kind);
+
 // Tests: a footprint from a plot's parts, built at once on this thread.
 std::shared_ptr<const PlotMap> MapFeatures_BuildNow(const class Plot& plot);
 void MapFeatures_Reset();

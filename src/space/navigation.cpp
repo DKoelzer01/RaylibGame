@@ -124,6 +124,7 @@ struct MapImage {
     bool circle = false;                // alpha 0 outside the inscribed circle (the minimap)
     std::shared_ptr<const MapPlots> plots; // (#1795) the plot footprints under it, or null
     std::shared_ptr<const MapEdits> edits; // (#1795) the body's sampled edit tiles, or null
+    std::shared_ptr<const MapWater> water; // (#1795) the body's sampled simulated water, or null
     std::vector<unsigned char> px;
     std::atomic<int> rowsDone{ 0 };
 };
@@ -172,6 +173,13 @@ void RenderRows(MapImage& m, int y0, int y1) {
                 const float ch = chg[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)];
                 if (ch < -0.25f) c = Vector3Lerp(c, { 0.20f, 0.13f, 0.07f }, std::min(1.0f, -ch / 1.5f) * 0.8f);
                 else if (ch > 0.25f) c = Vector3Lerp(c, { 0.42f, 0.41f, 0.39f }, std::min(1.0f, ch / 1.5f) * 0.8f);
+            }
+            float wd;
+            int wk;
+            if (!water && m.water && MapFeatures_WaterAt(*m.water, Vector3Scale(dir, f.radius + h), wd, wk)) { // (#1795) the simulation's water
+                if (wk == 0) c = { 0.04f, 0.16f, 0.30f };
+                else { const Color k = Fluid::KindInfo(wk).color; c = { powf(k.r / 255.0f, 2.2f) * 0.6f, powf(k.g / 255.0f, 2.2f) * 0.6f, powf(k.b / 255.0f, 2.2f) * 0.6f }; }
+                water = true;
             }
             if (!water && f.inlandWaterNear(dir, 0.0f, m.mpp)) {
                 const float w = f.waterElevation(dir, m.mpp);
@@ -224,6 +232,7 @@ std::shared_ptr<MapImage> StartImage(const Here& h, Vector3 centre, float mpp, i
     m->tiles = std::move(tiles);
     m->plots = MapFeatures_PlotsNear(*h.body, DVec3(centre) * (double)h.field->radius, 0.75f * std::max(W, H) * mpp);
     m->edits = MapFeatures_Edits(*h.body);
+    m->water = MapFeatures_Water(*h.body);
     m->circle = circle;
     m->px.assign((size_t)W * H * 4, 0);
     const int block = 16;
@@ -421,6 +430,7 @@ void Nav_Update(Scene& world, bool inputEnabled, bool gameInput) {
     // (#1795) Plot footprints: rebuilt on the workers when a plot changes; the maps re-render when one lands.
     if (h.body && HasMap() && MapFeatures_Update(*h.body)) plotsDirtyMini = plotsDirtyBig = true;
     if (h.body && HasMap() && MapFeatures_UpdateEdits(*h.body, GetTime())) plotsDirtyMini = plotsDirtyBig = true; // (#1795) re-sampled dug ground
+    if (h.body && HasMap() && MapFeatures_UpdateWater(*h.body, GetTime())) plotsDirtyMini = plotsDirtyBig = true; // (#1795) re-sampled simulated water
     const bool plotsDue = plotsDirtyMini && GetTime() - minimapAt > 1.0;
     // Minimap: re-rendered when the player has moved 40 m off its centre (the image has 70 m of margin
     // around the circle), every 2 s while moving, when new ground shows, or when a plot changed.

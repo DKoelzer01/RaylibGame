@@ -2,6 +2,7 @@
 #include "jobsystem.h"
 #include "plots.h"
 #include "profiler.h"
+#include "waterfield.h"
 #include "world.h"
 #include "worldtypes.h"
 
@@ -500,7 +501,111 @@ bool MapFeatures_EditedAt(const MapEdits& e, Vector3 dir, float& elev, float& ch
     return true;
 }
 
-void MapFeatures_Reset() { cache.clear(); editStates.clear(); }
+// ---------------------------------------------------------------------------------------------
+// Simulated water (#1795 part 3)
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+inline int64_t ColKey(int i, int j) { return ((int64_t)(i + (1 << 20)) << 21) | (int64_t)(j + (1 << 20)); }
+
+std::shared_ptr<const MapWater> SampleWater(const WaterField::Snapshot& snap, uint64_t body) {
+    auto w = std::make_shared<MapWater>();
+    const float cs = WaterField::CellSize();
+    for (const WaterField::Site& s : snap.sites) {
+        if (s.body != body || s.bricks.empty()) continue;
+        MapWaterSite ms;
+        ms.origin = s.origin; ms.e = s.e; ms.n = s.n; ms.u = s.u; ms.lo = s.lo; ms.hi = s.hi;
+        for (const auto& kv : s.bricks) {
+            const int bi = (int)(kv.first >> 22) - 1024, bj = (int)((kv.first >> 11) & 2047) - 1024, bk = (int)(kv.first & 2047) - 1024;
+            const WaterField::Brick& b = *kv.second;
+            for (int y = 0; y < WaterField::kBrick; ++y)
+                for (int x = 0; x < WaterField::kBrick; ++x) {
+                    float top = -1e9f, depth = 0.0f;
+                    uint8_t kind = 0;
+                    for (int z = WaterField::kBrick - 1; z >= 0; --z) {
+                        const int i = WaterField::CellIdx(x, y, z);
+                        if (!b.fill[i] || (b.flags[i] & WaterField::kSolid)) continue;
+                        const float t = bk * WaterField::kBrick + z + (b.shut[i] + b.fill[i]) / 255.0f; // water stands on the cell's ground share (#454)
+                        if (t > top) { top = t; kind = (uint8_t)WaterField::CellKind(b.flags[i]); }
+                        depth += b.fill[i] / 255.0f * cs;
+                    }
+                    if (depth <= 0.0f) continue;
+                    MapWaterSite::Col& c = ms.cols[ColKey(bi * WaterField::kBrick + x, bj * WaterField::kBrick + y)];
+                    if (top > c.top) { c.top = top; c.kind = kind; }
+                    c.depth += depth; // (bricks stacked on one column add up)
+                }
+        }
+        for (auto it = ms.cols.begin(); it != ms.cols.end();) it = it->second.depth < 0.1f ? ms.cols.erase(it) : std::next(it); // films
+        if (!ms.cols.empty()) w->sites.push_back(std::move(ms));
+    }
+    return w;
+}
+
+struct WaterSlot { std::atomic<bool> done{ false }; std::shared_ptr<const MapWater> water; };
+struct WaterState {
+    uint64_t seq = UINT64_MAX; // the snapshot sampled last
+    double at = -1e18;
+    std::shared_ptr<WaterSlot> building;
+    std::shared_ptr<const MapWater> water;
+};
+std::unordered_map<uint64_t, WaterState> waterStates; // body id -> its sampled water (main thread)
+
+} // namespace
+
+bool MapFeatures_UpdateWater(const Planetoid& body, double now) {
+    PROFILE_SCOPE("nav: water");
+    WaterState& st = waterStates[body.id];
+    bool landed = false;
+    if (st.building && st.building->done.load()) {
+        landed = (st.water && !st.water->sites.empty()) || !st.building->water->sites.empty();
+        st.water = st.building->water;
+        st.building.reset();
+    }
+    WaterField::SnapshotPtr snap = WaterField::Current();
+    if (st.building || !snap || snap->seq == st.seq) return landed;
+    // The first water at once, then at most every kWaterResampleS seconds.
+    const bool first = !st.water || st.water->sites.empty();
+    if (!first && now - st.at < kWaterResampleS) return landed;
+    if (first) {
+        bool any = false;
+        for (const auto& s : snap->sites) any |= s.body == body.id && !s.bricks.empty();
+        if (!any) { st.seq = snap->seq; return landed; }
+    }
+    auto slot = std::make_shared<WaterSlot>();
+    st.building = slot;
+    st.seq = snap->seq;
+    st.at = now;
+    const uint64_t id = body.id;
+    JobSystem::tagNext(JobTag::NavMap);
+    WorldJobs().submit(150.0f, [slot, snap, id] { slot->water = SampleWater(*snap, id); slot->done.store(true); });
+    return landed;
+}
+
+std::shared_ptr<const MapWater> MapFeatures_Water(const Planetoid& body) {
+    auto it = waterStates.find(body.id);
+    if (it == waterStates.end() || !it->second.water || it->second.water->sites.empty()) return nullptr;
+    return it->second.water;
+}
+
+bool MapFeatures_WaterAt(const MapWater& w, Vector3 p, float& depth, int& kind) {
+    const float cs = WaterField::CellSize();
+    for (const MapWaterSite& s : w.sites) {
+        if (p.x < s.lo.x - 2.0f || p.y < s.lo.y - 2.0f || p.z < s.lo.z - 2.0f || p.x > s.hi.x + 2.0f || p.y > s.hi.y + 2.0f || p.z > s.hi.z + 2.0f) continue;
+        const Vector3 d = Vector3Subtract(p, s.origin);
+        const float fx = Vector3DotProduct(d, s.e) / cs, fy = Vector3DotProduct(d, s.n) / cs, fz = Vector3DotProduct(d, s.u) / cs;
+        const auto it = s.cols.find(ColKey((int)floorf(fx), (int)floorf(fy)));
+        if (it == s.cols.end()) continue;
+        const float over = (it->second.top - fz) * cs;
+        if (over < -0.3f) continue; // water below this ground (another level of a cave, or ground that rose)
+        depth = std::max(over, 0.0f);
+        kind = it->second.kind;
+        return true;
+    }
+    return false;
+}
+
+void MapFeatures_Reset() { cache.clear(); editStates.clear(); waterStates.clear(); }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
