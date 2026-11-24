@@ -7699,6 +7699,7 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocalOf(player.position, world.renderOrigin));
+                        { static int dbgN = 0; if (dbgN++ % 20 == 0) printf("DBG1787 t=%.2f loading=%d fly=%d flyAllowed=%d gravity=%.2f nearest=%s grounded=%d inWater=%d h=%.2f piloted=%d boarded=%d health=%.0f\n", t, (int)loading, (int)player.flyMode, (int)player.flyAllowed, player.gravity, player.nearest ? player.nearest->name.c_str() : "-", (int)player.grounded, (int)player.inWater, h, (int)ship.piloted, (int)Rocket_Boarded(), survival.health); }
                         if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
                         if (t > 3.0) {
