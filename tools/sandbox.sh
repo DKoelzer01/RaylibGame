@@ -17,6 +17,9 @@ br=$(git rev-parse --abbrev-ref HEAD)
 [ "$br" = HEAD ] && { echo "sandbox: check out a branch first (detached HEAD)"; exit 2; }
 git push -q -u origin "$br" 2>&1 | grep -v '^remote:' || true
 ssh="C:/Windows/System32/OpenSSH/ssh.exe"; [ -x "$ssh" ] || ssh=ssh
+# (#1769) Linked shader programs in the sandbox's persistent /cache (the job's work tree is cleaned each time): ~16 s of
+# compiles per game process otherwise. A command can still set RAYLIBGAME_SHADER_CACHE itself (0: a cold start).
+q=${1:-}; [ -n "$q" ] && q="export RAYLIBGAME_SHADER_CACHE=\${RAYLIBGAME_SHADER_CACHE:-/cache/shaders}; $q"
 # the command goes to the server as one argument, single-quoted for its shell
-q=${1:-}; q=${q//\'/\'\\\'\'}
+q=${q//\'/\'\\\'\'}
 exec "$ssh" deweyserver "~/rg-sandbox/rb.sh '$br' -- '$q'"
