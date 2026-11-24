@@ -9,6 +9,7 @@
 #include "survival.h"
 #include "navigation.h"
 #include "gameui.h"
+#include "statusbar.h"
 #include "net.h"
 #include "itemdata.h"
 
@@ -65,6 +66,7 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
         if (Combat4_On() && now >= sv.parryReadyAt) {
             sv.parryStartedAt = now; sv.parryLanded = false;
             sv.parryReadyAt = now + sv.shieldParryWindow + kParryRecovery;
+            if (&s == &LocalSession()) StatusBar_Add("parry", sv.shieldParryWindow, "PARRY", GOLD); // (#1776, #1777) the window, draining
         }
     }
     sv.rmbHeld = held;
@@ -149,6 +151,7 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
         if (ps <= t + 1e-6 && ps + sv.shieldParryWindow >= t - e.hitWindow - 1e-6) {
             r.parried = true; ++sv.parries;
             sv.parryLanded = true; sv.parrying = false;
+            if (&sv == &LocalSession().survival) StatusBar_Remove("parry"); // the local player's bar
             return r;
         }
     }

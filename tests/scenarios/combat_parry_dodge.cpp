@@ -10,6 +10,7 @@
 #include "player.h"
 #include "playerinput.h"
 #include "playersession.h"
+#include "statusbar.h"
 #include "survival.h"
 #include "world.h"
 #include <raymath.h>
@@ -53,11 +54,13 @@ SCENARIO("combat/parry-dodge") {
         if (c.frame < S.frame0 + 4) return false; // ~50 ms after the raise
         survival.health = 100.0f; survival.stamina = 100.0f;
         const int parries0 = survival.parries;
+        c.check("the PARRY bar shows the window (#1777)", StatusBar_Active("parry"), TextFormat("%.2f left", StatusBar_Remaining("parry")));
         const DamageResult r = HitFromFront(20.0f);
         c.check("parried", r.parried);
         c.near("no damage", 100.0f - survival.health, 0.0, 1e-4);
         c.near("no stamina", 100.0f - survival.stamina, 0.0, 1e-4);
         c.eq("counted", survival.parries - parries0, 1);
+        c.check("the bar goes when the parry lands", !StatusBar_Active("parry"));
         return true;
     });
     s.step("held past the window: an ordinary block", 3.0, [](ScenarioCtx& c) {
