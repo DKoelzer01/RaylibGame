@@ -137,6 +137,13 @@ iron_mace_head        | Iron mace head        | 64 | 175,170,175 | Forged at an 
 steel_blade           | Steel blade           | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab): one makes a knife, two a sword, three a greatsword.
 steel_spearhead       | Steel spearhead       | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) on planks into a spear.
 steel_mace_head       | Steel mace head       | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a mace.
+# (#1613) The smith's hammer and its heads: stone shaped by hand, bronze cast and finished at an anvil, iron and steel forged.
+tool_hammer           | Hammer                | tool | 150,140,130 | Forging at an anvil needs one in hand: its head works metal of its tier and below. Every stroke wears it.
+stone_hammer_head     | Stone hammer head     | 64 | 140,135,130 | A shaped stone. Haft it (Tab) into a hammer that works copper and bronze.
+rough_bronze_hammer_head | Rough bronze hammer head | 64 | 190,140, 70 | Fresh from the mould: finish it at an anvil.
+bronze_hammer_head    | Bronze hammer head    | 64 | 205,150, 75 | Haft it (Tab) into a hammer that works iron.
+iron_hammer_head      | Iron hammer head      | 64 | 175,170,175 | Forged at an anvil. Haft it (Tab) into a hammer.
+steel_hammer_head     | Steel hammer head     | 64 | 125,128,140 | Forged at an anvil. Haft it (Tab) into a hammer that works steel.
 # Navigation: carrying a Map shows the minimap and opens the full map (M).
 map              | Map              | tool | 210,190,140 | Shows the ground you have explored: a minimap on the HUD, the full map with M (waypoints).
 # Farming and food (plan 2, milestone 11): seeds from bushes, crops on farmland, cooked in a campfire.

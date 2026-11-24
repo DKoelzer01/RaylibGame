@@ -11,3 +11,5 @@ weapon_sword      | weapon | -         | sword        | blade       | sword
 weapon_mace       | weapon | -         | mace         | mace head   | mace
 weapon_spear      | weapon | -         | spear        | spearhead   | spear
 weapon_greatsword | weapon | -         | twohanded    | blade       | greatsword
+# (#1613) The smith's hammer: forging at an anvil needs one in hand, its head's tier at least the metal's; each stroke wears it.
+tool_hammer       | tool   | -         | tools        | hammer head | hammer

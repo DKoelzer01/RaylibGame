@@ -631,8 +631,8 @@ TEST(Forge, Scoring) {
 
 TEST(Forge, PatternsParse) {
     const std::vector<ForgePattern>& all = Forge_AllPatterns();
-    EXPECT_EQ(all.size(), 7u);
-    for (const char* id : { "pick_head", "axe_head", "shovel_head", "hoe_head", "blade", "spearhead", "mace_head" }) {
+    EXPECT_EQ(all.size(), 8u);
+    for (const char* id : { "pick_head", "axe_head", "shovel_head", "hoe_head", "blade", "spearhead", "mace_head", "hammer_head" }) {
         const ForgePattern* p = Forge_Pattern(id);
         ASSERT_NE(p, nullptr) << id;
         EXPECT_EQ(p->units(), p->ingots * kForgeUnitsPerIngot) << id;
@@ -687,7 +687,7 @@ TEST(Forge, PatternsParse) {
 }
 
 TEST(Forge, SolverReachesEveryPattern) {
-    ASSERT_EQ(Forge_AllPatterns().size(), 7u);
+    ASSERT_EQ(Forge_AllPatterns().size(), 8u);
     for (const ForgePattern& p : Forge_AllPatterns()) {
         const int tier = 2;
         const std::vector<ForgeMove> moves = Forge_Solve(p, tier);
