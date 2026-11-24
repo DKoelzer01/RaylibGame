@@ -139,6 +139,9 @@ uint32_t NetClient_RequestEdit(NetClient& c, NetEditKind kind, const class Plane
 // anchored at `anchor`, body-local), or to break `plot`'s part partIndex. Returns its seq (0: not sent). The change comes
 // back as PlotEdits with it, or a PartRefused.
 uint32_t NetClient_RequestPart(NetClient& c, const class Planetoid& body, const class Plot* plot, Vector3 anchor, const struct Part& part, bool remove, int partIndex);
+// (#1429 PR 3) Ask the server to form (the wrench) or unform a multiblock controller. Returns its seq (0: not sent). The verdict
+// comes back as a PlotEdit (op Form) to everyone, or a chat line with the problem.
+uint32_t NetClient_RequestForm(NetClient& c, const class Planetoid& body, const class Plot& plot, int partIndex, bool formed);
 // Join sync (#776): a body's plots as bytes (the save's text), and back onto a body (replacing its plots); the server
 // sends the first, a client installs with the second.
 std::vector<uint8_t> Plots_Blob(const class PlotSet& plots);

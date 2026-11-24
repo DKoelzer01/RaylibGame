@@ -352,6 +352,7 @@ steel_casing     | Steel casing     | 64  | 130,135,145 | A steel machine casing
 fluid_in_hatch   | Fluid input hatch | 64 | 100,130,170 | A casing with a fluid input: pipes feed a multiblock through it.
 fluid_out_hatch  | Fluid output hatch | 64 | 170,130,100 | A casing with a fluid output: a multiblock empties into pipes through it.
 large_tank_controller | Large tank controller | 64 | 80, 85, 95 | The brain of a large tank: it sits in the wall of the casings and glass.
+wrench           | Wrench           | tool | 150,150,160 | Hold it and right-click a multiblock controller to form the structure around it.
 # (#1614 PR 6) MV and HV assemblies (by hand with Tab, or in an assembler of their tier)
 mv_motor         | MV motor         | 64  | 140,150,150 | An MV motor: invar rods, a heavy copper winding. MV machines that move have one or two.
 mv_pump          | MV pump          | 64  | 120,145,165 | An MV motor driving a valve: electrolyzers, chemical reactors, MV ore washers.

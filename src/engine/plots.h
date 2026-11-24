@@ -143,6 +143,7 @@ public:
     struct CellRef { int part; CellShape shape; };
     std::unordered_map<Int3, CellRef> cells; // occupied cell -> part index and its shape there
     std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
+    std::vector<int> formed;            // (#1429 PR 3) part indices of the multiblock controllers whose structure is formed (sorted, unique; saved). Members are derived by validation: a part may belong to several structures
     uint32_t refundTo = 0;              // (#854) a server: the player whose removal is next to reach the factory (its machines' contents go to them)
 
     // Plot space <-> body-local.

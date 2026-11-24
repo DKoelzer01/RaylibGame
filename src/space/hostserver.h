@@ -60,6 +60,7 @@ double Host_InventoryAmount(uint32_t session, const std::string& item);
 // into the server's copy of their inventory, and the delta to them. False: no such player or item.
 int Host_PartsApplied();
 void Host_BroadcastPartEdits(const Planetoid& body, const Plot& plot, const std::vector<PartEdit>& edits); // (#1684) a host's own dungeon edit (vault unlock, lever): sent to every client
+void Host_BroadcastForm(const Planetoid& body, const Plot& plot, int part, bool formed); // (#1429 PR 3) a host's own wrench or break: a controller formed or unformed, sent to every client
 bool Host_Give(uint32_t session, const std::string& item, int count);
 bool Host_SetCreative(const std::string& name, bool on); // (#823) /gamemode: an online player's game mode (false: not online)
 // Tests (#346): how many of an item the server holds for a session (-1: no such player in the world); forget every

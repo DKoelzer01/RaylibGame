@@ -12290,7 +12290,7 @@ int main(int argc, char** argv)
                                 if (e.op == NetPartOp::Place) {
                                     Part pt{}; pt.type = (PartType)e.part.type; pt.origin = { e.part.x, e.part.y, e.part.z }; pt.orient = e.part.orient; pt.material = e.part.material;
                                     BuildTool_ApplyPart(*body, *pl, pt);
-                                } else pl->remove((int)e.partIndex);
+                                } else if (e.op == NetPartOp::Remove) pl->remove((int)e.partIndex);
                             }
                             const Plot* a = own.byId(bob.lastNewPlot);
                             if (a && plot) {
@@ -13927,7 +13927,7 @@ int main(int argc, char** argv)
                     NetClient_Disconnect(gJoin);
                 }
                 gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSetGemRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gMachineInsertData = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
-                gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr;
+                gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; gFormRequest = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
@@ -14126,7 +14126,9 @@ int main(int argc, char** argv)
                         gBuildToolNetEdit = [](Planetoid& body, Plot* plot, Vector3 anchor, const Part& part, bool remove, int partIndex) {
                             NetClient_RequestPart(*gNetClient, body, plot, anchor, part, remove, partIndex);
                         };
-                } else { gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; }
+                    if (!gFormRequest) // (#1429 PR 3) the wrench on a controller: the server forms it
+                        gFormRequest = [](Planetoid& body, Plot& plot, int partIndex) { NetClient_RequestForm(*gNetClient, body, plot, partIndex, true); };
+                } else { gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; gFormRequest = nullptr; }
                 if (avatarSelf) { // RAYLIBGAME_AVATAR_SELF=1: yourself, 3 m ahead and facing you (a mirror)
                     AvatarState a = Avatar_FromPlayer(player, 0);
                     const Vector3 ahead = a.facing;

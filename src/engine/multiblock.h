@@ -77,6 +77,20 @@ struct MbResult {
 // controller's front as a horizontal unit vector (fx,fz) in {(0,1),(1,0),(0,-1),(-1,0)}.
 MbResult Multiblock_Validate(const MbDef& def, const MbCatalog& cat, const std::function<std::string(MbInt3)>& lookup,
                              MbInt3 controllerAt, int fx, int fz);
+// (#1429 PR 3) Forming. The controller is the plot's part `partIndex` (an MbController): its definition is the one whose
+// controller legend id is its item, its facing is the part's local +z turned by its orientation (a controller facing up or
+// down has none: not formable), and the world is the plot's cells (the part covering a cell, whatever its footprint).
+// `def` (if not null) gets the definition used, nullptr when the part is not a controller with a definition.
+class Plot;
+struct Part;
+MbResult Multiblock_CheckController(const Plot& plot, int partIndex, const MbDef** def = nullptr);
+const MbDef* Multiblock_DefForController(const Part& controller); // nullptr when the part is not a controller with a definition
+// Mark / unmark a controller as formed (keeps Plot::formed sorted and unique); true when the list changed.
+bool Multiblock_SetFormed(Plot& plot, int partIndex, bool formed);
+// Drop every formed index whose structure no longer validates (or whose part is gone or not a controller). Returns the
+// dropped indices in ascending order; the caller broadcasts them.
+std::vector<int> Multiblock_Recheck(Plot& plot);
+
 // A definition cell in the world. Cells in layers above the stretch layer shift up by stretchExtra (repeats - 1).
 MbInt3 Multiblock_ToWorld(const MbDef& def, MbInt3 defCell, MbInt3 controllerAt, int fx, int fz, int stretchExtra = 0);
 

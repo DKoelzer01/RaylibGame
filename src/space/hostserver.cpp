@@ -1747,6 +1747,13 @@ namespace {
         const DVec3 eye = ns.local + up * (double)rm.player.eyeHeight;
         return (DVec3(local) - eye).length() * scale <= BuildToolState{}.reach + kReachSlack + 1.0; // (+1 m: a part's far cells)
     }
+    // (#1429 PR 3) After a place or break: the plot's formed structures that no longer validate are unformed, and everyone hears it.
+    void SendUnformed(uint64_t bodyNet, Plot& plot) {
+        for (int idx : Multiblock_Recheck(plot)) {
+            MsgPlotEdit f; f.session = 0; f.seq = 0; f.op = NetPartOp::Form; f.body = bodyNet; f.plot = plot.id; f.partIndex = (uint32_t)idx; f.formed = 0;
+            SendToJoined(f);
+        }
+    }
     void OnPartRequest(Scene& world, uint32_t conn, uint32_t session, const MsgPartRequest& q) {
         Remote& rm = remotes[session];
         Planetoid* p = Planetoid::findNet(q.body);
@@ -1756,6 +1763,26 @@ namespace {
         rm.partTokensAt = SimTime();
         if (rm.partTokens < 0.999) { RefusePart(conn, q.seq, NetPartRefusal::Rate); return; }
         std::map<std::string, double> before;
+        if (q.op == NetPartOp::Form) { // (#1429 PR 3) the wrench on a multiblock controller: the server validates and tells everyone
+            Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
+            if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
+            if (q.partIndex >= plot->parts.size() || plot->parts[q.partIndex].type != PartType::MbController) { RefusePart(conn, q.seq, NetPartRefusal::NoPart); return; }
+            const Part& ctl = plot->parts[q.partIndex];
+            const Vector3 at = plot->toBody({ (ctl.origin.x + 0.5f) * kCellSize, (ctl.origin.y + 0.5f) * kCellSize, (ctl.origin.z + 0.5f) * kCellSize });
+            if (!InBuildReach(world, rm, q.body, at, p->scale)) { RefusePart(conn, q.seq, NetPartRefusal::Reach); return; }
+            if (ClaimBlocks(session, p, at)) { RefusePart(conn, q.seq, NetPartRefusal::Claim); return; } // (#343) as a break
+            rm.partTokens -= 1.0;
+            bool formed = false;
+            if (q.formed) {
+                const MbResult res = Multiblock_CheckController(*plot, (int)q.partIndex);
+                if (!res.formed) { SendMsg(conn, MsgChat{ 0, "Can't form: " + res.problem }); return; }
+                Multiblock_SetFormed(*plot, (int)q.partIndex, true);
+                formed = true;
+            } else Multiblock_SetFormed(*plot, (int)q.partIndex, false);
+            MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Form; out.body = q.body; out.plot = plot->id; out.partIndex = q.partIndex; out.formed = formed ? 1 : 0;
+            SendToJoined(out);
+            return;
+        }
         if (q.op == NetPartOp::Remove) {
             Plot* plot = p->plots ? p->plots->byId(q.plot) : nullptr;
             if (!plot) { RefusePart(conn, q.seq, NetPartRefusal::NoPlot); return; }
@@ -1785,6 +1812,7 @@ namespace {
             for (const auto& [item, n] : give) { before.emplace(item, rm.inventory.amount(item)); rm.inventory.add(item, n); }
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Remove; out.body = q.body; out.plot = q.plot; out.partIndex = q.partIndex;
             SendToJoined(out);
+            SendUnformed(q.body, *plot); // (#1429 PR 3) a structure that lost a part
             if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
             Part part = ToPart(q.part);
@@ -1838,6 +1866,7 @@ namespace {
             if (IsMachine(part.type) || IsRocketPart(part.type) || IsRotationPart(part.type)) TeamEvent(session, "placed", PartCostItem(part.type)); // (#338) "place" tasks
             MsgPlotEdit out; out.session = session; out.seq = q.seq; out.op = NetPartOp::Place; out.body = q.body; out.plot = plot->id; out.part = q.part; out.part.material = part.material;
             SendToJoined(out);
+            SendUnformed(q.body, *plot); // (#1429 PR 3) a part in a structure's air cell, or one in the way
         }
         rm.partTokens -= 1.0;
         SendInventoryDeltas(conn, rm.inventory, before);
@@ -2503,6 +2532,10 @@ double Host_InventoryAmount(uint32_t session, const std::string& item) {
 }
 int Host_PartsApplied() { return partsApplied; }
 void Host_BroadcastPartEdits(const Planetoid& body, const Plot& plot, const std::vector<PartEdit>& edits) { SendPartEdits(body.netId, plot.id, edits); } // (#1684)
+void Host_BroadcastForm(const Planetoid& body, const Plot& plot, int part, bool formed) { // (#1429 PR 3) a host's own wrench or break: the clients hear it
+    MsgPlotEdit out; out.session = 0; out.seq = 0; out.op = NetPartOp::Form; out.body = body.netId; out.plot = plot.id; out.partIndex = (uint32_t)part; out.formed = formed ? 1 : 0;
+    SendToJoined(out);
+}
 bool Host_Give(uint32_t session, const std::string& item, int count) {
     auto it = remotes.find(session);
     if (it == remotes.end() || count <= 0 || !itemDB.find(item)) return false;
