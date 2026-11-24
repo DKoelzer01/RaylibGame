@@ -25,6 +25,7 @@ double SlopeWater(ScenarioCtx& c) { // m^3 on the slope: a box from the top 6 m 
 
 SCENARIO("fluid/slope-drain") {
     s.tags = { "fluid", "water" };
+    s.world = ScenarioWorld::Planet;
     s.timeout = 300.0;
     s.step("find a slope", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
