@@ -4,6 +4,11 @@
 #include <string>
 #include <vector>
 #include "plots.h" // Part, held by value in PartEdit (#1684)
+#include "composed.h" // AnvilStrike (#1613)
+
+// (#1613) One hammer strike on an anvil by the local player: needs a smith's hammer held (terrainTool.heldTool) of the job's
+// metal tier or better, and wears it a stroke; creative and an empty anvil need none. Ok: struck (Factory::Strike queued).
+AnvilStrike BuildTool_StrikeAnvil(uint64_t body, uint32_t plot, int part);
 
 class Scene;
 class Planetoid;
