@@ -448,12 +448,37 @@ std::unordered_map<std::string, int> Inventory::all() const {
     return out;
 }
 
+int Inventory::takeHeadParts(const std::string& id, int n) {
+    if (n <= 0) return 100;
+    std::vector<int> forged; // cells holding a forged head: best quality first, then the lowest cell
+    for (int i = 0; i < kCells; ++i)
+        if (!slots[i].empty() && slots[i].hasData() && slots[i].id == id) forged.push_back(i);
+    std::stable_sort(forged.begin(), forged.end(), [&](int a, int b) {
+        return Composed_PartQuality(slots[a].data) > Composed_PartQuality(slots[b].data);
+    });
+    const int fromForged = std::min(n, (int)forged.size());
+    if (fromForged + count(id) < n) return -1;
+    int sum = 100 * (n - fromForged); // plain heads count as 100 %
+    for (int k = 0; k < fromForged; ++k) sum += Composed_PartQuality(slots[forged[k]].data);
+    for (int k = 0; k < fromForged; ++k) takeInstance(forged[k]);
+    if (n > fromForged) removeAmount(id, n - fromForged);
+    return sum / n;
+}
+
 bool Inventory::canCraft(const Recipe& r) const {
-    for (auto& in : r.inputs) if (count(in.first) < in.second) return false;
+    const bool composed = Composed_Is(r.output);
+    for (auto& in : r.inputs) {
+        const bool head = composed && Composed_IsHeadPartOf(r.output, in.first); // (#1613) a forged head counts too
+        if ((head ? held(in.first) : count(in.first)) < in.second) return false;
+    }
     // The output must fit (after the inputs are taken out), or crafting would destroy ingredients.
     Inventory after = *this;
-    for (auto& in : r.inputs) after.removeAmount(in.first, in.second);
-    if (Composed_Is(r.output)) { // (#1449) one empty cell a copy
+    after.journal = false;
+    for (auto& in : r.inputs) {
+        if (composed && Composed_IsHeadPartOf(r.output, in.first)) after.takeHeadParts(in.first, in.second);
+        else after.removeAmount(in.first, in.second);
+    }
+    if (composed) { // (#1449) one empty cell a copy
         int empty = 0; for (int k = 0; k < kGrid; ++k) empty += after.slots[k].empty() ? 1 : 0;
         return empty >= std::max(1, r.outputCount);
     }
@@ -462,11 +487,16 @@ bool Inventory::canCraft(const Recipe& r) const {
 
 bool Inventory::craft(const Recipe& r) {
     if (!canCraft(r)) return false;
-    for (auto& in : r.inputs) removeAmount(in.first, in.second);
-    if (Composed_Is(r.output)) { // (#1449) the assembly hook: the parts consumed become the copy's record
+    const bool composed = Composed_Is(r.output);
+    int quality = 100;
+    for (auto& in : r.inputs) {
+        if (composed && Composed_IsHeadPartOf(r.output, in.first)) quality = takeHeadParts(in.first, in.second); // (#1613)
+        else removeAmount(in.first, in.second);
+    }
+    if (composed) { // (#1449) the assembly hook: the parts consumed become the copy's record
         std::vector<std::string> parts;
         for (auto& in : r.inputs) parts.push_back(in.first);
-        const std::string data = Composed_FromParts(r.output, parts);
+        const std::string data = Composed_FromParts(r.output, parts, std::max(quality, kComposedQualityMin));
         if (!data.empty()) { for (int k = 0; k < std::max(1, r.outputCount); ++k) addInstance(r.output, data); return true; }
     }
     addAmount(r.output, r.outputCount);
@@ -698,6 +728,39 @@ TEST_F(InventoryTest, HaftingAHeadMakesAComposedWeapon) {
     EXPECT_EQ(inv.count("bronze_blade"), 0) << "the blades went into it";
     const int cell = inv.findInstance("weapon_sword", Composed_MakeData("bronze"));
     EXPECT_GE(cell, 0) << "a bronze head, the default handle and binding";
+
+    // (#1613) Forged blades carry their quality into the sword (2 blades: the average): the best go first, then plain ones.
+    ASSERT_EQ(sword->inputs[0].second, 2) << "a sword takes 2 blades";
+    auto give = [&](Inventory& v) { for (const auto& in : sword->inputs) if (in.first != "bronze_blade") v.add(ItemMatches(in.first, "oak_planks") ? "oak_planks" : in.first, in.second); };
+    Inventory forged;
+    give(forged);
+    forged.add("bronze_blade", 3);
+    forged.addInstance("bronze_blade", "q=112");
+    forged.addInstance("bronze_blade", "q=127");
+    forged.addInstance("bronze_blade", "q=90");
+    EXPECT_EQ(forged.held("bronze_blade"), 6);
+    ASSERT_TRUE(forged.craft(*sword));
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 119)), 0) << "127 and 112 went first: 119";
+    EXPECT_EQ(forged.countInstances("bronze_blade"), 1);
+    EXPECT_EQ(forged.count("bronze_blade"), 3) << "the plain blades stay";
+    give(forged);
+    ASSERT_TRUE(forged.craft(*sword));
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 95)), 0) << "90 and a plain 100: 95";
+    give(forged);
+    ASSERT_TRUE(forged.craft(*sword));
+    EXPECT_GE(forged.findInstance("weapon_sword", Composed_MakeData("bronze")), 0) << "plain blades: 100 %";
+    give(forged);
+    EXPECT_FALSE(forged.canCraft(*sword)) << "no blades left";
+
+    // only forged blades (no plain ones): they still count
+    Inventory only;
+    give(only);
+    only.addInstance("bronze_blade", "q=80");
+    EXPECT_FALSE(only.canCraft(*sword)) << "one blade is not two";
+    only.addInstance("bronze_blade", "q=84");
+    ASSERT_TRUE(only.craft(*sword));
+    EXPECT_GE(only.findInstance("weapon_sword", Composed_MakeData("bronze", {}, {}, 82)), 0) << "Crude blades make a Crude sword";
+    EXPECT_EQ(only.held("bronze_blade"), 0);
 }
 
 // (#1449 T1) Tools from recipes.txt: no recipe makes an old per-material tool any more; every tool_ recipe hafts a head the

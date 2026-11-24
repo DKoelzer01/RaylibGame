@@ -1,4 +1,5 @@
 #include "composed.h"
+#include "forge.h"
 #include "itemdata.h"
 #include "inventory.h"
 #include "utils/logger.h"
@@ -110,6 +111,28 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
     return d;
 }
 
+int Composed_HammerTier(const std::string& id, const std::string& data) {
+    if (id != "tool_hammer") return 0;
+    const ComposedStats s = Composed_Stats(id, data);
+    if (!s.valid || s.wear >= s.durability) return 0;
+    return s.headTier;
+}
+
+std::string Composed_AddWear(const std::string& id, const std::string& data, int strokes, bool* broken) {
+    if (broken) *broken = false;
+    const ComposedStats s = Composed_Stats(id, data);
+    if (!s.valid) return {};
+    const int w = s.wear + std::max(0, strokes);
+    if (broken) *broken = w >= s.durability;
+    return ItemData::SetInt(data, "w", w);
+}
+
+AnvilStrike Composed_AnvilStrike(const std::string& heldId, const std::string& heldData, int metalTier) {
+    const int t = Composed_HammerTier(heldId, heldData);
+    if (t <= 0) return AnvilStrike::NoHammer;
+    return t >= metalTier ? AnvilStrike::Ok : AnvilStrike::TooWeak;
+}
+
 bool Composed_IsGem(const std::string& id) { return id == "ruby" || id == "sapphire" || id == "emerald" || id == "amethyst" || id == "quartz"; }
 
 std::string Composed_SetGem(const std::string& cls, const std::string& data, const std::string& gem) {
@@ -131,17 +154,34 @@ std::string Composed_GemText(const std::string& id) { // (#1219, combat doc: GUE
     return id;
 }
 
+namespace {
+std::string HeadPartName(const ComposedClass& c) {
+    std::string p = c.headPart;
+    for (char& ch : p) if (ch == ' ') ch = '_';
+    return p;
+}
+std::string MaterialOf(const std::string& id, const std::string& part) { // "<material>_<part>" with a known material
+    if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
+    const std::string m = id.substr(0, id.size() - part.size() - 1);
+    return Composed_Material(m) ? m : std::string();
+}
+} // namespace
+
+bool Composed_IsHeadPartOf(const std::string& cls, const std::string& itemId) {
+    const ComposedClass* c = Composed_Class(cls);
+    return c && !MaterialOf(itemId, HeadPartName(*c)).empty();
+}
+
+int Composed_PartQuality(const std::string& partData) {
+    return std::clamp(ItemData::GetInt(partData, "q", 100), kComposedQualityMin, kComposedQualityMax);
+}
+
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct) {
     const ComposedClass* c = Composed_Class(cls);
     if (!c) return {};
-    std::string headPart = c->headPart;
-    for (char& ch : headPart) if (ch == ' ') ch = '_';
+    const std::string headPart = HeadPartName(*c);
     std::string head, handle, binding;
-    auto materialOf = [](const std::string& id, const std::string& part) -> std::string { // "<material>_<part>" with a known material
-        if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
-        const std::string m = id.substr(0, id.size() - part.size() - 1);
-        return Composed_Material(m) ? m : std::string();
-    };
+    auto materialOf = MaterialOf;
     for (const std::string& id : ingredients) {
         std::string m;
         if (head.empty() && !(m = materialOf(id, headPart)).empty()) head = m;
@@ -165,13 +205,15 @@ ComposedStats Composed_Stats(const std::string& id, const std::string& data) {
     const PartMaterial* handle = Composed_Material(s.handle.empty() ? std::string("wood") : s.handle);
     const PartMaterial* binding = Composed_Material(s.binding.empty() ? DefaultBinding(s.head) : s.binding);
     s.valid = true;
-    s.quality = std::clamp(ItemData::GetInt(data, "q", 100), 90, 110) / 100.0f;
+    s.qualityPct = std::clamp(ItemData::GetInt(data, "q", 100), kComposedQualityMin, kComposedQualityMax);
+    s.quality = s.qualityPct / 100.0f;
     s.wear = std::max(0, ItemData::GetInt(data, "w", 0));
     const float hf = handle ? handle->factor : 1.0f, bf = binding ? binding->factor : 1.0f;
     s.tool.type = ToolTypeOf(c->toolType);
     s.tool.tier = s.tool.type == ToolType::Hands ? 0 : std::clamp(head->tier, 1, 4);
     s.durability = (int)std::lround(25.0f * head->toughness * hf * bf * s.quality);
     s.damage = (3.0f + 3.0f * head->hardness) * s.quality;
+    s.headTier = head->tier;
     // Dig speed against the tier's reference hardness (the tier's own number): flint bites a little faster than stone.
     s.digSpeed = head->tier > 0 ? std::clamp(head->hardness / (float)head->tier, 0.5f, 1.5f) : 1.0f;
     s.weight = 0.4f * head->density + 0.3f * (handle ? handle->density : 0.7f) + 0.05f * (binding ? binding->density : 0.3f);
@@ -255,7 +297,10 @@ std::string Composed_PartsText(const std::string& id, const std::string& data) {
     char buf[160];
     if (s.tool.type != ToolType::Hands) { snprintf(buf, sizeof buf, "\nTier %d (%s)", s.tool.tier, ToolTierName(s.tool.tier)); t += buf; }
     snprintf(buf, sizeof buf, "\nDurability %d / %d", std::max(0, s.durability - s.wear), s.durability); t += buf;
-    if (s.quality != 1.0f) { snprintf(buf, sizeof buf, "   Quality %+.0f%%", (s.quality - 1.0f) * 100.0f); t += buf; }
+    // (#1613) the grade always (a machine-made item reads Common), the percentage when it isn't 100
+    if (s.qualityPct != 100) snprintf(buf, sizeof buf, "   %s %+d%%", Forge_Grade(s.qualityPct), s.qualityPct - 100);
+    else snprintf(buf, sizeof buf, "   %s", Forge_Grade(s.qualityPct));
+    t += buf;
     if (s.sockets > 0) {
         snprintf(buf, sizeof buf, "   Sockets %d/%d", (int)s.gems.size(), s.sockets); t += buf; // (#1219) set / free
         if (!s.gems.empty()) {
@@ -304,7 +349,16 @@ TEST(Composed, StatsFollowTheParts) {
     const ComposedStats good = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 110));
     EXPECT_NEAR(good.durability, plain.durability * 1.1f, 1.0f);
     EXPECT_NEAR(good.damage, plain.damage * 1.1f, 1e-3f);
-    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 300)).quality, 1.1f) << "clamped to 110 %";
+    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 300)).quality, 1.3f) << "clamped to 130 %";
+    EXPECT_EQ(Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 10)).qualityPct, 75) << "clamped to 75 %";
+    // (#1613) the full range reaches the stats: a Masterwork 128 % lasts 128/80 as long as a Crude 80 %
+    const ComposedStats crude = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 80));
+    const ComposedStats master = Composed_Stats("tool_axe", Composed_MakeData("bronze", {}, {}, 128));
+    EXPECT_NEAR(master.durability, crude.durability * 128.0f / 80.0f, 2.0f);
+    EXPECT_NEAR(master.damage, crude.damage * 1.6f, 1e-3f);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze", {}, {}, 80)).find("Crude -20%"), std::string::npos);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze", {}, {}, 128)).find("Masterwork +28%"), std::string::npos);
+    EXPECT_NE(Composed_PartsText("tool_axe", Composed_MakeData("bronze")).find("Common"), std::string::npos);
     // Sockets: bronze one, steel two; weapons have no tool type.
     EXPECT_EQ(plain.sockets, 1);
     const ComposedStats sword = Composed_Stats("weapon_sword", Composed_MakeData("steel"));
@@ -314,6 +368,45 @@ TEST(Composed, StatsFollowTheParts) {
     EXPECT_GT(sword.damage, Composed_Stats("weapon_sword", Composed_MakeData("bronze")).damage);
     // Wear is read from the record.
     EXPECT_EQ(Composed_Stats("tool_pickaxe", ItemData::SetInt(Composed_MakeData("iron"), "w", 37)).wear, 37);
+}
+
+// (#1613) The smith's hammer: its tier is its head's; every stroke wears it; worn out, it forges nothing.
+TEST(Composed, HammerTierAndWear) {
+    ASSERT_TRUE(Composed_Load());
+    ASSERT_TRUE(Composed_Is("tool_hammer"));
+    const ComposedStats stone = Composed_Stats("tool_hammer", Composed_MakeData("stone"));
+    ASSERT_TRUE(stone.valid);
+    EXPECT_EQ(stone.tool.type, ToolType::Hands) << "a hammer digs nothing";
+    EXPECT_EQ(stone.headTier, 1);
+    EXPECT_EQ(Composed_HammerTier("tool_hammer", Composed_MakeData("stone")), 1);
+    EXPECT_EQ(Composed_HammerTier("tool_hammer", Composed_MakeData("bronze")), 2);
+    EXPECT_EQ(Composed_HammerTier("tool_hammer", Composed_MakeData("steel")), 3);
+    EXPECT_EQ(Composed_HammerTier("weapon_mace", Composed_MakeData("steel")), 0) << "a mace is no smith's hammer";
+    EXPECT_EQ(Composed_HammerTier("tool_hammer", ""), 0);
+    EXPECT_EQ(Composed_FromParts("tool_hammer", { "bronze_hammer_head", "oak_planks" }), Composed_MakeData("bronze"));
+
+    bool broken = true;
+    std::string d = Composed_AddWear("tool_hammer", Composed_MakeData("stone"), 10, &broken);
+    EXPECT_FALSE(broken);
+    EXPECT_EQ(Composed_Stats("tool_hammer", d).wear, 10);
+    d = Composed_AddWear("tool_hammer", d, 5);
+    EXPECT_EQ(Composed_Stats("tool_hammer", d).wear, 15);
+    d = Composed_AddWear("tool_hammer", d, stone.durability, &broken);
+    EXPECT_TRUE(broken) << "used up";
+    EXPECT_EQ(Composed_HammerTier("tool_hammer", d), 0) << "a worn-out hammer forges nothing";
+    EXPECT_EQ(Composed_AddWear("tool_hammer", "", 1, &broken), "");
+    EXPECT_FALSE(broken);
+
+    // striking an anvil: a hammer of the metal's tier or better (bronze is tier 1 to forge, iron 2, steel 3)
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 1), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 2), AnvilStrike::TooWeak);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("bronze"), 2), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("bronze"), 3), AnvilStrike::TooWeak);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("steel"), 3), AnvilStrike::Ok);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", Composed_MakeData("stone"), 0), AnvilStrike::Ok) << "a repair: any hammer";
+    EXPECT_EQ(Composed_AnvilStrike("tool_pickaxe", Composed_MakeData("steel"), 1), AnvilStrike::NoHammer);
+    EXPECT_EQ(Composed_AnvilStrike("", "", 0), AnvilStrike::NoHammer);
+    EXPECT_EQ(Composed_AnvilStrike("tool_hammer", d, 1), AnvilStrike::NoHammer) << "worn out";
 }
 
 // (#1449 part 2) Old tools in an inventory become composed ones, their wear moved into the first copy of each.
@@ -374,7 +467,7 @@ TEST(Composed, NamesAndPartsForTheUi) {
     EXPECT_NE(t.find("Binding: Leather"), std::string::npos) << t;
     EXPECT_NE(t.find("Tier 2"), std::string::npos) << t;
     EXPECT_NE(t.find("Durability 380 / 420"), std::string::npos) << t; // 400 x 1.05 quality, 40 used
-    EXPECT_NE(t.find("Quality +5%"), std::string::npos) << t;
+    EXPECT_NE(t.find("Common +5%"), std::string::npos) << t;
     EXPECT_NE(t.find("Sockets 0/1"), std::string::npos) << t; // (#1219: set / sockets)
 }
 

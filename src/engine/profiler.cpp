@@ -411,11 +411,18 @@ TEST(Profiler, OffRecordsNothingAndCostsLittle) {
     Profiler_Enable(true);
     Prof::Frame();
     const std::string j = Profiler_SummaryJson();
-    double onNs = 0.0, offNs = 0.0;
-    Profiler_MeasureZoneCost(onNs, offNs);
+    // (#1817) The best of 5 runs, and "off" judged against "on" from the same runs: a busy runner (12.5 ns off once against a
+    // fixed 5 ns) slows both, while an off zone that still records or reads the clock costs a large share of an on one.
+    double onNs = 1e9, offNs = 1e9;
+    for (int k = 0; k < 5; ++k) {
+        double on = 0.0, off = 0.0;
+        Profiler_MeasureZoneCost(on, off);
+        onNs = std::min(onNs, on);
+        offNs = std::min(offNs, off);
+    }
     Profiler_Enable(false);
     EXPECT_EQ(j.find("unit/off zone"), std::string::npos);
-    EXPECT_LT(offNs, 5.0);
+    EXPECT_LT(offNs, std::max(5.0, 0.25 * onNs)) << "off " << offNs << " ns, on " << onNs << " ns";
     EXPECT_LT(onNs, 200.0) << "a zone on: two rdtsc and a ring write (the plan: 20-40 ns; loose here, machines vary)";
 }
 #endif

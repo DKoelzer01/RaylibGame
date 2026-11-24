@@ -150,6 +150,11 @@ anvil            | iron_mace_head 1   | iron_ingot 2              | 120 | 0
 anvil            | steel_blade 1      | steel_ingot 1             | 160 | 0
 anvil            | steel_spearhead 1  | steel_ingot 1             | 160 | 0
 anvil            | steel_mace_head 1  | steel_ingot 2             | 160 | 0
+# (#1613) hammer heads, as the weapon heads (one ingot)
+kiln             | rough_bronze_hammer_head 1 | bronze_ingot 1, fired_mould 1 | 300 | 0
+anvil            | bronze_hammer_head 1 | rough_bronze_hammer_head 1 | 80  | 0
+anvil            | iron_hammer_head 1   | iron_ingot 1               | 120 | 0
+anvil            | steel_hammer_head 1  | steel_ingot 1              | 160 | 0
 # (#1449 T2) iron and steel tool heads forged at the anvil like the weapon heads (the ingots of the old tool recipes; times
 # as the weapon heads': GUESS). Hafted by hand (recipes.txt).
 anvil            | iron_pick_head 1     | iron_ingot 3            | 120 | 0

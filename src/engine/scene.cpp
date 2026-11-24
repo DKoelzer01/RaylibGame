@@ -4,6 +4,7 @@
 #include "headless.h"
 #include "ores.h"
 #include "gputimer.h"
+#include "gpucompute.h"
 #include "utils/logger.h"
 #include "profiler.h"
 #include "worldtypes.h"
@@ -55,6 +56,36 @@ static std::string ExpandShaderIncludes(const std::string& path, std::vector<std
     return out;
 }
 
+// (#1769) A raylib Shader around an already linked program (a cached binary): the locations LoadShaderFromMemory sets, the
+// same way (raylib 5.5 rcore.c, its names from config.h, which raylib keeps to itself). The default attributes were bound before
+// the original link and the binary keeps them.
+static Shader ShaderFromProgram(unsigned id) {
+    Shader s{};
+    if (id == 0) return s;
+    s.id = id;
+    s.locs = (int*)RL_CALLOC(RL_MAX_SHADER_LOCATIONS, sizeof(int)); // UnloadShader frees it with RL_FREE
+    for (int i = 0; i < RL_MAX_SHADER_LOCATIONS; i++) s.locs[i] = -1;
+    s.locs[SHADER_LOC_VERTEX_POSITION] = rlGetLocationAttrib(id, "vertexPosition");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD01] = rlGetLocationAttrib(id, "vertexTexCoord");
+    s.locs[SHADER_LOC_VERTEX_TEXCOORD02] = rlGetLocationAttrib(id, "vertexTexCoord2");
+    s.locs[SHADER_LOC_VERTEX_NORMAL] = rlGetLocationAttrib(id, "vertexNormal");
+    s.locs[SHADER_LOC_VERTEX_TANGENT] = rlGetLocationAttrib(id, "vertexTangent");
+    s.locs[SHADER_LOC_VERTEX_COLOR] = rlGetLocationAttrib(id, "vertexColor");
+    s.locs[SHADER_LOC_VERTEX_BONEIDS] = rlGetLocationAttrib(id, "vertexBoneIds");
+    s.locs[SHADER_LOC_VERTEX_BONEWEIGHTS] = rlGetLocationAttrib(id, "vertexBoneWeights");
+    s.locs[SHADER_LOC_MATRIX_MVP] = rlGetLocationUniform(id, "mvp");
+    s.locs[SHADER_LOC_MATRIX_VIEW] = rlGetLocationUniform(id, "matView");
+    s.locs[SHADER_LOC_MATRIX_PROJECTION] = rlGetLocationUniform(id, "matProjection");
+    s.locs[SHADER_LOC_MATRIX_MODEL] = rlGetLocationUniform(id, "matModel");
+    s.locs[SHADER_LOC_MATRIX_NORMAL] = rlGetLocationUniform(id, "matNormal");
+    s.locs[SHADER_LOC_BONE_MATRICES] = rlGetLocationUniform(id, "boneMatrices");
+    s.locs[SHADER_LOC_COLOR_DIFFUSE] = rlGetLocationUniform(id, "colDiffuse");
+    s.locs[SHADER_LOC_MAP_DIFFUSE] = rlGetLocationUniform(id, "texture0");
+    s.locs[SHADER_LOC_MAP_SPECULAR] = rlGetLocationUniform(id, "texture1");
+    s.locs[SHADER_LOC_MAP_NORMAL] = rlGetLocationUniform(id, "texture2");
+    return s;
+}
+
 bool HotShader::reloadIfChanged(bool force) {
     // Two file stats per shader cost ~20 us each on Windows: 20 a frame was ~0.35 ms of the main
     // thread. Look at most twice a second (each shader keeps its own clock).
@@ -72,7 +103,18 @@ bool HotShader::reloadIfChanged(bool force) {
     const std::string vsSrc = ExpandShaderIncludes(vsPath, incs), fsSrc = ExpandShaderIncludes(fsPath, incs);
     includes = incs;
     for (const std::string& inc : includes) fsTime = std::max(fsTime, GetFileModTime(inc.c_str()));
-    Shader s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
+    // (#1769) The linked program from an earlier run when there is one (raylib's default vertex shader, used when vsSrc is
+    // empty, is part of the program: its version is in the key).
+    const std::string cacheFile = ProgramCache_Usable() ? ProgramCache_Path(fsPath, std::string(RAYLIB_VERSION) + "\n" + vsSrc + "\n// fragment\n" + fsSrc) : std::string();
+    Shader s{};
+    if (!cacheFile.empty()) s = ShaderFromProgram(ProgramCache_Load(cacheFile));
+    if (s.id == 0) {
+        const double t0 = GetTime();
+        s = LoadShaderFromMemory(vsSrc.empty() ? nullptr : vsSrc.c_str(), fsSrc.empty() ? nullptr : fsSrc.c_str());
+        // a slow compile stalls its frame and every scenario's start (a cold driver cache)
+        if (const double ms = (GetTime() - t0) * 1000.0; ms > 50.0) TraceLog(LOG_WARNING, "Shader %s: compiled and linked in %.0f ms", fsPath.c_str(), ms);
+        if (!cacheFile.empty() && IsShaderValid(s) && s.id != rlGetShaderIdDefault()) ProgramCache_Save(cacheFile, s.id);
+    }
     // On a compile/link error raylib hands back its default shader instead.
     if (!IsShaderValid(s) || s.id == rlGetShaderIdDefault()) {
         LOG_ERROR("Shader", "Shader %s / %s failed to compile; keeping previous version\n", vsPath.c_str(), fsPath.c_str());

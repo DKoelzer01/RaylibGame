@@ -4,6 +4,11 @@
 #include <string>
 #include <vector>
 #include "plots.h" // Part, held by value in PartEdit (#1684)
+#include "composed.h" // AnvilStrike (#1613)
+
+// (#1613) One hammer strike on an anvil by the local player: needs a smith's hammer held (terrainTool.heldTool) of the job's
+// metal tier or better, and wears it a stroke; creative and an empty anvil need none. Ok: struck (Factory::Strike queued).
+AnvilStrike BuildTool_StrikeAnvil(uint64_t body, uint32_t plot, int part);
 
 class Scene;
 class Planetoid;
@@ -59,6 +64,7 @@ void BuildTool_LayFoundation(Planetoid& body, Plot& plot, const Part& part);
 // one batch at End (each part's own batch re-dirtied the same chunks again and again: a freeze on a big blueprint).
 void BuildTool_BeginFoundationBatch();
 void BuildTool_EndFoundationBatch(Planetoid& body);
+void BuildTool_TakeFoundationBatch(std::vector<TerrainEdit>& out); // (#1791) ends the batch, its edits appended to out (the caller folds them)
 // (#1183) Foundations queued by a placement land over the next frames: each frame applies them within budgetMs (0: all
 // now, e.g. before a save). BuildTool_PendingFoundations: how many wait.
 void BuildTool_ApplyPendingFoundations(double budgetMs);

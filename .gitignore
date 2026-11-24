@@ -31,3 +31,4 @@ phonon.dll
 .machine-lock.d/
 .machine-queue
 .machine-queue.tmp
+cache/
