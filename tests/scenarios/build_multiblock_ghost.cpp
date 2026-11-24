@@ -126,6 +126,7 @@ SCENARIO("build/multiblock-ghost") {
         static bool pressed = false;
         if (c.t < 0.05) pressed = false;
         LookAtController(c);
+        if (c.t < 0.2) return false; // (past the reset frames above: one press)
         if (!pressed) {
             pressed = true;
             terrainTool.creative = false; // (creative crafting costs nothing: the plan would not be tested)
@@ -150,6 +151,7 @@ SCENARIO("build/multiblock-ghost") {
         static bool done = false;
         if (c.t < 0.05) done = false;
         c.camera(At(base.x + 4.5f, base.y + 4.0f, base.z + 7.0f), At(base.x + 1.5f, base.y + 1.2f, base.z + 1.5f), Up());
+        if (c.t < 0.2) return false; // (past the reset frames above: once)
         if (!done) {
             done = true;
             MbResult r;

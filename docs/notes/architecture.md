@@ -59,6 +59,11 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   (it changes no part version). `MbStep` runs a structure's jobs (parallel recipes): inputs claimed and output room
   reserved at the start, energy through energy hatches (`MbDemand` before the power step, `MbTakePower` after), shared
   hatches in round-robin. A plot with a formed structure stays out of the summary sim (far: the 20-tick step).
+- Multiblock ghost and parts list (#1429 PR 5): `Multiblock_Plan` turns a validation into the part for each open cell and the
+  totals (hatch spots get hatches while a kind is under its minimum, else the fallback casing). The ghost is view state
+  only (buildtool.cpp, keyed by the controller's cell, no protocol): E on a controller toggles it, the wrench shows the last
+  aimed one. I ("Craft missing") calls `GameUI_QueueToHold`, which plans each item on what the earlier plans leave;
+  ingredients of other needed items go last (`CraftOrder`), so joined requests plan the same on the server.
 - Weather captures: `RAYLIBGAME_WEATHER_FORCE=0..3` (clear .. storm).
 - Caves (Plan 10, #615): all cave carving is `PlanetField::caveDistance` (voxel.cpp) and its bit-exact twin in terrain.glsl; change both
   together. `--cave-stats R [D]` (counts, the trench metric, a density hash that refactors must keep), `--test-caves` (fly into the nearest
