@@ -131,4 +131,4 @@ void Build(ScenarioDef& s) {
 }
 
 SCENARIO("frames/build-hold") { Build(s); }
-SCENARIO("frames/build-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); }
+SCENARIO("frames/build-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }
