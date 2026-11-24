@@ -9,6 +9,13 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "agent",
+      "displayName": "Agent check build (MinGW, -O1, #1758)",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/check",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "RAYLIBGAME_FAST_BUILD": "ON", "GAME_OUTPUT_DIR": "${sourceDir}/build/check/bin" }
+    },
+    {
       "name": "debug",
       "displayName": "Debug (MinGW)",
       "generator": "MinGW Makefiles",

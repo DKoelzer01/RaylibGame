@@ -63,6 +63,7 @@ LightGrid::Brick& LightGrid::Get(int bx, int by, int bz) {
     b.bx = bx; b.by = by; b.bz = bz;
     std::memset(b.opaque, 0, sizeof(b.opaque)); // b.light starts unlit (LightCell's initializers)
     if (opacity_) opacity_(bx, by, bz, b.opaque);
+    ++newBricks_;
     last_ = &b;
     return b;
 }
@@ -193,12 +194,14 @@ void LightGrid::TakeDirty(std::vector<int>& out) {
 }
 
 bool LightGrid::Update(int budget) {
+    newBricks_ = 0;
+    auto capped = [&] { return newBrickCap_ > 0 && newBricks_ >= newBrickCap_; };
     int done = 0;
     // Removal first (Minecraft's two-queue relight): a neighbour dimmer than the light that left could have been lit by
     // it, so it goes dark and passes the removal on; a neighbour at least as bright is lit from elsewhere and refills
     // the dark region in the add pass. Source cells that go dark get their own emission back at once.
     while (removeHead_ < removeQ_.size()) {
-        if (budget > 0 && done >= budget) return false;
+        if ((budget > 0 && done >= budget) || capped()) return false;
         const RemoveItem it = removeQ_[removeHead_++];
         ++done;
         for (const Move& m : kMoves.m) {
@@ -222,7 +225,7 @@ bool LightGrid::Update(int budget) {
     removeQ_.clear();
     removeHead_ = 0;
     while (addHead_ < addQ_.size()) {
-        if (budget > 0 && done >= budget) return false;
+        if ((budget > 0 && done >= budget) || capped()) return false;
         const Cell c = addQ_[addHead_++];
         ++done;
         const LightCell l = At(c.x, c.y, c.z);
@@ -387,6 +390,7 @@ TEST(LightGrid, DigAndFillMatchARebuild) {
     }
     g.Update();
     ExpectMatchesRebuild(g, world, sources, 48);
+    g.SetNewBrickCap(1); // updates stop after each new brick too: the result must not change
     for (int round = 0; round < 6; ++round) {
         for (int k = 0; k < 40; ++k) {
             const int x = c(rng), y = c(rng), z = c(rng);

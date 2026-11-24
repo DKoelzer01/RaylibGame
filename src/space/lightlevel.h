@@ -19,7 +19,7 @@ void LightLevel_Update(Scene& world, bool inGame);
 // The grid's level at a body-local point (0 where it has none, or on another body). Creatures and crops read this later.
 LightCell LightLevel_At(const Planetoid& body, Vector3 local);
 // Stats for tests and the profiler: sources, bricks, queued work, cells relit last frame, ms spent last frame.
-struct LightLevelStats { int sources = 0; int bricks = 0; bool busy = false; int uploaded = 0; float ms = 0.0f; };
+struct LightLevelStats { int sources = 0; int bricks = 0; bool busy = false; int uploaded = 0; float ms = 0.0f; float brickMsMax = 0.0f; }; // brickMsMax: the slowest brick read (a terrain density block)
 LightLevelStats LightLevel_Stats();
 
 #endif
