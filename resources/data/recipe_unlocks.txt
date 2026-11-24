@@ -36,5 +36,8 @@ bronze_casing | tier 3
 steel_casing  | tier 3
 fluid_in_hatch | tier 3
 fluid_out_hatch | tier 3
+item_in_hatch | tier 3
+item_out_hatch | tier 3
+lv_energy_hatch | tier 4
 large_tank_controller | tier 3
 wrench | tier 3

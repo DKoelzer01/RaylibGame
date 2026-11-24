@@ -39,6 +39,10 @@ struct MbDef {
     int stretchLayer = -1, stretchMin = 1, stretchMax = 1;
     std::map<std::string, std::pair<int, int>> hatchLimits; // kind -> min,max
     MbInt3 controller;                                      // its cell in the definition frame (layer y, row z, column x)
+    // (#1429 PR 4) The factory: a formed structure runs this machines.txt machine's recipes ("": none, e.g. a tank), up to
+    // `parallel` at once.
+    std::string machine;
+    int parallel = 1;
     const MbLegend* key(char c) const;
 };
 
@@ -46,6 +50,9 @@ struct MbCatalog {
     std::vector<MbDef> defs;
     std::map<std::string, int> casingTier;                      // casing id -> tier
     std::map<std::string, std::pair<std::string, int>> hatches; // hatch id -> kind, tier
+    // (#1429 PR 4) casing / hatch id -> the voltage tier name ("LV") that caps a structure's tier (an energy hatch's voltage);
+    // absent: no cap (a steam-age bronze casing)
+    std::map<std::string, std::string> volts;
     const MbDef* find(const std::string& id) const;
     // (#1429 PR 2) ordered part lists: the index is a placed part's Part::material, so the order is the file's (deterministic)
     std::vector<std::string> controllers, casings, hatchIds; // at most 256 each
@@ -90,6 +97,18 @@ bool Multiblock_SetFormed(Plot& plot, int partIndex, bool formed);
 // Drop every formed index whose structure no longer validates (or whose part is gone or not a controller). Returns the
 // dropped indices in ascending order; the caller broadcasts them.
 std::vector<int> Multiblock_Recheck(Plot& plot);
+
+// (#1429 PR 4) A formed structure as the factory runs it: its definition, its hatches (part index and kind, in the order the
+// validator checked them, each once) and the voltage names capping its tier (its casings' and energy hatches', each once).
+// False when the controller does not validate (the caller treats it as unformed).
+struct MbMachine {
+    const MbDef* def = nullptr;
+    std::vector<std::pair<int, std::string>> hatches;
+    std::vector<std::string> volts;
+};
+bool Multiblock_Members(const Plot& plot, int controllerPart, MbMachine& out);
+// A hatch part's kind ("item_in", ...) from its Part::material; "" when out of range.
+std::string Multiblock_HatchKind(int material);
 
 // A definition cell in the world. Cells in layers above the stretch layer shift up by stretchExtra (repeats - 1).
 MbInt3 Multiblock_ToWorld(const MbDef& def, MbInt3 defCell, MbInt3 controllerAt, int fx, int fz, int stretchExtra = 0);

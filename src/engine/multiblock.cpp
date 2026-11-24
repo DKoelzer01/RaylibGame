@@ -137,14 +137,18 @@ MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* er
             continue;
         }
         if (!cur.open) {
-            if (kw == "casing" && w.size() == 4 && w[2] == "tier") {
+            // (#1429 PR 4) an optional trailing "volts <tier name>" on casing and hatch lines
+            const bool cVolts = kw == "casing" && w.size() == 6 && w[4] == "volts", hVolts = kw == "hatch" && w.size() == 8 && w[6] == "volts";
+            if (kw == "casing" && (w.size() == 4 || cVolts) && w[2] == "tier") {
                 cat.casingTier[w[1]] = atoi(w[3].c_str());
+                if (cVolts) cat.volts[w[1]] = w[5];
                 if (std::find(cat.casings.begin(), cat.casings.end(), w[1]) == cat.casings.end()) cat.casings.push_back(w[1]);
             }
-            else if (kw == "hatch" && w.size() == 6 && w[2] == "kind" && w[4] == "tier") {
+            else if (kw == "hatch" && (w.size() == 6 || hVolts) && w[2] == "kind" && w[4] == "tier") {
                 if (!IsHatchKind(w[3])) err(lineNo, "unknown hatch kind '" + w[3] + "'");
                 else {
                     cat.hatches[w[1]] = { w[3], atoi(w[5].c_str()) };
+                    if (hVolts) cat.volts[w[1]] = w[7];
                     if (std::find(cat.hatchIds.begin(), cat.hatchIds.end(), w[1]) == cat.hatchIds.end()) cat.hatchIds.push_back(w[1]);
                 }
             }
@@ -192,6 +196,16 @@ MbCatalog Multiblock_Parse(const std::string& text, std::vector<std::string>* er
             if (!IsHatchKind(w[1])) { bad(lineNo, "unknown hatch kind '" + w[1] + "'"); continue; }
             if (a > b) { bad(lineNo, "hatch min is above max"); continue; }
             d.hatchLimits[w[1]] = { a, b };
+            continue;
+        }
+        if (kw == "machine") { // (#1429 PR 4)
+            if (w.size() != 2) { bad(lineNo, "machine needs: <machines.txt machine>"); continue; }
+            d.machine = w[1];
+            continue;
+        }
+        if (kw == "parallel") {
+            if (w.size() != 2 || atoi(w[1].c_str()) < 1) { bad(lineNo, "parallel needs: <n >= 1>"); continue; }
+            d.parallel = atoi(w[1].c_str());
             continue;
         }
         if (kw == "stretch") {
@@ -476,6 +490,35 @@ std::vector<int> Multiblock_Recheck(Plot& plot) {
     }
     plot.formed = keep;
     return dropped;
+}
+
+std::string Multiblock_HatchKind(int material) {
+    const std::string id = Multiblock_PartItem(PartType::MbHatch, material);
+    const auto it = Multiblock_All().hatches.find(id);
+    return it == Multiblock_All().hatches.end() ? std::string() : it->second.first;
+}
+
+bool Multiblock_Members(const Plot& plot, int controllerPart, MbMachine& out) {
+    out = MbMachine{};
+    const MbResult r = Multiblock_CheckController(plot, controllerPart, &out.def);
+    if (!r.formed || !out.def) return false;
+    const MbCatalog& cat = Multiblock_All();
+    auto addVolts = [&](const std::string& id) {
+        const auto v = cat.volts.find(id);
+        if (v != cat.volts.end() && std::find(out.volts.begin(), out.volts.end(), v->second) == out.volts.end()) out.volts.push_back(v->second);
+    };
+    for (const MbCellResult& c : r.cells) {
+        if (c.status != MbCell::Ok) continue;
+        const int i = plot.partAt({ c.world.x, c.world.y, c.world.z });
+        if (i < 0 || i >= (int)plot.parts.size()) continue;
+        const Part& p = plot.parts[i];
+        if (p.type == PartType::MbCasing) addVolts(Multiblock_PartItem(p.type, p.material));
+        if (p.type != PartType::MbHatch) continue;
+        if (std::any_of(out.hatches.begin(), out.hatches.end(), [i](const auto& h) { return h.first == i; })) continue;
+        out.hatches.push_back({ i, Multiblock_HatchKind(p.material) });
+        addVolts(Multiblock_PartItem(p.type, p.material));
+    }
+    return true;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
@@ -962,6 +1005,58 @@ TEST(MultiblockForming, NeighboursShareAWall) {
     EXPECT_EQ(dropped[0], cb);
     ASSERT_EQ(plot.formed.size(), 1u);
     EXPECT_EQ(plot.formed[0], ca);
+}
+
+// (#1429 PR 4) The factory's view: a definition's machine and parallel, volts on casings and hatches, and a formed
+// structure's hatches with their kinds.
+TEST(Multiblock, MachineParallelAndVoltsParse) {
+    std::vector<std::string> errors;
+    const MbCatalog cat = Multiblock_Parse(std::string(kDecl) +
+        "casing hot_casing tier 4 volts MV\n"
+        "hatch mv_energy_hatch kind energy tier 5 volts MV\n"
+        "multiblock oven | Oven | tier 3\n"
+        "  machine coke_oven\n"
+        "  parallel 4\n"
+        "  legend C controller:oven_controller\n"
+        "  legend c casing:hot_casing\n"
+        "  layer cCc\n"
+        "end\n"
+        "multiblock bad | Bad | tier 3\n"
+        "  parallel 0\n"
+        "  legend C controller:bad_controller\n"
+        "  layer C\n"
+        "end\n", &errors);
+    ASSERT_EQ(errors.size(), 1u) << "parallel 0 is refused";
+    const MbDef* d = cat.find("oven");
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(d->machine, "coke_oven");
+    EXPECT_EQ(d->parallel, 4);
+    EXPECT_EQ(cat.find("bad"), nullptr);
+    EXPECT_EQ(cat.volts.at("hot_casing"), "MV");
+    EXPECT_EQ(cat.volts.at("mv_energy_hatch"), "MV");
+    EXPECT_EQ(cat.hatches.at("mv_energy_hatch").first, "energy");
+    EXPECT_EQ(cat.volts.count("bronze_casing"), 0u) << "no volts: no cap";
+    const MbDef* tank = Multiblock_All().find("large_tank");
+    ASSERT_NE(tank, nullptr);
+    EXPECT_TRUE(tank->machine.empty()) << "a tank runs no recipes";
+    EXPECT_EQ(tank->parallel, 1);
+}
+
+TEST(MultiblockForming, MembersListTheHatchesOnce) {
+    Plot plot;
+    const int ctl = PlaceTank(plot, { 10, 5, 10 }, 0, 1);
+    MbMachine mb;
+    ASSERT_TRUE(Multiblock_Members(plot, ctl, mb));
+    ASSERT_NE(mb.def, nullptr);
+    EXPECT_EQ(mb.def->id, "large_tank");
+    ASSERT_EQ(mb.hatches.size(), 2u) << "the tank's two hatch cells";
+    std::vector<std::string> kinds;
+    for (const auto& h : mb.hatches) { EXPECT_EQ(plot.parts[h.first].type, PartType::MbHatch); kinds.push_back(h.second); }
+    std::sort(kinds.begin(), kinds.end());
+    EXPECT_EQ(kinds, (std::vector<std::string>{ "fluid_in", "fluid_out" }));
+    EXPECT_TRUE(mb.volts.empty()) << "bronze casings: no voltage cap";
+    plot.remove(mb.hatches[0].first);
+    EXPECT_FALSE(Multiblock_Members(plot, ctl, mb)) << "broken: not a machine";
 }
 
 TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
