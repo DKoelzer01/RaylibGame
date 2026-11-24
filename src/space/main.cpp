@@ -62,6 +62,7 @@
 #include "itemicons.h"
 #include "particles.h"
 #include "ambience.h"
+#include "lightlevel.h"
 #include "waterfalls.h"
 #include "gpumem.h"
 #include "structures.h"
@@ -10466,7 +10467,7 @@ int main(int argc, char** argv)
                     if (player.autoCrouch) scripted.hold(Act::Down);
                     if (player.autoWalk && player.autoSprint) scripted.hold(Act::Sprint);
                     const PlayerInput& moveIn = gameInput ? stepIn : scripted.enabled ? scripted : PlayerInput::None();
-                    Combat_Step(session, simDt, moveIn); // stamina and the block before this step's movement (#165)
+                    Combat_Step(session, simDt, Interact_FilterRmb(moveIn)); // (#1716: an aimed interactable takes RMB, no block) stamina and the block before this step's movement (#165)
                     // Physics in the player's own frame (#314): render space centred on the feet for the step, whatever the
                     // camera and the floating origin do (a server runs every player this way).
                     player.flyAllowed = terrainTool.creative || bench; // F flies in creative mode only (#531; benches fly their cameras)
@@ -10581,7 +10582,7 @@ int main(int argc, char** argv)
             if (!loading) MachineAct_Update(); // (#854) a joined client's cursor takes from machines
             if (!loading) Viewmodel_Update(world, Combat_HitStop(LocalSession(), settings.reduceMotion) ? 0.0f : frameDt); // hit-stop (#165)
             if (!loading) Structures_Update(world); // ruins, wrecks and wonders near the player (#164)
-            if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted); // (#176)
+            if (!loading) Fishing_Update(world, frameDt, gameInput && alive && !ship.piloted && !Interact_RmbConsumed()); // (#176)
             if (!loading) Trapping_Update(world); // snares (#176)
             // (#822) Q: the off hand's food (eaten, when not full) or consumable (an oxygen canister, a power cell), one at a time
             if (!loading && gameInput && alive && !GameUI_InventoryOpen() && PlayerInput_BindingPressed(Act::OffHandUse)) {
@@ -10886,6 +10887,7 @@ int main(int argc, char** argv)
         if (crackCheck) noHud = true; // #725: no HUD or hands: their text and shapes boxed in bits of the magenta sky, which then read as holes
         if (crackCheck) world.clearColor = MAGENTA;
         while (world.lights.size() < 4) world.lights.push_back(Light{});
+        LightLevel_Update(world, gameState == 1); // (#1739) torches and lamp blocks through the light grid
         if (gameState == 1) { Ambience_GatherLights(world); Events_AddLights(world); Animals_AddLights(world); } else world.localLights.clear(); // lamps, campfires, fire machines (#139); meteor impacts (#177)
         if (getenv("RAYLIBGAME_CAMERA_LIGHT") && gameState == 1) { LocalLight L; L.position = world.camera.position; L.range = 60.0f; L.color = { 1.0f, 0.95f, 0.85f }; L.intensity = 2.5f; world.localLights.push_back(L); } // (#615 captures) a light at the eye, to see caves
         if (gameState == 1 && Potion_NightVision()) { LocalLight L; L.position = world.camera.position; L.range = 40.0f; L.color = { 0.75f, 0.95f, 0.8f }; L.intensity = 1.6f; world.localLights.push_back(L); } // (#1254) the night-eye draught: the dark around you shows
@@ -10984,7 +10986,7 @@ int main(int argc, char** argv)
             }
         }
         GpuTimer_CpuMark("world+lights");
-        if (gameState == 1) Hotbar_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), ship.piloted);
+        if (gameState == 1) Hotbar_Update(world, Interact_FilterRmb(PlayerInput_If(gameInput && alive, PlayerInput_Frame())), ship.piloted); // (#1716: eating, the torch)
         if (gameState == 1) BuildTool_Update(world, PlayerInput_If(gameInput && alive, PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !player.flyMode && !telescope.active && alive);
         if (gameState == 1 && !loading) Animals_Aim(world, PlayerInput_If(gameInput && alive && !ship.piloted, PlayerInput_Frame())); // this frame's camera (#222)
         if (gameState == 1 && !loading) MagicSight_Update(world, std::min(GameFrameTime(), 0.1f), PlayerInput_If(gameInput && alive && !ship.piloted && !GameUI_InventoryOpen(), PlayerInput_Frame())); // (#1249) RAYLIBGAME_MAGIC
@@ -10992,7 +10994,7 @@ int main(int argc, char** argv)
         // (#1564) The crosshair on a creature, a built part or a cockpit: those take the prompt and the buttons, and the terrain
         // tool draws no preview and no text for the ground behind them (parts were already held off: PartInFront).
         terrainTool.aimHeldOff = Animals_Aiming() || BuildTool_AimingPart() || Rocket_AimingCockpit();
-        if (gameState == 1) TerrainTool_Update(world, PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame()), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
+        if (gameState == 1) TerrainTool_Update(world, Interact_FilterRmb(PlayerInput_If(gameInput && alive && !Animals_Aiming(), PlayerInput_Frame())), !ship.piloted && !Rocket_Boarded() && !telescope.active && !buildTool.active); // F5/F9 work aboard too
         {   // Tool wear: each stroke, chop or hit with the held tool (the swing counter covers them all).
             static int lastSwings = 0;
             if (terrainTool.swings > lastSwings && !terrainTool.creative && !terrainTool.terraform && !terrainTool.heldTool.empty())

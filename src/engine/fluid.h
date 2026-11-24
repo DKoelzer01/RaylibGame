@@ -68,7 +68,9 @@ namespace Fluid {
     // Tests (#454): m^3 of water in published cells within `radius` of `local` whose bottom stands `above` m or more over it.
     float VolumeAbove(const Planetoid& body, Vector3 local, float radius, float above);
     bool StandingWaterNear(const Planetoid& body, Vector3 local, float range); // irrigation
-    float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius
+    float WaterAt(const Planetoid& body, Vector3 local, float radius);    // m^3 of water (moving or static) within radius (cost ~ (radius / CellSize)^3: keep it small)
+    // More than minVolume m^3 of water within radius (WaterAt's cube), answered by brick: for large-radius yes/no looks (#1736).
+    bool AnyWaterNear(const Planetoid& body, Vector3 local, float radius, float minVolume = 0.0f);
     // Flow through the simulated water around a point (#392): body-local, its length in m^3/s - the volume crossing the
     // cells within `radius` per second divided by the sphere's diameter, so a sphere spanning a channel reads its
     // discharge. Smoothed over ~0.5 s. The first call starts watching the spot (zero until then); keep asking (a watch

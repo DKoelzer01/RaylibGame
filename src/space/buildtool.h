@@ -78,6 +78,12 @@ int Dungeon_UnlockVault(Plot& plot, int partIndex, std::vector<PartEdit>* edits 
 int Dungeon_PullLever(Plot& plot, int partIndex, std::vector<PartEdit>* edits = nullptr);
 // Machines: looking at one shows its state (factory snapshot); I inserts items, O takes outputs.
 void Machine_Update(Scene& world, const PlayerInput& in);
+// (#1716) An aimed chest, machine, campfire, bed, pump, crank, lever or vault door takes the RMB click: the held item's RMB
+// (telescope, bucket, food, torch, shield block, ground placing) fires only when nothing like that is aimed. A press made on
+// empty space keeps working while held; one made on an interactable does nothing until released. Before Machine_Update runs
+// in a frame it answers from the aim of the frame before, after it from this frame's.
+bool Interact_RmbConsumed();
+PlayerInput Interact_FilterRmb(const PlayerInput& in); // `in` without RMB when it is consumed: what the held item's handlers get
 void Machine_DrawHUD();
 // A ", "-separated item list wrapped into lines of at most maxW px, capped at maxLines ("+N more", #567).
 std::vector<std::string> WrapItemList(const char* prefix, const std::string& list, int maxW, int size, int maxLines);

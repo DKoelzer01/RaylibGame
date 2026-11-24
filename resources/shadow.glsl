@@ -93,6 +93,26 @@ vec3 localLights(vec3 p, vec3 n)
     return sum;
 }
 
+// (#1739) Static lights (torches, lamps, fires) through the light-level grid (lightgrid.h): a 128 m window of 1 m cells
+// round the camera, body-local, in a wrap-around 3D texture. Sampled half a metre out along the normal (in the open cell in
+// front of the surface, not the solid one behind it). Texels: the light's colour (rgb, its largest channel 1) and its
+// level (a: 8 per metre of reach left, / 255), so colour x (level / 128)^2 falls off as the point lights'
+// (1 - d / range)^2 did; info.w is the gain (0: off). Fades out at the window's edge.
+uniform sampler3D lightGridTex;
+uniform mat4 lightGridFromRender;   // render space -> texture coordinates
+uniform vec4 lightGridInfo;         // the window's centre (texture coordinates), gain
+vec3 gridLight(vec3 p, vec3 n)
+{
+    if (lightGridInfo.w <= 0.0) return vec3(0.0);
+    vec3 q = (lightGridFromRender * vec4(p + n * 0.5, 1.0)).xyz;
+    vec3 off = abs(q - lightGridInfo.xyz);
+    float edge = max(off.x, max(off.y, off.z));
+    if (edge > 0.49) return vec3(0.0);
+    vec4 t = texture(lightGridTex, q);
+    float level = t.a * (255.0 / 128.0);
+    return t.rgb * level * level * lightGridInfo.w * (1.0 - smoothstep(0.42, 0.49, edge));
+}
+
 // A held torch (#218), a point light: render-space position and range (w, 0 off); colour and intensity (a).
 // Terrain gets it through lights[3] (lighting.fs), with the same falloff.
 uniform vec4 torchPos;
@@ -111,7 +131,7 @@ uniform vec4 lampTarget;
 // lampLight() also adds the held torch and the local lights: every shader that calls it gets them all.
 vec3 lampLight(vec3 p, vec3 n)
 {
-    vec3 other = torchLight(p, n) + localLights(p, n); // with the headlamp off too (it returned early before: no torch on grass, #218)
+    vec3 other = torchLight(p, n) + localLights(p, n) + gridLight(p, n); // with the headlamp off too (it returned early before: no torch on grass, #218)
     if (lampPos.w <= 0.0) return other;
     vec3 beam = lampTarget.xyz - lampPos.xyz;
     float range = max(length(beam), 1.0);
