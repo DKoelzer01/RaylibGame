@@ -7699,9 +7699,12 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocalOf(player.position, world.renderOrigin));
-                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
+                        // The first frame here can come late (a hitch, or the spawn's loading screen: up to 20 s, #1787): the swim is
+                        // timed from it, and judged only on a later frame (judging on this one counted no frames: a FAIL).
+                        const bool first = t < 0.5 || h0 == 0.0f;
+                        if (first) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); }
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
-                        if (t > 3.0) {
+                        if (!first && t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
                             const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
@@ -14016,7 +14019,10 @@ int main(int argc, char** argv)
                     // frames to queue the new place and has built it (where it is built already: at once).
                     ++loadFrames;
                     Soundscape_PreloadStep(); // (#1241) one procedural ambience bed a frame behind the bar, not mid-play
-                    const bool built = !preparing && (spawnLoad ? WorldIdle() && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
+                    // (#1787) A spawn also ends once the ground is built while jobs keep running: moving water near the spot (a
+                    // river, a pond still filling) keeps remeshing its chunks and stepping, so the world is never idle, and every
+                    // spawn or teleport beside it showed the screen for its full 20 s.
+                    const bool built = !preparing && (spawnLoad ? (WorldIdle() || WorldTerrainReady(world)) && loadFrames >= 3 : WorldIdle() && GetTime() - loadStart > 0.5);
                     if (built) barClosing = true; // fill to the end first (a few frames), then close
                     const bool timedOut = GetTime() - loadStart > (preparing ? 90.0 : 20.0);
                     if ((barClosing && barShown >= 0.999f) || timedOut) {

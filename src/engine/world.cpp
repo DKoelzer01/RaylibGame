@@ -1811,6 +1811,9 @@ void worldUpdate(Scene& world, float uploadBudgetMs) {
 
 // False until a (re)generation has fully streamed in, and while edits/LOD changes are building.
 bool WorldIdle() { return generationStart < 0.0 && PipelineIdle(); }
+// (#1787) Every LOD node the streamer wants has its mesh: the ground is there, though jobs may still run (moving water
+// remeshes the chunks it changes, ~200 a second, and its fluid steps are foreground jobs too, so WorldIdle stays false).
+bool WorldTerrainReady(Scene& world) { return generationStart < 0.0 && !AnyLodPending(world); }
 
 void BeginSpawnPreload() {
     gPreloadUrgent = lodSettings.preloadRadius > 0.0f && !gStreamOld;
