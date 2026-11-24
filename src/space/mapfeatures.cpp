@@ -115,7 +115,8 @@ std::shared_ptr<const PlotMap> Build(const Snapshot& s) {
         m->part[i] = c.part;
         top[i] = c.y;
     }
-    // Coarser levels: per block the most common kind of its columns (any part at all keeps the block filled).
+    // Coarser levels: per block the highest-ranked kind among its columns, so a machine on a floor or a conveyor row still
+    // shows zoomed out (any part at all keeps the block filled).
     using Counts = std::array<uint32_t, (int)MapKind::Count>;
     std::vector<Counts> cnt((size_t)w * h, Counts{});
     for (size_t i = 0; i < cnt.size(); ++i) cnt[i][l0.kind[i]] = 1;
@@ -131,9 +132,12 @@ std::shared_ptr<const PlotMap> Build(const Snapshot& s) {
                 const Counts& c = cnt[(size_t)z * lw + x];
                 for (int k = 0; k < (int)MapKind::Count; ++k) d[k] += c[k];
             }
-        for (size_t i = 0; i < next.size(); ++i) {
+        for (size_t i = 0; i < next.size(); ++i) { // the highest-ranked kind present, the most common one on a tie
             int best = 0;
-            for (int k = 1; k < (int)MapKind::Count; ++k) if (next[i][k] > (best ? next[i][best] : 0u)) best = k;
+            for (int k = 1; k < (int)MapKind::Count; ++k) {
+                if (!next[i][k]) continue;
+                if (!best || Rank((MapKind)k) > Rank((MapKind)best) || (Rank((MapKind)k) == Rank((MapKind)best) && next[i][k] > next[i][best])) best = k;
+            }
             l.kind[i] = (uint8_t)best;
         }
         cnt.swap(next);
@@ -275,8 +279,9 @@ bool MapFeatures_Sample(const MapPlots& s, const DVec3& p, Vector3 east, Vector3
         const MapKind k = (MapKind)l.kind[(size_t)z * l.w + x];
         if (k == MapKind::None) continue;
         Color c = s.colour[(int)k];
-        // Zoomed in (a cell 2+ pixels across): a dark edge where the pixel's corners land on another part.
-        if (L == 0 && mpp <= 0.5f * kCellSize) {
+        // Zoomed in (a cell 4+ pixels across; at 2, nearly every pixel touches a cell edge): a dark edge where the pixel's
+        // corners land on another part.
+        if (L == 0 && mpp <= 0.25f * kCellSize) {
             const int self = PartAt(m, u, v);
             const float h = 0.5f * mpp;
             for (int i = 0; i < 4; ++i) {
@@ -354,6 +359,10 @@ TEST(MapFeatures, PlotFootprintAtItsHeadingInKindColours) {
     // Zoomed in, the edge between two parts is dark; the middle of a part is not.
     EXPECT_EQ(kindAt(6.02f, 0.5f, 0.1f), MapKind::Count) << "an outline at the edge of two conveyors";
     EXPECT_EQ(kindAt(6.5f, 0.5f, 0.1f), MapKind::Transport);
+    EXPECT_EQ(kindAt(6.02f, 0.5f, 0.25f), MapKind::Transport) << "no outlines at 2 pixels a cell (every pixel would touch an edge)";
+    // Zoomed out, a block shows its highest-ranked part: the furnace and the conveyors over the floor they stand on.
+    EXPECT_EQ(kindAt(fu, fv, 2.0f), MapKind::Machine) << "the furnace's 2 m block";
+    EXPECT_EQ(kindAt(5.5f, 2.5f, 2.0f), MapKind::Transport) << "a block of floor with a conveyor row through it";
     // Zoomed out (4 m a pixel, 8 cells a block): the plot is still drawn wherever it has parts.
     EXPECT_NE(kindAt(6.5f, 0.5f, 4.0f), MapKind::None);
     EXPECT_EQ(kindAt(30.0f, 0.5f, 4.0f), MapKind::None);

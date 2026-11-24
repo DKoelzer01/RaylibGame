@@ -6,8 +6,8 @@
 // Each plot gets a footprint: per column of cells (plot x, z) the part shown from above, coloured by its kind. A machine
 // shows over the floor or roof around it. Footprints are built on the job system from a copy of the plot's parts, only when
 // the plot's version changes. The map's render workers then sample them per pixel. Zoomed in, each part has an outline.
-// Zoomed out, coarser levels (2, 4, 8... cells a block, the most common kind) keep thin rows of parts visible as a solid
-// footprint. Colours come from resources/data/map_colours.txt.
+// Zoomed out, coarser levels (2, 4, 8... cells a block, the highest-ranked kind in it) keep machines and thin rows of parts
+// visible as a solid footprint. Colours come from resources/data/map_colours.txt.
 
 #include <raylib.h>
 #include <cstdint>
