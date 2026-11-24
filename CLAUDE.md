@@ -15,6 +15,8 @@ test; add a line when something goes wrong).
 
 - Shell PATH: `export PATH="/c/Program Files/CMake/bin:/c/raylib/w64devkit/bin:$PATH"`.
 - Agent build: `cmake --build build/check -j 4` -> `build/check/bin/game.exe`. Re-run `cmake build/check` after adding a .cpp.
+  Agent and sandbox builds compile at -O1 (`-DRAYLIBGAME_FAST_BUILD=ON`, #1758); playtest builds and the runner stay -O3.
+  Timing or perf numbers on this PC need a -O3 build (`-DRAYLIBGAME_FAST_BUILD=OFF`).
   The PostToolUse hook rebuilds after each C++ edit (low priority, -j 4, skipped during someone else's quiet window) and
   reports errors and warnings in the edited file.
 - Never overwrite the user's root `./game.exe` (their playtest build); a new build dir needs `-DGAME_OUTPUT_DIR=<dir>/bin`.
