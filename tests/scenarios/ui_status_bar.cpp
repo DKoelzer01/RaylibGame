@@ -13,7 +13,7 @@ double t0 = 0.0; // sim time when the two effects were added
 SCENARIO("ui/status-bar") {
     s.tags = { "world", "ui" };
     s.world = ScenarioWorld::Sandbox;
-    s.args = { "--day" };
+    s.args = { "--day", "--record-hud", "1" }; // the recording shows the HUD: the widget is what this scenario is about
     s.step("settle", 30.0, [](ScenarioCtx& c) { c.waitingFor("an idle world"); return c.T >= 1.0 && WorldIdle(); });
     s.step("two effects: 1 s and 2 s", 1.0, [](ScenarioCtx& c) {
         StatusBar_Clear();
