@@ -387,35 +387,38 @@ struct BuildJob {
     std::vector<std::pair<Part, std::string>> parts; // the part, and its loot table for a chest ("" none)
     size_t next = 0;
     std::vector<TerrainEdit> edits;                  // in order: the site's pad, interior and doorways, a dungeon's rooms and corridors (#719)
-    bool groundIn = false;                           // the edits are in the body's snapshot
-    std::shared_ptr<TerrainFold> fold;               // (#1791) the edits folding on a worker
+    enum class Ground { Todo, Folding, In } ground = Ground::Todo; // the edits: not started, on a worker, in the body's snapshot
+    std::shared_ptr<TerrainFold> fold;               // (#1791) on a worker: the edits, then the placed parts' foundations
+    std::vector<TerrainEdit> foundations;            // placed parts' foundations waiting for the fold in flight
 };
 std::vector<BuildJob> jobs;
 int lastPlaced = 0; // parts the last RunJob placed (all of them, for a forced build)
-// async: the ground folds on a worker (#1791: 150-420 ms on the main thread for a site), and the parts wait for it - they
-// go down after the ground as before (a foundation's fill under a cut would otherwise be cut away). Otherwise (a save, a
-// forced test build) everything is done now; a fold still running is dropped and redone here.
+// async (#1791): terrain folds on a worker and is swapped in a later frame - the site's cuts first (150-420 ms on the main
+// thread), the parts waiting for them as before; then each frame's parts' foundations in one fold (one at a time they were
+// up to 40 ms each). Otherwise (a save, a forced test build) everything is done now, a fold in flight included.
 bool RunJob(Planetoid& body, BuildJob& job, double budgetMs, bool async = false) { // true when the job is done
     Plot* plot = body.plots ? body.plots->byId(job.plot) : nullptr;
     if (!plot) return true; // the plot is gone (a reload, a world change): nothing to finish
     const auto t0 = std::chrono::steady_clock::now();
     auto spent = [&]() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
     lastPlaced = 0;
-    if (!job.groundIn && !job.edits.empty()) {
+    if (job.fold) { // in once done; folded again from the new snapshot if an edit landed meanwhile (rare)
         if (!async) {
-            if (!(job.fold && PublishTerrainFold(body, *job.fold))) ApplyTerrainEdits(body, job.edits.data(), job.edits.size());
-        } else {
-            if (!job.fold) job.fold = FoldTerrainEditsAsync(body, job.edits);
-            if (!job.fold->done.load(std::memory_order_acquire)) return false; // next frame
-            if (!PublishTerrainFold(body, *job.fold)) { // an edit landed meanwhile: fold again from it (rare)
-                job.fold = FoldTerrainEditsAsync(body, job.edits);
-                return false;
-            }
+            if (!PublishTerrainFold(body, *job.fold)) ApplyTerrainEdits(body, job.fold->edits.data(), job.fold->edits.size());
+            job.fold.reset();
+        } else if (job.fold->done.load(std::memory_order_acquire)) {
+            if (PublishTerrainFold(body, *job.fold)) job.fold.reset();
+            else job.fold = FoldTerrainEditsAsync(body, job.fold->edits);
         }
-        job.groundIn = true;
-        job.fold.reset();
-        if (spent() > budgetMs) return false; // (the publish's remesh requests)
+        if (!job.fold && job.ground == BuildJob::Ground::Folding) job.ground = BuildJob::Ground::In;
     }
+    if (job.ground == BuildJob::Ground::Todo) {
+        if (job.edits.empty()) job.ground = BuildJob::Ground::In;
+        else if (!async) { ApplyTerrainEdits(body, job.edits.data(), job.edits.size()); job.ground = BuildJob::Ground::In; }
+        else { job.fold = FoldTerrainEditsAsync(body, job.edits); job.ground = BuildJob::Ground::Folding; }
+    }
+    if (job.ground != BuildJob::Ground::In) return false; // the parts wait for the ground
+    if (async) BuildTool_BeginFoundationBatch();
     while (job.next < job.parts.size()) {
         const auto& [p, table] = job.parts[job.next++];
         const int idx = plot->place(p);
@@ -427,7 +430,12 @@ bool RunJob(Planetoid& body, BuildJob& job, double budgetMs, bool async = false)
         }
         if (spent() > budgetMs) break;
     }
-    return job.next >= job.parts.size();
+    if (async) BuildTool_TakeFoundationBatch(job.foundations);
+    if (!job.foundations.empty()) {
+        if (!async) { ApplyTerrainEdits(body, job.foundations.data(), job.foundations.size()); job.foundations.clear(); }
+        else if (!job.fold) { job.fold = FoldTerrainEditsAsync(body, std::move(job.foundations)); job.foundations.clear(); }
+    }
+    return job.next >= job.parts.size() && !job.fold && job.foundations.empty();
 }
 // Each frame: the oldest job gets a little time (kJobBudgetMs).
 constexpr double kJobBudgetMs = 1.5;
