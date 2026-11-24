@@ -67,6 +67,10 @@ struct SurvivalState {
     bool hyperArmour = false;                                 // (#1217) in a heavy or two-handed wind-up now: hits don't stagger
     // (#1218) Parry, dodge and the winded state (defense.h).
     double blockStartedAt = -1e9;                             // sim time the block was raised (the parry window counts from it)
+    // (#1776) An RMB tap parries, a hold blocks: the press opens the parry window; held past it (or past a parry that
+    // landed) is the block. parryReadyAt: the next tap that can parry (a short recovery after each).
+    bool rmbHeld = false, parrying = false, parryLanded = false;
+    double rmbDownAt = -1e9, parryStartedAt = -1e9, parryReadyAt = 0.0;
     float windedLeft = 0.0f;                                  // s winded left (ran out of stamina: no heavies, no dodge, slow walk)
     bool staminaEmpty = false;                                // at 0 last step (the winded state starts once per emptying)
     float dodgeInvuln = 0.0f;                                 // s of a dodge's invulnerability left

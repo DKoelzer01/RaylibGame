@@ -29,6 +29,7 @@ static constexpr float kBlockArcCos = 0.5f;           // a block covers +-60 deg
 static constexpr float kShieldBlockFraction = 0.75f;  // share of the damage a shield stops
 static constexpr float kBlockedKnockback = 0.4f;      // share of the push left through a block
 static constexpr float kKnockLift = 2.0f;             // m/s up with a push on the ground: off it, a short hop
+static constexpr double kParryRecovery = 0.4;         // (#1776) s after a parry window before the next tap can parry (GUESS)
 
 static bool testHoldBlock = false; // --test-combat: RMB held
 static void PickUpGraves(PlayerSession& s);
@@ -53,10 +54,24 @@ void Combat_Step(PlayerSession& s, float dt, const PlayerInput& in) {
     SurvivalState& sv = s.survival;
     // The block: RMB with a shield in the off hand (and RMB not taken by the main hand or build mode), while stamina lasts.
     s.terrainTool.rmbBlocks = IsShield(s.inventory.offHand().id) && !s.buildTool.active && !RmbUsedByHand(s);
-    const bool wasBlocking = sv.blocking;
-    sv.blocking = s.terrainTool.rmbBlocks && (in.down(Act::Secondary) || testHoldBlock) && sv.stamina > 0.0f && !sv.dead;
-    if (sv.blocking && !wasBlocking) sv.blockStartedAt = SimTime(); // (#1218) the parry window counts from the raise
     if (Combat4_On()) { const ShieldSpec& sh = ShieldFor(s.inventory.offHand().id); sv.shieldStops = sh.stops; sv.shieldArcDeg = sh.arcDeg; sv.shieldParryWindow = sh.parryWindow; }
+    // (#1776, user) An RMB tap parries, a hold blocks. The press (or the shield coming into the hand with RMB down) opens
+    // the shield's parry window, whether or not RMB stays down; held past the window, or past a parry that landed, it is
+    // the block. After each tap a short recovery before the next can parry (no spamming the window).
+    const double now = SimTime();
+    const bool held = s.terrainTool.rmbBlocks && (in.down(Act::Secondary) || testHoldBlock) && sv.stamina > 0.0f && !sv.dead;
+    if (held && !sv.rmbHeld) {
+        sv.rmbDownAt = now;
+        if (Combat4_On() && now >= sv.parryReadyAt) {
+            sv.parryStartedAt = now; sv.parryLanded = false;
+            sv.parryReadyAt = now + sv.shieldParryWindow + kParryRecovery;
+        }
+    }
+    sv.rmbHeld = held;
+    sv.parrying = Combat4_On() && !sv.parryLanded && !sv.dead && now - sv.parryStartedAt <= sv.shieldParryWindow + 1e-6;
+    const bool wasBlocking = sv.blocking;
+    sv.blocking = held && (!Combat4_On() || sv.parryLanded || now - sv.rmbDownAt > sv.shieldParryWindow + 1e-6);
+    if (sv.blocking && !wasBlocking) sv.blockStartedAt = now;
     // Stamina comes back a second after the last spend.
     if (SimTime() - sv.staminaUsedAt >= kRegenDelay) sv.stamina = std::min(100.0f, sv.stamina + kStaminaRegenPerSec * dt);
     // (#1215) Status effects: their damage over time, and chill's slow (frozen: no moving) on the walk speed.
@@ -120,17 +135,26 @@ DamageResult Combat_DamageFor(SurvivalState& sv, Player& p, const DamageEvent& e
         const float l = Vector3Length(away);
         away = l > 1e-4f ? Vector3Scale(away, 1.0f / l) : Vector3{ 0, 0, 0 };
     }
-    // A block stops part of a hit it faces (the source within the arc around the level view) while stamina lasts.
-    if (sv.blocking && e.hasSource && Vector3LengthSqr(away) > 0.0f) {
+    // Facing the source: within the shield's arc around the level view.
+    auto facing = [&] {
+        if (!e.hasSource || Vector3LengthSqr(away) <= 0.0f) return false;
         const Vector3 fwd = Vector3Normalize(Vector3Subtract(p.forward, Vector3Scale(p.up, Vector3DotProduct(p.forward, p.up))));
-        const float arcCos = Combat4_On() ? cosf(sv.shieldArcDeg * DEG2RAD) : kBlockArcCos;
-        if (Vector3DotProduct(fwd, Vector3Negate(away)) >= arcCos) {
-            // (#1218) Raised within the shield's parry window before a parryable melee hit or bite: stopped whole, for no stamina
-            // (the attacker staggers: animals.cpp).
-            if (Combat4_On() && e.parryable && (e.kind == DamageKind::Melee || e.kind == DamageKind::Bite) && SimTime() - sv.blockStartedAt <= sv.shieldParryWindow + 1e-6) {
-                r.parried = true; ++sv.parries;
-                return r;
-            }
+        return Vector3DotProduct(fwd, Vector3Negate(away)) >= (Combat4_On() ? cosf(sv.shieldArcDeg * DEG2RAD) : kBlockArcCos);
+    };
+    // (#1218, #1776) A parry: the tap's window overlaps the attack's live span [t - hitWindow, t] (the window may have just
+    // closed as the blow lands), facing it. A melee hit, a bite or a projectile is stopped whole, for no stamina (a melee
+    // attacker staggers: animals.cpp). One parry per tap.
+    if (Combat4_On() && e.parryable && e.kind != DamageKind::Other && !sv.parryLanded && facing()) {
+        const double t = SimTime(), ps = sv.parryStartedAt;
+        if (ps <= t + 1e-6 && ps + sv.shieldParryWindow >= t - e.hitWindow - 1e-6) {
+            r.parried = true; ++sv.parries;
+            sv.parryLanded = true; sv.parrying = false;
+            return r;
+        }
+    }
+    // A block stops part of a hit it faces while stamina lasts.
+    if (sv.blocking && facing()) {
+        {
             const float stopped = amount * (Combat4_On() ? sv.shieldStops : kShieldBlockFraction);
             const float cost = stopped * kBlockCostPerDamage;
             if (sv.stamina >= cost) {
@@ -718,7 +742,7 @@ bool Combat_TestFrame(Scene& world) {
         t0 = now; step = 3;
         return false;
     case 3: // a shield in the off hand, RMB held, landed again: a hit from in front
-        if (now - t0 < 0.3 || (!p.grounded && now - t0 < 3.0)) return false; // (#1218) past the parry window: an ordinary block
+        if (now - t0 < 0.6 || (!p.grounded && now - t0 < 3.0)) return false; // (#1218, #1776) held past the parry window: an ordinary block
         check(sv.blocking && s.terrainTool.rmbBlocks, "a shield in the off hand: RMB blocks (and builds nothing)");
         sv.health = sv.stamina = 100.0f;
         local0 = local();

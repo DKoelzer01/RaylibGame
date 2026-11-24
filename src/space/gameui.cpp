@@ -2340,11 +2340,11 @@ static void DrawTierBanner() {
 // (#1713) While the shield is up: a ring round the crosshair, gold with "PARRY" during the parry window (a melee hit or a bite
 // landing now is parried: the attacker staggers), then grey while it only blocks. The window is the shield's (0.22-0.45 s).
 static void DrawBlockRing() {
-    if (!survival.blocking) return;
+    if (!survival.blocking && !survival.parrying) return; // (#1776: a tap parries without the block; the status bar #1777 replaces this ring)
     const float s = GameUI_HudScale();
     const float cx = GetScreenWidth() * 0.5f, cy = GetScreenHeight() * 0.5f, r = 26.0f * s;
-    const double since = SimTime() - survival.blockStartedAt;
-    const bool parry = since >= 0.0 && since <= survival.shieldParryWindow;
+    const double since = SimTime() - survival.parryStartedAt;
+    const bool parry = survival.parrying;
     if (parry) {
         const float left = 1.0f - (float)(since / std::max(0.01f, survival.shieldParryWindow)); // the window running out: the arc shrinks
         DrawRing({ cx, cy }, r - 3.0f * s, r, -90.0f, -90.0f + 360.0f * left, 48, Color{ 255, 205, 70, 235 });
