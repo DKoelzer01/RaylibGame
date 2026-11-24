@@ -542,7 +542,10 @@ static void SyncGrassBlockers(Planetoid& p) {
         g.origin = pl->origin; g.east = pl->east; g.up = pl->up; g.north = pl->north;
         for (const auto& kv : pl->cells) {
             g.cells.insert(kv.first);
-            if (PartBlocksSky(pl->parts[kv.second.part])) g.solid.insert(kv.first); // (#908) roofs shade the ground
+            if (PartBlocksSky(pl->parts[kv.second.part])) {
+                g.solid.insert(kv.first); // (#908) roofs shade the ground
+                if (kv.second.shape.full) g.full.insert(kv.first);
+            }
             const Int3 c = kv.first;
             g.radius = std::max(g.radius, sqrtf((float)(c.x * c.x + c.y * c.y + c.z * c.z)) * kCellSize + kCellSize);
         }
