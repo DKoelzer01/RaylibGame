@@ -9,6 +9,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# (#1758, the user 2026-11-24) Agent (build/check) and sandbox builds compile at -O1: at -O3 a file's time is ~70%
+# optimisation (precompiled headers saved ~5%), and those builds check behaviour, not speed. Playtest builds and the
+# self-hosted runner keep the Release -O3. Timing on the PC needs a -O3 build. Appended after the Release flags: the
+# last -O wins. Floating-point results don't change with -O (no -ffast-math; -ffp-contract=off stays), so the CPU
+# terrain stays bit-exact with the GPU shader (--test-terrain-gpu).
+option(RAYLIBGAME_FAST_BUILD "Compile at -O1 (agent and sandbox builds; not for playtests or timing)" OFF)
+if(RAYLIBGAME_FAST_BUILD AND NOT MSVC)
+    add_compile_options(-O1)
+endif()
+
 option(USE_SYSTEM_RAYLIB "Link a prebuilt raylib at RAYLIB_PATH instead of fetching raylib 5.5" OFF)
 set(RAYLIB_PATH "C:/raylib/raylib" CACHE PATH "raylib source tree containing src/libraylib.a (USE_SYSTEM_RAYLIB only)")
 option(ENABLE_TRACY "Build with the Tracy profiler client (connect with tracy-profiler v0.11.1)" OFF)
