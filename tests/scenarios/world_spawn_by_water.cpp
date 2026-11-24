@@ -1,9 +1,8 @@
-// world/spawn-by-water (#1787): a spawn or teleport beside moving water ends its loading screen once the ground is built,
-// and the player is under gravity after it. Moving water keeps remeshing its chunks and stepping on the job pool, so the
-// world never reads idle: the spawn's loading screen ran to its 20 s timeout, and --test-pond judged its swim on the first
-// frame after it (gravity still 0: the player isn't updated while the screen is up). On the sandbox, 300 m^3 are poured on
-// flat ground (it spreads for a long while), then the player is put down 40 m off, on dry ground (any moving water kept the
-// whole world from reading idle).
+// world/spawn-by-water (#1787): a spawn (placeAt, as a teleport or a bench does) while water is moving releases the player
+// promptly, and the player is under gravity after it. --test-pond's swim spawn hit a loading screen that never saw an idle
+// world (20 s, #1793) and then judged its swim on the first frame after it, with gravity still 0 (the player isn't updated
+// while the screen is up). On the sandbox, 300 m^3 are poured on flat ground (it spreads for a long while), then the player
+// is put down 40 m off, on dry ground, 1 m up.
 #include "scenario.h"
 #include "fluid.h"
 #include "player.h"

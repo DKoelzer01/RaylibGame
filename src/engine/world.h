@@ -165,7 +165,6 @@ inline float gFrameBusyMs = 0.0f;
 inline float gTargetFrameMs = 0.0f;
 inline void SetFrameTarget(int fps, int vsyncHz = 0) { const int hz = fps > 0 ? fps : vsyncHz; gTargetFrameMs = hz > 0 ? 1000.0f / (float)hz : 0.0f; }
 bool WorldIdle();                      // no queued/running jobs and nothing left to upload
-bool WorldTerrainReady(Scene& world);  // (#1787) every wanted LOD node has its mesh (jobs may still run: moving water)
 void World_ClearStreamingQueues();     // #387: drop queued GPU blocks, results and pending uploads (unloadWorld calls it)
 inline bool gJobLog = false;           // --perf-log: the job queue and mix every second (#387)
 // Spawn preload (#294): from now until the ring around the camera is built, ring builds run at full rate (no
