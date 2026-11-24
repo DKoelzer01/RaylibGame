@@ -814,20 +814,20 @@ TEST(Conduit, BeltValidAndSlots) {
     EXPECT_FALSE(Conduit_ValidRun(wide, &why));
 
     // along x at z 4: z 2..5 across, y 0..1 up
-    const std::vector<CInt3> s = Conduit_Slots(Belt(1, { {0, 0, 4}, {7, 0, 4} }));
-    EXPECT_EQ(s.size(), 8u * kBeltWidth * kBeltHeight);
+    const std::vector<CInt3> s = Conduit_Slots(Belt(1, { {0, 0, 4}, {8, 0, 4} }));
+    EXPECT_EQ(s.size(), 9u * kBeltWidth * kBeltHeight);
     EXPECT_TRUE(Has(s, { 0, 0, 2 }));
-    EXPECT_TRUE(Has(s, { 7, 1, 5 }));
+    EXPECT_TRUE(Has(s, { 8, 1, 5 }));
     EXPECT_FALSE(Has(s, { 3, 2, 4 }));   // the 6 slots above stay free for conduits
     EXPECT_FALSE(Has(s, { 3, 0, 6 }));   // half a cell wide
     // along z: the cross axis is x
-    const std::vector<CInt3> t = Conduit_Slots(Belt(1, { {4, 0, 0}, {4, 0, 3} }));
-    EXPECT_TRUE(Has(t, { 2, 1, 3 }));
+    const std::vector<CInt3> t = Conduit_Slots(Belt(1, { {4, 0, 0}, {4, 0, 2} }));
+    EXPECT_TRUE(Has(t, { 2, 1, 2 }));
     EXPECT_FALSE(Has(t, { 4, 2, 0 }));
     // a cell holds two belts side by side
     ConduitOccupancy occ;
-    occ.add(Belt(1, { {0, 0, 2}, {7, 0, 2} }));
-    occ.add(Belt(2, { {0, 0, 6}, {7, 0, 6} }));
+    occ.add(Belt(1, { {0, 0, 2}, {6, 0, 2} }));
+    occ.add(Belt(2, { {0, 0, 6}, {6, 0, 6} }));
     EXPECT_EQ(occ.ownerAt({ 3, 0, 3 }), 1);
     EXPECT_EQ(occ.ownerAt({ 3, 0, 4 }), 2);
     EXPECT_EQ(occ.cellCount(), 1u);
