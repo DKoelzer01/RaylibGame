@@ -381,22 +381,27 @@ std::shared_ptr<const EditTile> SampleTile(uint64_t key, const DensityField& fie
         for (int cu = 0; cu < kEditCols; ++cu) {
             const Vector3 dir = EditColumnDir(key, R, cu, cv);
             const float g = pf.elevation(dir, 0.5f);
-            auto solid = [&](float e) { return field.density(Vector3Scale(dir, R + e), d) >= ISO_LEVEL; };
-            float lo, hi;
-            float e = g + 1.0f;
-            if (solid(e)) { // filled over the ground: climb to the air
-                int k = 0;
-                while (k < 24 && solid(e + 1.0f)) { e += 1.0f; ++k; }
-                lo = e; hi = e + 1.0f;
-            } else {        // the ground or a pit: descend to the solid
-                int k = 0;
-                while (k < 40 && !solid(e - 1.0f)) { e -= 1.0f; ++k; }
-                hi = e; lo = e - 1.0f;
-            }
-            for (int s = 0; s < 6; ++s) { const float m = 0.5f * (lo + hi); if (solid(m)) lo = m; else hi = m; }
+            auto surface = [&](const TerrainDeltas* deltas) {
+                auto solid = [&](float e) { return field.density(Vector3Scale(dir, R + e), deltas) >= ISO_LEVEL; };
+                float lo, hi;
+                float e = g + 1.0f;
+                if (solid(e)) { // filled over the ground: climb to the air
+                    int k = 0;
+                    while (k < 24 && solid(e + 1.0f)) { e += 1.0f; ++k; }
+                    lo = e; hi = e + 1.0f;
+                } else {        // the ground or a pit: descend to the solid
+                    int k = 0;
+                    while (k < 40 && !solid(e - 1.0f)) { e -= 1.0f; ++k; }
+                    hi = e; lo = e - 1.0f;
+                }
+                for (int s = 0; s < 6; ++s) { const float m = 0.5f * (lo + hi); if (solid(m)) lo = m; else hi = m; }
+                return 0.5f * (lo + hi);
+            };
+            // The change against the same search without the edits (the generator's elevation() and the density surface
+            // differ by up to ~0.3 m where the 3D band shapes the ground).
             const size_t i = (size_t)cv * kEditCols + cu;
-            t->elev[i] = 0.5f * (lo + hi);
-            t->change[i] = t->elev[i] - g;
+            t->elev[i] = surface(d);
+            t->change[i] = t->elev[i] - surface(nullptr);
         }
     return t;
 }
@@ -480,9 +485,18 @@ bool MapFeatures_EditedAt(const MapEdits& e, Vector3 dir, float& elev, float& ch
     const uint64_t key = EditKey(dir, e.radius, &fu, &fv);
     const auto it = e.tiles.find(key);
     if (it == e.tiles.end()) return false;
-    const size_t i = (size_t)(int)(fv * kEditCols) * kEditCols + (size_t)(int)(fu * kEditCols);
-    elev = it->second->elev[i];
-    change = it->second->change[i];
+    // Bilinear between column centres (a nearest column drew 0.5 m steps, and their hillshade a grid, when zoomed in);
+    // clamped at the tile's edge.
+    const float x = std::clamp(fu * kEditCols - 0.5f, 0.0f, kEditCols - 1.0f), y = std::clamp(fv * kEditCols - 0.5f, 0.0f, kEditCols - 1.0f);
+    const int x0 = std::min((int)x, kEditCols - 2), y0 = std::min((int)y, kEditCols - 2);
+    const float tx = x - x0, ty = y - y0;
+    auto lerp2 = [&](const std::vector<float>& a) {
+        const float* r0 = &a[(size_t)y0 * kEditCols + x0];
+        const float* r1 = r0 + kEditCols;
+        return (r0[0] * (1 - tx) + r0[1] * tx) * (1 - ty) + (r1[0] * (1 - tx) + r1[1] * tx) * ty;
+    };
+    elev = lerp2(it->second->elev);
+    change = lerp2(it->second->change);
     return true;
 }
 

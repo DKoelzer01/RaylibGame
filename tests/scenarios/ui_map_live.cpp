@@ -2,7 +2,9 @@
 // and a row of conveyors) is built a few metres from the player, turned 30 degrees off north (a turned plot, as #1771 will
 // place them). Within the refresh window the minimap and the big map (opened over the plot at 1/4 m a pixel) show it: each
 // part in its kind's colour at its place; the conveyor row along the plot's own east, not along the body's east (the
-// heading); and the ground, not the plot, just past its edge. The recording shows the HUD: the minimap, then the big map.
+// heading); and the ground, not the plot, just past its edge. Then a close-up at 1/16 m a pixel, and a 2.5 m pit dug beside
+// the plot: within the refresh window its edit tile is re-sampled (its depth) and the map draws it as dug earth (part 2).
+// The recording shows the HUD: the minimap, then the big map.
 #include "scenario.h"
 #include "inventory.h"
 #include "mapfeatures.h"
@@ -12,15 +14,19 @@
 #include "profiler.h"
 #include "world.h"
 #include <raymath.h>
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
 namespace {
 Plot* plot = nullptr;
 Vector3 e0{}, n0{}; // the body's east and north at the plot (unturned)
-double tBuilt = 0.0;
+double tBuilt = 0.0, tDug = 0.0;
 bool opened = false;
+Vector3 pitDir{};
+Color pitBefore{};
 
 // A body-local direction at plot cell (u, v) (continuous cells), on the floor's top.
 Vector3 AtCell(float u, float v) { return Vector3Normalize(plot->toBody({ u * kCellSize, kCellSize, v * kCellSize })); }
@@ -114,6 +120,37 @@ SCENARIO("ui/map-live") {
         const MapKind k = MapKindAt(true, AtCell(3.0f, 3.0f));
         c.check("close up: the furnace is machine", k == MapKind::Machine, "got " + Name(k));
         c.grab("big-map-close");
+        // (part 2) A pit 6 m west of the plot: 2.5 m deep, carved now; the map's colour there before it.
+        pitDir = AtCell(-12.0f, 4.0f);
+        Nav_MapPixel(true, pitDir, pitBefore);
+        TerrainEdit e{};
+        e.center = Vector3Scale(pitDir, c.field->radius + c.field->elevation(pitDir, 0.5f));
+        e.radius = 2.5f;
+        e.carve = true;
+        ApplyTerrainEdit(*c.body, e);
+        tDug = c.T;
+        return true;
+    });
+    s.step("the pit shows on the map", 20.0, [](ScenarioCtx& c) {
+        c.waitingFor("the pit re-sampled and drawn");
+        const auto edits = MapFeatures_Edits(*c.body);
+        float el = 0.0f, ch = 0.0f;
+        if (!edits || !MapFeatures_EditedAt(*edits, pitDir, el, ch) || ch > -1.0f) return false;
+        Color now;
+        if (!Nav_MapPixel(true, pitDir, now)) return false;
+        const int diff = std::max({ abs(now.r - pitBefore.r), abs(now.g - pitBefore.g), abs(now.b - pitBefore.b) });
+        if (diff < 20) return false; // (the tile landed; the map re-renders within a second)
+        c.metric("pit on the map after", c.T - tDug, "s");
+        c.lt("pit drawn within the refresh window (s)", c.T - tDug, 15.0);
+        c.near("the pit's sampled depth (m)", ch, -2.5, 0.6);
+        c.check("the pit is drawn darker (dug earth)", now.r + now.g + now.b < pitBefore.r + pitBefore.g + pitBefore.b,
+                TextFormat("before %d,%d,%d now %d,%d,%d", pitBefore.r, pitBefore.g, pitBefore.b, now.r, now.g, now.b));
+        // 6 m north of its centre the ground is untouched.
+        const Vector3 away = AtCell(-12.0f, 16.0f);
+        float el2 = 0.0f, ch2 = 0.0f;
+        const bool sampled = MapFeatures_EditedAt(*edits, away, el2, ch2);
+        c.check("untouched ground beside it keeps its height", !sampled || fabsf(ch2) < 0.25f, TextFormat("change %.2f m", ch2));
+        c.grab("big-map-pit");
         return true;
     });
     s.step("hold for the recording", 3.0, [](ScenarioCtx& c) {
@@ -121,7 +158,7 @@ SCENARIO("ui/map-live") {
         Nav_CloseMap();
         // The maps' main-thread work over the whole run (plot builds landing, renders started and uploaded): never a
         // millisecond in one frame (#1795). Timing gates are only reported on the runner.
-        for (const char* z : { "gu: Nav_Update", "nav: plots", "nav: map start", "nav: map take", "nav: minimap start", "nav: minimap take" }) {
+        for (const char* z : { "gu: Nav_Update", "nav: plots", "nav: edits", "nav: map start", "nav: map take", "nav: minimap start", "nav: minimap take" }) {
             const double ms = Profiler_ZoneMaxMs(z);
             if (ms >= 0.0) c.timingLt(std::string(z) + " max (ms)", ms, 1.0);
         }

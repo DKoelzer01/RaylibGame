@@ -149,8 +149,9 @@ void RenderRows(MapImage& m, int y0, int y1) {
         for (int x = -1; x <= W; ++x) {
             const Vector3 d = PixelDir(m, x + 0.5f, y + 0.5f);
             float el, ch;
-            if (m.edits && MapFeatures_EditedAt(*m.edits, d, el, ch)) { E(x, y) = el; chg[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)] = ch; }
-            else E(x, y) = f.elevation(d, m.mpp);
+            E(x, y) = f.elevation(d, m.mpp);
+            // the generator's height plus the edit's change (not the sampled height itself: no seam at a tile's edge)
+            if (m.edits && MapFeatures_EditedAt(*m.edits, d, el, ch)) { E(x, y) += ch; chg[(size_t)(y - y0 + 1) * (W + 2) + (x + 1)] = ch; }
         }
     const Vector3 light = Vector3Normalize({ -0.6f, 0.75f, 0.6f }); // from the north-west, as maps are lit
     for (int y = y0; y < y1; ++y)

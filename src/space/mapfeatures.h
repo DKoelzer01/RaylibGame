@@ -67,7 +67,7 @@ constexpr double kEditResampleS = 15.0;
 struct EditTile {
     uint64_t key = 0;
     std::vector<float> elev;   // per column: the edited surface's elevation (m over the field radius)
-    std::vector<float> change; // per column: elev minus the generated surface's (m; < 0 dug, > 0 filled)
+    std::vector<float> change; // per column: elev minus the unedited density surface's (m; < 0 dug, > 0 filled)
 };
 struct MapEdits {
     float radius = 0.0f;
