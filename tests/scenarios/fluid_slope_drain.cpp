@@ -1,8 +1,9 @@
 // fluid/slope-drain (#454, playtest 2026-11-24: "Water clings to slopes as a thin film after all water has flowed away"): on the
 // bench planet, the steepest open slope (9-35 degrees each 2 m, still falling 8 m down) within 80 m of the spawn; 0.5 m^3 poured at its
 // top runs down. A film under the spread limit (~1 cm) never moves, and the bricks fall asleep after 2-3 s, so their films
-// stayed for good. Checked: the water left on the slope (the simulation's cells in a box over its upper 6 m, 2 m wide) 150 s
-// later is under 2 litres. The amount at 20 s (runoff done, films left) is reported for comparison.
+// stayed for good. Checked: 150 s later no cell on the slope (the published cells in a box over its upper 6 m, 2 m wide) holds
+// a film (fill under the spread limit). The litres left at 20 s and 150 s and the cells by depth are reported: water 1 cm+
+// deep resting on the slope is a second question (#454 comment, 2026-11-24).
 #include "scenario.h"
 #include "fluid.h"
 #include "player.h"
@@ -17,6 +18,7 @@ struct State {
     Vector3 top{}, down{}, up{}, side{};
     double nextPour = 0.0, at20 = -1.0;
     float poured = 0.0f, grade = 0.0f;
+    int films[4] = {}; // wet cells left on the slope by fill: 1-2, 3-9 (films), 10-39, 40+
 } S;
 double SlopeWater(ScenarioCtx& c) { // m^3 on the slope: a box from the top 6 m down it, 2 m wide, 1.5 m over and under the ground's mean
     const Vector3 mid = Vector3Add(S.top, Vector3Scale(S.down, 3.0f));
@@ -90,7 +92,7 @@ SCENARIO("fluid/slope-drain") {
         // water should have run on.
         {
             const WaterField::SnapshotPtr snap = WaterField::Current();
-            int n[4] = {}, worst = 0;
+            int worst = 0;
             const Vector3 mid = Vector3Add(S.top, Vector3Scale(S.down, 3.0f));
             const float hz = 1.5f + 3.0f * S.grade;
             for (float u = -3.0f; u <= 3.0f; u += 0.25f)
@@ -99,16 +101,16 @@ SCENARIO("fluid/slope-drain") {
                         const Vector3 p = Vector3Add(mid, Vector3Add(Vector3Scale(S.down, u), Vector3Add(Vector3Scale(S.side, v), Vector3Scale(S.up, w))));
                         const int f = WaterField::CellFill(*snap, c.body->id, p, 0);
                         if (f <= 0) continue;
-                        ++n[f <= 2 ? 0 : f < 10 ? 1 : f < 40 ? 2 : 3];
+                        ++S.films[f <= 2 ? 0 : f < 10 ? 1 : f < 40 ? 2 : 3];
                         worst = std::max(worst, f);
                     }
             const Fluid::Stats st = Fluid::GetStats();
             c.note(TextFormat("wet cells on the slope by fill: 1-2 %d, 3-9 %d, 10-39 %d, 40+ %d (deepest %d); bricks %d, awake %d, steady %d, settled %d",
-                              n[0], n[1], n[2], n[3], worst, st.bricks, st.activeBricks, st.steadyBricks, st.settled));
+                              S.films[0], S.films[1], S.films[2], S.films[3], worst, st.bricks, st.activeBricks, st.steadyBricks, st.settled));
         }
         c.metric("water left on the slope at 150 s", (float)(left * 1000.0), "litres");
         c.gt("water poured", S.poured, 0.4f);
-        c.lt("the films on the slope dried (litres left at 150 s)", (float)(left * 1000.0), 2.0f);
+        c.eq("no films (fill under the spread limit, ~1 cm) left on the slope at 150 s (cells)", S.films[0] + S.films[1], 0);
         return true;
     });
 }
