@@ -69,7 +69,8 @@ SCENARIO("world/structure-site-stall") {
         c.gt("sites built by walking in", Structures_SitesBuilt() - sites0, 0.0);
         c.gt("site strokes in the body's edits", (double)(c.body->edits->strokes - strokes0), 0.0);
         c.metric("Structures_Update max", worstMs, "ms");
-        c.timingLt("Structures_Update max ms (GUESS 4)", worstMs, 4.0);
+        // (GUESS 10: 0.9-2.2 ms measured on the sandbox, 6.1 once with another job on it; the fold on the main thread was 150-420)
+        c.timingLt("Structures_Update max ms", worstMs, 10.0);
         frames.report(c);
         return true;
     });
