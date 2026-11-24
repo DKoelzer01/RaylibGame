@@ -11,7 +11,8 @@ main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
 [ "$wt" = "$main" ] && { echo "setup: this is the main checkout, not a worktree; refusing (its game.exe is the user's)"; exit 1; }
 [ -f "$wt/CMakeUserPresets.json" ] || cp "$main/CMakeUserPresets.json" "$wt/" 2>/dev/null && echo "setup: presets copied"
 out="$wt/build/check/bin"
-conf() { cmake -S "$wt" -B "$wt/build/check" -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DGAME_OUTPUT_DIR="$out" > "$wt/build/configure.log" 2>&1; }
+# (#1758) -O1: an agent build checks behaviour; timing on the PC needs a -O3 build (RAYLIBGAME_FAST_BUILD=OFF)
+conf() { cmake -S "$wt" -B "$wt/build/check" -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DRAYLIBGAME_FAST_BUILD=ON -DGAME_OUTPUT_DIR="$out" > "$wt/build/configure.log" 2>&1; }
 mkdir -p "$wt/build"
 conf || { echo "setup: configure failed once (often the a.exe antivirus scan); retrying"; sleep 5; conf; } || { tail -20 "$wt/build/configure.log"; exit 1; }
 grep -q "GAME_OUTPUT_DIR:.*=$out" "$wt/build/check/CMakeCache.txt" || { echo "setup: GAME_OUTPUT_DIR is not $out - stop"; exit 1; }
