@@ -132,17 +132,34 @@ std::string Composed_GemText(const std::string& id) { // (#1219, combat doc: GUE
     return id;
 }
 
+namespace {
+std::string HeadPartName(const ComposedClass& c) {
+    std::string p = c.headPart;
+    for (char& ch : p) if (ch == ' ') ch = '_';
+    return p;
+}
+std::string MaterialOf(const std::string& id, const std::string& part) { // "<material>_<part>" with a known material
+    if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
+    const std::string m = id.substr(0, id.size() - part.size() - 1);
+    return Composed_Material(m) ? m : std::string();
+}
+} // namespace
+
+bool Composed_IsHeadPartOf(const std::string& cls, const std::string& itemId) {
+    const ComposedClass* c = Composed_Class(cls);
+    return c && !MaterialOf(itemId, HeadPartName(*c)).empty();
+}
+
+int Composed_PartQuality(const std::string& partData) {
+    return std::clamp(ItemData::GetInt(partData, "q", 100), kComposedQualityMin, kComposedQualityMax);
+}
+
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct) {
     const ComposedClass* c = Composed_Class(cls);
     if (!c) return {};
-    std::string headPart = c->headPart;
-    for (char& ch : headPart) if (ch == ' ') ch = '_';
+    const std::string headPart = HeadPartName(*c);
     std::string head, handle, binding;
-    auto materialOf = [](const std::string& id, const std::string& part) -> std::string { // "<material>_<part>" with a known material
-        if (id.size() <= part.size() + 1 || id.compare(id.size() - part.size(), part.size(), part) != 0 || id[id.size() - part.size() - 1] != '_') return {};
-        const std::string m = id.substr(0, id.size() - part.size() - 1);
-        return Composed_Material(m) ? m : std::string();
-    };
+    auto materialOf = MaterialOf;
     for (const std::string& id : ingredients) {
         std::string m;
         if (head.empty() && !(m = materialOf(id, headPart)).empty()) head = m;

@@ -57,6 +57,11 @@ std::string Composed_MakeData(const std::string& head, const std::string& handle
 // handle / binding (wood_handle, leather_binding); the material is a part_materials.txt row. Other ingredients are ignored.
 // A missing handle or binding takes the head's default; no head: "" (the recipe is wrong: the item stays plain).
 std::string Composed_FromParts(const std::string& cls, const std::vector<std::string>& ingredients, int qualityPct = 100);
+// (#1613) A forged head is a part item with its own record ("q=<quality %>", from the anvil); hafting it gives the tool
+// that quality. Whether an item is the class's head part (bronze_pick_head for tool_pickaxe), and a part record's q
+// (clamped to 75..130; 100 for a plain part).
+bool Composed_IsHeadPartOf(const std::string& cls, const std::string& itemId);
+int Composed_PartQuality(const std::string& partData);
 // (#1219) The five gems a socket takes, and a gem's words in a tooltip ("Ruby (burns)").
 bool Composed_IsGem(const std::string& id);
 std::string Composed_GemText(const std::string& id);
