@@ -695,8 +695,11 @@ namespace {
     // milestone 8: the rest of the ladder, through LV ore processing, MV and HV to titanium alloy
     // (rocketry's tier), and a miner working its deposit.
     void BuildFull() {
-        ResearchGate_SetOn(false); // (#1271 L6b-3) the full run beyond tier 4 isn't scripted for research yet (LV packs need the LV assembler)
         auto add = [](const std::string& n, std::function<bool()> f) { steps.push_back({ n, std::move(f) }); };
+        // (#1271 L6b-3) The full run beyond tier 4 isn't scripted for research yet (LV packs need the LV assembler): the gate
+        // goes off here, as a step after the base run's, not while the steps are built (#1826: off from the start, the quest
+        // book passed tier 3 without its milestone, and the tier 3 hand-in then worked on tier 4's and never met).
+        add("research gate off for the rest of the ladder (not scripted beyond tier 4)", [] { ResearchGate_SetOn(false); return true; });
         add("mine for the MV and HV ladder (iron, coal, copper) and dig stone", [] {
             const bool ok = MineOre("iron_ore", 185) && MineOre("coal", 530) && MineOre("copper_ore", 160) && DigFor("any_stone", 40, 6.0f);
             static bool told = false; // (the step retries every frame)
