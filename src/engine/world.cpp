@@ -167,10 +167,14 @@ uint64_t WorldFingerprint(const Scene& world) {
         // Heights where the surface is: around sea level (planets, moons), else through the outer half (asteroids).
         const float sea = p->field->seaLevelRadius(), top = p->field->maxRadius();
         const float heights[3] = { sea > 0.0f ? sea - 40.0f : top * 0.5f, sea > 0.0f ? sea + 15.0f : top * 0.75f, sea > 0.0f ? sea + 150.0f : top * 0.95f };
-        for (int i = 0; i < 64; ++i) {
-            // A Fibonacci sphere of directions, three heights each.
-            const float y = 1.0f - 2.0f * (i + 0.5f) / 64.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
-            const Vector3 dir = { rr * cosf(a), y, rr * sinf(a) };
+        // (#1905) Directions from integer lattice points (every primitive one in [-2, 2]^3: 98), normalised with sqrtf, which
+        // IEEE rounds exactly: the same bits on every platform. The old Fibonacci sphere took them from cosf/sinf, whose
+        // last bits differ between the C libraries (MinGW, glibc), so a Windows client and a Linux server could sample
+        // different points before the terrain was even asked.
+        auto gcd = [](int a, int b) { a = std::abs(a); b = std::abs(b); while (b) { const int t = a % b; a = b; b = t; } return a; };
+        for (int x = -2; x <= 2; ++x) for (int y = -2; y <= 2; ++y) for (int z = -2; z <= 2; ++z) {
+            if (gcd(gcd(x, y), z) != 1) continue; // the origin, and repeats like (2, 2, 0) of (1, 1, 0)
+            const Vector3 dir = Vector3Normalize({ (float)x, (float)y, (float)z });
             for (float hgt : heights) {
                 const float r = p->flat ? 0.0f : hgt;
                 const float d = p->field->baseDensity(Vector3Scale(dir, r));
