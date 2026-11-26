@@ -153,6 +153,7 @@ struct Animal {
     State state = State::Graze;
     float timer = 0.0f, fleeTimer = 0.0f;
     Vector3 fleeFrom{};
+    bool fleeFromPlayer = false; // (#1850) the threat is the player: fleeFrom follows them each step (else it stays put: a predator, a fire)
     uint32_t rng = 1;
     double angryUntil = -1.0, lastBite = -1.0; // hostile: charging until (world time); the last bite
     double windUpAt = -1.0;      // an attack winding up since (simClock; #165), -1 none
@@ -625,7 +626,7 @@ void HitByCreature(int i, const DamageEvent& e, uint64_t attacker, Vector3 from)
     if (const CreatureSpec* cs = Creature_Spec(species[a.species].id)) {
         a.hurtPending = true; a.hurtBy = attacker; a.hurtFrom = from;
         FxEvent(a, *cs, CreatureEvent::Hurt, BodyIdOf(a.body), a.pos.toFloat());
-    } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.state = State::Flee; }
+    } else { a.fleeTimer = 5.0f; a.fleeFrom = from; a.fleeFromPlayer = false; a.state = State::Flee; }
     if (a.health <= 0.0f) Kill(i, nullptr, true);
     else MaybeSplit(i, e.type); // (#1226)
 }
@@ -721,7 +722,7 @@ bool Animals_Hit(int i, float damage) {
     // Hostile ones fight back until badly hurt; the rest run.
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
-    a.fleeFrom = a.pos.toFloat(); // refined to the player's position in the update
+    a.fleeFrom = a.pos.toFloat(); a.fleeFromPlayer = true; // refined to the player's position in the update
     a.state = State::Flee;
     }
     Audio_Play(Sfx::Dig, 0.5f, 1.6f);
@@ -1239,7 +1240,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 const Species& t = species[b.species];
                 if (b.species == a.species && d < 40.0f) { centre = Vector3Add(centre, bp); ++herd; }
                 if (s.hostile && !t.hostile && d < bestPrey && threatsOn) { bestPrey = d; a.chase = j; }
-                if (!s.hostile && t.hostile && d < bestThreat && threatsOn && !Creature_Spec(s.id)) /* (#1225: a creature's fears are its faction's) */ { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = bp; }
+                if (!s.hostile && t.hostile && d < bestThreat && threatsOn && !Creature_Spec(s.id)) /* (#1225: a creature's fears are its faction's) */ { bestThreat = d; a.fleeTimer = std::max(a.fleeTimer, 3.0f); a.fleeFrom = bp; a.fleeFromPlayer = false; }
             }
             a.herdCentre = herd ? Vector3Scale(centre, 1.0f / herd) : a.pos.toFloat();
             a.herdSize = herd;
@@ -1306,7 +1307,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             a.daylight += step;
             if (a.daylight > 40.0f || (pdist > 70.0f && a.daylight > 5.0f)) { gone.push_back((int)i); continue; }
             a.fleeTimer = std::max(a.fleeTimer, 1.0f);
-            a.fleeFrom = sameBody ? tgLocal : a.pos.toFloat();
+            a.fleeFrom = sameBody ? tgLocal : a.pos.toFloat(); a.fleeFromPlayer = true;
         }
         // Hostile ones (not on peaceful): thornbacks charge within 12 m (or for 20 s after being hit),
         // dusk stalkers hunt within 70 m after dark. A campfire within 10 m keeps the player safe, and
@@ -1365,7 +1366,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 printf("creature %s %llu: mood %s, player %.1f m seen %d heard %d safe %d, flee %.1f, health %.0f\n", s.id.c_str(), (unsigned long long)a.netId, Mood_Name(bo.mood), pp ? pp->dist : -1.0f, pp ? (int)pp->seen : -1, pp ? (int)pp->heard : -1, pp ? (int)pp->safe : -1, a.fleeTimer, a.health); }
             if ((bo.mood == Mood::Alert || bo.mood == Mood::Chase) && (before == Mood::Idle || before == Mood::Sleep || before == Mood::Wander))
                 FxEvent(a, *cs, CreatureEvent::Alert, body->id, selfPos);
-            if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; }
+            if (bo.mood == Mood::Flee || bo.mood == Mood::Retreat) { a.fleeTimer = std::max(a.fleeTimer, a.brain.timer); a.fleeFrom = bo.goal; a.fleeFromPlayer = false; }
             if ((bo.mood == Mood::Chase || bo.mood == Mood::Attack) && a.fleeTimer <= 0.0f) {
                 if (bo.target & kPlayerPercept) hunting = sameBody;
                 else if ((preyIdx = IndexOfNet(bo.target)) >= 0) { hunting = true; huntAt = animals[preyIdx].pos.toFloat(); huntDist = Vector3Distance(huntAt, selfPos); }
@@ -1450,7 +1451,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
                 if (Combat_PileNear(a.body, thiefAt, 12.0f, pile)) {
                     if (Vector3Distance(pile, thiefAt) < 1.4f) {
                         if (Combat_TakePileNear(a.body, thiefAt, 1.6f, a.carried) && !a.carried.empty()) {
-                            a.fleeTimer = 12.0f; a.fleeFrom = sameBody ? tgLocal : thiefAt; hunting = false;
+                            a.fleeTimer = 12.0f; a.fleeFrom = sameBody ? tgLocal : thiefAt; a.fleeFromPlayer = true; hunting = false;
                             ++thefts;
                             if (sameBody && tg->session == 0 && pdist < 40.0f)
                                 GameUI_Toast(TextFormat("A %s grabs your %s and runs!", s.name.c_str(), a.carried[0].id.c_str()));
@@ -1463,7 +1464,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         } else if (s.hostile && threatsOn && Difficulty_ThreatScale() > 0.0f && sameBody && a.fleeTimer <= 0.0f && tg->vulnerable) { // not inside a cockpit
             Vector3 fire;
             const bool playerSafe = NearFire(tgLocal, 10.0f, fire);
-            if (s.night && NearFire(a.pos.toFloat(), 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; }
+            if (s.night && NearFire(a.pos.toFloat(), 14.0f, fire)) { a.fleeTimer = 3.0f; a.fleeFrom = fire; a.fleeFromPlayer = false; }
             else if (s.night) hunting = dark && pdist < 70.0f && !playerSafe;
             else hunting = (pdist < 12.0f || now < a.angryUntil) && pdist < 30.0f && !playerSafe;
         }
@@ -1552,7 +1553,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         } else if (a.fleeTimer > 0.0f) {
             a.fleeTimer -= step;
             a.state = State::Flee;
-            if (sameBody) a.fleeFrom = tgLocal;
+            if (sameBody && a.fleeFromPlayer) a.fleeFrom = tgLocal; // (#1850) not a predator or a fire: it keeps its place
             toward = Vector3Subtract(curPos, a.fleeFrom);
             steer = true;
             speed = s.run;
@@ -1565,6 +1566,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         } else if (s.wild && sameBody && pdist < 25.0f) {
             a.fleeTimer = 4.0f;
             a.fleeFrom = tgLocal;
+            a.fleeFromPlayer = true;
             continue;
         } else if (s.hostile && a.chase >= 0 && a.chase < (int)animals.size() && animals[a.chase].body == a.body &&
                    Vector3Distance(animals[a.chase].pos.toFloat(), curPos) < 35.0f && !(s.night && !dark)) {
@@ -1575,7 +1577,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
             steer = true;
             speed = s.run * 0.75f;
             Animal& prey = animals[a.chase];
-            if (Vector3Distance(preyPos, curPos) < 6.0f) { prey.fleeTimer = std::max(prey.fleeTimer, 3.0f); prey.fleeFrom = curPos; }
+            if (Vector3Distance(preyPos, curPos) < 6.0f) { prey.fleeTimer = std::max(prey.fleeTimer, 3.0f); prey.fleeFrom = curPos; prey.fleeFromPlayer = false; }
         } else if (dark || (sameBody && Weather_StormHere())) { // night, or a storm: they shelter and rest
             a.state = State::Rest; // night
             a.fatigue = std::max(0.0f, a.fatigue - step / 90.0f);
@@ -2346,7 +2348,7 @@ bool Animals_HitNet(uint64_t netId, float damage, std::vector<std::pair<std::str
     a.health -= damage;
     a.fleeTimer = !species[a.species].hostile || a.health < 0.35f * species[a.species].health ? 5.0f : 0.0f;
     if (species[a.species].hostile && a.fleeTimer <= 0.0f) a.angryUntil = WorldTime() + 20.0;
-    a.fleeFrom = a.pos.toFloat();
+    a.fleeFrom = a.pos.toFloat(); a.fleeFromPlayer = true; // (a player hit it: refined to the nearest one in the update)
     a.state = State::Flee;
     if (a.health <= 0.0f) { Kill(i, &drops); return true; }
     return false;
@@ -2401,4 +2403,9 @@ void Animals_TestPin(int i, Vector3 pos, Vector3 face) {
     a.pos = a.prevPos = DVec3(pos);
     a.heading = a.prevHeading = atan2f(Vector3DotProduct(face, north), Vector3DotProduct(face, east));
     a.state = State::Rest; a.fleeTimer = 0.0f; a.path.clear();
+}
+void Animals_TestFlee(int i, Vector3 from, float seconds) {
+    if (i < 0 || i >= (int)animals.size()) return;
+    Animal& a = animals[i];
+    a.fleeTimer = seconds; a.fleeFrom = from; a.fleeFromPlayer = false; a.state = State::Flee;
 }

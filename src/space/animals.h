@@ -42,6 +42,7 @@ uint64_t Animals_LockOn();
 int Animals_MeleeHits();
 const struct MeleeState& Animals_Melee();
 void Animals_TestPin(int index, Vector3 bodyLocal, Vector3 faceLocal); // (#1216 tests) a dummy held in place
+void Animals_TestFlee(int index, Vector3 fromLocal, float seconds); // (#1850 tests) it flees a threat at a fixed point (not the player)
 // (#1223) Cave creature spawning: spawned so far, the sites found in the last pass; spawn on the next update; forget the chunks.
 bool Animals_Clinging(int index);  // (#1224 tests) on a cave ceiling
 Vector3 Animals_ClingFloor(int index); // (#1224 tests) the floor under where it hangs (where it climbed from)
