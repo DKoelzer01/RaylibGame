@@ -2,7 +2,7 @@
 // second into the fall its net state is taken (as a server sends it), given 5 m/s more upward (a server's correction) and applied.
 // Checked: right after, the velocity against the ground is the old one plus the 5 m/s (M3: the frame path's airborne velocity,
 // against the ground already, had the ground's motion taken off it again - ~105 m/s near a spinning planet), and one frame
-// later the correction still holds (M4: the next step rebuilt the old flight from the frame path's stored velocity).
+// later the correction still holds, less gravity (M4: the next step rebuilt the old flight from the frame path's stored velocity).
 #include "scenario.h"
 #include "player.h"
 #include "world.h"
@@ -12,7 +12,7 @@
 namespace {
 struct State {
     Vector3 dir{}, before{}, applied{}, after{};
-    double tFall = -1.0;
+    double tFall = -1.0, tApply = 0.0;
     int phase = 0; // 0 placed, 1 corrected (wait a frame), 2 done
 } S;
 }
@@ -43,6 +43,7 @@ SCENARIO("frames/net-correction") {
             ns.vel = Vector3Add(ns.vel, Vector3Scale(S.dir, 5.0f)); // body-local: 5 m/s more up (the server's correction)
             c.check("the corrected state applies", player.applyNetState(c.world, ns), "applyNetState false");
             S.applied = player.groundVelocity(c.world);
+            S.tApply = c.t;
             S.phase = 1;
             return false;
         }
@@ -54,7 +55,10 @@ SCENARIO("frames/net-correction") {
                           upBefore, upApplied, upAfter, sideErr));
         c.between("the applied state is the old velocity + 5 m/s up (m/s up, M3)", upApplied - upBefore, 4.9, 5.1);
         c.lt("no sideways jump at the apply (m/s, M3: ~the ground's speed when the ground's motion was taken off twice)", sideErr, 0.1);
-        c.between("a frame later the correction holds (m/s up against before, M4; gravity takes ~0.16)", upAfter - upBefore, 4.5, 5.1);
+        // Gravity (~9.8 m/s^2 at the surface) acts over the frames since the apply; without M4 the old flight came back (~0).
+        const double expect = 5.0 - 9.8 * (c.t - S.tApply);
+        c.note(TextFormat("%.3f s after the apply: expected %.2f m/s over before (the correction less gravity)", c.t - S.tApply, expect));
+        c.between("frames later the correction holds (m/s up against before, M4: within 0.3 of the correction less gravity)", upAfter - upBefore, expect - 0.3, expect + 0.3);
         return true;
     });
 }
