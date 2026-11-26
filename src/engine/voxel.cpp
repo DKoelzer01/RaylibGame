@@ -1894,6 +1894,7 @@ void PlanetField::caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntr
         for (int y = clo[1]; y <= chi[1]; ++y)
             for (int x = clo[0]; x <= chi[0]; ++x)
                 for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.kind == 3) continue; // (#1859 L11) a chamber's centre is no entrance (it hid cave spawns there as "near a mouth")
                     if (m.at.x < lo.x || m.at.x > hi.x || m.at.y < lo.y || m.at.y > hi.y || m.at.z < lo.z || m.at.z > hi.z) continue;
                     out.push_back({ m.at, m.out, m.kind });
                 }
@@ -3981,6 +3982,27 @@ TEST(Voxel, ChamberCellsCanHaveAnEntrance) {
     PlanetField::tIgnoreBake = false;
     EXPECT_GT(chambers, 0);
     EXPECT_GT(withEntrance, 0) << chambers << " chamber cells, none with an entrance";
+}
+
+// (#1859 L11) Entrances near a chamber's centre never list the centre itself (creatures took it for a mouth).
+TEST(Voxel, ChamberCentreIsNoEntrance) {
+    if (!PlanetField::CavesGraph()) GTEST_SKIP() << "graph caves off";
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3;
+    int checked = 0;
+    for (int cx = r0; cx <= r1 && checked < 5; ++cx)
+        for (int cy = -40; cy <= 40 && checked < 5; ++cy)
+            for (int cz = -40; cz <= 40 && checked < 5; ++cz)
+                for (const CaveMouth& m : CaveCell(f, f.terrainSeed(), cx, cy, cz)->mouths) {
+                    if (m.kind != 3) continue;
+                    std::vector<PlanetField::CaveEntrance> ents;
+                    f.caveEntrancesNear(Vector3SubtractValue(m.at, 1.0f), Vector3AddValue(m.at, 1.0f), ents);
+                    for (const PlanetField::CaveEntrance& e : ents) EXPECT_NE(e.kind, 3);
+                    ++checked;
+                }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(checked, 0);
 }
 // #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
 // in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
