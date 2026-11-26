@@ -174,6 +174,8 @@ int64_t Belt_PosOf(const ConduitRun& run, CInt3 slot) {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
+#include <chrono>
+#include <cstdio>
 
 namespace {
 BeltLine Line(int id, int64_t length, int speed) {
@@ -295,6 +297,37 @@ TEST(BeltSim, GapEncodingMatchesThePositionReference) {
                 if (!rp.empty()) ASSERT_EQ(lines[k].tailPos, rp.back()) << "seed " << seed << " t " << t << " line " << k;
             }
         }
+    }
+}
+
+// (#1735) What the gap encoding buys: 40 lines of 25 cells, 100 items each (4000 items), stepped 2000 ticks, free-flowing
+// (sinks take) and backed up (sinks refuse), against the position reference. Prints only (timings on a shared machine).
+TEST(BeltSim, GapEncodingTiming) {
+    auto build = [](auto& lines, auto make) {
+        for (int k = 0; k < 40; ++k) {
+            auto l = make(64 * 25);
+            l.end = BeltEnd::Sink; l.sink = k;
+            lines.push_back(l);
+        }
+    };
+    for (int blocked = 0; blocked < 2; ++blocked) {
+        const BeltSinkFn sink = [&](int, int) { return blocked == 0; };
+        std::vector<BeltLine> g;
+        build(g, [](int64_t len) { return Line(1, len, 6); });
+        std::vector<RefLine> r;
+        build(r, [](int64_t len) { RefLine l; l.length = len; l.speed = 6; return l; });
+        for (auto& l : g) for (int64_t p = 0; p <= l.length - 16; p += 16) Belt_TryInsert(l, 1, p);
+        for (auto& l : r) for (int64_t p = 0; p <= l.length - 16; p += 16) RefInsert(l, 1, p);
+        auto run = [&](auto step) {
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int t = 0; t < 2000; ++t) step();
+            return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 2000.0;
+        };
+        // keep both awake (a blocked line would sleep and cost nothing in either)
+        const double gu = run([&] { for (auto& l : g) { Belt_TryInsert(l, 1, 0); Belt_Wake(l); } Belt_Step(g, sink); });
+        const double ru = run([&] { for (auto& l : r) { RefInsert(l, 1, 0); l.asleep = false; } RefStep(r, sink); });
+        printf("beltsim timing (%s, 4000 items on 40 lines): gaps %.1f us/tick, positions %.1f us/tick (%.1fx)\n",
+               blocked ? "backed up" : "flowing", gu, ru, ru / std::max(0.001, gu));
     }
 }
 
