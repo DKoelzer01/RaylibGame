@@ -344,7 +344,7 @@ BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, 
             if (c.aggro == Aggro::Predator) want = hostile && inRange && (p.seen || p.heard);
             else if (c.aggro == Aggro::Territorial) want = (hostile && inRange && (p.seen || p.heard)) || angryAt;
             else want = angryAt; // defensive
-            if (!want || p.dist >= c.chaseRange) continue;
+            if (!want || p.dist >= std::max(c.aggroRange, c.chaseRange)) continue; // (never given up within the range it takes at)
             if (!best || p.dist < best->dist) best = &p;
         }
     if (!best) {
