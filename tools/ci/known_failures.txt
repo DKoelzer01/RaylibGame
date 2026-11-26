@@ -16,3 +16,4 @@ fluid/u-bend -> FAIL                   | #1168 | the two pits stand 1.77 m apart
 fluid/u-bend-cpu -> FAIL               | #1168 | the CPU twin of fluid/u-bend, same check
 frames/build-hold(-pose)? -> FAIL         | #1759 | 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
 perf/creatures-crowd -> FAIL: step .settle.  | #1821 | settle times out on the slow runner (26 of its 30 s on the sandbox); not -200
+fluid/spring -> FAIL                    | #1910 | "moving water" under 3 m^3 or the idle-world wait past 30 s on the slow runner; 12/20 pass, on staging and m84 too
