@@ -3943,6 +3943,42 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1905) The CPU terrain the same on every platform: the planet (seed 42, the erosion bake left out) sampled at 24 fixed
+// directions (integer lattice points, normalised: no libm in choosing them), its elevation and the density 2 m above, 3 m
+// below and 40 m below the surface, hashed bit for bit against one golden that the Windows (w64devkit) and Linux (GCC) CI legs
+// both check. Every sample is printed as hex bits, so a failing leg's log shows which direction and depth differ first.
+TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    static const int kDirs[24][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { -1, 0, 0 }, { 0, -1, 0 }, { 0, 0, -1 },
+                                      { 1, 1, 0 }, { 1, 0, 1 }, { 0, 1, 1 }, { -1, 1, 0 }, { 1, -1, 1 }, { 0, -1, -1 },
+                                      { 2, 1, 0 }, { 1, 2, 3 }, { -3, 1, 2 }, { 2, -3, 1 }, { 1, 1, -3 }, { -2, -1, 3 },
+                                      { 3, 2, 1 }, { -1, 3, -2 }, { 2, 2, -1 }, { -3, -2, -1 }, { 1, -2, -2 }, { 3, -1, 2 } };
+    auto bits = [](float v) { uint32_t u; memcpy(&u, &v, sizeof u); return u; };
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint32_t u) { for (int b = 0; b < 4; ++b) h = (h ^ ((u >> (8 * b)) & 0xFF)) * 1099511628211ull; };
+    for (int k = 0; k < 24; ++k) {
+        const Vector3 dir = Vector3Normalize({ (float)kDirs[k][0], (float)kDirs[k][1], (float)kDirs[k][2] });
+        const float e = f.elevation(dir);
+        const float r = f.radius + e;
+        const float above = f.baseDensity(Vector3Scale(dir, r + 2.0f)), below = f.baseDensity(Vector3Scale(dir, r - 3.0f)),
+                    deep = f.baseDensity(Vector3Scale(dir, r - 40.0f));
+        for (float v : { e, above, below, deep }) mix(bits(v));
+        printf("terrain probe %2d: elevation %08x (%.6f m), density +2 m %08x, -3 m %08x, -40 m %08x\n", k, bits(e), e, bits(above), bits(below), bits(deep));
+    }
+    PlanetField::tIgnoreBake = false;
+    // The C library's float functions on fixed arguments (printed only): where the two legs' lines differ, so does libm.
+    // a = 2.39996323 i are WorldFingerprint's own sample angles.
+    for (int i = 1; i <= 8; ++i) {
+        const float a = 2.39996323f * (float)i, x = 0.1234567f * (float)i;
+        printf("libm probe %d: sinf %08x cosf %08x expf %08x powf %08x logf %08x asinf %08x\n", i, bits(sinf(a)), bits(cosf(a)),
+               bits(expf(-x * 3.0f)), bits(powf(x * 7.0f, 0.45f)), bits(logf(x * 1000.0f)), bits(asinf(x - 0.5f)));
+    }
+    printf("terrain probe hash %016llx\n", (unsigned long long)h);
+    constexpr uint64_t kGolden = 0ull;
+    EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
+}
+
 // (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
 // rough or smooth world): linear in it, and its hills gone at roughness 0.
 TEST(Voxel, RiverLandFollowsRoughness) {
