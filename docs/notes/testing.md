@@ -136,3 +136,8 @@ Every line a session reads stays in its context and is re-read on each later tur
 - `perl tools/usage_profile.pl [SINCE] [UNTIL]` (#1880): API-equivalent cost of the RaylibGame transcripts by main
   session vs subagent and model, calls and mean context, the context-size spread, and tool-result tokens by tool and by
   shell command type, weighted by how long they stay in context. About 1.5 min for a week.
+- deweyserver MCP lookups (#1875, #1878, #1879; code in `~/mcp-stack/rglib.py`, jobs in `~/mcp-stack/rgindex.py`, the
+  `rgindex` container): `code_find` / `code_refs` / `code_outline` / `code_grep` over shallow clones of staging, ladder
+  and develop with a universal-ctags index (refreshed every 15 min; answers name the indexed commit);
+  `issue_search` (SQLite FTS5 over every issue, refreshed every 15 min); `runner_digest(hours)`, also posted to the
+  board daily at 11:00 UTC; `morning_data(since)` for the morning report.

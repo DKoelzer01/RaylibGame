@@ -71,6 +71,9 @@ test; add a line when something goes wrong).
   (errors, FAIL lines, a PASS count and the log path; full log in `build/logs/`; it keeps the exit code). Before asking
   for review or labelling a PR `ready`, run `tools/ci/prereview.sh` (scope, size, line endings, debug leftovers,
   protocol/save touches, static checks).
+- **Look code up, don't dump it:** the deweyserver MCP `code_find` (definitions), `code_refs` (uses), `code_outline` (a
+  file's symbols with lines) and `code_grep` answer for staging/ladder/develop in a few lines (#1875); then Read only
+  the lines you need (offset/limit). Your own branch's changes: grep your work tree.
 - Full regression (`tools/regression.sh planet`): ONE run, after all fixes are in and PRs are merge-ready; never between fix rounds.
 - Perf numbers are invalid while another session compiles or runs: take a quiet slot for timing.
 
