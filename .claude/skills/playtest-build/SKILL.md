@@ -1,7 +1,7 @@
 ---
 name: playtest-build
 description: Coordinator only, and only when the user says to. Install a playtest build into the user's root game.exe - hold the machine, back up the current exe, build the requested branch tip in release (with multiplayer transport), smoke-test it, install it, and hold the slot as "playtest" so no session runs the game while they play. Use when the user says they want to playtest.
-argument-hint: "[branch, default m84-integration]"
+argument-hint: "[branch, default staging]"
 ---
 
 # Playtest build (coordinator, on the user's word only)

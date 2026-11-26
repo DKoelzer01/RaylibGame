@@ -7,7 +7,7 @@ name: Self-hosted (deweyserver)
 
 on:
   push:
-    branches: [develop, m84-integration]
+    branches: [develop, staging]
   schedule:
     - cron: "0 5 * * *" # nightly, 05:00 UTC (the schedule fires from the default branch's copy of this file)
   workflow_dispatch:
@@ -50,7 +50,7 @@ concurrency:
 # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags); a manual run
 # builds its `ref` input, else the branch it was started on.
 env:
-  REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'm84-integration') || github.ref) }}
+  REF: ${{ inputs.ref || (github.event_name == 'schedule' && (vars.NIGHTLY_BRANCH || 'staging') || github.ref) }}
 
 jobs:
   # The server package on its own (#1028): its result is what tools/ci/deweyserver-update-server.sh looks at, so a failing
@@ -94,8 +94,8 @@ jobs:
     timeout-minutes: 120
     env:
       # (#1768) The slow report and twin steps (fluid parity, pose twins, perf budgets) run on the nightly, on pushes to the
-      # integration branches and on m84-integration dispatches; a dispatch on any other branch (a PR's runner evidence) skips them.
-      FULL_RUN: ${{ (github.event_name != 'workflow_dispatch' || endsWith(inputs.ref || github.ref, 'm84-integration') || endsWith(inputs.ref || github.ref, 'develop')) && 'true' || 'false' }}
+      # integration branches and on staging dispatches; a dispatch on any other branch (a PR's runner evidence) skips them.
+      FULL_RUN: ${{ (github.event_name != 'workflow_dispatch' || endsWith(inputs.ref || github.ref, 'staging') || endsWith(inputs.ref || github.ref, 'develop')) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

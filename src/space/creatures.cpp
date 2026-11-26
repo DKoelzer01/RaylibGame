@@ -342,11 +342,13 @@ BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in, 
             if (!p.vulnerable || p.safe) continue;
             const bool angryAt = in.now < s.angryUntil && p.id == s.angryAt;
             const bool hostile = ft.stance(c.factionIdx, p.faction) == Stance::Hostile;
+            // (#1851) Taken within its range; the target it has is kept out to its chase range (it gave up at the range).
+            const bool inRange = p.dist < c.aggroRange || (p.id == s.target && s.target != 0);
             bool want = false;
-            if (c.aggro == Aggro::Predator) want = hostile && p.dist < c.aggroRange && (p.seen || p.heard);
-            else if (c.aggro == Aggro::Territorial) want = (hostile && p.dist < c.aggroRange && (p.seen || p.heard)) || angryAt;
+            if (c.aggro == Aggro::Predator) want = hostile && inRange && (p.seen || p.heard);
+            else if (c.aggro == Aggro::Territorial) want = (hostile && inRange && (p.seen || p.heard)) || angryAt;
             else want = angryAt; // defensive
-            if (!want || p.dist >= (c.aggro == Aggro::Predator ? c.aggroRange : c.chaseRange)) continue;
+            if (!want || p.dist >= std::max(c.aggroRange, c.chaseRange)) continue; // (never given up within the range it takes at)
             if (!best || p.dist < best->dist) best = &p;
         }
     if (!best) {
@@ -521,6 +523,23 @@ TEST(Creatures, ThornbackAsBefore) {
     // Badly hurt (under 35%): it runs for 5 s.
     BrainState r;
     EXPECT_EQ(Step(r, c, 0.0, { Player(3.0f) }, true, 0.3f).mood, Mood::Retreat);
+}
+
+// (#1851) A target taken within the range is chased out to the chase range: it gave up at the range.
+TEST(Creatures, ChaseKeptToChaseRange) {
+    if (Faction_Player() < 0 || Factions().find("beast") < 0) GTEST_SKIP() << "factions.txt not found (run from the repo root)";
+    for (const char* aggro : { "predator", "territorial" }) {
+        CreatureSpec c; std::string err;
+        ASSERT_TRUE(Creatures_ParseLine(std::string("stalker | beast | aggro=") + aggro + " range=12 chase=30 sight=1000 darksight=1 damage=8 reach=1.8", c, &err)) << err;
+        c.factionIdx = Factions().find(c.faction);
+        BrainState s;
+        EXPECT_EQ(Step(s, c, 0.0, { Player(13.0f) }).mood, Mood::Idle) << aggro;  // not taken past its range
+        EXPECT_EQ(Step(s, c, 0.1, { Player(11.0f) }).mood, Mood::Chase) << aggro; // taken
+        EXPECT_EQ(Step(s, c, 0.2, { Player(13.0f) }).mood, Mood::Chase) << aggro; // kept past the range
+        EXPECT_EQ(Step(s, c, 0.3, { Player(29.0f) }).mood, Mood::Chase) << aggro;
+        EXPECT_EQ(Step(s, c, 0.4, { Player(31.0f) }).mood, Mood::Idle) << aggro;  // given up past the chase range
+        EXPECT_EQ(Step(s, c, 0.5, { Player(20.0f) }).mood, Mood::Idle) << aggro;  // and not taken again from there
+    }
 }
 
 TEST(Creatures, NightHunterFireAndDay) {

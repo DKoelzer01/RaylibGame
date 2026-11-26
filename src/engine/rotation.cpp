@@ -8,7 +8,10 @@
 namespace Rotation {
 
 namespace {
-constexpr int64_t kMaxTerm = int64_t(1) << 24; // a ratio's numerator or denominator past this: a runaway chain (jams the net)
+// A ratio's numerator or denominator past this: a runaway chain (jams the net). (#1858 M8: 2^24 jammed a 16-stage 3/2 chain,
+// 3^16 = 43M, whose speed span (~657) is well inside kMaxRatioSpan; the span check is what limits gearing. 2^40 keeps every
+// product in Build/Solve inside i128: rpm x den x num x 1000 < 2^14 x 2^40 x 2^40 x 2^10.)
+constexpr int64_t kMaxTerm = int64_t(1) << 40;
 using i128 = __int128;
 
 int64_t Abs(int64_t v) { return v < 0 ? -v : v; }
@@ -335,6 +338,20 @@ TEST(Rotation, ARunawayGearChainJamsAndTheTopSpeedIsCapped) {
     r = Solve(g);
     EXPECT_EQ(r.nets[0].jam, Jam::RatioSpan);
     EXPECT_EQ(r.speedMilli[last], 0);
+}
+
+// (#1858 M8) A long chain of 3:2 steps: the terms grow (3^16 = 43M) though the speed span stays small (1.5^16 ~ 657), so
+// only the span may jam it.
+TEST(Rotation, ALongOddRatioChainWithinTheSpanTurns) {
+    Graph g;
+    int prev = g.addSource(kHandCrank, 32);
+    for (int i = 0; i < 16; ++i) { const int s = g.addShaft(); g.link(prev, s, 3, 2); prev = s; }
+    Result r = Solve(g);
+    EXPECT_EQ(r.nets[0].jam, Jam::None) << "x657: inside kMaxRatioSpan";
+    EXPECT_GT(r.speedMilli[prev], 0) << "it turns";
+    for (int i = 0; i < 5; ++i) { const int s = g.addShaft(); g.link(prev, s, 3, 2); prev = s; } // 1.5^21 ~ 4988: past the span
+    r = Solve(g);
+    EXPECT_EQ(r.nets[0].jam, Jam::RatioSpan);
 }
 
 TEST(Rotation, NoTurningSourceMeansEverythingStopped) {

@@ -198,7 +198,7 @@ static bool gSoakOn = false;
 static void Server_KickRefused() {
     for (const HostPlayer& p : Host_ListPlayers()) {
         std::string why;
-        if (p.online && !Admin_CheckJoin(p.name, p.address, why)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
+        if (p.online && !Admin_CheckJoin(p.name, p.address, why, p.uuid)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
     }
 }
 #include "worldgenparams.h"
@@ -733,7 +733,7 @@ int main(int argc, char** argv)
     constexpr float kFlowShaftM = 6.0f, kFlowChamberR = 2.0f, kFlowCaveM = 8.0f; // the flow tests' shaft depth, chamber radius, chamber point under the water (m, #935)
     float damDrift = 0.0f, damSpillL = 0.0f; // damSpillL: the dam's crest length over ground under the crest (m, #1039: the weir's width); // --test-dam: the current mid-channel (0: the check failed)
     bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
-    bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
+    bool benchFlowMeter = false; int fmPhase = 0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchDamDivert = false, benchDamDivertFull = false; int divPhase = 0; Vector3 divDir{}; float divLevel0 = 0.0f, divDepth = 0.0f; int divPiece = -1; double divDryT = -1.0, divOpenT = -1.0; std::vector<TerrainEdit> divWall; // --test-dam-divert (#656)
@@ -2332,10 +2332,17 @@ int main(int argc, char** argv)
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+            // (#1868) a name to a player's id for `op NAME` (roles are by id): a player online under it, else a player record
+            Admin_SetResolver([](const std::string& name) {
+                auto same = [&](const std::string& n) { if (n.size() != name.size()) return false; for (size_t i = 0; i < n.size(); ++i) if (tolower((unsigned char)n[i]) != tolower((unsigned char)name[i])) return false; return true; };
+                for (const HostPlayer& p : Host_ListPlayers()) if (p.online && !p.uuid.empty() && same(p.name)) return p.uuid;
+                for (const PlayerRecordMeta& m : PlayerRecord_List()) if (!m.uuid.empty() && same(m.name)) return m.uuid;
+                return std::string();
+            });
             // (#326, #345) the host's hooks: the motd, bans and the whitelist at join, the audit log, and players' chat - a line
             // starting with '/' is a command (ops: the admin commands, kick, say), anything else goes to everyone.
             Host_SetMotd(serverCfg.motd);
-            Host_SetJoinCheck([](const std::string& name, const std::string& address, std::string& why) { return Admin_CheckJoin(name, address, why); });
+            Host_SetJoinCheck([](const std::string& name, const std::string& address, const std::string& uuid, std::string& why) { return Admin_CheckJoin(name, address, why, uuid); });
             Host_SetEventHook([](const char* what, uint32_t session, const std::string& detail) {
                 Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
                 if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
@@ -7862,9 +7869,12 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocalOf(player.position, world.renderOrigin));
-                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
+                        // The first frame here can come late (a hitch, or the spawn's loading screen: up to 20 s, #1787): the swim is
+                        // timed from it, and judged only on a later frame (judging on this one counted no frames: a FAIL).
+                        const bool first = t < 0.5 || h0 == 0.0f;
+                        if (first) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); }
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
-                        if (t > 3.0) {
+                        if (!first && t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
                             const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
@@ -7924,7 +7934,13 @@ int main(int argc, char** argv)
                     if (!pf) { printf("bench: flow-meter: needs the planet -> FAIL\n"); benchFlowMeter = false; }
                     else {
                         auto at = [&](float x, float y) { return fmPlot->toBody({ x, y, 0.0f }); };
-                        const double t = GetTime() - fmT0;
+                        // (#1835) On the water's own clock: fluid ticks (25 ms each) since the stream began, as fluid/flow-meter does
+                        // (#1431). Wall time read -0.00 to 1.13 m^3/s on one seed: a loaded machine skips ticks (9-16 a second of 40),
+                        // so at 60 s of wall time the stream had run anywhere from a few seconds to a minute.
+                        static long long fmTick0 = -1;
+                        const long long ticksNow = Fluid::GetStats().ticks;
+                        if (fmPhase > 0 && fmTick0 < 0) fmTick0 = ticksNow;
+                        const double t = fmPhase > 0 ? (double)(ticksNow - fmTick0) * 0.025 : 0.0;
                         if (fmPhase == 0) {
                             const Vector3 d = StartSpawnDir(*p);
                             float gh = pf->elevation(d) + 8.0f;
@@ -7939,7 +7955,7 @@ int main(int argc, char** argv)
                             sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(at(0.0f, 50.0f)));
                             player.flyMode = true;
                             printf("bench: flow-meter: trench and pit dug, a 1 m^3/s spring at the trench's head\n");
-                            fmPhase = 1; fmT0 = GetTime();
+                            fmPhase = 1;
                         } else {
                             const Vector3 up = Vector3Normalize(at(0.0f, 0.0f));
                             world.camera.position = p->toWorld(Vector3Add(at(0.0f, 8.0f), Vector3Scale(fmPlot->north, 8.0f))); world.camera.target = p->toWorld(at(0.0f, -1.5f));
@@ -7948,9 +7964,9 @@ int main(int argc, char** argv)
                             const Vector3 q = Fluid::FlowAt(*p, at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
                             static double lastPrint = 0.0;
                             const Fluid::Stats fs = Fluid::GetStats();
-                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water; %d bricks awake, %d steady, publish %.2f ms\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), fs.volume, fs.activeBricks, fs.steadyBricks, fs.meshMs); }
+                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter fluid t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water; %d bricks awake, %d steady, publish %.2f ms\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), fs.volume, fs.activeBricks, fs.steadyBricks, fs.meshMs); }
                             // Steady flow (#674): the trench's bricks turn steady (running, read back once a second); a pour into the
-                            // trench at 45 s wakes them (fewer steady), and the meter still reads the stream at 60 s.
+                            // trench at 45 s wakes them (fewer steady), and the meter still reads the stream at 60 s (all fluid time).
                             static int steadyBefore = 0, steadyAfter = 1 << 30;
                             static bool poured = false;
                             if (t > 30.0 && t < 45.0) steadyBefore = std::max(steadyBefore, fs.steadyBricks);
@@ -10809,7 +10825,7 @@ int main(int argc, char** argv)
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") {
                         int n = 0;
-                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, Host_SessionUuid(p.session))), p.address.c_str()); }
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, p.uuid)), p.address.c_str()); }
                         printf("server: %d player(s) online\n", n);
                     }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
@@ -13023,6 +13039,15 @@ int main(int argc, char** argv)
                 static NetClient badName, upper; static std::vector<std::unique_ptr<NetClient>> extras;
                 static bool badRefused = false, upperRefused = false, chatClean = false; static int extrasRefused = 0;
                 const bool capTest = getenv("RAYLIBGAME_MAX_PER_ADDRESS") != nullptr;
+                // (#1868) With RAYLIBGAME_HELLO_SECONDS set: two connections that never say Hello are closed by the server (they count
+                // from the moment they connect; before, only from their first message, so a silent one stayed forever).
+                const bool helloTest = getenv("RAYLIBGAME_HELLO_SECONDS") != nullptr;
+                static uint32_t silentConn[2] = { 0, 0 }; static bool silentGone = false; static int silentBase = 0;
+                if (ph == 6 && helloTest) {
+                    silentBase = Host_SilentDropped();
+                    for (uint32_t& s : silentConn) { s = Net_Connect(addr); if (s) Host_SetLocalClient(s); } // (its replies are a client's, not the server's)
+                }
+                if (ph == 7 && helloTest) silentGone = silentConn[0] && silentConn[1] && !Net_IsConnected(silentConn[0]) && !Net_IsConnected(silentConn[1]) && Host_SilentDropped() - silentBase >= 2;
                 if (ph == 6) {
                     NetClient_Connect(badName, addr, "bad\nname"); NetClient_Connect(upper, addr, "ALICE");
                     NetClient_SendChat(alice, "hi\nthere");
@@ -13035,11 +13060,12 @@ int main(int argc, char** argv)
                     upperRefused = upper.state == NetClient::State::Rejected && upper.reject.reason == NetReject::NameTaken;
                     for (const MsgChat& c : eve.chat) chatClean = chatClean || c.text == "hi there";
                     extrasRefused = 0; for (auto& x : extras) extrasRefused += x->state == NetClient::State::Rejected && x->reject.reason == NetReject::Full;
-                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0)) || GetTime() - t0 > 8.0) ph = 8;
+                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone)) || GetTime() - t0 > 8.0) ph = 8;
                 }
                 if (ph == 8) {
                     const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1 &&
-                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0);
+                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone);
+                    if (helloTest) printf("bench: net abuse: two connections that never said Hello were closed %d (%d silent drops, #1868)\n", (int)silentGone, Host_SilentDropped() - silentBase);
                     printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
                            "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780); a name with a newline refused %d, \"ALICE\" "
                            "refused as alice %d, chat cleaned %d; %s -> %s\n",
