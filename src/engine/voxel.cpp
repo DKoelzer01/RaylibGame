@@ -2442,11 +2442,12 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (auto it = picked.find(key); it != picked.end()) { best = it->second; cached = true; }
     }
     if (!cached) {
+    const bool scoring = kScoreSpawn && !sandbox; // (the flat test plane keeps the old pick: its tests stay where they were)
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     float bestScore = -1e30f;
     std::vector<std::pair<float, Vector3>> temperateSpots; // (#1883) the acceptable temperate spots: (old score, dir)
-    for (int attempt = 0; attempt < 4000 && (!kScoreSpawn || (int)temperateSpots.size() < kSpawnCandidates); ++attempt) {
+    for (int attempt = 0; attempt < 4000 && (!scoring || (int)temperateSpots.size() < kSpawnCandidates); ++attempt) {
         // Temperate band: 25-45 degrees north or south.
         const float lat = (25.0f + 20.0f * unit(rng)) * DEG2RAD * (unit(rng) < 0.5f ? 1.0f : -1.0f);
         const float lon = unit(rng) * 2.0f * PI;
@@ -2476,9 +2477,9 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
         if (temperate) temperateSpots.push_back({ score, dir });
-        if (!kScoreSpawn && slope < 0.01f && temperate) break; // (A/B: the first flat temperate spot, as before #1883)
+        if (!scoring && slope < 0.01f && temperate) break; // (A/B: the first flat temperate spot, as before #1883)
     }
-    if (!kScoreSpawn) temperateSpots.clear();
+    if (!scoring) temperateSpots.clear();
     // (#1883) Before, the first flat temperate spot won ("good enough is good enough"); now the temperate spot whose
     // surroundings score best: flat land to build on, fresh water, the first ores (ties: the flatter, lower spot).
     float bestSurround = -1e30f;
@@ -3874,17 +3875,23 @@ PlanetField::SpawnScore PlanetField::spawnScore(Vector3 dir) const {
     const Vector3 a = fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
     const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, a)), t2 = Vector3CrossProduct(t1, dir);
     auto at = [&](float x, float y) { return Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(t1, x / radius), Vector3Scale(t2, y / radius)))); };
-    // The centre and 16 directions at 50-300 m (water needs the finer spacing: a stream is a few metres wide).
+    // Water: the centre and 16 directions on rings every 50 m out to 300 m (a stream is a few metres wide), inside out,
+    // up to the first ring with fresh water. Flat land: the centre and 8 directions at 100, 200 and 300 m (25 points).
     int flat = 0, n = 0;
     for (int ring = 0; ring <= 6; ++ring) {
         const float r = ring * kSpawnReachM / 6.0f;
+        const bool flatRing = ring % 2 == 0, waterRing = s.waterM > kSpawnReachM;
+        if (!flatRing && !waterRing) continue;
         for (int k = 0; k < (ring ? 16 : 1); ++k) {
+            const bool flatPoint = flatRing && k % 2 == 0;
+            if (!flatPoint && !waterRing) continue;
             const float ang = k * (2.0f * PI / 16.0f);
             const Vector3 d = at(r * cosf(ang), r * sinf(ang));
-            const float e = elevation(d);
-            ++n;
             const WaterSource ws = waterSourceAt(d);
             if (ws.kind >= 1 && ws.kind <= 3) s.waterM = std::min(s.waterM, r);
+            if (!flatPoint) continue;
+            const float e = elevation(d);
+            ++n;
             if (e < 2.0f || (ws.kind != 0 && ws.level > e)) continue; // under water or at the shore: not building land
             // Flat as findSpawnDir's own test: the normal from the heights 4 m away within 0.05 of up.
             const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, a)), u2 = Vector3CrossProduct(u1, d);
