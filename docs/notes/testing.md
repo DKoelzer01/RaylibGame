@@ -10,7 +10,7 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
   - **Self-hosted on deweyserver (GPU, isolated from the LAN):** `--test-terrain-gpu` bit-exactness, headless scenarios
     (fluids, craft, skills, world), the multiplayer server and join tests, the Linux server package, and the headless
     half of the regression (`tools/regression.sh planet --only headless`, #1028; nightly, or add `-f regression=headless`).
-    Runs on pushes to m84-integration/develop and nightly; for your own branch, dispatch it: `gh workflow run
+    Runs on pushes to staging/develop and nightly; for your own branch, dispatch it: `gh workflow run
     selfhosted.yml -r <branch>` (one GPU run at a time, so batch your changes). Use it instead of running those tests here.
     Three ephemeral runners (raylibgame-runner@1-3, 4 CPU/10 GB each) share one `ci-persist` volume; each job takes a
     flock'd slot (`ci-persist/slotN`) with its own out/ and run/ (#1411: shared dirs made join tests stall each other).

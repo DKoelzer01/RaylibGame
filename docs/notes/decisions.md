@@ -255,6 +255,16 @@ Rulings 2026-11-24 to 2026-11-26 (user)
 - Working title: "Ringbound" (2026-11-24).
 - Agents (2026-11-25): a local model does the "doing" (implementing and testing small sectioned chunks, complex
   problems included); Claude keeps all design, decomposition, review and ship decisions.
+- Branches (user, 2026-11-26, #1870): a permanent `staging` branch replaces `m84-integration`. Feature PRs -> staging ->
+  develop -> main, each promotion only when the user says so.
+- CI (user, 2026-11-26, #1871): run fewer tests per change; the full suite before staging -> develop and always before
+  develop -> main.
+- Sessions (user, 2026-11-26): the user clears sessions near 250K tokens. A Tools and CI session owns CI and tooling
+  (#1871, #1874). Local model plan: the coordinator drives the subject sessions; they design and decide, and implement
+  through the local model once it runs.
+- Research picks (user, 2026-11-26): progression state (research, blueprints, map) is team-scoped and sent to late
+  joiners; world saves get a name palette (part/item names in the save instead of relying on enum order). Twelve
+  research items moved to the front of the session queues.
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

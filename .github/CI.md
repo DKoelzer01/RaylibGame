@@ -4,8 +4,8 @@ Three places run checks, each for what it can do safely.
 
 | Where | Workflow | Triggers | What |
 | --- | --- | --- | --- |
-| GitHub-hosted runners | `workflows/pr-checks.yml` | every PR into `m84-integration` / `develop` / `main` (forks too), pushes to `m84-integration` / `develop`, manual | static checks, Windows build (w64devkit) + `game_tests`, Linux headless build + `game_tests` + a dedicated-server smoke test |
-| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop` / `m84-integration`, nightly 05:00 UTC, manual. **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests` and the server package (their own job), the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
+| GitHub-hosted runners | `workflows/pr-checks.yml` | every PR into `staging` / `develop` / `main` (forks too), pushes to `staging` / `develop`, manual | static checks, Windows build (w64devkit) + `game_tests`, Linux headless build + `game_tests` + a dedicated-server smoke test |
+| Self-hosted runner on deweyserver (labels `raylibgame-linux`, `gpu`) | `workflows/selfhosted.yml` | pushes to `develop` / `staging`, nightly 05:00 UTC, manual. **Never** `pull_request` / `pull_request_target` | Linux server build, `game_tests` and the server package (their own job), the GPU bit-exact check (`--test-terrain-gpu` on EGL), headless scenarios (fluid, craft, skills, world), `tools/test_server.sh` + `tools/test_join.sh`, the server tarball as an artifact; nightly (and on dispatch with `regression=headless`) the headless half of the regression, `tools/regression.sh planet --only headless` |
 | The user's PC | none (agents and the user) | by hand, the midnight regression | rendering, visual baselines and captures, perf timing (quiet windows), the local half of the regression (`tools/regression.sh planet --only local`; the full run when asked) |
 
 Why the split: the repo is public, so hosted runners are free and safe for code from anyone (read-only token, no
@@ -26,7 +26,7 @@ machine, which only the PC has.
 - **Linux build + unit tests (headless server, GNS)**: Ubuntu 24.04, `RAYLIBGAME_HEADLESS=ON` (the server's raylib
   backend), `-DENABLE_GNS=ON`, `game` + `game_tests`, then `game_tests` and `tools/test_server.sh` on the null GL.
 - **CI ok**: passes when every job above passed or was skipped. **Make this the required check** (branch protection on
-  `m84-integration` and `develop`: "Require status checks to pass", check name `CI ok`). It is reported on every PR,
+  `staging` and `develop`: "Require status checks to pass", check name `CI ok`). It is reported on every PR,
   also when the builds are skipped, so docs-only PRs are not left waiting.
 
 Caches (actions/cache, 10 GB per repo, least recently used goes first): ccache per branch (a PR falls back to its base
@@ -43,7 +43,7 @@ files recompiles only those plus the links.
 
 Off until the repository variable is set: Settings > Secrets and variables > Actions > Variables > New repository
 variable `SELF_HOSTED_ENABLED` = `true`. While it is unset, the job is skipped at once (never queued for a missing
-runner). `NIGHTLY_BRANCH` (optional) picks the branch the nightly run builds, default `m84-integration`; a schedule only
+runner). `NIGHTLY_BRANCH` (optional) picks the branch the nightly run builds, default `staging`; a schedule only
 fires from the default branch's (`main`'s) copy of the workflow, so the nightly starts once this file reaches `main`.
 
 The runners (three ephemeral GPU runners in Docker on deweyserver, all with the labels below; a job takes whichever is
@@ -106,9 +106,9 @@ branch's workflow; `-f regression_sets="planet multiplayer"` adds the multiplaye
 
 **The nightly trigger.** A `schedule` fires only from the default branch's (`main`'s) copy of the workflow, so the
 `cron` in this file does nothing until `selfhosted.yml` is on `main`. Until then the nightly is started from outside:
-a dispatch (`gh workflow run selfhosted.yml -r m84-integration -f regression=headless`, or the REST call
+a dispatch (`gh workflow run selfhosted.yml -r staging -f regression=headless`, or the REST call
 `POST /repos/DKoelzer01/RaylibGame/actions/workflows/selfhosted.yml/dispatches` with
-`{"ref":"m84-integration","inputs":{"regression":"headless"}}`) needs a token with "Actions: write" on this repository.
+`{"ref":"staging","inputs":{"regression":"headless"}}`) needs a token with "Actions: write" on this repository.
 
 ## Rules for workflow changes
 
