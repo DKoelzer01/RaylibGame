@@ -6,12 +6,14 @@
 #include "scenario.h"
 #include "player.h"
 #include "world.h"
+#include "frames.h"
 #include <raymath.h>
 #include <cmath>
 
 namespace {
 struct State {
     Vector3 dir{}, before{}, applied{}, after{};
+    DVec3 placed{};
     double tFall = -1.0, tApply = 0.0;
     int phase = 0; // 0 placed, 1 corrected (wait a frame), 2 done
 } S;
@@ -26,18 +28,26 @@ SCENARIO("frames/net-correction") {
         if (c.T < 1.0 || !WorldIdle() || !c.field) return false;
         S.dir = c.spawnDirWorld();
         const float r = c.field->radius + c.field->elevation(S.dir) + 60.0f;
-        player.placeAt(c.world, *c.body, (c.body->toWorldD(DVec3(S.dir.x * r, S.dir.y * r, S.dir.z * r)) - c.world.renderOrigin).toFloat());
+        S.placed = DVec3(S.dir.x * r, S.dir.y * r, S.dir.z * r);
+        player.flyMode = false; // (scenarios start flying: the fly branch returns before the fall and the frame path)
+        player.placeAt(c.world, *c.body, (c.body->toWorldD(S.placed) - c.world.renderOrigin).toFloat());
         return true;
     });
-    s.step("fall, correct, one frame on", 20.0, [](ScenarioCtx& c) {
+    s.step("fall, correct, one frame on", 60.0, [](ScenarioCtx& c) {
         const Vector3 up = c.body->dirToWorld(S.dir);
-        const Vector3 me = c.body->toLocalD(player.position).toFloat(); // the camera beside the falling player
-        c.camera(Vector3Add(me, Vector3Add(Vector3Scale(S.dir, 2.0f), Vector3Scale(Vector3Normalize(Vector3CrossProduct(S.dir, { 0, 1, 0 })), 6.0f))), me, S.dir);
+        // (No c.camera: it flies the player to the eye. The player's own view shows the fall, as in frames/long-fall.)
         if (S.phase == 0) {
             if (player.grounded) return false;
-            if (S.tFall < 0.0) S.tFall = c.t;
+            c.waitingFor("the spawn hold to let the player fall");
+            if (S.tFall < 0.0 && (c.body->toLocalD(player.position) - S.placed).length() > 0.01) S.tFall = c.t; // (the hold keeps it still while the place loads)
+            if (S.tFall < 0.0) return false;
             if (c.t - S.tFall < 1.0) return false;
             S.before = player.groundVelocity(c.world);
+            // The frame path needs frames on and the player in the body's Fixed frame (else nothing here is on the path).
+            const bool onPath = Frames_On() && player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == c.body->netId;
+            c.check("on the frame path (frames on, the body's Fixed frame)", onPath,
+                    TextFormat("frames %d, kind %d, frame body %llu, the body %llu", (int)Frames_On(), (int)player.frame.frame.kind,
+                               (unsigned long long)player.frame.frame.body, (unsigned long long)c.body->netId));
             Player::NetState ns;
             if (!player.netState(c.world, ns)) { c.check("the player has a net state", false, "netState false"); return true; }
             ns.vel = Vector3Add(ns.vel, Vector3Scale(S.dir, 5.0f)); // body-local: 5 m/s more up (the server's correction)
