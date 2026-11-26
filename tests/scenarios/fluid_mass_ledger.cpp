@@ -1,5 +1,5 @@
 // fluid/mass-ledger (#1885): water is neither made nor lost by the simulation. In the sandbox, a closed 2 x 2 m pen of stone-brick
-// cubes (plot cells, 0.5 m; walls 1 m high) on a floating floor; 2 m^3 is poured into one corner over 2 s (it sloshes across),
+// cubes (plot cells, 0.5 m; walls 1 m high) on a floating floor; 1.9 m^3 is poured into one corner over 2 s (it sloshes across),
 // 0.5 m^3 is taken from the middle at 10 s (Fluid::Take), and it settles until 40 s. Evaporation is off
 // (RAYLIBGAME_FLUID_NOEVAP=1). Twice a second the simulation's volume (Fluid::GetStats().volume) is compared with the CPU
 // ledger (Fluid::GetLedger: poured - taken - dried): their difference may drift by at most 0.5% of what was poured. Samples
@@ -66,7 +66,7 @@ void Build(ScenarioDef& s) {
         c.camera(S.at(mid + 2.5f, S.floorTop() + 3.0f, midz + 2.5f), S.at(mid, S.floorTop(), midz), Vector3Normalize(Vector3Subtract(S.at(0, 1, 0), S.at(0, 0, 0))));
         return true;
     });
-    s.step("pour 2 m^3 into a corner, take 0.5 m^3 at 10 s, settle to 40 s", 60.0, [](ScenarioCtx& c) {
+    s.step("pour 1.9 m^3 into a corner, take 0.5 m^3 at 10 s, settle to 40 s", 60.0, [](ScenarioCtx& c) {
         const float cx = S.cell(1, S.base.x), cz = S.cell(1, S.base.z);
         if (c.t >= S.nextPour && c.t < 2.0) {
             S.nextPour = c.t + 0.1;
