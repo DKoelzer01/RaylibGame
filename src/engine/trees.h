@@ -191,6 +191,7 @@ private:
 // Tile helpers (exposed for tests).
 TreeTileKey TreeTileOf(Vector3 dir, float radius);
 Vector3 TreeTileCentreDir(const TreeTileKey& key, float radius);
+bool TreeClearingReaches(const TreeTileKey& key, const TreeTile& tile, float planetRadius, Vector3 c, float r); // (#1856 M20) built or still building
 // Fraction of the ground under tree crowns around a body-local direction (the same forest field
 // and odds as the placement), for painting distant forests into the terrain.
 class PlanetField;

@@ -511,7 +511,7 @@ float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
     if (const PlanetErosion* e = erosion()) return e->heightAt(dir, smoothFp);
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
-    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
+    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) * gen.roughness - ValleyCarve(l.valley) * l.valleyWeight; // (#1856 M11) scaled as land()'s hills: rivers off the land with roughness != 1
 }
 
 PlanetField::River PlanetField::stream(const Land& l, Vector3 dir, float fp) const {
@@ -1390,7 +1390,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                 for (size_t k = 0; k < rank.size() && k < 5; ++k) steep.push_back(rank[k].second);
             }
         }
-        for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
+        // (#1856 M12) An entrance yet (a chamber's centre marker, kind 3, is none: cells with a chamber never got a mouth)
+        auto noEntrance = [&] { for (const CaveMouth& m : data->mouths) if (m.kind != 3) return false; return true; };
+        for (int tries = 0; cellHasMouth && tries < 10 && noEntrance(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
             const float sl = Vector3Length(s);
@@ -1892,6 +1894,7 @@ void PlanetField::caveEntrancesNear(Vector3 lo, Vector3 hi, std::vector<CaveEntr
         for (int y = clo[1]; y <= chi[1]; ++y)
             for (int x = clo[0]; x <= chi[0]; ++x)
                 for (const CaveMouth& m : CaveCell(*this, fieldSeed, x, y, z)->mouths) {
+                    if (m.kind == 3) continue; // (#1859 L11) a chamber's centre is no entrance (it hid cave spawns there as "near a mouth")
                     if (m.at.x < lo.x || m.at.x > hi.x || m.at.y < lo.y || m.at.y > hi.y || m.at.z < lo.z || m.at.z > hi.z) continue;
                     out.push_back({ m.at, m.out, m.kind });
                 }
@@ -3940,6 +3943,67 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
+// rough or smooth world): linear in it, and its hills gone at roughness 0.
+TEST(Voxel, RiverLandFollowsRoughness) {
+    PlanetField::tIgnoreBake = true;
+    auto at = [](float roughness, Vector3 dir) {
+        PlanetField f(42u, 32000.0f, false);
+        WorldGenParams p; p.roughness = roughness;
+        f.setGenParams(p);
+        return f.testBroadLand(dir, 4.0f);
+    };
+    float most = 0.0f;
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float b0 = at(0.0f, dir), b1 = at(1.0f, dir), b2 = at(2.0f, dir);
+        EXPECT_NEAR(b2 - b1, b1 - b0, 0.01f);
+        most = std::max(most, fabsf(b1 - b0));
+    }
+    EXPECT_GT(most, 0.5f); // the hills count for something somewhere
+    PlanetField::tIgnoreBake = false;
+}
+// (#1856 M12) A cell whose cave made a chamber can still have an entrance (the chamber's centre marker counted as one, so
+// those cells never got a hillside mouth): over the cells under a patch of the surface, some chamber cells have one.
+TEST(Voxel, ChamberCellsCanHaveAnEntrance) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    int chambers = 0, withEntrance = 0;
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3; // the shell of cells round the surface
+    for (int cx = r0; cx <= r1; ++cx)
+        for (int cy = -40; cy <= 40; ++cy)
+            for (int cz = -40; cz <= 40; ++cz) {
+                const auto cell = CaveCell(f, f.terrainSeed(), cx, cy, cz);
+                bool chamber = false, entrance = false;
+                for (const CaveMouth& m : cell->mouths) { chamber = chamber || m.kind == 3; entrance = entrance || m.kind != 3; }
+                chambers += chamber;
+                withEntrance += chamber && entrance;
+            }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(chambers, 0);
+    EXPECT_GT(withEntrance, 0) << chambers << " chamber cells, none with an entrance";
+}
+
+// (#1859 L11) Entrances near a chamber's centre never list the centre itself (creatures took it for a mouth).
+TEST(Voxel, ChamberCentreIsNoEntrance) {
+    if (!PlanetField::CavesGraph()) GTEST_SKIP() << "graph caves off";
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3;
+    int checked = 0;
+    for (int cx = r0; cx <= r1 && checked < 5; ++cx)
+        for (int cy = -40; cy <= 40 && checked < 5; ++cy)
+            for (int cz = -40; cz <= 40 && checked < 5; ++cz)
+                for (const CaveMouth& m : CaveCell(f, f.terrainSeed(), cx, cy, cz)->mouths) {
+                    if (m.kind != 3) continue;
+                    std::vector<PlanetField::CaveEntrance> ents;
+                    f.caveEntrancesNear(Vector3SubtractValue(m.at, 1.0f), Vector3AddValue(m.at, 1.0f), ents);
+                    for (const PlanetField::CaveEntrance& e : ents) EXPECT_NE(e.kind, 3);
+                    ++checked;
+                }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(checked, 0);
+}
 // #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
 // in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
 // step along the border. (The old behaviour stays behind RAYLIBGAME_SKY_UNHINTED=0: unhintedDepth false.)

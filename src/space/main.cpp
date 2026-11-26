@@ -182,7 +182,7 @@ static bool gSoakOn = false;
 static void Server_KickRefused() {
     for (const HostPlayer& p : Host_ListPlayers()) {
         std::string why;
-        if (p.online && !Admin_CheckJoin(p.name, p.address, why)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
+        if (p.online && !Admin_CheckJoin(p.name, p.address, why, p.uuid)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
     }
 }
 #include "worldgenparams.h"
@@ -2208,10 +2208,17 @@ int main(int argc, char** argv)
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+            // (#1868) a name to a player's id for `op NAME` (roles are by id): a player online under it, else a player record
+            Admin_SetResolver([](const std::string& name) {
+                auto same = [&](const std::string& n) { if (n.size() != name.size()) return false; for (size_t i = 0; i < n.size(); ++i) if (tolower((unsigned char)n[i]) != tolower((unsigned char)name[i])) return false; return true; };
+                for (const HostPlayer& p : Host_ListPlayers()) if (p.online && !p.uuid.empty() && same(p.name)) return p.uuid;
+                for (const PlayerRecordMeta& m : PlayerRecord_List()) if (!m.uuid.empty() && same(m.name)) return m.uuid;
+                return std::string();
+            });
             // (#326, #345) the host's hooks: the motd, bans and the whitelist at join, the audit log, and players' chat - a line
             // starting with '/' is a command (ops: the admin commands, kick, say), anything else goes to everyone.
             Host_SetMotd(serverCfg.motd);
-            Host_SetJoinCheck([](const std::string& name, const std::string& address, std::string& why) { return Admin_CheckJoin(name, address, why); });
+            Host_SetJoinCheck([](const std::string& name, const std::string& address, const std::string& uuid, std::string& why) { return Admin_CheckJoin(name, address, why, uuid); });
             Host_SetEventHook([](const char* what, uint32_t session, const std::string& detail) {
                 Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
                 if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
@@ -10644,7 +10651,7 @@ int main(int argc, char** argv)
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") {
                         int n = 0;
-                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, Host_SessionUuid(p.session))), p.address.c_str()); }
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, p.uuid)), p.address.c_str()); }
                         printf("server: %d player(s) online\n", n);
                     }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
@@ -12858,6 +12865,15 @@ int main(int argc, char** argv)
                 static NetClient badName, upper; static std::vector<std::unique_ptr<NetClient>> extras;
                 static bool badRefused = false, upperRefused = false, chatClean = false; static int extrasRefused = 0;
                 const bool capTest = getenv("RAYLIBGAME_MAX_PER_ADDRESS") != nullptr;
+                // (#1868) With RAYLIBGAME_HELLO_SECONDS set: two connections that never say Hello are closed by the server (they count
+                // from the moment they connect; before, only from their first message, so a silent one stayed forever).
+                const bool helloTest = getenv("RAYLIBGAME_HELLO_SECONDS") != nullptr;
+                static uint32_t silentConn[2] = { 0, 0 }; static bool silentGone = false; static int silentBase = 0;
+                if (ph == 6 && helloTest) {
+                    silentBase = Host_SilentDropped();
+                    for (uint32_t& s : silentConn) { s = Net_Connect(addr); if (s) Host_SetLocalClient(s); } // (its replies are a client's, not the server's)
+                }
+                if (ph == 7 && helloTest) silentGone = silentConn[0] && silentConn[1] && !Net_IsConnected(silentConn[0]) && !Net_IsConnected(silentConn[1]) && Host_SilentDropped() - silentBase >= 2;
                 if (ph == 6) {
                     NetClient_Connect(badName, addr, "bad\nname"); NetClient_Connect(upper, addr, "ALICE");
                     NetClient_SendChat(alice, "hi\nthere");
@@ -12870,11 +12886,12 @@ int main(int argc, char** argv)
                     upperRefused = upper.state == NetClient::State::Rejected && upper.reject.reason == NetReject::NameTaken;
                     for (const MsgChat& c : eve.chat) chatClean = chatClean || c.text == "hi there";
                     extrasRefused = 0; for (auto& x : extras) extrasRefused += x->state == NetClient::State::Rejected && x->reject.reason == NetReject::Full;
-                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0)) || GetTime() - t0 > 8.0) ph = 8;
+                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone)) || GetTime() - t0 > 8.0) ph = 8;
                 }
                 if (ph == 8) {
                     const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1 &&
-                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0);
+                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone);
+                    if (helloTest) printf("bench: net abuse: two connections that never said Hello were closed %d (%d silent drops, #1868)\n", (int)silentGone, Host_SilentDropped() - silentBase);
                     printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
                            "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780); a name with a newline refused %d, \"ALICE\" "
                            "refused as alice %d, chat cleaned %d; %s -> %s\n",
