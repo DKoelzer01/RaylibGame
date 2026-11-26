@@ -15,8 +15,9 @@
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
 #      two branches can't ship the same number for different wire formats.
+#   7. The integer simulation files (tools/ci/sim_integer_files.txt) use no float, double or libm (#1015): else an error.
 #
-# Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
+# Exit code 1 only for errors (duplicate / unparsable ids, checks 3, 5, 6 and 7). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
 set -uo pipefail
 export LC_ALL=C # sort and join must agree on the order
@@ -235,6 +236,23 @@ else
         sum ""; sum "**kNetProtocol $proto** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
     fi
 fi
+
+# ---- 7. The integer simulation stays integer (#1015) ----
+# The files in tools/ci/sim_integer_files.txt use no float, double or libm before their unit-test block (comments ignored):
+# else an error, since their state must hash the same on every machine and compiler.
+SIMLIST=tools/ci/sim_integer_files.txt
+sim_hits=0
+while read -r f; do
+    [ -f "$f" ] || { echo "::error file=$SIMLIST::static check 7: $f is listed but missing"; errors=$((errors + 1)); continue; }
+    hits=$(tr -d '\r' < "$f" | awk '/^#ifdef RAYLIBGAME_UNIT_TESTS/ { exit } { sub(/\/\/.*/, "") }
+        /(^|[^A-Za-z_])(float|double)([^A-Za-z_]|$)|<cmath>|<math\.h>/ { print NR }')
+    for n in $hits; do
+        annot error "$f" "$n" "float, double or libm in an integer-only simulation file ($SIMLIST, #1015): its state must hash the same on every machine"
+        sim_hits=$((sim_hits + 1))
+    done
+done < <(tr -d '\r' < "$SIMLIST" | grep -v '^#' | grep -v '^[[:space:]]*$')
+errors=$((errors + sim_hits))
+sum ""; sum "**Integer simulation files** ($(tr -d '\r' < "$SIMLIST" | grep -vc '^#\|^[[:space:]]*$') listed): $sim_hits float/libm use(s)"
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
 if [ "$errors" -gt 0 ]; then

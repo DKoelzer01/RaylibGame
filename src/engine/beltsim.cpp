@@ -431,27 +431,41 @@ TEST(BeltSim, EndToEndAndMergeYield) {
     EXPECT_EQ(fromSide, 0); // a full main belt never lets the side in
 }
 
+// A fixed network (two lines merging into a third, a sink that takes 3 in 4 at random) for 1500 ticks: every line's
+// checksum each 100 ticks, then how many items the sink took.
+static std::vector<uint32_t> FixedBeltRun() {
+    std::vector<BeltLine> lines = { Line(1, 200, 6), Line(2, 120, 4), Line(3, 300, 6) };
+    lines[0].end = BeltEnd::Belt; lines[0].outLine = 2; lines[0].outPos = 0;
+    lines[1].end = BeltEnd::Belt; lines[1].outLine = 2; lines[1].outPos = 96;
+    lines[2].end = BeltEnd::Sink; lines[2].sink = 0;
+    uint32_t seed = 12345;
+    int accepted = 0;
+    const BeltSinkFn sink = [&](int, int) { seed = seed * 1664525u + 1013904223u; if (seed >> 30) { ++accepted; return true; } return false; };
+    std::vector<uint32_t> sums;
+    for (int t = 0; t < 1500; ++t) {
+        Belt_TryInsert(lines[0], t % 5, 0);
+        if (t % 3 == 0) Belt_TryInsert(lines[1], 100 + t % 7, 0);
+        Belt_Step(lines, sink);
+        if (t % 50 == 0) for (BeltLine& l : lines) Belt_Wake(l); // a sink freeing room now and then
+        if (t % 100 == 99) for (const BeltLine& l : lines) sums.push_back(Belt_Checksum(l));
+    }
+    sums.push_back((uint32_t)accepted);
+    return sums;
+}
+
+// (#1015) The determinism guard across platforms: the fixed run hashes to one constant, which the Windows (w64devkit) and
+// Linux (GCC) CI legs both check. Only one leg failing means the platforms diverge (a float or libm call crept into the sim,
+// or undefined behaviour): fix that, never the constant. Both legs failing alike after a deliberate change to the belt
+// rules: put the new value here in the same PR and say why in its description.
+TEST(BeltSim, FixedRunMatchesTheGoldenHash) {
+    uint64_t h = 1469598103934665603ull; // FNV-1a over the run's checksums
+    for (uint32_t s : FixedBeltRun()) h = (h ^ s) * 1099511628211ull;
+    constexpr uint64_t kGolden = 0ull;
+    EXPECT_EQ(h, kGolden) << "the fixed belt run changed (#1015): see the comment above before updating the constant";
+}
+
 TEST(BeltSim, Deterministic) {
-    auto run = [] {
-        std::vector<BeltLine> lines = { Line(1, 200, 6), Line(2, 120, 4), Line(3, 300, 6) };
-        lines[0].end = BeltEnd::Belt; lines[0].outLine = 2; lines[0].outPos = 0;
-        lines[1].end = BeltEnd::Belt; lines[1].outLine = 2; lines[1].outPos = 96;
-        lines[2].end = BeltEnd::Sink; lines[2].sink = 0;
-        uint32_t seed = 12345;
-        int accepted = 0;
-        const BeltSinkFn sink = [&](int, int) { seed = seed * 1664525u + 1013904223u; if (seed >> 30) { ++accepted; return true; } return false; };
-        std::vector<uint32_t> sums;
-        for (int t = 0; t < 1500; ++t) {
-            Belt_TryInsert(lines[0], t % 5, 0);
-            if (t % 3 == 0) Belt_TryInsert(lines[1], 100 + t % 7, 0);
-            Belt_Step(lines, sink);
-            if (t % 50 == 0) for (BeltLine& l : lines) Belt_Wake(l); // a sink freeing room now and then
-            if (t % 100 == 99) for (const BeltLine& l : lines) sums.push_back(Belt_Checksum(l));
-        }
-        sums.push_back((uint32_t)accepted);
-        return sums;
-    };
-    const std::vector<uint32_t> a = run(), b = run();
+    const std::vector<uint32_t> a = FixedBeltRun(), b = FixedBeltRun();
     EXPECT_EQ(a, b);
     EXPECT_GT(a.back(), 0u);
     // the checksum sees a moved item
