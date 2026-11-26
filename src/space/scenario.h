@@ -72,6 +72,14 @@ struct ScenarioCtx {
     // goes there once as <scenario>-<name>.png (the scenario's '/' as '_'); otherwise nothing happens. Scenarios that
     // already frame their subject well call it at that moment (run them with --no-hud --native-window).
     void grab(const std::string& name);
+    // (#1015) State hashes against goldens: one check per subsystem, "hash LABEL SUBSYSTEM", against the line
+    // "<scenario> LABEL SUBSYSTEM <16 hex digits>" in tests/scenarios/golden_hashes.txt. Subsystems: "factory" (every plot's
+    // machines, item networks and shafts: Factory::StateHash), "edits" (body 0's terrain edits, as the save encodes them),
+    // "water" (the fluid snapshot's fill and flags, brick by brick). No golden yet: the check fails and prints the line to
+    // add; RAYLIBGAME_GOLDEN_UPDATE=1 writes it into the file instead (the check passes, noted). A golden needs a run that
+    // repeats: the factory in lockstep (s.env RAYLIBGAME_FACTORY_LOCKSTEP=1), the fluid with RAYLIBGAME_FLUID_LOCKSTEP=1.
+    // Call it at a moment fixed by state or WaitTicks, never by the wall clock. Returns whether every check passed.
+    bool hashState(const std::string& label, const std::vector<std::string>& subsystems = { "factory", "edits", "water" });
 
     // Helpers the fluid and terrain tests share.
     Vector3 spawnDirLocal() const;            // the start's direction, body-local (--spawn-dir override, else the field's)

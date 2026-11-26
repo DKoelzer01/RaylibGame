@@ -202,6 +202,9 @@ namespace Factory {
     bool Accepts(PartType type, const std::string& item, int mode = 0);
     void Advance(float simDt);                       // one simulation step (#315): grants the ticks it owes (20 Hz x speed)
     void WaitTicks(int n);                           // run n more ticks now and block until they have
+    // (#1015) A hash of every plot's simulated state (machines, item networks, shafts), between ticks; the same on every
+    // machine and worker count. Scenarios compare it with a golden (ScenarioCtx::hashState, run with RAYLIBGAME_FACTORY_LOCKSTEP).
+    uint64_t StateHash();
     void SetSpeed(int multiplier);                   // tests: run the 20 Hz clock this many times faster
     // Saves: machine contents per body index (the plots themselves are saved with the body).
     void Save(FILE* f, uint64_t bodyId);
