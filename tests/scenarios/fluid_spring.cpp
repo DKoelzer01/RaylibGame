@@ -22,10 +22,10 @@ void SpringCamera(ScenarioCtx& c) {
 SCENARIO("fluid/spring") {
     s.tags = { "fluid", "water", "planet" };
     s.world = ScenarioWorld::Planet;
-    s.timeout = 150.0;
+    s.timeout = 300.0; // wall s: the runner streams a planet slowly (#1910)
     s.legacyFlag = "--seed 42 --test-spring";
 
-    s.step("find", 30.0, [](ScenarioCtx& c) {
+    s.step("find", 90.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (!WorldIdle()) return false; // (the flag's branch starts on an idle frame)
         const Vector3 home = Vector3Scale(c.field->findSpawnDir(c.body->seed), c.field->radius);
@@ -43,7 +43,14 @@ SCENARIO("fluid/spring") {
         player.flyMode = true;
         return true;
     });
-    s.step("arrive", 10.0, [](ScenarioCtx& c) { SpringCamera(c); c.waitingFor("5 s at the spring"); return c.t > 5.0; });
+    // (#1910) The timed run starts only once the spring is a source and its basin's terrain edit is built (an idle world):
+    // on the runner's slow machine those came late, the 30 s run began before the spring flowed, and it failed 8 of 20
+    // runs with too little moving water. The fluid is lockstep (sim time), so from here the run is the same everywhere.
+    s.step("arrive", 60.0, [](ScenarioCtx& c) {
+        SpringCamera(c);
+        c.waitingFor("5 s at the spring, its source added and an idle world");
+        return c.t > 5.0 && Fluid::SourceCount() > 0 && WorldIdle();
+    });
     s.step("run", 40.0, [](ScenarioCtx& c) {
         SpringCamera(c);
         if (c.t < 0.05) Fluid::SetSpeed(6); // fast-forward, as the flag
