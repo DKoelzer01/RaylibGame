@@ -48,7 +48,7 @@ void Park(ScenarioCtx& c) {
 }
 }
 
-SCENARIO("net/creative-fly") {
+static void BuildFly(ScenarioDef& s) {
     s.tags = { "multiplayer", "net" };
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-creative-fly.sav", "--port", std::to_string(kPort) };
@@ -131,4 +131,12 @@ SCENARIO("net/creative-fly") {
         NetClient_Disconnect(S.cl);
         return true;
     });
+}
+
+SCENARIO("net/creative-fly") { BuildFly(s); }
+// The same on a slow link (#1922 was found on one): 100 ms each way, 15 ms jitter, 2 % loss (net.cpp's simulated
+// conditions, #347). Lost input packets are covered by the next ones (each carries the newest 4 steps).
+SCENARIO("net/creative-fly-lag") {
+    BuildFly(s);
+    s.env = { { "RAYLIBGAME_NET_LAG_MS", "100" }, { "RAYLIBGAME_NET_JITTER_MS", "15" }, { "RAYLIBGAME_NET_LOSS", "2" }, { "RAYLIBGAME_NET_SEED", "1922" } };
 }
