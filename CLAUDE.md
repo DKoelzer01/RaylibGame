@@ -67,6 +67,10 @@ test; add a line when something goes wrong).
 - **The camera shows what a test tests**, and follows it. **Sim benches use `--sandbox`.** A bench camera inside terrain
   looks like a rendering bug (#1428); #1442 flags it. Fix benches, not features (jump, turn, lift the camera).
 - Gate every run on the build's exit code (`cmake --build ... > log && game.exe ...`).
+- **Keep output out of context (#1874):** run builds, tests, benches and sandbox jobs through `tools/quiet.sh -- <cmd>`
+  (errors, FAIL lines, a PASS count and the log path; full log in `build/logs/`; it keeps the exit code). Before asking
+  for review or labelling a PR `ready`, run `tools/ci/prereview.sh` (scope, size, line endings, debug leftovers,
+  protocol/save touches, static checks).
 - Full regression (`tools/regression.sh planet`): ONE run, after all fixes are in and PRs are merge-ready; never between fix rounds.
 - Perf numbers are invalid while another session compiles or runs: take a quiet slot for timing.
 

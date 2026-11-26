@@ -117,3 +117,22 @@ Detail behind CLAUDE.md's Testing section (#1478). Read the parts for what you'r
   `--load` / `--at-save` (bench saves/world.sav from its own camera; copy a save into a temp dir
   with `resources`/`assets` junctions to bench it read-only), `--test-paint`, `--test-dig`
   (casts down from the player: the bench camera is not placed yet when early tests run).
+
+## Context cost tools (#1874)
+
+Every line a session reads stays in its context and is re-read on each later turn (2026-11-19..26: Opus main sessions
+97% of the cost, ~76% of that cache reads, mean context ~460K per call). Tools that keep output small:
+
+- `tools/quiet.sh [--label L] [--all] -- <command...>` (#1876): runs the command with the full log in
+  `build/logs/<label>-<time>.log` and prints the exit code, time, compiler/linker errors (first three with context),
+  distinct warnings (capped), every FAIL verdict, a PASS count (`--all` lists them), bench and scenario summary lines,
+  and the last lines when it failed without any of those. Exits with the command's code, so `&&` gating still works.
+  Example: `tools/quiet.sh -- cmake --build build/check -j 4 && tools/quiet.sh -- build/check/bin/game.exe --seed 42 --bench 3 --test-pump`.
+- `tools/ci/prereview.sh [BASE] [--files a,dir/,*.glob] [--max-lines N] [--committed]` (#1877): a mechanical review of
+  the diff since merge-base(BASE, HEAD) (default BASE origin/staging), work tree included: files outside `--files`,
+  the diff size, CR in `.sh` files (blocker) and mixed line endings elsewhere, debug leftovers in added lines, changes
+  Claude must look at (netproto.h, save code, CMake, workflows, data, new headers) and `tools/ci/static_checks.sh`
+  (warnings only for files the diff touches). Exit 0 clean, 1 warnings, 2 blockers.
+- `perl tools/usage_profile.pl [SINCE] [UNTIL]` (#1880): API-equivalent cost of the RaylibGame transcripts by main
+  session vs subagent and model, calls and mean context, the context-size spread, and tool-result tokens by tool and by
+  shell command type, weighted by how long they stay in context. About 1.5 min for a week.
