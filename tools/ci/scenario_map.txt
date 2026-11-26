@@ -21,7 +21,8 @@ DEFAULT | tag:world
 ^resources/data/fluids|^resources/(compute/)?[a-z_]*(fluid|water)[a-z_]*\.(fs|vs|glsl|comp)$ | tag:fluid
 # The terrain and world generation: the ground everything stands on. (#1882) A terrain change also runs the 1-seed world
 # generation metrics; the 8-seed set runs in the full tier and on manual runs (its own workflow step, tag:worldgen).
-^src/engine/(voxel|terrain[a-z]*|cubemarch[a-z]*|erosion[a-z_]*|rivers|canyons|strata|caves?|oreveins|SimplexNoise|worldgen[a-z_]*|worldprofile|planetfield[a-z_]*|bodies|farsphere)\.(h|cpp)$ | tag:world,tag:caves,tag:fluid,worldgen/metrics-1
+^tests/scenarios/worldgen_metrics\.h$ | worldgen/metrics-1
+^src/engine/(voxel[a-z_]*|terrain[a-z]*|cubemarch[a-z]*|erosion[a-z_]*|rivers|canyons|strata|caves?|oreveins|SimplexNoise|worldgen[a-z_]*|worldprofile|planetfield[a-z_]*|bodies|farsphere)\.(h|cpp)$ | tag:world,tag:caves,tag:fluid,worldgen/metrics-1
 ^resources/data/(biomes|worldgen|strata|bodies)|^resources/compute/(terrain|chunk)[a-z_]*\.(comp|glsl)$|^resources/(voxel_lighting|farsphere)\.(fs|vs)$ | tag:world,tag:caves,worldgen/metrics-1
 ^resources/[a-z_]*\.(fs|vs|glsl)$ | tag:world
 # The factory, machines, crafting and building.
