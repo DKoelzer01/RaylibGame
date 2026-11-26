@@ -192,6 +192,8 @@ struct Grave {
 };
 static std::vector<Grave> graves;
 static int graveCounter = 0;
+static uint32_t dropCounter = 0; // (#1852) dropped piles' ids (0x80000000 | n); a load moves it past the ids it read
+static bool lastLoadedDrop = false; // (#1852) loading: the last line read was a pile kept (its dropped_mp line follows)
 static uint32_t graveVersion = 1;          // bumps on every change of the grave set (the server resends its list)
 static constexpr double kGraveReach = 2.5; // m: walking up to it takes everything back
 static constexpr double kDropMerge = 1.0;  // m: a drop this close to an unarmed pile joins it
@@ -440,7 +442,6 @@ bool Combat_DropFor(const std::string& body, const DVec3& at, const InvSlot& sta
             g.diedAt = WallNow();
             return true;
         }
-    static uint32_t dropCounter = 0;
     Grave g;
     g.body = body;
     g.local = at;
@@ -545,7 +546,7 @@ void Combat_DrawGraves(Scene& world) {
     }
 }
 
-void Combat_Reset() { graves.clear(); graveCounter = 0; }
+void Combat_Reset() { graves.clear(); graveCounter = 0; dropCounter = 0; }
 
 void Combat_Save(FILE* f) {
     fprintf(f, "grave_counter %d\n", graveCounter);
@@ -554,6 +555,8 @@ void Combat_Save(FILE* f) {
             fprintf(f, "dropped %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.armed ? 1 : 0, g.items.size());
             for (const InvSlot& it : g.items) fprintf(f, " %s %lld", it.id.c_str(), (long long)it.centi);
             fprintf(f, "\n");
+            // (#1852) its id (replication matches piles by it), when and by whom it was dropped (others wait 2 s)
+            fprintf(f, "dropped_mp %u %lld %s\n", g.id, (long long)g.diedAt, g.owner.empty() ? "-" : g.owner.c_str());
             continue;
         }
         fprintf(f, "grave %s %.6f %.6f %.6f %d %zu", g.body.c_str(), g.local.x, g.local.y, g.local.z, g.offHand, g.items.size());
@@ -576,7 +579,20 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         ++graveVersion;
         return true;
     }
+    if (strcmp(tok, "dropped_mp") == 0) { // (#1852) for the pile just read (none: it was empty and left out)
+        unsigned id = 0; long long died = 0; char owner[64] = {};
+        if (fscanf(f, " %u %lld %63s", &id, &died, owner) == 3 && lastLoadedDrop && !graves.empty()) {
+            Grave& g = graves.back();
+            g.id = id; g.diedAt = died;
+            g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
+            dropCounter = std::max(dropCounter, id & 0x7fffffffu); // new piles number past it
+        }
+        lastLoadedDrop = false;
+        ++graveVersion;
+        return true;
+    }
     const bool dropped = strcmp(tok, "dropped") == 0;
+    lastLoadedDrop = false;
     if (strcmp(tok, "grave") != 0 && !dropped) return false;
     Grave g;
     char body[64] = {};
@@ -603,8 +619,11 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         g.id = 0x80000000u + (uint32_t)graves.size();
         g.style = Combat_GraveStyle(g.body, g.local, g.id);
         g.diedAt = g.ownerSeen = WallNow();
+    } else { // (#1852) an id of its own (an older save has no dropped_mp line; one that follows sets it), anyone's now
+        g.id = 0x80000000u | ++dropCounter;
+        g.diedAt = WallNow();
     }
-    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; }
+    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; lastLoadedDrop = dropped; }
     return true;
 }
 
@@ -865,6 +884,50 @@ bool Combat_TestFrame(Scene& world) {
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#828): a grave's map label ----
 #include "unit_helpers.h"
+
+namespace {
+std::vector<GraveInfo> Piles() { std::vector<GraveInfo> o; for (const GraveInfo& g : Combat_GraveList()) if (g.dropped) o.push_back(g); return o; }
+std::vector<GraveInfo> SaveAndLoad(const std::string& extra = "") { // the save's grave lines (plus extra), read back after a reset
+    FILE* f = tmpfile();
+    Combat_Save(f);
+    fputs(extra.c_str(), f);
+    rewind(f);
+    Combat_Reset();
+    char tok[64];
+    while (fscanf(f, " %63s", tok) == 1) Combat_LoadLine(tok, f);
+    fclose(f);
+    return Piles();
+}
+}
+
+// (#1852) Dropped piles keep their ids, owners and times over a save; an older save's piles (no dropped_mp line) get ids of
+// their own; and a pile dropped after a load never takes a loaded one's id.
+TEST(Combat, DroppedPilesKeepIdsAndOwnersOverASave) {
+    Combat_Reset();
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 0 }, InvSlot{ "stone", 300 }, "alice-uuid"));
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 20 }, InvSlot{ "stone", 200 }, "bob-uuid"));
+    const std::vector<GraveInfo> before = Piles();
+    ASSERT_EQ(before.size(), 2u);
+    const std::vector<GraveInfo> after = SaveAndLoad();
+    ASSERT_EQ(after.size(), 2u);
+    for (size_t k = 0; k < 2; ++k) {
+        EXPECT_EQ(after[k].id, before[k].id);
+        EXPECT_EQ(after[k].owner, before[k].owner);
+        EXPECT_EQ(after[k].diedAt, before[k].diedAt);
+    }
+    ASSERT_TRUE(Combat_DropFor("terra", { 0, 60000, 40 }, InvSlot{ "stone", 100 }, "alice-uuid"));
+    const std::vector<GraveInfo> three = Piles();
+    ASSERT_EQ(three.size(), 3u);
+    EXPECT_NE(three[2].id, three[0].id);
+    EXPECT_NE(three[2].id, three[1].id);
+    // An older save: two piles, no dropped_mp lines.
+    Combat_Reset();
+    const std::vector<GraveInfo> old = SaveAndLoad("dropped terra 0 60000 0 1 1 stone 100\ndropped terra 0 60000 9 1 1 stone 100\n");
+    ASSERT_EQ(old.size(), 2u);
+    EXPECT_NE(old[0].id, 0u);
+    EXPECT_NE(old[0].id, old[1].id);
+    Combat_Reset();
+}
 
 // A multiplayer grave reads its time until it opens to others (15 min after the death), then "open to all"; a single
 // player's grave (no owner: anyone may take it) its name alone; a waypoint that is no grave is not one.
