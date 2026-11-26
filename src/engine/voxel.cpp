@@ -3975,7 +3975,7 @@ TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
                bits(expf(-x * 3.0f)), bits(powf(x * 7.0f, 0.45f)), bits(logf(x * 1000.0f)), bits(asinf(x - 0.5f)));
     }
     printf("terrain probe hash %016llx\n", (unsigned long long)h);
-    constexpr uint64_t kGolden = 0ull;
+    constexpr uint64_t kGolden = 16656868793744975483ull; // e72915ea8175667b, Linux GCC (sandbox)
     EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
 }
 
