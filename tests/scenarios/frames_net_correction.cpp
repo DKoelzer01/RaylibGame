@@ -6,6 +6,7 @@
 #include "scenario.h"
 #include "player.h"
 #include "world.h"
+#include "frames.h"
 #include <raymath.h>
 #include <cmath>
 
@@ -38,6 +39,11 @@ SCENARIO("frames/net-correction") {
             if (S.tFall < 0.0) S.tFall = c.t;
             if (c.t - S.tFall < 1.0) return false;
             S.before = player.groundVelocity(c.world);
+            // The frame path needs frames on and the player in the body's Fixed frame (else nothing here is on the path).
+            const bool onPath = Frames_On() && player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == c.body->netId;
+            c.check("on the frame path (frames on, the body's Fixed frame)", onPath,
+                    TextFormat("frames %d, kind %d, frame body %llu, the body %llu", (int)Frames_On(), (int)player.frame.frame.kind,
+                               (unsigned long long)player.frame.frame.body, (unsigned long long)c.body->netId));
             Player::NetState ns;
             if (!player.netState(c.world, ns)) { c.check("the player has a net state", false, "netState false"); return true; }
             ns.vel = Vector3Add(ns.vel, Vector3Scale(S.dir, 5.0f)); // body-local: 5 m/s more up (the server's correction)
