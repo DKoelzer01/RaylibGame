@@ -1014,6 +1014,12 @@ void SpawnCaveCreatures(Planetoid& body, const PlanetField& f, Vector3 centre, V
             int alive = 0;
             for (const Animal& a : animals) if (a.species == si && a.body == body.name) { const ChunkId id = ChunkOf(a.pos.toFloat(), si); alive += !(id < ck.first) && !(ck.first < id); }
             if (c.nests && nestSi >= 0) {
+                if (!ch.hasNest) // (#1859) one nest a chunk: another nesting species' there already is this one's too (two stood in one spot)
+                    for (const auto& [id, other] : spawnChunks)
+                        if (other.hasNest && id.x == ck.first.x && id.y == ck.first.y && id.z == ck.first.z && id.species != si) {
+                            ch.nest = other.nest; ch.hasNest = true; ch.nestDestroyed = other.nestDestroyed;
+                            break;
+                        }
                 if (!ch.hasNest) // the nest in the chunk's large chamber (none without one)
                     for (const SpawnSite* s : ck.second)
                         if (s->kind == 3 && s->radius >= SpawnTune::kNestChamber) { ch.nest = SpawnAt(body, nestSi, s->floor, Hash((uint64_t)ck.first.x * 73856093u ^ (uint64_t)ck.first.z, 3u)); ch.hasNest = true; break; }
