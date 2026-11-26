@@ -107,6 +107,11 @@ test; add a line when something goes wrong).
   #1030). **Magic** (#1001) is split by feature (user, 2026-11-23): crafting, machines and essence logistics go to
   Progression; spells, rituals and the adventure side to UI/UX and Adventure. **Space** (Plan 13), and the **coordinator** (merges, the board, routing the user's decisions). Unclear ownership: ask
   the coordinator.
+- **Restarts (#1897, user 2026-11-26):** the coordinator restarts a topic session above ~250K context at a task boundary:
+  `tools/coord/cycle_session.sh check <name>`, ask it to finish and write `build/session-handoff.md` (wait for idle),
+  then `restart <id|name>`. Keep your handoff file current. A SessionStart(compact) hook loads that file after an
+  auto-compaction (sessions launch with `--autocompact 300000`). Never `claude rm` a session whose cwd is a Claude-made
+  `.claude/worktrees/` folder: rm deletes a clean one under the restarted session.
 - **Messages:** send only what someone needs: reports, questions, PR numbers. No acknowledgements of FYIs ("holding",
   "noted"); a message marked "FYI" needs no reply. Batch your requests.
 - **kNetProtocol:** reserve the next number in `tools/ci/protocol_reservations.txt` (a static check enforces it, #1480);
