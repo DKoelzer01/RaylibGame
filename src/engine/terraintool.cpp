@@ -573,7 +573,10 @@ DigYield TerrainTool_DigYield(Planetoid& p, Vector3 centre, float r, Vector3 hit
                 // no stones in placed dirt, no stone kinds, peat, gems or seeds, no perks. Placing and digging it back can't
                 // make anything.
                 if (const int pm = p.edits ? p.edits->placedAt(q) : -1; pm >= 0) {
-                    out.placed[ItemAt(p, q, (VoxelMaterial)pm)] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
+                    // (#1846) The filler item for that ground, never ItemAt's body specials: placed stone on the moon gave
+                    // back anorthite (aluminium from free stone). Dirt and regolith both place as Regolith, so that one comes
+                    // back as the body's own (dirt where there is soil, regolith where there isn't).
+                    out.placed[ItemForMaterial((VoxelMaterial)pm, HasSoil(p))] += cell * 1.8f; // a tenth crumbles away: the sample grid never pays back more than the fill cost
                     continue;
                 }
                 const char* item = ItemAt(p, q, m);

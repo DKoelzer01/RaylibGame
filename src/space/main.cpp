@@ -707,7 +707,7 @@ int main(int argc, char** argv)
     constexpr float kFlowShaftM = 6.0f, kFlowChamberR = 2.0f, kFlowCaveM = 8.0f; // the flow tests' shaft depth, chamber radius, chamber point under the water (m, #935)
     float damDrift = 0.0f, damSpillL = 0.0f; // damSpillL: the dam's crest length over ground under the crest (m, #1039: the weir's width); // --test-dam: the current mid-channel (0: the check failed)
     bool benchPressure = false; int prPhase = 0; double prT0 = 0.0; Vector3 prDir{}; float prGround = 0.0f; // --test-pressure (#393)
-    bool benchFlowMeter = false; int fmPhase = 0; double fmT0 = 0.0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
+    bool benchFlowMeter = false; int fmPhase = 0; Plot* fmPlot = nullptr; // --test-flow-meter (#392)
     bool benchPartWall = false; int pwPhase = 0; double pwT0 = 0.0; Plot* pwPlot = nullptr; std::vector<int> pwParts; bool pwHeld = false, pwWestWet = false; // --test-part-wall (#391)
     bool benchDam = false; int damPhase = 0; double damT0 = 0.0; Vector3 damDir{}, damDown{}, damSide{}, damUp{}, damDn{}; float damLevel = 0.0f, damHW = 0.0f, damDepth = 0.0f, damCrest = 0.0f, damLvU = 0.0f, damLvD = 0.0f, damMaxU = -1e9f, damMinD = 1e9f, damLateD = -1e9f; // --test-dam (#361)
     bool benchDamDivert = false, benchDamDivertFull = false; int divPhase = 0; Vector3 divDir{}; float divLevel0 = 0.0f, divDepth = 0.0f; int divPiece = -1; double divDryT = -1.0, divOpenT = -1.0; std::vector<TerrainEdit> divWall; // --test-dam-divert (#656)
@@ -7699,9 +7699,12 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocalOf(player.position, world.renderOrigin));
-                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
+                        // The first frame here can come late (a hitch, or the spawn's loading screen: up to 20 s, #1787): the swim is
+                        // timed from it, and judged only on a later frame (judging on this one counted no frames: a FAIL).
+                        const bool first = t < 0.5 || h0 == 0.0f;
+                        if (first) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); }
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
-                        if (t > 3.0) {
+                        if (!first && t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
                             const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
@@ -7761,7 +7764,13 @@ int main(int argc, char** argv)
                     if (!pf) { printf("bench: flow-meter: needs the planet -> FAIL\n"); benchFlowMeter = false; }
                     else {
                         auto at = [&](float x, float y) { return fmPlot->toBody({ x, y, 0.0f }); };
-                        const double t = GetTime() - fmT0;
+                        // (#1835) On the water's own clock: fluid ticks (25 ms each) since the stream began, as fluid/flow-meter does
+                        // (#1431). Wall time read -0.00 to 1.13 m^3/s on one seed: a loaded machine skips ticks (9-16 a second of 40),
+                        // so at 60 s of wall time the stream had run anywhere from a few seconds to a minute.
+                        static long long fmTick0 = -1;
+                        const long long ticksNow = Fluid::GetStats().ticks;
+                        if (fmPhase > 0 && fmTick0 < 0) fmTick0 = ticksNow;
+                        const double t = fmPhase > 0 ? (double)(ticksNow - fmTick0) * 0.025 : 0.0;
                         if (fmPhase == 0) {
                             const Vector3 d = StartSpawnDir(*p);
                             float gh = pf->elevation(d) + 8.0f;
@@ -7776,7 +7785,7 @@ int main(int argc, char** argv)
                             sunOverride = true; sunArg = p->dirToWorld(Vector3Normalize(at(0.0f, 50.0f)));
                             player.flyMode = true;
                             printf("bench: flow-meter: trench and pit dug, a 1 m^3/s spring at the trench's head\n");
-                            fmPhase = 1; fmT0 = GetTime();
+                            fmPhase = 1;
                         } else {
                             const Vector3 up = Vector3Normalize(at(0.0f, 0.0f));
                             world.camera.position = p->toWorld(Vector3Add(at(0.0f, 8.0f), Vector3Scale(fmPlot->north, 8.0f))); world.camera.target = p->toWorld(at(0.0f, -1.5f));
@@ -7785,9 +7794,9 @@ int main(int argc, char** argv)
                             const Vector3 q = Fluid::FlowAt(*p, at(0.0f, -1.8f), 2.0f); // asked every frame: the readout smooths
                             static double lastPrint = 0.0;
                             const Fluid::Stats fs = Fluid::GetStats();
-                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water; %d bricks awake, %d steady, publish %.2f ms\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), fs.volume, fs.activeBricks, fs.steadyBricks, fs.meshMs); }
+                            if (t - lastPrint >= 10.0) { lastPrint = t; printf("bench: flow-meter fluid t=%3.0f s: %.2f m^3/s along the trench (%.2f across); %.1f m^3 of water; %d bricks awake, %d steady, publish %.2f ms\n", t, Vector3DotProduct(q, fmPlot->east), Vector3Length(Vector3Subtract(q, Vector3Scale(fmPlot->east, Vector3DotProduct(q, fmPlot->east)))), fs.volume, fs.activeBricks, fs.steadyBricks, fs.meshMs); }
                             // Steady flow (#674): the trench's bricks turn steady (running, read back once a second); a pour into the
-                            // trench at 45 s wakes them (fewer steady), and the meter still reads the stream at 60 s.
+                            // trench at 45 s wakes them (fewer steady), and the meter still reads the stream at 60 s (all fluid time).
                             static int steadyBefore = 0, steadyAfter = 1 << 30;
                             static bool poured = false;
                             if (t > 30.0 && t < 45.0) steadyBefore = std::max(steadyBefore, fs.steadyBricks);

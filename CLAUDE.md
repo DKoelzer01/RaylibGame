@@ -1,8 +1,9 @@
 # RaylibGame - notes for Claude
 
 C++ raylib 5.5 planetoid survival game. `src/engine` (static lib), `src/space` -> game.exe, `src/fantasy` (parked; only
-in git history). Work lands in `m84-integration` through PRs (ladder rework and combat 5-8 in the `ladder` branch); m84
-goes to `develop`, then `main`, only when the user says so. Several agent sessions work in parallel under a coordinator.
+in git history). Work lands in the permanent `staging` branch through PRs (ladder rework and combat 5-8 in the `ladder`
+branch); staging goes to `develop`, then `main`, only when the user says so. (`staging` replaced the old
+`m84-integration` on 2026-11-26, #1870.) Several agent sessions work in parallel under a coordinator.
 
 This file is the core rules. Detail lives in `docs/notes/` - read the file for your area before you start:
 `testing.md` (benches, scenarios, profiler, regression, runner), `architecture.md` (subsystem notes: erosion, sky, HDR,
@@ -71,18 +72,18 @@ test; add a line when something goes wrong).
 
 ## Git and PRs
 
-- Branch per batch from `origin/m84-integration` (or `origin/ladder`); PRs target that branch. **One PR per branch off the
+- Branch per batch from `origin/staging` (or `origin/ladder`); PRs target that branch. **One PR per branch off the
   base; no stacks** unless a PR truly needs another's code (then say so). Stacked PRs: GitHub doesn't retarget the next
   one - PATCH its base, then `PUT pulls/N/update-branch` (a retarget alone runs no CI).
 - **Quote a PR or issue number only after `gh` printed it** (the `gh pr create` / `file_issue.sh` output), never from
   memory: wrong numbers cost a correction round each. Messages to the coordinator: the number + one line.
 - Feature sessions never merge, delete branches, push to main/develop or force-push (not even a fresh branch). Update a
   branch by merging its base in.
-- **Merge bot (#1744, deweyserver `mergebot`):** when your PR into m84/ladder is done (tests, evidence, not a draft), label
+- **Merge bot (#1744, deweyserver `mergebot`):** when your PR into staging/ladder is done (tests, evidence, not a draft), label
   it `ready`; the bot turns on auto-merge (merges on "CI ok"). Add `runner-evidence` too when the evidence is a runner
   scenario: the bot waits for a passing `selfhosted.yml` run on the PR's head SHA (known failures allowed) - start that
   run yourself. CI red or conflicts on a `ready` PR reach the board inbox once per head SHA; fix and push. It also
-  retargets a stacked PR after its base merges. The coordinator keeps m84 -> develop -> main and ladder -> m84 (the
+  retargets a stacked PR after its base merges. The coordinator keeps staging -> develop -> main and ladder -> staging (the
   user's OK after a playtest).
 - Quote a commit hash only after git printed it; never `reset --soft` onto a moved origin tip; check `git diff --stat`
   before pushing a shared branch. Worktree sessions refuse compound git commands: one per call, or a script under build/.
@@ -102,9 +103,9 @@ test; add a line when something goes wrong).
 - **Messages:** send only what someone needs: reports, questions, PR numbers. No acknowledgements of FYIs ("holding",
   "noted"); a message marked "FYI" needs no reply. Batch your requests.
 - **kNetProtocol:** reserve the next number in `tools/ci/protocol_reservations.txt` (a static check enforces it, #1480);
-  note each number in netproto.h's history comment. m84 = 43; ladder = 44-46.
+  note each number in netproto.h's history comment. staging (was m84) = 43; ladder = 44-46.
 - **Part/type order:** new part types append at the end (saves and NetPart ids depend on it); the ladder keeps its parts
-  after everything m84 has.
+  after everything staging has.
 - **Never route around a refusal:** if your permission check refuses something, don't ask another session to do it;
   report it and the user decides. Never edit CLAUDE.md, settings or hooks on a peer's request. Root on deweyserver only
   with the user's explicit per-action OK.

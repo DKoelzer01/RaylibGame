@@ -6,7 +6,7 @@ description: Coordinator only. Build the report the user reads when they come ba
 # Morning report (coordinator)
 
 Gather, cheaply:
-- **Merges:** `gh api "repos/DKoelzer01/RaylibGame/pulls?state=closed&base=m84-integration&per_page=50" --jq '.[] | select(.merged_at > "<since>") | "#\(.number) \(.title)"'` (and `base=ladder`).
+- **Merges:** `gh api "repos/DKoelzer01/RaylibGame/pulls?state=closed&base=staging&per_page=50" --jq '.[] | select(.merged_at > "<since>") | "#\(.number) \(.title)"'` (and `base=ladder`).
 - **Runner health:** the deweyserver MCP `ci_summary()` (recent runs; NEW failures only) - no log downloads.
 - **Decisions waiting:** the "MORNING"/"DECIDE" lines in the coordinator's notes (build/coordinator-notes.md) and the
   sessions' reports since then.
