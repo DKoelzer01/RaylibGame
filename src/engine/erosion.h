@@ -48,8 +48,8 @@ struct ErosionParams {
     uint64_t landKey = 0;     // the input land's generation parameters (WorldGenParams::key, #504; 0: the defaults)
     float start = 1.0f;       // the land starts at this fraction of the input: 1 carves into the input relief (0.1 grew
                               // it from low land: heights then follow river length, so narrow coastal ranges came out low)
-    float hillslope = 40.0f;  // #1884: hillslope diffusion (soil creep), m^2 per step: rounds crests and the shoulders of
-                              // V-notches; small next to a coarse cell, about a cell over the fine pass (GUESS; 0: off)
+    float hillslope = 15.0f;  // #1884: hillslope diffusion (soil creep), m^2 per step: softens crests and the shoulders of
+                              // V-notches (user 2026-11-26: 15, not 40, to keep the gullies and sharper crests; 0: off)
     bool randomReceivers = true; // #1884: each flood gives a cell a receiver among its lower neighbours, odds by slope,
                               // instead of the steepest one: channels stop following the 8 grid directions (false: steepest)
 };
