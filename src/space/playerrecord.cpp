@@ -4,6 +4,7 @@
 #include "world.h"
 #include "research.h"
 #include "teamstore.h" // (#1886)
+#include "teamquests.h" // (#1886)
 #include "tome.h" // (#1251)
 
 #include <algorithm>
@@ -138,6 +139,7 @@ bool Teams_LoadLine(const char* tok, FILE* f, const std::string& localId) {
         return true;
     }
     if (TeamStore_LoadLine(tok, f)) return true; // (#1886) the team's progression sections: team_research (#1030), ...
+    if (TeamQuests_LoadPlayerLine(tok, f)) return true; // (#1886) a player's own explored tiles
     if (strcmp(tok, "team_tome") == 0) { // (#1251) the team's tome pages, its own lines up to team_tome_end
         int id = 0;
         fscanf(f, " %d", &id);
@@ -169,6 +171,7 @@ void Teams_Save(FILE* f, const std::string& localId, const std::function<void(FI
         TeamStore_SaveTeam(f, t.id); // (#1886) research (#1030) and the rest of the team's progression store
         if (const std::string r = Tome_TeamText(t.id); !r.empty()) fprintf(f, "team_tome %d\n%steam_tome_end\n", t.id, r.c_str()); // (#1251)
     }
+    TeamQuests_SavePlayers(f); // (#1886) each player's own explored tiles (a server's), carried on a team change
 }
 
 std::string PlayerId_FromName(const std::string& name) {
