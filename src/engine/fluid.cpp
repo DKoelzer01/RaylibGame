@@ -537,6 +537,11 @@ void PinPondFace(Brick& b, int f) {
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 std::atomic<long long> pourDroppedUnits{ 0 }; // fill units pours found no room for, even widened (#766)
+// The mass ledger (#1885): fill units the CPU side added or removed since the start, by cause (Fluid::GetLedger). The kernels'
+// own changes (source cells held at their level, sinks, kernel evaporation) are not in it: a closed basin with
+// RAYLIBGAME_FLUID_NOEVAP=1 must hold its volume to what the ledger says.
+enum LedgerCause { kLedgerPoured, kLedgerTaken, kLedgerTakenFree, kLedgerSpring, kLedgerDried, kLedgerCauses };
+std::atomic<long long> ledgerUnits[kLedgerCauses] = {};
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
 std::atomic<long long> diagTicks{ 0 }, diagDispatches{ 0 }, diagFlowReads{ 0 }; // (#1407) for Stats: ticks, GPU dispatches, flux reads
@@ -632,6 +637,7 @@ void StepSpring(Site& s, Site::Spring& sp) {
             TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
             b->fill[i] = (uint8_t)(b->fill[i] + add);
             GpuDelta(b, i, add);
+            ledgerUnits[kLedgerSpring] += add;
             sp.acc -= (float)add;
             Touch(b); ++dbgSrc;
             return sp.acc < 1.0f;
@@ -997,6 +1003,7 @@ void ApplyCommand(const Command& c) {
                         b->fill[i] = (uint8_t)(b->fill[i] + add);
                         GpuDelta(b, i, add);
                         left -= add;
+                        ledgerUnits[kLedgerPoured] += add;
                         Touch(b);
                     }
         if (left > 0.0f) pourDroppedUnits += (long long)left;
@@ -1029,6 +1036,7 @@ void ApplyCommand(const Command& c) {
                         if (dx * dx + dy * dy < rel.r * rel.r) { infinite = true; break; }
                     }
                 if (!infinite) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                ledgerUnits[infinite ? kLedgerTakenFree : kLedgerTaken] += t;
                 want -= t;
                 Touch(b);
             }
@@ -1134,6 +1142,7 @@ void RunJob() {
                                                                         : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
                             if (!ground) continue;
                             b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
+                            ledgerUnits[kLedgerDried] += f <= 2 ? f : 1;
                             dried = true;
                         }
                 if (dried) { b.changed = true; b.statSet = false; if (gpuMode && b.slot >= 0) b.upload = true; }
@@ -2244,6 +2253,14 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
 }
 
 float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
+Fluid::Ledger Fluid::GetLedger() {
+    const double u = (double)WaterField::CellVolume() / 255.0; // m^3 a fill unit
+    Ledger l;
+    l.poured = ledgerUnits[kLedgerPoured].load() * u; l.taken = ledgerUnits[kLedgerTaken].load() * u;
+    l.takenFree = ledgerUnits[kLedgerTakenFree].load() * u; l.spring = ledgerUnits[kLedgerSpring].load() * u;
+    l.dried = ledgerUnits[kLedgerDried].load() * u;
+    return l;
+}
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {
     if (!dynamic_cast<const PlanetField*>(body.field.get()) || rate <= 0.0f) return;
