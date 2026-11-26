@@ -76,7 +76,8 @@ struct ScenarioCtx {
     // "<scenario> LABEL SUBSYSTEM <16 hex digits>" in tests/scenarios/golden_hashes.txt. Subsystems: "factory" (every plot's
     // machines, item networks and shafts: Factory::StateHash), "edits" (body 0's terrain edits, as the save encodes them),
     // "water" (the fluid snapshot's fill and flags, brick by brick). No golden yet: the check fails and prints the line to
-    // add; RAYLIBGAME_GOLDEN_UPDATE=1 writes it into the file instead (the check passes, noted). A golden needs a run that
+    // add; RAYLIBGAME_GOLDEN_UPDATE=1 passes instead and writes the updated file into the run's folder (never the checkout:
+    // #1908), to copy over the checked-in one. A golden needs a run that
     // repeats: the factory in lockstep (s.env RAYLIBGAME_FACTORY_LOCKSTEP=1), the fluid with RAYLIBGAME_FLUID_LOCKSTEP=1.
     // Call it at a moment fixed by state or WaitTicks, never by the wall clock. Returns whether every check passed.
     bool hashState(const std::string& label, const std::vector<std::string>& subsystems = { "factory", "edits", "water" });

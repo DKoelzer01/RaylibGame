@@ -675,8 +675,11 @@ bool ScenarioCtx::hashState(const std::string& label, const std::vector<std::str
                                   : "got " + std::string(hex) + " (a deliberate change: RAYLIBGAME_GOLDEN_UPDATE=1 and say why in the PR; else the run doesn't repeat)") && all;
     }
     if (changed) {
-        if (FILE* f = fopen(kGoldenFile, "wb")) { for (const std::string& l : lines) fprintf(f, "%s\n", l.c_str()); fclose(f); }
-        else note(std::string("could not write ") + kGoldenFile);
+        // Into the run's folder, never the checkout: a shared work tree (the sandbox, the runner) with a changed tracked file
+        // refuses the next branch's checkout (#1908). Copy it over tests/scenarios/golden_hashes.txt by hand.
+        const std::string out = R.runDir + "/golden_hashes.txt";
+        if (FILE* f = fopen(out.c_str(), "wb")) { for (const std::string& l : lines) fprintf(f, "%s\n", l.c_str()); fclose(f); note("updated goldens written to " + out + ": copy it over " + kGoldenFile); }
+        else note("could not write " + out);
     }
     return all;
 }
