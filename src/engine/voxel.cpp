@@ -1390,7 +1390,9 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
                 for (size_t k = 0; k < rank.size() && k < 5; ++k) steep.push_back(rank[k].second);
             }
         }
-        for (int tries = 0; cellHasMouth && tries < 10 && data->mouths.empty(); ++tries) {
+        // (#1856 M12) An entrance yet (a chamber's centre marker, kind 3, is none: cells with a chamber never got a mouth)
+        auto noEntrance = [&] { for (const CaveMouth& m : data->mouths) if (m.kind != 3) return false; return true; };
+        for (int tries = 0; cellHasMouth && tries < 10 && noEntrance(); ++tries) {
             const Vector3 s = { (cx + UM(rm)) * kCaveCell, (cy + UM(rm)) * kCaveCell, (cz + UM(rm)) * kCaveCell };
             const float coin = UM(rm), rr = UM(rm), rf = UM(rm), rd = UM(rm), rn = UM(rm);
             const float sl = Vector3Length(s);
@@ -3959,6 +3961,26 @@ TEST(Voxel, RiverLandFollowsRoughness) {
     }
     EXPECT_GT(most, 0.5f); // the hills count for something somewhere
     PlanetField::tIgnoreBake = false;
+}
+// (#1856 M12) A cell whose cave made a chamber can still have an entrance (the chamber's centre marker counted as one, so
+// those cells never got a hillside mouth): over the cells under a patch of the surface, some chamber cells have one.
+TEST(Voxel, ChamberCellsCanHaveAnEntrance) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    int chambers = 0, withEntrance = 0;
+    const int r0 = (int)floorf(32000.0f / kCaveCell) - 2, r1 = r0 + 3; // the shell of cells round the surface
+    for (int cx = r0; cx <= r1; ++cx)
+        for (int cy = -40; cy <= 40; ++cy)
+            for (int cz = -40; cz <= 40; ++cz) {
+                const auto cell = CaveCell(f, f.terrainSeed(), cx, cy, cz);
+                bool chamber = false, entrance = false;
+                for (const CaveMouth& m : cell->mouths) { chamber = chamber || m.kind == 3; entrance = entrance || m.kind != 3; }
+                chambers += chamber;
+                withEntrance += chamber && entrance;
+            }
+    PlanetField::tIgnoreBake = false;
+    EXPECT_GT(chambers, 0);
+    EXPECT_GT(withEntrance, 0) << chambers << " chamber cells, none with an entrance";
 }
 // #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
 // in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
