@@ -12849,6 +12849,15 @@ int main(int argc, char** argv)
                 static NetClient badName, upper; static std::vector<std::unique_ptr<NetClient>> extras;
                 static bool badRefused = false, upperRefused = false, chatClean = false; static int extrasRefused = 0;
                 const bool capTest = getenv("RAYLIBGAME_MAX_PER_ADDRESS") != nullptr;
+                // (#1868) With RAYLIBGAME_HELLO_SECONDS set: two connections that never say Hello are closed by the server (they count
+                // from the moment they connect; before, only from their first message, so a silent one stayed forever).
+                const bool helloTest = getenv("RAYLIBGAME_HELLO_SECONDS") != nullptr;
+                static uint32_t silentConn[2] = { 0, 0 }; static bool silentGone = false; static int silentBase = 0;
+                if (ph == 6 && helloTest) {
+                    silentBase = Host_SilentDropped();
+                    for (uint32_t& s : silentConn) { s = Net_Connect(addr); if (s) Host_SetLocalClient(s); } // (its replies are a client's, not the server's)
+                }
+                if (ph == 7 && helloTest) silentGone = silentConn[0] && silentConn[1] && !Net_IsConnected(silentConn[0]) && !Net_IsConnected(silentConn[1]) && Host_SilentDropped() - silentBase >= 2;
                 if (ph == 6) {
                     NetClient_Connect(badName, addr, "bad\nname"); NetClient_Connect(upper, addr, "ALICE");
                     NetClient_SendChat(alice, "hi\nthere");
@@ -12861,11 +12870,12 @@ int main(int argc, char** argv)
                     upperRefused = upper.state == NetClient::State::Rejected && upper.reject.reason == NetReject::NameTaken;
                     for (const MsgChat& c : eve.chat) chatClean = chatClean || c.text == "hi there";
                     extrasRefused = 0; for (auto& x : extras) extrasRefused += x->state == NetClient::State::Rejected && x->reject.reason == NetReject::Full;
-                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0)) || GetTime() - t0 > 8.0) ph = 8;
+                    if ((badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone)) || GetTime() - t0 > 8.0) ph = 8;
                 }
                 if (ph == 8) {
                     const bool ok = malloryKicked && aliceOk && !eveFlew && eveStates > 30 && rejoinWalked && Host_GuardKicks() >= 1 &&
-                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0);
+                                    badRefused && upperRefused && chatClean && (!capTest || extrasRefused > 0) && (!helloTest || silentGone);
+                    if (helloTest) printf("bench: net abuse: two connections that never said Hello were closed %d (%d silent drops, #1868)\n", (int)silentGone, Host_SilentDropped() - silentBase);
                     printf("bench: net abuse (#349): mallory (chat flood, garbage, oversized) kicked %d; %d messages dropped, %d kicks; alice stayed joined %d; "
                            "eve's server player flew %d (%d states, #781); alice rejoined and walked %d (#780); a name with a newline refused %d, \"ALICE\" "
                            "refused as alice %d, chat cleaned %d; %s -> %s\n",

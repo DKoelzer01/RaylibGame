@@ -45,6 +45,8 @@ int Host_CreativeGives();                             // (#866) creative gives d
 int Host_CreativeRefused();                           // (#866) refused: not creative
 int Host_LoadoutsRefused();                           // (#1868) loadouts relayed as bare hands: the item wasn't in the player's inventory
 std::string Host_HeldItem(uint32_t session);          // (#1868) the item the server lets a session use ("" bare hands)
+int Host_ConnectionsRefused();                        // (#1868) connections refused at admission (per-address or pending cap)
+int Host_SilentDropped();                             // (#1868) connections closed for never saying Hello
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed

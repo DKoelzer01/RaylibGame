@@ -1476,7 +1476,11 @@ namespace {
     // (#349) connections: at most kMaxPerAddress from one address at once (loopback exempt: the host's own machine and the
     // tests), and a connection must say Hello within kHelloSeconds.
     const int kMaxPerAddress = getenv("RAYLIBGAME_MAX_PER_ADDRESS") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PER_ADDRESS"))) : 8;
-    constexpr double kHelloSeconds = 10.0;
+    // (#1868) and at most kMaxPending connections that haven't joined yet (from any non-loopback address), counted from the
+    // moment they connect (a silent one used to count only after its first message); the tests shorten the Hello wait
+    const int kMaxPending = getenv("RAYLIBGAME_MAX_PENDING") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PENDING"))) : 16;
+    const double kHelloSeconds = getenv("RAYLIBGAME_HELLO_SECONDS") ? std::max(0.5, atof(getenv("RAYLIBGAME_HELLO_SECONDS"))) : 10.0;
+    int pendingRefused = 0, silentDropped = 0; // (#1868) tests
     std::string AddressHost(const std::string& a) { const size_t c = a.rfind(':'); return c == std::string::npos ? a : a.substr(0, c); }
     // (loopback is counted too when RAYLIBGAME_MAX_PER_ADDRESS is set: the tests check the limit on one machine)
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
@@ -1948,23 +1952,43 @@ namespace {
         ++guardDropped;
         if (NetGuard_Violation(it->second.guard, GetTime()) == GuardVerdict::Kick) GuardKick(conn, why);
     }
+    // (#349, #1868) A new connection's admission: 0 admit, 1 too many from its address, 2 too many not joined yet. Loopback
+    // (the host's machine, the tests) is exempt.
+    int AdmitVerdict(bool loopback, int sameAddress, int pending) {
+        if (loopback) return 0;
+        if (sameAddress >= kMaxPerAddress) return 1;
+        return pending >= kMaxPending ? 2 : 0;
+    }
+    // Admit a new connection as a peer (its Hello clock starts now), or refuse it. Called when it connects (#1868) and, for a
+    // connection the transport didn't report, at its first message.
+    bool AdmitPeer(uint32_t conn) {
+        const std::string host = AddressHost(Net_RemoteAddress(conn));
+        const bool loop = Loopback(host);
+        int same = 0, pending = 0;
+        if (!loop)
+            for (const auto& [c, p] : peers) {
+                const std::string h = AddressHost(Net_RemoteAddress(c));
+                if (h == host) ++same;
+                if (!p.joined && !Loopback(h)) ++pending;
+            }
+        if (const int v = AdmitVerdict(loop, same, pending)) {
+            const char* why = v == 1 ? "too many connections from your address" : "too many players connecting at once: try again shortly";
+            printf("host: refused connection %u from %s: %s (%d from that address, %d not joined)\n", conn, host.c_str(), why, same, pending);
+            if (eventHook) eventHook("refused", 0, "connection from " + host + (v == 1 ? " (too many from one address)" : " (too many connecting)"));
+            Refuse(conn, NetReject::Full, why);
+            ++pendingRefused;
+            return false;
+        }
+        Peer& p = peers[conn];
+        p.firstHeard = p.lastHeard = GetTime();
+        return true;
+    }
     void OnMessage(Scene& world, const NetMessage& m) {
         if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
-        if (it == peers.end()) { // first word on a new connection
-            const std::string host = AddressHost(Net_RemoteAddress(m.conn));
-            if (!Loopback(host)) { // (#349) too many from one address
-                int same = 0;
-                for (const auto& [c, p] : peers) if (AddressHost(Net_RemoteAddress(c)) == host) ++same;
-                if (same >= kMaxPerAddress) {
-                    printf("host: refused connection %u from %s: %d connections from that address already\n", m.conn, host.c_str(), same);
-                    if (eventHook) eventHook("refused", 0, "connection from " + host + " (too many from one address)");
-                    Refuse(m.conn, NetReject::Full, "too many connections from your address");
-                    return;
-                }
-            }
-            it = peers.emplace(m.conn, Peer{}).first;
-            it->second.firstHeard = GetTime();
+        if (it == peers.end()) { // first word on a connection not admitted yet
+            if (!AdmitPeer(m.conn)) return;
+            it = peers.find(m.conn);
         }
         it->second.lastHeard = GetTime();
         if (NetPeek(m.data) == NetMsg::Input) it->second.inGame = true; // (#1033)
@@ -2287,6 +2311,8 @@ int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
 int Host_LoadoutsRefused() { return loadoutsRefused; }
 std::string Host_HeldItem(uint32_t session) { return HeldItem(session); }
+int Host_ConnectionsRefused() { return pendingRefused; }
+int Host_SilentDropped() { return silentDropped; }
 
 void Host_Update(Scene& world) {
     hostWorld = &world;
@@ -2302,6 +2328,12 @@ void Host_Update(Scene& world) {
     }
     if (!listening) return;
     Net_Poll();
+    { // (#1868) connections admitted (or refused) as they come up, before any message: a silent one counts and times out too
+        static std::vector<uint32_t> fresh;
+        fresh.clear();
+        Net_TakeNewIncoming(fresh);
+        for (uint32_t c : fresh) if (!peers.count(c) && Net_IsConnected(c)) AdmitPeer(c);
+    }
     std::vector<NetMessage> in;
     Net_Receive(in, 256);
     for (NetMessage& m : in) {
@@ -2313,7 +2345,7 @@ void Host_Update(Scene& world) {
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
         else if (GetTime() - p.lastHeard > Host_SilenceLimit(p.joined, p.inGame)) silent.push_back(conn);
-        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
+        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) { silent.push_back(conn); ++silentDropped; } // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
@@ -2552,5 +2584,15 @@ TEST(HostLoadout, TheHeldItemCountsOnlyWhenThePlayerHasIt) {
     EXPECT_EQ(HeldItem(id + 1), "") << "no such session";
     remotes.erase(id);
     sessions.pop_back();
+}
+
+// (#1868) Admission: the per-address cap and the cap on connections that haven't joined yet; loopback exempt.
+TEST(HostAdmission, PerAddressAndPendingCaps) {
+    if (getenv("RAYLIBGAME_MAX_PER_ADDRESS") || getenv("RAYLIBGAME_MAX_PENDING")) GTEST_SKIP() << "limits overridden by the environment";
+    EXPECT_EQ(AdmitVerdict(false, 0, 0), 0);
+    EXPECT_EQ(AdmitVerdict(false, 7, 15), 0) << "under both caps";
+    EXPECT_EQ(AdmitVerdict(false, 8, 0), 1) << "the 9th from one address";
+    EXPECT_EQ(AdmitVerdict(false, 0, 16), 2) << "the 17th not joined yet, from anywhere";
+    EXPECT_EQ(AdmitVerdict(true, 100, 100), 0) << "loopback: the host's own machine and the tests";
 }
 #endif

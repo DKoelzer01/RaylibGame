@@ -30,6 +30,8 @@ bool Net_Host(uint16_t port);                          // listen for connections
 uint32_t Net_Connect(const char* address);             // "ip:port"; a connection handle, 0 on a bad address
 void Net_Poll();                                       // run callbacks: accepts, connects, disconnects
 bool Net_IsConnected(uint32_t conn);
+// (#1868) Incoming connections that came up since the last call (appended): the server admits or refuses each at once.
+void Net_TakeNewIncoming(std::vector<uint32_t>& out);
 int Net_ConnectionCount();                             // connected now
 bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 // Bytes not yet delivered on a connection: queued, sent but not acknowledged, and held by the simulated conditions. A
