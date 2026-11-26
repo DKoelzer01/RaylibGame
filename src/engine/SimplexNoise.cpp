@@ -477,7 +477,7 @@ float SimplexNoise::fractal(size_t octaves, float x) const {
     float amplitude = mAmplitude;
 
     for (size_t i = 0; i < octaves; i++) {
-        output += (amplitude * noise(x * frequency));
+        output += (amplitude * noise((x + mSeedX) * frequency)); // (#1856 M13) seeded, as the 3D one
         denom += amplitude;
 
         frequency *= mLacunarity;
@@ -504,7 +504,7 @@ float SimplexNoise::fractal(size_t octaves, float x, float y) const {
     float amplitude = mAmplitude;
 
     for (size_t i = 0; i < octaves; i++) {
-        output += (amplitude * noise(x * frequency, y * frequency));
+        output += (amplitude * noise((x + mSeedX) * frequency, (y + mSeedY) * frequency)); // (#1856 M13) seeded, as the 3D one
         denom += amplitude;
 
         frequency *= mLacunarity;
@@ -613,5 +613,13 @@ TEST(SimplexNoise, FractalLimitedWithoutFootprintIsFractal) {
         const float x = d(rng), y = d(rng), z = d(rng);
         EXPECT_EQ(n.fractalLimited(6, 0.0f, x, y, z), n.fractal(6, x, y, z));
     }
+}
+
+// (#1856 M13) The 1D and 2D fractals take the seed as the 3D one does (two seeds, two fields; the same seed, the same).
+TEST(SimplexNoise, LowerDimensionFractalsAreSeeded) {
+    const SimplexNoise a(0.01f, 1.0f, 2.0f, 0.5f, 100.0f, 200.0f, 300.0f), b(0.01f, 1.0f, 2.0f, 0.5f, 4100.0f, 5200.0f, 6300.0f), a2 = a;
+    EXPECT_NE(a.fractal(3, 12.3f), b.fractal(3, 12.3f));
+    EXPECT_NE(a.fractal(3, 12.3f, 45.6f), b.fractal(3, 12.3f, 45.6f));
+    EXPECT_EQ(a.fractal(3, 12.3f, 45.6f), a2.fractal(3, 12.3f, 45.6f));
 }
 #endif

@@ -5,4 +5,4 @@ self-hosted-runner:
     - gpu
 config-variables:
   - SELF_HOSTED_ENABLED # "true" turns the self-hosted workflow on
-  - NIGHTLY_BRANCH # the branch the nightly self-hosted run builds (default m84-integration)
+  - NIGHTLY_BRANCH # the branch the nightly self-hosted run builds (default staging)

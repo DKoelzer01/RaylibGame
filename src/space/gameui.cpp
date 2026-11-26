@@ -443,6 +443,7 @@ struct ContainerGrid : SlotGrid {
     std::vector<int> fracs; // (#1102) a chest slot's fraction more (hundredths), as the view has it
     std::vector<std::string> datas; // (#1446 2b) a slot's own record (a composed tool in a chest)
     explicit ContainerGrid(int w) : which(w) {}
+    bool emptying = false; // (#1838) a swap: the slot's stack is on its way to the inventory, so the slot has its whole room
     int size() const override { return (int)slots.size(); }
     InvSlot at(int i) const override {
         InvSlot s;
@@ -456,7 +457,7 @@ struct ContainerGrid : SlotGrid {
     bool keepsFractions() const { return container.type == PartType::Chest && which == 0 && !MachineAct_Remote(); }
     int64_t room(int i, const std::string& id) const override {
         if (which == 1 || id.empty()) return 0; // outputs only give
-        const InvSlot s = at(i);
+        const InvSlot s = emptying ? InvSlot{} : at(i);
         if (which == 2) {
             const auto fuels = Factory::FuelsOf(container.type);
             if (std::find(fuels.begin(), fuels.end(), id) == fuels.end()) return 0;
@@ -516,7 +517,8 @@ struct ContainerGrid : SlotGrid {
         const int n = (int)std::min<double>(std::max<int64_t>(1, centi / 100), std::floor(inventory.count(s.id)));
         if (n <= 0 || !inventory.remove(s.id, n)) return;
         InvSlot h = s; h.centi = (int64_t)n * 100;
-        if (put(i, h, h.centi) == 0) { ++inventory.muted; inventory.add(s.id, n); --inventory.muted; }
+        const int64_t placed = put(i, h, h.centi);
+        if (placed < h.centi) { ++inventory.muted; inventory.addAmount(s.id, (h.centi - placed) / 100.0); --inventory.muted; } // (#1839) what didn't fit comes back
     }
     void cloneStack(int i, InvSlot& held) override { const InvSlot s = at(i); if (!s.empty()) CreativeTake(s.id, capOf(s.id), held); } // (#866)
     void swapCell(int i, int cell) override { // the slot's stack to the inventory, that cell's stack into the slot
@@ -528,7 +530,12 @@ struct ContainerGrid : SlotGrid {
         if (!c.empty() && which != 1) {
             const InvSlot moving = c;
             c = InvSlot{};
-            if (put(i, moving, moving.centi) < moving.centi) { ++inventory.muted; if (moving.hasData()) inventory.addInstance(moving.id, moving.data, moving.heat); else inventory.addAmount(moving.id, moving.amount(), moving.heat); --inventory.muted; }
+            // (#1838) the slot's stack was just taken (the view shows it until the next tick): the moving stack gets the whole room,
+            // and only what didn't fit comes back (all of it came back, on top of what went in: a dupe)
+            emptying = !s.empty();
+            const int64_t placed = put(i, moving, moving.centi);
+            emptying = false;
+            if (placed < moving.centi) { ++inventory.muted; if (moving.hasData()) inventory.addInstance(moving.id, moving.data, moving.heat); else inventory.addAmount(moving.id, (moving.centi - placed) / 100.0, moving.heat); --inventory.muted; }
         }
     }
 };
@@ -634,7 +641,29 @@ bool GameUI_TestContainerCursor(Scene& world, uint64_t body, uint32_t plot, int 
     bool fits = lines.size() == 4 && lines.back().find("more") != std::string::npos;
     for (const std::string& l : lines) fits = fits && MeasureText(l.c_str(), 16) <= 404;
     check(fits, TextFormat("a 40-item list wraps into 4 lines inside the panel, the last saying what's left out (%d lines)", (int)lines.size()));
+    // (#1838, #1839) No stone made or lost by a swap into a part-full slot, or by pulling into a nearly full one.
+    auto stoneInChest = [&](const MachineView& mv) { int n = 0; for (const auto& [id, c] : mv.inSlots) if (id == "stone") n += c; return n; };
+    auto stoneCell = [&]() { for (int k = 0; k < Inventory::kSlots; ++k) if (inventory.grid()[k].id == "stone") return k; return -1; };
+    ContainerGrid grid(0);
+    Factory::Extract(body, plot, part); settle(); chest();
+    inventory.clear();
+    const int lim = StackLimit("stone"); Factory::Insert(body, plot, part, "stone", lim - 50); settle(); chest();
+    ++inventory.muted; inventory.add("stone", 100); --inventory.muted;
+    v = chest(); grid.slots = v.inSlots; grid.fracs = v.inCenti; // (the view the UI gives the grid each frame)
+    if (const int c = stoneCell(); c >= 0) grid.swapCell(0, c);
+    settle(); settle(); v = chest();
+    check(stoneInChest(v) + inventory.count("stone") == lim + 50, TextFormat("a swap of 100 into a slot 50 short of full keeps every stone (#1838): chest %d + inventory %d", stoneInChest(v), inventory.count("stone")));
+    check(inSlot(v) == 100, TextFormat("...and the swapped stack is in the slot (%d)", inSlot(v)));
+    Factory::Extract(body, plot, part); settle(); chest();
+    inventory.clear();
+    Factory::Insert(body, plot, part, "stone", lim - 1); settle(); chest();
+    ++inventory.muted; inventory.add("stone", 10); --inventory.muted;
+    v = chest(); grid.slots = v.inSlots; grid.fracs = v.inCenti;
+    grid.pullIn(0, 1000);
+    settle(); settle(); v = chest();
+    check(stoneInChest(v) + inventory.count("stone") == lim + 9, TextFormat("pulling 10 into a slot with room for 1 keeps every stone (#1839): chest %d + inventory %d", stoneInChest(v), inventory.count("stone")));
     Factory::Extract(body, plot, part); settle();
+    inventory.clear();
     GameUI_CloseContainer();
     printf("bench: container cursor (#192): %s\n", ok ? "PASS" : "FAIL");
     return ok;
