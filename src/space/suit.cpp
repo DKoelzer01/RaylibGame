@@ -94,12 +94,7 @@ SuitStats StatsOf(const SuitState& st) { // (#337: any player's suit, not only t
 
 // Fit the slot list to the suit: extra modules go back to the inventory.
 void Resize(int slots) {
-    for (size_t i = slots; i < S().fitted.size(); ++i) if (!S().fitted[i].empty()) inventory.add(S().fitted[i], 1);
-    std::vector<std::string> keep;
-    for (const std::string& id : S().fitted) if (!id.empty() && (int)keep.size() < slots) keep.push_back(id);
-    // Modules past the new count that were packed forward stay fitted; the rest went back above.
-    S().fitted.assign(slots, "");
-    for (size_t i = 0; i < keep.size(); ++i) S().fitted[i] = keep[i];
+    for (const std::string& id : Suit_PackSlots(S().fitted, slots)) inventory.add(id, 1);
 }
 
 void Scan(Scene& world) {
@@ -272,6 +267,20 @@ bool Suit_LoadLine(const char* tok, FILE* f) {
 }
 SuitStats Suit_StatsOf(const SuitState& st) { return StatsOf(st); } // (#337)
 
+std::vector<std::string> Suit_PackSlots(std::vector<std::string>& fitted, int slots) {
+    // One pass (#1840): the old code returned everything past the new count and then also kept it when it packed forward
+    // into a freed slot ({a, "", b} into 2 slots: b both fitted and back in the inventory).
+    std::vector<std::string> keep, spill;
+    for (const std::string& id : fitted) {
+        if (id.empty()) continue;
+        if ((int)keep.size() < slots) keep.push_back(id);
+        else spill.push_back(id);
+    }
+    fitted.assign(std::max(0, slots), "");
+    for (size_t i = 0; i < keep.size(); ++i) fitted[i] = keep[i];
+    return spill;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
 TEST(SuitStats, NoThrusterPackMeansNoJetpack) { // (#1087: a server's remote players kept the Player defaults: a full, working jetpack)
@@ -288,5 +297,25 @@ TEST(SuitStats, NoThrusterPackMeansNoJetpack) { // (#1087: a server's remote pla
     SuitStats unpowered = packed; unpowered.powered = false;
     Suit_ApplyStatsTo(q, unpowered);
     EXPECT_FLOAT_EQ(q.jetpackAccel, 0.0f) << "no power, no jetpack";
+}
+
+// (#1840) A smaller suit packs the modules forward; only the ones that don't fit come out, each once.
+TEST(SuitStats, PackSlotsReturnsEachModuleOnce) {
+    std::vector<std::string> f = { "a", "", "b" };
+    std::vector<std::string> spill = Suit_PackSlots(f, 2);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "b" })) << "b packs forward into the free slot";
+    EXPECT_TRUE(spill.empty()) << "and isn't also given back (the duplicate)";
+    f = { "a", "b", "c", "" };
+    spill = Suit_PackSlots(f, 2);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "b" }));
+    EXPECT_EQ(spill, (std::vector<std::string>{ "c" }));
+    f = { "a" };
+    spill = Suit_PackSlots(f, 3);
+    EXPECT_EQ(f, (std::vector<std::string>{ "a", "", "" })) << "a bigger suit: free slots after";
+    EXPECT_TRUE(spill.empty());
+    f = { "a", "b" };
+    spill = Suit_PackSlots(f, 0);
+    EXPECT_TRUE(f.empty());
+    EXPECT_EQ(spill.size(), 2u);
 }
 #endif
