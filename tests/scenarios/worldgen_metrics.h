@@ -11,7 +11,8 @@
 //   slope histogram    over land, from the heights 8 m east, west, north and south (a 16 m baseline: a building plot's size)
 //   flat buildable %   land whose four 8 m neighbours lie within kFlatTolM of the centre (GUESS: a plot levels with <= 1 m of cut)
 //   bake hash          PlanetErosion::hash (low 32 bits as a metric, the full hash as a note): stable unless the bake changes
-//   spawn              findSpawnDir's elevation and biome (the start #1883 will score)
+//   spawn              findSpawnDir's elevation and biome, and its spawnScore (#1883): flat share, nearest fresh water,
+//                      ore kinds within 300 m; and how long the search took
 #pragma once
 #include "scenario.h"
 #include "voxel.h"
@@ -47,6 +48,8 @@ struct SeedStats {
     int slope[kSlopeBins] = {};
     float spawnElev = 0;
     Biome spawnBiome = Biome::Ocean;
+    PlanetField::SpawnScore spawn; // #1883: what the start has within 300 m
+    double spawnSec = 0;
 };
 
 inline SeedStats Measure(unsigned seed, float radius) {
@@ -101,10 +104,13 @@ inline SeedStats Measure(unsigned seed, float radius) {
         for (int b = 0; b < (int)Biome::Count; ++b) st.biome[b] += p.biome[b];
         for (int b = 0; b < kSlopeBins; ++b) st.slope[b] += p.slope[b];
     }
+    const auto t2 = std::chrono::steady_clock::now();
+    st.sampleSec = std::chrono::duration<double>(t2 - t1).count();
     const Vector3 spawn = field.findSpawnDir(seed);
+    st.spawnSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t2).count();
     st.spawnElev = field.elevation(spawn);
     st.spawnBiome = field.biomeAt(spawn, st.spawnElev);
-    st.sampleSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+    st.spawn = field.spawnScore(spawn);
     return st;
 }
 
@@ -129,6 +135,11 @@ inline void Report(ScenarioCtx& c, const SeedStats& st) {
     for (int b = (int)Biome::Jungle; b < (int)Biome::Count; ++b) c.metric(p + BiomeName((Biome)b), 100.0 * st.biome[b] / land, "% of land", false);
     c.metric(p + "spawn elevation", st.spawnElev, "m", false);
     c.note(p + "spawn biome " + BiomeName(st.spawnBiome));
+    c.metric(p + "spawn flat within 300 m", 100.0 * st.spawn.flat, "%", false);
+    c.metric(p + "spawn water distance", std::min(st.spawn.waterM, 1000.0f), "m (1000: none within 300 m)");
+    c.metric(p + "spawn ore kinds within 300 m", st.spawn.ores, "of 4", false);
+    c.metric(p + "spawn score", st.spawn.score, "", false);
+    c.metric(p + "spawn search", st.spawnSec * 1000.0, "ms");
 }
 
 // The scenario: seeds = how many planets (the world's own first, then terrain seeds 1, 2, ...).
