@@ -3996,7 +3996,7 @@ TEST(Voxel, ErosionBakeMatchesOneGoldenOnEveryPlatform) {
         uint32_t u; memcpy(&u, &e, sizeof u);
         printf("erosion probe elevation (%g %g %g): %08x (%.6f m)\n", raw.x, raw.y, raw.z, u, e);
     }
-    constexpr uint64_t kGolden = 0ull;
+    constexpr uint64_t kGolden = 12360165338619176722ull; // ab8820e3757de712, Linux GCC (sandbox)
     EXPECT_EQ(bh, kGolden) << "(#1905) one CI leg only: the bake differs between platforms; both: a deliberate bake change, update the constant";
 }
 
