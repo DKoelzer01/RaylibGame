@@ -7,10 +7,16 @@
 // code calls it yet (conversion of the old conveyors is PR 3).
 //
 // Units: positions along a belt are in 1/64 cell (8 per conduit slot), measured from the run's first point.
+//
+// (#1735, research r-ce4b78ee: Factorio FFF #176) Items are gap-encoded: each stores its distance to the item ahead (the
+// front item: to the end), not its position. A free-flowing line moves by changing only its front gap; a line backed up
+// behind a blocked end skips its packed run (cached) and walks only until an item has room to move at full speed again.
+// Taking the front and loading the back are O(1) (a deque). Positions are derived when needed (Belt_Positions).
 
 #include "conduit.h"
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <vector>
 
@@ -19,7 +25,7 @@ constexpr int kBeltGap = 16;   // the minimum distance between two items' positi
 
 struct BeltItem {
     int item = 0;              // the caller's item id
-    int64_t pos = 0;           // 0 .. line length
+    int64_t gap = 0;           // the front item: its distance to the end; the others: to the item ahead (>= kBeltGap)
 };
 
 enum class BeltEnd : uint8_t { None, Sink, Belt };
@@ -28,13 +34,18 @@ struct BeltLine {
     int id = 0;                // the run id (checksums and saves key on it)
     int64_t length = 0;        // 1/64 cell: Conduit_Length(run) * kBeltSub
     int speed = 0;             // 1/64 cell per tick (the material's speed)
-    std::vector<BeltItem> items; // front first: pos strictly decreasing, neighbours at least kBeltGap apart
+    std::deque<BeltItem> items; // front first
+    int64_t tailPos = 0;       // the last item's position (O(1) loading at 0); meaningless when empty
+    int packed = 0;            // cache: the front item sits at the end and the next packed-1 items exactly kBeltGap apart
     BeltEnd end = BeltEnd::None;
     int sink = -1;             // BeltEnd::Sink: the caller's sink id (a machine's item_in port)
     int outLine = -1;          // BeltEnd::Belt: the index of the line this one feeds
     int64_t outPos = 0;        //   and the position on it where the front item goes in (a side merge or 0 end to end)
     bool asleep = false;       // nothing moved and the front could not leave: skipped until woken
 };
+
+// Every item's position, front first (strictly decreasing, neighbours at least kBeltGap apart).
+std::vector<int64_t> Belt_Positions(const BeltLine& line);
 
 // A sink takes the front item (true) or refuses it (false: the belt waits). Called in a fixed order within a step.
 typedef std::function<bool(int sink, int item)> BeltSinkFn;
@@ -57,7 +68,7 @@ void Belt_Wake(BeltLine& line);
 // (Belt_Wake) when they free room.
 void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink);
 
-// FNV-1a over the id and every item (id, pos): the MP sync compares these per belt.
+// FNV-1a over the id, the count and every item (id, gap): the MP sync compares these per belt.
 uint32_t Belt_Checksum(const BeltLine& line);
 
 // The point at pos along the run's centreline, in 1/64-cell units (slot * kBeltSub); clamped to the ends.
