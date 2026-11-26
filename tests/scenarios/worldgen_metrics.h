@@ -49,7 +49,7 @@ struct SeedStats {
     float spawnElev = 0;
     Biome spawnBiome = Biome::Ocean;
     PlanetField::SpawnScore spawn; // #1883: what the start has within 300 m
-    double spawnSec = 0, riverSec = 0;
+    double spawnSec = 0, riverSec = 0, scoreSec = 0;
 };
 
 inline SeedStats Measure(unsigned seed, float radius) {
@@ -115,7 +115,9 @@ inline SeedStats Measure(unsigned seed, float radius) {
     st.spawnSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t2).count();
     st.spawnElev = field.elevation(spawn);
     st.spawnBiome = field.biomeAt(spawn, st.spawnElev);
+    const auto t3 = std::chrono::steady_clock::now();
     st.spawn = field.spawnScore(spawn);
+    st.scoreSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t3).count();
     return st;
 }
 
@@ -146,6 +148,7 @@ inline void Report(ScenarioCtx& c, const SeedStats& st) {
     c.metric(p + "spawn score", st.spawn.score, "", false);
     c.metric(p + "spawn search", st.spawnSec * 1000.0, "ms");
     c.metric(p + "river network build", st.riverSec * 1000.0, "ms");
+    c.metric(p + "spawn score of one spot", st.scoreSec * 1000.0, "ms");
 }
 
 // The scenario: seeds = how many planets (the world's own first, then terrain seeds 1, 2, ...).
