@@ -3979,6 +3979,20 @@ TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
     EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
 }
 
+// (#1905) The erosion bake the same on every platform: a small planet (seed 42, 8 km) baked from scratch, its hash (the one
+// the game logs, "[Erosion] baked the planet ... hash") against one golden for both CI legs; printed either way.
+TEST(Voxel, ErosionBakeMatchesOneGoldenOnEveryPlatform) {
+    PlanetField f(42u, 8000.0f, false);
+    const auto t0 = std::chrono::steady_clock::now();
+    f.bakeErosion("");
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const PlanetErosion* b = f.erosion();
+    ASSERT_NE(b, nullptr);
+    printf("erosion probe: %d cells, hash %016llx, %.1f s\n", b->cells(), (unsigned long long)b->hash(), s);
+    constexpr uint64_t kGolden = 0ull;
+    EXPECT_EQ(b->hash(), kGolden) << "(#1905) one CI leg only: the bake differs between platforms; both: a deliberate bake change, update the constant";
+}
+
 // (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
 // rough or smooth world): linear in it, and its hills gone at roughness 0.
 TEST(Voxel, RiverLandFollowsRoughness) {
