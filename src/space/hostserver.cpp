@@ -85,7 +85,7 @@ namespace {
     std::vector<Session> sessions;
     // #326 / #345: the dedicated server's hooks (main.cpp sets them in --server mode).
     std::string motd;
-    std::function<bool(const std::string& name, const std::string& address, std::string& why)> joinCheck;
+    std::function<bool(const std::string& name, const std::string& address, const std::string& uuid, std::string& why)> joinCheck; // (#1868: and the id)
     std::function<void(uint32_t session, const std::string& name, const std::string& text)> chatHandler;
     std::function<void(const char* what, uint32_t session, const std::string& detail)> eventHook;
     uint32_t nextSession = 1;
@@ -1490,7 +1490,7 @@ namespace {
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
-            if (!joinCheck(h.name, Net_RemoteAddress(conn), why)) {
+            if (!joinCheck(h.name, Net_RemoteAddress(conn), h.uuid, why)) {
                 Refuse(conn, NetReject::Banned, why);
                 if (eventHook) eventHook("refused", 0, h.name + " (" + why + ")");
                 return;
@@ -2453,7 +2453,7 @@ bool Host_Give(uint32_t session, const std::string& item, int count) {
 // ---- The dedicated server's console and admin (#326, #345) ----
 std::vector<HostPlayer> Host_ListPlayers() {
     std::vector<HostPlayer> out;
-    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string() });
+    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string(), s.uuid });
     return out;
 }
 bool Host_Kick(const std::string& name, const std::string& reason) {
@@ -2471,7 +2471,7 @@ void Host_Say(const std::string& text, uint32_t fromSession, uint32_t toSession)
     for (const Session& s : sessions) if (s.id == toSession && s.online && s.conn) SendMsg(s.conn, c);
 }
 void Host_SetMotd(const std::string& text) { motd = text; }
-void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
+void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
 void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
 void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }
 int Host_SyncsDone() { return syncsDone; }

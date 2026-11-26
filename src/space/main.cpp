@@ -182,7 +182,7 @@ static bool gSoakOn = false;
 static void Server_KickRefused() {
     for (const HostPlayer& p : Host_ListPlayers()) {
         std::string why;
-        if (p.online && !Admin_CheckJoin(p.name, p.address, why)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
+        if (p.online && !Admin_CheckJoin(p.name, p.address, why, p.uuid)) { Host_Kick(p.name, why); printf("server: kicked %s (%s)\n", p.name.c_str(), why.c_str()); }
     }
 }
 #include "worldgenparams.h"
@@ -2208,10 +2208,17 @@ int main(int argc, char** argv)
         if (serverMode) { // (#345) the admin lists live next to the save: <save dir>/admin.txt, audit.log
             const std::filesystem::path saveDir = std::filesystem::path(hostSave).parent_path();
             Admin_Load(saveDir.empty() ? std::string(".") : saveDir.string());
+            // (#1868) a name to a player's id for `op NAME` (roles are by id): a player online under it, else a player record
+            Admin_SetResolver([](const std::string& name) {
+                auto same = [&](const std::string& n) { if (n.size() != name.size()) return false; for (size_t i = 0; i < n.size(); ++i) if (tolower((unsigned char)n[i]) != tolower((unsigned char)name[i])) return false; return true; };
+                for (const HostPlayer& p : Host_ListPlayers()) if (p.online && !p.uuid.empty() && same(p.name)) return p.uuid;
+                for (const PlayerRecordMeta& m : PlayerRecord_List()) if (!m.uuid.empty() && same(m.name)) return m.uuid;
+                return std::string();
+            });
             // (#326, #345) the host's hooks: the motd, bans and the whitelist at join, the audit log, and players' chat - a line
             // starting with '/' is a command (ops: the admin commands, kick, say), anything else goes to everyone.
             Host_SetMotd(serverCfg.motd);
-            Host_SetJoinCheck([](const std::string& name, const std::string& address, std::string& why) { return Admin_CheckJoin(name, address, why); });
+            Host_SetJoinCheck([](const std::string& name, const std::string& address, const std::string& uuid, std::string& why) { return Admin_CheckJoin(name, address, why, uuid); });
             Host_SetEventHook([](const char* what, uint32_t session, const std::string& detail) {
                 Admin_Audit(std::string(what) + " " + detail + (session ? TextFormat(" (session %u)", session) : ""));
                 if (!strcmp(what, "refused")) printf("server: refused %s\n", detail.c_str());
@@ -10635,7 +10642,7 @@ int main(int argc, char** argv)
                                                      serverCfg.maxPlayers, Host_Joins(), WorldTime(), GetFPS(), hostSave.c_str(), Host_Autosaves());
                     else if (cmd == "list") {
                         int n = 0;
-                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, Host_SessionUuid(p.session))), p.address.c_str()); }
+                        for (const HostPlayer& p : Host_ListPlayers()) if (p.online) { ++n; printf("server:   %s (session %u, %s, %s)\n", p.name.c_str(), p.session, Admin_RoleName(Admin_RoleOf(p.name, p.uuid)), p.address.c_str()); }
                         printf("server: %d player(s) online\n", n);
                     }
                     else if (cmd == "save") { const bool ok = SaveWorld(world); printf("server: saved to %s %s\n", WorldSavePath(), ok ? "done" : "FAILED"); }
