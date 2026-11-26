@@ -35,8 +35,7 @@ SCENARIO("frames/net-correction") {
     });
     s.step("fall, correct, one frame on", 60.0, [](ScenarioCtx& c) {
         const Vector3 up = c.body->dirToWorld(S.dir);
-        const Vector3 me = c.body->toLocalD(player.position).toFloat(); // the camera beside the falling player
-        c.camera(Vector3Add(me, Vector3Add(Vector3Scale(S.dir, 2.0f), Vector3Scale(Vector3Normalize(Vector3CrossProduct(S.dir, { 0, 1, 0 })), 6.0f))), me, S.dir);
+        // (No c.camera: it flies the player to the eye. The player's own view shows the fall, as in frames/long-fall.)
         if (S.phase == 0) {
             if (player.grounded) return false;
             c.waitingFor("the spawn hold to let the player fall");
