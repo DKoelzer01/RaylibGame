@@ -26,28 +26,35 @@ std::vector<int64_t> Belt_Positions(const BeltLine& line) {
 
 namespace {
 // Where an item at pos would go (the index of the first item behind it), or -1 when an item is closer than kBeltGap.
-int InsertIndex(const BeltLine& line, int64_t pos) {
+// *ahead: the position of the item ahead of it (the line's length when it would be the front). Behind the tail (the
+// loader at 0, the usual case) it's O(1): the tail is the last and lowest position.
+int InsertIndex(const BeltLine& line, int64_t pos, int64_t* ahead) {
     if (pos < 0 || pos > line.length) return -1;
+    *ahead = line.length;
     if (line.items.empty()) return 0;
-    if (pos <= line.tailPos - kBeltGap) return (int)line.items.size(); // behind the last item: the loader's O(1) case
+    if (pos <= line.tailPos) {
+        if (pos > line.tailPos - kBeltGap) return -1;
+        *ahead = line.tailPos;
+        return (int)line.items.size();
+    }
     int64_t at = line.length;
     for (size_t k = 0; k < line.items.size(); ++k) {
         at -= line.items[k].gap;
         if (std::llabs(at - pos) < kBeltGap) return -1;
         if (at < pos) return (int)k;
+        *ahead = at;
     }
     return (int)line.items.size();
 }
 } // namespace
 
-bool Belt_HasRoom(const BeltLine& line, int64_t pos) { return InsertIndex(line, pos) >= 0; }
+bool Belt_HasRoom(const BeltLine& line, int64_t pos) { int64_t a; return InsertIndex(line, pos, &a) >= 0; }
 
 bool Belt_TryInsert(BeltLine& line, int item, int64_t pos) {
-    const int k = InsertIndex(line, pos);
+    int64_t ahead = 0;
+    const int k = InsertIndex(line, pos, &ahead);
     if (k < 0) return false;
     // The gap of the new item (to the item ahead, or to the end) and of the item behind it (now to the new one).
-    int64_t ahead = line.length;
-    for (int j = 0; j < k; ++j) ahead -= line.items[j].gap;
     BeltItem b;
     b.item = item;
     b.gap = ahead - pos;
