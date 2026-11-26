@@ -13075,6 +13075,8 @@ int main(int argc, char** argv)
         // --test-teams (#604, with --host <save>): alice, bob and carol join over loopback (clients in this process); alice
         // invites bob, bob sees it and accepts; both hear a team of two (bob online, with his health); bob's team chat reaches
         // alice, not carol; carol (not the owner, another team) can't kick; alice kicks bob: a team of one again.
+        // (#1921) Built without ENABLE_GNS the host never listens: SKIP rather than wait for it until the timeout.
+        if (benchTeams && gameState == 1 && !loading && WorldIdle() && !Net_Available()) { printf("bench: teams: built without ENABLE_GNS -> SKIP\n"); benchTeams = false; }
         if (benchTeams && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
             static NetClient alice, bob, carol;
             static int step = 0;
