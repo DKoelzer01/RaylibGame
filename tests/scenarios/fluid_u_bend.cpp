@@ -58,8 +58,9 @@ struct State {
         }
         return kFloor;
     }
-    // Side on, a little above the ground: both pits and the line of the tunnel between them.
-    void camera(ScenarioCtx& c) const { c.camera(pt(0.0f, -18.0f, 5.0f), pt(0.0f, 0.0f, -2.0f), home); }
+    // Side on and high (~50 degrees down): the water in both pits and the line of the tunnel between them (from 5 m up the
+    // rims hid the water, which settles ~0.75 m down).
+    void camera(ScenarioCtx& c) const { c.camera(pt(0.0f, -12.0f, 14.0f), pt(0.0f, 0.0f, -1.0f), home); }
 } S;
 }
 
