@@ -184,7 +184,9 @@ function(add_game target dir)
     target_include_directories(${target}_objs PUBLIC ${dir})
     target_link_libraries(${target}_objs PUBLIC engine)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security)
+        # (#1015) -ffp-contract=off as in engine: no FMA contraction, so the game's float code (player and vehicle
+        # physics, the host's simulation) rounds the same whatever the compiler or -march decides to fuse
+        target_compile_options(${target}_objs PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security -ffp-contract=off)
     endif()
     # Tier 2 scenarios (#870): tests/scenarios/*.cpp register themselves with SCENARIO(...), so they are compiled into the
     # exe itself (not the object library's archive, whose unreferenced members game_tests' linker would drop).
@@ -201,7 +203,7 @@ function(add_game target dir)
     target_sources(${target} PRIVATE ${version_src})
     add_dependencies(${target} ${target}_version)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security)
+        target_compile_options(${target} PRIVATE -Wall -Wno-missing-braces -Werror=format -Werror=format-security -ffp-contract=off)
     endif()
     if(MINGW)
         # Self-contained exe: no libstdc++/libgcc DLLs needed next to it.

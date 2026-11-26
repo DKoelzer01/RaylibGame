@@ -1,0 +1,17 @@
+# (#1015) Simulation files that must stay integer-only: no float, double or libm (<cmath>) outside their unit-test block.
+# The factory thread's state (belts, conduit networks, shaft rotation) has to come out bit-identical on every machine and
+# compiler (MP sync checksums, the golden hashes in game_tests on the Windows and Linux CI legs), and float or libm results
+# can differ between them. Checked by tools/ci/static_checks.sh (check 7). A float input from the world (wind, a wheel's
+# speed) is turned into an integer before it reaches these files (rotationsources.cpp).
+src/engine/beltsim.cpp
+src/engine/beltsim.h
+src/engine/conduit.cpp
+src/engine/conduit.h
+src/engine/conduitnet.cpp
+src/engine/conduitnet.h
+src/engine/rotation.cpp
+src/engine/rotation.h
+src/engine/rotationparts.cpp
+src/engine/rotationparts.h
+src/engine/rotationplot.cpp
+src/engine/rotationplot.h

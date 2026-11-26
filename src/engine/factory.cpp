@@ -3235,12 +3235,15 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
 }
 } // namespace
 
-// (#997, user decision) the determinism gate for parallel plots: 1 and 4 workers give the same factory, bit for bit.
+// (#997, user decision) the determinism gate for parallel plots: 1, 2 and 4 workers give the same factory, bit for bit
+// (#1015: the issue's 1/2/N).
 TEST(Factory, PlotsTickedOnFourWorkersMatchOneWorker) {
-    const ChainsRun one = RunChains(true, 1), four = RunChains(true, 4);
+    const ChainsRun one = RunChains(true, 1), two = RunChains(true, 2), four = RunChains(true, 4);
     EXPECT_GT(one.made, 0);
     EXPECT_EQ(four.made, one.made);
+    EXPECT_EQ(two.made, one.made);
     EXPECT_EQ(four.hash, one.hash) << "every machine and network the same whatever the worker count";
+    EXPECT_EQ(two.hash, one.hash) << "every machine and network the same whatever the worker count";
     EXPECT_GT(one.gravelMilled, 0) << "(#1269) the cranked millstones ground stone, slowed";
     EXPECT_EQ(four.gravelMilled, one.gravelMilled) << "rotation is per plot: the same on any worker";
 }
