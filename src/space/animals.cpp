@@ -217,6 +217,8 @@ void FxEvent(const Animal& a, const CreatureSpec& c, CreatureEvent e, uint64_t b
 }
 std::unordered_map<std::string, std::unordered_set<uint64_t>> spawnedTiles; // body -> herd tiles decided
 int aimed = -1;
+// (#1856 M1) After animals[i] is erased: the aimed one keeps being aimed (one place down), or none if it was i.
+void AimAfterErase(int i) { if (aimed == i) aimed = -1; else if (aimed > i) --aimed; }
 static bool hitLatch = false; // LMB went to an animal: the terrain tool waits for its release (#222)
 double lastSpawnCheck = -1.0, lastHit = -1.0, lastPenCheck = -10.0, lastFireScan = -10.0, lastNightSpawn = -10.0;
 double simClock = 0.0; // seconds of animal steps (the sum of Animals_Update's dt): the bite wind-up and cooldown (#165), so tests that step animals many times in a frame still see time pass
@@ -555,7 +557,7 @@ void Kill(int i, std::vector<std::pair<std::string, int>>* dropsTo = nullptr, bo
     }
     if (!dropsTo && !toGround) GameUI_Toast(TextFormat("The %s fell.%s", s.name.c_str(), got.c_str()));
     animals.erase(animals.begin() + i);
-    if (aimed == i) aimed = -1;
+    AimAfterErase(i);
 }
 
 // (#1223) The resistances a hit meets: its creatures.txt row's, else the species'.
@@ -771,6 +773,15 @@ namespace {
 struct Projectile { std::string body; Vector3 pos, vel; float damage; uint64_t owner; double born; bool spear; bool dart = false; uint32_t id = 0; }; // (#1343) id: a server's shots carry it to clients // (#1228) dart: a sentinel's bolt (pierce, fast, flat)
 std::vector<Projectile> projectiles;
 int projectileHits = 0, projectilesThrown = 0;
+// A projectile's hit on a player (local or remote, #1856 M2: a remote player's was blunt for spears and darts too), from `from`.
+DamageEvent ProjectileDamage(const Projectile& p, const DVec3& from) {
+    DamageEvent e;
+    e.amount = p.damage * Difficulty_ThreatScale();
+    e.kind = DamageKind::Projectile; e.type = (p.spear || p.dart) ? DamageType::Pierce : DamageType::Blunt;
+    e.parryable = false; e.hasSource = true; e.source = from;
+    e.knockback = 2.0f; e.sourceId = p.owner;
+    return e;
+}
 
 void ThrowAt(const std::string& body, Vector3 from, Vector3 target, float damage, uint64_t owner, bool spear, float speed = 16.0f, bool dart = false) {
     Vector3 vel;
@@ -801,12 +812,7 @@ void StepProjectiles(Scene& world, float dt) {
             if (!gone && here == body && !survival.dead && !player.flyMode && !gAnimalsReplicated) { // (a client only flies them: hits are the server's)
                 const Vector3 pu = Vector3Normalize(feet);
                 if (Melee_SegmentDistance(before, p.pos, feet, Vector3Add(feet, Vector3Scale(pu, 1.7f))) < 0.45f) {
-                    DamageEvent e;
-                    e.amount = p.damage * Difficulty_ThreatScale();
-                    e.kind = DamageKind::Projectile; e.type = (p.spear || p.dart) ? DamageType::Pierce : DamageType::Blunt;
-                    e.parryable = false; e.hasSource = true;
-                    e.source = body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f)))); // where it came from
-                    e.knockback = 2.0f; e.sourceId = p.owner;
+                    const DamageEvent e = ProjectileDamage(p, body->toWorldD(DVec3(Vector3Subtract(p.pos, Vector3Scale(Vector3Normalize(p.vel), 2.0f))))); // from where it came
                     const DamageResult r = Combat_Damage(LocalSession(), e);
                     GameUI_Toast(p.dart ? (r.dodged ? "You dodge a dart" : r.blocked ? "Your shield takes a dart" : "A dart hits you!") : r.dodged ? "You dodge a thrown stone" : r.blocked ? "Your shield takes a thrown stone" : p.spear ? "A spear hits you!" : "A thrown stone hits you!");
                     ++projectileHits;
@@ -819,8 +825,7 @@ void StepProjectiles(Scene& world, float dt) {
                     if (Planetoid::findNet(t.body) != body || !t.vulnerable) continue;
                     const Vector3 tu = Vector3Normalize(t.local);
                     if (Melee_SegmentDistance(before, p.pos, t.local, Vector3Add(t.local, Vector3Scale(tu, 1.7f))) >= 0.45f) continue;
-                    DamageEvent e; e.amount = p.damage * Difficulty_ThreatScale(); e.kind = DamageKind::Projectile; e.parryable = false;
-                    e.hasSource = true; e.source = body->toWorldD(DVec3(before)); e.knockback = 2.0f; e.sourceId = p.owner;
+                    const DamageEvent e = ProjectileDamage(p, body->toWorldD(DVec3(before)));
                     if (gAnimalDamageRemote) gAnimalDamageRemote(t.session, e);
                     ++projectileHits;
                     gone = true;
@@ -1067,7 +1072,7 @@ void Animals_Update(Scene& world, float dt, float worldDt, bool inputEnabled) {
         const float k = 1.0f - expf(-dt / 0.08f); // ~80 ms to close a gap (states come 10 a second)
         for (size_t i = 0; i < animals.size();) {
             Animal& a = animals[i];
-            if (now - a.netSeen > 3.0) { animals.erase(animals.begin() + i); if (aimed == (int)i) aimed = -1; continue; } // out of view (or the removal was lost)
+            if (now - a.netSeen > 3.0) { animals.erase(animals.begin() + i); AimAfterErase((int)i); continue; } // out of view (or the removal was lost)
             const DVec3 before = a.pos;
             a.pos += (DVec3(a.netPos) - a.pos) * (double)k;
             float dh = a.netHeading - a.heading; while (dh > PI) dh -= 2 * PI; while (dh < -PI) dh += 2 * PI;
@@ -2320,7 +2325,7 @@ int Animals_FindNet(uint64_t netId) {
 void Animals_ApplyNet(const std::vector<AnimalNet>& in, const std::vector<uint64_t>& removed) {
     LoadSpecies();
     const double now = GetTime();
-    for (uint64_t id : removed) { const int i = Animals_FindNet(id); if (i >= 0) { animals.erase(animals.begin() + i); if (aimed == i) aimed = -1; else if (aimed > i) --aimed; } }
+    for (uint64_t id : removed) { const int i = Animals_FindNet(id); if (i >= 0) { animals.erase(animals.begin() + i); AimAfterErase(i); } }
     for (const AnimalNet& n : in) {
         if (n.species >= species.size()) continue;
         int i = Animals_FindNet(n.netId);
@@ -2392,6 +2397,24 @@ TEST(AnimalLagCompensation, AHitCountsWhereTheAnimalWasWithinTheRewind) { // (#1
     EXPECT_NEAR(Animals_RewindDistance(trail, current, hunter, now, 0.0), 5.3f, 1e-4f) << "no rewind: where it is now";
     EXPECT_LT(Animals_RewindDistance(trail, current, hunter, now, 0.2), 4.5f) << "within 0.2 s it was in reach";
     EXPECT_GT(Animals_RewindDistance(trail, current, Vector3{ -7.0f, 0.0f, 0.0f }, now, 0.2), 4.5f) << "the rewind is capped: further back doesn't count";
+}
+// (#1856 M1) Erasing an animal before the aimed one keeps the aim on it (it pointed at the next one, or past the end).
+TEST(AnimalAim, StaysOnTheSameAnimalWhenAnEarlierOneGoes) {
+    const int saved = aimed;
+    aimed = 3; AimAfterErase(1); EXPECT_EQ(aimed, 2);  // an earlier one: one place down
+    aimed = 3; AimAfterErase(3); EXPECT_EQ(aimed, -1); // the aimed one itself: none
+    aimed = 3; AimAfterErase(5); EXPECT_EQ(aimed, 3);  // a later one: unchanged
+    aimed = -1; AimAfterErase(0); EXPECT_EQ(aimed, -1);
+    aimed = saved;
+}
+// (#1856 M2) Spears and darts pierce, stones are blunt (a remote player's hits were blunt for all of them).
+TEST(AnimalProjectiles, SpearsAndDartsPierceStonesAreBlunt) {
+    Projectile stone{ "terra", {}, {}, 5.0f, 1, 0.0, false }, spear = stone, dart = stone;
+    spear.spear = true; dart.dart = true;
+    EXPECT_EQ(ProjectileDamage(stone, {}).type, DamageType::Blunt);
+    EXPECT_EQ(ProjectileDamage(spear, {}).type, DamageType::Pierce);
+    EXPECT_EQ(ProjectileDamage(dart, {}).type, DamageType::Pierce);
+    EXPECT_EQ(ProjectileDamage(dart, {}).kind, DamageKind::Projectile);
 }
 #endif
 // (#1216 tests) A training dummy: the animal held at `pos` (body-local, on the ground) facing `face` (body-local), at rest.
