@@ -286,7 +286,7 @@ public:
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed. (#1883) Of the first
-    // kSpawnCandidates such spots, the one whose surroundings score best (spawnScore). Cached per field and seed.
+    // kSpawnCandidates (12) such spots, the one whose surroundings score best (spawnScore). Cached per field and seed.
     Vector3 findSpawnDir(unsigned int seed) const;
     // #1883: what a start spot has within kSpawnReachM: the share of flat dry land (25 points on rings of 100, 200 and
     // 300 m), the nearest fresh water (river, lake or pond; 1e9 if none), and how many of the tier 0-3 ores (iron,

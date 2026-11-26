@@ -2426,7 +2426,7 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
     return biomeOf(c, elev);
 }
 
-static constexpr int kSpawnCandidates = 24;     // #1883: temperate start spots scored by their surroundings
+static constexpr int kSpawnCandidates = 12;     // #1883: temperate start spots scored by their surroundings (each ~90 ms to find at -O1)
 static constexpr float kSpawnReachM = 300.0f;   // #1883: how far the score looks (m)
 static const bool kScoreSpawn = !(getenv("RAYLIBGAME_SPAWN_SCORE") && getenv("RAYLIBGAME_SPAWN_SCORE")[0] == '0'); // #1883 A/B (0: the old pick)
 
@@ -2463,6 +2463,10 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
         const float slope = 1.0f - Vector3DotProduct(normal, dir);
         if (slope > 0.05f) continue;
+        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
+        const Biome b = biomeAt(dir, e);
+        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        if (scoring && !temperate && bestScore > -1e29f) continue; // (#1883: a fallback is known; the checks below cost)
         const Vector3 surface = Vector3Scale(dir, radius + e - 0.3f);
         if (materialLod(surface, 1.0f, 0.0f, normal) != VoxelMaterial::Grass) continue;
         // Solid underfoot (caves and ravines carve the density, not the height map).
@@ -2470,10 +2474,7 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         for (float depth : { 1.0f, 3.0f, 6.0f, 12.0f })
             if (baseDensity(Vector3Scale(dir, radius + e - depth)) < ISO_LEVEL) { solid = false; break; }
         if (!solid) continue;
-        // Prefer flat, low ground: good enough is good enough.
-        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
-        const Biome b = biomeAt(dir, e);
-        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        // Prefer flat, low ground (without scoring, #1883: the first flat temperate spot is good enough).
         const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
         if (temperate) temperateSpots.push_back({ score, dir });
