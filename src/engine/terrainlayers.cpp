@@ -422,14 +422,20 @@ void UnbindTextureArray(int unit) {
 // ---- Unit tests (#1859 L1-L4): every terrain layer tiles without a seam ----
 #include <gtest/gtest.h>
 
-// Mean colour step (sum of |dR|+|dG|+|dB| per pixel) between column (or row) a and b of the image.
+// Mean colour step (|dR|+|dG|+|dB|) between line a and line b (columns, or rows), each pixel first averaged with its 15
+// neighbours along the line (wrapping): the per-pixel grain averages out, a seam across the line stays whole.
 static double LayerLineStep(const Image& img, int a, int b, bool columns) {
     const Color* px = (const Color*)img.data;
-    const int n = img.width;
+    const int n = img.width, k = 7;
+    auto at = [&](int line, int i) { i = (i + n) % n; return columns ? px[i * n + line] : px[line * n + i]; };
     double sum = 0.0;
     for (int i = 0; i < n; ++i) {
-        const Color p = columns ? px[i * n + a] : px[a * n + i], q = columns ? px[i * n + b] : px[b * n + i];
-        sum += abs(p.r - q.r) + abs(p.g - q.g) + abs(p.b - q.b);
+        int d[3] = { 0, 0, 0 };
+        for (int j = i - k; j <= i + k; ++j) {
+            const Color p = at(a, j), q = at(b, j);
+            d[0] += p.r - q.r; d[1] += p.g - q.g; d[2] += p.b - q.b;
+        }
+        sum += (abs(d[0]) + abs(d[1]) + abs(d[2])) / (2.0 * k + 1.0);
     }
     return sum / n;
 }
@@ -439,12 +445,13 @@ TEST(TerrainLayers, EveryLayerTilesWithoutASeam) {
     for (int layer = 0; layer < LayerCount; ++layer) {
         Image img = GenerateTerrainLayerImage(layer, kSize);
         for (bool columns : { true, false }) {
-            // The step across the wrap (last line to the first) against the biggest step between neighbouring lines
-            // inside the tile: a seam stands out above every one of them.
-            double inner = 0.0;
-            for (int i = 0; i + 1 < kSize; ++i) inner = std::max(inner, LayerLineStep(img, i, i + 1, columns));
-            const double wrap = LayerLineStep(img, kSize - 1, 0, columns);
-            EXPECT_LE(wrap, inner * 1.15 + 1.0) << TerrainLayerName(layer) << (columns ? ": left/right" : ": top/bottom") << " edge, wrap step " << wrap << " vs at most " << inner << " inside";
+            // The step across the wrap (last line to the first) against the typical (median) step between neighbouring
+            // lines inside the tile.
+            std::vector<double> inner;
+            for (int i = 0; i + 1 < kSize; ++i) inner.push_back(LayerLineStep(img, i, i + 1, columns));
+            std::nth_element(inner.begin(), inner.begin() + inner.size() / 2, inner.end());
+            const double median = inner[inner.size() / 2], wrap = LayerLineStep(img, kSize - 1, 0, columns);
+            EXPECT_LE(wrap, 2.0 * median + 1.0) << TerrainLayerName(layer) << (columns ? ": left/right" : ": top/bottom") << " edge, wrap step " << wrap << ", median inside " << median;
         }
         UnloadImage(img);
     }
