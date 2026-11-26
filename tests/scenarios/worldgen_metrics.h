@@ -49,7 +49,7 @@ struct SeedStats {
     float spawnElev = 0;
     Biome spawnBiome = Biome::Ocean;
     PlanetField::SpawnScore spawn; // #1883: what the start has within 300 m
-    double spawnSec = 0;
+    double spawnSec = 0, riverSec = 0;
 };
 
 inline SeedStats Measure(unsigned seed, float radius) {
@@ -104,8 +104,13 @@ inline SeedStats Measure(unsigned seed, float radius) {
         for (int b = 0; b < (int)Biome::Count; ++b) st.biome[b] += p.biome[b];
         for (int b = 0; b < kSlopeBins; ++b) st.slope[b] += p.slope[b];
     }
+    st.sampleSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+    // The river network is built on first use (any water query; a world's first chunks make it): timed apart from the
+    // spawn search, which would otherwise carry it.
+    const auto tr = std::chrono::steady_clock::now();
+    (void)field.waterSourceAt({ 0, 1, 0 });
     const auto t2 = std::chrono::steady_clock::now();
-    st.sampleSec = std::chrono::duration<double>(t2 - t1).count();
+    st.riverSec = std::chrono::duration<double>(t2 - tr).count();
     const Vector3 spawn = field.findSpawnDir(seed);
     st.spawnSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t2).count();
     st.spawnElev = field.elevation(spawn);
@@ -140,6 +145,7 @@ inline void Report(ScenarioCtx& c, const SeedStats& st) {
     c.metric(p + "spawn ore kinds within 300 m", st.spawn.ores, "of 4", false);
     c.metric(p + "spawn score", st.spawn.score, "", false);
     c.metric(p + "spawn search", st.spawnSec * 1000.0, "ms");
+    c.metric(p + "river network build", st.riverSec * 1000.0, "ms");
 }
 
 // The scenario: seeds = how many planets (the world's own first, then terrain seeds 1, 2, ...).
