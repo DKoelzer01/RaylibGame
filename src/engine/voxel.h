@@ -97,6 +97,27 @@ class PlanetErosion;
 const char* BiomeName(Biome b);
 const char* VoxelMaterialName(VoxelMaterial m);
 
+// (#1722 base, #1791) The set cells of an oriented grid: one carve or fill of any cell pattern (an L-shaped room and its
+// doorways, a 2x2 column, stairs). Cell (0,0,0) has its low corner at `origin`; the grid's axes are the edit's ax/ay/az.
+struct CellMask {
+    Vector3 origin{};            // body-local
+    float cell = 0.5f;           // m (a plot's kCellSize, or the body grid's)
+    int nx = 0, ny = 0, nz = 0;  // cells along ax, ay, az
+    std::vector<uint8_t> bits;   // nx * ny * nz bits, x fastest, then y
+    CellMask() = default;
+    CellMask(Vector3 o, float c, int x, int y, int z) : origin(o), cell(c), nx(x), ny(y), nz(z), bits(((size_t)x * y * z + 7) / 8, 0) {}
+    bool at(int x, int y, int z) const {
+        if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return false;
+        const size_t i = ((size_t)z * ny + y) * nx + x;
+        return (bits[i >> 3] >> (i & 7)) & 1;
+    }
+    void set(int x, int y, int z) {
+        if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return;
+        const size_t i = ((size_t)z * ny + y) * nx + x;
+        bits[i >> 3] |= (uint8_t)(1u << (i & 7));
+    }
+};
+
 // A spherical density brush in planetoid-local space. strength < 0 digs, > 0 adds.
 struct TerrainEdit {
     Vector3 center;
@@ -118,7 +139,12 @@ struct TerrainEdit {
     // dirty-chunk, tree and fluid bounds use it.
     bool box = false;
     Vector3 half{ 0, 0, 0 }, ax{ 1, 0, 0 }, ay{ 0, 1, 0 }, az{ 0, 0, 1 };
+    // (#1722 base) Carve or fill the mask's set cells instead (carve or fill must be set): exact to the cells, the surface
+    // within 1 m of them reshaped as a box's is. Built with MaskEdit (it sets center, half and radius from the mask).
+    std::shared_ptr<const CellMask> mask;
 };
+// A carve (or with fill, a fill) of a mask's set cells on the grid with unit axes ax, ay, az.
+TerrainEdit MaskEdit(std::shared_ptr<const CellMask> mask, Vector3 ax, Vector3 ay, Vector3 az, bool carve);
 #include "terraindeltas.h"
 
 // A terrain density field: density >= ISO_LEVEL is solid. Implementations must be immutable and
