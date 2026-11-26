@@ -299,6 +299,7 @@ struct PlanetField::ErosionState {
 };
 
 bool PlanetField::caveBaked() const { return erosion() != nullptr; }
+uint64_t PlanetField::erosionHash() const { const PlanetErosion* b = erosion(); return b ? b->hash() : 0; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -3986,11 +3987,17 @@ TEST(Voxel, ErosionBakeMatchesOneGoldenOnEveryPlatform) {
     const auto t0 = std::chrono::steady_clock::now();
     f.bakeErosion("");
     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    const PlanetErosion* b = f.erosion();
-    ASSERT_NE(b, nullptr);
-    printf("erosion probe: %d cells, hash %016llx, %.1f s\n", b->cells(), (unsigned long long)b->hash(), s);
+    const uint64_t bh = f.erosionHash();
+    ASSERT_NE(bh, 0u) << "no bake";
+    printf("erosion probe: hash %016llx, %.1f s\n", (unsigned long long)bh, s);
+    // The baked terrain at the first probe's directions (elevation bits), to see how far a differing bake reaches.
+    for (const Vector3 raw : { Vector3{ 1, 0, 0 }, Vector3{ 0, 1, 0 }, Vector3{ 0, 0, 1 }, Vector3{ 1, 2, 3 }, Vector3{ -3, 1, 2 }, Vector3{ 2, -3, 1 } }) {
+        const float e = f.elevation(Vector3Normalize(raw));
+        uint32_t u; memcpy(&u, &e, sizeof u);
+        printf("erosion probe elevation (%g %g %g): %08x (%.6f m)\n", raw.x, raw.y, raw.z, u, e);
+    }
     constexpr uint64_t kGolden = 0ull;
-    EXPECT_EQ(b->hash(), kGolden) << "(#1905) one CI leg only: the bake differs between platforms; both: a deliberate bake change, update the constant";
+    EXPECT_EQ(bh, kGolden) << "(#1905) one CI leg only: the bake differs between platforms; both: a deliberate bake change, update the constant";
 }
 
 // (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a

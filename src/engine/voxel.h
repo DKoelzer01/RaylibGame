@@ -283,6 +283,7 @@ public:
     WaterSource waterSourceAt(Vector3 dir) const;
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
+    uint64_t erosionHash() const; // (#1905) the bake's hash, as logged (0 without a bake): the platforms must agree on it
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
