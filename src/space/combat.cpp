@@ -193,7 +193,9 @@ struct Grave {
 static std::vector<Grave> graves;
 static int graveCounter = 0;
 static uint32_t dropCounter = 0; // (#1852) dropped piles' ids (0x80000000 | n); a load moves it past the ids it read
-static bool lastLoadedDrop = false; // (#1852) loading: the last line read was a pile kept (its dropped_mp line follows)
+// Loading (#1852, #1856 M19): what the last grave or pile line kept (its grave_mp / dropped_mp line follows; none: left out)
+enum class LoadedLast : uint8_t { None, Grave, Pile };
+static LoadedLast lastLoaded = LoadedLast::None;
 static uint32_t graveVersion = 1;          // bumps on every change of the grave set (the server resends its list)
 static constexpr double kGraveReach = 2.5; // m: walking up to it takes everything back
 static constexpr double kDropMerge = 1.0;  // m: a drop this close to an unarmed pile joins it
@@ -333,6 +335,8 @@ int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now
     }
     return removed;
 }
+
+int Combat_TestGraveOffHand(size_t index) { return index < graves.size() ? graves[index].offHand : -1; }
 
 std::vector<GraveInfo> Combat_GraveList() {
     std::vector<GraveInfo> out;
@@ -571,29 +575,30 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
     if (strcmp(tok, "grave_counter") == 0) { if (fscanf(f, " %d", &graveCounter) != 1) graveCounter = 0; return true; }
     if (strcmp(tok, "grave_mp") == 0) { // (#804) for the grave just read
         unsigned id = 0; long long died = 0, seen = 0; int style = 0; char owner[64] = {};
-        if (fscanf(f, " %u %lld %lld %d %63s", &id, &died, &seen, &style, owner) == 5 && !graves.empty() && !graves.back().dropped) {
+        if (fscanf(f, " %u %lld %lld %d %63s", &id, &died, &seen, &style, owner) == 5 && lastLoaded == LoadedLast::Grave && !graves.empty()) { // (#1856 M19: not a grave left out's line on the one before)
             Grave& g = graves.back();
             g.id = id; g.diedAt = died; g.ownerSeen = seen; g.style = (uint8_t)(style % 3);
             g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
         }
+        lastLoaded = LoadedLast::None;
         ++graveVersion;
         return true;
     }
     if (strcmp(tok, "dropped_mp") == 0) { // (#1852) for the pile just read (none: it was empty and left out)
         unsigned id = 0; long long died = 0; char owner[64] = {};
-        if (fscanf(f, " %u %lld %63s", &id, &died, owner) == 3 && lastLoadedDrop && !graves.empty()) {
+        if (fscanf(f, " %u %lld %63s", &id, &died, owner) == 3 && lastLoaded == LoadedLast::Pile && !graves.empty()) {
             Grave& g = graves.back();
             g.id = id; g.diedAt = died;
             g.owner = strcmp(owner, "-") == 0 ? std::string() : std::string(owner);
             dropCounter = std::max(dropCounter, id & 0x7fffffffu); // new piles number past it
         }
-        lastLoadedDrop = false;
+        lastLoaded = LoadedLast::None;
         ++graveVersion;
         return true;
     }
     const bool dropped = strcmp(tok, "dropped") == 0;
-    lastLoadedDrop = false;
     if (strcmp(tok, "grave") != 0 && !dropped) return false;
+    lastLoaded = LoadedLast::None;
     Grave g;
     char body[64] = {};
     size_t n = 0;
@@ -601,13 +606,16 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
     if (fscanf(f, " %63s %lf %lf %lf %d %zu", body, &g.local.x, &g.local.y, &g.local.z, &flag, &n) != 6) return true;
     if (dropped) { g.dropped = true; g.armed = flag != 0; } else g.offHand = flag;
     g.body = body;
+    const int savedOff = g.offHand;
+    g.offHand = -1; // (#1856 M18) set below to where the off hand's item lands: an item left out before it shifts the rest
     for (size_t i = 0; i < n; ++i) {
         char id[64] = {};
         long long c = 0;
         if (fscanf(f, " %63s %lld", id, &c) != 2) return true;
         if (const char* now = RetiredItem(id); *now) snprintf(id, sizeof id, "%s", now); // #1090
-        if (itemDB.find(id) && c > 0) g.items.push_back(InvSlot{ id, (int64_t)c });
-        else if ((int)i == g.offHand) g.offHand = -1;
+        if (!itemDB.find(id) || c <= 0) continue;
+        if ((int)i == savedOff) g.offHand = (int)g.items.size();
+        g.items.push_back(InvSlot{ id, (int64_t)c });
     }
     if (!dropped) { // a pile has no name
         char name[64] = {};
@@ -623,7 +631,7 @@ bool Combat_LoadLine(const char* tok, FILE* f) {
         g.id = 0x80000000u | ++dropCounter;
         g.diedAt = WallNow();
     }
-    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; lastLoadedDrop = dropped; }
+    if (!g.items.empty()) { graves.push_back(std::move(g)); ++graveVersion; lastLoaded = dropped ? LoadedLast::Pile : LoadedLast::Grave; }
     return true;
 }
 
@@ -926,6 +934,22 @@ TEST(Combat, DroppedPilesKeepIdsAndOwnersOverASave) {
     ASSERT_EQ(old.size(), 2u);
     EXPECT_NE(old[0].id, 0u);
     EXPECT_NE(old[0].id, old[1].id);
+    Combat_Reset();
+}
+
+// (#1856 M18, M19) Loading graves: an unknown item before the off hand's leaves the off hand on its own item; a grave left
+// out (nothing it held is known) takes its grave_mp line with it, not onto the grave before.
+TEST(Combat, GraveLoadKeepsOffHandAndOwnLines) {
+    Combat_Reset();
+    SaveAndLoad("grave terra 0 60000 0 1 2 no_such_item 100 wooden_shield 100 Grave 1\n"
+                "grave_mp 1 100 100 0 alice-uuid\n"
+                "grave terra 0 60000 9 -1 1 no_such_item 100 Grave 2\n"
+                "grave_mp 2 200 200 0 bob-uuid\n");
+    const std::vector<GraveInfo> all = Combat_GraveList();
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_EQ(Combat_TestGraveOffHand(0), 0);   // the shield, now the only item
+    EXPECT_EQ(all[0].owner, "alice-uuid");      // not bob's (the grave left out)
+    EXPECT_EQ(all[0].id, 1u);
     Combat_Reset();
 }
 
