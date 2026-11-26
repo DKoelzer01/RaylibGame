@@ -21,7 +21,7 @@ double Height(ScenarioCtx& c) { return Vector3Length(c.body->toLocalOf(LocalSess
 }
 
 SCENARIO("world/spawn-by-water") {
-    s.tags = { "world", "fluid" };
+    s.tags = { "world" }; // (one runner list: "fluid" put it in part 1 as well, and static check 5 refuses a scenario run twice)
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 90.0;
     s.step("settle", 30.0, [](ScenarioCtx& c) { c.waitingFor("2 s of play and an idle world"); return c.T >= 2.0 && WorldIdle(); });
