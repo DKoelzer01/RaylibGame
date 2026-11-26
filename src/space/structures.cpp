@@ -336,7 +336,8 @@ int PickSet(int biome, const char* kind, uint32_t& h, bool unguarded = false) {
 Site RingSite(const PlanetField& pf, Vector3 start, int k) {
     // Cached per world and start: every tile's check asks for both ring sites.
     static std::unordered_map<uint64_t, Site> cache;
-    const uint64_t key = ((uint64_t)pf.foliageSeed * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)(uint32_t)(start.x * 1e6f) * 31 + (uint64_t)(uint32_t)(start.z * 1e6f)) ^ (uint64_t)k;
+    // (#1859 L19) floats to integers through int32_t: a negative float cast straight to uint32_t is undefined (the bits as before on x86)
+    const uint64_t key = ((uint64_t)pf.foliageSeed * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)(uint32_t)(int32_t)(start.x * 1e6f) * 31 + (uint64_t)(uint32_t)(int32_t)(start.z * 1e6f)) ^ (uint64_t)k;
     if (auto it = cache.find(key); it != cache.end()) return it->second;
     Site s;
     static const char* kKinds[2] = { "camp", "ruin" };
@@ -555,6 +556,8 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
     std::vector<std::pair<int, int>> links;
     const int floors = 2 + (Unit(h) < 0.4f ? 1 : 0);
     int floorsBuilt = 0;
+    // (#1859 L18) The stairwell just cut down to this floor, undone if the floor's first room does not fit (it led nowhere).
+    struct StairMark { bool on = false; size_t cuts = 0, cutBoxes = 0, parts = 0, points = 0; int wall = 0; } stairMark;
     for (int fl = 0; fl < floors; ++fl) {
         const size_t first = rooms.size();
         // The first room at the foot of the ramp or stairs, along their direction.
@@ -566,9 +569,17 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             if (tm >= 0) r.shape = 0; // a template room is plain: its props are the furnishing
             r.tmpl = tm;
             r.c.y = flr;
-            if (!covered(r, flr)) break; // the ground falls away here: no (deeper) floor
+            if (!covered(r, flr)) { // the ground falls away here: no (deeper) floor, and no stairs down to it
+                if (stairMark.on) {
+                    cuts.resize(stairMark.cuts); cutBoxes.resize(stairMark.cutBoxes); parts.resize(stairMark.parts);
+                    lastDungeon.stairPoints.resize(stairMark.points);
+                    rooms.back().walls &= (uint8_t)~(1 << stairMark.wall);
+                }
+                break;
+            }
             rooms.push_back(r);
         }
+        stairMark.on = false;
         const int n = 2 + (int)(Unit(h) * 3.0f) % 3;
         for (int tries = 0; (int)(rooms.size() - first) < n && tries < 60; ++tries) {
             const size_t fi = first + (size_t)(Unit(h) * (rooms.size() - first)) % (rooms.size() - first);
@@ -630,6 +641,7 @@ void PlanDungeon(BuildJob& job, Planetoid& body, const PlanetField& pf, const Pl
             }
             const Vector3 end = Vector3Add(start, Vector3Scale(dir, kStepRun * n2));
             if (!clear || cover({ end.x, flr - kFloorGap + kCorrH, end.z }) < kCover) continue;
+            stairMark = { true, cuts.size(), cutBoxes.size(), parts.size(), lastDungeon.stairPoints.size(), k };
             r.walls |= (uint8_t)(1 << k);
             for (int i = 0; i <= n2; ++i) {
                 const Vector3 p = Vector3Add(start, Vector3Scale(dir, kStepRun * i + 0.25f));
@@ -1230,7 +1242,7 @@ bool Structures_NearestSite(const Planetoid& body, Vector3 local, float range, V
     const Vector3 t2 = Vector3CrossProduct(t1, up);
     float best = range; bool found = false;
     std::unordered_set<uint64_t> seen;
-    const int R = (int)ceilf(range / kTile) + 1;
+    const int R = (int)ceilf(range / (kTile * 0.5f)) + 1; // (#1854) samples are half a tile apart: by whole tiles it saw half the range
     for (int a = -R; a <= R; ++a)
         for (int b = -R; b <= R; ++b) {
             Vector3 centre;
@@ -1271,7 +1283,7 @@ int Structures_SitesNear(const Planetoid& body, Vector3 local, float range, std:
         const bool dungeon = S.dungeon > 0.0f && DungeonsOn() && Unit(dh) < S.dungeon; // (as Build's roll)
         out.push_back({ p, S.name, S.kind, dungeon, d });
     };
-    const int R = (int)ceilf(range / kTile) + 1;
+    const int R = (int)ceilf(range / (kTile * 0.5f)) + 1; // (#1854) half-tile samples, as NearestSite
     for (int a = -R; a <= R; ++a)
         for (int b = -R; b <= R; ++b) {
             Vector3 centre;
@@ -1443,6 +1455,18 @@ bool Structures_TestDungeon(Scene& world, Planetoid& body, Vector3 nearLocal, Ve
     Plot* plot = body.plots ? body.plots->plotFor(Vector3Scale(s.dir, pf->radius + pf->elevation(s.dir)), 15.0f, false) : nullptr;
     if (placed < 0 || !plot) { printf("bench: dungeon: the ruin not built (%s) -> FAIL\n", lastSkip); return false; }
     const DungeonArgs A = lastDungeonArgs;
+    // (#1859 L18) No stairwell leads nowhere: each one's 5 open points belong to a floor below it (a next floor whose first
+    // room failed its cover kept its stairs, a dead end).
+    int deadEnds = 0, planned = 0;
+    for (uint32_t k = 0; k < 200; ++k) {
+        BuildJob dry;
+        PlanDungeon(dry, body, *pf, *plot, A.floorY, A.half, 9001u + 7919u * k, A.stone);
+        if (lastDungeon.rooms == 0) continue;
+        ++planned;
+        if ((int)lastDungeon.stairPoints.size() != 5 * (lastDungeon.floors - 1)) ++deadEnds;
+    }
+    printf("bench: dungeon: stairwells: %d of %d plans with one leading nowhere%s\n", deadEnds, planned, deadEnds ? " -> FAIL" : "");
+    if (deadEnds) return false;
     uint32_t pick = 4242u;
     bool picked = false;
     for (int pass = 0; pass < 2 && !picked; ++pass) // pass 0: a seed with a side branch for the portcullis (#1641 slice 2c); pass 1: any
@@ -1605,7 +1629,7 @@ bool Structures_TestPlacement(const Planetoid& body, float range, uint64_t& hash
         if (d < kSpawnKeepOut) ++close;
         if (!dry || hi - lo > 3.0f || d < kSpawnKeepOut)
             printf("bench: structures: placement: %s %.0f m from the start: %s%s%s\n", S.name.c_str(), d, dry ? "" : "wet ", hi - lo > 3.0f ? TextFormat("rise %.1f m ", hi - lo) : "", d < kSpawnKeepOut ? "too close" : "");
-        for (uint64_t x : { tile, (uint64_t)s.set, (uint64_t)(uint32_t)(s.dir.x * 1e6f), (uint64_t)(uint32_t)(s.dir.z * 1e6f) }) hash = (hash ^ x) * 1099511628211ull;
+        for (uint64_t x : { tile, (uint64_t)s.set, (uint64_t)(uint32_t)(int32_t)(s.dir.x * 1e6f), (uint64_t)(uint32_t)(int32_t)(s.dir.z * 1e6f) }) hash = (hash ^ x) * 1099511628211ull;
     }
     ok = wet == 0 && steep == 0 && close == 0;
     const Site camp = RingSite(*pf, start, 0), ruin = RingSite(*pf, start, 1);

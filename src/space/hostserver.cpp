@@ -790,7 +790,7 @@ namespace {
                 if (auto pf = std::dynamic_pointer_cast<const PlanetField>(b->field); pf && !b->flat) {
                     const DVec3 l = b->toLocalD(r.player.position);
                     if (l.length() > 1.0) {
-                        TeamQuests_Explore(team, b->name, Vector3Normalize(l.toFloat()), pf->radius);
+                        TeamQuests_Explore(team, b->name, Vector3Normalize(l.toFloat()), pf->radius, r.record.uuid); // (#1886) the player's own tiles too
                         Nav_RevealTiles(Vector3Normalize(l.toFloat()), pf->radius, r.tilesAlone); // (tests: what it revealed alone)
                     }
                 }
@@ -1254,12 +1254,14 @@ namespace {
     }
     // Into another team. A joiner who was alone keeps their progress: their book is merged into the team's (#861, the user
     // on #604), then it goes with the emptied team. One who moves straight from a team that still has members brings nothing
-    // across: that team keeps its book (leaving or a kick is SplitOff: a team of one with a copy, unchanged).
+    // across: that team keeps its book (leaving or a kick is SplitOff: a team of one with a copy, unchanged), except the
+    // map they explored themselves, which comes with them (the user, on #1886).
     void JoinTeam(const Session& s, int team) {
         const int from = Teams_Of(s.uuid);
         if (from) TeamQuests_Book(from); // (loaded from its record now: Teams_Move removes an emptied team's record)
         const int emptied = Teams_Move(s.uuid, team);
         if (emptied) { if (emptied == from) TeamQuests_Merge(from, team); TeamQuests_Forget(emptied); Claims_MoveTeam(emptied, team); } // (#343) its claims go with them
+        if (Teams_Of(s.uuid) == team) TeamQuests_CarryPlayer(s.uuid, team); // (#1886)
         SendQuestBook(s.conn, team);
     }
     // Out of their team into a team of one with a copy of its progress (leave, kick). Online or not.

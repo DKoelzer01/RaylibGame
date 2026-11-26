@@ -107,7 +107,10 @@ constexpr int kInitPerStep = 24;       // bricks classified per step, in paralle
 inline int MaxBricks() { static const int n = std::min(32768, (int)lroundf(4096.0f / (WaterField::CellSize() * WaterField::CellSize()))); return n; }
 
 inline int Idx(int x, int y, int z) { return x + y * B + z * B * B; }
-inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); }
+inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); } // bricks (+-1024)
+// A cell's key by site cell coordinates (#1855 M9): a site reaches 256 m, +-1024 cells of 0.25 m and past them at its edge, so
+// Key's 11-bit fields overflowed into the next one and cells merged in the levelling pass (Key(0, 0, 1030) == Key(0, 1, -1018)).
+inline int64_t CellKey(int i, int j, int k) { return ((int64_t)(i + (1 << 20)) << 42) | ((int64_t)(j + (1 << 20)) << 21) | (int64_t)(k + (1 << 20)); }
 inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
 // Partly solid cells (#454): RAYLIBGAME_WATER_SHUT=0 treats every open cell as wholly open (the old model, for A/B).
 inline bool ShutOn() { static const bool on = !(getenv("RAYLIBGAME_WATER_SHUT") && getenv("RAYLIBGAME_WATER_SHUT")[0] == '0'); return on; }
@@ -537,6 +540,11 @@ void PinPondFace(Brick& b, int f) {
 
 long long wakeGpu = 0, wakeTouch = 0; // settled bricks woken (stats)
 std::atomic<long long> pourDroppedUnits{ 0 }; // fill units pours found no room for, even widened (#766)
+// The mass ledger (#1885): fill units the CPU side added or removed since the start, by cause (Fluid::GetLedger). The kernels'
+// own changes (source cells held at their level, sinks, kernel evaporation) are not in it: a closed basin with
+// RAYLIBGAME_FLUID_NOEVAP=1 must hold its volume to what the ledger says.
+enum LedgerCause { kLedgerPoured, kLedgerTaken, kLedgerTakenFree, kLedgerSpring, kLedgerDried, kLedgerCauses };
+std::atomic<long long> ledgerUnits[kLedgerCauses] = {};
 long long filmFlips = 0;              // bricks whose films switched shown/hidden (stats, #660)
 long long slotReleases = 0;           // GPU slots given back by sleeping bricks (stats, #675)
 std::atomic<long long> diagTicks{ 0 }, diagDispatches{ 0 }, diagFlowReads{ 0 }; // (#1407) for Stats: ticks, GPU dispatches, flux reads
@@ -632,6 +640,7 @@ void StepSpring(Site& s, Site::Spring& sp) {
             TakeKind(b, i, (uint8_t)(sp.kind << kKindShift));
             b->fill[i] = (uint8_t)(b->fill[i] + add);
             GpuDelta(b, i, add);
+            ledgerUnits[kLedgerSpring] += add;
             sp.acc -= (float)add;
             Touch(b); ++dbgSrc;
             return sp.acc < 1.0f;
@@ -666,7 +675,7 @@ void LevelSite(Site& s) {
         for (int i0 = 0; i0 < B3; ++i0) {
             if (b0->fill[i0] < Cap(b0, i0) || (b0->flags[i0] & kSolid)) continue; // full: at its capacity (#454)
             const int x0 = i0 % B, y0 = (i0 / B) % B, z0 = i0 / (B * B);
-            const int64_t k0 = Key(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
+            const int64_t k0 = CellKey(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
             if (seen.count(k0)) continue;
             const uint8_t kind0 = b0->flags[i0] & kKindMask; // a body is all one kind
             // BFS through full cells; partial and empty-above neighbours are leaves.
@@ -689,7 +698,7 @@ void LevelSite(Site& s) {
                     Brick* nb; int ni;
                     if (!s.cell(nc[0], nc[1], nc[2], nb, ni) || (nb->flags[ni] & kSolid)) continue;
                     if (nb->fill[ni] > 0 && (nb->flags[ni] & kKindMask) != kind0) continue; // the other fluid
-                    const int64_t nk = Key(nc[0], nc[1], nc[2]);
+                    const int64_t nk = CellKey(nc[0], nc[1], nc[2]);
                     if (nb->fill[ni] >= Cap(nb, ni)) {
                         if (!seen.count(nk)) { seen.insert(nk); q.push_back({ nc[0], nc[1], nc[2] }); }
                     } else if ((nb->fill[ni] > 0 || k == 4) && !leafSeen.count(nk)) {
@@ -710,7 +719,7 @@ void LevelSite(Site& s) {
                 for (const C& c : comp)
                     if (c.leaf) {
                         const int li = c.i, lx = c.b->bi * B + li % B, ly = c.b->bj * B + (li / B) % B;
-                        leafAt.emplace(Key(lx, ly, c.ck), (int)parent.size());
+                        leafAt.emplace(CellKey(lx, ly, c.ck), (int)parent.size());
                         leafPos.push_back({ lx, ly, c.ck });
                         parent.push_back((int)parent.size());
                     }
@@ -721,7 +730,7 @@ void LevelSite(Site& s) {
                         for (int dy = -1; dy <= 1; ++dy)
                             for (int dx = -1; dx <= 1; ++dx) {
                                 if ((dx != 0) + (dy != 0) + (dz != 0) == 0 || (dx != 0 && dy != 0)) continue; // side, up/down, side +- a layer
-                                auto it = leafAt.find(Key(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
+                                auto it = leafAt.find(CellKey(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
                                 if (it == leafAt.end()) continue;
                                 const int ra = root((int)a), rb = root(it->second);
                                 if (ra != rb) { parent[ra] = rb; --groups; }
@@ -997,6 +1006,7 @@ void ApplyCommand(const Command& c) {
                         b->fill[i] = (uint8_t)(b->fill[i] + add);
                         GpuDelta(b, i, add);
                         left -= add;
+                        ledgerUnits[kLedgerPoured] += add;
                         Touch(b);
                     }
         if (left > 0.0f) pourDroppedUnits += (long long)left;
@@ -1029,6 +1039,7 @@ void ApplyCommand(const Command& c) {
                         if (dx * dx + dy * dy < rel.r * rel.r) { infinite = true; break; }
                     }
                 if (!infinite) { b->fill[i] = (uint8_t)(b->fill[i] - t); GpuDelta(b, i, -t); }
+                ledgerUnits[infinite ? kLedgerTakenFree : kLedgerTaken] += t;
                 want -= t;
                 Touch(b);
             }
@@ -1134,6 +1145,7 @@ void RunJob() {
                                                                         : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
                             if (!ground) continue;
                             b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
+                            ledgerUnits[kLedgerDried] += f <= 2 ? f : 1;
                             dried = true;
                         }
                 if (dried) { b.changed = true; b.statSet = false; if (gpuMode && b.slot >= 0) b.upload = true; }
@@ -2244,6 +2256,14 @@ float Fluid::Pour(Planetoid& body, Vector3 local, float m3, int kind) {
 }
 
 float Fluid::PourDropped() { return (float)(pourDroppedUnits.load() * (double)WaterField::CellVolume() / 255.0); }
+Fluid::Ledger Fluid::GetLedger() {
+    const double u = (double)WaterField::CellVolume() / 255.0; // m^3 a fill unit
+    Ledger l;
+    l.poured = ledgerUnits[kLedgerPoured].load() * u; l.taken = ledgerUnits[kLedgerTaken].load() * u;
+    l.takenFree = ledgerUnits[kLedgerTakenFree].load() * u; l.spring = ledgerUnits[kLedgerSpring].load() * u;
+    l.dried = ledgerUnits[kLedgerDried].load() * u;
+    return l;
+}
 
 void Fluid::AddSource(Planetoid& body, Vector3 local, int kind, float rate, float head) {
     if (!dynamic_cast<const PlanetField*>(body.field.get()) || rate <= 0.0f) return;
@@ -2621,7 +2641,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
         const uint8_t kind = fl & kKindMask;
         std::unordered_set<int64_t> seen;
         std::deque<std::array<int, 3>> q;
-        q.push_back({ ci, cj, ck }); seen.insert(Key(ci, cj, ck));
+        q.push_back({ ci, cj, ck }); seen.insert(CellKey(ci, cj, ck));
         float level = -1e9f, top = (float)ck + 1.0f;
         static const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
         while (!q.empty() && seen.size() < 20000) {
@@ -2632,7 +2652,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
                 uint8_t nf, nfl, nsh;
                 if (!s.cell(nx, ny, nz, nf, nfl, nsh) || (nfl & kSolid)) continue;
                 if (nf > 0 && (nfl & kKindMask) != kind) continue;
-                if (nf + nsh >= 255) { if (seen.insert(Key(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
+                if (nf + nsh >= 255) { if (seen.insert(CellKey(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
                 else if (nf > 0) level = std::max(level, nz + (nsh + nf) / 255.0f); // a partial cell: the surface
                 else if (dd[2] == 1) level = std::max(level, (float)nz);      // open air right over a full cell
             }
@@ -3129,3 +3149,14 @@ bool Fluid::GeneratedWaterValid(uint64_t body, Vector3 local) {
     const int f = WaterField::CellFill(*WaterField::Current(), body, local, 0);
     return f < 0 || f > 0;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// #1855 M9: cells past +-1024 (a 256 m site of 0.25 m cells reaches them) kept apart by their keys; brick keys merged them.
+TEST(Fluid, CellKeysStayApartPastTheBrickKeysRange) {
+    EXPECT_EQ(Key(0, 0, 1030), Key(0, 1, -1018)) << "the old collision (the reason for CellKey)";
+    EXPECT_NE(CellKey(0, 0, 1030), CellKey(0, 1, -1018));
+    EXPECT_NE(CellKey(-1100, 1100, 0), CellKey(-1100, 1099, 0));
+    EXPECT_NE(CellKey(5000, -5000, 2000), CellKey(5000, -5000, -2000));
+}
+#endif

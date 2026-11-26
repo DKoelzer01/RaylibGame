@@ -106,6 +106,10 @@ namespace Fluid {
     float Take(Planetoid& body, Vector3 local, float m3, float radius = 1.5f, int kind = 0); // returns what will be taken
     float Pour(Planetoid& body, Vector3 local, float m3, int kind = 0);                     // returns the m^3 queued (placed on the next step)
     float PourDropped();                                                                       // m^3 pours found no room for, in all (#766)
+    // The mass ledger (#1885): m^3 the CPU side added or removed since the start, by cause. Not in it: the kernels' own
+    // changes (source cells held at their level, sinks, kernel evaporation; RAYLIBGAME_FLUID_NOEVAP=1 turns evaporation off).
+    struct Ledger { double poured = 0.0, taken = 0.0, takenFree = 0.0, spring = 0.0, dried = 0.0; };
+    Ledger GetLedger();
     float FluidAt(const Planetoid& body, Vector3 local, float radius, int kind);          // m^3 of moving fluid of a kind within radius
     int KindAt(const Planetoid& body, Vector3 local, float radius);                      // the most plentiful non-water kind there, or -1
 
