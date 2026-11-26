@@ -2414,6 +2414,9 @@ int SaveRegionsFor(const TerrainDeltas& edits, std::unordered_set<TerrainDeltas:
     }
     int written = 0;
     for (const auto& kv : byRegion) written += WriteRegion(RegionFile(dir, body, kv.first), kv.second) ? 1 : 0;
+    // (#1843) A changed region with no chunks left (its edits cleared): its old file goes, or the next load brings them back.
+    if (!full)
+        for (const TerrainDeltas::Key r : dirty) if (!byRegion.count(r)) std::remove(RegionFile(dir, body, r).c_str());
     dirty.clear();
     allDirty = false;
     savedTo = dir;
@@ -3096,5 +3099,33 @@ TEST(Frames, DoublePoseMovesASurfacePointEvenly) {
     const double floatSpread = stepSpread(false), doubleSpread = stepSpread(true);
     EXPECT_GT(floatSpread, 0.005) << "the float angle's steps: uneven by cm (the test still sees the old path)";
     EXPECT_LT(doubleSpread, 1e-4) << "the double pose: even steps";
+}
+
+// (#1843) Edits cleared from a region stay cleared after an incremental save and a load (its old region file went too).
+TEST(RegionSaves, AClearedRegionStaysClearedAfterSaveAndLoad) {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "raylibgame_unit_1843";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const std::string d = dir.string();
+    const TerrainDeltas::Key key = TerrainDeltas::KeyOf(3, -2, 5);
+    auto chunk = std::make_shared<DeltaChunk>();
+    chunk->set(0, 120);
+    TerrainDeltas edited;
+    edited.chunks[key] = chunk;
+    std::unordered_set<TerrainDeltas::Key> dirty;
+    bool allDirty = true;
+    std::string savedTo;
+    EXPECT_EQ(SaveRegionsFor(edited, dirty, allDirty, savedTo, 0, d), 1) << "the first save writes the region";
+    auto loaded = LoadRegionsFor(0, d, 1);
+    ASSERT_TRUE(loaded && loaded->chunks.count(key)) << "and it loads back";
+    // The region's chunks cleared (Region_Install of an empty region: marked dirty), then an incremental save.
+    TerrainDeltas cleared;
+    dirty.insert(TerrainDeltas::RegionOf(key));
+    SaveRegionsFor(cleared, dirty, allDirty, savedTo, 0, d);
+    loaded = LoadRegionsFor(0, d, 1);
+    EXPECT_TRUE(!loaded || loaded->chunks.empty()) << "the cleared edits came back from the old region file";
+    fs::remove_all(dir, ec);
 }
 #endif
