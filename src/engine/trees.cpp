@@ -1040,12 +1040,20 @@ float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed, 
     return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), trees)) * edge; // forest presence
 }
 
+// (#1856 M20) Whether a clearing reaches a tile: built or not - one still building has no centre yet (its key's is used),
+// and its build captured the clearings as they were (it must be asked again, or its trees grow inside the new one).
+bool TreeClearingReaches(const TreeTileKey& key, const TreeTile& tile, float planetRadius, Vector3 c, float r) {
+    const bool hasCentre = tile.centre.x != 0.0f || tile.centre.y != 0.0f || tile.centre.z != 0.0f;
+    const Vector3 centre = hasCentre ? tile.centre : Vector3Scale(TreeTileCentreDir(key, planetRadius), planetRadius);
+    return Vector3Distance(centre, c) < r + kTreeTileSize;
+}
+
 void TreeSystem::addClearing(Vector3 c, float r) {
     auto next = std::make_shared<std::vector<Vector4>>(*clearings);
     next->push_back({ c.x, c.y, c.z, r });
     clearings = next;
     for (auto& kv : tiles)
-        if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
+        if (TreeClearingReaches(kv.first, kv.second, radius, c, r)) request(kv.first, kv.second, 0.0f);
 }
 
 bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone, int sizeClass) const {
@@ -1073,3 +1081,18 @@ void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpec
                 if (Vector3Distance({ t.inst[v][k], t.inst[v][k + 1], t.inst[v][k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; }
     }
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// (#1856 M20) A clearing reaches a tile still building (no centre yet: its key's is used), not only built ones.
+TEST(Trees, ClearingReachesATileStillBuilding) {
+    const float R = 60000.0f;
+    const TreeTileKey key{ 0, 5, 5 };
+    const Vector3 at = Vector3Scale(TreeTileCentreDir(key, R), R);
+    TreeTile building; // ready false, centre zero: its first build is pending
+    EXPECT_TRUE(TreeClearingReaches(key, building, R, Vector3Add(at, { 10.0f, 0.0f, 0.0f }), 20.0f));
+    EXPECT_FALSE(TreeClearingReaches(key, building, R, Vector3Scale(at, -1.0f), 20.0f)); // the far side of the planet
+    TreeTile built; built.ready = true; built.centre = at;
+    EXPECT_TRUE(TreeClearingReaches(key, built, R, at, 5.0f));
+}
+#endif
