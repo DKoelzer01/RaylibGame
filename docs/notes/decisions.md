@@ -259,7 +259,8 @@ Rulings 2026-11-24 to 2026-11-26 (user)
   develop -> main, each promotion only when the user says so.
 - CI (user, 2026-11-26, #1871): run fewer tests per change; the full suite before staging -> develop and always before
   develop -> main.
-- Sessions (user, 2026-11-26): the user clears sessions near 250K tokens. A Tools and CI session owns CI and tooling
+- Sessions (user, 2026-11-26): the coordinator may stop and restart topic sessions itself near 250K tokens
+  (`tools/coord/cycle_session.sh`, #1897; before it, the user cleared them by hand). A Tools and CI session owns CI and tooling
   (#1871, #1874). Local model plan: the coordinator drives the subject sessions; they design and decide, and implement
   through the local model once it runs.
 - Research picks (user, 2026-11-26): progression state (research, blueprints, map) is team-scoped and sent to late
