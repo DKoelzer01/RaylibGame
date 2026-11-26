@@ -7699,9 +7699,12 @@ int main(int argc, char** argv)
                     } else if (pondPhase == 3) {
                         static float h0 = 0.0f; static int inWaterFrames = 0, frames = 0;
                         const float h = Vector3Length(p->toLocalOf(player.position, world.renderOrigin));
-                        if (t < 0.5 || h0 == 0.0f) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); } // the first frame here can come late (a hitch)
+                        // The first frame here can come late (a hitch, or the spawn's loading screen: up to 20 s, #1787): the swim is
+                        // timed from it, and judged only on a later frame (judging on this one counted no frames: a FAIL).
+                        const bool first = t < 0.5 || h0 == 0.0f;
+                        if (first) { h0 = h; inWaterFrames = frames = 0; pondT0 = GetTime() - std::min(t, 0.5); }
                         else { ++frames; inWaterFrames += player.inWater ? 1 : 0; }
-                        if (t > 3.0) {
+                        if (!first && t > 3.0) {
                             const float sink = (h0 - h) / 2.5f;
                             const bool pass = frames > 0 && inWaterFrames * 10 >= frames * 9 && sink < 1.0f;
                             printf("bench: pond: swimming in the pit: in water %d%% of frames, sank %.2f m/s (falling in air would be ~%.0f m/s) -> %s\n",
