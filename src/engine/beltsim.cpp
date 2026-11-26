@@ -460,7 +460,7 @@ static std::vector<uint32_t> FixedBeltRun() {
 TEST(BeltSim, FixedRunMatchesTheGoldenHash) {
     uint64_t h = 1469598103934665603ull; // FNV-1a over the run's checksums
     for (uint32_t s : FixedBeltRun()) h = (h ^ s) * 1099511628211ull;
-    constexpr uint64_t kGolden = 0ull;
+    constexpr uint64_t kGolden = 15827766116492930527ull;
     EXPECT_EQ(h, kGolden) << "the fixed belt run changed (#1015): see the comment above before updating the constant";
 }
 
