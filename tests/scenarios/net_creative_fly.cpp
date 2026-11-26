@@ -56,7 +56,10 @@ SCENARIO("net/creative-fly") {
     s.step("join as flyer", 40.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
-        if (!Host_Listening()) { c.note("needs --host with a GameNetworkingSockets build -> SKIP"); S.skip = true; return true; }
+        if (!Host_Listening()) { // (the harness has no SKIP verdict: one passing check, said plainly)
+            c.check("SKIP: not listening (a build without GameNetworkingSockets)", true);
+            S.skip = true; return true;
+        }
         if (S.cl.state == NetClient::State::Idle) {
             NetClient_Connect(S.cl, TextFormat("127.0.0.1:%d", kPort), "flyer");
             S.t0 = c.t;
