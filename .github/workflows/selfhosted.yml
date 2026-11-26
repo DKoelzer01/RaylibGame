@@ -29,9 +29,9 @@ on:
         default: planet multiplayer
         type: string
       fluid_pressure:
-        description: "Run the headless scenarios with the fluid pressure pass on (#1168: RAYLIBGAME_FLUID_PRESSURE=1)"
+        description: "The fluid pressure pass for the headless scenarios (#1168; on by default since #1898, 0 turns it off)"
         required: false
-        default: "0"
+        default: "1"
         type: choice
         options: ["0", "1"]
       extra_scenarios:
@@ -169,7 +169,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/flow 400 --scenario-out "$RUN/scenarios/parity" > parity.log 2>&1
           rc=$?
           # The pressure pass (#1168) the same way: the U-bend with the pass on, GPU against CPU.
-          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend-pressure 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
+          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" --scenario-parity fluid/u-bend 400 --scenario-out "$RUN/scenarios/parity-pressure" > parity-pressure.log 2>&1
           set -e
           grep -E "^scenario: parity" parity.log || true
           grep -E "^scenario: parity" parity-pressure.log || true
@@ -187,7 +187,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0" # #1034: timing gates are reported, not judged, on this shared machine
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }} # #1168: the pressure pass for every fluid scene, when asked
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '1' }} # #1168/#1898: the pressure pass (on unless asked off)
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           # Part 1: fluid, frames, factory.
@@ -216,7 +216,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '0' }}
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '1' }}
         run: |
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
