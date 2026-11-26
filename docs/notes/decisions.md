@@ -244,6 +244,18 @@ Rulings 2026-11-23 (user)
   work"): .glb in assets/models/<pack>/, THIRDPARTY entry per asset.
 - Sessions (CLAUDE.md, PR #1699): audio moved to UI/UX; magic split by feature.
 
+Rulings 2026-11-24 to 2026-11-26 (user)
+- Belt speed (#1735): **6/64 cell per tick** (1.875 cells/s, 7.5 items/s) accepted; check it in playtest.
+- Hammer heads (#1613): a hammer head forges **one tier easier than its metal**, so a bronze or iron hammer forges the
+  steel hammer's head. Chain: stone hammer -> bronze -> iron/steel.
+- Plots (#1771): a part placed on bare ground starts a new plot at the aim, facing the player or a rotation, not the
+  cardinal grid.
+- Sky light (#1765): deferred.
+- Process: the coordinator's priority picks stand without a GUESS mark; the user reassigns when they want.
+- Working title: "Ringbound" (2026-11-24).
+- Agents (2026-11-25): a local model does the "doing" (implementing and testing small sectioned chunks, complex
+  problems included); Claude keeps all design, decomposition, review and ship decisions.
+
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.
 
