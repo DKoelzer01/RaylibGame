@@ -817,7 +817,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
                 if (!pl->collideSphere(c, radius / p.scale, nl, &hits)) continue;
                 for (int k = 0; k < hits.count; ++k) { // the floor's own normal, not its sum with a wall beside the feet (#1732)
                     const Vector3 n = p.dirToWorld(hits.n[k]);
-                    if (Vector3DotProduct(n, up) > walkableCos && (!onGround || Vector3DotProduct(n, up) > Vector3DotProduct(groundNormal, up))) { onGround = true; groundNormal = n; }
+                    if (Vector3DotProduct(n, up) > 0.55f && (!onGround || Vector3DotProduct(n, up) > Vector3DotProduct(groundNormal, up))) { onGround = true; groundNormal = n; }
                 }
                 if (onGround) break;
             }
@@ -827,7 +827,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
     if (!onGround && Vector3DotProduct(Vector3Subtract(velocity, collideFrameVel), up) <= 0.5f) {
         float dist; Vector3 n;
         const float skin = 0.12f;
-        if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > walkableCos) { // (#1855 M5: grip boots lower walkableCos; 0.55 here kept them off steep ground)
+        if (TerrainSurfaceDistance(p, Vector3Add(feet, Vector3Scale(up, radius)), dist, n) && dist < radius + skin && Vector3DotProduct(n, up) > 0.55f) {
             // Settle onto it, past a 2 cm dead band: the distance here is a linear estimate and the
             // push-out a bisection; settling every frame see-sawed between the two by 5-9 mm.
             const float gap = dist - radius;
@@ -1002,7 +1002,7 @@ void Player::CacheNetState(const Scene& world) {
     Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
     if (!b) return;
     const Quaternion toLocal = QuaternionInvert(b->rotationQuat()); // (dirToLocal normalizes: a speed needs the rotation)
-    const Vector3 rel = (grounded || fxActive) ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat())); // (#1855 M3) the frame path flies against the ground already
+    const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
     netCache.body = b->netId;
     netCache.local = b->toLocalD(position);
     netCache.vel = Vector3RotateByQuaternion(rel, toLocal);
@@ -1014,7 +1014,7 @@ bool Player::netState(const Scene& world, NetState& s) const {
     if (!netCached || netCacheSpawns != spawns) { // never stepped since a spawn: as it stands now
         Planetoid* b = (grounded && groundBody) ? groundBody : nearest ? nearest : airBody;
         if (!b) return false;
-        const Vector3 rel = (grounded || fxActive) ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat())); // (M3)
+        const Vector3 rel = grounded ? velocity : Vector3Subtract(velocity, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
         s.body = b->netId;
         // (#856) The anchor's body-local feet, not the world position: a player spawned and not stepped yet (a server's
         // joiner still loading its world) keeps its spawn-time world position while the planet turns under it (~105 m/s at
@@ -1038,10 +1038,6 @@ bool Player::applyNetState(Scene& world, const NetState& s) {
     position = b->toWorldD(s.local);
     const Vector3 rel = Vector3RotateByQuaternion(s.vel, b->rotationQuat());
     velocity = s.grounded ? rel : Vector3Add(rel, b->surfaceVelocity((position - world.renderOrigin).toFloat()));
-    // (#1855 M4) The state is the server's now: drop the frame path's stored flight (its velocity, kept turned with the body, and
-    // the view carry), or the next step rebuilt the old velocity from it and the correction was lost. The frame path starts over
-    // from this world-frame velocity, as after a teleport.
-    fxActive = false; airVelBody = 0; viewBody = 0;
     grounded = s.grounded; hovering = s.hovering;
     posture = (Posture)std::min<uint8_t>(s.posture, (uint8_t)Posture::Prone);
     height = postureHeight(posture);
