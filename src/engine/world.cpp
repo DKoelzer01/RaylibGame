@@ -643,7 +643,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.waterMaterial);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
-    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f }; // night side, planets and moons only, as for terrain (#1859 L9)
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     if (ctx.bindSunLighting) ctx.bindSunLighting(ctx.waterMaterial->shader); // cliffs and builds shade the water (slots 6-7)
     Fluid::BindKindUniforms(ctx.waterMaterial->shader); // per-vertex fluid kinds (oil, ...): their colours
@@ -666,7 +666,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     if (!isActive || drawList.empty() || !ctx.grassShader) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
-    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f }; // night side, planets and moons only, as for terrain (#1859 L9)
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
     for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f && !ch->fadeOut) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp); not a node fading out (#243)
 }

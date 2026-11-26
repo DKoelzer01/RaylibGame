@@ -875,7 +875,7 @@ void Scene::drawScene(int gamestate) {
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3); // (#1859 L6: the sun, as their rings; lightDirection is the moon at night)
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,

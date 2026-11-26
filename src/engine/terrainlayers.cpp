@@ -56,6 +56,16 @@ namespace {
         const float a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), d = at(x0 + 1, y0 + 1);
         return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
     }
+    // The same, stretched: cu cells across and cv down, each wrapping (#1859 L1-L4: ValueNoise(u * 0.5, v, n) to stretch
+    // left a seam where the tile's right edge met its left).
+    float ValueNoise2(float u, float v, int cu, int cv, uint32_t seed) {
+        const float x = u * cu, y = v * cv;
+        const int x0 = (int)floorf(x), y0 = (int)floorf(y);
+        const float fx = Fade(x - x0), fy = Fade(y - y0);
+        auto at = [&](int i, int j) { return Rand01(((i % cu) + cu) % cu, ((j % cv) + cv) % cv, seed); };
+        const float a = at(x0, y0), b = at(x0 + 1, y0), c = at(x0, y0 + 1), d = at(x0 + 1, y0 + 1);
+        return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+    }
     float Fbm(float u, float v, int cells, int octaves, uint32_t seed) {
         float sum = 0.0f, amp = 0.5f, norm = 0.0f;
         for (int o = 0; o < octaves; ++o) { sum += amp * ValueNoise(u, v, cells << o, seed + o * 101u); norm += amp; amp *= 0.5f; }
@@ -153,7 +163,7 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     const float warp = Fbm(u, v, 3, 4, 73u);
                     const float band = v * 9.0f + warp * 1.6f;                       // 9 wavy layers per tile (seamless)
                     const float strata = 0.5f + 0.5f * sinf(band * 6.2831853f);
-                    const float layerTone = Rand01((int)floorf(band) & 15, 0, 75u);  // each layer a little lighter or darker
+                    const float layerTone = Rand01((((int)floorf(band) % 9) + 9) % 9, 0, 75u); // each layer a little lighter or darker (mod 9: the tile's 9 layers repeat, #1859)
                     const float grain = Fbm(u, v, 24, 4, 72u);
                     c = Mix({ 92, 91, 95, 255 }, { 158, 154, 148, 255 }, 0.5f * grain + 0.22f * strata + 0.25f * layerTone);
                     float f1, f2; uint32_t id;
@@ -166,7 +176,7 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                 }
                 case LayerClay: { // clay (#206): smooth warm terracotta, faint smears, a fine network of drying cracks
                     const float tone = Fbm(u, v, 4, 4, 81u);
-                    const float smear = ValueNoise(u * 0.5f, v, 24, 82u);
+                    const float smear = ValueNoise2(u, v, 12, 24, 82u); // (smears twice as long across: 12 cells by 24)
                     c = Mix({ 150, 92, 64, 255 }, { 196, 134, 98, 255 }, 0.65f * tone + 0.25f * smear);
                     float f1, f2; uint32_t id;
                     Worley(u, v, 34, 83u, f1, f2, id); // ~0.6 m plates, faint (#609: 1.4 m plates with dark cracks read as paving)
@@ -191,7 +201,7 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                 }
                 case LayerSilt: { // floodplain silt (#595): fine pale grey-brown, faint flow streaks, a scatter of dark flecks
                     const float tone = Fbm(u, v, 6, 4, 101u);
-                    const float streak = ValueNoise(u * 0.25f, v, 40, 102u);
+                    const float streak = ValueNoise2(u, v, 10, 40, 102u); // (streaks four times as long across: 10 cells by 40)
                     c = Mix({ 138, 122, 96, 255 }, { 176, 160, 130, 255 }, 0.6f * tone + 0.3f * streak);
                     if (Rand01(x, y, 103u) > 0.988f) c = Scale(c, 0.62f);
                     // Damp darker patches and a fine grain; no crack plates (#609: 2 m polygons read as a paved road).
@@ -241,7 +251,7 @@ Image GenerateTerrainLayerImage(int layer, int size) {
                     break;
                 }
                 case LayerMarble: { // near-white, soft grey veins
-                    const float vein = fabsf(sinf((u * 0.8f + v) * 6.2831853f * 2.0f + Fbm(u, v, 4, 4, 131u) * 7.0f));
+                    const float vein = fabsf(sinf((u * 0.5f + v) * 6.2831853f * 2.0f + Fbm(u, v, 4, 4, 131u) * 7.0f)); // (whole cycles across, #1859: 0.8 left a seam)
                     c = Mix({ 226, 224, 220, 255 }, { 246, 245, 242, 255 }, Fbm(u, v, 6, 3, 132u));
                     c = Mix(Scale(c, 0.68f), c, std::clamp(vein / 0.12f, 0.0f, 1.0f));
                     break;
@@ -408,3 +418,35 @@ void UnbindTextureArray(int unit) {
     glad_glActiveTexture(GL_TEXTURE0_ + kTerrainDetailUnit);
     glad_glBindTexture(GL_TEXTURE_2D_ARRAY_, 0);
 }
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#1859 L1-L4): every terrain layer tiles without a seam ----
+#include <gtest/gtest.h>
+
+// Mean colour step (sum of |dR|+|dG|+|dB| per pixel) between column (or row) a and b of the image.
+static double LayerLineStep(const Image& img, int a, int b, bool columns) {
+    const Color* px = (const Color*)img.data;
+    const int n = img.width;
+    double sum = 0.0;
+    for (int i = 0; i < n; ++i) {
+        const Color p = columns ? px[i * n + a] : px[a * n + i], q = columns ? px[i * n + b] : px[b * n + i];
+        sum += abs(p.r - q.r) + abs(p.g - q.g) + abs(p.b - q.b);
+    }
+    return sum / n;
+}
+
+TEST(TerrainLayers, EveryLayerTilesWithoutASeam) {
+    constexpr int kSize = 256;
+    for (int layer = 0; layer < LayerCount; ++layer) {
+        Image img = GenerateTerrainLayerImage(layer, kSize);
+        for (bool columns : { true, false }) {
+            // The step across the wrap (last line to the first) against the biggest step between neighbouring lines
+            // inside the tile: a seam stands out above every one of them.
+            double inner = 0.0;
+            for (int i = 0; i + 1 < kSize; ++i) inner = std::max(inner, LayerLineStep(img, i, i + 1, columns));
+            const double wrap = LayerLineStep(img, kSize - 1, 0, columns);
+            EXPECT_LE(wrap, inner * 1.15 + 1.0) << TerrainLayerName(layer) << (columns ? ": left/right" : ": top/bottom") << " edge, wrap step " << wrap << " vs at most " << inner << " inside";
+        }
+        UnloadImage(img);
+    }
+}
+#endif
