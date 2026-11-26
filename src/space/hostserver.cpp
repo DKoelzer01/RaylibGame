@@ -1489,7 +1489,9 @@ namespace {
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
-        if (!h.build.empty() && !Build_SameCommit(Build_CommitOf(h.build), BuildCommit())) { // (#1906) e5f5f13 == e5f5f132 Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
+        if (!h.build.empty() && !Build_SameCommit(Build_CommitOf(h.build), BuildCommit())) { // (#1906) e5f5f13 == e5f5f132
+            Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return;
+        }
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
