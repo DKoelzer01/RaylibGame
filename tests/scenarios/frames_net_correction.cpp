@@ -29,6 +29,7 @@ SCENARIO("frames/net-correction") {
         S.dir = c.spawnDirWorld();
         const float r = c.field->radius + c.field->elevation(S.dir) + 60.0f;
         S.placed = DVec3(S.dir.x * r, S.dir.y * r, S.dir.z * r);
+        player.flyMode = false; // (scenarios start flying: the fly branch returns before the fall and the frame path)
         player.placeAt(c.world, *c.body, (c.body->toWorldD(S.placed) - c.world.renderOrigin).toFloat());
         return true;
     });
