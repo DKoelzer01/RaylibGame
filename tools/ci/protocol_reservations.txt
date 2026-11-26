@@ -11,3 +11,4 @@
 44 | ladder          | #1271 | the ladder rework (assembler mode, recipe pick in MachineView)
 45 | ladder          | #1446 | item instance data in inventory deltas, drops, graves
 46 | ladder          | #1446 | item instance data in chest and machine slots
+53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
