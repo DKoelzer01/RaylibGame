@@ -13,6 +13,14 @@
 ItemDB itemDB;
 // (inventory: the local PlayerSession's, src/space/playersession.cpp, #313)
 
+namespace {
+// A placeable part's item stacks as a block (256). Not shapes, the lever, or the parts only the world places (#812): a
+// meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must stay a resource.
+bool PartItemIsBlock(PartType t) {
+    return !IsShape(t) && t != PartType::Meteorite && t != PartType::PressurePlate && t != PartType::GasVent && t != PartType::Lever;
+}
+} // namespace
+
 const char* RetiredItem(const std::string& id) { return id == "concrete" ? "stone" : ""; }
 
 static std::string Trim(const std::string& s) {
@@ -73,9 +81,10 @@ bool ItemDB::loadExtraText(const std::string& text) {
         if (valid) recipeList.push_back(r);
         else LOG_WARN("Items", "recipes: unknown item in '%s'\n", rl.c_str());
     }
-    // Placeable parts named here are blocks, as load() makes them.
+    // Placeable parts named here are blocks, as load() makes them (#1858 M16: the same parts skipped, or stone and nickel-iron
+    // ore from the world-only parts became blocks stacking to 256).
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (const char* item = PartCostItem((PartType)t); item && !IsShape((PartType)t) && (PartType)t != PartType::Lever)
+        if (const char* item = PartCostItem((PartType)t); item && PartItemIsBlock((PartType)t))
             if (auto it = byId.find(item); it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
     return true;
 }
@@ -163,7 +172,7 @@ bool ItemDB::load(const char* itemsPath, const char* recipesPath) {
     // places (#812): a meteorite and dungeon traps name the material they break into (nickel-iron ore, stone), which must
     // stay a resource (stone as a block stacked to 256 and lost nothing on death).
     for (int t = 0; t < (int)PartType::Count; ++t)
-        if (IsShape((PartType)t) || (PartType)t == PartType::Meteorite || (PartType)t == PartType::PressurePlate || (PartType)t == PartType::GasVent || (PartType)t == PartType::Lever) continue; else
+        if (!PartItemIsBlock((PartType)t)) continue; else
         if (const char* item = PartCostItem((PartType)t)) {
             auto it = byId.find(item);
             if (it != byId.end() && itemList[it->second].kind == ItemKind::Resource) itemList[it->second].kind = ItemKind::Block;
@@ -619,6 +628,19 @@ TEST_F(InventoryTest, LunacreteIsGoneAndOldStacksBecomeStone) {
 }
 
 // (#1250) magic_items.txt adds its items after the table; items.txt's own stay as they were.
+// (#1858 M16) Loading extra text keeps the world-only parts' items resources, as load() does: stone (a pressure plate's
+// material) and nickel-iron ore (a meteorite's) must not become blocks stacking to 256.
+TEST(ItemDBExtra, ExtraTextKeepsWorldPartItemsResources) {
+    ItemDB db;
+    ASSERT_TRUE(db.load("resources/data/items.txt", "resources/data/recipes.txt"));
+    std::vector<std::pair<std::string, ItemKind>> before;
+    for (int t = 0; t < (int)PartType::Count; ++t)
+        if (const char* item = PartCostItem((PartType)t)) if (const ItemDef* it = db.find(item)) before.push_back({ item, it->kind });
+    ASSERT_TRUE(db.loadExtraText(""));
+    for (const auto& b : before) EXPECT_EQ(db.find(b.first)->kind, b.second) << b.first << " changed kind on an extra load";
+    if (const char* meteor = PartCostItem(PartType::Meteorite)) EXPECT_EQ(db.find(meteor)->kind, ItemKind::Resource) << meteor;
+}
+
 TEST(ItemDBExtra, MagicItemsAddWithoutReplacing) {
     ItemDB db;
     ASSERT_TRUE(db.load("resources/data/items.txt", "resources/data/recipes.txt"));

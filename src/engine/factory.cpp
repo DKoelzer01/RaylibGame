@@ -801,9 +801,11 @@ void ApplyLayout(const LayoutMsg& L) {
         auto kept = byPart.find(old.part);
         if (kept != byPart.end() && next[kept->second].type == old.type) continue;
         // (#1254) fluid (essence) is not an item: it is lost with its vessel
-        for (int i = 0; i < InSlots(old); ++i) if (old.in[i].count > 0 && !tables.fluid(old.in[i].item)) refunds.push_back({ old.in[i].item, old.in[i].count, L.refundTo });
-        for (int i = 0; i < kSlots; ++i) if (old.out[i].count > 0 && !tables.fluid(old.out[i].item)) refunds.push_back({ old.out[i].item, old.out[i].count, L.refundTo });
-        if (old.fuel.count > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo });
+        // (#1848) with their fractions: a chest's 0.4 dirt is a slot with count 0 and centi 40
+        auto refund = [&](const Stack& s) { if ((s.count > 0 || s.centi > 0) && !tables.fluid(s.item)) refunds.push_back({ s.item, s.count, L.refundTo, s.centi }); };
+        for (int i = 0; i < InSlots(old); ++i) refund(old.in[i]);
+        for (int i = 0; i < kSlots; ++i) refund(old.out[i]);
+        if (old.fuel.count > 0 || old.fuel.centi > 0) refunds.push_back({ old.fuel.item, old.fuel.count, L.refundTo, old.fuel.centi });
     }
     ps->machines = std::move(next);
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
@@ -818,6 +820,9 @@ void RotationStep(PlotSim& ps, int dt) {
     for (const Machine& m : ps.machines) if (Def(m.type).power == Power::Rotation) ps.rot.SetRunning(m.part, m.recipe >= 0);
     ps.rot.Step(dt);
 }
+
+// (#1847) A craft still to do: a finished one waiting on full outputs draws no power (it kept the generators burning).
+static bool Crafting(const Machine& m) { return m.recipe >= 0 && m.progress < tables.recipes[m.recipe].ticks; }
 
 // One step of dt ticks for a plot.
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
@@ -836,7 +841,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 batteryRoom += std::min(kBatteryCapacity - m.energy, kBatteryRate * dt);
             } else if (def.power == Power::Eu) {
                 if (def.volts < net.voltage) { m.status = MachineStatus::Overvoltage; continue; }
-                if (m.recipe >= 0) demand += (long long)tables.recipes[m.recipe].eu * dt;
+                if (Crafting(m)) demand += (long long)tables.recipes[m.recipe].eu * dt;
             }
         }
         // Generators burn for the consumers and the batteries' room, in a fixed order (#229: not whatever the load).
@@ -856,7 +861,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
         for (int mi : net.machines) {
             Machine& m = ps.machines[mi];
             const MachineDef& def = Def(m.type);
-            if (def.power == Power::Eu && m.recipe >= 0 && def.volts >= net.voltage) {
+            if (def.power == Power::Eu && Crafting(m) && def.volts >= net.voltage) {
                 const long long need = (long long)tables.recipes[m.recipe].eu * dt;
                 m.received = (int)(demand <= avail ? need : need * avail / std::max(1LL, demand));
                 if (m.received > 0) ps.stats.euUsed[(int)m.type].add(m.received); // (#1199)
@@ -1491,7 +1496,7 @@ void SimLoop() {
                 if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
-                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
+                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to, im.centi }); // (#1849) and its fraction
                     if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     if (im.kind == 7) filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     continue;
@@ -2611,6 +2616,31 @@ TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallTh
     plots.clear(); plotIndexDirty = true;
 }
 
+// (#1847) A machine whose craft is done but can't get out (outputs full) draws no power: its generator stops burning.
+TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 } }, {}, Row(0, 4, -1)));
+    PlotSim& ps = *FindPlot(9, 2);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    Machine& mac = ps.machines[ps.byPart.at(1)];
+    InsertInto(mac, tables.item("iron_ore"), 64, false, b);
+    for (Stack& o : mac.out) { o = Stack{}; o.item = tables.item("dirt"); o.count = 64; } // no room for what it makes
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 400; ++t) TickPlot(ps, 1, made, active); // the first craft finishes its work and waits
+    ASSERT_GE(mac.recipe, 0);
+    ASSERT_EQ(mac.progress, tables.recipes[mac.recipe].ticks) << "done, waiting on the outputs";
+    const Machine& gen = ps.machines[ps.byPart.at(0)];
+    const int fuel = gen.fuel.count, energy = gen.energy;
+    for (int t = 0; t < 2000; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(made, 0) << "nothing fits";
+    EXPECT_EQ(gen.fuel.count, fuel) << "no coal burnt for a machine that can't craft";
+    EXPECT_LE(gen.energy, energy);
+    EXPECT_EQ(mac.received, 0);
+    plots.clear(); plotIndexDirty = true;
+}
+
 // (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the
 // summary at once with the caps it had (no minute of measuring).
 TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
@@ -2716,6 +2746,30 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     Factory::WaitTicks(2);
     EXPECT_EQ(back("dirt"), 290);
     EXPECT_EQ(back("sand"), 30);
+
+    // (#1849) An insert whose plot is gone comes back whole, its fraction too.
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    Factory::Insert(99, 7, 0, "dirt", 2, 0, 50);
+    Factory::WaitTicks(2);
+    EXPECT_EQ(back("dirt"), 250) << "2.5 dirt back";
+
+    // (#1848) Removing the chest gives back its contents with their fractions (0.4 dirt is a slot with count 0).
+    Factory::InsertSlot(11, 1, 0, "dirt", 0, 0, 0, 40);
+    Factory::InsertSlot(11, 1, 0, "sand", 2, 1, 0, 50);
+    Factory::WaitTicks(2);
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    {
+        LayoutMsg L{};
+        L.body = 11; L.plot = 1; L.version = 2; // the macerator only: the chest was broken
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ 3 + dx, dy, dz });
+        L.machines.push_back({ 1, PartType::Macerator }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        std::lock_guard<std::mutex> q(queueMutex);
+        layoutQueue.push_back(L);
+    }
+    Factory::WaitTicks(3);
+    EXPECT_EQ(back("dirt"), 40) << "the chest's 0.4 dirt";
+    EXPECT_EQ(back("sand"), 250) << "and its 2.5 sand";
     Factory::Stop();
     plots.clear(); plotIndexDirty = true;
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
