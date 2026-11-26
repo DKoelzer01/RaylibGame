@@ -36,6 +36,15 @@ bool Net_Send(uint32_t conn, const void* data, uint32_t size, bool reliable);
 // sender that streams (the join sync, #776) holds back while this is high instead of overflowing the send buffer.
 uint32_t Net_PendingBytes(uint32_t conn);
 int Net_ReliableSendFailures();                        // reliable sends the transport refused (should stay 0)
+// (#1836, #1421) Every send the transport refused, reliable or not: counted per message type (the payload's first byte, a
+// NetMsg id) and result; the first refusal of each (type, reliable, result) is printed. Net_NoteSendRefused is called by the
+// send path (and by tests); the summary is "" when nothing was refused, and is printed when a connection closes.
+void Net_NoteSendRefused(uint32_t conn, const void* data, uint32_t size, bool reliable, const char* result);
+int Net_SendFailures();
+std::string Net_SendFailureSummary();
+// (#1836) The transport's queue on a connection (bytes) and its ping: false where unknown (no GNS, or not connected).
+struct NetQueueStatus { int pendingReliable = 0, pendingUnreliable = 0, sentUnacked = 0, pingMs = -1; };
+bool Net_QueueStatus(uint32_t conn, NetQueueStatus& out);
 int Net_Receive(std::vector<NetMessage>& out, int max = 64); // appends; returns how many
 void Net_Close(uint32_t conn);
 std::string Net_RemoteAddress(uint32_t conn);           // "ip:port" of the other end ("" unknown; #345 IP bans)
