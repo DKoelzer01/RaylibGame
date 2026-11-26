@@ -187,7 +187,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0" # #1034: timing gates are reported, not judged, on this shared machine
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '1' }} # #1168/#1898: the pressure pass (on unless asked off)
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }} # #1168/#1898: the pressure pass (on unless asked off)
         run: |
           # Every match runs in its own process; perf scenarios are left out (timing belongs on a quiet machine, this PC).
           # Part 1: fluid, frames, factory.
@@ -216,7 +216,7 @@ jobs:
         working-directory: ${{ env.RUN }}
         env:
           RAYLIBGAME_TIMING_GATES: "0"
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure || '1' }}
+          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }}
         run: |
           set +e
           bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
