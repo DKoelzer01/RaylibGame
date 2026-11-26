@@ -43,6 +43,10 @@ int Host_GravesMade();
 int Host_DropsMade();                                 // (#865) drops made for joined players
 int Host_CreativeGives();                             // (#866) creative gives done for joined players
 int Host_CreativeRefused();                           // (#866) refused: not creative
+int Host_LoadoutsRefused();                           // (#1868) loadouts relayed as bare hands: the item wasn't in the player's inventory
+std::string Host_HeldItem(uint32_t session);          // (#1868) the item the server lets a session use ("" bare hands)
+int Host_ConnectionsRefused();                        // (#1868) connections refused at admission (per-address or pending cap)
+int Host_SilentDropped();                             // (#1868) connections closed for never saying Hello
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed
@@ -85,12 +89,12 @@ uint64_t Host_SyncBytesSent();
 // line first); a chat line from the server (fromSession 0) or a player, to everyone (toSession 0) or one session; the message of
 // the day (in the Welcome); a join check (bans, whitelist: false refuses with NetReject::Banned and why); a handler for
 // players' chat (else it goes to everyone); joins, leaves and refusals for the audit log.
-struct HostPlayer { uint32_t session = 0; std::string name; bool online = false; std::string address; };
+struct HostPlayer { uint32_t session = 0; std::string name; bool online = false; std::string address; std::string uuid; }; // (#1868 uuid)
 std::vector<HostPlayer> Host_ListPlayers();
 bool Host_Kick(const std::string& name, const std::string& reason);
 void Host_Say(const std::string& text, uint32_t fromSession = 0, uint32_t toSession = 0);
 void Host_SetMotd(const std::string& text);
-void Host_SetJoinCheck(std::function<bool(const std::string& name, const std::string& address, std::string& why)> check);
+void Host_SetJoinCheck(std::function<bool(const std::string& name, const std::string& address, const std::string& uuid, std::string& why)> check); // (#1868: uuid)
 void Host_SetChatHandler(std::function<void(uint32_t session, const std::string& name, const std::string& text)> handler);
 void Host_SetEventHook(std::function<void(const char* what, uint32_t session, const std::string& detail)> hook);
 // Tests (#349): messages the server's guard dropped (oversized, unexpected, malformed, over-rate, impossible), connections kicked.

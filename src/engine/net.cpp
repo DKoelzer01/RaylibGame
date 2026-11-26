@@ -132,6 +132,7 @@ bool initialised = false;
 HSteamListenSocket listenSocket = k_HSteamListenSocket_Invalid;
 HSteamNetPollGroup pollGroup = k_HSteamNetPollGroup_Invalid;
 std::unordered_set<uint32_t> connected;
+std::vector<uint32_t> newIncoming; // (#1868) incoming connections that came up since Net_TakeNewIncoming
 
 void OnStatus(SteamNetConnectionStatusChangedCallback_t* info) {
     ISteamNetworkingSockets* s = SteamNetworkingSockets();
@@ -143,6 +144,9 @@ void OnStatus(SteamNetConnectionStatusChangedCallback_t* info) {
         break;
     case k_ESteamNetworkingConnectionState_Connected:
         connected.insert(info->m_hConn);
+        // (#1868) the server learns of it now, not at its first message: a connection that stays silent still counts against
+        // the limits and times out
+        if (info->m_info.m_hListenSocket != k_HSteamListenSocket_Invalid) newIncoming.push_back(info->m_hConn);
         break;
     case k_ESteamNetworkingConnectionState_ClosedByPeer:
     case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
@@ -217,6 +221,7 @@ std::string Net_RemoteAddress(uint32_t conn) {
     return buf;
 }
 bool Net_IsConnected(uint32_t conn) { return connected.count(conn) > 0; }
+void Net_TakeNewIncoming(std::vector<uint32_t>& out) { out.insert(out.end(), newIncoming.begin(), newIncoming.end()); newIncoming.clear(); }
 int Net_ConnectionCount() { return (int)connected.size(); }
 
 namespace {
@@ -304,6 +309,7 @@ int Net_ReliableSendFailures() { return 0; }
 uint32_t Net_PendingBytes(uint32_t) { return 0; }
 bool Net_QueueStatus(uint32_t, NetQueueStatus&) { return false; }
 bool Net_IsConnected(uint32_t) { return false; }
+void Net_TakeNewIncoming(std::vector<uint32_t>&) {}
 int Net_ConnectionCount() { return 0; }
 bool Net_Send(uint32_t, const void*, uint32_t, bool) { return false; }
 int Net_Receive(std::vector<NetMessage>&, int) { return 0; }

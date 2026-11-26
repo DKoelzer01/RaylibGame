@@ -85,7 +85,7 @@ namespace {
     std::vector<Session> sessions;
     // #326 / #345: the dedicated server's hooks (main.cpp sets them in --server mode).
     std::string motd;
-    std::function<bool(const std::string& name, const std::string& address, std::string& why)> joinCheck;
+    std::function<bool(const std::string& name, const std::string& address, const std::string& uuid, std::string& why)> joinCheck; // (#1868: and the id)
     std::function<void(uint32_t session, const std::string& name, const std::string& text)> chatHandler;
     std::function<void(const char* what, uint32_t session, const std::string& detail)> eventHook;
     uint32_t nextSession = 1;
@@ -138,6 +138,23 @@ namespace {
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
+    // (#1868) The item a player really holds: its loadout's, when the inventory the server keeps for it has one; else hands ("").
+    // Read where it counts (digging, felling, hitting), so an item that left the inventory after the loadout came stops too.
+    // Slots are matched by id (not Inventory::count: tools that carry item data are left out of counts). Creative players may
+    // take any item from the Catalog, so their loadout stands as sent.
+    bool InventoryHolds(const Inventory& inv, const std::string& id) {
+        for (const InvSlot& s : inv.grid()) if (!s.empty() && s.id == id) return true;
+        return false;
+    }
+    std::string HeldItem(uint32_t session) {
+        std::string held;
+        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        if (held.empty()) return held;
+        const auto rit = remotes.find(session);
+        if (rit == remotes.end()) return "";
+        return rit->second.creative || InventoryHolds(rit->second.inventory, held) ? held : std::string();
+    }
+    int loadoutsRefused = 0; // (#1868) loadouts naming an item the player doesn't have (tests)
     void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
     void TeamXp(uint32_t session, const char* event, double n);         // (#920) and teammates' share of it (below)
     // (#920) A remote player's perk multipliers by stat name (Skills_Stat on the skills the server keeps for them).
@@ -713,8 +730,7 @@ namespace {
             }
             if (const float d = Vector3Distance(pl.base, me); d > kPlantReach * b->scale) { refuseLog(TextFormat("out of reach (%.1f m)", d), "That's out of reach"); return; }
             if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuseLog(why.c_str(), why.c_str()); return; } // (#343)
-            std::string held;
-            for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+            const std::string held = HeldItem(session); // (#1868) only if the player has it
             const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuseLog(TextFormat("too soon (%.2f s of %.2f s, %d swings with '%s')", SimTime() - rm.lastFellAt, minGap, hits, held.c_str()), nullptr); return; }
@@ -878,7 +894,7 @@ namespace {
             auto rit = remotes.find(s.id);
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
-            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
+            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, HeldItem(s.id) }); // (#337: the dead aren't prey; #1868 held: only if had)
         }
         // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
         // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
@@ -965,7 +981,7 @@ namespace {
             }
             return;
         }
-        std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const std::string held = HeldItem(session); // (#1868) only if the player has it
         const ToolSpec t = ToolOf(held);
         const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
         std::vector<std::pair<std::string, int>> drops;
@@ -1460,7 +1476,11 @@ namespace {
     // (#349) connections: at most kMaxPerAddress from one address at once (loopback exempt: the host's own machine and the
     // tests), and a connection must say Hello within kHelloSeconds.
     const int kMaxPerAddress = getenv("RAYLIBGAME_MAX_PER_ADDRESS") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PER_ADDRESS"))) : 8;
-    constexpr double kHelloSeconds = 10.0;
+    // (#1868) and at most kMaxPending connections that haven't joined yet (from any non-loopback address), counted from the
+    // moment they connect (a silent one used to count only after its first message); the tests shorten the Hello wait
+    const int kMaxPending = getenv("RAYLIBGAME_MAX_PENDING") ? std::max(1, atoi(getenv("RAYLIBGAME_MAX_PENDING"))) : 16;
+    const double kHelloSeconds = getenv("RAYLIBGAME_HELLO_SECONDS") ? std::max(0.5, atof(getenv("RAYLIBGAME_HELLO_SECONDS"))) : 10.0;
+    int pendingRefused = 0, silentDropped = 0; // (#1868) tests
     std::string AddressHost(const std::string& a) { const size_t c = a.rfind(':'); return c == std::string::npos ? a : a.substr(0, c); }
     // (loopback is counted too when RAYLIBGAME_MAX_PER_ADDRESS is set: the tests check the limit on one machine)
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
@@ -1470,7 +1490,7 @@ namespace {
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
-            if (!joinCheck(h.name, Net_RemoteAddress(conn), why)) {
+            if (!joinCheck(h.name, Net_RemoteAddress(conn), h.uuid, why)) {
                 Refuse(conn, NetReject::Banned, why);
                 if (eventHook) eventHook("refused", 0, h.name + " (" + why + ")");
                 return;
@@ -1516,7 +1536,7 @@ namespace {
         }
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
-        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
+        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) { MsgLoadout l = x.loadout; l.held = HeldItem(x.id); SendMsg(conn, l); } // (#1868) as had
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         SendGraves(conn); // (#804) the graves so far
         SendAllPlants(world, conn); // (#335) the plants felled so far
@@ -1587,9 +1607,8 @@ namespace {
         if ((q.hit - eye).length() * p->scale > TerrainToolSettings{}.reach + kReachSlack) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
         if (!p->field->editable(hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Mantle); return; }
         if (ClaimBlocks(session, p, hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Claim); return; } // (#343)
-        // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
-        std::string held;
-        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        // The tool in the player's hands (its loadout, when its inventory here has one: #1868) and what it does to the ground.
+        const std::string held = HeldItem(session);
         const ToolSpec tool = ToolOf(held);
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
@@ -1941,23 +1960,43 @@ namespace {
         ++guardDropped;
         if (NetGuard_Violation(it->second.guard, GetTime()) == GuardVerdict::Kick) GuardKick(conn, why);
     }
+    // (#349, #1868) A new connection's admission: 0 admit, 1 too many from its address, 2 too many not joined yet. Loopback
+    // (the host's machine, the tests) is exempt.
+    int AdmitVerdict(bool loopback, int sameAddress, int pending) {
+        if (loopback) return 0;
+        if (sameAddress >= kMaxPerAddress) return 1;
+        return pending >= kMaxPending ? 2 : 0;
+    }
+    // Admit a new connection as a peer (its Hello clock starts now), or refuse it. Called when it connects (#1868) and, for a
+    // connection the transport didn't report, at its first message.
+    bool AdmitPeer(uint32_t conn) {
+        const std::string host = AddressHost(Net_RemoteAddress(conn));
+        const bool loop = Loopback(host);
+        int same = 0, pending = 0;
+        if (!loop)
+            for (const auto& [c, p] : peers) {
+                const std::string h = AddressHost(Net_RemoteAddress(c));
+                if (h == host) ++same;
+                if (!p.joined && !Loopback(h)) ++pending;
+            }
+        if (const int v = AdmitVerdict(loop, same, pending)) {
+            const char* why = v == 1 ? "too many connections from your address" : "too many players connecting at once: try again shortly";
+            printf("host: refused connection %u from %s: %s (%d from that address, %d not joined)\n", conn, host.c_str(), why, same, pending);
+            if (eventHook) eventHook("refused", 0, "connection from " + host + (v == 1 ? " (too many from one address)" : " (too many connecting)"));
+            Refuse(conn, NetReject::Full, why);
+            ++pendingRefused;
+            return false;
+        }
+        Peer& p = peers[conn];
+        p.firstHeard = p.lastHeard = GetTime();
+        return true;
+    }
     void OnMessage(Scene& world, const NetMessage& m) {
         if (!peers.count(m.conn) && !Net_IsConnected(m.conn)) return; // (#349: the rest of a batch from a connection just kicked)
         auto it = peers.find(m.conn);
-        if (it == peers.end()) { // first word on a new connection
-            const std::string host = AddressHost(Net_RemoteAddress(m.conn));
-            if (!Loopback(host)) { // (#349) too many from one address
-                int same = 0;
-                for (const auto& [c, p] : peers) if (AddressHost(Net_RemoteAddress(c)) == host) ++same;
-                if (same >= kMaxPerAddress) {
-                    printf("host: refused connection %u from %s: %d connections from that address already\n", m.conn, host.c_str(), same);
-                    if (eventHook) eventHook("refused", 0, "connection from " + host + " (too many from one address)");
-                    Refuse(m.conn, NetReject::Full, "too many connections from your address");
-                    return;
-                }
-            }
-            it = peers.emplace(m.conn, Peer{}).first;
-            it->second.firstHeard = GetTime();
+        if (it == peers.end()) { // first word on a connection not admitted yet
+            if (!AdmitPeer(m.conn)) return;
+            it = peers.find(m.conn);
         }
         it->second.lastHeard = GetTime();
         if (NetPeek(m.data) == NetMsg::Input) it->second.inGame = true; // (#1033)
@@ -2211,8 +2250,11 @@ namespace {
                 MsgLoadout l;
                 if (!it->second.joined || !NetRead(r, l)) return;
                 l.session = it->second.session; // (a client speaks only for itself)
-                for (Session& s : sessions) if (s.id == l.session) s.loadout = l;
-                SendToJoined(l);
+                for (Session& s : sessions) if (s.id == l.session) s.loadout = l; // kept as sent: HeldItem checks it at each use (#1868),
+                // so a loadout that came a moment before its item (a craft, a take) works once the item is there
+                MsgLoadout shown = l;
+                if (!shown.held.empty() && HeldItem(l.session).empty()) { shown.held.clear(); ++loadoutsRefused; } // others see bare hands
+                SendToJoined(shown);
                 return;
             }
             case NetMsg::EditRequest: {
@@ -2275,6 +2317,10 @@ int Host_GravesMade() { return gravesMade; }
 int Host_DropsMade() { return dropsMade; }
 int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
+int Host_LoadoutsRefused() { return loadoutsRefused; }
+std::string Host_HeldItem(uint32_t session) { return HeldItem(session); }
+int Host_ConnectionsRefused() { return pendingRefused; }
+int Host_SilentDropped() { return silentDropped; }
 
 void Host_Update(Scene& world) {
     hostWorld = &world;
@@ -2290,6 +2336,12 @@ void Host_Update(Scene& world) {
     }
     if (!listening) return;
     Net_Poll();
+    { // (#1868) connections admitted (or refused) as they come up, before any message: a silent one counts and times out too
+        static std::vector<uint32_t> fresh;
+        fresh.clear();
+        Net_TakeNewIncoming(fresh);
+        for (uint32_t c : fresh) if (!peers.count(c) && Net_IsConnected(c)) AdmitPeer(c);
+    }
     std::vector<NetMessage> in;
     Net_Receive(in, 256);
     for (NetMessage& m : in) {
@@ -2301,7 +2353,7 @@ void Host_Update(Scene& world) {
     for (const auto& [conn, p] : peers) {
         if (!Net_IsConnected(conn)) gone.push_back(conn);
         else if (GetTime() - p.lastHeard > Host_SilenceLimit(p.joined, p.inGame)) silent.push_back(conn);
-        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) silent.push_back(conn); // (#349) never said Hello
+        else if (!p.joined && GetTime() - p.firstHeard > kHelloSeconds) { silent.push_back(conn); ++silentDropped; } // (#349) never said Hello
     }
     for (uint32_t c : gone) Drop(c, NetBye::Quit);
     for (uint32_t c : silent) Drop(c, NetBye::TimedOut);
@@ -2409,7 +2461,7 @@ bool Host_Give(uint32_t session, const std::string& item, int count) {
 // ---- The dedicated server's console and admin (#326, #345) ----
 std::vector<HostPlayer> Host_ListPlayers() {
     std::vector<HostPlayer> out;
-    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string() });
+    for (const Session& s : sessions) out.push_back({ s.id, s.name, s.online, s.online ? Net_RemoteAddress(s.conn) : std::string(), s.uuid });
     return out;
 }
 bool Host_Kick(const std::string& name, const std::string& reason) {
@@ -2427,7 +2479,7 @@ void Host_Say(const std::string& text, uint32_t fromSession, uint32_t toSession)
     for (const Session& s : sessions) if (s.id == toSession && s.online && s.conn) SendMsg(s.conn, c);
 }
 void Host_SetMotd(const std::string& text) { motd = text; }
-void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
+void Host_SetJoinCheck(std::function<bool(const std::string&, const std::string&, const std::string&, std::string&)> check) { joinCheck = std::move(check); }
 void Host_SetChatHandler(std::function<void(uint32_t, const std::string&, const std::string&)> handler) { chatHandler = std::move(handler); }
 void Host_SetEventHook(std::function<void(const char*, uint32_t, const std::string&)> hook) { eventHook = std::move(hook); }
 int Host_SyncsDone() { return syncsDone; }
@@ -2518,5 +2570,37 @@ TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
     EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(false, false), 15.0) << "not joined yet: the usual limit (Hello has its own)";
+}
+
+// (#1868) The held item counts only when the server's copy of the player's inventory has it (creative players excepted), and
+// stops counting once it leaves the inventory.
+TEST(HostLoadout, TheHeldItemCountsOnlyWhenThePlayerHasIt) {
+    const uint32_t id = 0xF1868u;
+    Session s;
+    s.id = id;
+    s.loadout.session = id;
+    s.loadout.held = "unit_pickaxe";
+    sessions.push_back(s);
+    Remote& r = remotes[id];
+    EXPECT_EQ(HeldItem(id), "") << "claimed, not in the inventory: bare hands";
+    r.inventory.grid()[3] = InvSlot{ "unit_pickaxe", 100, 0.0f };
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "in the inventory";
+    r.inventory.grid()[3] = InvSlot{};
+    EXPECT_EQ(HeldItem(id), "") << "it left the inventory after the loadout came";
+    r.creative = true;
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "creative: any Catalog item";
+    EXPECT_EQ(HeldItem(id + 1), "") << "no such session";
+    remotes.erase(id);
+    sessions.pop_back();
+}
+
+// (#1868) Admission: the per-address cap and the cap on connections that haven't joined yet; loopback exempt.
+TEST(HostAdmission, PerAddressAndPendingCaps) {
+    if (getenv("RAYLIBGAME_MAX_PER_ADDRESS") || getenv("RAYLIBGAME_MAX_PENDING")) GTEST_SKIP() << "limits overridden by the environment";
+    EXPECT_EQ(AdmitVerdict(false, 0, 0), 0);
+    EXPECT_EQ(AdmitVerdict(false, 7, 15), 0) << "under both caps";
+    EXPECT_EQ(AdmitVerdict(false, 8, 0), 1) << "the 9th from one address";
+    EXPECT_EQ(AdmitVerdict(false, 0, 16), 2) << "the 17th not joined yet, from anywhere";
+    EXPECT_EQ(AdmitVerdict(true, 100, 100), 0) << "loopback: the host's own machine and the tests";
 }
 #endif
