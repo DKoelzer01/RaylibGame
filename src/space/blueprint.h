@@ -6,6 +6,9 @@
 // In build mode: B saves the plot you look at; N cycles blueprints (a ghost outline at the aim, its
 // parts list on screen; N past the last turns it off); RMB places every part you can afford, bottom
 // up, and reports what is still missing (place again later to fill in the rest).
+// (#1886) Each team also has a blueprint library, kept in the world (the team progression store's "blueprints"
+// section); the blueprints/ folder stays the player's personal library. B saves to both; N cycles the team's, then the
+// player's own (one already in the team's is shown once), then the presets.
 
 #include <cstdio>
 #include <string>
@@ -16,14 +19,28 @@ class Planetoid;
 class Scene;
 
 struct Blueprint {
-    std::string name, path;
+    std::string name, path;    // path: "" for a team library blueprint
     std::vector<Part> parts;   // origins relative to the blueprint's lowest corner
+    int team = 0;              // (#1886) from this team's library (0: a file)
+    std::string text;          // the .bp text it was read from
 };
 
-const std::vector<Blueprint>& Blueprint_List();     // presets and the player's, loaded on first use
+const std::vector<Blueprint>& Blueprint_List();     // the team's, the player's and the presets, loaded on first use
 void Blueprint_Reload();
 bool Blueprint_SaveFile(const Plot& plot, const std::string& path, const std::string& name);
 bool Blueprint_LoadFile(const std::string& path, Blueprint& out);
+std::string Blueprint_Text(const Plot& plot, const std::string& name); // the .bp text of a plot's parts ("" when it has none)
+bool Blueprint_ParseText(const std::string& text, Blueprint& out);    // keeps out.name when the text has no name line
+
+// ---- Team libraries (#1886) ----
+void Blueprint_AddToTeam(int team, const std::string& text);  // a .bp text (the same text twice is kept once)
+int Blueprint_TeamCount(int team);
+std::string Blueprint_TeamText(int team);                      // the library as store text: "blueprint" .bp lines "blueprint_end"
+void Blueprint_SetTeamText(int team, const std::string& text); // replaces the library ("" empties it)
+void Blueprint_ApplyTeamText(int team, const std::string& text); // a client: its team's library from the host (N shows it)
+void Blueprint_ResetTeams();
+// The team whose library N shows and B adds to: a client's from the host's store, else the local player's team.
+int Blueprint_LocalTeam();
 
 const Blueprint* Blueprint_Active();                // the one being placed, or null
 void Blueprint_Cycle();                             // N
