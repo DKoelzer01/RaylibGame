@@ -511,7 +511,7 @@ float PlanetField::broadLand(const Land& l, Vector3 dir, float smoothFp) const {
     if (const PlanetErosion* e = erosion()) return e->heightAt(dir, smoothFp);
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
     const float base = l.c < 0.0f ? l.c * 650.0f : l.c * 200.0f;
-    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) - ValleyCarve(l.valley) * l.valleyWeight;
+    return base + l.ridge + hills.fractalLimited(3, smoothFp, sx, sy, sz) * (25.0f + 60.0f * l.mountain) * gen.roughness - ValleyCarve(l.valley) * l.valleyWeight; // (#1856 M11) scaled as land()'s hills: rivers off the land with roughness != 1
 }
 
 PlanetField::River PlanetField::stream(const Land& l, Vector3 dir, float fp) const {
@@ -3940,6 +3940,26 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
+// rough or smooth world): linear in it, and its hills gone at roughness 0.
+TEST(Voxel, RiverLandFollowsRoughness) {
+    PlanetField::tIgnoreBake = true;
+    auto at = [](float roughness, Vector3 dir) {
+        PlanetField f(42u, 32000.0f, false);
+        WorldGenParams p; p.roughness = roughness;
+        f.setGenParams(p);
+        return f.testBroadLand(dir, 4.0f);
+    };
+    float most = 0.0f;
+    for (const Vector3 raw : { Vector3{ 0.3f, 0.8f, 0.5f }, Vector3{ -0.6f, 0.2f, 0.77f }, Vector3{ 0.1f, -0.9f, 0.4f } }) {
+        const Vector3 dir = Vector3Normalize(raw);
+        const float b0 = at(0.0f, dir), b1 = at(1.0f, dir), b2 = at(2.0f, dir);
+        EXPECT_NEAR(b2 - b1, b1 - b0, 0.01f);
+        most = std::max(most, fabsf(b1 - b0));
+    }
+    EXPECT_GT(most, 0.5f); // the hills count for something somewhere
+    PlanetField::tIgnoreBake = false;
+}
 // #899: a vertex in a block meshed without the grid hint (dug ground, a cave block on the CPU path) has the same depth as
 // in a hinted neighbour at their shared border - not 1e9 m, which skipped the sky terms there and left a straight lit/dark
 // step along the border. (The old behaviour stays behind RAYLIBGAME_SKY_UNHINTED=0: unhintedDepth false.)
