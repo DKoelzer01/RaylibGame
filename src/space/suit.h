@@ -42,6 +42,8 @@ struct SuitState {
 
 const SuitStats& Suit_Stats();
 SuitStats Suit_StatsOf(const SuitState& suit); // (#337) any player's (a server's remote players)
+// (#1840) Packs fitted modules forward into `slots` slots; returns the ones that don't fit (each once), for the inventory.
+std::vector<std::string> Suit_PackSlots(std::vector<std::string>& fitted, int slots);
 const std::string& Suit_Worn();                       // the worn suit's item id
 const std::vector<std::string>& Suit_Modules();       // one per slot, "" empty
 bool Suit_IsSuit(const std::string& id);

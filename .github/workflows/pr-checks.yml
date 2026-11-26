@@ -5,9 +5,9 @@ name: PR checks
 
 on:
   pull_request:
-    branches: [m84-integration, develop, main, ladder]
+    branches: [staging, m84-integration, develop, main, ladder]
   push:
-    branches: [m84-integration, develop, ladder]
+    branches: [staging, m84-integration, develop, ladder]
   workflow_dispatch:
 
 permissions:
@@ -151,7 +151,7 @@ jobs:
           key: ccache-windows-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
           restore-keys: |
             ccache-windows-${{ github.head_ref || github.ref_name }}-
-            ccache-windows-${{ github.base_ref || 'm84-integration' }}-
+            ccache-windows-${{ github.base_ref || 'staging' }}-
             ccache-windows-
       - name: Configure
         run: |
@@ -233,7 +233,7 @@ jobs:
           key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.sha }}
           restore-keys: |
             ccache-linux-${{ github.head_ref || github.ref_name }}-
-            ccache-linux-${{ github.base_ref || 'm84-integration' }}-
+            ccache-linux-${{ github.base_ref || 'staging' }}-
             ccache-linux-
       - name: Configure
         run: |

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Merge ready PRs into m84-integration in order; retarget stacked ones first. Stops at the first conflict
+# Merge ready PRs into staging in order; retarget stacked ones first. Stops at the first conflict
 # or at a PR whose "CI ok" check (#1016) hasn't passed on its head commit (NOCI=1 skips that gate).
 R=repos/DKoelzer01/RaylibGame
 for p in "$@"; do
   base=$(gh api $R/pulls/$p --jq .base.ref)
-  if [ "${KEEPBASE:-0}" != "1" ] && [ "$base" != "m84-integration" ]; then
-    gh api -X PATCH $R/pulls/$p -f base=m84-integration --silent && echo "#$p retargeted from $base"
+  if [ "${KEEPBASE:-0}" != "1" ] && [ "$base" != "staging" ]; then
+    gh api -X PATCH $R/pulls/$p -f base=staging --silent && echo "#$p retargeted from $base"
     sleep 4
   fi
   if [ "${NOCI:-0}" != "1" ]; then

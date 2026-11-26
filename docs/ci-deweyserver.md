@@ -1,7 +1,7 @@
 # Server builds on deweyserver (#1016)
 
 The self-hosted workflow (`.github/workflows/selfhosted.yml`) builds the Linux server tarball on every push to
-`develop` / `m84-integration` and uploads it as the workflow artifact `raylibgame-server-linux-x86_64` (kept 5 days).
+`develop` / `staging` and uploads it as the workflow artifact `raylibgame-server-linux-x86_64` (kept 5 days).
 The runner's container has no LAN access, so it cannot touch the game server. `tools/ci/deweyserver-update-server.sh`
 runs on the host instead and makes the newest build available to the Pterodactyl egg
 (`tools/pterodactyl/egg-raylibgame-linux.json`, variable `DOWNLOAD_URL`). **Nothing here is deployed yet**: each step

@@ -1809,6 +1809,7 @@ namespace {
         std::vector<uint32_t> order; size_t cur = 0; uint32_t offset = 0; // what to send, the one being sent, how far
         uint64_t sent = 0; double started = 0.0, budget = 0.0, lastAt = 0.0;
         int wanted = 0;
+        double statusAt = 0.0; // (#1836) when its transport queue was last printed
         std::future<std::vector<SyncItem>> regions; // the worker encoding and hashing the regions
         bool indexed = false;
     };
@@ -1905,6 +1906,13 @@ namespace {
                 ++it; continue;
             }
             if (!job.wantIn) { ++it; continue; }
+            if (GetTime() - job.statusAt >= 1.0) { // (#1836, #1421) the joining link's transport queue, once a second, to see a join stall
+                job.statusAt = GetTime();
+                NetQueueStatus q;
+                if (Net_QueueStatus(it->first, q))
+                    printf("host: join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends\n",
+                           job.snapshot, job.cur, job.order.size(), job.sent / 1048576.0, q.pendingReliable, q.pendingUnreliable, q.sentUnacked, q.pingMs, Net_SendFailures());
+            }
             if (Net_PendingBytes(it->first) > kSyncMaxPending) { job.lastAt = GetTime(); ++it; continue; } // the link is behind: wait
             const double now = GetTime();
             job.budget = std::min(job.budget + (now - job.lastAt) * SyncRate(), SyncRate() * 0.25); // (a quarter second's worth at most)
