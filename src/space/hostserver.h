@@ -43,6 +43,8 @@ int Host_GravesMade();
 int Host_DropsMade();                                 // (#865) drops made for joined players
 int Host_CreativeGives();                             // (#866) creative gives done for joined players
 int Host_CreativeRefused();                           // (#866) refused: not creative
+int Host_LoadoutsRefused();                           // (#1868) loadouts relayed as bare hands: the item wasn't in the player's inventory
+std::string Host_HeldItem(uint32_t session);          // (#1868) the item the server lets a session use ("" bare hands)
 void Host_Update(Scene& world);                       // per frame: autosave, poll, the handshake, pings, timeouts
 bool Host_SaveOnShutdown(Scene& world);               // before the scene goes away
 void Host_Stop();                                     // tells every client the server closed

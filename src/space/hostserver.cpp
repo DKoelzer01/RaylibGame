@@ -138,6 +138,23 @@ namespace {
         uint64_t farmHash = 0;      // (#335) the farm fields last sent to it
     };
     std::unordered_map<uint32_t, Remote> remotes;      // by session
+    // (#1868) The item a player really holds: its loadout's, when the inventory the server keeps for it has one; else hands ("").
+    // Read where it counts (digging, felling, hitting), so an item that left the inventory after the loadout came stops too.
+    // Slots are matched by id (not Inventory::count: tools that carry item data are left out of counts). Creative players may
+    // take any item from the Catalog, so their loadout stands as sent.
+    bool InventoryHolds(const Inventory& inv, const std::string& id) {
+        for (const InvSlot& s : inv.grid()) if (!s.empty() && s.id == id) return true;
+        return false;
+    }
+    std::string HeldItem(uint32_t session) {
+        std::string held;
+        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        if (held.empty()) return held;
+        const auto rit = remotes.find(session);
+        if (rit == remotes.end()) return "";
+        return rit->second.creative || InventoryHolds(rit->second.inventory, held) ? held : std::string();
+    }
+    int loadoutsRefused = 0; // (#1868) loadouts naming an item the player doesn't have (tests)
     void RemoteXp(uint32_t session, const char* event, double n = 1.0); // (#920) XP for a remote player's event (below)
     void TeamXp(uint32_t session, const char* event, double n);         // (#920) and teammates' share of it (below)
     // (#920) A remote player's perk multipliers by stat name (Skills_Stat on the skills the server keeps for them).
@@ -713,8 +730,7 @@ namespace {
             }
             if (const float d = Vector3Distance(pl.base, me); d > kPlantReach * b->scale) { refuseLog(TextFormat("out of reach (%.1f m)", d), "That's out of reach"); return; }
             if (ClaimBlocks(session, b, pl.base)) { const std::string why = ClaimRefusal(b, pl.base); refuseLog(why.c_str(), why.c_str()); return; } // (#343)
-            std::string held;
-            for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+            const std::string held = HeldItem(session); // (#1868) only if the player has it
             const int hits = TerrainTool_HitsToFell(pl, ToolOf(held));
             const double minGap = 0.5 * 0.3 * (hits - 1); // half the swings it takes (latency, a held-on beat)
             if (SimTime() - rm.lastFellAt < minGap) { refuseLog(TextFormat("too soon (%.2f s of %.2f s, %d swings with '%s')", SimTime() - rm.lastFellAt, minGap, hits, held.c_str()), nullptr); return; }
@@ -878,7 +894,7 @@ namespace {
             auto rit = remotes.find(s.id);
             if (rit == remotes.end() || !rit->second.player.nearest) continue;
             const Planetoid* b = rit->second.player.nearest;
-            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, s.loadout.held }); // (#337: the dead aren't prey)
+            gAnimalTargets.push_back({ b->netId, b->toLocalD(rit->second.player.position).toFloat(), s.id, !rit->second.player.flyMode && !rit->second.survival.dead, HeldItem(s.id) }); // (#337: the dead aren't prey; #1868 held: only if had)
         }
         // (#1223/#1224, Plan 12 testing) RAYLIBGAME_JOIN_CREATURE=1 (tools/test_join.sh): once two players have been playing for
         // 3 s, a thornback (a creature on the brain) by the first; it hunts and bites them; from 6 s on the server hits it for 10
@@ -965,7 +981,7 @@ namespace {
             }
             return;
         }
-        std::string held; for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        const std::string held = HeldItem(session); // (#1868) only if the player has it
         const ToolSpec t = ToolOf(held);
         const float damage = t.type == ToolType::Hands ? 2.0f : 3.0f + 3.0f * t.tier;
         std::vector<std::pair<std::string, int>> drops;
@@ -1516,7 +1532,7 @@ namespace {
         }
         // Who is here (everyone, the newcomer included), and what the others hold.
         SendRoster();
-        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) SendMsg(conn, x.loadout);
+        for (const Session& x : sessions) if (x.online && x.id != s->id && x.loadout.session) { MsgLoadout l = x.loadout; l.held = HeldItem(x.id); SendMsg(conn, l); } // (#1868) as had
         StartSync(world, conn, s->id); // the world's edits so far (#776); later ones follow as live edits
         SendGraves(conn); // (#804) the graves so far
         SendAllPlants(world, conn); // (#335) the plants felled so far
@@ -1587,9 +1603,8 @@ namespace {
         if ((q.hit - eye).length() * p->scale > TerrainToolSettings{}.reach + kReachSlack) { RefuseEdit(conn, q.seq, NetEditRefusal::Reach); return; }
         if (!p->field->editable(hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Mantle); return; }
         if (ClaimBlocks(session, p, hit)) { RefuseEdit(conn, q.seq, NetEditRefusal::Claim); return; } // (#343)
-        // The tool in the player's hands (its loadout; possession is #331's) and what it does to the aimed ground.
-        std::string held;
-        for (const Session& s : sessions) if (s.id == session) held = s.loadout.held;
+        // The tool in the player's hands (its loadout, when its inventory here has one: #1868) and what it does to the ground.
+        const std::string held = HeldItem(session);
         const ToolSpec tool = ToolOf(held);
         const Vector3 surfN = p->field->normal(hit, p->edits.get());
         const VoxelMaterial mat = p->materialAt(hit, surfN);
@@ -2203,8 +2218,11 @@ namespace {
                 MsgLoadout l;
                 if (!it->second.joined || !NetRead(r, l)) return;
                 l.session = it->second.session; // (a client speaks only for itself)
-                for (Session& s : sessions) if (s.id == l.session) s.loadout = l;
-                SendToJoined(l);
+                for (Session& s : sessions) if (s.id == l.session) s.loadout = l; // kept as sent: HeldItem checks it at each use (#1868),
+                // so a loadout that came a moment before its item (a craft, a take) works once the item is there
+                MsgLoadout shown = l;
+                if (!shown.held.empty() && HeldItem(l.session).empty()) { shown.held.clear(); ++loadoutsRefused; } // others see bare hands
+                SendToJoined(shown);
                 return;
             }
             case NetMsg::EditRequest: {
@@ -2267,6 +2285,8 @@ int Host_GravesMade() { return gravesMade; }
 int Host_DropsMade() { return dropsMade; }
 int Host_CreativeGives() { return creativeGives; }
 int Host_CreativeRefused() { return creativeRefused; }
+int Host_LoadoutsRefused() { return loadoutsRefused; }
+std::string Host_HeldItem(uint32_t session) { return HeldItem(session); }
 
 void Host_Update(Scene& world) {
     hostWorld = &world;
@@ -2510,5 +2530,27 @@ TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
     EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(false, false), 15.0) << "not joined yet: the usual limit (Hello has its own)";
+}
+
+// (#1868) The held item counts only when the server's copy of the player's inventory has it (creative players excepted), and
+// stops counting once it leaves the inventory.
+TEST(HostLoadout, TheHeldItemCountsOnlyWhenThePlayerHasIt) {
+    const uint32_t id = 0xF1868u;
+    Session s;
+    s.id = id;
+    s.loadout.session = id;
+    s.loadout.held = "unit_pickaxe";
+    sessions.push_back(s);
+    Remote& r = remotes[id];
+    EXPECT_EQ(HeldItem(id), "") << "claimed, not in the inventory: bare hands";
+    r.inventory.grid()[3] = InvSlot{ "unit_pickaxe", 100, 0.0f };
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "in the inventory";
+    r.inventory.grid()[3] = InvSlot{};
+    EXPECT_EQ(HeldItem(id), "") << "it left the inventory after the loadout came";
+    r.creative = true;
+    EXPECT_EQ(HeldItem(id), "unit_pickaxe") << "creative: any Catalog item";
+    EXPECT_EQ(HeldItem(id + 1), "") << "no such session";
+    remotes.erase(id);
+    sessions.pop_back();
 }
 #endif
