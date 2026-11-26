@@ -10395,7 +10395,7 @@ int main(int argc, char** argv)
         // the player carried on them, animals, the factory, fluids) with no input (gameInput needs gameState 1). The steps
         // below test simState: with gameState they stopped the world behind a client's menu (it looked like the server
         // had paused, and the client's planet stood still under the server's) and a listen host's for everyone.
-        const int simState = gameState;
+        const int simState = gameState == 2 && !paused ? 1 : gameState;
         if (!paused) gGameClock += frameDt;
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadFrames = 0; } }
