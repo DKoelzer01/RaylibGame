@@ -24,6 +24,15 @@ inline double Log(double x) {
     return 2.0 * s * t + e * 0.69314718055994530942;
 }
 
+// log2, x > 0 (x <= 0: -1e30); exact for powers of two, so floor(Log2(x)) classes are exact at their edges.
+inline double Log2(double x) {
+    if (!(x > 0.0)) return -1e30;
+    int e = 0;
+    double m = std::frexp(x, &e);
+    if (m < 0.70710678118654752440) { m *= 2.0; --e; }
+    return e + Log(m) * 1.44269504088896340736;
+}
+
 // e^x (x < -745: 0; x > 709: 1e308).
 inline double Exp(double x) {
     if (x < -745.0) return 0.0;
@@ -127,6 +136,7 @@ inline float Atanf(float x) { return (float)Atan(x); }
 inline float Sinf(float x) { return (float)Sin(x); }
 inline float Cosf(float x) { return (float)Cos(x); }
 inline float Logf(float x) { return (float)Log(x); }
+inline float Log2f(float x) { return (float)Log2(x); }
 inline float Expf(float x) { return (float)Exp(x); }
 inline float Powf(float x, float y) { return (float)Pow(x, y); }
 inline float Asinf(float x) { return (float)Asin(x); }

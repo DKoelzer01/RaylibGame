@@ -424,7 +424,7 @@ namespace {
             if (fine && !gBakeOld && step % 2 == 0)
                 for (int c : wide) {
                     if (hf[c] > d.h[c] + 1e-3f) continue; // lakes: no banks to wear
-                    const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * log2f(area[c] / 5.0e6f));
+                    const float w = 0.03f * std::min(1.0f, 0.25f + 0.1875f * det::Log2f(area[c] / 5.0e6f));
                     for (int k = 0; k < 4; ++k) {
                         const int o = nbOf((size_t)c, k);
                         if (o < 0 || d.outlet[o] || o == receiver[c] || area[o] >= area[c]) continue;
@@ -1159,7 +1159,7 @@ void PlanetErosion::routeFinal(int threads) {
     std::vector<float> cut(G, 0.0f);
     for (int g = 0; g < G; ++g) {
         int cls = 0;
-        if (area[g] >= kFlowArea0) cls = std::min(15, 1 + (int)floorf(log2f(area[g] / kFlowArea0)));
+        if (area[g] >= kFlowArea0) cls = std::min(15, 1 + (int)floorf(det::Log2f(area[g] / kFlowArea0)));
         flow[g] = (uint8_t)((outlet[g] ? 15 : (dirK[g] & 15)) | (cls << 4));
         if (outlet[g]) continue;
         cut[g] = h0[g] - h[g]; // the corners worn above
