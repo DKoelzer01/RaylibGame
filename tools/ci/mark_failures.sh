@@ -5,7 +5,8 @@
 #   tools/ci/mark_failures.sh <log or folder>...      (folders are searched for *.log)
 # Exit 0 always: the steps that ran the tests already carry the verdict; this only labels it.
 root=$(cd "$(dirname "$0")/../.." && pwd)
-known="$root/tools/ci/known_failures.txt"
+# (#1946) this checkout's list plus staging's, so entries added there since the branch was cut count too
+knownText=$(bash "$root/tools/ci/known_list.sh")
 out="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 files=()
 for a in "$@"; do
@@ -19,7 +20,7 @@ if [ ${#files[@]} -gt 0 ]; then
     while IFS='|' read -r pat issue note; do
       pat=$(echo "$pat" | sed 's/[[:space:]]*$//'); [[ -z "$pat" || "$pat" == \#* ]] && continue
       if echo "$line" | grep -Eq "$pat"; then tag="known $(echo $issue)"; break; fi
-    done < <(tr -d '\r' < "$known")
+    done <<< "$knownText"
     if [ "$tag" = NEW ]; then new=$((new + 1)); else old=$((old + 1)); fi
     body+="- **[$tag]** \`$line\`"$'\n'
   done < <(cat "${files[@]}" | tr -d '\r' | grep -E -- '-> FAIL' | grep -v '=== ' | cut -c1-220 | sort -u)
