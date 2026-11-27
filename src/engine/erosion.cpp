@@ -1910,6 +1910,11 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     }
     EXPECT_GT(maxErosion, 1.0f) << "the bake cut nowhere";
     EXPECT_GT(maxSlope, 1.0f);
+    for (float r : { 0.0f, 0.025f, 0.05f, 0.075f, 0.1f }) { // DEBUG #2069
+        const Vector3 d = Vector3Normalize(Vector3{ r, 0.6f, 0.8f });
+        printf("DBG r %.3f input %.1f baked %.1f flow %.1f\n", r, height(d, 0.0f), b.heightAt(d, 0.0f), b.flowHeight(b.flowCellOf(d)));
+    }
+    printf("DBG cells %d flowCells %d ponds %d filled %d\n", b.cells(), b.flowCells(), (int)b.ponds().size(), (int)b.filledCells().size());
     ASSERT_FALSE(b.filledCells().empty()) << "no lakes or ponds on the test planet";
     int wet = 0;
     for (const auto& fc : b.filledCells()) wet += b.fieldsAt(b.flowDir(fc.first)).wetness > 0.6f;
