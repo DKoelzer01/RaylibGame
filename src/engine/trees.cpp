@@ -1,4 +1,5 @@
 #include "trees.h"
+#include "biomevariants.h"
 #include "gpumem.h"
 #include "jobsystem.h"
 #include "worldtypes.h"
@@ -386,7 +387,32 @@ static BiomeFlora FloraOf(Biome b) {
         default:              return { 0.0f, 0.0f, 0.0f, true, 1.0f };   // ocean, polar
     }
 }
-constexpr float kMaxTreeFactor = 1.5f, kMaxBushFactor = 1.5f, kMaxStoneFactor = 2.5f;
+// A biome variant's flora over its type's (#1978, biomes.txt): density and size multipliers, its own canopy floor.
+static_assert(BiomeVariantDef::kSpecies == (int)WoodSpecies::Count, "biomes.txt species names follow WoodSpecies");
+static BiomeFlora FloraOf(Biome b, const BiomeVariantDef* v) {
+    BiomeFlora f = FloraOf(b);
+    if (!v) return f;
+    f.trees *= v->trees; f.bushes *= v->bushes; f.stones *= v->stones; f.size *= v->size;
+    if (v->cover >= 0.0f) f.cover = v->cover;
+    return f;
+}
+// The densest any variant allows: BuildTile's cheap first cut, so it never rejects a plant a variant would grow.
+struct FloraMax { float trees = 0.0f, bushes = 0.0f, stones = 0.0f, cover = 0.0f; };
+static const FloraMax& FloraMaxima() {
+    static const FloraMax m = [] {
+        FloraMax r;
+        const BiomeVariantTable& t = BiomeVariants();
+        for (const BiomeVariantDef& d : t.defs) {
+            const BiomeFlora f = FloraOf(d.type, &d);
+            r.trees = std::max(r.trees, f.trees); r.bushes = std::max(r.bushes, f.bushes);
+            r.stones = std::max(r.stones, f.stones); r.cover = std::max(r.cover, f.cover);
+        }
+        const BiomeFlora island = FloraOf(Biome::Forest); // floating islands grow the plain forest
+        r.trees = std::max(r.trees, island.trees); r.bushes = std::max(r.bushes, island.bushes); r.stones = std::max(r.stones, island.stones);
+        return r;
+    }();
+    return m;
+}
 
 // Chance of a tree in a 4 m cell from the forest field, scaled by the biome's tree factor.
 float TreeChanceFromForest(float forest, float biomeTrees) {
@@ -416,18 +442,33 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float forest = Forest(Vector3Scale(dir, R), seed);
             // First a cheap cut at the densest any biome allows, then the biome's own odds (it needs the
             // height, which is the expensive part).
-            const float pTreeMax = std::max(TreeChanceFromForest(forest, kMaxTreeFactor), 0.34f);
+            const FloraMax& fmax = FloraMaxima();
+            const float pTreeMax = std::max(TreeChanceFromForest(forest, fmax.trees), fmax.cover);
             const float pBushBase = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
             const float pStoneBase = 0.025f;                              // loose stones: the first stone tools' stone
-            if (roll >= pTreeMax + pBushBase * kMaxBushFactor + pStoneBase * kMaxStoneFactor) continue;
+            if (roll >= pTreeMax + pBushBase * fmax.bushes + pStoneBase * fmax.stones) continue;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             // Floating islands (Plan 5 C) have woods on their tops: the column's ground is the island's top.
             float islandTop = 0.0f;
             const bool onIsland = f.islandTopAt(dir, islandTop);
             const float e = onIsland ? islandTop - R : f.elevation(dir);
-            const Biome biome = onIsland ? Biome::Forest : f.biomeAt(dir, e);
-            const BiomeFlora flora = FloraOf(biome);
+            // The variant (#1978), read ~100 m off at random per plant so neighbouring variants' flora cross-fade over
+            // ~200 m instead of meeting on a line (its own hash: the cell's draws below stay as they were).
+            const BiomeVariantDef* vdef = nullptr;
+            Biome biome = Biome::Forest;
+            if (!onIsland) {
+                uint32_t sv = Hash(s ^ 0x19780bu);
+                const float ox = Unit(sv) * 2.0f - 1.0f, oy = Unit(sv) * 2.0f - 1.0f, k = 100.0f / R;
+                const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                const Vector3 u2 = Vector3CrossProduct(u1, dir);
+                const Vector3 uDir = Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
+                const int vid = f.variantAt(dir, e, uDir);
+                const BiomeVariantTable& vt = BiomeVariants();
+                if (vid >= 0 && vid < (int)vt.defs.size()) { vdef = &vt.defs[vid]; biome = vdef->type; }
+                else biome = f.biomeAt(dir, e);
+            }
+            const BiomeFlora flora = FloraOf(biome, vdef);
             const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
@@ -489,14 +530,30 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 // Broadleaf woods (oak, birch, maple) in the temperate band; conifer woods (pine, spruce,
                 // birch) from ~40 degrees and up high, mixing at the edge. Each area (a ~400 m noise
                 // patch) has a dominant species: 60% of its trees, the other two 20% each.
-                const bool cold = flora.cold || e > 550.0f + 300.0f * (h - 0.5f); // conifers in cold biomes and up high (Plan 5 B)
+                const bool high = e > 550.0f + 300.0f * (h - 0.5f);
+                const bool cold = flora.cold || high; // conifers in cold biomes and up high (Plan 5 B)
                 static const WoodSpecies kWarm[3] = { WoodSpecies::Oak, WoodSpecies::Maple, WoodSpecies::Birch };
                 static const WoodSpecies kCold[3] = { WoodSpecies::Pine, WoodSpecies::Spruce, WoodSpecies::Birch };
                 const float area = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 400.0f), seed ^ 0x7a3c19u);
-                const int dom = std::min(2, (int)(Smooth(0.3f, 0.7f, area) * 3.0f));
                 const float pick = Unit(s);
-                const int k = pick < 0.6f ? dom : pick < 0.8f ? (dom + 1) % 3 : (dom + 2) % 3;
-                const WoodSpecies sp = (cold ? kCold : kWarm)[k];
+                WoodSpecies sp;
+                if (vdef && vdef->hasSpecies() && (flora.cold || !high)) {
+                    // The variant's own mix (#1978): its weights, with the area's dominant species (one of the listed,
+                    // by the same ~400 m patch) counted double, so stands still form inside the mix.
+                    int listed[BiomeVariantDef::kSpecies], n = 0;
+                    for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) if (vdef->species[i] > 0.0f) listed[n++] = i;
+                    const int dom = listed[std::min(n - 1, (int)(Smooth(0.3f, 0.7f, area) * n))];
+                    float w[BiomeVariantDef::kSpecies], total = 0.0f;
+                    for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) total += (w[i] = vdef->species[i] * (i == dom && n > 1 ? 2.0f : 1.0f));
+                    float at = pick * total;
+                    int k = dom;
+                    for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) if (w[i] > 0.0f) { k = i; if ((at -= w[i]) < 0.0f) break; }
+                    sp = (WoodSpecies)k;
+                } else {
+                    const int dom = std::min(2, (int)(Smooth(0.3f, 0.7f, area) * 3.0f));
+                    const int k = pick < 0.6f ? dom : pick < 0.8f ? (dom + 1) % 3 : (dom + 2) % 3;
+                    sp = (cold ? kCold : kWarm)[k];
+                }
                 // Size class (#274): from the stand's age (a ~250 m noise patch) and the forest's density. Young
                 // stands and open ground grow small trees; old dense forest holds the large ones and, rarely, giants.
                 const float age = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 250.0f), seed ^ 0x51ed27u);
@@ -1034,7 +1091,12 @@ float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed, 
     if (lat > 0.86f || elevation < 4.0f || elevation > 900.0f) return 0.0f;
     const float edge = std::min(Smooth(4.0f, 12.0f, elevation), 1.0f - Smooth(800.0f, 900.0f, elevation));
     // The biome's tree factor (Plan 5 B); without a field, the old latitude rule.
-    const BiomeFlora fl = field ? FloraOf(field->biomeAt(dir, elevation)) : BiomeFlora{};
+    BiomeFlora fl{};
+    if (field) { // the variant's flora (#1978), as BuildTile (without its border dither)
+        const int vid = field->variantAt(dir, elevation);
+        const BiomeVariantTable& vt = BiomeVariants();
+        fl = vid >= 0 && vid < (int)vt.defs.size() ? FloraOf(vt.defs[vid].type, &vt.defs[vid]) : FloraOf(field->biomeAt(dir, elevation));
+    }
     if (field && fl.cover > 0.0f) return std::max(Smooth(0.04f, 0.3f, fl.cover), Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), fl.trees))) * edge;
     const float trees = field ? fl.trees : (lat < 0.6f ? 1.3f - 0.3f * Smooth(0.2f, 0.4f, lat) : 1.0f - 0.55f * (lat - 0.6f) / 0.26f);
     return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), trees)) * edge; // forest presence
