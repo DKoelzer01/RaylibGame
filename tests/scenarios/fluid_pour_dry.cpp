@@ -36,13 +36,20 @@ SCENARIO("fluid/pour-dry") {
         S.at = Vector3Add(feet, Vector3Add(Vector3Scale(ahead, 6.0f), Vector3Scale(up, 0.5f)));
         S.v0 = Fluid::GetStats().volume;
         S.l0 = Fluid::GetLedger();
-        S.tick0 = Fluid::GetStats().ticks;
+        S.tick0 = -1; // (set once the pour is in the ledger: the next step)
         S.queued = Fluid::Pour(*c.body, S.at, 0.5f);
         // Looking down at the puddle from 6 m (no player physics here: c.camera's fly mode does no harm).
         c.camera(Vector3Add(S.at, Vector3Add(Vector3Scale(up, 5.0f), Vector3Scale(ahead, -4.0f))), S.at, up);
         return true;
     });
     s.step("wait 8 min of fluid time", 720.0, [](ScenarioCtx& c) {
+        // The clock starts once the pour is in the ledger: read before it, the tick count can be stale (no water active
+        // yet) and jump past the 10 s mark at once, which read 0 m^3 on the null-GL CI (#1944; fluid/luna-pour #1942).
+        if (S.tick0 < 0) {
+            c.waitingFor("the pour in the simulation");
+            if (Fluid::GetLedger().poured - S.l0.poured < 0.45) return false;
+            S.tick0 = Fluid::GetStats().ticks;
+        }
         const double t = FluidT();
         for (int k = 0; k < 4; ++k)
             if (S.held[k] < 0.0 && t >= kMarks[k]) {
