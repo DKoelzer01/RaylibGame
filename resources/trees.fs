@@ -17,6 +17,7 @@ in float fragFar;      // #745: 0 near .. 1 far (always 0 with RAYLIBGAME_FAR_FO
 in float fragAo;       // (#933 layer 2) baked AO: scales the ambient only
 
 uniform vec3 viewPos;
+uniform float treeVariationOff; // #1979 (trees.vs)
 uniform vec3 sunDir;
 uniform vec3 ambient;
 uniform vec4 sunOccluder;
@@ -67,6 +68,7 @@ void main()
     vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
     vec3 leafC = climateFoliage(temperate, dry, cold, vec3(0.05, 0.24, 0.04), vec3(0.12, 0.18, 0.05), lat);
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
+    if (treeVariationOff < 0.5) leafC *= mix(vec3(1.08, 1.0, 0.86), vec3(0.9, 1.0, 1.07), fract(fragHash * 173.3 + 0.41)); // #1979: yellower .. bluer crowns per tree
     leafC = min(leafC * leafTint, vec3(0.9));
     leafC *= mix(vec3(1.0), vec3(0.64, 0.73, 0.86), fragFar); // #745: far crowns deeper and a touch cooler, as the canopy tint
     vec3 bark = min(vec3(0.20, 0.13, 0.08) * barkTint, vec3(0.85)) * (0.8 + 0.4 * fragShade);
