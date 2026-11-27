@@ -25,3 +25,4 @@ space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a ju
 net/late-join-lag -> FAIL: step .edits  | #1972 | the sim runs ahead of the wall-clock join and the step deadline passes (10/12 recent runs pass)
 fluid/flow -> FAIL                      | #2018 | a check fails intermittently on the runner (18/20 recent runs pass)
 fluid/slope-drain -> FAIL               | #2018 | checks fail intermittently on the runner (12/20 recent runs pass)
+caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
