@@ -1,6 +1,7 @@
 #include "erosion.h"
 #include "detmath.h" // (#1905) expf/logf/powf/asinf with the same bits everywhere
 #include "utils/logger.h"
+#include "envflag.h"
 #include <raymath.h>
 #include <algorithm>
 #include <chrono>
@@ -598,6 +599,21 @@ namespace {
     }
     bool DumpOn() { const char* e = getenv("RAYLIBGAME_EROSION_DUMP"); return e && e[0] == '1'; }
 
+    // #1905: RAYLIBGAME_BAKE_STAGE_HASH=1 logs an FNV hash of the bake's state after each stage, so two platforms' logs
+    // show the first stage where their bits part.
+    bool StageHashOn() { static const bool on = EnvFlag("RAYLIBGAME_BAKE_STAGE_HASH"); return on; }
+    template <class T> uint64_t HashBits(const std::vector<T>& v, uint64_t h = 1469598103934665603ull) {
+        const unsigned char* b = reinterpret_cast<const unsigned char*>(v.data());
+        for (size_t k = 0; k < v.size() * sizeof(T); ++k) h = (h ^ b[k]) * 1099511628211ull;
+        return h;
+    }
+    void StageHash(const char* stage, int face, const Domain& d, const std::vector<float>& h0) {
+        if (!StageHashOn()) return;
+        LOG_INFO("Erosion", "stage hash %s face %d: dir %016llx h0 %016llx h %016llx U %016llx rockK %016llx strata %016llx glacier %016llx\n", stage, face,
+            (unsigned long long)HashBits(d.dir), (unsigned long long)HashBits(h0), (unsigned long long)HashBits(d.h), (unsigned long long)HashBits(d.U),
+            (unsigned long long)HashBits(d.rockK), (unsigned long long)HashBits(d.strata), (unsigned long long)HashBits(d.glacier));
+    }
+
     // Before/after/difference of one face (#358 evidence): `beforePath` holds an earlier run's heights (int side, then
     // floats). Writes erosion_compare.png (the 512-cell window with the most change: before | after | difference, 2x)
     // and erosion_compare_face.png (the whole face, difference over the after hillshade). Difference: red = lowered,
@@ -751,12 +767,15 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     float maxH0 = 1.0f;
     for (float v : h0) maxH0 = std::max(maxH0, v);
     const double tSample = pt();
+    StageHash("sampled", -1, d, h0);
     SetRock(d, h0, maxH0, R, seed, p, &strata, T);
     const double tRock = pt();
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
+    StageHash("rock", -1, d, h0);
     Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
     const double tSim = pt();
+    StageHash("simulated", -1, d, h0);
     // Back to the input's height range: the 99th percentile of land as high as the input's. (Matching only the highest
     // peak left the ranges ~30% lower than the input: p90 1041 -> 723 m on seed 42.)
     float scale = 1.0f;
@@ -843,6 +862,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 for (auto& th : pool) th.join();
             }
             flap(0);
+            StageHash("sampled", f, fd, fh0);
             SetRock(fd, fh0, maxH0, R, seed, p, &strata, sampleThreads);
             flap(1);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
@@ -853,11 +873,13 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.outlet[c] = fh0[c] <= 0.0f || rim;
                     fd.h[c] = fh0[c] <= 0.0f ? fh0[c] : coarseUnscaledAt(fd.dir[c]);
                 }
+            StageHash("rock", f, fd, fh0);
             Simulate(fd, [FE](size_t c, int k) {
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
             }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads, true); // #605: the face's share of the threads; fine (#633)
             flap(2);
+            StageHash("simulated", f, fd, fh0);
             {   // Hold the fine grid to the coarse one at large scales (#360): the refinement's own uplift and erosion drift
                 // it by tens of metres (70 m in seed 42's ranges), so the coarse LOD, and the rivers and lakes built on it,
                 // disagreed with the near ground (a lake 130 m under it). Fine = coarse + the high-pass part of
@@ -967,7 +989,9 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     for (const auto& fp2 : facePonds) pondList.insert(pondList.end(), fp2.begin(), fp2.end()); // face order: deterministic
     refineSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t1r).count();
     flow.clear(); filled.clear(); routeSeconds = 0.0f;
+    if (StageHashOn()) LOG_INFO("Erosion", "stage hash grids: coarse %016llx fine %016llx, %d ponds\n", (unsigned long long)HashBits(coarse), (unsigned long long)HashBits(fine), (int)pondList.size());
     if (fe > 0 && !BakeRiversOld()) routeFinal(T); // #547: drainage and channels on the final terrain
+    if (StageHashOn()) LOG_INFO("Erosion", "stage hash routed: flow %016llx, %d filled\n", (unsigned long long)HashBits(flow), (int)filled.size());
     computeHash();
     buildSeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
     {   // #605: where the time went (wall seconds; the faces' parts are summed over the faces = thread seconds)
@@ -1499,6 +1523,6 @@ TEST(DetMath, TrigCloseToLibmAndTheSameBitsEverywhere) {
     EXPECT_LT(worst[1], 6.0e-8) << "Cosf";
     EXPECT_LT(worst[2], 6.0e-8) << "Tanf";
     EXPECT_LT(worst[3], 1.2e-7) << "Atanf"; // |atan| <= pi/2
-    EXPECT_EQ(h, 0x0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+    EXPECT_EQ(h, 0x5ebe982caa1a1756ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
 }
 #endif
