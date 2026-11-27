@@ -1,6 +1,6 @@
 // space/luna-walk (#1942, Plan 11 #667): the player stands, jumps and pours water on Luna under Luna's own gravity, not
 // Terra's. Luna (worlds/luna.txt) is 10 km with 0.98 m/s^2; Terra 5.9. The player is put on Luna's surface (spawnOn), waits
-// to land, then is pushed up at 5 m/s as a jump does (pendingPush): the apex over the take-off radius gives the gravity felt,
+// to land, then is jumps (autoJump: a Space press, 5 m/s): the apex over the take-off radius gives the gravity felt,
 // g = v^2 / (2 h) (Luna: ~12.8 m, Terra's pull would give ~2.1 m), which must be within 5% of Luna's surfaceGravity. Then
 // 0.5 m^3 of water is poured beside the player: the simulation must hold it (water works on the moon).
 // No c.camera(): it turns fly mode on, and the player's physics is what is tested.
@@ -12,6 +12,7 @@
 #include <raymath.h>
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace {
 struct State {
@@ -19,6 +20,7 @@ struct State {
     double r0 = 0.0, apex = 0.0, pourAt = -1.0;
     float vol0 = 0.0f, poured = 0.0f;
     bool jumped = false, airborne = false;
+    std::string trace; // the jump's height over time (s:m)
 } S;
 double FeetRadius() { return S.luna->toLocalD(player.position).length(); } // m from Luna's centre
 Vector3 UpLocal() { return Vector3Normalize(S.luna->toLocalD(player.position).toFloat()); }
@@ -48,11 +50,12 @@ SCENARIO("space/luna-walk") {
         if (!S.jumped) {
             S.jumped = true;
             S.r0 = FeetRadius();
-            player.pendingPush = S.luna->dirToWorld(Vector3Scale(UpLocal(), 5.0f));
+            player.autoJump = true; // a Space press: the jump key's own path (jumpSpeed 5 m/s)
             return false;
         }
         const double h = FeetRadius() - S.r0;
         S.apex = std::max(S.apex, h);
+        if ((int)(c.t * 60.0) % 15 == 0) S.trace += TextFormat("%.2f:%.2f ", c.t, h); // the height every 0.25 s
         if (!player.grounded) S.airborne = true;
         c.waitingFor(TextFormat("back on the ground (apex %.2f m, now %.2f m, airborne %d, grounded %d, fly %d, nearest luna %d)", S.apex, h, (int)S.airborne, (int)player.grounded, (int)player.flyMode, (int)(player.nearest == S.luna)));
         return S.airborne && player.grounded && c.t > 1.0;
@@ -75,6 +78,7 @@ SCENARIO("space/luna-walk") {
         c.note(TextFormat("jump apex %.2f m (Luna's gravity predicts %.2f m, Terra's 5.9 would give %.2f m); felt %.3f m/s^2; "
                           "water: %.2f m^3 queued, %.2f m^3 held after 10 s",
                           S.apex, 25.0 / (2.0 * S.luna->surfaceGravity), 25.0 / (2.0 * 5.9), g, S.poured, held));
+        c.note("height over the jump (s:m): " + S.trace);
         c.metric("jump apex", S.apex, "m", false);
         c.near("gravity felt on Luna (m/s^2)", g, S.luna->surfaceGravity, 0.05 * S.luna->surfaceGravity);
         c.gt("water poured on Luna is held (m^3)", held, 0.4);
