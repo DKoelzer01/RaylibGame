@@ -56,6 +56,7 @@ SCENARIO("net/late-join-lag") {
     s.args = { "--host", "saves/scenario-net-late-join-lag.sav", "--port", std::to_string(kPort) };
     s.env = { { "RAYLIBGAME_NET_LAG_MS", "80" }, { "RAYLIBGAME_NET_JITTER_MS", "20" }, { "RAYLIBGAME_NET_LOSS", "3" }, { "RAYLIBGAME_NET_SEED", "347" } };
     s.timeout = 240.0;
+    s.realTime = true; // (#1972) joins over real sockets
     s.step("edits, then bob joins and walks", 60.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
@@ -67,7 +68,7 @@ SCENARIO("net/late-join-lag") {
             S.strokes = NetSync_ScatterStrokes(c.world, kStrokes, 347);
             if (!c.check("the server's world has the edits", S.strokes > kStrokes / 2, TextFormat("%d strokes", S.strokes))) return true;
             NetClient_Connect(S.bob, TextFormat("127.0.0.1:%d", kPort), "bob");
-            S.t0 = c.t;
+            S.t0 = c.clock;
         }
         RealTime(); NetClient_Update(S.bob);
         if (!S.bobSelf && S.bob.state == NetClient::State::Joined && S.bob.haveOwn && !S.bob.syncing)
@@ -76,15 +77,15 @@ SCENARIO("net/late-join-lag") {
                 S.bobSelf->spawnOn(c.world, *b, b->dirToWorld(Vector3Normalize(S.bob.own.local.toFloat())));
                 S.bobSelf->applyNetState(c.world, NetClient_FromMsg(S.bob.own));
                 S.bobSelf->flyMode = false;
-                S.stepped = SimTick(); S.t0 = c.t;
+                S.stepped = SimTick(); S.t0 = c.clock;
             }
         StepBob(c);
         c.waitingFor(TextFormat("bob in the game (%s, syncing %d)", StateName(S.bob), (int)S.bob.syncing));
         if (!S.bobSelf) {
-            if (c.t - S.t0 > 50.0) c.fail(TextFormat("bob not in the game after 50 s (%s, %d of %d entries)", StateName(S.bob), S.bob.syncEntriesDone, S.bob.syncEntriesWanted));
+            if (c.clock - S.t0 > 50.0) c.fail(TextFormat("bob not in the game after 50 s (%s, %d of %d entries)", StateName(S.bob), S.bob.syncEntriesDone, S.bob.syncEntriesWanted));
             return false;
         }
-        if (c.t - S.t0 < 2.0) return false; // (walking first)
+        if (c.clock - S.t0 < 2.0) return false; // (walking first)
         S.correctionsAtJoin = S.bob.corrections; S.worstAtJoin = S.bob.worstError; S.bob.worstError = 0.0;
         S.dave.syncAssumeEmpty = S.frank.syncAssumeEmpty = true; // nothing cached: everything comes over
         // His dig mid-sync must be one the server takes: a pickaxe stroke. The server takes a held tool only from the player's
@@ -100,7 +101,11 @@ SCENARIO("net/late-join-lag") {
         if (S.skip) return true;
         RealTime(); for (NetClient* n : { &S.bob, &S.dave, &S.frank }) NetClient_Update(*n);
         StepBob(c);
-        if (S.bob.state != NetClient::State::Joined) { c.fail(TextFormat("bob lost the server (%s)", StateName(S.bob))); return true; }
+        if (S.bob.state != NetClient::State::Joined) { // (#1972) why, and the host's side: the runner keeps no host log
+            c.fail(TextFormat("bob lost the server (%s: %s); host: %d guard kicks, %d messages dropped by the guard",
+                              StateName(S.bob), NetByeText(S.bob.bye), Host_GuardKicks(), Host_GuardDropped()));
+            return true;
+        }
         // bob digs at his feet once both syncs are under way: they must hold it until their sync is done.
         if (!S.dug && S.dave.syncing && S.frank.syncing && S.dave.syncEntriesDone > 0 && S.frank.syncEntriesDone > 0) {
             uint64_t bid = 0; DVec3 feet{};
@@ -116,16 +121,16 @@ SCENARIO("net/late-join-lag") {
                                 StateName(S.frank), S.frank.syncEntriesDone, S.frank.syncEntriesWanted));
         const bool closed = S.dave.state == NetClient::State::Closed || S.dave.state == NetClient::State::Rejected ||
                             S.frank.state == NetClient::State::Closed || S.frank.state == NetClient::State::Rejected;
-        if (closed || c.t > 110.0) {
+        if (closed || c.clock > 110.0) {
             const std::string why = Net_SendFailureSummary();
             c.fail(TextFormat("late join failed: dave %s (%d/%d), frank %s (%d/%d) after %.0f s; refused sends: %s", StateName(S.dave),
                               S.dave.syncEntriesDone, S.dave.syncEntriesWanted, StateName(S.frank), S.frank.syncEntriesDone,
-                              S.frank.syncEntriesWanted, c.t, why.empty() ? "none" : why.c_str()));
+                              S.frank.syncEntriesWanted, c.clock, why.empty() ? "none" : why.c_str()));
             return true;
         }
         if (!(done(S.dave) && done(S.frank))) return false;
-        if (S.tDone < 0.0) S.tDone = c.t;
-        return c.t - S.tDone > 2.0; // (a moment after: bob's dig, held during the syncs, is applied)
+        if (S.tDone < 0.0) S.tDone = c.clock;
+        return c.clock - S.tDone > 2.0; // (a moment after: bob's dig, held during the syncs, is applied)
     });
     s.step("checks", 10.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
