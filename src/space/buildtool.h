@@ -9,6 +9,13 @@
 // (#1613) One hammer strike on an anvil by the local player: needs a smith's hammer held (terrainTool.heldTool) of the job's
 // metal tier or better, and wears it a stroke; creative and an empty anvil need none. Ok: struck (Factory::Strike queued).
 AnvilStrike BuildTool_StrikeAnvil(uint64_t body, uint32_t plot, int part);
+// (#1613) Whether a held tool is a smith's hammer (RMB on an anvil then strikes; anything else puts a workpiece on or takes it).
+bool BuildTool_IsHammer(const std::string& held);
+// (#1613) RMB on an anvil without a hammer: `held` (an item in the inventory) puts one of it on the anvil (Put; Refused if
+// the anvil doesn't work it); "" takes a piece off: the finished one first, else the last one put on (Took; Nothing if bare).
+// The take reads Factory::View: the anvil must be the watched machine (it is while aimed at).
+enum class AnvilRmb { Put, Took, Refused, Nothing };
+AnvilRmb BuildTool_AnvilRmb(uint64_t body, uint32_t plot, int part, const std::string& held);
 
 class Scene;
 class Planetoid;

@@ -33,6 +33,28 @@
 #include "forge.h"
 #include "toolwear.h"
 
+bool BuildTool_IsHammer(const std::string& held) { // (#1613) a smith's hammer, worn out or not (a worn one still strikes, to say so)
+    return held == "tool_hammer" || Composed_HammerTier(held, ToolWear_HeldData(held)) > 0;
+}
+
+AnvilRmb BuildTool_AnvilRmb(uint64_t body, uint32_t plot, int part, const std::string& held) {
+    if (!held.empty()) { // one of it on the anvil
+        if (!Factory::Accepts(PartType::Anvil, held)) return AnvilRmb::Refused;
+        if (!inventory.remove(held, 1)) return AnvilRmb::Nothing;
+        MachineAct_Insert(body, plot, part, held, 1);
+        return AnvilRmb::Put;
+    }
+    // Empty-handed: the finished piece if there is one, else the last piece put on (the machine screen's view of it).
+    const MachineView v = Factory::View(body, plot, part);
+    const bool done = std::any_of(v.outSlots.begin(), v.outSlots.end(), [](const auto& s) { return !s.first.empty(); });
+    int slot = -1;
+    for (int i = 0; i < (int)v.inSlots.size(); ++i) if (!v.inSlots[i].first.empty()) slot = i;
+    if (done) MachineAct_Extract(body, plot, part);
+    else if (slot >= 0) MachineAct_TakeSlot(body, plot, part, slot, 0);
+    else return AnvilRmb::Nothing;
+    return AnvilRmb::Took;
+}
+
 AnvilStrike BuildTool_StrikeAnvil(uint64_t body, uint32_t plot, int part) {
     // (#1613) A smith's hammer in hand of the job's metal tier or better; every strike on work wears it. Creative: free.
     const MachineView v = Factory::View(body, plot, part);
@@ -1018,7 +1040,17 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
         return;
     }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
-    if (machineAim.type == PartType::Anvil && !buildTool.active && in.down(Act::Secondary)) { // (#1271 L2) hold RMB on an anvil to hammer
+    // (#1613, the user's rules) RMB on an anvil: with a hammer in hand, hold to strike; with anything else, a press puts one on
+    // it (the workpiece, drawn on the anvil); empty-handed, a press takes it off (the finished piece first).
+    if (machineAim.type == PartType::Anvil && !buildTool.active && in.hit(Act::Secondary) && !BuildTool_IsHammer(terrainTool.heldTool)) {
+        const std::string held = Hotbar_Slot(Hotbar_Selected());
+        const AnvilRmb r = BuildTool_AnvilRmb(machineAim.body, machineAim.plot, machineAim.part, inventory.count(held) > 0 ? held : std::string());
+        if (r == AnvilRmb::Refused) { const auto* d = itemDB.find(held); GameUI_Toast(TextFormat("The anvil doesn't work %s", d ? d->name.c_str() : held.c_str())); }
+        else if (r == AnvilRmb::Nothing) GameUI_Toast("Nothing on the anvil: RMB with a metal puts it on, hold RMB with a hammer to forge");
+        else Audio_Play(Sfx::Pickup, 0.4f, r == AnvilRmb::Put ? 0.8f : 1.2f);
+        return;
+    }
+    if (machineAim.type == PartType::Anvil && !buildTool.active && in.down(Act::Secondary) && BuildTool_IsHammer(terrainTool.heldTool)) { // (#1271 L2) hold RMB to hammer
         static double nextStrike = 0.0, nextHint = 0.0;
         if (GetTime() < nextStrike) return;
         const AnvilStrike r = BuildTool_StrikeAnvil(machineAim.body, machineAim.plot, machineAim.part);
@@ -1265,7 +1297,7 @@ void Machine_DrawHUD() {
     for (const std::string& l : out) { DrawText(l.c_str(), x, ty, 16, RAYWHITE); ty += 20; }
     if (!runLine.empty()) { DrawText(runLine.c_str(), x, ty, 16, runLine.find("refused") != std::string::npos ? Color{ 255, 150, 110, 255 } : Color{ 205, 190, 255, 255 }); ty += 20; }
     if (v.energyMax > 0) DrawText(TextFormat("charge %d / %d EU", v.energy, v.energyMax), x, ty, 16, YELLOW);
-    else DrawText(machineAim.type == PartType::Anvil ? "hold RMB to hammer   I put work in   O take it out" : chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
+    else DrawText(machineAim.type == PartType::Anvil ? (BuildTool_IsHammer(terrainTool.heldTool) ? "hold RMB to hammer   O take the finished piece" : "RMB puts the held metal on   RMB empty-handed takes it off   a hammer in hand to forge") /* (#1613) */ : chest ? "RMB open   I put items in   O take all" : "RMB open   I put items in   O take the output", x, ty, 16, Fade(RAYWHITE, 0.7f));
 }
 
 // The world is going (#902): the aim points into its bodies and plots.
