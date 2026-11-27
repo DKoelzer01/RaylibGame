@@ -133,7 +133,9 @@ private:
 // the baked drainage; each octave's slope bends the next one's direction (small gullies branch into larger ones).
 // Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
 // p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
-float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
+// firstOctave: skip the longer octaves (option B starts at 190 m: the coarse bake carries the 420/900 m relief, and those
+// ribs stood as spires on small islands and lake shores, #1988).
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength, int firstOctave = 0);
 // Terrain v2 option B (#1988): the detail the 50 m refinement gave, made at chunk time on the B face. The gullies above,
 // stronger (no eroded 50 m relief under them), plus derivative fBm (octaves damped where the earlier ones are steep:
 // rounded swells with smooth hollows, not uniform bumps) on gentle ground. Both fade out over large drainage, so valley

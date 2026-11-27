@@ -1490,7 +1490,7 @@ namespace {
     }
 }
 
-float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength) {
+float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength, int firstOctave) {
     static const float kLambda[6] = { 900.0f, 420.0f, 190.0f, 85.0f, 38.0f, 17.0f };
     constexpr float kTwoPi = 6.28318531f;
     static const float kGullyAmp = getenv("RAYLIBGAME_GULLY_AMP") ? (float)atof(getenv("RAYLIBGAME_GULLY_AMP")) : 0.14f; // tuning (0.11 read as smooth ridges, user 2026-11-14)
@@ -1508,6 +1508,7 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         const float lam = kLambda[o];
         const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
         if (fade <= 0.0f) break;
+        if (o < firstOctave) continue;
         const float slope = Vector3Length(grad);
         if (slope < 1e-4f) continue;
         const Vector3 across = Vector3Scale(Vector3CrossProduct(dir, grad), 1.0f / slope); // unit, along the contour
@@ -1562,13 +1563,14 @@ namespace {
 float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage) {
     if (h <= 0.0f) return 0.0f;
     static const float kGully = EnvTune("RAYLIBGAME_B_GULLY", 1.5f); // GUESS: x the A faces' gully strength
+    static const int kFirst = (int)EnvTune("RAYLIBGAME_B_FIRST_OCTAVE", 2.0f); // GUESS: the gullies from 190 m (0: from 900 m as on A)
     static const float kFbm = EnvTune("RAYLIBGAME_B_FBM", 6.0f);     // GUESS: m, the first fBm octave's amplitude
     auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
     // Valley floors stay smooth: full detail up to ~0.3 km^2, none from 10 km^2 (the small streams run straight along the 50 m grid: a mask on them drew ruled lines).
     const float dry = 1.0f - smooth(5.5f, 7.0f, drainage);
     if (dry <= 0.0f) return 0.0f;
     const float coast = smooth(2.0f, 15.0f, h); // as the A faces' gullies: the shore stays a shore
-    float out = ErosionGullies(p, dir, grad, footprint, seed, coast * kGully * dry);
+    float out = ErosionGullies(p, dir, grad, footprint, seed, coast * kGully * dry, kFirst);
     // Derivative fBm (the octaves' running slope damps the next ones): on gentle ground only, where the gullies are weak.
     const float gentle = 1.0f - smooth(0.12f, 0.45f, Vector3Length(grad));
     if (gentle > 0.0f && kFbm > 0.0f) {
