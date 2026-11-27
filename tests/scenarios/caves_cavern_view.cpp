@@ -47,7 +47,9 @@ SCENARIO("caves/cavern-view") {
         return c.t > 2.0 && WorldIdle();
     });
     for (int k = 0; k < 6; ++k) {
-        s.step("look " + std::to_string(k), 8.0, [k](ScenarioCtx& c) {
+        // (the wall looks wait for the terrain at a new eye 0.7 r out: 30 s, since on fast runner runs that build took over
+        // 8 s sim, #1828)
+        s.step("look " + std::to_string(k), k >= 4 ? 30.0 : 8.0, [k](ScenarioCtx& c) {
             if (!S.found) return true;
             if (k == 0 && c.t < 0.05) c.cue();
             const bool wall = k >= 4; // the last two: 0.7 r out, facing the wall
