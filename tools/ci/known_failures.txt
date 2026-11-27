@@ -22,3 +22,4 @@ build/tile-walk-planet -> FAIL          | #1999 | the build step passes its 20 s
 creatures/lurker-ceiling -> FAIL        | #1998 | 1 of 8 checks fails in ~10% of runs (18/20), on several branches
 world/spawn-by-water -> FAIL            | #2002 | 1 of 5 checks fails in ~10% of runs (18/20), on several branches
 space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump (~600 km apex); 0/5 on every branch, staging too
+net/late-join-lag -> FAIL: step .edits  | #1972 | the sim runs ahead of the wall-clock join and the step deadline passes (10/12 recent runs pass)
