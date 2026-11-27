@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <cstring>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "envflag.h"
 #include "utils/logger.h"
 #include "erosion.h"
@@ -259,6 +260,18 @@ PlanetField::PlanetField(unsigned int seed, float radius_, bool moon_)
     moistNoise = SeededNoise(rng, 1.0f / 3200.0f);    // ...wet and dry ones
     biomeJitter = SeededNoise(rng, 1.0f / 90.0f);     // ...and a fine wobble that interleaves their borders
     caveMouths = SeededNoise(rng, 1.0f / 700.0f);     // Plan 5 C: regions where cave tunnels break the surface
+    variantNoise = SeededNoise(rng, 1.0f / 2500.0f);  // biome variants (#1977): ~1-3 km patches inside each biome
+    {   // The variant noise's distribution over the sphere (65 quantiles from 4096 Fibonacci directions), so its bands
+        // cover the shares biomes.txt gives them; the same for a seed on every machine (a fixed sample set, a sort).
+        constexpr int N = 4096;
+        std::vector<float> s(N);
+        for (int i = 0; i < N; ++i) {
+            const float y = 1.0f - 2.0f * (i + 0.5f) / N, r = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * i;
+            s[i] = variantNoise.fractal(2, cosf(a) * r * radius, y * radius, sinf(a) * r * radius);
+        }
+        std::sort(s.begin(), s.end());
+        for (int k = 0; k <= 64; ++k) variantQ[k] = s[std::min(N - 1, k * (N - 1) / 64)];
+    }
     // Bounds of elevation() below (each noise term is in [-1, 1]).
     if (moon) { minElevation = -90.0f; maxElevation = 340.0f; }
     else { minElevation = -740.0f; maxElevation = 1690.0f + 50.0f + 15.0f; } // + the 3D terrain band + biome landforms (dunes, mesas)
@@ -2481,6 +2494,39 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
     return biomeOf(c, elev);
 }
 
+float PlanetField::variantU(Vector3 dir) const {
+    const float bs = 1.0f / std::max(gen.biomeSize, 0.1f); // larger biomes, larger variant patches
+    const float x = dir.x * radius, y = dir.y * radius, z = dir.z * radius;
+    // The fine border wobble (as biomeAt's) so variants interleave over ~100 m instead of meeting on a line.
+    const float v = variantNoise.fractal(2, x * bs, y * bs, z * bs) + 0.02f * biomeJitter.fractal(2, x, y, z);
+    if (v <= variantQ[0]) return 0.0f;
+    if (v >= variantQ[64]) return 0.999999f;
+    const int k = (int)(std::upper_bound(variantQ, variantQ + 65, v) - variantQ) - 1; // variantQ[k] <= v < variantQ[k + 1]
+    const float span = variantQ[k + 1] - variantQ[k];
+    return std::min(0.999999f, (k + (span > 0.0f ? (v - variantQ[k]) / span : 0.0f)) / 64.0f);
+}
+
+int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) const {
+    const BiomeVariantTable& t = BiomeVariants();
+    const std::vector<int>& ids = t.byType[(int)type];
+    if (ids.size() <= 1) return t.base(type);
+    int k = 0;
+    while (k + 1 < (int)ids.size() && u >= t.bandHi[ids[k]]) ++k;
+    for (int n = 0; n < (int)ids.size(); ++n) { // a failed gate: the next band (the base, first, has none)
+        const int id = ids[(k + n) % ids.size()];
+        if (t.defs[id].admits(elev, c.temp, c.moist)) return id;
+    }
+    return ids[0];
+}
+
+int PlanetField::variantAt(Vector3 dir, float elev) const {
+    Climate c = climateAt(dir, elev);
+    const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
+    c.temp += 1.2f * j;
+    c.moist += 0.035f * j;
+    return variantOf(biomeOf(c, elev), c, elev, variantU(dir));
+}
+
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
@@ -2547,12 +2593,32 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (it == cache.end()) it = cache.emplace(this, nearestBiomeDir(best, (Biome)gSpawnBiome)).first;
         return it->second;
     }
+    if (gSpawnVariant >= 0) { // ...or that biome variant (#1977)
+        static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
+        std::lock_guard<std::mutex> lock(m);
+        auto it = cache.find(this);
+        if (it == cache.end()) {
+            it = cache.emplace(this, nearestVariantDir(best, gSpawnVariant)).first;
+            const Vector3 d = it->second;
+            printf("bench: --bench-biome: start in %s, %.1f km from the default start%s\n", BiomeVariantName(variantAt(d, elevation(d))),
+                   acosf(std::clamp(Vector3DotProduct(d, best), -1.0f, 1.0f)) * radius / 1000.0f, variantAt(d, elevation(d)) == gSpawnVariant ? "" : " (none found: the default start)");
+        }
+        return it->second;
+    }
     return best;
 }
 
 // The nearest deep patch of biome b (the same biome 200 m out on four sides) to home, from 60k random directions;
 // home if none. Used by --bench-biome (gSpawnBiome).
 Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
+    return nearestDeepDir(home, [&](Vector3 d, float e) { return biomeAt(d, e) == b; });
+}
+
+Vector3 PlanetField::nearestVariantDir(Vector3 home, int variant) const {
+    return nearestDeepDir(home, [&](Vector3 d, float e) { return variantAt(d, e) == variant; });
+}
+
+Vector3 PlanetField::nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const {
     std::mt19937 rng(11);
     std::uniform_real_distribution<float> u(-1.0f, 1.0f);
     float best = -2.0f;
@@ -2564,12 +2630,12 @@ Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
         const float close = Vector3DotProduct(d, home);
         if (close <= best) continue;
         const float e = elevation(d, 32.0f);
-        if (e < 6.0f || biomeAt(d, e) != b) continue;
+        if (e < 6.0f || !is(d, e)) continue;
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
         bool deep = true;
         for (int s = 0; s < 4 && deep; ++s) {
             const Vector3 q = Vector3Normalize(Vector3Add(d, Vector3Scale(s < 2 ? t1 : t2, (s & 1 ? 200.0f : -200.0f) / radius)));
-            deep = biomeAt(q, elevation(q, 32.0f)) == b;
+            deep = is(q, elevation(q, 32.0f));
         }
         if (deep) { best = close; out = d; }
     }
@@ -4001,6 +4067,47 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1977) Biome variants over a whole 60 km planet, at a fixed 100 m elevation (no bake needed): the variant axis is
+// even (its quantile table works), each ungated variant covers its biomes.txt share of its type, gates hold, and a
+// variant's type is always biomeAt's biome.
+TEST(Voxel, BiomeVariantsCoverTheirShares) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 60000.0f, false);
+    const BiomeVariantTable& t = BiomeVariants();
+    ASSERT_GT((int)t.defs.size(), (int)Biome::Count) << "biomes.txt did not load (tests run from the repo root)";
+    constexpr int N = 120000;
+    constexpr float kElev = 100.0f;
+    int decile[10] = {}, typeCount[(int)Biome::Count] = {}, mismatch = 0;
+    std::vector<int> count(t.defs.size(), 0);
+    for (int i = 0; i < N; ++i) {
+        const float y = 1.0f - 2.0f * (i + 0.5f) / N, r = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * i;
+        const Vector3 d = { cosf(a) * r, y, sinf(a) * r };
+        ++decile[std::min(9, (int)(f.variantU(d) * 10.0f))];
+        const int v = f.variantAt(d, kElev);
+        ASSERT_GE(v, 0);
+        ++count[v];
+        ++typeCount[(int)t.defs[v].type];
+        if (t.defs[v].type != f.biomeAt(d, kElev)) ++mismatch;
+    }
+    EXPECT_EQ(mismatch, 0);
+    for (int k = 0; k < 10; ++k) EXPECT_NEAR(decile[k] / (float)N, 0.1f, 0.03f) << "decile " << k;
+    int checked = 0;
+    for (int b = 0; b < (int)Biome::Count; ++b) {
+        if (typeCount[b] < 4000) continue; // too little of this type on the planet to measure shares
+        bool anyGate = false;
+        float total = 0.0f;
+        for (int id : t.byType[b]) { anyGate |= t.defs[id].gated(); total += t.defs[id].weight; }
+        for (int id : t.byType[b]) {
+            const float share = count[id] / (float)typeCount[b];
+            if (kElev < t.defs[id].elevMin || kElev > t.defs[id].elevMax) EXPECT_EQ(count[id], 0) << t.defs[id].key << " outside its elevation gate";
+            if (anyGate) continue; // a failed gate moves points to the next band: no exact shares
+            EXPECT_NEAR(share, t.defs[id].weight / total, 0.08f) << t.defs[id].key;
+            ++checked;
+        }
+    }
+    EXPECT_GE(checked, 9); // shares measured on at least three types
+    PlanetField::tIgnoreBake = false;
+}
 // (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
 // rough or smooth world): linear in it, and its hills gone at roughness 0.
 TEST(Voxel, RiverLandFollowsRoughness) {

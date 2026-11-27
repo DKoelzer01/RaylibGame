@@ -70,6 +70,9 @@ if ($rec.Count -gt 0) {
         Write-Host "capture: frames $($m.Groups[2].Value)  (frame_0000.png ...)"
         if ($m.Groups[4].Value -ne '-') { Write-Host "capture: sheet  $($m.Groups[4].Value -replace '/', '\')" }
         if ($m.Groups[3].Value -ne '-') { Write-Host "capture: gif    $($m.Groups[3].Value -replace '/', '\')" }
+        # A Read of a UNC path always asks for permission: on deweyserver, look with media_get instead (SKILL.md).
+        $mm = [regex]::Match($m.Groups[1].Value, '(?i)claude-media/(.+?)/?$')
+        if ($mm.Success) { Write-Host "capture: look   mcp__deweyserver__media_get(path=""$($mm.Groups[1].Value)"")  (frame=N for one frame; not Read)" }
     }
 } else {
     Get-Content $log -Tail 12 | Out-Host
