@@ -8,41 +8,61 @@
 // float: accurate to well under a float ulp, and identical everywhere. Inputs outside a function's domain give what the
 // bake needs, not NaN (noted per function).
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 namespace det {
+
+namespace detail {
+// x = m * 2^e with m in [sqrt(1/2), sqrt(2)), x > 0 finite. From the bits for normal x (a library frexp call cost a
+// tenth of the bake's flood pass, #1905); subnormals through std::frexp (exact as well).
+inline double SplitLog(double x, int& e) {
+    uint64_t b; std::memcpy(&b, &x, 8);
+    const int be = (int)((b >> 52) & 0x7ff);
+    double m;
+    if (be == 0) { m = std::frexp(x, &e); m *= 2.0; --e; } // subnormal: m in [1, 2)
+    else { e = be - 1023; b = (b & 0x000fffffffffffffull) | 0x3ff0000000000000ull; std::memcpy(&m, &b, 8); } // m in [1, 2)
+    if (m >= 1.41421356237309504880) { m *= 0.5; ++e; }
+    return m;
+}
+// 2^k as a double, k in -1022..1023 (exact).
+inline double Pow2(int k) { const uint64_t b = (uint64_t)(k + 1023) << 52; double v; std::memcpy(&v, &b, 8); return v; }
+// log(m), m in [sqrt(1/2), sqrt(2)): 2 atanh(s), s = (m - 1) / (m + 1), |s| < 0.172. The series to s^13; the rest is
+// below 2e-12 relative, far under a float ulp (6e-8). The coefficients are constants the compiler folds exactly.
+inline double LogMantissa(double m) {
+    const double s = (m - 1.0) / (m + 1.0), z = s * s;
+    const double t = 1.0 + z * (1.0 / 3.0 + z * (1.0 / 5.0 + z * (1.0 / 7.0 + z * (1.0 / 9.0 + z * (1.0 / 11.0 + z * (1.0 / 13.0))))));
+    return 2.0 * s * t;
+}
+} // namespace detail
 
 // Natural log, x > 0 (x <= 0: -1e30).
 inline double Log(double x) {
     if (!(x > 0.0)) return -1e30;
     int e = 0;
-    double m = std::frexp(x, &e); // x = m * 2^e, m in [0.5, 1)
-    if (m < 0.70710678118654752440) { m *= 2.0; --e; } // m in [sqrt(1/2), sqrt(2))
-    // log(m) = 2 atanh(s), s = (m - 1) / (m + 1), |s| < 0.172: the series to s^23 is below 1e-19
-    const double s = (m - 1.0) / (m + 1.0), z = s * s;
-    double t = 1.0 / 23.0;
-    for (int k = 21; k >= 1; k -= 2) t = t * z + 1.0 / k;
-    return 2.0 * s * t + e * 0.69314718055994530942;
+    const double m = detail::SplitLog(x, e);
+    return detail::LogMantissa(m) + e * 0.69314718055994530942;
 }
 
 // log2, x > 0 (x <= 0: -1e30); exact for powers of two, so floor(Log2(x)) classes are exact at their edges.
 inline double Log2(double x) {
     if (!(x > 0.0)) return -1e30;
     int e = 0;
-    double m = std::frexp(x, &e);
-    if (m < 0.70710678118654752440) { m *= 2.0; --e; }
-    return e + Log(m) * 1.44269504088896340736;
+    const double m = detail::SplitLog(x, e);
+    return e + detail::LogMantissa(m) * 1.44269504088896340736;
 }
 
-// e^x (x < -745: 0; x > 709: 1e308).
+// e^x (x < -708: 0; x > 709: 1e308).
 inline double Exp(double x) {
-    if (x < -745.0) return 0.0;
+    if (x < -708.0) return 0.0;
     if (x > 709.0) return 1e308;
     const double k = std::floor(x * 1.44269504088896340736 + 0.5); // nearest multiple of ln 2
     const double r = (x - k * 6.93147180369123816490e-01) - k * 1.90821492927058770002e-10; // ln 2 in two parts: r exact to ~1e-17
-    // e^r, |r| <= 0.35: Taylor to r^16 (the next term is below 1e-21)
-    double t = 1.0;
-    for (int n = 16; n >= 1; --n) t = 1.0 + t * r / n;
-    return std::ldexp(t, (int)k);
+    // e^r, |r| <= 0.347: Taylor to r^11 (the rest is below 1e-14)
+    const double t = 1.0 + r * (1.0 + r * (1.0 / 2.0 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0 + r * (1.0 / 5040.0
+                     + r * (1.0 / 40320.0 + r * (1.0 / 362880.0 + r * (1.0 / 3628800.0 + r * (1.0 / 39916800.0)))))))))));
+    const int ki = (int)k;
+    return ki >= -1022 ? t * detail::Pow2(ki) : std::ldexp(t, ki); // the product is exact (a power of two)
 }
 
 // x^y for x >= 0 (0^y: 0 for y > 0, 1 for y == 0).
@@ -54,14 +74,20 @@ inline double Pow(double x, double y) {
 // asin, x clamped to [-1, 1].
 inline double Asin(double x) {
     const double a = x < 0.0 ? -x : x, sign = x < 0.0 ? -1.0 : 1.0;
-    auto series = [](double v) { // asin(v), |v| <= 0.5: sum c_n v^(2n+1); the term past n = 30 is below 1e-20
+    // asin(v), |v| <= 0.5: sum c_n v^(2n+1), c_n = (2n)! / (4^n n!^2 (2n + 1)); the rest past n = 20 is below 1e-14.
+    // The table is built at compile time (the compiler's double arithmetic is IEEE too, so every build has the same).
+    struct Coef { double c[21]; };
+    static constexpr Coef kC = [] {
+        Coef t{};
+        double b = 1.0;
+        for (int n = 0; n <= 20; ++n) { if (n > 0) b *= (2.0 * n - 1.0) / (2.0 * n); t.c[n] = b / (2.0 * n + 1.0); }
+        return t;
+    }();
+    auto series = [](double v) {
         const double z = v * v;
-        double term = v, sum = v;
-        for (int n = 1; n <= 30; ++n) {
-            term *= z * (2.0 * n - 1.0) * (2.0 * n - 1.0) / ((2.0 * n) * (2.0 * n + 1.0));
-            sum += term;
-        }
-        return sum;
+        double t = kC.c[20];
+        for (int n = 19; n >= 0; --n) t = t * z + kC.c[n];
+        return v * t;
     };
     if (a <= 0.5) return sign * series(a);
     const double v = std::sqrt((1.0 - (a > 1.0 ? 1.0 : a)) * 0.5); // asin(a) = pi/2 - 2 asin(sqrt((1 - a) / 2))
@@ -139,6 +165,7 @@ inline float Logf(float x) { return (float)Log(x); }
 inline float Log2f(float x) { return (float)Log2(x); }
 inline float Expf(float x) { return (float)Exp(x); }
 inline float Powf(float x, float y) { return (float)Pow(x, y); }
+inline float Root4f(float x) { return (float)std::sqrt(std::sqrt((double)x)); } // x^0.25, x >= 0: sqrt is exact IEEE, and cheaper than Pow
 inline float Asinf(float x) { return (float)Asin(x); }
 
 } // namespace det

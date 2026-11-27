@@ -365,7 +365,7 @@ namespace {
             if (!gBakeOld) // #605: what the stream power needs per cell changes only here; once per flood, not every step
                 for (size_t c = 0; c < cells; ++c) {
                     areaM[c] = det::Powf(area[c], p.m);
-                    areaG[c] = det::Powf(area[c], 0.25f);
+                    areaG[c] = det::Root4f(area[c]);
                     recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R;
                 }
         };
@@ -384,7 +384,7 @@ namespace {
                     for (int c : order) {
                         const float g = d.glacier[c];
                         if (g <= 0.0f || d.outlet[c]) continue;
-                        const float ice = g * std::min(200.0f, 1.4f * det::Powf(area[c], 0.25f));
+                        const float ice = g * std::min(200.0f, 1.4f * det::Root4f(area[c]));
                         if (ice < 5.0f) continue;
                         const float top = d.h[c] + ice;
                         for (int k = 0; k < 8; ++k) {
@@ -405,7 +405,7 @@ namespace {
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Powf(area[c], 0.25f) : areaG[c]) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Root4f(area[c]) : areaG[c]) / L;
                     f += (fg - f) * g;
                 }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
