@@ -1159,7 +1159,11 @@ void PlanetErosion::routeFinal(int threads) {
     // One routing: priority flood over 8 neighbours (the bake's own connectivity: its valleys run diagonally too), steepest
     // descent on the filled surface - with preferD4, the steepest of the 4 side neighbours when one is lower, else of all
     // 8 - and the drainage area, downstream in reverse flood order.
-    auto route = [&](bool preferD4) {
+    // #1988: option B's faces, and how deep a breach may cut (m; GUESS 8, RAYLIBGAME_B_BREACH=0: fill as on A)
+    auto isB = [&](int g) { return bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace); };
+    static const float kBreach = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f;
+    std::vector<float> breachCut(bFace >= 0 ? G : 0, 0.0f);
+    auto route = [&](bool preferD4, bool breach) {
         RadixHeap heap;
         std::fill(seen.begin(), seen.end(), 0);
         std::fill(recv.begin(), recv.end(), -1);
@@ -1174,6 +1178,23 @@ void PlanetErosion::routeFinal(int threads) {
                 const int o = nb[k];
                 if (o < 0 || seen[o]) continue;
                 seen[o] = 1;
+                // #1988: on option B's faces a shallow closed basin is breached rather than filled (Barnes' carving
+                // priority flood): the path back toward the outlet is lowered just under this cell, when no cell on it
+                // must drop more than kBreach. The smooth 100-200 m surface leaves hollows the 50 m simulation would have
+                // worn an outlet through on A; filled, they stood as still ponds where A had a stream. Deeper basins
+                // stay lakes.
+                if (breach && h[o] < hf[c] - 0.05f && isB(o)) { // (a hollow, not the jitter across a flat)
+                    float need = 0.0f, t = h[o];
+                    int p = c, steps = 0;
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, h[p] - t);
+                    if (need <= kBreach && steps < 400) {
+                        t = h[o];
+                        for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
+                        hf[o] = h[o]; recv[o] = c;
+                        heap.push(RadixHeap::Key(hf[o], o));
+                        continue;
+                    }
+                }
                 hf[o] = std::max(h[o], hf[c] + 1e-3f * (1.0f + 4.0f * Hash3(o, 0, 13, seed))); // jittered across flats
                 recv[o] = c;
                 heap.push(RadixHeap::Key(hf[o], o));
@@ -1210,7 +1231,7 @@ void PlanetErosion::routeFinal(int threads) {
         }
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
     };
-    route(false);
+    route(false, bFace >= 0 && kBreach > 0.0f);
     // Diagonal channel links (#547): the line between two diagonal cells crosses the corner of the two cells beside them,
     // where the bilinear ground stands at the four cells' mean - up to half a V valley's side over the channel, which the
     // river then cut as a slot. The lower of those two side cells is worn down to the link's middle height, so the
@@ -1230,7 +1251,7 @@ void PlanetErosion::routeFinal(int threads) {
             h[s] = std::min(h[s], 0.5f * (h[c] + h[r]));
         }
     }
-    route(true);
+    route(true, false);
     // Classes, the filled cells, and the incision (channel cells off the filled surface, by their drainage).
     flow.assign(G, 0);
     filled.clear();
@@ -1246,7 +1267,7 @@ void PlanetErosion::routeFinal(int threads) {
         // #1988: no groove on the B face. Its grid is the smooth coarse surface, where 50 m D4/D8 paths run straight, and
         // a cut along them showed as ruled lines and staircases (on A the refined valleys hide the path). Rivers keep
         // their routing and classes; the drainage mask keeps their floors smooth.
-        if (bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace)) cut[g] = 0.0f;
+        if (isB(g)) cut[g] = breachCut[g]; // (only the breaches, #1988)
     }
     // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
     for (int f = 0; f < 6; ++f) {
