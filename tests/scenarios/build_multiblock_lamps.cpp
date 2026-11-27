@@ -39,7 +39,8 @@ MbLook LookNow() {
     return looks.size() == 1 ? looks[0] : MbLook{};
 }
 // Front and a little to the east, above: the controller's face, a hatch's lamp on the top and two edges' seams in view.
-void View(ScenarioCtx& c) { c.camera(At(base.x + 4.0f, base.y + 4.2f, base.z + 6.5f), At(base.x + 1.5f, base.y + 1.2f, base.z + 2.0f), Up()); }
+// (The controller sits front-centre of the bottom layer, facing +z: the tank spans x -1..1, z -2..0, y 0..2 from it.)
+void View(ScenarioCtx& c) { c.camera(At(ctl.x + 3.5f, ctl.y + 4.0f, ctl.z + 4.5f), At(ctl.x + 0.5f, ctl.y + 1.3f, ctl.z - 0.5f), Up()); }
 void CheckDrawn(ScenarioCtx& c) {
     if (!Headless()) c.check("the controller's lamp drawn", MultiblockModels_DrawnCount() >= 1);
 }
@@ -134,9 +135,11 @@ SCENARIO("build/multiblock-lamps") {
         static bool broken = false;
         if (c.t < 0.05) broken = false;
         View(c);
+        if (c.t < 0.2) return false; // (past the reset frames above: one break)
         if (!broken) {
             broken = true;
-            const int corner = plot->partAt(base); // (the tank's bottom north-west corner: a casing)
+            const MbInt3 lo = LookNow().lo; // (the formed box's low corner: a bottom corner casing)
+            const int corner = plot->partAt({ lo.x, lo.y, lo.z });
             if (!c.check("a casing at the corner", corner >= 0 && plot->parts[corner].type == PartType::MbCasing)) return true;
             plot->remove(corner);
             c.eq("the recheck drops the tank", (int)Multiblock_Recheck(*plot).size(), 1);
