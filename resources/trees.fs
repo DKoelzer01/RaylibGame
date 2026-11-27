@@ -65,6 +65,8 @@ vec3 leafTexture(vec3 c) { return c * (0.8 + 0.34 * foliageHash(floor(fragLocal 
 #include "shadow.glsl"
 #include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
+#include "biometint.glsl"
+flat in float fragBiome; // (#2032) the biome variant id
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
 // jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
@@ -99,6 +101,7 @@ void main()
     float lat = fragLatitude;
     vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
     vec3 leafC = climateFoliage(temperate, dry, cold, vec3(0.05, 0.24, 0.04), vec3(0.12, 0.18, 0.05), lat);
+    if (fragClimate.z > 0.5) leafC = biomeClimate(leafC, temperate) * biomeLeaf(fragBiome); // #2032: the biome's own tint
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
     if (treeVariationOff < 0.5) leafC *= mix(vec3(1.08, 1.0, 0.86), vec3(0.9, 1.0, 1.07), fract(fragHash * 173.3 + 0.41)); // #1979: yellower .. bluer crowns per tree
     leafC = min(leafC * leafTint, vec3(0.9));

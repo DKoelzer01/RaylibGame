@@ -2523,8 +2523,9 @@ int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) co
 
 int PlanetField::variantAt(Vector3 dir, float elev) const { return variantAt(dir, elev, dir); }
 
-int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const {
-    Climate c = climateAt(dir, elev);
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const { return variantAt(dir, elev, uDir, climateAt(dir, elev)); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir, Climate c) const {
     const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
     c.temp += 1.2f * j;
     c.moist += 0.035f * j;
@@ -3835,7 +3836,19 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
                     const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
-                    out.tangents[v * 4 + 1] = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2 (#254)
+                    // (#2032) The biome variant for its grass and canopy tints, read ~100 m off at random per vertex as the
+                    // flora reads it per plant (trees.cpp), so neighbouring variants' colours cross-fade over ~200 m.
+                    int variant = -1;
+                    if (BiomeTintOn()) {
+                        uint32_t hv = (uint32_t)(int32_t)floorf(p.x * 2.0f) * 0x8da6b343u ^ (uint32_t)(int32_t)floorf(p.y * 2.0f) * 0xd8163841u ^ (uint32_t)(int32_t)floorf(p.z * 2.0f) * 0xcb1ab31fu;
+                        hv ^= hv >> 15; hv *= 0x2c1b3c6du; hv ^= hv >> 12;
+                        const float ox = (float)(hv & 0xffffu) / 65535.0f * 2.0f - 1.0f, oy = (float)(hv >> 16) / 65535.0f * 2.0f - 1.0f, k = 100.0f / planetLife->radius;
+                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 u2 = Vector3CrossProduct(u1, up);
+                        const Vector3 uDir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
+                        variant = planetLife->variantAt(up, d - planetLife->radius, uDir, cl); // cl: the same climateAt (#2032)
+                    }
+                    out.tangents[v * 4 + 1] = BiomeClimateCode(cl.temp, cl.moist, variant); // from 2 (#254)
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
                     if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                         const float steep = 1.0f - Vector3DotProduct(n, up);
