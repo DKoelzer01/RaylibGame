@@ -1,0 +1,8 @@
+# (#1960) Sandbox scenarios that fail on the null GL (RAYLIBGAME_NO_GL=1) but pass on the GPU runner: they need the
+# GPU path (fluid compute, readbacks). tools/ci/nogl_scenarios.sh skips them; selfhosted.yml still runs them.
+# Measured 2026-11-27 on the deweyserver sandbox, staging f25503b2; GPU pass rates from scenario_history.
+factory/rotation-sources   # the stream never reaches the wheel (0 RPM); GPU 20/20
+fluid/u-bend               # 1 of 5 checks; GPU 2/2
+fluid/u-bend-cpu           # 1 of 5 checks; GPU 2/2
+water/film-on-tiles        # 1 of 3 checks; GPU 20/20
+world/spawn-by-water       # 1 of 5 checks; GPU 15/16
