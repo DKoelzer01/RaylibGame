@@ -1,0 +1,133 @@
+# Biome variants (#1964, #1977; plan: https://claude.ai/artifact/5ajPzE3GJb5QVvXc5tneyQ).
+# The biome types (Ocean, Jungle, ... Polar) are picked from the climate in code (PlanetField::biomeOf); a regional noise
+# (~2.5 km patches) then picks a variant inside the type. One block per variant:
+#   variant <type>.<id>      the type's lower-case name, a dot, the variant's id
+#     name    <text>         shown to players (default: the id)
+#     weight  <n>            its share of the type's area, relative to the type's other variants (default 1)
+#     elev    <min> <max>    optional gates: m above sea level, C (annual mean) and moisture 0..1, "-" = open; where a
+#     temp    <min> <max>    gate fails the point falls to the type's next variant. The first variant of a type is its
+#     moist   <min> <max>    base (the biome as it was): it takes no gate, it is the fallback.
+# Weights and gates are GUESSes for the first playtests (the user approved the set, 2026-11-27).
+
+variant ocean.open
+  name    Open ocean
+
+variant forest.mixed
+  name    Mixed woodland
+  weight  40
+variant forest.birch_grove
+  name    Birch grove
+  weight  20
+variant forest.old_growth
+  name    Old growth
+  weight  15
+variant forest.maple_hills
+  name    Maple hills
+  weight  25
+
+variant meadow.grassland
+  name    Grassland
+  weight  45
+variant meadow.flower_meadow
+  name    Flower meadow
+  weight  30
+variant meadow.chalk_downs
+  name    Chalk downs
+  weight  25
+
+variant swamp.reed_marsh
+  name    Reed marsh
+  weight  45
+variant swamp.mangrove
+  name    Mangrove
+  weight  25
+  temp    20 -       # warm...
+  elev    - 20       # ...coasts
+variant swamp.peat_bog
+  name    Peat bog
+  weight  30
+  temp    - 13       # the cool half of the swamps
+
+variant taiga.spruce
+  name    Spruce taiga
+  weight  40
+variant taiga.pine_barrens
+  name    Pine barrens
+  weight  20
+variant taiga.burnt
+  name    Burnt taiga
+  weight  15
+variant taiga.muskeg
+  name    Muskeg
+  weight  25
+
+variant tundra.stony
+  name    Stony tundra
+  weight  40
+variant tundra.polygon
+  name    Polygon tundra
+  weight  35
+variant tundra.lichen_heath
+  name    Lichen heath
+  weight  25
+
+variant alpine.bare_peaks
+  name    Bare peaks
+  weight  50
+variant alpine.krummholz
+  name    Krummholz slopes
+  weight  30
+  elev    - 1050     # the tree line, just over the 850 m alpine line
+variant alpine.cirque_lakes
+  name    Cirque lakes
+  weight  20
+
+variant polar.ice_sheet
+  name    Ice sheet
+  weight  70
+variant polar.frozen_coast
+  name    Frozen coast
+  weight  30
+  elev    - 40
+
+variant desert.sand_sea
+  name    Sand sea
+  weight  45
+variant desert.hamada
+  name    Rocky hamada
+  weight  35
+variant desert.salt_flats
+  name    Salt flats
+  weight  20
+  elev    - 250      # low basins
+
+variant badlands.rill
+  name    Rill badlands
+  weight  35
+variant badlands.mesa
+  name    Mesa country
+  weight  40
+variant badlands.red_canyon
+  name    Red canyon
+  weight  25
+
+variant savanna.grassland
+  name    Grass savanna
+  weight  40
+variant savanna.acacia
+  name    Acacia woodland
+  weight  35
+variant savanna.kopje
+  name    Kopje country
+  weight  25
+
+variant jungle.lowland
+  name    Lowland rainforest
+  weight  50
+variant jungle.karst_towers
+  name    Karst towers
+  weight  25
+variant jungle.cloud_forest
+  name    Cloud forest
+  weight  25
+  elev    400 -
