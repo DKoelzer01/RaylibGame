@@ -136,8 +136,9 @@ jobs:
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 120
     env:
-      # (#1768, #1871) The slow report and twin steps (fluid parity, pose twins, perf budgets) run in the batch and full tiers;
-      # a PR's run (the affected tier) skips them.
+      # (#1768, #1871) The fluid parity report runs in the batch and full tiers; a PR's run (the affected tier) skips it.
+      # (#1947) The pose twins and perf budgets (~25 min) run only in the full tier: promotion (a push to develop, a tier=full
+      # dispatch before develop -> main) and the nightly. In-dev branches, the staging batch included, run the trimmed set.
       FULL_RUN: ${{ needs.plan.outputs.tier != 'affected' && 'true' || 'false' }}
       TIER: ${{ needs.plan.outputs.tier }}
       AFFECTED: ${{ needs.plan.outputs.scenarios }}
@@ -189,10 +190,18 @@ jobs:
         working-directory: ${{ env.RUN }}
         run: |
           # The GPU bit-exact check: the GPU height map and density blocks against the CPU field (Plan 6, #146).
+          # (#1947) The EGL context itself takes seconds. When this slot's seed-42 erosion bake cache is stale (an erosion
+          # change, or another branch's bake version), the bench bakes first (~5 min on the runner); the planet scenarios
+          # after it reuse that bake. The summary says which, so a slow step isn't mistaken for a slow context.
+          bake=saves/bench.sav.erosion
+          before=$(stat -c %Y "$bake" 2>/dev/null || echo 0)
+          t0=$SECONDS
           set +e
           timeout 840 "$OUT/bin/game" --seed 42 --bench 3 --test-terrain-gpu > terrain-gpu.log 2>&1
           rc=$?
           set -e
+          baked="cache read"; [ "$(stat -c %Y "$bake" 2>/dev/null || echo 0)" != "$before" ] && baked="baked the seed-42 erosion (stale or no cache)"
+          echo "terrain gpu: $((SECONDS - t0)) s ($baked)" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -E "HEADLESS|^bench: terrain gpu" terrain-gpu.log || true
           if grep -q "null GL" terrain-gpu.log; then
             echo "::error::No GPU context (null GL): the runner container needs the NVIDIA runtime and NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility"
@@ -226,7 +235,7 @@ jobs:
       # the rest down with it. The parts share no scenario (no file carries tags from both lists): fluid, frames and factory
       # (~40 min alone), then the rest. (#1768) The two parts run at the same time (both under the shared GPU lock, each with
       # its own output folder and log): the step takes as long as the slower part, not the sum. The pose twins are tagged
-      # `pose` (not `frames`), so they are not in part 1; they run in their own step below, nightly and on integration branches.
+      # `pose` (not `frames`), so they are not in part 1; they run in their own step below, in the full tier (#1947).
       - name: Affected scenarios only (a PR's run, #1871)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED != 'ALL' }}
         timeout-minutes: 60
@@ -273,8 +282,8 @@ jobs:
           done
           echo "scenarios part 1: exit $rc1; part 2: exit $rc2 (run in parallel)" | tee -a "$GITHUB_STEP_SUMMARY"
           [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ]
-      - name: Pose twins (frames/*-pose, rocket/*-pose; nightly and integration branches only, #1768)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.FULL_RUN == 'true' }}
+      - name: Pose twins (frames/*-pose, rocket/*-pose; full tier only, #1768, #1947)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.TIER == 'full' }}
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
         env:
@@ -331,8 +340,8 @@ jobs:
         # (#1690) The tag:budget scenes 3 times with the GPU to ourselves, the median of each metric against
         # tools/ci/perf_budgets.txt. Report-only: continue-on-error stays until the user turns blocking on (then drop it and
         # set PERF_BUDGETS_ENFORCE to 1: a miss over 20% fails the step, up to 20% only warns). Timing gates stay off.
-        # (#1768) Nightly and integration branches only: a PR's runner run skips it (it waited up to 30 min for the GPU).
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.FULL_RUN == 'true' }}
+        # (#1768, #1947) Full tier only (promotion and the nightly): PR runs and the staging batch skip it.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.TIER == 'full' }}
         continue-on-error: true
         timeout-minutes: 120 # (up to 30 min waiting for the lock per run, then ~2 min per scene)
         working-directory: ${{ env.RUN }}

@@ -82,8 +82,8 @@ tier first; its summary line says which and why.
 | Tier | When | What runs |
 |---|---|---|
 | **affected** | a dispatch on a PR's branch (`runner-evidence`; `tier=auto`) | build, unit tests, the GPU check if its paths changed (`gpu_changes.sh`, diffed from the merge base), and only the scenarios `tools/ci/scenario_map.txt` maps its changed files to; the server and join tests only when mapped (`SERVER`) |
-| **batch** | `staging` every 4 h (the second cron; skipped when staging hasn't moved since the last batch), or a dispatch on `staging`/`develop`/`main` | all headless scenarios, the server and join tests, the full-run steps (fluid parity, pose twins, perf budgets) |
-| **full** | the nightly, a push to `develop`, a dispatch with `tier=full` (before staging -> develop and develop -> main) | the batch plus the world generation metrics (`tag:worldgen`, also on manual batch dispatches) and the headless regression (nightly, or `regression=headless`) |
+| **batch** | `staging` every 4 h (the second cron; skipped when staging hasn't moved since the last batch), or a dispatch on `staging`/`develop`/`main` | all headless scenarios and the fluid parity; the server and join tests only when the commits since the last batch touch a path the map sends to `SERVER` or `ALL` (always when there is no earlier batch, #1947) |
+| **full** | the nightly, a push to `develop`, a dispatch with `tier=full` (before staging -> develop and develop -> main) | the batch plus the server and join tests always, the pose twins and perf budgets (~25 min, full tier only since #1947), the world generation metrics (`tag:worldgen`, also on manual batch dispatches) and the headless regression (nightly, or `regression=headless`) |
 
 - **The map** (`tools/ci/scenario_map.txt`): `<regex on a changed path> | <targets>`; targets are scenario names,
   `tag:X`, `ALL` or `SERVER`. Every matching line adds its targets. A changed scenario file adds its own scenarios

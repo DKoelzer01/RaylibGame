@@ -44,6 +44,7 @@ if [ -n "$kind" ]; then # a timed run: skipped when the branch hasn't moved sinc
         skip=true; why="$branch hasn't moved since the last $kind run (${head:0:8})"
     else
         last=$(cut -c1-8 "$marker" 2>/dev/null || true)
+        lastFull=$(tr -d '[:space:]' 2>/dev/null < "$marker" || true) # (#1947) the batch's server gate diffs from here
         why="the $kind run of $branch at ${head:0:8}$([ -n "$last" ] && echo ", covering $last..${head:0:8}: $(git rev-list --count "$last..$head" 2>/dev/null || echo '?') commits")"
         [ $dry = 1 ] || { mkdir -p "$(dirname "$marker")" && echo "$head" > "$marker"; }
     fi
@@ -95,6 +96,23 @@ if [ "$tier" = affected ]; then
         else scenarios=$(printf '%s\n' "${!want[@]}" | sort | paste -sd, -); fi
         why="$why; $(printf '%s\n' "$files" | grep -c .) files changed against $base"
     fi
+elif [ "$tier" = batch ] && [ -n "${lastFull:-}" ] && changed=$(git diff --name-only "$lastFull" "${HEAD_SHA:-HEAD}" 2>/dev/null); then
+    # (#1947) The staging batch runs every scenario, but the dedicated server and join tests only when the commits since
+    # the last batch touch a path the map sends to SERVER or ALL (the full tier always runs them). No marker, or a marker
+    # outside the checkout's history: they run.
+    scenarios=ALL; server=false
+    mapText=$(tr -d '\015' < "$(dirname "$0")/scenario_map.txt")
+    hitBy=""
+    while read -r f; do
+        [ -z "$f" ] && continue
+        while IFS= read -r line; do
+            case "$line" in ""|"#"*|"DEFAULT | "*) continue ;; esac
+            re="${line% | *}" tg="${line##* | }"
+            printf '%s\n' "$tg" | grep -Eq '(^|,) *(SERVER|ALL) *(,|$)' || continue
+            printf '%s\n' "$f" | grep -Eq "$re" && { server=true; hitBy="$f"; break 2; }
+        done <<< "$mapText"
+    done <<< "$changed"
+    why="$why; server and join tests: $([ $server = true ] && echo "$hitBy changed" || echo "no network or host path changed since ${lastFull:0:8}")"
 else
     scenarios=ALL; server=true
 fi
