@@ -1479,4 +1479,26 @@ TEST(DetMath, CloseToLibmAndTheSameBitsEverywhere) {
     EXPECT_FLOAT_EQ(det::Asinf(1.5f), 1.57079633f); // clamped
     EXPECT_EQ(h, 0x6fedff241edf6da0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
 }
+
+// #1905: the terrain's sin/cos (canyon and river headings, spawn search) and tan/atan (the river grid's cube-sphere cells).
+TEST(DetMath, TrigCloseToLibmAndTheSameBitsEverywhere) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 1099511628211ull; } };
+    double worst[4] = {};
+    for (int i = -100000; i <= 100000; ++i) {
+        const float x = (float)i * 0.00137f; // +-137 rad: many turns of the reduction
+        const float t = (float)i * 7.85e-6f; // +-0.785: the river grid's angles
+        const float s = det::Sinf(x), c = det::Cosf(x), tn = det::Tanf(t), at = det::Atanf(x);
+        worst[0] = std::max(worst[0], std::fabs(s - std::sin((double)x)));
+        worst[1] = std::max(worst[1], std::fabs(c - std::cos((double)x)));
+        worst[2] = std::max(worst[2], std::fabs(tn - std::tan((double)t)));
+        worst[3] = std::max(worst[3], std::fabs(at - std::atan((double)x)));
+        mix(s); mix(c); mix(tn); mix(at);
+    }
+    EXPECT_LT(worst[0], 6.0e-8) << "Sinf"; // absolute, below half a float ulp at 1
+    EXPECT_LT(worst[1], 6.0e-8) << "Cosf";
+    EXPECT_LT(worst[2], 6.0e-8) << "Tanf";
+    EXPECT_LT(worst[3], 1.2e-7) << "Atanf"; // |atan| <= pi/2
+    EXPECT_EQ(h, 0x0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+}
 #endif

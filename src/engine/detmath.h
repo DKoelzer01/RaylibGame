@@ -59,6 +59,73 @@ inline double Asin(double x) {
     return sign * (1.57079632679489661923 - 2.0 * series(v));
 }
 
+namespace detail {
+// sin and cos of r, |r| <= pi/4: Taylor to r^21 / r^20 (the next terms are below 1e-20).
+inline double SinPoly(double r) {
+    const double z = r * r;
+    double t = 1.0;
+    for (int n = 20; n >= 2; n -= 2) t = 1.0 - t * z / (n * (n + 1.0));
+    return r * t;
+}
+inline double CosPoly(double r) {
+    const double z = r * r;
+    double t = 1.0;
+    for (int n = 20; n >= 2; n -= 2) t = 1.0 - t * z / ((n - 1.0) * n);
+    return t;
+}
+// x = q * pi/2 + r, |r| <= pi/4. pi/2 in two parts (fdlibm's pio2_1, 33 bits, so k * it is exact, and its tail).
+inline double Reduce(double x, long long& q) {
+    const double k = std::floor(x * 0.63661977236758134308 + 0.5);
+    q = (long long)k;
+    return (x - k * 1.57079632673412561417e+00) - k * 6.07710050650619224932e-11;
+}
+} // namespace detail
+
+// sin and cos (accuracy falls off past |x| ~1e6, determinism doesn't).
+inline double Sin(double x) {
+    long long q = 0;
+    const double r = detail::Reduce(x, q);
+    switch (q & 3) {
+    case 0: return detail::SinPoly(r);
+    case 1: return detail::CosPoly(r);
+    case 2: return -detail::SinPoly(r);
+    default: return -detail::CosPoly(r);
+    }
+}
+inline double Cos(double x) {
+    long long q = 0;
+    const double r = detail::Reduce(x, q);
+    switch (q & 3) {
+    case 0: return detail::CosPoly(r);
+    case 1: return -detail::SinPoly(r);
+    case 2: return -detail::CosPoly(r);
+    default: return detail::SinPoly(r);
+    }
+}
+
+// tan (cos == 0 never happens for a double x: pi/2 isn't representable).
+inline double Tan(double x) { return Sin(x) / Cos(x); }
+
+// atan: |x| > 1 folds to pi/2 - atan(1/x), above tan(pi/8) to pi/4 + atan((x - 1) / (x + 1)), then the series on
+// |t| <= 0.4143 (t^2 <= 0.1716: the term past n = 26 is below 1e-20).
+inline double Atan(double x) {
+    const double sign = x < 0.0 ? -1.0 : 1.0;
+    double a = x < 0.0 ? -x : x, base = 0.0;
+    bool inv = false;
+    if (a > 1.0) { a = 1.0 / a; inv = true; }
+    if (a > 0.41421356237309504880) { a = (a - 1.0) / (a + 1.0); base = 0.78539816339744830962; }
+    const double z = a * a;
+    double t = 1.0 / 53.0;
+    for (int k = 51; k >= 1; k -= 2) t = 1.0 / k - t * z;
+    double r = base + a * t;
+    if (inv) r = 1.57079632679489661923 - r;
+    return sign * r;
+}
+
+inline float Tanf(float x) { return (float)Tan(x); }
+inline float Atanf(float x) { return (float)Atan(x); }
+inline float Sinf(float x) { return (float)Sin(x); }
+inline float Cosf(float x) { return (float)Cos(x); }
 inline float Logf(float x) { return (float)Log(x); }
 inline float Expf(float x) { return (float)Exp(x); }
 inline float Powf(float x, float y) { return (float)Pow(x, y); }
