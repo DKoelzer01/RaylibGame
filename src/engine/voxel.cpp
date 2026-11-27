@@ -556,6 +556,87 @@ PlanetField::River PlanetField::river(const Land& l, Vector3 dir, float fp) cons
     return r;
 }
 
+PlanetField::Pond PlanetField::bakePond(int index, int& reason) const {
+    Pond p{ false, { 0, 0, 0 }, 0, 0, 0 };
+    const PlanetErosion* ero = erosion();
+    if (!ero || index < 0 || index >= (int)ero->ponds().size()) { reason = 3; return p; }
+    const PlanetErosion::Pond& bp = ero->ponds()[index];
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(bp.dir, fabsf(bp.dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+    const Vector3 t2 = Vector3CrossProduct(t1, bp.dir);
+    float rim = 1e30f;
+    for (int k = 0; k < 8; ++k) {
+        const float a = k * (PI / 4.0f), s = bp.r * 1.15f / radius;
+        rim = std::min(rim, elevationBase(Vector3Normalize(Vector3Add(bp.dir, Vector3Add(Vector3Scale(t1, cosf(a) * s), Vector3Scale(t2, sinf(a) * s)))), 8.0f));
+    }
+    const float level = std::min(bp.level, rim - 0.3f);
+    const float bottom = elevationBase(bp.dir, 8.0f);
+    // The bowl cuts down to the level where the middle stands higher; a middle far below it is a ravine or a
+    // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
+    // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
+    // inside a lake's region never settled once drained).
+    int water = 0; // 0 apart, 1 in a lake's water, 4 on a lake's bank, 5 by a river
+    if (const RiverNetwork* net = rivers()) {
+        float lv, lo;
+        const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
+        water = net->lakeAt(bp.dir, lv, lo) ? (lo < RiverNetwork::kLakeMargin ? 1 : 4)
+              : (rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f) ? 5 : 0;
+    }
+    reason = water ? water : !(level > 1.0f) ? 2 : !(level - bottom > -1.0f && level - bottom < 6.0f) ? 3 : 0;
+    if (reason == 0) {
+        p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
+        p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
+    }
+    return p;
+}
+
+PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const {
+    PondCensus c;
+    const PlanetErosion* ero = moon ? nullptr : erosion();
+    if (!ero) return c;
+    const auto& ponds = ero->ponds();
+    c.bake = (int)ponds.size();
+    // Two ponds in one 260 m cell: the terrain keeps the larger (pondOfCell's index), the other is shadowed.
+    std::unordered_map<uint64_t, int> best;
+    for (int i = 0; i < (int)ponds.size(); ++i) {
+        const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+        const uint64_t key = PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell));
+        auto it = best.find(key);
+        if (it == best.end() || ponds[it->second].r < ponds[i].r) best[key] = i;
+    }
+    const Vector3 d = Vector3Normalize(dir);
+    for (int i = 0; i < (int)ponds.size(); ++i) {
+        const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+        // Water shows at the hollow's middle, by whatever rule (pond, lake or river): the ground stands under the water.
+        if (elevation(ponds[i].dir, 0.0f) < waterElevation(ponds[i].dir, 0.0f) - 0.1f) {
+            ++c.wet;
+            const float arc = acosf(std::clamp(Vector3DotProduct(Vector3Normalize(dir), ponds[i].dir), -1.0f, 1.0f)) * radius;
+            if (c.nearestWet < 0.0f || arc < c.nearestWet) { c.nearestWet = arc; c.nearestWetDir = ponds[i].dir; }
+        }
+        if (best[PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell))] != i) { ++c.shadowed; continue; }
+        int reason = 0;
+        const Pond p = bakePond(i, reason);
+        if (reason == 1 || reason == 4 || reason == 5) ++c.nearWater;
+        if (reason == 1) {
+            ++c.inLake;
+            float lv, lo; int id = -1;
+            if (const RiverNetwork* net = rivers(); net && net->lakeAt(ponds[i].dir, lv, lo, id) && id >= 0) {
+                if (fabsf(lv - ponds[i].level) < 1.5f) { // the network's lake is this very hollow
+                    ++c.lakeIsPond;
+                    c.lakeCellsMax = std::max(c.lakeCellsMax, net->lakeInfo(id).cells);
+                }
+            }
+        } else if (reason == 4) ++c.lakeBank; else if (reason == 5) ++c.river;
+        else if (reason == 2) ++c.low; else if (reason == 3) ++c.depth;
+        if (!p.exists) continue;
+        ++c.kept;
+        const float arc = acosf(std::clamp(Vector3DotProduct(d, p.dir), -1.0f, 1.0f)) * radius;
+        if (arc <= within) ++c.within;
+        if (c.nearest < 0.0f || arc < c.nearest) c.nearest = arc;
+        if (c.smallest < 0.0f || p.r < c.smallest) c.smallest = p.r;
+    }
+    return c;
+}
+
 PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
     struct Entry { int x, y, z; const PlanetField* f; Pond p; };
     thread_local Entry cache[512];
@@ -579,32 +660,7 @@ PlanetField::Pond PlanetField::pondOfCell(int cx, int cy, int cz) const {
             }
         });
         const auto it = erosionState->pondByCell.find(PondId(cx, cy, cz));
-        if (it != erosionState->pondByCell.end()) {
-            const PlanetErosion::Pond& bp = ero->ponds()[it->second];
-            const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(bp.dir, fabsf(bp.dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
-            const Vector3 t2 = Vector3CrossProduct(t1, bp.dir);
-            float rim = 1e30f;
-            for (int k = 0; k < 8; ++k) {
-                const float a = k * (PI / 4.0f), s = bp.r * 1.15f / radius;
-                rim = std::min(rim, elevationBase(Vector3Normalize(Vector3Add(bp.dir, Vector3Add(Vector3Scale(t1, cosf(a) * s), Vector3Scale(t2, sinf(a) * s)))), 8.0f));
-            }
-            const float level = std::min(bp.level, rim - 0.3f);
-            const float bottom = elevationBase(bp.dir, 8.0f);
-            // The bowl cuts down to the level where the middle stands higher; a middle far below it is a ravine or a
-            // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
-            // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
-            // inside a lake's region never settled once drained).
-            bool apart = true;
-            if (const RiverNetwork* net = rivers()) {
-                float lv, lo;
-                const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
-                apart = !net->lakeAt(bp.dir, lv, lo) && !(rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f);
-            }
-            if (apart && level > 1.0f && level - bottom > -1.0f && level - bottom < 6.0f) {
-                p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
-                p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
-            }
-        }
+        if (it != erosionState->pondByCell.end()) { int reason = 0; p = bakePond(it->second, reason); }
         e = { cx, cy, cz, this, p };
         return p;
     }
