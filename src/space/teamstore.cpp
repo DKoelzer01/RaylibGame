@@ -307,9 +307,10 @@ TEST_F(TeamMapTest, PinsAreTheTeamsAndReachItsMembers) {
     ASSERT_TRUE(TeamQuests_SetPin(a, false, "terra", kSpotA, "Copper_hill"));
     ASSERT_TRUE(TeamStore_SetText(a, TeamStore_Text(a)));
     EXPECT_EQ(Nav_TeamPinCount(), 1) << "a removed pin goes from the members' maps";
-    ASSERT_TRUE(TeamStore_SetText(a, TeamStore_Text(b)));
+    TeamStore_ApplyFromHost(a, TeamStore_Text(b)); // (empty: what a client does with a store of nothing)
     EXPECT_EQ(Nav_TeamPinCount(), 0) << "a store without pins clears them";
     EXPECT_EQ(Nav_WaypointCount(), 1) << "...and keeps the player's own";
+    TeamStore_ResetLocalTeam();
 
     EXPECT_FALSE(TeamQuests_SetPin(a, false, "terra", kSpotA, "nothing_here"));
     EXPECT_FALSE(TeamQuests_SetPin(a, true, "terra", Vector3{ 0, 0, 0 }, "zero"));
