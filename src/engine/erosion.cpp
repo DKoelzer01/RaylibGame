@@ -728,7 +728,10 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
-    if (p.bFace >= 0) { const int b = 0x19880 + p.bFace; mix(&b, sizeof b); } // #1988: a B face bakes its own (default key unchanged)
+    if (p.bFace >= 0) { // #1988: a B face bakes its own (default key unchanged); v2: basins breached (RAYLIBGAME_B_BREACH)
+        const int b = 0x19880 + p.bFace; mix(&b, sizeof b);
+        const float br = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f; const int v = 2; mix(&br, sizeof br); mix(&v, sizeof v);
+    }
     if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
