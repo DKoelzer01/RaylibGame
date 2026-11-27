@@ -1,4 +1,5 @@
 #include "machinemodels.h"
+#include "multiblockmodels.h"
 #include "rotationmodels.h"
 #include "factory.h"
 #include "trapping.h"
@@ -554,6 +555,7 @@ void Machines_Draw3D(Scene& world) {
     rlDrawRenderBatchActive();
     rlEnableBackfaceCulling();
     RotationModels_Draw3D(world); // (#1269) shafts, cogs, cranks and the rotation machines' turning parts
+    MultiblockModels_Draw3D(world); // (#1429 PR 6) multiblock status lamps and seams
 }
 
 bool Machine_RaycastDetails(const Plot& plot, Vector3 o, Vector3 d, float maxDist, int& part, float& dist) {

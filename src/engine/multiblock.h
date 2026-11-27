@@ -119,6 +119,25 @@ bool Multiblock_Members(const Plot& plot, int controllerPart, MbMachine& out);
 // A hatch part's kind ("item_in", ...) from its Part::material; "" when out of range.
 std::string Multiblock_HatchKind(int material);
 
+// (#1429 PR 6) What the renderer shows on a structure, derived from the plot alone (the parts and Plot::formed), so a joined
+// client sees the same: a status lamp on the controller's front, one on each hatch's outer face, and the formed structure's
+// box for the seam glow. Recomputed when the plot changes (a validation: a few hundred cells).
+enum class MbLampState : uint8_t { Unformed, Idle, Working, Stalled };
+MbLampState Multiblock_LampState(bool formed, bool working, bool stalled);
+struct MbLamp {
+    int part = -1;
+    MbInt3 cell;        // the part's cell
+    MbInt3 out;         // the face it sits on: a unit axis vector out of the cell
+    std::string kind;   // "controller" or the hatch's kind ("fluid_in", ...)
+};
+struct MbLook {
+    int controller = -1;
+    bool formed = false;  // listed in Plot::formed and validating
+    MbInt3 lo, hi;        // formed: the members' bounding box in plot cells, inclusive
+    std::vector<MbLamp> lamps; // the controller's first, then each hatch once (unformed: the controller's only)
+};
+void Multiblock_Looks(const Plot& plot, std::vector<MbLook>& out); // every controller in the plot, in part order
+
 // A definition cell in the world. Cells in layers above the stretch layer shift up by stretchExtra (repeats - 1).
 MbInt3 Multiblock_ToWorld(const MbDef& def, MbInt3 defCell, MbInt3 controllerAt, int fx, int fz, int stretchExtra = 0);
 
