@@ -52,6 +52,8 @@ struct ErosionParams {
                               // V-notches (user 2026-11-26: 15, not 40, to keep the gullies and sharper crests; 0: off)
     bool randomReceivers = true; // #1884: each flood gives a cell a receiver among its lower neighbours, odds by slope,
                               // instead of the steepest one: channels stop following the 8 grid directions (false: steepest)
+    int bFace = -1;           // #1988 prototype (terrain v2 option B): this cube face skips the 50 m refinement; its fine
+                              // grid is the coarse surface resampled, and its detail comes at chunk time (-1: none)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
 bool BakeRiversOld(); // #547 A/B: RAYLIBGAME_RIVERS_OLD=1 = the 200 m river network and its carving (no final drainage in the bake)
@@ -76,6 +78,8 @@ public:
     std::string profile;      // #605: seconds per pass of the last build()
     float heightScale = 1.0f; // #587: the bake's result = its simulation heights x this (strata are laid in simulation heights)
     int cells() const { return 6 * n * n; }
+    int bFace = -1;           // #1988: the option B face (ErosionParams::bFace; set by build and after a load)
+    bool onBFace(Vector3 dir) const; // dir lies on the B face: its detail comes from TerrainBDetail at chunk time
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }
     // Ponds (#360): the small closed depressions the 50 m refinement left (at most 12 cells): centre, a radius, the
@@ -96,6 +100,7 @@ public:
     float flowHeight(int g) const;                    // the stored (incised) height, m
     int flowReceiver(int g) const;                    // the cell it drains to, or -1 (the sea, an outlet)
     float flowArea(int g) const;                      // m^2 drained through it (its class's middle), 0 under kFlowArea0
+    float drainageAt(Vector3 dir) const;              // log10 of flowArea, bilinear over the flow cells (4.7 off the network)
     static float IncisionDepth(float area);           // m the bake wore a channel cell down by
     // Filled cells (lakes and ponds of the flood): cell -> the water level there (m).
     const std::vector<std::pair<int, float>>& filledCells() const { return filled; }
@@ -129,6 +134,11 @@ private:
 // Strength follows the slope (flat ground stays flat); octaves finer than the sample footprint fade out.
 // p = surface point (m), dir = its unit direction, grad = slopeAt's gradient. Returns a height offset (m).
 float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float strength);
+// Terrain v2 option B (#1988): the detail the 50 m refinement gave, made at chunk time on the B face. The gullies above,
+// stronger (no eroded 50 m relief under them), plus derivative fBm (octaves damped where the earlier ones are steep:
+// rounded swells with smooth hollows, not uniform bumps) on gentle ground. Both fade out over large drainage, so valley
+// floors and the routed rivers stay smooth. drainage = log10 of the flow area (m^2) at dir, 4.7 off the network (drainageAt).
+float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage);
 float ErosionBakeProgress(); // 0..1 while a bake runs (the loading screen, #362)
 bool ErosionBaking();        // a bake is running (not a cache read: #505)
 int ErosionBakeCount();      // bakes run so far (tests: a load must read the cache, #505)

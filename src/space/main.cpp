@@ -2182,7 +2182,7 @@ int main(int argc, char** argv)
                 }
             ExportImage(img, "bench_hillshade.png");
             UnloadImage(img);
-            printf("bench: hillshade: %d px at %.2f m/px, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, curv / std::max<long long>(1, nc));
+            printf("bench: hillshade: %d px at %.2f m/px around dir %.4f %.4f %.4f, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, home.x, home.y, home.z, curv / std::max<long long>(1, nc));
             return 0;
         }
 

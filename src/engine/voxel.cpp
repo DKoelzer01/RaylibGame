@@ -321,11 +321,13 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.hillslope = envf("RAYLIBGAME_EROSION_HILLSLOPE", p.hillslope); // #1884 (0: off, A/B)
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+    p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", -1.0f); // #1988 prototype: this cube face (0-5) gets option B; unset: none
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
     const auto tl0 = std::chrono::steady_clock::now();
     const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
+    if (loaded) b.bFace = p.bFace; // #1988 (the key holds it)
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         int threads = std::max(1u, std::thread::hardware_concurrency());
@@ -389,7 +391,11 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (eroded) {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
-        if (gGullies && fp < 450.0f) h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+        if (gGullies && fp < 450.0f) {
+            if (eroded->onBFace(dir)) { // #1988: option B, the 50 m detail made here (the bake's routed drainage keeps valley floors smooth)
+                h += (l.relief = TerrainBDetail({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, s.h, eroded->drainageAt(dir)));
+            } else h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+        }
         { const float cf = cliffFace({ sx, sy, sz }, h, s.grad, fp); h += cf; l.relief += cf; } // one face per steep resistant layer (#588)
         { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)
             const float top = maxElevation - 65.0f, knee = top - 200.0f;

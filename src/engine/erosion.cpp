@@ -724,6 +724,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
+    if (p.bFace >= 0) { const int b = 0x19880 + p.bFace; mix(&b, sizeof b); } // #1988: a B face bakes its own (default key unchanged)
     if (const char* e = getenv("RAYLIBGAME_CANYON_GRADE"); e && e[0] == '0') { const int ng = 0x544; mix(&ng, sizeof ng); } // #544 A/B: ungraded canyons bake their own
     return h;
 }
@@ -732,6 +733,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     gBakeProgress.store(0.0f, std::memory_order_relaxed);
     struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
+    bFace = p.bFace; // #1988
     const auto t0 = std::chrono::steady_clock::now();
     double freeMB0 = 0.0; unsigned long long faults0 = 0; Profiler_MemoryHealth(freeMB0, faults0); // #1914: the machine's state, for the profile
     R = planetRadius; seed = seedIn;
@@ -888,6 +890,15 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             }
             flap(0);
             StageHash("sampled", f, fd, fh0);
+            if (f == p.bFace) {
+                // #1988 (option B): no 50 m simulation. The fine grid is the coarse result resampled (Catmull-Rom, so C1
+                // across the 200 m cells; land and sea from this face's own input as on the other faces); the chunks add
+                // the detail (TerrainBDetail) and the final drainage routes rivers and lakes over it. No ponds: those came
+                // from the refinement's flood.
+                for (size_t c = 0; c < fd.cells; ++c) fine[(size_t)f * FE * FE + c] = Q(fh0[c] <= 0.0f ? fh0[c] : std::max(0.5f, coarseAt(fd.dir[c])));
+                flap(3);
+                return;
+            }
             SetRock(fd, fh0, maxH0, R, seed, p, &strata, sampleThreads);
             flap(1);
             fd.outlet.resize(fd.cells); fd.h.resize(fd.cells);
@@ -1092,6 +1103,23 @@ float PlanetErosion::flowArea(int g) const {
     return cls == 0 ? 0.0f : kFlowArea0 * ldexpf(1.41421356f, cls - 1);
 }
 
+float PlanetErosion::drainageAt(Vector3 dv) const {
+    // Bilinear over the 4 nearest flow cells of dir's face, in log10 area, so masks built on it are continuous (the
+    // nearest cell's class jumps at every 50 m border: visible steps in the B detail, #1988). Off the network: 4.7, just
+    // under its 1e5 m^2 start (a 0 there made a 0 -> 5 step across one cell beside every channel).
+    if (flow.empty()) return 0.0f;
+    const int f = FaceOf(dv);
+    Vector3 nrm, t1, t2; FaceAxes(f, nrm, t1, t2);
+    const float s = Vector3DotProduct(dv, nrm), duf = 2.0f / nf;
+    const float x = std::clamp((Vector3DotProduct(dv, t1) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const float y = std::clamp((Vector3DotProduct(dv, t2) / s + 1.0f) / duf - 0.5f, 0.0f, nf - 1.0f);
+    const int i0 = std::min((int)x, nf - 2), j0 = std::min((int)y, nf - 2);
+    float fx = x - i0, fy = y - j0;
+    fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy); // C1: linear weights leave kinks a hillshade shows
+    auto L =[&](int i, int j) { const float a = flowArea((f * nf + j) * nf + i); return a > 0.0f ? 0.30103f * det::Log2f(a) : 4.7f; };
+    return (1 - fy) * ((1 - fx) * L(i0, j0) + fx * L(i0 + 1, j0)) + fy * ((1 - fx) * L(i0, j0 + 1) + fx * L(i0 + 1, j0 + 1));
+}
+
 float PlanetErosion::IncisionDepth(float area) {
     // Light: 0.5 m where a stream starts (0.1 km^2), ~2 m at 10 km^2, at most 4 m.
     return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * det::Powf(area / kFlowArea0, 0.3f));
@@ -1201,6 +1229,10 @@ void PlanetErosion::routeFinal(int threads) {
         cut[g] = h0[g] - h[g]; // the corners worn above
         if (hf[g] - h[g] > 0.05f) filled.push_back({ g, hf[g] });
         else if (cls > 0) cut[g] += IncisionDepth(flowArea(g));
+        // #1988: no groove on the B face. Its grid is the smooth coarse surface, where 50 m D4/D8 paths run straight, and
+        // a cut along them showed as ruled lines and staircases (on A the refined valleys hide the path). Rivers keep
+        // their routing and classes; the drainage mask keeps their floors smooth.
+        if (bFace >= 0 && g / (nf * nf) == bFace) cut[g] = 0.0f;
     }
     // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
     for (int f = 0; f < 6; ++f) {
@@ -1507,6 +1539,52 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         grad = Vector3Add(grad, Vector3Scale(across, amp * dval * kTwoPi * inv));
     }
     return h;
+}
+
+bool PlanetErosion::onBFace(Vector3 dir) const { return bFace >= 0 && FaceOf(dir) == bFace; }
+
+namespace {
+    // Value noise in [-1, 1] with its gradient (per unit of p): trilinear over lattice hashes, smoothstep-eased.
+    float ValueNoiseD(Vector3 p, unsigned int seed, Vector3& g) {
+        const int x0 = (int)floorf(p.x), y0 = (int)floorf(p.y), z0 = (int)floorf(p.z);
+        const float fx = p.x - x0, fy = p.y - y0, fz = p.z - z0;
+        const float u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+        const float du = 6 * fx * (1 - fx), dv = 6 * fy * (1 - fy), dw = 6 * fz * (1 - fz);
+        auto H = [&](int i, int j, int k) { return 2.0f * Hash3(x0 + i, y0 + j, z0 + k, seed) - 1.0f; };
+        const float a = H(0, 0, 0), b = H(1, 0, 0), c = H(0, 1, 0), d = H(1, 1, 0), e = H(0, 0, 1), f = H(1, 0, 1), gg = H(0, 1, 1), h = H(1, 1, 1);
+        const float k1 = b - a, k2 = c - a, k3 = e - a, k4 = a - b - c + d, k5 = a - c - e + gg, k6 = a - b - e + f, k7 = -a + b + c - d + e - f - gg + h;
+        g = { du * (k1 + k4 * v + k6 * w + k7 * v * w), dv * (k2 + k5 * w + k4 * u + k7 * w * u), dw * (k3 + k6 * u + k5 * v + k7 * u * v) };
+        return a + k1 * u + k2 * v + k3 * w + k4 * u * v + k5 * v * w + k6 * w * u + k7 * u * v * w;
+    }
+    float EnvTune(const char* name, float def) { const char* e = getenv(name); return e ? (float)atof(e) : def; } // live tuning (#1988)
+}
+
+float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsigned int seed, float h, float drainage) {
+    if (h <= 0.0f) return 0.0f;
+    static const float kGully = EnvTune("RAYLIBGAME_B_GULLY", 1.5f); // GUESS: x the A faces' gully strength
+    static const float kFbm = EnvTune("RAYLIBGAME_B_FBM", 6.0f);     // GUESS: m, the first fBm octave's amplitude
+    auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+    // Valley floors stay smooth: full detail up to ~0.3 km^2, none from 10 km^2 (the small streams run straight along the 50 m grid: a mask on them drew ruled lines).
+    const float dry = 1.0f - smooth(5.5f, 7.0f, drainage);
+    if (dry <= 0.0f) return 0.0f;
+    const float coast = smooth(2.0f, 15.0f, h); // as the A faces' gullies: the shore stays a shore
+    float out = ErosionGullies(p, dir, grad, footprint, seed, coast * kGully * dry);
+    // Derivative fBm (the octaves' running slope damps the next ones): on gentle ground only, where the gullies are weak.
+    const float gentle = 1.0f - smooth(0.12f, 0.45f, Vector3Length(grad));
+    if (gentle > 0.0f && kFbm > 0.0f) {
+        float amp = kFbm, sum = 0.0f; Vector3 dsum{ 0, 0, 0 };
+        for (int o = 0; o < 5; ++o, amp *= 0.5f) {
+            const float lam = 320.0f / (float)(1 << o); // 320, 160, 80, 40, 20 m
+            const float fade = std::clamp(lam / (2.0f * footprint) - 1.0f, 0.0f, 1.0f);
+            if (fade <= 0.0f) break;
+            Vector3 g;
+            const float n = ValueNoiseD(Vector3Scale(p, 1.0f / lam), seed ^ (0x1988u + 977u * o), g);
+            dsum = Vector3Add(dsum, Vector3Scale(g, amp * fade / lam)); // m per m
+            sum += amp * fade * n / (1.0f + Vector3DotProduct(dsum, dsum) / (0.15f * 0.15f));
+        }
+        out += sum * gentle * dry * coast;
+    }
+    return out;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
