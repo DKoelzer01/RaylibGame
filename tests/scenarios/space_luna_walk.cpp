@@ -56,8 +56,9 @@ SCENARIO("space/luna-walk") {
         S.spawnR = FeetRadius();
         return true;
     });
-    // spawnOn raycasts the terrain built so far: on the runner Luna's near chunks came later and the player stood 2 m inside
-    // the ground, grounded, while they were pushed out (#2000). Wait until the feet hold still on the ground for 1 s.
+    // spawnOn used to raycast the terrain built so far: on the runner a coarse mesh put the feet 2 m inside Luna's ground,
+    // and the push out when the fine chunks came was a fatal "fall" (#2000; spawnOn now marches the field). Wait until the
+    // feet hold still on the ground for 1 s.
     s.step("land", 90.0, [](ScenarioCtx& c) {
         player.flyMode = false;
         if (Respawned(c)) return true;
