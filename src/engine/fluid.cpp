@@ -65,6 +65,9 @@ constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry u
 constexpr unsigned kEvapEvery = 2400;   // awake bricks: films thin on one substep in this many (~20 s): only cells that stay put (#454)
 constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting specks dry (#454)
 constexpr int kFilmThinEvery = 10; // of those passes: every 20 s their films (3 units to the spread limit) lose a unit (#1944)
+// Shallow puddles dry too (#1944: "dry gradually"; GUESS 5 cm): standing water one cell deep on the ground, no water over it,
+// thinner than this, loses a unit every 20 s with the films (a 2 cm puddle: ~7 min). Deeper pools and ponds never dry.
+constexpr float kPuddleDryDepth = 0.05f; // m
 std::atomic<bool> gFilmDryDue{ false }; // (#454) set by Update, taken by the next publish
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
@@ -1138,18 +1141,22 @@ void RunJob() {
             // (#454) Films dry in sleeping bricks too: a film under the spread limit never moves, and the kernels' evaporation
             // only reaches awake bricks - one asleep after 2-3 s kept its films on a slope for good
             // ("water clings to slopes as a thin film after all water has flowed away"). Here: every 2 s resting specks of 2 or
-            // less go, every 20 s films on the ground lose a unit (#1944). Puddles (the spread limit or more) stay.
+            // less go, every 20 s films and shallow puddles on the ground lose a unit (#1944). Deeper pools stay.
             static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // (tests: water accounting)
             if (!b.active && !noEvap && filmDry) {
                 bool dried = false;
+                const int shallowUnits = (int)(kPuddleDryDepth * 255.0f / WaterField::CellSize()); // (#1944)
                 for (int z = 0; z < B; ++z)
                     for (int y = 0; y < B; ++y)
                         for (int x = 0; x < B; ++x) {
                             const int i = Idx(x, y, z), f = b.fill[i];
-                            if (f == 0 || (b.flags[i] & (kSolid | kSource)) || f >= kindMinSpread[CellKind(b.flags[i])]) continue;
+                            if (f == 0 || (b.flags[i] & (kSolid | kSource))) continue;
+                            const bool film = f < kindMinSpread[CellKind(b.flags[i])];
+                            if (!film && (!filmThin || f >= shallowUnits)) continue; // a pool: stays
                             const bool ground = b.shut[i] > 0 || (z > 0 ? (b.flags[Idx(x, y, z - 1)] & kSolid) != 0
                                                                         : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
                             if (!ground || (f > 2 && !filmThin)) continue;
+                            if (!film && (z + 1 < B ? b.fill[Idx(x, y, z + 1)] != 0 : b.nbr[5] && b.nbr[5]->fill[Idx(x, y, 0)] != 0)) continue; // water over it: deeper than a puddle
                             b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
                             ledgerUnits[kLedgerDried] += f <= 2 ? f : 1;
                             dried = true;

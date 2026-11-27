@@ -1,6 +1,6 @@
 // fluid/pour-dry (#1944, user 2026-11-27: "slow water film drying down to minutes"): 0.5 m^3 poured on the sandbox's flat
-// ground spreads into a film under the spread limit (~1 cm) and dries a unit (~1 mm) every 20 s, so it stays a puddle for
-// minutes. Reported: the water held at 10 s, 60 s and 5 min of fluid time (ticks x 25 ms; wall speed varies). Checked: most
+// ground stands as a puddle a few cm deep with films at its edge; both (shallower than 5 cm, one cell deep) dry a unit (~1 mm)
+// every 20 s, so it stays a puddle for minutes. Reported: the water held at 10 s, 60 s and 5 min of fluid time (ticks x 25 ms; wall speed varies). Checked: most
 // of it at 60 s, mostly dry by 5 min, and the held water against the mass ledger (#1885: what dried is counted). Before
 // #1944 half the pour was gone in 10 s (a unit every 2 s).
 #include "scenario.h"
