@@ -54,6 +54,10 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
+    // (#2000) The body put on is the nearest now, before the next update finds it: the spawn's loading screen holds the
+    // player in player.nearest's frame, and the old one (Terra, for a move to Luna) held them still against Terra while Luna
+    // moved on at ~1 km/s: released, its ground hit them at hundreds of m/s, a fatal "fall".
+    nearest = &body;
     anchorTo(body);
     flyMode = false;
 }
@@ -1114,6 +1118,7 @@ void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     velocity = body.surfaceVelocity(renderFeet);
     grounded = false;
     groundBody = nullptr;
+    nearest = &body; // (#2000) the loading screen's hold uses it (spawnOn)
     flyMode = false;
     anchorTo(body);
 }
