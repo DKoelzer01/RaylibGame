@@ -1668,6 +1668,7 @@ float PlanetErosion::valleyCut(Vector3 dir, float h, float dist, float level, fl
     if (wb <= 0.0f || h <= floorY) return 0.0f;
     static const float kW = EnvTune("RAYLIBGAME_B_VALLEY_W", 1.0f); // x the half width (GUESS 40 m + 4 x the river's, <= 170 m)
     static const float kD = EnvTune("RAYLIBGAME_B_VALLEY_D", 1.0f); // x the depth cap (GUESS 25 m + 1.5 x the river's half width)
+    if (dist >= std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * 1.3f)) return 0.0f; // past the widest the noise allows: skip it
     const Vector3 p = Vector3Scale(dir, R);
     Vector3 gd;
     const float nW = ValueNoiseD(Vector3Scale(p, 1.0f / 450.0f), seed ^ 0x7C33u, gd);
