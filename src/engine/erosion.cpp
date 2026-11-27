@@ -722,13 +722,13 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
-    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (default key unchanged)
+    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (mixed only when != 1)
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own
     if (BakeRiversOld()) { const int nr = 0x547; mix(&nr, sizeof nr); } // #547 A/B: no final drainage pass
-    if (p.bFace >= 0) { // #1988: a B face bakes its own (default key unchanged); v2: basins breached (RAYLIBGAME_B_BREACH)
+    if (p.bFace >= 0) { // #1988: B faces bake their own (A, -1, mixes nothing); v2: basins breached (RAYLIBGAME_B_BREACH)
         const int b = 0x19880 + p.bFace; mix(&b, sizeof b);
         const float br = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f; const int v = 2; mix(&br, sizeof br); mix(&v, sizeof v);
     }

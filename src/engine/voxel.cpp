@@ -336,7 +336,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.coarseDt = envf("RAYLIBGAME_EROSION_DT", p.coarseDt); // #1957 (1: the old 400 small coarse steps, A/B)
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
-    p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", -1.0f); // #1988 prototype: this cube face (0-5) gets option B; unset: none
+    p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", (float)p.bFace); // #1988: option B on face 0-5, 6 every face (default), -1 none (A)
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
