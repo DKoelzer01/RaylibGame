@@ -15,6 +15,7 @@ Rotation::ConsumerSpec RotationPlot_Consumer(PartType t) {
     case PartType::Saw: return kSaw;
     case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: return kPress; // (#1614, #1734: as the press)
     case PartType::Mixer: return Rotation::kMixer; // (#1734)
+    case PartType::RotarySieve: return Rotation::kSaw; // (#1734: 4 SU/RPM, 16 RPM, rated 32, as the saw)
     case PartType::Dynamo: return Rotation::kDynamo; // (#1271 L3)
     case PartType::SteamLab: return Rotation::kSteamLab; // (#1271 L6)
     case PartType::Bellows: return Rotation::kBellows; // (#1271 L2)
@@ -46,7 +47,7 @@ bool RotationPlot_Describe(const Part& part, int partIndex, RotationPartMsg& out
     std::vector<Cell> cells;
     for (const auto& c : fp) cells.push_back({ c.first.x, c.first.y, c.first.z });
     // The local axis, turned by the part's orientation (row-major 3x3).
-    const Int3 local = (part.type == PartType::Millstone || part.type == PartType::SteamLab || part.type == PartType::SteamAssembler) ? Int3{ 0, 1, 0 } : (part.type == PartType::Saw || part.type == PartType::Press || part.type == PartType::Lathe || part.type == PartType::Wiremill || part.type == PartType::TripHammer || part.type == PartType::Mixer || part.type == PartType::SteamEngine || part.type == PartType::Dynamo || part.type == PartType::Motor) ? Int3{ 1, 0, 0 } : Int3{ 0, 0, 1 };
+    const Int3 local = (part.type == PartType::Millstone || part.type == PartType::SteamLab || part.type == PartType::SteamAssembler) ? Int3{ 0, 1, 0 } : (part.type == PartType::Saw || part.type == PartType::Press || part.type == PartType::Lathe || part.type == PartType::Wiremill || part.type == PartType::TripHammer || part.type == PartType::Mixer || part.type == PartType::RotarySieve || part.type == PartType::SteamEngine || part.type == PartType::Dynamo || part.type == PartType::Motor) ? Int3{ 1, 0, 0 } : Int3{ 0, 0, 1 };
     const int* M = Orientation(part.orient);
     const int w[3] = { M[0] * local.x + M[1] * local.y + M[2] * local.z, M[3] * local.x + M[4] * local.y + M[5] * local.z, M[6] * local.x + M[7] * local.y + M[8] * local.z };
     const int axis = w[0] != 0 ? 0 : w[1] != 0 ? 1 : 2;

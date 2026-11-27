@@ -77,6 +77,10 @@ constexpr int kChestSlots = Inventory::kGrid; // as many cells as the player's m
 struct Recipe {
     PartType machine;
     std::vector<Stack> in, out;
+    // (#1734) Outputs by chance ("iron_ore 8%" in machine_recipes.txt): count = hundredths of an item per craft. A machine
+    // carries the fractions (Machine::disCarry, saved), so every machine gives exactly its share, deterministically: the
+    // 13th sieved gravel of a machine always gives its first iron ore. Single machines only (a multiblock's jobs drop them).
+    std::vector<Stack> chance;
     int ticks = 0, eu = 0;   // generators: ticks of burn per fuel item, EU per tick produced
     int tier = -1;           // (#1427 L7a) its voltage tier (machine_recipes.txt's sixth column; else its machine's first)
 };
@@ -197,13 +201,15 @@ void LoadRecipes() {
     LoadMachineDefs();
     std::ifstream f("resources/data/machine_recipes.txt");
     std::string line;
-    auto parseStacks = [](const std::string& s, std::vector<Stack>& out) {
+    auto parseStacks = [](const std::string& s, std::vector<Stack>& out, std::vector<Stack>* chance = nullptr) {
         std::stringstream ss(s);
         std::string part;
         while (std::getline(ss, part, ',')) {
             std::stringstream ps(part);
-            std::string name; int n = 0;
-            if (ps >> name >> n && name != "-") out.push_back({ tables.item(name), n });
+            std::string name, n;
+            if (!(ps >> name >> n) || name == "-") continue;
+            if (chance && n.back() == '%') { if (atoi(n.c_str()) > 0) chance->push_back({ tables.item(name), atoi(n.c_str()) }); } // (#1734) "8%": hundredths per craft
+            else out.push_back({ tables.item(name), atoi(n.c_str()) });
         }
     };
     while (std::getline(f, line)) {
@@ -219,7 +225,7 @@ void LoadRecipes() {
         Recipe r;
         r.machine = MachineByName(cols[0]);
         if (r.machine == PartType::Count) continue;
-        parseStacks(cols[1], r.out);
+        parseStacks(cols[1], r.out, &r.chance);
         parseStacks(cols[2], r.in);
         r.ticks = std::max(1, atoi(cols[3].c_str()));
         r.eu = std::max(0, atoi(cols[4].c_str()));
@@ -1680,7 +1686,19 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                 }
                 if (AddItems(trial, kSlots, s.item, s.count) > 0) { fits = false; break; }
             }
+            std::map<int, int> carry; // (#1734) outputs by chance: the machine's carried hundredths, kept only if all fits
+            std::vector<std::pair<int, int>> lucky;
+            if (fits && !r.chance.empty()) {
+                carry = m.disCarry;
+                for (const Stack& s : r.chance) {
+                    const int c = carry[s.item] + s.count;
+                    carry[s.item] = c % 100;
+                    if (c >= 100) { lucky.push_back({ s.item, c / 100 }); if (AddItems(trial, kSlots, s.item, c / 100) > 0) { fits = false; break; } }
+                }
+            }
             if (!fits) { m.status = MachineStatus::OutputFull; continue; }
+            if (!r.chance.empty()) { for (auto it = carry.begin(); it != carry.end();) it = it->second == 0 ? carry.erase(it) : std::next(it); m.disCarry = std::move(carry); }
+            for (const auto& [id, n] : lucky) { made += n; ps.stats.items[id].made.add(n); if (ps.completed.size() < 4096) ps.completed.emplace_back(id, n); }
             m.quality = 100; // (#1446 2c) used
             for (const Stack& s : r.in) TakeItems(m.in.data(), kSlots, s.item, s.count); // consumed now, at the end (#193)
             std::copy(trial, trial + kSlots, m.out);
@@ -1936,6 +1954,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             for (const SumNode& n : nodes) {
                 const Recipe& r = tables.recipes[n.recipe];
                 for (const Stack& s : r.out) made[{ netOf(n.mi), s.item }] += n.rate * s.count;
+                for (const Stack& s : r.chance) made[{ netOf(n.mi), s.item }] += n.rate * s.count / 100; // (#1734) hundredths a craft
                 nodeNeeds(n, needs);
                 for (const auto& [item, need] : needs) if (!own[n.mi].count(item)) want[{ netOf(n.mi), item }] += need;
             }
@@ -2016,6 +2035,7 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
                 const Recipe& r = tables.recipes[nodes[k].recipe];
                 const int mi = nodes[k].mi;
                 for (const Stack& s : r.out) makeN[{ netOf(mi), s.item }] += crafts[k] * s.count;
+                for (const Stack& s : r.chance) makeN[{ netOf(mi), s.item }] += crafts[k] * s.count / 100; // (#1734; the carry may add one)
                 for (const Stack& s : r.in) ownNeed[mi][s.item] += crafts[k] * s.count;
                 if (nodes[k].fuelItem >= 0) ownNeed[mi][nodes[k].fuelItem] += (crafts[k] * r.ticks + fuelOf(nodes[k].fuelItem) - 1) / fuelOf(nodes[k].fuelItem);
             }
@@ -2062,6 +2082,12 @@ void AdvanceSummary(PlotSim& ps, long long t0, long long t1) {
             for (const Stack& s : r.in) { const long long left = takeFrom(mi, s.item, crafts[k] * s.count); if (left) fromNet[{ netOf(mi), s.item }] += left; ps.stats.items[s.item].used.add(crafts[k] * s.count); }
             if (nodes[k].fuelItem >= 0) { const long long nf = (crafts[k] * r.ticks + fuelOf(nodes[k].fuelItem) - 1) / fuelOf(nodes[k].fuelItem); const long long left = takeFrom(mi, nodes[k].fuelItem, nf); if (left) fromNet[{ netOf(mi), nodes[k].fuelItem }] += left; ps.stats.items[nodes[k].fuelItem].used.add(nf); }
             for (const Stack& s : r.out) { makeN[{ netOf(mi), s.item }] += crafts[k] * s.count; ps.stats.items[s.item].made.add(crafts[k] * s.count); }
+            for (const Stack& s : r.chance) { // (#1734) outputs by chance: the machine's carry, as when it runs near
+                int& c = ps.machines[mi].disCarry[s.item];
+                const long long all = c + crafts[k] * s.count;
+                c = (int)(all % 100);
+                if (all >= 100) { makeN[{ netOf(mi), s.item }] += all / 100; ps.stats.items[s.item].made.add(all / 100); }
+            }
         }
         for (size_t g = 0; g < gens.size(); ++g) if (genFuel[g] > 0) { const long long left = takeFrom(gens[g].mi, gens[g].fuelItem, genFuel[g]); if (left) fromNet[{ netOf(gens[g].mi), gens[g].fuelItem }] += left; ps.stats.items[gens[g].fuelItem].used.add(genFuel[g]); }
         // What the net made covers what it needed; the rest of the need comes out of its chests; the rest of the making goes
@@ -2906,6 +2932,7 @@ std::vector<Factory::RecipeInfo> Factory::RecipeList() {
         ri.machine = r.machine; ri.ticks = r.ticks; ri.eu = r.eu; ri.tier = r.tier; // (#1427 L7d: tier)
         for (const Stack& s : r.in) ri.in.push_back({ tables.name(s.item), s.count });
         for (const Stack& s : r.out) ri.out.push_back({ tables.name(s.item), s.count });
+        for (const Stack& s : r.chance) ri.chance.push_back({ tables.name(s.item), s.count });
         out.push_back(std::move(ri));
     }
     return out;
@@ -3405,6 +3432,55 @@ TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
     EXPECT_EQ(CountItems(M(machine[0]).out, kSlots, tables.item("iron_ingot")), 4) << "the trip hammer worked all 4 blooms (80 ticks each)";
     EXPECT_EQ(CountItems(M(machine[1]).out, kSlots, tables.item("bronze_dust")), 4) << "copper and tin dust 3:1 -> 4 bronze dust";
     EXPECT_EQ(CountItems(M(machine[2]).out, kSlots, tables.item("bronze_dust")), 4) << "crushed copper and tin 3:1 -> 4 bronze dust";
+}
+
+// (#1734 PR 2) The rotary sieve's outputs by chance ("iron_ore 8%") come from the machine's carried hundredths: 12 gravel
+// carry 96 hundredths of an iron ore and give none, the 13th gives the first; every 100 gravel give exactly 8 iron, 6 copper
+// and 4 tin ore with their 100 sand, and nothing is left carried.
+TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 92; L.version = 1;
+    int part = 0;
+    auto add = [&](PartType t, Int3 at, int orient = 0) {
+        const Part pt = RotationPlot_PartAt(t, at, orient);
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(pt, fp);
+        if (IsMachine(t)) {
+            std::vector<Int3> cells;
+            for (const auto& c : fp) cells.push_back(c.first);
+            L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        }
+        RotationPartMsg rm;
+        if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+        return part++;
+    };
+    const int gen = add(PartType::Generator, { 0, 0, 0 });
+    L.cables.push_back({ 2, 0, 0 });
+    add(PartType::Motor, { 3, 0, 0 });
+    add(PartType::Shaft, { 5, 0, 0 }, RotationPlot_OrientFor({ 1, 0, 0 }));
+    const int sieve = add(PartType::RotarySieve, { 6, 0, 0 });
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 92);
+    Machine& m = ps.machines[ps.byPart.at(sieve)];
+    int buckets = 0;
+    InsertInto(ps.machines[ps.byPart.at(gen)], tables.item("coal"), 64, true, buckets);
+    const int gravel = tables.item("gravel"), sand = tables.item("sand"), iron = tables.item("iron_ore");
+    long long made = 0; int active = 0;
+    auto runUntil = [&](int sandWanted) { for (int t = 0; t < 20000 && CountItems(m.out, kSlots, sand) < sandWanted; ++t) TickPlot(ps, 1, made, active); };
+    InsertInto(m, gravel, 12, false, buckets);
+    runUntil(12);
+    ASSERT_EQ(CountItems(m.out, kSlots, sand), 12) << "12 gravel sifted";
+    EXPECT_EQ(CountItems(m.out, kSlots, iron), 0) << "12 x 8% = 96 hundredths: no iron ore yet";
+    EXPECT_EQ(m.disCarry[iron], 96);
+    InsertInto(m, gravel, 88, false, buckets);
+    runUntil(100);
+    ASSERT_EQ(CountItems(m.out, kSlots, sand), 100);
+    EXPECT_EQ(CountItems(m.out, kSlots, iron), 8) << "8% of 100 gravel";
+    EXPECT_EQ(CountItems(m.out, kSlots, tables.item("copper_ore")), 6);
+    EXPECT_EQ(CountItems(m.out, kSlots, tables.item("tin_ore")), 4);
+    EXPECT_TRUE(m.disCarry.empty()) << "100 gravel leave nothing carried";
 }
 
 // (#1261, S1) A plot that leaves "near" measures for 60 s on the 20-tick step, then enters Summary with caps from what each
