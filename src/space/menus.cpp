@@ -183,8 +183,9 @@ namespace {
         return ok;
     }
 
-    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete.
-    int renaming = -1, deleting = -1;
+    // The Load page's row state: which save is being renamed (its text) or waits for a second click to delete. (#1841, #1842) By
+    // the save's name, not its row: a copy, rename or delete re-sorts the list, and a row index then pointed at another save.
+    std::string renaming, deleting;
     std::string renameText;
     double deleteAsked = 0.0;
     std::string saveMessage;
@@ -709,7 +710,7 @@ MenuResult Menu_Main() {
             const float sw = 92.0f * s, gap = 8.0f * s;
             const Rectangle main = { row.x, row.y, row.width - 3 * (sw + gap), row.height };
             const Rectangle bRen = { main.x + main.width + gap, row.y, sw, row.height }, bCopy = { bRen.x + sw + gap, row.y, sw, row.height }, bDel = { bCopy.x + sw + gap, row.y, sw, row.height };
-            if (renaming == i) { // the name being typed
+            if (renaming == e.name) { // the name being typed
                 DrawRectangleRounded(main, 0.18f, 6, kHover);
                 const bool ok = SaveNameOk(renameText);
                 const int tfs = (int)(main.height * 0.45f);
@@ -718,28 +719,28 @@ MenuResult Menu_Main() {
                 if (IsKeyPressed(KEY_BACKSPACE) && !renameText.empty()) renameText.pop_back();
                 if ((IsKeyPressed(KEY_ENTER) || Button(bRen, "OK")) && ok) {
                     saveMessage = SaveRename(e.name, renameText) ? TextFormat("Renamed to %s", renameText.c_str()) : "Rename failed";
-                    renaming = -1; changed = true;
+                    renaming.clear(); changed = true;
                 }
-                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming = -1;
+                if (Button(bCopy, "Cancel") || IsKeyPressed(KEY_ESCAPE)) renaming.clear();
                 continue;
             }
             if (Button(main, TextFormat("%s   %s", e.name.c_str(), e.when.c_str()))) { r.action = MenuAction::LoadGame; r.path = e.path; mainPage = Page::Main; }
-            if (Button(bRen, "Rename")) { renaming = i; renameText = e.name; deleting = -1; }
+            if (Button(bRen, "Rename")) { renaming = e.name; renameText = e.name; deleting.clear(); }
             if (Button(bCopy, "Copy")) {
                 std::string to = e.name + " copy";
                 for (int k = 2; !SaveNameOk(to) && k < 100; ++k) to = TextFormat("%s copy %d", e.name.c_str(), k);
                 saveMessage = SaveCopy(e.name, to) ? TextFormat("Copied to %s", to.c_str()) : "Copy failed";
                 changed = true;
             }
-            const bool sure = deleting == i && GetTime() - deleteAsked < 4.0;
+            const bool sure = deleting == e.name && GetTime() - deleteAsked < 4.0;
             if (Button(bDel, sure ? "Sure?" : "Delete")) {
-                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting = -1; changed = true; }
-                else { deleting = i; deleteAsked = GetTime(); }
+                if (sure) { saveMessage = SaveDelete(e.name) ? TextFormat("Deleted %s", e.name.c_str()) : "Delete failed"; deleting.clear(); changed = true; }
+                else { deleting = e.name; deleteAsked = GetTime(); }
             }
         }
         if (!saveMessage.empty()) DrawText(saveMessage.c_str(), (GetScreenWidth() - MeasureText(saveMessage.c_str(), fs)) / 2, (int)(Row(7, 300.0f, 0.32f).y - 34 * s), fs, Fade(kText, 0.8f));
         if (changed) { const float keep = saveScroll; RefreshSaves(); saveScroll = std::min(keep, std::max(0.0f, (float)saves.size() - 7.0f)); }
-        if (renaming < 0 && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting = -1; saveMessage.clear(); }
+        if (renaming.empty() && (Button(Row(7, 300.0f, 0.32f), "Back") || IsKeyPressed(KEY_ESCAPE))) { mainPage = Page::Main; deleting.clear(); saveMessage.clear(); }
     } else if (mainPage == Page::Multiplayer || mainPage == Page::Join || mainPage == Page::Host) {
         MultiplayerPage(r);
     } else if (SettingsPage()) {

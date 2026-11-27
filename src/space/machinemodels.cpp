@@ -41,6 +41,26 @@ constexpr float kTorchStick = 0.05f; // a placed torch's stick centre from its c
 const Color kSteel = { 140, 144, 150, 255 }, kDarkSteel = { 70, 72, 78, 255 }, kBrick = { 150, 80, 60, 255 }, kCopper = { 190, 110, 60, 255 };
 const Color kGlowOrange = { 255, 150, 50, 255 }, kGlass = { 120, 200, 230, 255 }, kPaint = { 200, 170, 50, 255 };
 
+// (#1613) The piece on an anvil: a bar on its face, in its metal's colour (from the item's name: no item has a colour of
+// its own). GUESS: 0.36 x 0.10 x 0.12 m, a little longer for a finished head (it reads as "done"). Full colour, not
+// darkened like the casing details: all instanced details render too dark today (#1962).
+void DrawWorkpiece(const std::string& item, const Frame& f, const Painter& p) {
+    if (item.empty()) return;
+    static const struct { const char* metal; Color c; } kMetals[] = {
+        { "copper", { 196, 112, 64, 255 } }, { "bronze", { 176, 130, 62, 255 } }, { "tin", { 190, 192, 196, 255 } },
+        { "gold", { 222, 180, 60, 255 } }, { "tungsten", { 96, 98, 108, 255 } }, { "steel", { 150, 156, 166, 255 } },
+        { "iron", { 150, 146, 142, 255 } }, { "bloom", { 120, 82, 62, 255 } }, // a bloom: slaggy, rust-brown
+    };
+    auto word = [&](const char* w) { // a whole _-separated word of the id ("tin" isn't in "casting")
+        const std::string k = std::string("_") + w + "_", id = "_" + item + "_";
+        return id.find(k) != std::string::npos;
+    };
+    Color c = kSteel;
+    for (const auto& m : kMetals) if (word(m.metal)) { c = m.c; break; }
+    const bool head = word("head");
+    p.cube({ 0.0f, f.h + 0.05f, 0.0f }, { head ? 0.42f : 0.36f, 0.10f, 0.12f }, c);
+}
+
 void Chimney(const Painter& p, const Frame& f, float x, float z, float r, float h, Color c) {
     p.cyl({ x, f.h, z }, r, r * 1.15f, h, c);
     p.cyl({ x, f.h + h, z }, r * 1.2f, r * 1.2f, 0.06f, kDarkSteel);
@@ -95,6 +115,7 @@ float TopReach(PartType type) {
     case PartType::Centrifuge: return 0.3f;
     case PartType::HandPump: return 0.71f;
     case PartType::WaterPump: return 0.45f;
+    case PartType::RotaryPump: return 0.56f; // (#1734) its wheel on top (rotationmodels: 0.32 up, 0.24 round)
     case PartType::Electrolyzer: return 0.5f;
     case PartType::ChemicalReactor: return 0.6f;
     case PartType::Refinery: return 1.85f;
@@ -118,7 +139,7 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         Stack st[4];
         for (int i = 0, n = Stacks(type, f, st); i < n; ++i) Chimney(p, f, st[i].x, st[i].z, st[i].r, st[i].h, st[i].c);
     }
-    if (type == PartType::HandPump || type == PartType::WaterPump) { // the intake pipe, cut at a block below or above (#221)
+    if (type == PartType::HandPump || type == PartType::WaterPump || type == PartType::RotaryPump) { // the intake pipe, cut at a block below or above (#221; #1734 the rotary pump)
         const float lo = -std::min(0.6f, f.roomBelow), hi = top + std::min(0.3f, f.roomAbove);
         p.cyl({ x0 + 0.2f, lo, z0 + 0.2f }, type == PartType::HandPump ? 0.07f : 0.08f, type == PartType::HandPump ? 0.07f : 0.08f, hi - lo, kSteel);
     }
@@ -525,6 +546,7 @@ void Machines_Draw3D(Scene& world) {
         rlMultMatrixf(MatrixToFloat(mm));
         IB_SetBuried(s.buried);
         DrawMachine(s.type, s.f, pp, working);
+        if (s.type == PartType::Anvil) DrawWorkpiece(Factory::Workpiece(q.body->id, q.plot->id, s.part), s.f, pp); // (#1613)
         IB_SetBuried(0.0f);
         ++drawnLastFrame;
         rlPopMatrix();

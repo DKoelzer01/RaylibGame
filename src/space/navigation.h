@@ -17,9 +17,18 @@
 #include <cstdio>
 #include <string>
 #include <cstdint>
+#include <map>
 #include <unordered_set>
 
 class Scene;
+
+// (#1886) explored map tiles by body name (a team's on a server, a player's own), and their text form for the team
+// progression store: "tiles <body> <n>" then n hex keys, 16 to a line.
+using NavTiles = std::map<std::string, std::unordered_set<uint64_t>>;
+std::string Nav_TilesText(const NavTiles& tiles);
+void Nav_TilesFromText(const std::string& text, NavTiles& into); // adds to `into` (a union)
+// A client: the team's explored map added to the local one (the player keeps what they explored themselves).
+void Nav_MergeTilesText(const std::string& text);
 
 void Nav_Update(Scene& world, bool inputEnabled, bool gameInput); // once a frame: exploration, the map's input (inputEnabled), images; gameInput: the minimap zoom keys (#278)
 // (#338) the map tiles a player at body-local `up` (unit) reveals on a body of radius R, added to `set` (the same tiles and radius

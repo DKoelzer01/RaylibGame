@@ -38,6 +38,10 @@ mechanical_saw   | 0 | rotation | 0 |
 mechanical_press | 0 | rotation | 0 |
 lathe            | 0 | rotation | 0 |
 wiremill         | 0 | rotation | 0 |
+trip_hammer      | 0 | rotation | 0 |
+mixer            | 0 | rotation | 0 |
+rotary_sieve     | 0 | rotation | 0 |
+rotary_pump      | 0 | rotation | 0 |
 # (#1271 L3) steam: a boiler making steam (EU per tick = its steam at full heat) for the steam engines touching it; engine: a
 # steam engine (rotation from that steam); dynamo: rotation into EU at its voltage; motor: EU into rotation.
 steam_engine     | 0  | engine | 0  |

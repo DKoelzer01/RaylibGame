@@ -1,6 +1,30 @@
 {
   "agent": "space-game",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$f = Join-Path \"$env:CLAUDE_PROJECT_DIR\" '.claude/hooks/compact-handoff.ps1'; if (-not (Test-Path $f)) { $r = git rev-parse --show-toplevel 2>$null; if ($r) { $f = Join-Path $r '.claude/hooks/compact-handoff.ps1' } }; if (Test-Path $f) { & $f; exit $LASTEXITCODE }",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$f = Join-Path \"$env:CLAUDE_PROJECT_DIR\" '.claude/hooks/claude-md-fresh.ps1'; if (-not (Test-Path $f)) { $r = git rev-parse --show-toplevel 2>$null; if ($r) { $f = Join-Path $r '.claude/hooks/claude-md-fresh.ps1' } }; if (Test-Path $f) { & $f; exit $LASTEXITCODE }",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash|PowerShell",

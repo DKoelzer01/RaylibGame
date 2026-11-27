@@ -28,7 +28,8 @@ const char* MachineSound_Hum(PartType t) {
         case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::Gearbox: case PartType::HandCrank: return "mech_gears";
         case PartType::Millstone: return "mech_millstone";
         case PartType::Saw: return "mech_saw";
-        case PartType::Press: case PartType::Lathe: case PartType::Wiremill: return "mech_press";
+        case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: return "mech_press";
+        case PartType::Mixer: case PartType::RotarySieve: case PartType::RotaryPump: return "mech_millstone"; // (#1734) GUESS: a slow grinding turn
         case PartType::WaterWheel: return "mech_waterwheel";
         case PartType::Windmill: return "mech_windmill";
         default: return nullptr; // chests, hand pumps, rocket parts, connectors, gauges

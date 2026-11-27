@@ -117,6 +117,7 @@ int Combat_UpdateGraveOwners(const std::vector<std::string>& online, int64_t now
 struct GraveInfo { uint32_t id = 0; std::string body; DVec3 local{}; std::string owner, name; uint8_t style = 0; int64_t diedAt = 0;
                    bool dropped = false; std::vector<std::string> items; }; // (#865) a dropped pile and up to 3 of its item ids
 std::vector<GraveInfo> Combat_GraveList();
+int Combat_TestGraveOffHand(size_t index); // (#1856 tests) the off hand's item index in the index-th grave or pile (-1 none)
 void Combat_SetGraveMirror(const std::vector<GraveInfo>& list, const std::string& me);
 uint32_t Combat_GraveVersion();
 uint8_t Combat_GraveStyle(const std::string& body, const DVec3& local, uint32_t id); // 0 cross, 1 headstone, 2 monolith

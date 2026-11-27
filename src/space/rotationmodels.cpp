@@ -114,6 +114,26 @@ void DrawPart(PartType t) {
         IB_Cube({ 0, 0, 0 }, { 0.5f, 0.1f, 0.06f }, kDarkWood);
         IB_Cylinder({ 0, -0.12f, 0 }, 0.04f, 0.04f, 0.24f, kWood);
         break;
+    case PartType::TripHammer: // (#1734) the camshaft: two lobes that lift the hammer's helve, one marked (the turning shows)
+        IB_Cylinder({ 0, -0.3f, 0 }, 0.07f, 0.07f, 0.6f, kWood);
+        IB_Cube({ 0.11f, -0.15f, 0 }, { 0.16f, 0.08f, 0.1f }, kDarkWood);
+        IB_Cube({ -0.11f, 0.15f, 0 }, { 0.16f, 0.08f, 0.1f }, kMark);
+        break;
+    case PartType::Mixer: // (#1734) a pug mill: a cross of paddles on its shaft through the tub, one marked
+        IB_Cylinder({ 0, -0.1f, 0 }, 0.04f, 0.04f, 0.3f, kWood);
+        IB_Cube({ 0, 0.12f, 0 }, { 0.7f, 0.08f, 0.04f }, kMark);
+        IB_Cube({ 0, 0.12f, 0 }, { 0.04f, 0.08f, 0.7f }, kLight);
+        break;
+    case PartType::RotarySieve: // (#1734) a trommel: two hoops on its shaft and six slats around the mesh, one marked
+        IB_Cylinder({ 0, -0.32f, 0 }, 0.04f, 0.04f, 0.64f, kWood);
+        for (float side : { -0.26f, 0.26f }) IB_Cylinder({ 0, side - 0.03f, 0 }, 0.26f, 0.26f, 0.06f, kSteel);
+        for (int k = 0; k < 6; ++k) { rlPushMatrix(); rlRotatef(60.0f * k, 0, 1, 0); IB_Cube({ 0.25f, 0, 0 }, { 0.04f, 0.52f, 0.06f }, k == 0 ? kMark : kDarkWood); rlPopMatrix(); }
+        break;
+    case PartType::RotaryPump: // (#1734) a chain pump's wheel: a steel rim on four spokes, one marked
+        IB_Cylinder({ 0, -0.1f, 0 }, 0.04f, 0.04f, 0.2f, kWood);
+        IB_Cylinder({ 0, -0.03f, 0 }, 0.24f, 0.24f, 0.06f, kSteel);
+        for (int k = 0; k < 4; ++k) { rlPushMatrix(); rlRotatef(90.0f * k, 0, 1, 0); IB_Cube({ 0.12f, 0, 0 }, { 0.22f, 0.07f, 0.04f }, k == 0 ? kMark : kDarkWood); rlPopMatrix(); }
+        break;
     case PartType::WaterWheel: // (#1270) two rims on spokes, paddles between them (1.5 m across)
         IB_Cylinder({ 0, -0.25f, 0 }, 0.07f, 0.07f, 0.5f, kWood);
         for (float side : { -0.2f, 0.2f }) {
