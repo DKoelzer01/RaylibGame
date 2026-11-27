@@ -569,6 +569,59 @@ bool Multiblock_Members(const Plot& plot, int controllerPart, MbMachine& out) {
     return true;
 }
 
+MbLampState Multiblock_LampState(bool formed, bool working, bool stalled) {
+    if (!formed) return MbLampState::Unformed;
+    return working ? MbLampState::Working : stalled ? MbLampState::Stalled : MbLampState::Idle;
+}
+
+void Multiblock_Looks(const Plot& plot, std::vector<MbLook>& out) {
+    out.clear();
+    std::vector<std::pair<Int3, CellShape>> fp;
+    // Horizontal faces first: a lamp on a side reads from the ground; then the top, then the bottom.
+    static const MbInt3 kFaces[6] = { { 0, 0, 1 }, { 1, 0, 0 }, { 0, 0, -1 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 } };
+    for (size_t i = 0; i < plot.parts.size(); ++i) {
+        const Part& part = plot.parts[i];
+        if (part.type != PartType::MbController) continue;
+        MbLook look;
+        look.controller = (int)i;
+        Plot::Footprint(part, fp);
+        const Int3 at = fp.empty() ? part.origin : fp[0].first;
+        const int* M = Orientation(part.orient);
+        MbLamp ctl;
+        ctl.part = (int)i; ctl.cell = { at.x, at.y, at.z }; ctl.out = { M[2], M[5], M[8] }; ctl.kind = "controller";
+        look.lamps.push_back(ctl);
+        const bool listed = std::binary_search(plot.formed.begin(), plot.formed.end(), (int)i);
+        const MbResult r = listed ? Multiblock_CheckController(plot, (int)i) : MbResult{};
+        look.formed = listed && r.formed;
+        if (look.formed) {
+            std::vector<MbInt3> members;
+            for (const MbCellResult& c : r.cells) if (c.status == MbCell::Ok && c.want != "air") members.push_back(c.world);
+            look.lo = look.hi = members.empty() ? ctl.cell : members[0];
+            for (const MbInt3& c : members) {
+                look.lo = { std::min(look.lo.x, c.x), std::min(look.lo.y, c.y), std::min(look.lo.z, c.z) };
+                look.hi = { std::max(look.hi.x, c.x), std::max(look.hi.y, c.y), std::max(look.hi.z, c.z) };
+            }
+            auto inBox = [&](MbInt3 c) { return c.x >= look.lo.x && c.x <= look.hi.x && c.y >= look.lo.y && c.y <= look.hi.y && c.z >= look.lo.z && c.z <= look.hi.z; };
+            auto member = [&](MbInt3 c) { return std::find(members.begin(), members.end(), c) != members.end(); };
+            for (const MbInt3& c : members) {
+                const int h = plot.partAt({ c.x, c.y, c.z });
+                if (h < 0 || h >= (int)plot.parts.size() || plot.parts[h].type != PartType::MbHatch) continue;
+                if (std::any_of(look.lamps.begin(), look.lamps.end(), [h](const MbLamp& l) { return l.part == h; })) continue;
+                MbLamp lamp;
+                lamp.part = h; lamp.cell = c; lamp.kind = Multiblock_HatchKind(plot.parts[h].material);
+                // The outer face: out of the structure's box (where its pipes or belts come in), else any face not on a member
+                // (a hatch on an inner wall, facing the hollow), else the top.
+                const MbInt3* pick = nullptr;
+                for (const MbInt3& f : kFaces) if (!inBox({ c.x + f.x, c.y + f.y, c.z + f.z })) { pick = &f; break; }
+                if (!pick) for (const MbInt3& f : kFaces) if (!member({ c.x + f.x, c.y + f.y, c.z + f.z })) { pick = &f; break; }
+                lamp.out = pick ? *pick : kFaces[4];
+                look.lamps.push_back(lamp);
+            }
+        }
+        out.push_back(std::move(look));
+    }
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
 
@@ -1152,6 +1205,47 @@ TEST(MultiblockForming, MembersListTheHatchesOnce) {
     EXPECT_TRUE(mb.volts.empty()) << "bronze casings: no voltage cap";
     plot.remove(mb.hatches[0].first);
     EXPECT_FALSE(Multiblock_Members(plot, ctl, mb)) << "broken: not a machine";
+}
+
+// (#1429 PR 6) The renderer's view: an unformed controller gets its own lamp only; formed, each hatch gets one on a face out
+// of the box, and the box spans the tank (3 x 3 x 3 cells with one stretch repeat).
+TEST(MultiblockLooks, LampsAndBox) {
+    EXPECT_EQ(Multiblock_LampState(false, true, false), MbLampState::Unformed) << "unformed never works";
+    EXPECT_EQ(Multiblock_LampState(true, false, false), MbLampState::Idle);
+    EXPECT_EQ(Multiblock_LampState(true, true, true), MbLampState::Working);
+    EXPECT_EQ(Multiblock_LampState(true, false, true), MbLampState::Stalled);
+    for (const auto& f : kFacings) {
+        Plot plot;
+        const MbInt3 at{ 10, 5, 10 };
+        const int ctl = PlaceTank(plot, at, f[0], f[1], OrientFacing(f[0], f[1]));
+        ASSERT_GE(ctl, 0);
+        std::vector<MbLook> looks;
+        Multiblock_Looks(plot, looks);
+        ASSERT_EQ(looks.size(), 1u);
+        EXPECT_FALSE(looks[0].formed) << "not listed in Plot::formed: unformed";
+        ASSERT_EQ(looks[0].lamps.size(), 1u);
+        EXPECT_EQ(looks[0].lamps[0].kind, "controller");
+        EXPECT_TRUE(looks[0].lamps[0].out == (MbInt3{ f[0], 0, f[1] })) << "the lamp on the controller's front";
+        Multiblock_SetFormed(plot, ctl, true);
+        Multiblock_Looks(plot, looks);
+        ASSERT_EQ(looks.size(), 1u);
+        EXPECT_TRUE(looks[0].formed);
+        EXPECT_EQ(looks[0].hi.x - looks[0].lo.x, 2);
+        EXPECT_EQ(looks[0].hi.y - looks[0].lo.y, 2);
+        EXPECT_EQ(looks[0].hi.z - looks[0].lo.z, 2);
+        ASSERT_EQ(looks[0].lamps.size(), 3u) << "the controller and the two hatches";
+        for (size_t k = 1; k < 3; ++k) { // the hatches sit mid-bottom and mid-top: their lamps face down and up, out of the box
+            const MbLamp& l = looks[0].lamps[k];
+            EXPECT_EQ(plot.parts[l.part].type, PartType::MbHatch);
+            EXPECT_EQ(l.out.y, l.cell.y == looks[0].lo.y ? -1 : 1) << l.kind;
+        }
+        // a casing broken: still listed until the recheck, but no longer validating: drawn unformed
+        const MbInt3 c = Multiblock_ToWorld(*Multiblock_All().find("large_tank"), { 0, 0, 0 }, at, f[0], f[1]);
+        ASSERT_TRUE(plot.remove(plot.partAt({ c.x, c.y, c.z })));
+        Multiblock_Looks(plot, looks);
+        EXPECT_FALSE(looks[0].formed);
+        EXPECT_EQ(looks[0].lamps.size(), 1u);
+    }
 }
 
 TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
