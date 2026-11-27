@@ -1415,4 +1415,47 @@ TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
     EXPECT_EQ(pat("granite_brick"), PatPolished);
     EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
 }
+
+// (#1735 PR 3) A plot's belts: added with the next free id (an invalid run refused), removed by id, saved (plots7) and loaded;
+// a plot with only belts is saved too.
+TEST(PlotBelts, AddRemoveSaveLoad) {
+    auto plot = std::make_unique<Plot>();
+    plot->id = 4; plot->origin = DVec3(0.0, 100.0, 0.0);
+    plot->up = { 0, 1, 0 }; plot->east = { 1, 0, 0 }; plot->north = { 0, 0, 1 };
+    ConduitRun run; run.material = "basic"; run.points = { { 2, 0, 4 }, { 30, 0, 4 }, { 30, 0, 20 } };
+    const uint32_t v0 = plot->version;
+    EXPECT_EQ(plot->addBelt(run), 1);
+    EXPECT_NE(plot->version, v0) << "the factory sees the change";
+    run.points = { { 2, 8, 4 }, { 2, 8, 30 } };
+    EXPECT_EQ(plot->addBelt(run), 2);
+    ConduitRun bad = run; bad.points = { { 3, 0, 4 }, { 9, 0, 4 } };
+    EXPECT_EQ(plot->addBelt(bad), 0) << "off the quarter-cell grid";
+    EXPECT_TRUE(plot->removeBelt(1));
+    EXPECT_FALSE(plot->removeBelt(1));
+    run.points = { { 0, 0, 0 }, { 16, 0, 0 } };
+    EXPECT_EQ(plot->addBelt(run), 3);
+    const std::vector<ConduitRun> want = plot->belts;
+    PlotSet set;
+    set.plots.push_back(std::move(plot));
+    const char* path = "plot_belts_test.tmp";
+    FILE* f = fopen(path, "w");
+    ASSERT_NE(f, nullptr);
+    set.save(f);
+    fclose(f);
+    PlotSet back;
+    f = fopen(path, "r");
+    ASSERT_NE(f, nullptr);
+    ASSERT_TRUE(back.load(f));
+    fclose(f);
+    std::remove(path);
+    ASSERT_EQ(back.plots.size(), 1u) << "a plot with belts and no parts is kept";
+    const std::vector<ConduitRun>& got = back.plots[0]->belts;
+    ASSERT_EQ(got.size(), want.size());
+    for (size_t i = 0; i < got.size(); ++i) {
+        EXPECT_EQ(got[i].id, want[i].id);
+        EXPECT_EQ(got[i].material, want[i].material);
+        EXPECT_TRUE(got[i].kind == ConduitKind::Belt);
+        EXPECT_TRUE(got[i].points == want[i].points) << "run " << want[i].id;
+    }
+}
 #endif
