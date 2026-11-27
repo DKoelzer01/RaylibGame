@@ -562,6 +562,14 @@ namespace {
     }
 }
 void BuildTool_NotePlacedByPlayer(Planetoid& body, const Plot& plot, const Part& part) {
+    // (#1861) A beam is placed as the single cubes it splits into: those are what stand in the plot (a Beam record never
+    // matched one, so beams never paid). Each cube counts, as cubes placed one by one do.
+    if (IsBeam(part.type)) {
+        std::vector<Part> cubes;
+        Plot::SplitBeam(part, cubes);
+        for (const Part& c : cubes) if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, c.origin, c.type, SimTime() });
+        return;
+    }
     if (placedByPlayer.size() < 4096) placedByPlayer.push_back({ body.id, plot.id, part.origin, part.type, SimTime() });
 }
 

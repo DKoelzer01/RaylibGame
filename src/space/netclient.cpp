@@ -54,6 +54,7 @@ void ApplyInventoryDelta(Inventory& inv, const MsgInventoryDelta& d) {
 }
 
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
+#include "buildcommit.h"
 
 namespace {
     // A player's state from the server - its own message, or decoded from a snapshot (#769): the same handling either way.
@@ -71,7 +72,7 @@ namespace {
         NetWriter w; NetWrite(w, m);
         Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), true);
     }
-    std::string Commit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string Commit() { return Build_CommitOf(kGameVersion); } // (#1906) the hash, not "changes" from " +local changes"
     void End(NetClient& c, NetClient::State s) {
         if (c.conn) Net_Close(c.conn);
         c.conn = 0;
@@ -573,6 +574,13 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
         self.update(world, in, SimDt());
     }
     if (body) step.local = body->toLocalD(self.position);
+    // (#1922) Flying in creative: the server can't step our fly camera, so it takes our pose (it checks creative itself).
+    // (Not netState(): the fly path returns before update() caches it, so that would be the state from before the flight.)
+    if (self.flyMode && terrainTool.creative && body) {
+        const Vector3 rel = self.groundVelocity(world); // (against the ground, as netState() has it airborne)
+        step.fly = true; step.flyBody = body->netId; step.flyLocal = step.local;
+        step.flyVel = Vector3RotateByQuaternion(rel, QuaternionInvert(body->rotationQuat()));
+    }
     c.history.push_back(step);
     while (c.history.size() > 600) c.history.pop_front(); // 10 s unacknowledged: something is wrong; don't grow forever
     // The newest kInputRedundancy steps, unreliable (a lost packet is covered by the next).
@@ -581,7 +589,9 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
     m.ackSnap = c.snapNewest; m.ackMask = c.snapMask; // (#769)
     for (auto it = c.history.rbegin(); it != c.history.rend() && (int)m.steps.size() < kInputRedundancy; ++it) {
         if (!m.steps.empty() && it->tick != m.steps.back().tick - 1) break; // (consecutive only)
-        m.steps.push_back({ it->tick, it->in.held, it->in.pressed, it->fx, it->fy, it->fz });
+        MsgInput s{ it->tick, it->in.held, it->in.pressed, it->fx, it->fy, it->fz };
+        s.fly = it->fly; s.flyBody = it->flyBody; s.flyLocal = it->flyLocal; s.fvx = it->flyVel.x; s.fvy = it->flyVel.y; s.fvz = it->flyVel.z;
+        m.steps.push_back(s);
     }
     NetWriter w; NetWrite(w, m);
     Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), false);

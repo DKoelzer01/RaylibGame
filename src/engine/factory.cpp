@@ -1140,7 +1140,7 @@ static int JobEu(const Machine& m) {
     if (m.hatch == kHatchEnergy) return m.hatchDemand > 0 ? (int)std::min<long long>(m.hatchDemand, INT32_MAX) : -1; // (#1429 PR 4)
     if (m.type == PartType::MbController) return -1; // (its energy hatches draw for it)
     if (m.mode == 1) return m.disSlot >= 0 ? m.disEu : -1;
-    return m.recipe >= 0 ? EuOf(m, tables.recipes[m.recipe]) : -1;
+    return m.recipe >= 0 && m.progress < TicksOf(m, tables.recipes[m.recipe]) ? EuOf(m, tables.recipes[m.recipe]) : -1; // (#1847) a done craft waiting on full outputs draws nothing
 }
 // An assembler set to disassemble, one step: the first input it can take apart starts a job (the forward recipe's time and EU,
 // overclocked); a finished job takes one item and gives back its parts at the tier yield, raw parts as hundredths carried in
@@ -2236,7 +2236,7 @@ void SimLoop() {
                 if (im.kind == 12) { if (p) p->rot.SetSourceRpm(im.part, im.count); continue; } // (#1270) a water wheel's or windmill's sampled speed
                 auto it = p ? p->byPart.find(im.part) : decltype(p->byPart.end()){};
                 if (!p || it == p->byPart.end()) {
-                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to });
+                    if (im.kind == 0 || im.kind == 9) back.push_back({ im.item, im.count, im.to, im.centi }); // (#1849) and its fraction
                     if (im.kind == 5) drained.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     if (im.kind == 7) filled.push_back({ std::make_tuple(im.body, im.plot, im.part), im.count });
                     continue;
@@ -2945,7 +2945,16 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
     for (PlotSim& ps : plots) if (ps.body == bodyId && ps.mode == PlotSim::Mode::Summary && !ps.nearPlayer) { AdvanceSummary(ps, ps.lastAdvance, now); ps.lastAdvance = now; }
     int n = 0;
     for (const PlotSim& ps : plots) if (ps.body == bodyId) n += (int)ps.machines.size();
+    // (#1881) Loaded machines wait in pendingStates until their plot reaches the sim (the next Sync): a save before that
+    // wrote "machines 0" and lost every chest and machine on the body. Those go back out as they were read.
+    for (const auto& [key, rest] : pendingStates) if (std::get<0>(key) == bodyId) ++n;
     fprintf(f, "machines %d\n", n);
+    for (const auto& [key, rest] : pendingStates) {
+        if (std::get<0>(key) != bodyId) continue;
+        fprintf(f, "m %u %d", std::get<1>(key), std::get<2>(key));
+        for (const std::string& w : rest) fprintf(f, " %s", w.c_str());
+        fprintf(f, "\n");
+    }
     for (const PlotSim& ps : plots) {
         if (ps.body != bodyId) continue;
         const bool summary = ps.mode == PlotSim::Mode::Summary;
@@ -3585,6 +3594,31 @@ TEST(Factory, ParallelCablesCarryMore) {
     EXPECT_LE(r.used, 64LL * kT + 64) << "but never more than the generators make: used " << r.used;
 }
 
+// (#1847) A machine whose craft is done but can't get out (outputs full) draws no power: its generator stops burning.
+TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 } }, {}, Row(0, 4, -1)));
+    PlotSim& ps = *FindPlot(9, 2);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    Machine& mac = ps.machines[ps.byPart.at(1)];
+    InsertInto(mac, tables.item("iron_ore"), 64, false, b);
+    for (Stack& o : mac.out) { o = Stack{}; o.item = tables.item("dirt"); o.count = 64; } // no room for what it makes
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 400; ++t) TickPlot(ps, 1, made, active); // the first craft finishes its work and waits
+    ASSERT_GE(mac.recipe, 0);
+    ASSERT_EQ(mac.progress, tables.recipes[mac.recipe].ticks) << "done, waiting on the outputs";
+    const Machine& gen = ps.machines[ps.byPart.at(0)];
+    const int fuel = gen.fuel.count, energy = gen.energy;
+    for (int t = 0; t < 2000; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(made, 0) << "nothing fits";
+    EXPECT_EQ(gen.fuel.count, fuel) << "no coal burnt for a machine that can't craft";
+    EXPECT_LE(gen.energy, energy);
+    EXPECT_EQ(mac.received, 0);
+    plots.clear(); plotIndexDirty = true;
+}
+
 // (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the
 // summary at once with the caps it had (no minute of measuring).
 TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
@@ -3690,6 +3724,30 @@ TEST(Factory, AChestKeepsFractionsAndGivesThemBack) {
     Factory::WaitTicks(2);
     EXPECT_EQ(back("dirt"), 290);
     EXPECT_EQ(back("sand"), 30);
+
+    // (#1849) An insert whose plot is gone comes back whole, its fraction too.
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    Factory::Insert(99, 7, 0, "dirt", 2, 0, 50);
+    Factory::WaitTicks(2);
+    EXPECT_EQ(back("dirt"), 250) << "2.5 dirt back";
+
+    // (#1848) Removing the chest gives back its contents with their fractions (0.4 dirt is a slot with count 0).
+    Factory::InsertSlot(11, 1, 0, "dirt", 0, 0, 0, 40);
+    Factory::InsertSlot(11, 1, 0, "sand", 2, 1, 0, 50);
+    Factory::WaitTicks(2);
+    { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }
+    {
+        LayoutMsg L{};
+        L.body = 11; L.plot = 1; L.version = 2; // the macerator only: the chest was broken
+        std::vector<Int3> cells;
+        for (int dz = 0; dz < 2; ++dz) for (int dy = 0; dy < 2; ++dy) for (int dx = 0; dx < 2; ++dx) cells.push_back({ 3 + dx, dy, dz });
+        L.machines.push_back({ 1, PartType::Macerator }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        std::lock_guard<std::mutex> q(queueMutex);
+        layoutQueue.push_back(L);
+    }
+    Factory::WaitTicks(3);
+    EXPECT_EQ(back("dirt"), 40) << "the chest's 0.4 dirt";
+    EXPECT_EQ(back("sand"), 250) << "and its 2.5 sand";
     Factory::Stop();
     plots.clear(); plotIndexDirty = true;
     { std::lock_guard<std::mutex> l(viewMutex); results.clear(); }

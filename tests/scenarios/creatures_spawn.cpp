@@ -90,7 +90,17 @@ SCENARIO("creatures/cave-spawn") {
         c.eq("all in open space", open, n);
         c.eq("none within 24 m of the player", far, n);
         c.eq("all within 64 m of the player (or nests)", within, n);
-        int worst = 0; for (const auto& kv : perChunk) worst = std::max(worst, kv.second);
+        int worst = 0; std::tuple<int, int, int> worstKey{};
+        for (const auto& kv : perChunk) if (kv.second > worst) { worst = kv.second; worstKey = kv.first; }
+        if (worst > 3) // (what is in the fullest chunk, and how near each stands to its faces: a wanderer in from the next one?)
+            for (int i = S.count0; i < Animals_Count(); ++i) {
+                const Vector3 p = Animals_Position(i);
+                if (std::tuple<int, int, int>{ (int)floorf(p.x / 64.0f), (int)floorf(p.y / 64.0f), (int)floorf(p.z / 64.0f) } != worstKey) continue;
+                const float ex = std::min(p.x - 64.0f * floorf(p.x / 64.0f), 64.0f - (p.x - 64.0f * floorf(p.x / 64.0f)));
+                const float ey = std::min(p.y - 64.0f * floorf(p.y / 64.0f), 64.0f - (p.y - 64.0f * floorf(p.y / 64.0f)));
+                const float ez = std::min(p.z - 64.0f * floorf(p.z / 64.0f), 64.0f - (p.z - 64.0f * floorf(p.z / 64.0f)));
+                c.note(TextFormat("fullest chunk: %s, %.1f m from its nearest face", Animals_SpeciesOf(i).first.c_str(), std::min(ex, std::min(ey, ez))));
+            }
         c.lt("most in one chunk (cap 2 plus a nest)", worst, 3.5);
         return true;
     });

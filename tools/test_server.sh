@@ -21,7 +21,7 @@ EOF
 cd "$here"
 ( until grep -q "server: ready" "$tmp/out.txt" 2>/dev/null || [ $SECONDS -gt 150 ]; do sleep 1; done
   sleep 2; echo help; echo status; echo list; echo "say hello there"; echo nonsense
-  echo "op Alice"; echo "ban mallory griefing"; echo "whitelist on"; echo ops; echo save; sleep 2; echo stop ) \
+  echo "op Alice"; echo "op Bob 0123456789abcdef"; echo "ban mallory griefing"; echo "whitelist on"; echo ops; echo save; sleep 2; echo stop ) \
     | timeout 180 "$exe" --server "$win/server.cfg" --sandbox > "$tmp/out.txt" 2>&1
 rc=$?
 ok=1
@@ -36,7 +36,9 @@ need "server: saved to .* done" "$tmp/out.txt" "save command"
 need "host: saved on shutdown to .* done" "$tmp/out.txt" "final save on stop"
 need "server: stopped" "$tmp/out.txt" "clean stop"
 need "^\[20[0-9-]* [0-9:]*\] server: ready" "$tmp/logs/server.log" "log file, time-stamped"
-need "server: alice is now an op" "$tmp/out.txt" "op (#345)"
+need "alice hasn't played on this server" "$tmp/out.txt" "op refuses a name with no player id (#1868)"
+need "server: bob is now an op" "$tmp/out.txt" "op NAME UUID from the console (#345, #1868)"
+need "^op bob id:0123456789abcdef" "$tmp/world/admin.txt" "op stored with its player id (#1868)"
 need "server: mallory is banned (griefing)" "$tmp/out.txt" "ban (#345)"
 need "^ban mallory griefing" "$tmp/world/admin.txt" "admin.txt next to the save (#345)"
 need "console: whitelist on" "$tmp/world/audit.log" "audit log (#345)"

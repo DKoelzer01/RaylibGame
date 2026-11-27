@@ -6,6 +6,7 @@
 // into the player's team's book; evaluation runs here, its rewards and news through the given callbacks (the server pays
 // the completing player with Host_Give, so the client gets inventory deltas: #816). A client mirrors its team's book.
 
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <raylib.h>
@@ -19,9 +20,16 @@ void TeamQuests_NotePlaced(int team, const std::string& item);
 void TeamQuests_Obtained(int team, const std::string& item, double n);
 void TeamQuests_Made(int team, const std::string& item, double n); // (#1728) a team's machine finished n of item (counts for "get" as the larger of made and obtained)
 // (#338 slice 3) a player of `team` on `body` (body-local unit `up`, radius R) reveals map tiles as the local map does
-// (Nav_RevealTiles); a team's tiles are one set per body (teammates add up, a tile counts once), saved with its book and
-// never sent to clients; "explored" rises to their total.
-int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius); // the team's total when it grew, else 0
+// (Nav_RevealTiles); a team's tiles are one set per body (teammates add up, a tile counts once), saved with its book;
+// "explored" rises to their total. uuid (#1886): the player who explored, whose own tiles grow too.
+int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius, const std::string& uuid = ""); // the team's total when it grew, else 0
+// (#1886) the team's explored tiles as text (Nav_TilesText) for the team progression store: what a client's map gets.
+std::string TeamQuests_TilesText(int team);
+// (#1886) a player moving into `team` brings the tiles they explored themselves (the user, on #1886): the team's set
+// becomes the union and "explored" rises to it. How many tiles were new to the team.
+int TeamQuests_CarryPlayer(const std::string& uuid, int team);
+void TeamQuests_SavePlayers(FILE* f);                      // player_tiles <uuid> ... player_tiles_end, in the world file
+bool TeamQuests_LoadPlayerLine(const char* tok, FILE* f);  // true if it consumed a player_tiles block
 double TeamQuests_Explored(int team);
 void TeamQuests_Visit(int team, bool moon);           // a moon visited (else the ring)
 int TeamQuests_BodiesReached(int team);              // (#343) planets and moons the team has explored ground on (claim budget)

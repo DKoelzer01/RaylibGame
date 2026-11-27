@@ -139,7 +139,11 @@ void NetWrite(NetWriter& w, const MsgInputs& m) { // newest tick, then the steps
     Id(w, NetMsg::Input);
     const size_t n = std::min<size_t>(m.steps.size(), 8);
     w.u32(n ? m.steps[0].tick : 0); w.u8((uint8_t)n);
-    for (size_t i = 0; i < n; ++i) { const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz); }
+    for (size_t i = 0; i < n; ++i) {
+        const MsgInput& s = m.steps[i]; w.varu(s.held); w.varu(s.pressed); w.unit(s.fx, s.fy, s.fz);
+        w.boolean(s.fly); // (#1922)
+        if (s.fly) { w.varu(s.flyBody); w.pos(s.flyLocal); w.speed(s.fvx); w.speed(s.fvy); w.speed(s.fvz); }
+    }
     w.u8(m.action); w.u8((uint8_t)std::clamp((int)std::lround(m.actionPhase * 255.0f), 0, 255));
     w.u32(m.ackSnap); w.u32(m.ackMask); // (#769)
 }
@@ -151,6 +155,8 @@ bool NetRead(NetReader& r, MsgInputs& m) {
     for (uint32_t i = 0; i < n && r.ok; ++i) {
         MsgInput s; s.tick = newest - i;
         s.held = r.varu(); s.pressed = r.varu(); r.unit(s.fx, s.fy, s.fz);
+        s.fly = r.boolean(); // (#1922)
+        if (s.fly) { s.flyBody = r.varu(); s.flyLocal = r.pos(); s.fvx = r.speed(); s.fvy = r.speed(); s.fvz = r.speed(); }
         m.steps.push_back(s);
     }
     m.action = r.u8(); m.actionPhase = r.u8() / 255.0f;
@@ -602,6 +608,17 @@ bool NetProto_Test() {
         const bool rt = RoundTrip(a, b, &s);
         check(rt && b.steps.size() == 3 && b.steps[0].tick == 5000 && b.steps[2].tick == 4998 && b.steps[0].held == 0x1234ull && b.action == 2 && fabsf(b.actionPhase - 0.5f) < 3e-3f && b.steps[0].pressed == 0x10ull &&
               b.steps[2].held == 1ull && fabsf(b.steps[0].fx - 0.6f) < 1e-3f && fabsf(b.steps[0].fz + 0.8f) < 1e-3f && fabsf(b.steps[1].fy - 1.0f) < 1e-3f, "inputs (3 steps)");
+        samples.push_back(s);
+    }
+    { // (#1922) a creative flyer's pose rides on its step; the steps around it carry none
+        MsgInputs a, b; std::vector<uint8_t> s;
+        a.steps = { { 7001, 0ull, 0ull, 0.0f, 0.0f, 1.0f }, { 7000, 0ull, 0ull, 0.0f, 0.0f, 1.0f } };
+        a.steps[0].fly = true; a.steps[0].flyBody = 0xABCDull; a.steps[0].flyLocal = { 60012.3456, -123.4567, 0.0005 };
+        a.steps[0].fvx = 12.34f; a.steps[0].fvy = -0.5f; a.steps[0].fvz = 250.0f;
+        const bool rt = RoundTrip(a, b, &s);
+        const double dp = b.steps.empty() ? 1.0 : std::fmax(std::fabs(b.steps[0].flyLocal.x - 60012.3456), std::fabs(b.steps[0].flyLocal.y + 123.4567));
+        check(rt && b.steps.size() == 2 && b.steps[0].fly && !b.steps[1].fly && b.steps[0].flyBody == 0xABCDull && dp <= 0.0005 + 1e-9 &&
+              fabsf(b.steps[0].fvx - 12.34f) < 0.006f && fabsf(b.steps[0].fvz - 250.0f) < 0.006f && b.steps[1].flyBody == 0, "inputs (a flying step, 1 mm, 1 cm/s)");
         samples.push_back(s);
     }
     {

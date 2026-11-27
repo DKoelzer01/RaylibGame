@@ -3,7 +3,10 @@
 #include "survival.h"
 #include "world.h"
 #include "research.h"
+#include "teamstore.h" // (#1886)
+#include "teamquests.h" // (#1886)
 #include "tome.h" // (#1251)
+#include "blueprint.h" // (#1886) the team libraries
 
 #include <algorithm>
 #include <cctype>
@@ -65,7 +68,7 @@ bool Save_WriteAtomic(const std::string& path, const std::function<bool(FILE*)>&
     return true;
 }
 
-void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); Tome_Reset(); } // (#1030: research lives with the teams; #1251 the tome too)
+void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); Tome_Reset(); Blueprint_ResetTeams(); } // (#1030: research lives with the teams; #1251 the tome too; #1886 the blueprint libraries)
 const std::vector<TeamRecord>& Teams_All() { return teams; }
 const std::string& Teams_Owner() { return owner; }
 void Teams_SetOwner(const std::string& uuid) { owner = uuid; }
@@ -136,20 +139,8 @@ bool Teams_LoadLine(const char* tok, FILE* f, const std::string& localId) {
         }
         return true;
     }
-    if (strcmp(tok, "team_research") == 0) { // (#1030) the team's research state, its own lines up to team_research_end
-        int id = 0;
-        fscanf(f, " %d", &id);
-        char line[512];
-        if (!fgets(line, sizeof(line), f)) return true; // (the rest of the team_research line)
-        std::string text;
-        while (fgets(line, sizeof(line), f)) {
-            const char* s = line; while (*s == ' ' || *s == '\t') ++s;
-            if (strncmp(s, "team_research_end", 17) == 0) break;
-            text += line;
-        }
-        if (id > 0) Research_SetTeamText(id, text);
-        return true;
-    }
+    if (TeamStore_LoadLine(tok, f)) return true; // (#1886) the team's progression sections: team_research (#1030), ...
+    if (TeamQuests_LoadPlayerLine(tok, f)) return true; // (#1886) a player's own explored tiles
     if (strcmp(tok, "team_tome") == 0) { // (#1251) the team's tome pages, its own lines up to team_tome_end
         int id = 0;
         fscanf(f, " %d", &id);
@@ -178,9 +169,10 @@ void Teams_Save(FILE* f, const std::string& localId, const std::function<void(FI
         if (!t.owner.empty()) fprintf(f, "team_owner %d %s\n", t.id, t.owner.c_str()); // (#604)
         if (t.id == mine && writeLocalQuests) { fprintf(f, "team_quests %d\n", t.id); writeLocalQuests(f); fprintf(f, "team_quests_end\n"); }
         else if (!t.quests.empty()) { fprintf(f, "team_quests %d\n%s", t.id, t.quests.c_str()); fprintf(f, "team_quests_end\n"); }
-        if (const std::string r = Research_TeamText(t.id); !r.empty()) fprintf(f, "team_research %d\n%steam_research_end\n", t.id, r.c_str()); // (#1030)
+        TeamStore_SaveTeam(f, t.id); // (#1886) research (#1030) and the rest of the team's progression store
         if (const std::string r = Tome_TeamText(t.id); !r.empty()) fprintf(f, "team_tome %d\n%steam_tome_end\n", t.id, r.c_str()); // (#1251)
     }
+    TeamQuests_SavePlayers(f); // (#1886) each player's own explored tiles (a server's), carried on a team change
 }
 
 std::string PlayerId_FromName(const std::string& name) {

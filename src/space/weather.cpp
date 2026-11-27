@@ -17,10 +17,11 @@
 
 namespace {
     // The cloud field: a 3D noise over the sphere (features ~6 km) that drifts with the wind.
-    struct Fields { SimplexNoise cloud, humid, wind; bool ready = false; };
+    struct Fields { SimplexNoise cloud, humid, wind; bool ready = false; unsigned int seed = 0; };
     Fields fields;
     void Init(unsigned int seed) {
-        if (fields.ready) return;
+        if (fields.ready && fields.seed == seed) return; // (#1845) another world loaded in the session: its own weather
+        fields.seed = seed;
         std::mt19937 rng(seed ^ 0x5ea7u);
         std::uniform_real_distribution<float> unit(0.0f, 1.0f);
         auto make = [&](float f) { return SimplexNoise(f, 1.0f, 2.0f, 0.5f, unit(rng) * 10000.0f, unit(rng) * 10000.0f, unit(rng) * 10000.0f); };
@@ -262,3 +263,14 @@ void Weather_Draw3D(Scene& world) {
 void Weather_DrawHUD() {
     // (#1162) Nothing: lightning lights the sky and the open ground in the 3D scene instead of a white overlay.
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include <gtest/gtest.h>
+// (#1845) A second world loaded in the session gets its own weather, not the first one's; the same seed again, the same.
+TEST(Weather, FieldsFollowTheWorldSeed) {
+    auto cloudAt = [](unsigned int seed) { Init(seed); return fields.cloud.fractal(4, 1234.0f, 56000.0f, 789.0f); };
+    const float a = cloudAt(1), b = cloudAt(2), a2 = cloudAt(1);
+    EXPECT_NE(a, b);
+    EXPECT_EQ(a, a2);
+}
+#endif

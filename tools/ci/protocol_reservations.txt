@@ -17,3 +17,10 @@
 50 | ladder          | #1614 | the lathe and wiremill part types in NetPart
 51 | ladder          | #1429 | the multiblock part types (controller, casing, hatch) in NetPart
 52 | ladder          | #1429 | multiblock forming: NetPartOp Form and the formed flag
+53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
+
+# kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
+# kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
+# isn't listed. One line per version:
+#   save <number> | <branch or base> | <issue> | <what>
+save 13 | m84-integration | #1693 | one save version and the migration chain (the baseline)

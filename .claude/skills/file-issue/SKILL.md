@@ -6,7 +6,8 @@ argument-hint: "<keywords or title>"
 
 # File an issue
 
-1. **Search first:** `bash .claude/skills/file-issue/scripts/file_issue.sh search "<keywords>"` (open and closed).
+1. **Search first:** the deweyserver MCP `issue_search("<the problem in a sentence>")` (#1878: ranked, every issue,
+   one line each); `bash .claude/skills/file-issue/scripts/file_issue.sh search "<keywords>"` if the MCP is down.
    A match: use it; reopen it (`gh api -X PATCH repos/DKoelzer01/RaylibGame/issues/N -f state=open`) if the problem is back.
 2. **Write the body** to a file under build/: the problem or request (the user's words if they gave them), the cause if
    known, the planned fix. Mark guessed values "GUESS".
