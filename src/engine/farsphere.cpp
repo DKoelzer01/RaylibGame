@@ -1,6 +1,7 @@
 #include "farsphere.h"
 #include "gpumem.h"
 #include "jobsystem.h"
+#include "biomevariants.h"
 #include "trees.h"
 #include "voxel.h"
 #include "world.h"
@@ -55,6 +56,7 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
     // Biomes (Plan 5 B), with the terrain shader's climate tints (lighting.fs biomeTint).
     const Biome biome = f.biomeAt(up, e);
     const PlanetField::Climate cl = f.climateAt(up, e);
+    const int vid = BiomeTintOn() ? f.variantAt(up, e) : -1; // (#2032) for the tints
     auto smooth = [](float a, float b, float x) { const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
     const float red = smooth(16.0f, 21.0f, cl.temp) * smooth(0.2f, 0.27f, cl.moist) * (1.0f - smooth(0.36f, 0.44f, cl.moist));
     if (biome == Biome::Desert) return kSand;
@@ -68,13 +70,16 @@ Vector3 SurfaceAlbedo(const PlanetField& f, Vector3 up, float e, float slope, bo
         t = Mix(t, { 0.72f, 1.02f, 0.68f }, smooth(18.0f, 23.0f, cl.temp) * smooth(0.56f, 0.7f, cl.moist)); // lush
         t = Mix(t, { 0.92f, 0.92f, 0.95f }, smooth(9.0f, 3.0f, cl.temp));                                     // cold
         t = Mix(t, { 0.82f, 0.86f, 0.55f }, smooth(0.68f, 0.8f, cl.moist));                                   // swamp
+        // (#2032) The biome's own grass tint carries the main signal; the climate gradient keeps a share.
+        if (BiomeTintOn() && vid >= 0) t = Vector3Multiply(Mix({ 1, 1, 1 }, t, BiomeClimateWeight()), BiomeVariants().grassTint[vid]);
         c = Vector3Multiply(c, t);
         if (biome == Biome::Swamp) c = Mix(c, Vector3Scale(kDirt, 0.6f), 0.3f); // mud flats
     }
     if (foliage) {
         const float canopy = TreeCanopy(up, f.radius, e, foliageSeed, &f);
         const Vector3 dry = { 0.22f, 0.27f, 0.07f }, temperate = { 0.09f, 0.27f, 0.05f }, cold = { 0.05f, 0.17f, 0.08f };
-        const Vector3 crowns = Mix(Mix(temperate, dry, smooth(0.5f, 0.25f, cl.moist) * smooth(12.0f, 22.0f, cl.temp)), cold, smooth(8.0f, 0.0f, cl.temp));
+        Vector3 crowns = Mix(Mix(temperate, dry, smooth(0.5f, 0.25f, cl.moist) * smooth(12.0f, 22.0f, cl.temp)), cold, smooth(8.0f, 0.0f, cl.temp));
+        if (BiomeTintOn() && vid >= 0) crowns = Vector3Multiply(Mix(temperate, crowns, BiomeClimateWeight()), BiomeVariants().leafTint[vid]); // #2032, as the trees
         c = Mix(c, Vector3Scale(crowns, 0.5f), canopy);
     }
     return c;

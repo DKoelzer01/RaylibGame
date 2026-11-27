@@ -25,6 +25,7 @@ out float fragStone;
 out float fragHash;
 out float fragLatitude;
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
+flat out float fragBiome; // (#2032) the biome variant id (biometint.glsl), 0 if none
 out float fragHeight;
 out vec3 fragLocal;        // #1995: the mesh-space position and normal (before turning and scaling), for the bark and leaf textures
 out vec3 fragLocalN;
@@ -88,7 +89,9 @@ void main()
     fragHash = h;
     fragLatitude = abs(up.y);
     float cl = length(instUpHash.xyz);
-    fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    float clN = floor(cl) - 2.0, clId = floor(clN / 64.0); // (#2032) 64 x the variant id rides on the step
+    fragClimate = cl > 1.5 ? vec3((clN - 64.0 * clId) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    fragBiome = cl > 1.5 ? clId : 0.0;
     fragHeight = v.y;
     fragLocal = vertexPosition;
     fragLocalN = vertexNormal;
