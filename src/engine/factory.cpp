@@ -2931,7 +2931,16 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
     for (PlotSim& ps : plots) if (ps.body == bodyId && ps.mode == PlotSim::Mode::Summary && !ps.nearPlayer) { AdvanceSummary(ps, ps.lastAdvance, now); ps.lastAdvance = now; }
     int n = 0;
     for (const PlotSim& ps : plots) if (ps.body == bodyId) n += (int)ps.machines.size();
+    // (#1881) Loaded machines wait in pendingStates until their plot reaches the sim (the next Sync): a save before that
+    // wrote "machines 0" and lost every chest and machine on the body. Those go back out as they were read.
+    for (const auto& [key, rest] : pendingStates) if (std::get<0>(key) == bodyId) ++n;
     fprintf(f, "machines %d\n", n);
+    for (const auto& [key, rest] : pendingStates) {
+        if (std::get<0>(key) != bodyId) continue;
+        fprintf(f, "m %u %d", std::get<1>(key), std::get<2>(key));
+        for (const std::string& w : rest) fprintf(f, " %s", w.c_str());
+        fprintf(f, "\n");
+    }
     for (const PlotSim& ps : plots) {
         if (ps.body != bodyId) continue;
         const bool summary = ps.mode == PlotSim::Mode::Summary;

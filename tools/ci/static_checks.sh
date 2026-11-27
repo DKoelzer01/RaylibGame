@@ -236,6 +236,25 @@ else
         sum ""; sum "**kNetProtocol $proto** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
     fi
 fi
+# (#1881) kSaveVersion the same way: a "save <n> | ..." line in the same file, not "(unused)". Two branches that bumped the
+# save version independently would each write a different format under one number, and the migration chain would read
+# one of them wrongly.
+SAVEVER=src/engine/saveversion.h
+savever=$(grep -oE 'kSaveVersion = [0-9]+' "$SAVEVER" 2>/dev/null | head -1 | grep -oE '[0-9]+$')
+if [ -z "$savever" ]; then
+    echo "::error file=$SAVEVER::static check 6: kSaveVersion not found"; errors=$((errors + 1))
+elif [ -f "$RES" ]; then
+    line=$(tr -d '\r' < "$RES" | grep -E "^save[[:space:]]+${savever}[[:space:]]*\|" | head -1)
+    if [ -z "$line" ]; then
+        echo "::error file=$SAVEVER::kSaveVersion $savever is not reserved in $RES: add a line \"save $savever | <branch> | #<issue> | <what>\" (#1881)"
+        errors=$((errors + 1))
+    elif echo "$line" | grep -q "(unused)"; then
+        echo "::error file=$SAVEVER::kSaveVersion $savever is marked (unused) in $RES: reserve the next free number instead (#1881)"
+        errors=$((errors + 1))
+    else
+        sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+    fi
+fi
 
 # ---- 7. The integer simulation stays integer (#1015) ----
 # The files in tools/ci/sim_integer_files.txt use no float, double or libm before their unit-test block (comments ignored):

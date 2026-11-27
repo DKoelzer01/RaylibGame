@@ -66,6 +66,7 @@
 #include <unordered_map>
 
 extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmake, #501)
+#include "buildcommit.h"
 
 namespace {
     bool listening = false;
@@ -198,6 +199,17 @@ namespace {
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
     bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
+    // (#1922) A creative flyer's step: the pose its client flew to. Player::update's fly path moves world.camera (the
+    // player's own view), so on the server it flew the host's camera and the remote stayed put: the client's next state
+    // from us was far behind and pulled it back. Only creative players fly; it's their mode, so their pose is trusted.
+    bool FlyPoseTo(Scene& world, Player& p, const MsgInput& m) {
+        Player::NetState s;
+        if (!p.netState(world, s)) return false;
+        s.body = m.flyBody; s.local = m.flyLocal; s.vel = { m.fvx, m.fvy, m.fvz }; s.grounded = false;
+        if (!p.applyNetState(world, s)) return false; // (that body isn't here)
+        p.flyMode = true;
+        return true;
+    }
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -231,7 +243,15 @@ namespace {
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
                 r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
-                if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                if (!r.survival.dead && !(r.creative && m.fly && FlyPoseTo(world, r.player, m))) { // (#1922: a flyer's pose, above)
+                    // (#1922) Only the client flies: a step it didn't fly isn't flown here either (here fly mode flies
+                    // world.camera), and its F or double jump can't start flight here; the client's next step says it flies.
+                    const bool flyAllowed = r.player.flyAllowed;
+                    r.player.flyMode = false; r.player.flyAllowed = false;
+                    r.player.update(world, in, SimDt());
+                    r.player.flyAllowed = flyAllowed;
+                    if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false);
+                } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
@@ -1127,7 +1147,7 @@ namespace {
 
     void Send(uint32_t conn, const NetWriter& w) { Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), true); }
     template <class M> void SendMsg(uint32_t conn, const M& m) { NetWriter w; NetWrite(w, m); Send(conn, w); }
-    std::string BuildCommit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string BuildCommit() { return Build_CommitOf(kGameVersion); } // (#1906)
 
     template <class M> void SendToJoined(const M& m) { NetWriter w; NetWrite(w, m); for (const auto& [c, p] : peers) if (p.joined) Send(c, w); }
     // The roster (#750): everyone online, to everyone joined, on each join and leave (reliable; the whole list each time:
@@ -1523,7 +1543,9 @@ namespace {
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
-        if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
+        if (!h.build.empty() && !Build_SameCommit(Build_CommitOf(h.build), BuildCommit())) { // (#1906) e5f5f13 == e5f5f132
+            Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return;
+        }
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
@@ -2723,6 +2745,19 @@ bool Host_SetCreative(const std::string& name, bool on) {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
+// (#1906) git abbreviates the same commit to 7 digits in a shallow clone and 8+ in a big one: the join compares by prefix.
+TEST(HostBuild, TheSameCommitAbbreviatedToDifferentLengthsMatches) {
+    EXPECT_EQ(Build_CommitOf("playtest-20261124b e5f5f13"), "e5f5f13");
+    EXPECT_EQ(Build_CommitOf("staging e5f5f132 +local changes"), "e5f5f132") << "not \"changes\"";
+    EXPECT_EQ(Build_CommitOf("detached unknown"), "unknown");
+    EXPECT_TRUE(Build_SameCommit("e5f5f13", "e5f5f132"));
+    EXPECT_TRUE(Build_SameCommit("E5F5F132", "e5f5f13"));
+    EXPECT_FALSE(Build_SameCommit("e5f5f13", "e5f5f142")) << "a different commit";
+    EXPECT_FALSE(Build_SameCommit("e5f5f1", "e5f5f132")) << "6 digits: too short to tell commits apart";
+    EXPECT_FALSE(Build_SameCommit("unknown", "e5f5f13"));
+    EXPECT_TRUE(Build_SameCommit("unknown", "unknown")) << "(unchanged: equal strings match)";
+}
+
 TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
     EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";
