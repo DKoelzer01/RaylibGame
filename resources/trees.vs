@@ -26,6 +26,8 @@ out float fragHash;
 out float fragLatitude;
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
 out float fragHeight;
+out vec3 fragLocal;        // #1995: the mesh-space position and normal (before turning and scaling), for the bark and leaf textures
+out vec3 fragLocalN;
 out float fragFar;         // #745: 0 near .. 1 far (0 with the switch off)
 out float fragAo;          // (#933 layer 2) baked ambient occlusion (trees.cpp BakeFoliageAo): 1 open
 
@@ -88,6 +90,8 @@ void main()
     float cl = length(instUpHash.xyz);
     fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
     fragHeight = v.y;
+    fragLocal = vertexPosition;
+    fragLocalN = vertexNormal;
     fragFar = far;
     gl_Position = matViewProj * vec4(fragPosition, 1.0);
 }

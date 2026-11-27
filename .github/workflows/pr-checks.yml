@@ -32,6 +32,9 @@ jobs:
     name: Static checks
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # check 7 (#2009)
     outputs:
       code: ${{ steps.changes.outputs.code }}
     steps:
@@ -72,6 +75,8 @@ jobs:
       - name: Static checks (NetMsg ids, kNetProtocol, kErosionBakeVersion, gh project)
         env:
           BASE: ${{ steps.base.outputs.base }}
+          GH_TOKEN: ${{ github.token }} # check 7 reads open PRs' reservation lines (#2009)
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: bash tools/ci/static_checks.sh "$BASE"
 
   windows:

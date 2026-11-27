@@ -83,6 +83,32 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             float* mn = key == "elev" ? &d.elevMin : key == "temp" ? &d.tempMin : &d.moistMin;
             float* mx = key == "elev" ? &d.elevMax : key == "temp" ? &d.tempMax : &d.moistMax;
             if (!extra.empty() || !Bound(lo, -1e9f, *mn) || !Bound(hi, 1e9f, *mx) || *mn > *mx) return fail(lineNo, key + " takes '<min> <max>' (numbers or -)");
+        } else if (key == "flora") {
+            std::string v[4], extra;
+            ls >> v[0] >> v[1] >> v[2] >> v[3] >> extra;
+            float* dst[4] = { &d.trees, &d.bushes, &d.stones, &d.size };
+            for (int i = 0; i < 4; ++i)
+                if (!Bound(v[i], 1.0f, *dst[i]) || *dst[i] < 0.0f) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (numbers >= 0 or - for 1)");
+            if (!extra.empty() || !(d.size > 0.0f)) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (size > 0)");
+        } else if (key == "rubber") { // (#2012)
+            std::string extra;
+            if (!(ls >> d.rubber) || (ls >> extra) || d.rubber < 0 || d.rubber > 100) return fail(lineNo, "rubber takes one whole percent 0..100");
+        } else if (key == "cover") {
+            std::string v, extra;
+            ls >> v >> extra;
+            if (!extra.empty() || v == "-" || !Bound(v, 0.0f, d.cover) || d.cover < 0.0f || d.cover > 1.0f) return fail(lineNo, "cover takes one number 0..1");
+        } else if (key == "species") {
+            static const char* kNames[BiomeVariantDef::kSpecies] = { "oak", "birch", "maple", "pine", "spruce" };
+            std::string sp, w;
+            int n = 0;
+            while (ls >> sp) {
+                int k = -1;
+                for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) if (sp == kNames[i]) k = i;
+                if (k < 0) return fail(lineNo, "unknown species '" + sp + "' (oak birch maple pine spruce)");
+                if (!(ls >> w) || !Bound(w, 0.0f, d.species[k]) || w == "-" || d.species[k] < 0.0f) return fail(lineNo, "species takes '<name> <weight>' pairs");
+                ++n;
+            }
+            if (n == 0 || !d.hasSpecies()) return fail(lineNo, "species needs at least one '<name> <weight>' with weight > 0");
         } else {
             return fail(lineNo, "unknown key '" + key + "'");
         }
@@ -126,6 +152,14 @@ const char* BiomeVariantName(int id) {
     return id >= 0 && id < (int)t.defs.size() ? t.defs[id].name.c_str() : "";
 }
 
+bool BiomeVariants_RubberRoll(int percent, uint64_t plantId) {
+    if (percent <= 0) return false;
+    if (percent >= 100) return true;
+    uint64_t h = plantId * 0x9E3779B97F4A7C15ull; // a mix of the id: plant ids are spatial hashes, neighbours alike in their low bits
+    h ^= h >> 31;
+    return (int)(h % 100) < percent;
+}
+
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
 namespace {
@@ -159,6 +193,25 @@ TEST(BiomeVariants, ParsesBlocksBandsAndGates) {
     EXPECT_FALSE(t.defs[mixed].gated());
 }
 
+// Flora keys (#1978): multipliers default to 1, "-" keeps 1, species by name; bad values are errors.
+TEST(BiomeVariants, ParsesFlora) {
+    BiomeVariantTable t;
+    std::string err;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1.5 - 0.5 1.2\n  cover 0.3\n  species birch 3 pine 1\n", t, &err)) << err;
+    const BiomeVariantDef& d = t.defs[t.find("forest.x")];
+    EXPECT_FLOAT_EQ(d.trees, 1.5f); EXPECT_FLOAT_EQ(d.bushes, 1.0f); EXPECT_FLOAT_EQ(d.stones, 0.5f); EXPECT_FLOAT_EQ(d.size, 1.2f);
+    EXPECT_FLOAT_EQ(d.cover, 0.3f);
+    EXPECT_FLOAT_EQ(d.species[1], 3.0f); EXPECT_FLOAT_EQ(d.species[3], 1.0f); EXPECT_FLOAT_EQ(d.species[0], 0.0f);
+    const BiomeVariantDef& base = t.defs[t.base(Biome::Forest)];
+    EXPECT_FLOAT_EQ(base.trees, 1.0f); EXPECT_LT(base.cover, 0.0f); EXPECT_FALSE(base.hasSpecies());
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species palm 2\n", t, &err));
+    EXPECT_NE(err.find("palm"), std::string::npos) << err;
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species oak\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  cover 2\n", t, &err));
+}
+
 TEST(BiomeVariants, RefusesBadFiles) {
     BiomeVariantTable t;
     std::string err;
@@ -185,5 +238,33 @@ TEST(BiomeVariants, ShippedFileLoads) {
     ASSERT_TRUE(BiomeVariants_Parse(ss.str(), t, &err)) << err;
     EXPECT_EQ((int)t.defs.size(), 35);
     EXPECT_EQ((int)t.byType[(int)Biome::Ocean].size(), 1);
+    for (const char* k : { "forest.old_growth", "swamp.mangrove", "savanna.acacia" }) { // (#2012) the user's ruling on #1964
+        ASSERT_GE(t.find(k), 0) << k;
+        EXPECT_EQ(t.defs[t.find(k)].rubber, 33) << k;
+    }
+    EXPECT_EQ(t.defs[t.find("forest.mixed")].rubber, 0);
+}
+
+// (#2012) The rubber key: a whole percent 0..100, default 0; the roll gives about that share of trees, the same tree
+// always the same answer.
+TEST(BiomeVariants, RubberPercentAndRoll) {
+    BiomeVariantTable t;
+    std::string err;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  rubber 33\n", t, &err)) << err;
+    EXPECT_EQ(t.defs[t.find("forest.x")].rubber, 33);
+    EXPECT_EQ(t.defs[t.base(Biome::Forest)].rubber, 0);
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  rubber 120\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  rubber 33 5\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  rubber lots\n", t, &err));
+    int yes = 0;
+    for (uint64_t id = 0; id < 3000; ++id) {
+        const uint64_t plant = id * 4096 + 7; // spaced ids, as spatial hashes are
+        const bool r = BiomeVariants_RubberRoll(33, plant);
+        EXPECT_EQ(r, BiomeVariants_RubberRoll(33, plant));
+        yes += r;
+    }
+    EXPECT_NEAR(yes, 990, 90) << "about a third of 3000 trees";
+    EXPECT_FALSE(BiomeVariants_RubberRoll(0, 5));
+    EXPECT_TRUE(BiomeVariants_RubberRoll(100, 5));
 }
 #endif
