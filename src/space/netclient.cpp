@@ -558,7 +558,7 @@ void NetClient_Step(NetClient& c, Scene& world, Player& self, const PlayerInput&
     // (#1922) Flying in creative: the server can't step our fly camera, so it takes our pose (it checks creative itself).
     // (Not netState(): the fly path returns before update() caches it, so that would be the state from before the flight.)
     if (self.flyMode && terrainTool.creative && body) {
-        const Vector3 rel = Vector3Subtract(self.velocity, body->surfaceVelocity((self.position - world.renderOrigin).toFloat())); // as netState() has it airborne
+        const Vector3 rel = self.groundVelocity(world); // (against the ground, as netState() has it airborne)
         step.fly = true; step.flyBody = body->netId; step.flyLocal = step.local;
         step.flyVel = Vector3RotateByQuaternion(rel, QuaternionInvert(body->rotationQuat()));
     }
