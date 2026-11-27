@@ -128,7 +128,9 @@ static void BuildFly(ScenarioDef& s) {
         const bool have = b && Host_PlayerLocal(c.world, S.cl.welcome.session, sb, sl);
         c.check("the server has the flyer", have && sb == b->netId);
         if (!have) return true;
-        const DVec3 cl = b->toLocalD(S.p->position);
+        // The client's last stepped position, body-local (not its world position now: no step since, and the planet's spin
+        // has carried the ground ~1.5 m a frame under an unstepped flyer).
+        const DVec3 cl = S.cl.history.empty() ? b->toLocalD(S.p->position) : S.cl.history.back().local;
         const double off = (sl - cl).length() * b->scale, moved = (sl - S.start).length() * b->scale;
         c.note(TextFormat("server vs client %.3f m; the server's flyer moved %.1f m from the flight's start; %d corrections in the flight, "
                           "worst prediction error %.3f m; %d own states", off, moved, S.cl.corrections - S.correctionsAtStart, S.worstError, S.cl.states));
