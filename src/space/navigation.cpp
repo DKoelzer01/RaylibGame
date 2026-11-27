@@ -21,6 +21,8 @@
 #include <raymath.h>
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <set>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -724,7 +726,10 @@ void Nav_DrawMap(Scene& world) {
 }
 
 void Nav_Save(FILE* f) {
-    for (const auto& kv : explored) {
+    // (#1881) bodies and tiles in order: both sets are unordered, so a loaded save wrote its lines in another order
+    std::map<std::string, std::set<uint64_t>> sorted;
+    for (const auto& [body, tiles] : explored) sorted[body].insert(tiles.begin(), tiles.end());
+    for (const auto& kv : sorted) {
         if (kv.second.empty()) continue;
         fprintf(f, "nav_explored %s %zu", kv.first.c_str(), kv.second.size());
         for (uint64_t k : kv.second) fprintf(f, " %llu", (unsigned long long)k);
