@@ -23,3 +23,4 @@ creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | the sim outrun
 fluid/flow -> FAIL                      | #2044 | a check fails intermittently on the runner (8/20 recent runs pass)
 saves/roundtrip -> FAIL                 | #2045 | 2 of 7 checks fail intermittently (18/20 recent runs pass)
 space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; drop this line when the open fix PR lands
+frames/long-fall(-pose)? -> FAIL        | #2038 | the 100 m drops barely fall in ~15% of runs (17/20), on several branches (staging too)
