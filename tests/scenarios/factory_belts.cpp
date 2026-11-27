@@ -77,8 +77,9 @@ SCENARIO("factory/belts") {
         if (b < 12 && c.t < 35.0) return false;
         c.metric("12 stone across after", c.t, "s", false);
         c.eq("chest B holds all 12 stone", b, 12);
-        // 12 items at 7.5 a second, plus the 2.4-cell belt's 1.3 s ride: about 3 s
-        c.lt("at the basic belt's 7.5 items/s, a few seconds (s)", c.t, 6.0);
+        // Loading: one item every 3 ticks (a 16/64 gap at 6/64 a tick), 12 in 1.8 s; then the 4.25-cell ride (272/64 at 6/64 a
+        // tick), 2.3 s: about 4 s
+        c.lt("a few seconds at the basic belt's speed (s)", c.t, 6.0);
         c.gt("and no faster than the belt allows (s)", c.t, 2.0);
         return true;
     });
