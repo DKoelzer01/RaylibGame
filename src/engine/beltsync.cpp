@@ -77,6 +77,47 @@ bool BeltReplica::advance(float dt) {
 
 bool BeltReplica::playAll() { return play((int)queue_.size()); }
 
+void BeltClient::learn(const Names& names) { for (const auto& [id, name] : names) names_[id] = name; }
+
+void BeltClient::onSnapshot(Key k, const BeltSyncSnapshot& s, const Names& names, double now) {
+    learn(names);
+    Entry& e = plots_[k];
+    e.rep.reset(s); e.heard = now; e.orphan = false;
+    ++snapshots;
+}
+
+void BeltClient::onSteps(Key k, uint32_t epoch, int64_t first, const std::vector<BeltSyncStep>& steps, uint32_t checksum, const Names& names, double now) {
+    learn(names);
+    Entry& e = plots_[k];
+    e.heard = now;
+    if (!e.rep.valid()) { e.orphan = true; return; } // (forgotten here while the server still sends: ask for a snapshot)
+    e.rep.push(epoch, first, steps, checksum);
+    ++stepMsgs;
+}
+
+std::vector<BeltClient::Key> BeltClient::advance(float dt, double now) {
+    std::vector<Key> ask;
+    for (auto it = plots_.begin(); it != plots_.end();) {
+        Entry& e = it->second;
+        if (now - e.heard > kForgetAfter) { it = plots_.erase(it); continue; }
+        const bool ok = e.rep.valid() ? e.rep.advance(dt) : !e.orphan;
+        if (!ok && now - e.asked >= kResyncEvery) { e.asked = now; ask.push_back(it->first); ++resyncs; }
+        ++it;
+    }
+    return ask;
+}
+
+const BeltReplica* BeltClient::find(Key k) const {
+    const auto it = plots_.find(k);
+    return it != plots_.end() && it->second.rep.valid() ? &it->second.rep : nullptr;
+}
+
+const std::string& BeltClient::itemName(int id) const {
+    static const std::string none;
+    const auto it = names_.find(id);
+    return it != names_.end() ? it->second : none;
+}
+
 void BeltSyncRing::add(uint32_t ep, int64_t step, BeltSyncStep s, uint32_t sum) {
     if (ep != epoch || step != first + (int64_t)steps.size()) { epoch = ep; first = step; steps.clear(); sums.clear(); }
     steps.push_back(std::move(s));
@@ -204,6 +245,41 @@ TEST(BeltSync, PlaysAtTheTickRateBehindTheNewest) {
     for (int k = 0; k < 40; ++k) next();
     EXPECT_TRUE(rep.advance(0.05f));
     EXPECT_EQ(rep.received() - rep.step(), BeltReplica::kPlayout) << "a burst: caught up to the playout";
+}
+
+// The client registry: replays a plot from its messages, asks for a snapshot once a second while drifted or orphaned, and
+// forgets a plot it hasn't heard of for kForgetAfter.
+TEST(BeltSync, TheClientRegistryReplaysAsksAndForgets) {
+    Server srv(11);
+    BeltClient bc;
+    const BeltClient::Key k{ 77, 3 };
+    bc.onSnapshot(k, srv.snapshot(), { { 1, "stone" } }, 0.0);
+    double now = 0.0;
+    for (int t = 0; t < 100; ++t) {
+        const BeltSyncStep e = srv.tick();
+        bc.onSteps(k, 1, srv.step, { e }, Belt_PlotChecksum(srv.lines), {}, now);
+        now += 0.05;
+        EXPECT_TRUE(bc.advance(0.05f, now).empty()) << "step " << srv.step;
+    }
+    for (int t = 0; t < 10; ++t) { now += 0.05; bc.advance(0.05f, now); } // play out the last steps in hand
+    ASSERT_NE(bc.find(k), nullptr);
+    EXPECT_EQ(bc.find(k)->step(), srv.step);
+    EXPECT_EQ(Belt_PlotChecksum(bc.find(k)->lines()), Belt_PlotChecksum(srv.lines));
+    EXPECT_EQ(bc.itemName(1), "stone");
+    EXPECT_EQ(bc.itemName(2), "");
+    // a drift: asked at once, then not again within a second
+    const BeltSyncStep e = srv.tick();
+    bc.onSteps(k, 1, srv.step, { e }, Belt_PlotChecksum(srv.lines) ^ 1u, {}, now);
+    int asks = 0;
+    for (int t = 0; t < 30; ++t) { now += 0.05; asks += (int)bc.advance(0.05f, now).size(); bc.onSteps(k, 1, 1, {}, 0, {}, now); }
+    EXPECT_EQ(asks, 2) << "1.5 s drifted: at 0 s and 1 s";
+    // steps for a plot it has no snapshot of: ask
+    bc.onSteps({ 77, 4 }, 1, 5, { e }, 0, {}, now);
+    const auto ask = bc.advance(0.05f, now);
+    EXPECT_EQ(std::count(ask.begin(), ask.end(), BeltClient::Key{ 77, 4 }), 1);
+    // silence: forgotten
+    bc.advance(0.05f, now + BeltClient::kForgetAfter + 1.0);
+    EXPECT_EQ(bc.size(), 0u);
 }
 
 TEST(BeltSync, TheRingGivesTheStepsSinceAClientsLast) {

@@ -493,6 +493,7 @@ namespace {
     // (#854) crafts waiting for what they pulled from chests to arrive (Factory::Take delivers next tick)
     struct PendingCraft { uint32_t session = 0; int recipe = 0, count = 0; double until = 0.0; };
     std::vector<PendingCraft> pendingCrafts;
+    void StepBeltSync(); // (#1735, below)
     void StepMachines(Scene& world) {
         // The factory ticks the plots near every player at full rate and publishes what they see.
         std::vector<Vector3> near;
@@ -579,6 +580,74 @@ namespace {
                 }
             }
         }
+        StepBeltSync();
+    }
+    // ---- (#1735 PR 4) Belts replayed on clients: each player's near plots get a snapshot, then every belt step's events ----
+    // (beltsync.h). 10 times a second (two belt steps a message); a snapshot when the plot is new to the player, its layout
+    // changed (a new epoch), the player fell out of the ring, or its client asked (BeltResync: its replica drifted).
+    struct BeltSent { uint64_t netId = 0; uint32_t epoch = 0; int64_t step = -1; size_t lines = 0; bool snap = true; };
+    std::map<std::pair<uint32_t, std::pair<uint64_t, uint32_t>>, BeltSent> beltSent; // (session, (body, plot))
+    std::map<uint32_t, std::set<int>> beltNamesSent;                                  // session -> item ids it was named
+    long long lastBeltSync = 0;
+    int beltSnapshots = 0, beltResyncs = 0;
+    std::vector<std::pair<int32_t, std::string>> BeltNames(uint32_t session, const std::vector<BeltLine>* lines, const std::vector<BeltSyncStep>* steps) {
+        std::set<int>& known = beltNamesSent[session];
+        std::vector<std::pair<int32_t, std::string>> out;
+        auto name = [&](int id) { if (known.insert(id).second) out.push_back({ id, Factory::ItemName(id) }); };
+        if (lines) for (const BeltLine& l : *lines) for (const BeltItem& it : l.items) name(it.item);
+        if (steps) for (const BeltSyncStep& s : *steps) for (const auto& ld : s.loads) name(ld.second);
+        return out;
+    }
+    void StepBeltSync() {
+        if (SimTick() - lastBeltSync < 6) return;
+        lastBeltSync = SimTick();
+        std::vector<std::pair<uint64_t, uint32_t>> watch;
+        std::map<std::pair<uint32_t, std::pair<uint64_t, uint32_t>>, BeltSent> next;
+        for (const auto& [conn, p] : peers) {
+            if (!p.joined) continue;
+            auto rit = remotes.find(p.session);
+            if (rit == remotes.end() || !rit->second.player.nearest || !rit->second.player.nearest->plots) continue;
+            Planetoid* b = rit->second.player.nearest;
+            const Vector3 me = b->toLocalD(rit->second.player.position).toFloat();
+            for (const auto& pl : b->plots->plots) {
+                const Vector3 o = { (float)pl->origin.x, (float)pl->origin.y, (float)pl->origin.z };
+                if (Vector3Distance(o, me) > kMachineRange) continue;
+                const std::pair<uint64_t, uint32_t> key{ b->id, pl->id };
+                watch.push_back(key);
+                const auto k = std::make_pair(p.session, key);
+                auto old = beltSent.find(k);
+                BeltSent st = old != beltSent.end() ? old->second : BeltSent{};
+                st.netId = b->netId;
+                if (!st.snap) {
+                    MsgBeltSteps m; m.body = b->netId; m.plot = pl->id; m.epoch = st.epoch;
+                    if (Factory::BeltSteps(b->id, pl->id, st.epoch, st.step, 256, m.steps, m.first, m.checksum)) {
+                        if (!m.steps.empty()) {
+                            st.step = m.first + (int64_t)m.steps.size() - 1;
+                            if (st.lines > 0) { m.names = BeltNames(p.session, nullptr, &m.steps); SendMsg(conn, m); } // (no belts: nothing to replay)
+                        }
+                    } else st.snap = true; // a new layout, or the player fell out of the ring
+                }
+                if (st.snap) {
+                    MsgBeltSnapshot m; m.body = b->netId; m.plot = pl->id;
+                    if (Factory::BeltSnapshot(b->id, pl->id, m.snap)) { // (else asked for: ready next cycle)
+                        st.snap = false; st.epoch = m.snap.epoch; st.step = m.snap.step; st.lines = m.snap.lines.size();
+                        m.names = BeltNames(p.session, &m.snap.lines, nullptr);
+                        SendMsg(conn, m);
+                        ++beltSnapshots;
+                    }
+                }
+                next[k] = st;
+            }
+        }
+        beltSent.swap(next); // (players who left or walked away: forgotten; they get a snapshot when they come back)
+        for (auto it = beltNamesSent.begin(); it != beltNamesSent.end();) it = remotes.count(it->first) ? std::next(it) : beltNamesSent.erase(it);
+        std::sort(watch.begin(), watch.end());
+        watch.erase(std::unique(watch.begin(), watch.end()), watch.end());
+        Factory::WatchBelts(watch);
+    }
+    void OnBeltResync(uint32_t session, const MsgBeltResync& q) {
+        ++beltResyncs;
+        for (auto& [k, st] : beltSent) if (k.first == session && st.netId == q.body && k.second.second == q.plot) st.snap = true;
     }
     // (#1684) The part changes of a dungeon edit, as the clients apply them (in order: the removes and places keep every plot's indices equal).
     void SendPartEdits(uint64_t bodyNet, uint32_t plotId, const std::vector<PartEdit>& edits) {
@@ -2185,6 +2254,12 @@ namespace {
                 MsgMachineAction a;
                 if (!it->second.joined || !NetRead(r, a)) return;
                 OnMachineAction(m.conn, it->second.session, a);
+                return;
+            }
+            case NetMsg::BeltResync: { // (#1735) the client's replica of a plot's belts drifted: a snapshot next cycle
+                MsgBeltResync q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                OnBeltResync(it->second.session, q);
                 return;
             }
             case NetMsg::PlantAction: { // (#335) fell a plant, sow or harvest farmland

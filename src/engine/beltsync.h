@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <string>
+#include <utility>
 #include <vector>
 
 struct BeltSyncStep {
@@ -69,6 +71,32 @@ private:
     std::vector<BeltLine> lines_;
     std::deque<BeltSyncStep> queue_;
     std::map<int64_t, uint32_t> sums_;           // step -> the server's checksum after it
+};
+
+// A client's belts: a replica per plot the server sends (keyed by the server's body net id and the plot id), and the item
+// names (the server's ids). The net layer feeds it; drawing (#2053) reads replicas and names.
+class BeltClient {
+public:
+    typedef std::pair<uint64_t, uint32_t> Key;
+    typedef std::vector<std::pair<int32_t, std::string>> Names;
+    static constexpr double kResyncEvery = 1.0;   // s: at most one snapshot request a second per plot
+    static constexpr double kForgetAfter = 5.0;   // s without a message: the plot is out of range (the server forgot it too)
+
+    void onSnapshot(Key k, const BeltSyncSnapshot& s, const Names& names, double now);
+    void onSteps(Key k, uint32_t epoch, int64_t first, const std::vector<BeltSyncStep>& steps, uint32_t checksum, const Names& names, double now);
+    // Plays every replica dt on; the plots to ask a snapshot for (drifted, or steps for one it has no snapshot of).
+    std::vector<Key> advance(float dt, double now);
+    const BeltReplica* find(Key k) const;
+    const std::string& itemName(int id) const;    // "" when not told
+    size_t size() const { return plots_.size(); }
+    void clear() { plots_.clear(); names_.clear(); }
+    int snapshots = 0, stepMsgs = 0, resyncs = 0;
+
+private:
+    struct Entry { BeltReplica rep; double heard = 0.0, asked = -1e9; bool orphan = false; };
+    void learn(const Names& names);
+    std::map<Key, Entry> plots_;
+    std::map<int, std::string> names_;
 };
 
 // Server side: one plot's recent steps (a ring the net layer reads from).
