@@ -1465,7 +1465,7 @@ TEST(DetMath, CloseToLibmAndTheSameBitsEverywhere) {
         const float x = (float)i * 1.37f + 0.11f;
         const float p = det::Powf(x * 1000.0f, 0.45f), q = det::Powf(x * 1000.0f, 0.25f), e = det::Expf(-x * 0.01f), l = det::Logf(1.0f + x * 37.0f);
         const float a = det::Asinf(std::fmod(x * 0.001f, 2.0f) - 1.0f);
-        worst[0] = std::max(worst[0], rel(p, std::pow((double)(x * 1000.0f), 0.45)));
+        worst[0] = std::max(worst[0], rel(p, std::pow((double)(x * 1000.0f), (double)0.45f)));
         worst[1] = std::max(worst[1], rel(e, std::exp(-(double)(x * 0.01f))));
         worst[2] = std::max(worst[2], rel(l, std::log(1.0 + (double)(x * 37.0f))));
         worst[3] = std::max(worst[3], std::fabs(a - std::asin((double)(std::fmod(x * 0.001f, 2.0f) - 1.0f))));
@@ -1477,6 +1477,6 @@ TEST(DetMath, CloseToLibmAndTheSameBitsEverywhere) {
     EXPECT_LT(worst[3], 2.4e-7) << "Asinf"; // absolute, |asin| <= pi/2
     EXPECT_FLOAT_EQ(det::Powf(0.0f, 0.45f), 0.0f);
     EXPECT_FLOAT_EQ(det::Asinf(1.5f), 1.57079633f); // clamped
-    EXPECT_EQ(h, 0x0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+    EXPECT_EQ(h, 0x6fedff241edf6da0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
 }
 #endif
