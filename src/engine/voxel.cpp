@@ -2523,8 +2523,9 @@ int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) co
 
 int PlanetField::variantAt(Vector3 dir, float elev) const { return variantAt(dir, elev, dir); }
 
-int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const {
-    Climate c = climateAt(dir, elev);
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const { return variantAt(dir, elev, uDir, climateAt(dir, elev)); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir, Climate c) const {
     const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
     c.temp += 1.2f * j;
     c.moist += 0.035f * j;
@@ -3845,7 +3846,7 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                         const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
                         const Vector3 u2 = Vector3CrossProduct(u1, up);
                         const Vector3 uDir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
-                        variant = planetLife->variantAt(up, d - planetLife->radius, uDir);
+                        variant = planetLife->variantAt(up, d - planetLife->radius, uDir, cl); // cl: the same climateAt (#2032)
                     }
                     out.tangents[v * 4 + 1] = BiomeClimateCode(cl.temp, cl.moist, variant); // from 2 (#254)
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
