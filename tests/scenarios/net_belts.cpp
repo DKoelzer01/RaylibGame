@@ -57,7 +57,7 @@ int ItemsOn(const BeltReplica& r) { int n = 0; for (const BeltLine& l : r.lines(
 }
 
 SCENARIO("net/belts") {
-    s.tags = { "multiplayer", "net", "factory", "belts" };
+    s.tags = { "multiplayer", "net" };
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-belts.sav", "--port", std::to_string(kPort), "--day" };
     s.timeout = 120.0;
