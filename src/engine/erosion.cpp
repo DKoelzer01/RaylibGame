@@ -1236,7 +1236,9 @@ void PlanetErosion::routeFinal(int threads) {
                 if (breach && h[o] < hf[c] - 0.05f && isB(o) && (keepPond.empty() || !keepPond[o])) { // (a hollow, not the jitter across a flat; not a pond, #2039)
                     float need = 0.0f, t = h[o];
                     int p = c, steps = 0;
-                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, h[p] - t);
+                    // need counts the cut earlier breaches already made (#2069): measured on the lowered heights alone,
+                    // a smooth basin passed step by step and its rim was cut to the basin's full depth.
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, breachCut[p] + h[p] - t);
                     if (need <= kBreach && steps < 400) {
                         t = h[o];
                         for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
