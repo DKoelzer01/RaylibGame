@@ -44,9 +44,16 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
             p.at = BesidePlayer(*p.body);
             p.vol0 = Fluid::GetStats().volume;
             p.l0 = Fluid::GetLedger();
-            p.tick0 = Fluid::GetStats().ticks;
+            p.tick0 = 0;
             p.queued = Fluid::Pour(*p.body, p.at, 1.0f);
             return false;
+        }
+        // The clock starts once the pour is in the ledger: read before it, the tick count can be stale (no water was
+        // active on Terra yet) and jumped 10 s at once, judging a pour that never ran (#1942).
+        if (p.tick0 == 0) {
+            c.waitingFor("the pour in the simulation");
+            if (Fluid::GetLedger().poured - p.l0.poured < 0.5) return false;
+            p.tick0 = Fluid::GetStats().ticks;
         }
         const double t = (double)(Fluid::GetStats().ticks - p.tick0) * 0.025;
         if (p.near1s < 0.0f && t >= 1.0) p.near1s = Fluid::WaterAt(*p.body, p.at, 1.5f) + Fluid::WaterAt(*p.body, Vector3Subtract(p.at, Vector3Scale(Vector3Normalize(p.at), 1.0f)), 1.5f);
