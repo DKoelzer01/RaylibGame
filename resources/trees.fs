@@ -17,6 +17,7 @@ in float fragFar;      // #745: 0 near .. 1 far (always 0 with RAYLIBGAME_FAR_FO
 in float fragAo;       // (#933 layer 2) baked AO: scales the ambient only
 
 uniform vec3 viewPos;
+uniform float treeVariationOff; // #1979 (trees.vs)
 uniform vec3 sunDir;
 uniform vec3 ambient;
 uniform vec4 sunOccluder;
@@ -27,11 +28,45 @@ uniform float fadeEnd;
 uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALPHA_TO_COVERAGE on)
 uniform vec3 barkTint;   // per species (trees.h WoodSpeciesInfo); 1 for bushes and stones
 uniform vec3 leafTint;
+// #1995: low-poly textures, blocky like the meshes. foliageKind: 0-4 a tree species (WoodSpecies: oak, birch, maple,
+// pine, spruce), 5 a bush, 6 stones (none). foliageTexOff: 1 = plain (RAYLIBGAME_FOLIAGE_TEX=0, A/B).
+uniform float foliageKind;
+uniform float foliageTexOff;
+in vec3 fragLocal;
+in vec3 fragLocalN;
+float foliageHash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+vec3 barkTexture(vec3 bark)
+{
+    // On each prism face: its horizontal axis (u) and height (y), in mesh metres.
+    vec3 n = normalize(fragLocalN);
+    vec3 side = cross(vec3(0.0, 1.0, 0.0), n);
+    side = dot(side, side) > 1e-4 ? normalize(side) : vec3(1.0, 0.0, 0.0); // the top and bottom caps
+    float u = dot(fragLocal, side), y = fragLocal.y;
+    int k = int(foliageKind + 0.5);
+    if (k == 1) { // birch: white with dark horizontal dashes
+        float row = floor(y * 5.0);
+        float cell = floor(u * 3.0 + foliageHash(vec3(row, 0.0, 1.0)) * 3.0);
+        return mix(bark, bark * 0.22, step(0.7, foliageHash(vec3(row, cell, 2.0))));
+    }
+    if (k == 3 || k == 4) { // conifers: staggered blocky plates
+        float col = floor(u * 4.0);
+        vec2 c = vec2(col, floor(y * 2.5 + col * 0.5));
+        return bark * (0.78 + 0.38 * foliageHash(vec3(c, 3.0)));
+    }
+    // oak, maple and bush stems: vertical furrows, broken along their length
+    float col = floor(u * 7.0);
+    float seg = floor(y * 1.6 + foliageHash(vec3(col, 0.0, 4.0)) * 2.0);
+    float f = foliageHash(vec3(col, seg, 5.0));
+    return bark * (f < 0.35 ? 0.6 : 0.9 + 0.25 * f);
+}
+vec3 leafTexture(vec3 c) { return c * (0.8 + 0.34 * foliageHash(floor(fragLocal * 5.0))); } // bushes: leafy pixel blocks (20 cm)
 
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
 #include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
+#include "biometint.glsl"
+flat in float fragBiome; // (#2032) the biome variant id
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
 // jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
@@ -66,10 +101,16 @@ void main()
     float lat = fragLatitude;
     vec3 dry = vec3(0.22, 0.27, 0.07), temperate = vec3(0.09, 0.27, 0.05), cold = vec3(0.05, 0.17, 0.08);
     vec3 leafC = climateFoliage(temperate, dry, cold, vec3(0.05, 0.24, 0.04), vec3(0.12, 0.18, 0.05), lat);
+    if (fragClimate.z > 0.5) leafC = biomeClimate(leafC, temperate) * biomeLeaf(fragBiome); // #2032: the biome's own tint
     leafC *= 0.75 + 0.5 * fragShade * (0.8 + 0.4 * fragHash);
+    if (treeVariationOff < 0.5) leafC *= mix(vec3(1.08, 1.0, 0.86), vec3(0.9, 1.0, 1.07), fract(fragHash * 173.3 + 0.41)); // #1979: yellower .. bluer crowns per tree
     leafC = min(leafC * leafTint, vec3(0.9));
     leafC *= mix(vec3(1.0), vec3(0.64, 0.73, 0.86), fragFar); // #745: far crowns deeper and a touch cooler, as the canopy tint
     vec3 bark = min(vec3(0.20, 0.13, 0.08) * barkTint, vec3(0.85)) * (0.8 + 0.4 * fragShade);
+    if (foliageTexOff < 0.5 && foliageKind < 5.5) {
+        bark = barkTexture(bark);
+        if (foliageKind > 4.5) leafC = leafTexture(leafC);
+    }
     vec3 albedo = mix(bark, leafC, fragLeaf);
     albedo = mix(albedo, vec3(0.36, 0.35, 0.33) * (0.7 + 0.6 * fragShade), fragStone); // loose stones
 

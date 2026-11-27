@@ -24,6 +24,8 @@ uniform float alphaToCoverage; // 1: the fade is written as alpha (GL_SAMPLE_ALP
 // Sun shadows (two cascades, hardware PCF) and the headlamp.
 #include "shadow.glsl"
 #include "hemisphere.glsl"
+#include "biometint.glsl"
+flat in float fragBiome; // (#2032) the biome variant id
 out vec4 finalColor;
 // Foliage colour by climate (Plan 5 B): temperate green, straw-olive where warm and dry, deep in the
 // jungle, dark blue-green in the cold, olive in swamps. Without a climate: by latitude as before.
@@ -62,6 +64,7 @@ void main()
     vec3 cold = vec3(0.20, 0.24, 0.10);
     float lat = fragLatitude;
     vec3 albedo = climateFoliage(temperate, dry, cold, vec3(0.06, 0.26, 0.04), vec3(0.16, 0.22, 0.06), lat);
+    if (fragClimate.z > 0.5) albedo = min(biomeClimate(albedo, temperate) * biomeGrass(fragBiome), vec3(0.9)); // #2032
     albedo *= 0.8 + 0.4 * fragHash;
     albedo *= 0.85 + 0.3 * fragBlade;      // blades in a clump differ a little
     // Self-shadowed lower half (the clump and its neighbours shade it), sunlit tips.

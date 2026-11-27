@@ -441,3 +441,34 @@ double Profiler_VramUsedMB() {
     glad_glGetIntegerv(0x9049, &avail);
     return total > 0 && avail > 0 && total >= avail ? (total - avail) / 1024.0 : 0.0;
 }
+double Profiler_ThreadCpuSeconds() {
+#ifdef _WIN32
+    FILETIME c, e, k, u;
+    if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0.0;
+    const auto t = [](FILETIME f) { return (double)(((unsigned long long)f.dwHighDateTime << 32) | f.dwLowDateTime) * 1e-7; };
+    return t(k) + t(u);
+#else
+    timespec ts{};
+    return clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0 ? ts.tv_sec + ts.tv_nsec * 1e-9 : 0.0;
+#endif
+}
+void Profiler_MemoryHealth(double& freePhysMB, unsigned long long& pageFaults) {
+    freePhysMB = 0.0; pageFaults = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms{}; ms.dwLength = sizeof ms;
+    if (GlobalMemoryStatusEx(&ms)) freePhysMB = ms.ullAvailPhys / 1048576.0;
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) pageFaults = pmc.PageFaultCount; // soft and hard
+#elif defined(__linux__)
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[128]; unsigned long long kb;
+        while (fgets(line, sizeof line, f)) if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { freePhysMB = kb / 1024.0; break; }
+        fclose(f);
+    }
+    if (FILE* f = fopen("/proc/self/stat", "r")) { // fields 10 and 12: minflt, majflt
+        unsigned long long mn = 0, mj = 0;
+        if (fscanf(f, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %llu %*u %llu", &mn, &mj) == 2) pageFaults = mn + mj;
+        fclose(f);
+    }
+#endif
+}

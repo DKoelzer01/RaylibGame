@@ -233,6 +233,11 @@ static void __cdecl LogAssertW(const wchar_t* expr, const wchar_t* file, unsigne
 }
 void (__cdecl* __imp__assert)(const char*, const char*, unsigned) = LogAssertA;
 void (__cdecl* __imp__wassert)(const wchar_t*, const wchar_t*, unsigned) = LogAssertW;
+// The functions too (#2028): libmingw32's tls_atexit.o (pulled in by any thread_local with a destructor) calls _assert
+// directly. Without a definition here the linker takes msvcrt's _assert member, which also defines __imp__assert and
+// collides with the pointer above (#1802, #2015). With one, msvcrt's member is never pulled.
+void __cdecl _assert(const char* expr, const char* file, unsigned line) { LogAssertA(expr, file, line); }
+void __cdecl _wassert(const wchar_t* expr, const wchar_t* file, unsigned line) { LogAssertW(expr, file, line); }
 }
 #else
 // glibc's assert() calls __assert_fail: the game's own definition comes first.

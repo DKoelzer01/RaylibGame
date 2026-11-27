@@ -121,7 +121,7 @@ bool Survival_BedSpawnFor(const SurvivalState& survival, Planetoid*& body, Vecto
 inline std::function<void(const Planetoid& body, const Plot& plot, int part)> gBedUseRequest;
 void Survival_OnLandingFor(SurvivalState& survival, const SuitStats& stats, float impactSpeed, bool local);
 void Survival_DrawHUD();
-const char* Survival_BiomeName();   // the biome where the player stands ("" off-planet)
+const char* Survival_BiomeName();   // the biome where the player stands: "Birch grove (Forest)" ("" off-planet; #1977)
 // (#1099) The felt temperature eases toward `air` (C, NaN: none) over a few seconds; the readout's cold/hot band changes only
 // 1 C past each edge (5 C, 35 C).
 void Survival_FeelTemperature(SurvivalState& s, float air, float dt);

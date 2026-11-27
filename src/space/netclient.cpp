@@ -5,6 +5,7 @@
 #include "animals.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "factory.h"
 #include "farming.h"
 #include "claims.h"
@@ -62,6 +63,7 @@ namespace {
         if (c.conn) Net_Close(c.conn);
         c.conn = 0;
         c.state = s;
+        if (gNetRole == NetRole::Client) TeamStore_ResetLocalTeam(); // (#1886) the research tab goes back to our own teams
     }
     void OnMessage(NetClient& c, const NetMessage& m) {
         c.lastHeard = GetTime();
@@ -356,6 +358,13 @@ namespace {
                 if (c.state != NetClient::State::Joined || !NetRead(r, q)) return;
                 ++c.questBooks; c.questTeam = (int)q.team;
                 if (gNetRole == NetRole::Client) TeamQuests_ApplyText(q.text); // (a host in this process keeps the real ones)
+                return;
+            }
+            case NetMsg::TeamStore: { // (#1886) our team's research, explored map and blueprint library as the server keeps them
+                MsgTeamStore t;
+                if (c.state != NetClient::State::Joined || !NetRead(r, t)) return;
+                ++c.teamStores; c.teamStoreTeam = (int)t.team; c.teamStoreText = t.text;
+                if (gNetRole == NetRole::Client) TeamStore_ApplyFromHost((int)t.team, t.text); // (a host in this process has the real ones)
                 return;
             }
             case NetMsg::Graves: { // (#804) the server's graves: drawn here; ours (and our team's) marked on the compass
