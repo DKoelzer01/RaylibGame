@@ -20,8 +20,12 @@
 namespace fs = std::filesystem;
 
 namespace {
-// Line prefixes that may differ between a save and the save of its load, and why. (Empty until a run shows one that must.)
-const std::vector<std::pair<std::string, std::string>> kMoves = {};
+// Line prefixes that may differ between a save and the save of its load, and why.
+const std::vector<std::pair<std::string, std::string>> kMoves = {
+    { "player ", "the absolute position: a load takes player_body's (#346), so it comes back within the rounding of a rotation" },
+    { "player_up ", "a load with player_body rebuilds 'up' from the body at the next update (zero until then)" },
+    { "player_vel ", "a load with player_body starts at rest" },
+};
 
 struct State { uint32_t plotId = 0; int chest = -1, fire = -1; fs::path a, b; long loadFrame = -1; } R;
 
