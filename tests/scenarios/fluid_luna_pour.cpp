@@ -19,7 +19,7 @@ struct Pour {
     Vector3 at{};
     long long tick0 = -1;
     float queued = 0.0f, near1s = -1.0f;
-    double vol0 = 0.0;
+    double vol0 = 0.0, box0 = 0.0;
     Fluid::Ledger l0{};
 };
 struct State { Pour terra, luna; } S;
@@ -31,8 +31,7 @@ Vector3 BesidePlayer(Planetoid& b) {
     return Vector3Add(feet, Vector3Add(Vector3Scale(side, 3.0f), up));
 }
 
-// The simulated water within 30 m of a pour (m^3). Each body's water is judged by its own box: the world's total also
-// moved with the other body's water (Terra's pour, then left behind while the player stood on Luna).
+// The simulated water within 30 m of a pour (m^3), noted: how far the pour spread in 10 s.
 double NearPour(const Pour& p) {
     const Vector3 up = Vector3Normalize(p.at);
     const Vector3 ax = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.z) < 0.9f ? Vector3{ 0, 0, 1 } : Vector3{ 1, 0, 0 }));
@@ -52,7 +51,8 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
         Pour& p = S.*which;
         if (p.tick0 < 0) {
             p.at = BesidePlayer(*p.body);
-            p.vol0 = NearPour(p);
+            p.vol0 = Fluid::GetStats().volume;
+            p.box0 = NearPour(p);
             p.l0 = Fluid::GetLedger();
             p.tick0 = 0;
             p.queued = Fluid::Pour(*p.body, p.at, 1.0f);
@@ -74,11 +74,11 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
     s.step(TextFormat("judge %s", name), 1.0, [which, name](ScenarioCtx& c) {
         Pour& p = S.*which;
         const Fluid::Ledger l = Fluid::GetLedger(), &l0 = p.l0;
-        const double held = NearPour(p) - p.vol0;
+        const double held = Fluid::GetStats().volume - p.vol0, box = NearPour(p) - p.box0;
         const double net = (l.poured - l0.poured) - (l.taken - l0.taken) - (l.dried - l0.dried);
         c.note(TextFormat("%s: gravity %.3f m/s^2, fluid scale %.4f; %.2f m^3 queued, near the pour after 1 s %.3f m^3; after 10 s "
-                          "held %.3f, ledger poured %.3f, dried %.3f, net %.3f", name, p.body->surfaceGravity, Fluid::GravityScale(*p.body),
-                          p.queued, p.near1s, held, l.poured - l0.poured, l.dried - l0.dried, net));
+                          "held %.3f (%.3f within 30 m), ledger poured %.3f, dried %.3f, net %.3f", name, p.body->surfaceGravity, Fluid::GravityScale(*p.body),
+                          p.queued, p.near1s, held, box, l.poured - l0.poured, l.dried - l0.dried, net));
         c.metric(TextFormat("%s water near the pour after 1 s", name), p.near1s, "m^3", true);
         c.gt(TextFormat("water poured on %s (m^3)", name), l.poured - l0.poured, 0.8);
         c.near(TextFormat("water on %s matches the ledger (m^3)", name), held, net, 0.01);
