@@ -298,6 +298,10 @@ struct BodyRef {
 // surface gravity over the home planet's (the planet that orbits nothing; else the first planet). Exactly 1 on Terra and
 // on a world with no planet (the sandbox), so their water is bit-identical to before. Main thread (Planetoid::All).
 static float FluidGravityScale(const Planetoid& b) {
+    // Tests: RAYLIBGAME_FLUID_GSCALE=<s> forces the scale on every body (a sandbox scenario at Luna's water: the GPU and the
+    // CPU compared at k != 1 in lockstep, fluid/mass-ledger-luna).
+    static const float forced = getenv("RAYLIBGAME_FLUID_GSCALE") ? (float)atof(getenv("RAYLIBGAME_FLUID_GSCALE")) : 0.0f;
+    if (forced > 0.0f) return forced;
     const Planetoid* home = nullptr;
     for (const Planetoid* q : Planetoid::All()) {
         if (!q || q->kind != BodyKind::Planet || !q->field) continue;

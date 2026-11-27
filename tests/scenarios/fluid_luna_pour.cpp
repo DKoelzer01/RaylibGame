@@ -2,8 +2,8 @@
 // gravity over Terra's (Fluid::GravityScale: exactly 1 on Terra, 0.98 / 5.886 on Luna). The same 1 m^3 is poured 1 m over
 // the ground beside the player on Terra, then on Luna; after 1 s of fluid time (ticks x 25 ms, wall speed varies) the share
 // still within 1.5 m of the pour is noted for both (Luna's water spreads slower: it should keep more). Checked: the scales,
-// and each body's water against the mass ledger (#1885) after 10 s. Run with --scenario-parity for the GPU against the CPU
-// (the GPU reads the scale from inS, the CPU kernel from Grid::gScale).
+// and each body's water against the mass ledger (#1885) after 10 s. Not a parity scenario (the pours wait on landing and
+// streaming, wall-clock): fluid/mass-ledger-luna compares the GPU and the CPU at Luna's scale.
 // No c.camera(): it turns fly mode on, and the player's own placement is used.
 #include "scenario.h"
 #include "fluid.h"
