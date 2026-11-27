@@ -55,9 +55,17 @@ SCENARIO("factory/belts") {
         ConduitRun run; run.material = "basic"; run.points = { { xa * 8 + 6, 0, 4 }, { xb * 8, 0, 4 } };
         const int id = plot->addBelt(run);
         c.check("the belt added to the plot", id > 0);
-        Factory::Insert(bodyId, plot->id, chestA, "stone", 12);
         Factory::Sync(c.world);
         Look(c);
+        return true;
+    });
+    // An insert before the factory has the plot comes back to the player (#1849): wait for the chest's view first.
+    s.step("12 stone into the first chest", 10.0, [](ScenarioCtx& c) {
+        Look(c);
+        Factory::Sync(c.world);
+        c.waitingFor("the factory has the plot (chest A's view)");
+        if (!Factory::View(bodyId, plot->id, chestA).valid) return false;
+        Factory::Insert(bodyId, plot->id, chestA, "stone", 12);
         return true;
     });
     s.step("the stone rides the belt into the second chest", 40.0, [](ScenarioCtx& c) {
@@ -69,7 +77,9 @@ SCENARIO("factory/belts") {
         c.metric("12 stone across after", c.t, "s", false);
         c.eq("chest B holds all 12 stone", b, 12);
         c.eq("chest A is empty", a, 0);
-        c.lt("at the basic belt's 7.5 items/s, a couple of seconds (s)", c.t, 10.0);
+        // 12 items at 7.5 a second, plus the 2.4-cell belt's 1.3 s ride: about 3 s
+        c.lt("at the basic belt's 7.5 items/s, a few seconds (s)", c.t, 6.0);
+        c.gt("and no faster than the belt allows (s)", c.t, 2.0);
         return true;
     });
 }
