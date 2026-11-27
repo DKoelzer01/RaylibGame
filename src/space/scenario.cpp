@@ -640,12 +640,24 @@ uint64_t WaterHash() {
     return h;
 }
 const char* kGoldenFile = "tests/scenarios/golden_hashes.txt";
+// The runner's run folder links only resources/ and assets/ from the checkout (as saves/golden-load, #1940): there the
+// goldens are beside the real resources/.
+std::string GoldenFilePath() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::is_regular_file(kGoldenFile, ec)) return kGoldenFile;
+    const fs::path beside = fs::canonical("resources", ec).parent_path() / kGoldenFile;
+    return !ec && fs::is_regular_file(beside, ec) ? beside.string() : kGoldenFile;
+}
 }
 
 bool ScenarioCtx::hashState(const std::string& label, const std::vector<std::string>& subsystems) {
     const bool update = EnvFlag("RAYLIBGAME_GOLDEN_UPDATE");
     std::vector<std::string> lines;
-    if (FILE* f = fopen(kGoldenFile, "rb")) {
+    const std::string goldenPath = GoldenFilePath();
+    bool haveFile = false;
+    if (FILE* f = fopen(goldenPath.c_str(), "rb")) {
+        haveFile = true;
         char b[512];
         while (fgets(b, sizeof b, f)) { std::string s = b; while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back(); lines.push_back(s); }
         fclose(f);
@@ -671,7 +683,8 @@ bool ScenarioCtx::hashState(const std::string& label, const std::vector<std::str
             continue;
         }
         all = Record(name, 0.0, "==", want.empty() ? "a golden" : want, false,
-                     want.empty() ? "got " + std::string(hex) + "; no golden: add the line '" + key + hex + "' to " + kGoldenFile
+                     !haveFile ? "got " + std::string(hex) + "; the goldens file wasn't found (" + goldenPath + ", nor beside resources/)"
+                     : want.empty() ? "got " + std::string(hex) + "; no golden: add the line '" + key + hex + "' to " + kGoldenFile
                                   : "got " + std::string(hex) + " (a deliberate change: RAYLIBGAME_GOLDEN_UPDATE=1 and say why in the PR; else the run doesn't repeat)") && all;
     }
     if (changed) {
