@@ -18,3 +18,4 @@
 # isn't listed. One line per version:
 #   save <number> | <branch or base> | <issue> | <what>
 save 13 | m84-integration | #1693 | one save version and the migration chain (the baseline)
+save 14 | staging         | #1881 | a part_palette line: part types saved by name (13 -> 14 inserts the frozen v13 order)
