@@ -20,6 +20,5 @@ build/tile-walk-planet -> FAIL          | #1999 | the build step passes its 20 s
 fluid/slope-drain -> FAIL               | #2018 | checks fail intermittently on the runner (12/20 recent runs pass)
 caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
 creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | the sim outruns the wall clock and the 15 s step deadline passes (19/20 recent runs pass)
-fluid/flow -> FAIL                      | #2044 | a check fails intermittently on the runner (8/20 recent runs pass)
 saves/roundtrip -> FAIL                 | #2045 | 2 of 7 checks fail intermittently (18/20 recent runs pass)
 space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; drop this line when the open fix PR lands
