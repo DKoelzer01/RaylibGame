@@ -6,7 +6,8 @@ if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe
 #   runner_check.sh <branch> [--dispatch] [--regression]     or     runner_check.sh --run <run id>
 R=repos/DKoelzer01/RaylibGame
 root=$(git rev-parse --show-toplevel)
-known="$root/tools/ci/known_failures.txt"
+# (#1946) this checkout's list plus staging's, so entries added there since the branch was cut count too
+knownText=$(bash "$root/tools/ci/known_list.sh")
 if [ "$1" = "--run" ]; then id=$2
 else
   br=$1; shift
@@ -42,7 +43,7 @@ while IFS= read -r line; do
   while IFS='|' read -r pat issue note; do
     pat=$(echo "$pat" | sed 's/[[:space:]]*$//'); [[ -z "$pat" || "$pat" == \#* ]] && continue
     if echo "$line" | grep -Eq "$pat"; then tag="known $(echo $issue)"; break; fi
-  done < "$known"
+  done <<< "$knownText"
   [ "$tag" = NEW ] && new=$((new+1))
   echo "  [$tag] $line"
 done < <(gh run view "$id" --log 2>/dev/null | grep -E -- '-> FAIL' | grep -v '^.*=== ' | sed 's/.*Z //' | cut -c1-220 | sort -u)
