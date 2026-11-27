@@ -263,6 +263,7 @@ namespace {
         };
         std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells);
         std::vector<int> receiver(cells), order;
+        std::vector<float> hsDelta; // #1884: the hillslope pass's changes (applied after it, so the scan order doesn't matter)
         // Wind (#370): per cell its downwind and upwind neighbours (latitude bands: trade winds blowing west and toward the
         // equator below ~30 deg, westerlies east and poleward to ~60, polar easterlies beyond), the wind's speed there, and
         // how dry the band is (the subtropical desert belt around 25 deg, a weaker polar one; the wet equator and
@@ -328,8 +329,27 @@ namespace {
                     push(hf[o], o);
                 }
             }
-            for (int c : order) { // steepest descent on the filled surface (the flood parent where none is lower)
+            for (int c : order) { // the receiver on the filled surface (the flood parent where none is lower)
                 if (receiver[c] == c) continue;
+                if (p.randomReceivers) {
+                    // #1884: one of the lower neighbours, odds by slope, rolled again each flood (seeded: the bake stays
+                    // deterministic). Over the floods the flow spreads as over a smooth surface instead of along the
+                    // 8 grid directions. A lower neighbour comes earlier in `order` (lower hf), as the steepest one did.
+                    int lower[8]; float slope[8], sum = 0.0f; int n = 0;
+                    for (int k = 0; k < 8; ++k) {
+                        const int o = nbOf((size_t)c, k);
+                        if (o < 0 || hf[o] >= hf[c]) continue;
+                        const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
+                        slope[n] = s * s; // (squared: the steepest still wins most rolls, so channels stay single threads; GUESS)
+                        sum += slope[n]; lower[n++] = o;
+                    }
+                    if (n == 0 || sum <= 0.0f) continue;
+                    float roll = Hash3(c, step, 0x1884, seed) * sum;
+                    int pick = n - 1;
+                    for (int i = 0; i < n - 1; ++i) { roll -= slope[i]; if (roll < 0.0f) { pick = i; break; } }
+                    receiver[c] = lower[pick];
+                    continue;
+                }
                 float best = 0.0f;
                 for (int k = 0; k < 8; ++k) {
                     const int o = nbOf((size_t)c, k);
@@ -410,6 +430,24 @@ namespace {
                         if (dh > 0.5f) d.h[o] -= w * dh;
                     }
                 }
+            // #1884: hillslope diffusion (soil creep): every other step (the talus takes the others), each cell moves
+            // toward its 4 side neighbours by D x 2 steps / L^2 of each difference (the 4-neighbour Laplacian), capped
+            // at 0.1 a neighbour for stability. Crests round over and V shoulders soften; the sea floor stays put.
+            if (p.hillslope > 0.0f && step % 2 == 0) {
+                hsDelta.assign(cells, 0.0f);
+                for (size_t c = 0; c < cells; ++c) {
+                    if (d.outlet[c]) continue;
+                    float dh = 0.0f;
+                    for (int k = 0; k < 4; ++k) {
+                        const int o = nbOf(c, k);
+                        if (o < 0) continue;
+                        const float L = Vector3Distance(d.dir[c], d.dir[o]) * R;
+                        dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                    }
+                    hsDelta[c] = dh;
+                }
+                for (size_t c = 0; c < cells; ++c) d.h[c] += hsDelta[c];
+            }
             lap(3);
             if (step % 2 == 1) // talus: slopes steeper than the rock holds slump (half the excess moves down)
                 for (size_t c = 0; c < cells; ++c) {
@@ -640,8 +678,8 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
-    for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind }) mix(&f, sizeof f);
-    for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin }) mix(&i, sizeof i);
+    for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
+    for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
     if (!gStrataFolds) { const int nf = 0x591; mix(&nf, sizeof nf); }                                    // #591 A/B: RAYLIBGAME_FOLDS=0 bakes its own

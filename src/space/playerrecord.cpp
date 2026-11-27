@@ -6,6 +6,7 @@
 #include "teamstore.h" // (#1886)
 #include "teamquests.h" // (#1886)
 #include "tome.h" // (#1251)
+#include "blueprint.h" // (#1886) the team libraries
 
 #include <algorithm>
 #include <cctype>
@@ -67,7 +68,7 @@ bool Save_WriteAtomic(const std::string& path, const std::function<bool(FILE*)>&
     return true;
 }
 
-void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); Tome_Reset(); } // (#1030: research lives with the teams; #1251 the tome too)
+void Teams_Reset() { teams.clear(); owner.clear(); Research_Reset(); Tome_Reset(); Blueprint_ResetTeams(); } // (#1030: research lives with the teams; #1251 the tome too; #1886 the blueprint libraries)
 const std::vector<TeamRecord>& Teams_All() { return teams; }
 const std::string& Teams_Owner() { return owner; }
 void Teams_SetOwner(const std::string& uuid) { owner = uuid; }

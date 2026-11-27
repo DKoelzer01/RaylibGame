@@ -8,6 +8,8 @@
 #include "audio.h"
 #include "terraintool.h"
 #include "worldtypes.h"
+#include "playerrecord.h" // (#1886) the local player's team
+#include "researchtab.h"
 
 #include <raylib.h>
 #include <raymath.h>
@@ -16,7 +18,9 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <map>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -24,8 +28,17 @@ namespace {
     std::vector<Blueprint> list;
     bool loaded = false;
     int active = -1;
+    std::map<int, std::vector<std::string>> teamLibs; // (#1886) team -> its blueprints' .bp texts, in the order added
+    int clientTeam = 0;                               // (#1886) a client's team, from the host's store (0: not a client)
 
-    void LoadDir(const std::string& dir) {
+    std::string Normalised(std::string text) { // LF line ends and a final newline: one blueprint compares equal however it was written
+        text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        return text;
+    }
+
+    // skipSame: leave out a file whose text is already in the list (a blueprint saved to the team's and the player's)
+    void LoadDir(const std::string& dir, bool skipSame) {
         std::error_code ec;
         if (!fs::exists(dir, ec)) return;
         std::vector<std::string> files;
@@ -34,14 +47,23 @@ namespace {
         std::sort(files.begin(), files.end());
         for (const std::string& f : files) {
             Blueprint bp;
-            if (Blueprint_LoadFile(f, bp)) list.push_back(std::move(bp));
+            if (!Blueprint_LoadFile(f, bp)) continue;
+            if (skipSame && std::any_of(list.begin(), list.end(), [&](const Blueprint& b) { return b.text == bp.text; })) continue;
+            list.push_back(std::move(bp));
         }
     }
     void Ensure() {
         if (loaded) return;
         loaded = true;
-        LoadDir("resources/blueprints");
-        LoadDir("blueprints");
+        if (const int team = Blueprint_LocalTeam()) // (#1886) the team's library first, then the player's own, then the presets
+            if (auto it = teamLibs.find(team); it != teamLibs.end())
+                for (const std::string& text : it->second) {
+                    Blueprint bp;
+                    bp.name = "team blueprint";
+                    if (Blueprint_ParseText(text, bp)) { bp.team = team; list.push_back(std::move(bp)); }
+                }
+        LoadDir("blueprints", true);
+        LoadDir("resources/blueprints", false);
     }
     // Items a blueprint costs.
     std::map<std::string, int> Cost(const Blueprint& bp) {
@@ -54,7 +76,7 @@ namespace {
 const std::vector<Blueprint>& Blueprint_List() { Ensure(); return list; }
 void Blueprint_Reload() { list.clear(); loaded = false; active = -1; Ensure(); }
 
-bool Blueprint_SaveFile(const Plot& plot, const std::string& path, const std::string& name) {
+std::string Blueprint_Text(const Plot& plot, const std::string& name) {
     // Relative to the lowest corner of the parts' origins.
     Int3 lo{ 1 << 30, 1 << 30, 1 << 30 };
     int n = 0;
@@ -63,27 +85,33 @@ bool Blueprint_SaveFile(const Plot& plot, const std::string& path, const std::st
         lo.x = std::min(lo.x, p.origin.x); lo.y = std::min(lo.y, p.origin.y); lo.z = std::min(lo.z, p.origin.z);
         ++n;
     }
-    if (n == 0) return false;
+    if (n == 0) return std::string();
+    std::string s = TextFormat("# Blueprint: part type, cell x y z (from its lowest corner), orientation, material\nname %s\nparts %d\n", name.c_str(), n);
+    for (const Part& p : plot.parts)
+        if (p.type != PartType::Count) s += TextFormat("%d %d %d %d %d %d\n", (int)p.type, p.origin.x - lo.x, p.origin.y - lo.y, p.origin.z - lo.z, p.orient, p.material);
+    return s;
+}
+
+bool Blueprint_SaveFile(const Plot& plot, const std::string& path, const std::string& name) {
+    const std::string text = Blueprint_Text(plot, name);
+    if (text.empty()) return false;
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
     FILE* f = fopen(path.c_str(), "w");
     if (!f) return false;
-    fprintf(f, "# Blueprint: part type, cell x y z (from its lowest corner), orientation, material\nname %s\nparts %d\n", name.c_str(), n);
-    for (const Part& p : plot.parts)
-        if (p.type != PartType::Count) fprintf(f, "%d %d %d %d %d %d\n", (int)p.type, p.origin.x - lo.x, p.origin.y - lo.y, p.origin.z - lo.z, p.orient, p.material);
+    fputs(text.c_str(), f);
     fclose(f);
     return true;
 }
 
-bool Blueprint_LoadFile(const std::string& path, Blueprint& out) {
-    FILE* f = fopen(path.c_str(), "r");
-    if (!f) return false;
-    out = Blueprint{};
-    out.path = path;
-    out.name = fs::path(path).stem().string();
-    char line[256];
-    while (fgets(line, sizeof line, f)) {
-        if (line[0] == '#' || line[0] == '\n') continue;
+bool Blueprint_ParseText(const std::string& text, Blueprint& out) {
+    out.parts.clear();
+    out.text = Normalised(text);
+    std::istringstream in(text);
+    for (std::string l; std::getline(in, l);) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (l.empty() || l[0] == '#') continue;
+        const char* line = l.c_str();
         char name[128];
         int n;
         if (sscanf(line, "name %127[^\n]", name) == 1) { out.name = name; continue; }
@@ -92,11 +120,64 @@ bool Blueprint_LoadFile(const std::string& path, Blueprint& out) {
         if (sscanf(line, "%d %d %d %d %d %d", &t, &x, &y, &z, &o, &m) == 6 && t >= 0 && t < (int)PartType::Count)
             out.parts.push_back({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) });
     }
-    fclose(f);
     // Bottom up, so supports go in before what rests on them.
     std::stable_sort(out.parts.begin(), out.parts.end(), [](const Part& a, const Part& b) { return a.origin.y < b.origin.y; });
     return !out.parts.empty();
 }
+
+bool Blueprint_LoadFile(const std::string& path, Blueprint& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream text;
+    text << f.rdbuf();
+    out = Blueprint{};
+    out.path = path;
+    out.name = fs::path(path).stem().string();
+    return Blueprint_ParseText(text.str(), out);
+}
+
+// ---- Team libraries (#1886) ----
+void Blueprint_AddToTeam(int team, const std::string& text) {
+    if (!team) return;
+    const std::string t = Normalised(text);
+    Blueprint probe;
+    if (!Blueprint_ParseText(t, probe)) return; // no parts: nothing to keep
+    std::vector<std::string>& lib = teamLibs[team];
+    if (std::find(lib.begin(), lib.end(), t) == lib.end()) { lib.push_back(t); loaded = false; }
+}
+
+int Blueprint_TeamCount(int team) { auto it = teamLibs.find(team); return it == teamLibs.end() ? 0 : (int)it->second.size(); }
+
+std::string Blueprint_TeamText(int team) {
+    std::string s;
+    if (auto it = teamLibs.find(team); it != teamLibs.end())
+        for (const std::string& text : it->second) s += "blueprint\n" + text + "blueprint_end\n";
+    return s;
+}
+
+void Blueprint_SetTeamText(int team, const std::string& text) {
+    teamLibs.erase(team);
+    loaded = false;
+    std::istringstream in(text);
+    std::string bp;
+    bool inside = false;
+    for (std::string l; std::getline(in, l);) {
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (!inside) { inside = l == "blueprint"; bp.clear(); continue; }
+        if (l == "blueprint_end") { Blueprint_AddToTeam(team, bp); inside = false; continue; }
+        bp += l; bp += '\n';
+    }
+}
+
+void Blueprint_ApplyTeamText(int team, const std::string& text) {
+    clientTeam = team; // a client applies its own team's store
+    Blueprint_SetTeamText(team, text);
+    active = -1;
+}
+
+void Blueprint_ResetTeams() { teamLibs.clear(); clientTeam = 0; loaded = false; list.clear(); active = -1; }
+
+int Blueprint_LocalTeam() { return clientTeam ? clientTeam : Teams_Of(PlayerId_Local()); }
 
 const Blueprint* Blueprint_Active() { Ensure(); return active >= 0 && active < (int)list.size() ? &list[active] : nullptr; }
 void Blueprint_SetActive(int i) { Ensure(); active = i >= 0 && i < (int)list.size() ? i : -1; }
@@ -231,9 +312,14 @@ bool Blueprint_Keys(Planetoid* body, Plot* lookingAt) {
         char stamp[32];
         std::strftime(stamp, sizeof stamp, "%Y%m%d_%H%M%S", std::localtime(&now));
         const std::string path = std::string("blueprints/plot_") + stamp + ".bp";
-        if (Blueprint_SaveFile(*lookingAt, path, std::string("plot ") + stamp)) {
+        const std::string name = std::string("plot ") + stamp;
+        if (Blueprint_SaveFile(*lookingAt, path, name)) {
+            // (#1886) and into the team's library (the user: both). A client's addition stays local until the net
+            // carries it to the host (#1886 step 4).
+            const int team = clientTeam ? clientTeam : ResearchTab_Team();
+            Blueprint_AddToTeam(team, Blueprint_Text(*lookingAt, name));
             Blueprint_Reload();
-            GameUI_Toast(TextFormat("Saved %s (N to place it)", path.c_str()));
+            GameUI_Toast(TextFormat("Saved %s, and to your team's blueprints (N to place it)", path.c_str()));
             Audio_Play(Sfx::Build, 0.4f, 1.6f);
         }
         return true;

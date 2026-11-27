@@ -11,3 +11,9 @@
 44 | ladder          | #1271 | the ladder rework (assembler mode, recipe pick in MachineView)
 45 | ladder          | #1446 | item instance data in inventory deltas, drops, graves
 46 | ladder          | #1446 | item instance data in chest and machine slots
+
+# kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
+# kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
+# isn't listed. One line per version:
+#   save <number> | <branch or base> | <issue> | <what>
+save 13 | m84-integration | #1693 | one save version and the migration chain (the baseline)
