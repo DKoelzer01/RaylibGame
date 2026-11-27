@@ -804,10 +804,20 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // ground falls away. Faded out where samples are too far apart to resolve them.
     const float pw = std::clamp(2.0f - fp / 48.0f, 0.0f, 1.0f);
     if (pw > 0.0f) {
+        const PlanetErosion* ero = erosion();
         ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
             const Pond p = pondOfCell(x, y, z);
             if (!p.exists) return;
             const float dist = Vector3Distance(dir, p.dir) * radius;
+            // #2039: on option B the ground around a pond is the chunk-time detail over the smooth bake, metres above the
+            // routing's level, and the bowl alone left a sheer ring wall: a bank slopes from the water out to kPondBank.
+            const float wb = ero ? ero->bWeight(p.dir) : 0.0f;
+            constexpr float kPondBank = 30.0f; // m past the pond's radius
+            if (wb > 0.0f && dist >= p.r && dist < p.r + kPondBank && h > p.level + 0.4f) {
+                const float bank = p.level + 0.4f + (h - p.level - 0.4f) * Smoothstep(p.r, p.r + kPondBank, dist);
+                h += (bank - h) * wb * pw;
+                return;
+            }
             if (dist >= 1.8f * p.r) return;
             float target;
             if (dist < p.r) {
