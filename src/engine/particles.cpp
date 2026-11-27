@@ -95,14 +95,14 @@ void Particles_EmitWorld(const Planetoid& body, const DVec3& world, const Partic
 void Particles_Update(Scene&, float dt) {
     if (pool.empty() || dt <= 0.0f) return;
     dt = std::min(dt, 0.1f);
-    std::unordered_map<uint64_t, float> gravity; // per body: surface gravity (m/s^2), Terra-style g = 9.81 R / 100 km
+    std::unordered_map<uint64_t, float> gravity; // per body: its surface gravity (m/s^2)
     for (Particle& p : pool) {
         if (!p.alive()) continue;
         p.age += dt;
         auto it = gravity.find(p.body);
         if (it == gravity.end()) {
             const Planetoid* b = Planetoid::find(p.body);
-            it = gravity.emplace(p.body, b ? 9.81f * b->radius * b->scale / 100000.0f : -1.0f).first;
+            it = gravity.emplace(p.body, b ? b->surfaceGravity : -1.0f).first; // (#1942) the body's own (world files set it, #1298)
         }
         if (it->second < 0.0f) { p.age = p.life; continue; } // its body is gone
         const KindInfo& k = kInfo[(int)p.kind];

@@ -18,7 +18,10 @@
 #include "gameui.h"
 #include "world.h"
 #include "worldtypes.h"
+#include <cstring>
+#include <string>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
@@ -71,6 +74,7 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
+    int hereVariant = -1;           // ...its variant (BiomeVariants() id; -1 none)
     // (#337: for a given player - the local one, or a remote one a server simulates; only the local one sets the HUD's biome)
     float AirTemperature(Scene& world, const Player& player, const SurvivalState& survival, bool isLocal) {
         Planetoid* p = player.nearest;
@@ -88,7 +92,10 @@ namespace {
         // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
         const float ground = pf->elevation(up);
         const PlanetField::Climate c = pf->climateAt(up, ground);
-        if (isLocal) hereBiome = pf->biomeAt(up, ground);
+        if (isLocal) { // the variant (#1977) and its type
+            hereVariant = pf->variantAt(up, ground);
+            hereBiome = hereVariant >= 0 ? BiomeVariants().defs[hereVariant].type : pf->biomeAt(up, ground);
+        }
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
@@ -96,7 +103,16 @@ namespace {
     }
 }
 
-const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
+const char* Survival_BiomeName() {
+    if (hereBiome == Biome::Count) return "";
+    // "Birch grove (Forest)": the variant, then its type (#1977; the user: variant names show in the UI).
+    const char* v = BiomeVariantName(hereVariant);
+    if (!v[0] || !strcmp(v, BiomeName(hereBiome))) return BiomeName(hereBiome);
+    // A plain char buffer: a thread_local with a destructor breaks the w64devkit link (#2015, as #1802).
+    static thread_local char label[96];
+    snprintf(label, sizeof label, "%s (%s)", v, BiomeName(hereBiome));
+    return label;
+}
 
 // (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
 // the readout flickered between cold and fine at 5 C), and the band the readout shows changes only 1 C past each edge.
@@ -576,7 +592,9 @@ void QuestBook_Save(FILE* f) {
         for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
             if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
     for (const std::string& p : Q().placed) fprintf(f, "placed %s\n", p.c_str());
-    for (const auto& kv : (Q().ownObtained ? Q().obtained : inventory.obtained)) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    // (#1881) by name: the map is unordered, and a save loaded and saved again wrote its lines in another order
+    const auto& got = Q().ownObtained ? Q().obtained : inventory.obtained;
+    for (const auto& kv : std::map<std::string, double>(got.begin(), got.end())) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", Q().reachedOrbit ? 1 : 0, Q().visitedMoon ? 1 : 0, Q().visitedRing ? 1 : 0);
     for (const auto& kv : Q().counts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
     QuestTree_Save(f);

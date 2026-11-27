@@ -1,5 +1,6 @@
 #include "teamstore.h"
 
+#include "blueprint.h"
 #include "navigation.h"
 #include "research.h"
 #include "teamquests.h"
@@ -19,7 +20,10 @@ void ApplyMap(int, const std::string& text) { Nav_MergeTilesText(text); } // add
 const Section kSections[] = {
     {"research", Research_TeamText, Research_SetTeamText, Research_SetTeamText}, // (#1030) ResearchState::Text lines
     {"map", TeamQuests_TilesText, nullptr, ApplyMap}, // (#338) saved with the team's book (team_tiles); Nav_TilesText lines
+    {"blueprints", Blueprint_TeamText, Blueprint_SetTeamText, Blueprint_ApplyTeamText}, // the team library: .bp texts
 };
+
+int localTeam = 0; // a client's team, in the host's ids
 
 const Section* FindSection(const std::string& name) {
     for (const Section& s : kSections) if (name == s.name) return &s;
@@ -61,6 +65,13 @@ bool TeamStore_SetText(int team, const std::string& text) {
     for (const Section& s : kSections) if (!seen[&s - kSections]) s.apply(team, "");
     return true;
 }
+
+void TeamStore_ApplyFromHost(int team, const std::string& text) {
+    localTeam = team;
+    if (!TeamStore_SetText(team, text)) for (const Section& s : kSections) s.apply(team, ""); // (no section: all empty)
+}
+int TeamStore_LocalTeam() { return localTeam; }
+void TeamStore_ResetLocalTeam() { localTeam = 0; }
 
 void TeamStore_SaveTeam(FILE* f, int team) {
     for (const Section& s : kSections) {
@@ -227,5 +238,53 @@ TEST(NavTiles, TextRoundTrips) {
     NavTiles b;
     Nav_TilesFromText(Nav_TilesText(a), b);
     EXPECT_EQ(a, b);
+}
+
+namespace {
+const char* kTower = "# Blueprint\nname tower\nparts 2\n0 0 0 0 0 0\n0 0 1 0 0 0\n";
+const char* kWall = "name wall\r\nparts 1\r\n0 1 0 0 0 0\r\n"; // CRLF, as a Windows file
+} // namespace
+
+TEST_F(TeamStoreTest, BlueprintLibraryRoundTripsAndSaves) {
+    const int team = 9201;
+    Blueprint_AddToTeam(team, kTower);
+    Blueprint_AddToTeam(team, kWall);
+    Blueprint_AddToTeam(team, kTower); // the same one twice is kept once
+    Blueprint_AddToTeam(team, "name empty\nparts 0\n"); // no parts: not kept
+    ASSERT_EQ(Blueprint_TeamCount(team), 2);
+    const std::string lib = Blueprint_TeamText(team);
+    const std::string text = TeamStore_Text(team);
+    EXPECT_NE(text.find("section blueprints\n"), std::string::npos) << text;
+
+    FILE* f = tmpfile(); // the world save's block
+    ASSERT_NE(f, nullptr);
+    TeamStore_SaveTeam(f, team);
+    rewind(f);
+    Teams_Reset();
+    EXPECT_EQ(Blueprint_TeamCount(team), 0) << "a reset forgets the libraries";
+    char tok[64];
+    ASSERT_EQ(fscanf(f, " %63s", tok), 1);
+    EXPECT_STREQ(tok, "team_blueprints");
+    ASSERT_TRUE(TeamStore_LoadLine(tok, f));
+    fclose(f);
+    EXPECT_EQ(Blueprint_TeamText(team), lib) << "loaded back as saved";
+
+    Teams_Reset();
+    ASSERT_TRUE(TeamStore_SetText(team, text)); // a client gets its team's library
+    EXPECT_EQ(Blueprint_LocalTeam(), team) << "a client's N shows the team it was sent";
+    EXPECT_EQ(Blueprint_TeamText(team), lib);
+    ASSERT_TRUE(TeamStore_SetText(team, "section research\nsection_end\n"));
+    EXPECT_EQ(Blueprint_TeamCount(team), 0) << "the host sent no library: the team has none";
+}
+
+TEST_F(TeamStoreTest, NListsTheTeamsBlueprintsFirst) {
+    const int team = 9202;
+    ASSERT_TRUE(TeamStore_SetText(team, "section blueprints\nblueprint\n" + std::string(kTower) + "blueprint_end\nsection_end\n"));
+    const std::vector<Blueprint>& list = Blueprint_List();
+    ASSERT_FALSE(list.empty());
+    EXPECT_EQ(list.front().name, "tower");
+    EXPECT_EQ(list.front().team, team);
+    EXPECT_EQ(list.front().parts.size(), 2u);
+    for (size_t i = 1; i < list.size(); ++i) EXPECT_EQ(list[i].team, 0) << "then files: the player's and the presets";
 }
 #endif
