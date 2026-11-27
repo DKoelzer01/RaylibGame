@@ -31,22 +31,23 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "dvec3.h"
 #include "voxel.h"
+#include "woodspecies.h"
 
 class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-// Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules):
-// 0-3 oak, 4-7 birch, 8-11 maple (broadleaf), 12-15 pine, 16-19 spruce
-// (conifers); then 20-22 bushes and 23 loose stones.
-constexpr int kTreeVariants = 24;
-constexpr int kFirstBush = 20;
+// Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules), in
+// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then 3 bushes and the loose stones.
 constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
-constexpr int kStoneVariant = 23;           // loose stones on the ground: picked up for stone (the first stone tools)
+constexpr int kFirstBush = kWoodSpecies * kTreeClasses;
+constexpr int kStoneVariant = kFirstBush + 3; // loose stones on the ground: picked up for stone (the first stone tools)
+constexpr int kTreeVariants = kStoneVariant + 1;
 // (#1995) Each variant comes as kTreeForms seeded meshes (its own branching), so a stand of one species and size is not
 // made of clones. Tiles and draws key on the mesh (TreeMeshOf); plants, logs and picking keep the variant.
 // RAYLIBGAME_TREE_FORMS=0: form 0 only, with the shapes as before #1995 (A/B).
@@ -55,11 +56,20 @@ constexpr int kTreeMeshes = kTreeVariants * kTreeForms;
 inline int TreeMeshOf(int variant, int form) { return variant * kTreeForms + form; }
 inline int VariantOfTreeMesh(int mesh) { return mesh / kTreeForms; }
 bool TreeFormsOn();
-// Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
-// over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
-enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
-struct WoodSpeciesDef { const char* log; const char* name; bool conifer; Vector3 bark, leaf; };
+// Wood species (woodspecies.h): what a tree drops when felled (its log) and how it is drawn (bark and leaf tints over the
+// shader's climate colours, a bark texture, a size multiplier), from resources/data/trees.txt; the structure is code.
+// Without a variant's own mix an area has a dominant species (60%) and two others (20% each).
+enum class BarkTexture : uint8_t { Furrows, Birch, Plates, Rings, Smooth, Count }; // trees.fs foliageKind 0-4
+struct WoodSpeciesDef {
+    std::string log, name;
+    bool conifer = false;            // the far mesh's shape and the cold/high fallback (code: the form is a cone)
+    Vector3 bark{ 1, 1, 1 }, leaf{ 1, 1, 1 };
+    BarkTexture texture = BarkTexture::Furrows;
+    float size = 1.0f;               // scale multiplier over the biome's (birch slender 0.85, kapok emergent)
+};
 const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
+// trees.txt's text over the defaults (`out` holds them on entry); false with a message naming the line on an error.
+bool WoodSpecies_Parse(const std::string& text, WoodSpeciesDef out[kWoodSpecies], std::string* err);
 inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / kTreeClasses); }  // trees only (v < kFirstBush)
 inline int SizeClassOfVariant(int v) { return v % kTreeClasses; }                          // 0 small .. 3 extra large
 
