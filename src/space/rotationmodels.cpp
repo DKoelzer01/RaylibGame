@@ -114,6 +114,16 @@ void DrawPart(PartType t) {
         IB_Cube({ 0, 0, 0 }, { 0.5f, 0.1f, 0.06f }, kDarkWood);
         IB_Cylinder({ 0, -0.12f, 0 }, 0.04f, 0.04f, 0.24f, kWood);
         break;
+    case PartType::TripHammer: // (#1734) the camshaft: two lobes that lift the hammer's helve, one marked (the turning shows)
+        IB_Cylinder({ 0, -0.3f, 0 }, 0.07f, 0.07f, 0.6f, kWood);
+        IB_Cube({ 0.11f, -0.15f, 0 }, { 0.16f, 0.08f, 0.1f }, kDarkWood);
+        IB_Cube({ -0.11f, 0.15f, 0 }, { 0.16f, 0.08f, 0.1f }, kMark);
+        break;
+    case PartType::Mixer: // (#1734) a pug mill: a cross of paddles on its shaft through the tub, one marked
+        IB_Cylinder({ 0, -0.1f, 0 }, 0.04f, 0.04f, 0.3f, kWood);
+        IB_Cube({ 0, 0.12f, 0 }, { 0.7f, 0.08f, 0.04f }, kMark);
+        IB_Cube({ 0, 0.12f, 0 }, { 0.04f, 0.08f, 0.7f }, kLight);
+        break;
     case PartType::WaterWheel: // (#1270) two rims on spokes, paddles between them (1.5 m across)
         IB_Cylinder({ 0, -0.25f, 0 }, 0.07f, 0.07f, 0.5f, kWood);
         for (float side : { -0.2f, 0.2f }) {

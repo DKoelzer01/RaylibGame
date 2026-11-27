@@ -3358,6 +3358,55 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     EXPECT_GT(CountItems(M(press2).out, kSlots, tables.item("iron_plate")), 0) << "the motor-driven press pressed plates";
 }
 
+// (#1734) The rotation-age machines on shaft power: the trip hammer hammers blooms into ingots, the mixer stirs copper and
+// tin (dust or crushed ore) 3 to 1 into bronze dust. Each on its own motor (64 RPM, over the mixer's 32 RPM minimum).
+TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 91; L.version = 1;
+    int part = 0;
+    const int xAxis = RotationPlot_OrientFor({ 1, 0, 0 });
+    auto add = [&](PartType t, Int3 at, int orient = 0) {
+        const Part pt = RotationPlot_PartAt(t, at, orient);
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(pt, fp);
+        if (IsMachine(t)) {
+            std::vector<Int3> cells;
+            for (const auto& c : fp) cells.push_back(c.first);
+            L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        }
+        RotationPartMsg rm;
+        if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+        return part++;
+    };
+    int machine[3], gen[3];
+    const PartType kinds[3] = { PartType::TripHammer, PartType::Mixer, PartType::Mixer };
+    for (int i = 0; i < 3; ++i) { // one line each: generator, cable, motor, shaft, machine
+        const int z = 10 * i;
+        gen[i] = add(PartType::Generator, { 0, 0, z });
+        L.cables.push_back({ 2, 0, z });
+        add(PartType::Motor, { 3, 0, z });
+        add(PartType::Shaft, { 5, 0, z }, xAxis);
+        machine[i] = add(kinds[i], { 6, 0, z });
+    }
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 91);
+    auto M = [&](int p) -> Machine& { return ps.machines[ps.byPart.at(p)]; };
+    int buckets = 0;
+    for (int i = 0; i < 3; ++i) InsertInto(M(gen[i]), tables.item("coal"), 16, true, buckets);
+    InsertInto(M(machine[0]), tables.item("iron_bloom"), 4, false, buckets);
+    InsertInto(M(machine[1]), tables.item("copper_dust"), 3, false, buckets);
+    InsertInto(M(machine[1]), tables.item("tin_dust"), 1, false, buckets);
+    InsertInto(M(machine[2]), tables.item("copper_crushed"), 3, false, buckets);
+    InsertInto(M(machine[2]), tables.item("tin_crushed"), 1, false, buckets);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 1200; ++t) TickPlot(ps, 1, made, active);
+    EXPECT_EQ(CountItems(M(machine[0]).out, kSlots, tables.item("iron_ingot")), 4) << "the trip hammer worked all 4 blooms (80 ticks each)";
+    EXPECT_EQ(CountItems(M(machine[1]).out, kSlots, tables.item("bronze_dust")), 4) << "copper and tin dust 3:1 -> 4 bronze dust";
+    EXPECT_EQ(CountItems(M(machine[2]).out, kSlots, tables.item("bronze_dust")), 4) << "crushed copper and tin 3:1 -> 4 bronze dust";
+}
+
 // (#1261, S1) A plot that leaves "near" measures for 60 s on the 20-tick step, then enters Summary with caps from what each
 // machine crafted; a player's insert while far measures again; coming near ticks every tick; SUMMARY=0 never leaves the
 // 20-tick step.
