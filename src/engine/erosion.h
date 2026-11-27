@@ -82,6 +82,10 @@ public:
     int cells() const { return 6 * n * n; }
     int bFace = -1;           // #1988: the option B face (ErosionParams::bFace; set by build and after a load)
     float bWeight(Vector3 dir) const; // 1 on the B face (TerrainBDetail at chunk time), 0 off it, blended across its edge
+    // #1988 (option B): a river node's direction moved along a smooth noise field (the meander; dir unchanged off B), and
+    // the m to lower the ground at dist m from a river whose water is at level (its valley; 0 off B and past the rim).
+    Vector3 meanderShift(Vector3 dir, float area) const;
+    float valleyCut(Vector3 dir, float h, float dist, float level, float halfWidth) const;
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }
     // Ponds (#360): the small closed depressions the 50 m refinement left (at most 12 cells): centre, a radius, the

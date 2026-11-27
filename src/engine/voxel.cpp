@@ -688,6 +688,12 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (rh.found) h -= l.relief * (1.0f - Smoothstep(rh.halfWidth + 20.0f, rh.halfWidth + 140.0f, rh.dist));
         }
         const float cw = std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h);
+        // #1988 (option B): each river's valley along its (meandering) line, down to just above the water.
+        if (fp < 512.0f && erosion()->bFace >= 0) {
+            float cut = 0.0f; // the deepest of every piece's valley (the nearest piece switches between rivers at other levels)
+            netAll->forEachPieceNear(dir, 175.0f, [&](float d, float lv, float hw) { cut = std::max(cut, erosion()->valleyCut(dir, h, d, lv, hw)); });
+            h -= cut * std::clamp(2.0f - fp / 256.0f, 0.0f, 1.0f);
+        }
         if (cw > 0.0f) { const float c = netAll->carve(dir, h); h += (c - h) * cw; }
     }
     else if (const RiverNetwork* net = netAll) {
@@ -892,6 +898,7 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            if (ero->bFace >= 0) rp.meanderShift = [ero](Vector3 d, float a) { return ero->meanderShift(d, a); }; // #1988 (option B)
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
             // (#637) Rivers fill their worn valley floors from a water cycle of 1 up; at 0.5 only the discharge width (narrow streams).

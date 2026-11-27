@@ -901,7 +901,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             }
             flap(0);
             StageHash("sampled", f, fd, fh0);
-            if (f == p.bFace) {
+            if (f == p.bFace || p.bFace == 6) { // (6: every face)
                 // #1988 (option B): no 50 m simulation. The fine grid is the coarse result resampled (Catmull-Rom, so C1
                 // across the 200 m cells; land and sea from this face's own input as on the other faces); the chunks add
                 // the detail (TerrainBDetail) and the final drainage routes rivers and lakes over it. No ponds: those came
@@ -1243,7 +1243,7 @@ void PlanetErosion::routeFinal(int threads) {
         // #1988: no groove on the B face. Its grid is the smooth coarse surface, where 50 m D4/D8 paths run straight, and
         // a cut along them showed as ruled lines and staircases (on A the refined valleys hide the path). Rivers keep
         // their routing and classes; the drainage mask keeps their floors smooth.
-        if (bFace >= 0 && g / (nf * nf) == bFace) cut[g] = 0.0f;
+        if (bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace)) cut[g] = 0.0f;
     }
     // Into the stored heights: each face's own cells, and its margin cells from the cell of the face that owns them.
     for (int f = 0; f < 6; ++f) {
@@ -1557,6 +1557,7 @@ float PlanetErosion::bWeight(Vector3 dir) const {
     // 1 on the B face, 0 off it, a smoothstep across its edge (gnomonic 0.97..1.03, ~1.5 km each side): the detail
     // functions differ, and a hard switch drew the face edge as a straight line in the terrain.
     if (bFace < 0) return 0.0f;
+    if (bFace == 6) return 1.0f; // every face
     Vector3 nrm, t1, t2; FaceAxes(bFace, nrm, t1, t2);
     const float s = Vector3DotProduct(dir, nrm);
     if (s <= 0.0f) return 0.0f;
@@ -1608,6 +1609,50 @@ float TerrainBDetail(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         out += sum * gentle * dry * coast;
     }
     return out;
+}
+
+Vector3 PlanetErosion::meanderShift(Vector3 dir, float area) const {
+    // #1988 (user 2026-11-27: option a, valleys that meander): the river network's nodes move along a smooth noise field
+    // (700 m and 230 m, projected onto the tangent plane: no face axes, so no seams), so the rivers wind off the 50 m grid
+    // path, and valleyCut digs their valleys along the moved line: the water and its valley stay together.
+    const float wb = bWeight(dir);
+    if (wb <= 0.0f) return dir;
+    static const float kM = EnvTune("RAYLIBGAME_B_MEANDER", 1.0f); // x the swing (GUESS 20 m x (A / 1 km^2)^0.25, 15-60 m)
+    const float amp = std::clamp(20.0f * det::Powf(area / 1.0e6f, 0.25f), 15.0f, 60.0f) * kM * wb;
+    if (amp <= 0.0f) return dir;
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    auto nv = [&](float lam, unsigned int s) {
+        const Vector3 q = Vector3Scale(p, 1.0f / lam);
+        return Vector3{ ValueNoiseD(q, seed ^ s, gd), ValueNoiseD(q, seed ^ (s + 101u), gd), ValueNoiseD(q, seed ^ (s + 202u), gd) };
+    };
+    Vector3 w = Vector3Add(nv(700.0f, 0x7A11u), Vector3Scale(nv(230.0f, 0x7B22u), 0.2f)); // swing slope under 1: no loops
+    w = Vector3Subtract(w, Vector3Scale(dir, Vector3DotProduct(w, dir)));
+    return Vector3Normalize(Vector3Add(p, Vector3Scale(w, amp)));
+}
+
+float PlanetErosion::valleyCut(Vector3 dir, float h, float dist, float level, float halfWidth) const {
+    // #1988: the valley around a river (dist m from its centreline, its water at level): the ground is lowered toward a floor
+    // just above the water, across a half width that grows with the river; width, depth cap and cross-profile (a narrow
+    // V-floor to a wide U-floor, the rim always smooth) vary along the valley on 400-500 m. The bake's 100-200 m grid
+    // resolves only the larger valleys; these are the ones under that.
+    const float wb = bWeight(dir);
+    const float floorY = level + 0.6f;
+    if (wb <= 0.0f || h <= floorY) return 0.0f;
+    static const float kW = EnvTune("RAYLIBGAME_B_VALLEY_W", 1.0f); // x the half width (GUESS 40 m + 4 x the river's, <= 170 m)
+    static const float kD = EnvTune("RAYLIBGAME_B_VALLEY_D", 1.0f); // x the depth cap (GUESS 25 m + 1.5 x the river's half width)
+    const Vector3 p = Vector3Scale(dir, R);
+    Vector3 gd;
+    const float nW = ValueNoiseD(Vector3Scale(p, 1.0f / 450.0f), seed ^ 0x7C33u, gd);
+    const float nD = ValueNoiseD(Vector3Scale(p, 1.0f / 520.0f), seed ^ 0x7D44u, gd);
+    const float nP = ValueNoiseD(Vector3Scale(p, 1.0f / 380.0f), seed ^ 0x7E55u, gd);
+    const float W = std::min(170.0f, (40.0f + 4.0f * halfWidth) * kW * (1.0f + 0.3f * nW)); // the index reaches 180 m
+    if (dist >= W) return 0.0f;
+    const float D = (25.0f + 1.5f * halfWidth) * kD * (1.0f + 0.35f * nD);
+    const float floorShare = 0.2f + 0.12f * nP, wallExp = 1.6f + 0.6f * nP;
+    const float u = std::max(0.0f, (dist - floorShare * W) / ((1.0f - floorShare) * W)); // 0 on the floor, 1 at the rim
+    const float s = 1.0f - det::Powf(u, wallExp);
+    return std::min(h - floorY, D) * s * s * wb;
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
