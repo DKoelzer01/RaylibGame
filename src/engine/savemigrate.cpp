@@ -1,27 +1,24 @@
 #include "savemigrate.h"
 #include "saveversion.h"
+#include "plots.h"
 #include <cstdio>
+#include <iterator>
 
 namespace {
-// The world file's steps, in order. A step turns format `from` into `from + 1`. Empty today (13 is the oldest and the newest).
-//
-// Example of what the 13 -> 14 step would look like when a change renames a line tag and drops a section:
-//
-//   bool Step13to14(std::vector<std::string>& lines, MigrateContext& ctx) {
-//       std::vector<std::string> out;
-//       for (std::string& l : lines) {
-//           if (l.rfind("old_tag ", 0) == 0) l.replace(0, 7, "new_tag");        // renamed
-//           if (l.rfind("retired_thing ", 0) == 0) { ctx.drop("retired things"); continue; } // meaningless now: dropped, told
-//           out.push_back(l);
-//       }
-//       lines.swap(out);
-//       return true;
-//   }
-//   const SaveMigration kWorldSteps[] = { { 13, "old_tag renamed, retired things dropped", Step13to14 } };
-//
-// and kSaveVersion becomes 14. Add a golden save (tests/saves/v14) made by the new build.
-const SaveMigration* const kWorldSteps = nullptr;
-constexpr int kWorldStepCount = 0;
+// The world file's steps, in order. A step turns format `from` into `from + 1`; each new version adds a golden save
+// (tests/saves/v<N>, made by saves/golden-write). A step may rename tags or drop what no longer means anything
+// (ctx.drop("what"): logged and toasted).
+
+// 13 -> 14 (#1881): part types were numbered by the enum's order; 14 names them in a palette line after the camera line.
+// A 13 file gets the order it was written in (frozen in plots.cpp), so a type added mid-enum since still maps right.
+bool Step13to14(std::vector<std::string>& lines, MigrateContext&) {
+    for (size_t i = 0; i < lines.size(); ++i)
+        if (lines[i].rfind("camera ", 0) == 0) { lines.insert(lines.begin() + (long)i + 1, PartPalette_V13Line()); return true; }
+    return false; // (no header camera line: not a world file this reader knows)
+}
+const SaveMigration kWorldStepTable[] = { { 13, "part types by name (a part_palette line)", Step13to14 } };
+const SaveMigration* const kWorldSteps = kWorldStepTable;
+constexpr int kWorldStepCount = (int)std::size(kWorldStepTable);
 
 const SaveMigration* const kPlayerSteps = nullptr;
 constexpr int kPlayerStepCount = 0;

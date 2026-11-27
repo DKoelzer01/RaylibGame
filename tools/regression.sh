@@ -229,6 +229,7 @@ multiplayer() {
     H --test-net-interest
     H --test-net-guard # (#349) per-client message limits: a normal client never dropped; floods and garbage kicked
     exe="$gexe"; RAYLIBGAME_MAX_PER_ADDRESS=6 RAYLIBGAME_HELLO_SECONDS=2 H --host "$sv" --sandbox --bench 3 --port 27941 --test-net-abuse; exe="$keep" # (#349, #780, #781; names, chat, the per-address cap; #1868 silent connections closed) needs GNS (else SKIP)
+    exe="$gexe"; H --host "$sv" --bench 3 --port 27941 --test-teams; exe="$keep" # (#604, #1921) invite, accept, team chat, kick: the host's JoinTeam/SplitOff; needs GNS (else SKIP)
     H --test-server-admin
     H --seed 42 --bench 3 --test-player-cost 8 # (#768) player cost per update (reported), and determinism: a warm vs a poisoned collision cache stay bit-identical
     # The dedicated server (#326): config file, console commands, log file, "stop" with a final save (sandbox world).

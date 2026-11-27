@@ -68,7 +68,9 @@ SCENARIO("light/torch-room") {
         c.metric("light grid: slowest brick read (ms)", st.brickMsMax, "ms", false);
         // A frame does 1 ms of grid work plus at most one brick read past it (GUESS 8 ms on a shared machine: a brick read
         // alone was ~3 ms on the sandbox); before #1739's budget the whole relight ran in one frame (42-45 ms in play).
-        c.check("the relight is spread over frames (worst frame <= 8 ms)", S.worstMs <= 8.0f, TextFormat("%.2f ms, slowest brick read %.2f ms", S.worstMs, st.brickMsMax));
+        // A timing gate (#1034): on the shared runner one brick read alone took 7.5-52 ms (2/20 passes, #1829), so it is
+        // judged on the quiet PC only.
+        c.timingLt("the relight is spread over frames (worst frame, ms)", S.worstMs, 8.0);
         return true;
     });
     s.step("the room is lit, the rock is not", 1.0, [](ScenarioCtx& c) {

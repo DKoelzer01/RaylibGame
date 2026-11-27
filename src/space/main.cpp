@@ -43,6 +43,7 @@
 #include "ship.h"
 #include "camera.h"
 #include "survival.h"
+#include "biomevariants.h"
 #include "combat.h"
 #include "claims.h"
 #include "teamquests.h"
@@ -848,6 +849,7 @@ int main(int argc, char** argv)
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
+    bool hasBenchToward = false; Vector3 benchToward{}; // --bench-toward x y z: the bench view faces this body-local direction (#1988)
     float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
     float benchTurn = 0.0f; // --bench-turn DEG_PER_S (#134): the camera yaws on the spot through the timed run (Hi-Z pop checks)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
@@ -928,10 +930,12 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-turn" && i + 1 < argc) benchTurn = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-uphill") benchUphill = true;
+        if (std::string(argv[i]) == "--bench-toward" && i + 3 < argc) { hasBenchToward = true; benchToward = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
-            if (gSpawnBiome < 0) printf("bench: --bench-biome: unknown biome %s\n", argv[i + 1]);
+            if (gSpawnBiome < 0) gSpawnVariant = BiomeVariants().find(argv[i + 1]); // or a variant: forest.birch_grove (#1977)
+            if (gSpawnBiome < 0 && gSpawnVariant < 0) printf("bench: --bench-biome: unknown biome or variant %s\n", argv[i + 1]);
         }
         if (std::string(argv[i]) == "--bench-fly-alt" && i + 1 < argc) benchFlyAlt = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--spawn-dir" && i + 3 < argc) { hasSpawnDir = true; spawnDir = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
@@ -2154,7 +2158,7 @@ int main(int argc, char** argv)
             float mpp = 1.0f;
             for (int k = 1; k + 1 < argc; ++k) if (std::string(argv[k]) == "--hillshade-mpp") mpp = (float)atof(argv[k + 1]);
             const int N = 1024;
-            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 home = hasSpawnDir ? spawnDir : pf->findSpawnDir(p->seed); // --spawn-dir: anywhere (#1988: a face edge)
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
             std::vector<float> h((size_t)N * N);
             std::vector<std::thread> team;
@@ -2182,7 +2186,7 @@ int main(int argc, char** argv)
                 }
             ExportImage(img, "bench_hillshade.png");
             UnloadImage(img);
-            printf("bench: hillshade: %d px at %.2f m/px, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, curv / std::max<long long>(1, nc));
+            printf("bench: hillshade: %d px at %.2f m/px around dir %.4f %.4f %.4f, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, home.x, home.y, home.z, curv / std::max<long long>(1, nc));
             return 0;
         }
 
@@ -2270,8 +2274,19 @@ int main(int argc, char** argv)
         if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
             // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
             // offset below put the camera under the terrain). It rides the planet from here (#127).
+            const auto* pfs = dynamic_cast<const PlanetField*>(benchPlanet->field.get());
+            if (hasSpawnDir && !spawnDirLocal) { // --spawn-dir (body-local here, as --shot-hillshade): the player and the view there (#1988 A/B poses)
+                const DVec3 at = benchPlanet->toWorldD(DVec3(spawnDir) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(spawnDir, 1.0f)) + 1.0f));
+                player.position = at;
+                player.up = benchPlanet->dirToWorld(spawnDir);
+                player.forward = Vector3Normalize(Vector3CrossProduct(player.up, { 1, 0, 0 }));
+            }
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            if (hasBenchToward) { // --bench-toward x y z: face a body-local direction (a mountain, a valley)
+                const Vector3 d = (benchPlanet->toWorldD(DVec3(benchToward) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(benchToward, 1.0f)))) - player.position).toFloat(), dt = Vector3Subtract(d, Vector3Scale(player.up, Vector3DotProduct(d, player.up)));
+                if (Vector3Length(dt) > 1e-3f) ahead = Vector3Normalize(dt);
+            }
             if (benchUphill) // --bench-uphill (#357): face up the eroded slope, toward the cliff above
                 if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
                     const Vector3 dl = Vector3Normalize(benchPlanet->toLocal(feet));
@@ -3520,6 +3535,10 @@ int main(int argc, char** argv)
                     benchFingerprint = false;
                     const unsigned seedWas = worldGen.seed;
                     const uint64_t fp1 = WorldFingerprint(world), fp1b = WorldFingerprint(world);
+                    // (#1905) now: the regenerations below bake twice more (minutes each on a slow machine), and comparing
+                    // platforms needs only this
+                    printf("bench: fingerprint: seed %u: %016llx\n", worldGen.lastSeed, (unsigned long long)fp1);
+                    fflush(stdout);
                     regenerateWorld(world);
                     const uint64_t fp2 = WorldFingerprint(world);
                     worldGen.seed = worldGen.lastSeed + 1;
@@ -10391,6 +10410,11 @@ int main(int argc, char** argv)
         // The animation clock (GameClock) and the simulation steps stop behind the single-player pause menu (#511: the world,
         // the factory, fluids and time of day all wait); a host keeps running for its clients, and so does an unfocused window (#525).
         const bool paused = gameState == 2 && gNetRole == NetRole::Offline;
+        // (#1923) Joined or hosting, the pause menu is only a menu, like any open window: the world keeps stepping (bodies,
+        // the player carried on them, animals, the factory, fluids) with no input (gameInput needs gameState 1). The steps
+        // below test simState: with gameState they stopped the world behind a client's menu (it looked like the server
+        // had paused, and the client's planet stood still under the server's) and a listen host's for everyone.
+        const int simState = gameState == 2 && !paused ? 1 : gameState;
         if (!paused) gGameClock += frameDt;
         // A spawn or teleport: the loading screen until the terrain there is built (play and tests pause).
         if (player.spawns != seenSpawns) { seenSpawns = player.spawns; if (gameState == 1) { loading = true; spawnLoad = true; loadStart = GetTime(); loadFrames = 0; } }
@@ -10414,11 +10438,11 @@ int main(int argc, char** argv)
         const bool alive = !survival.dead; // (may change within the frame's steps)
         // Time of day (#275): the debug UI's time scale multiplies --time-scale; its jumps (+1 h, dawn, ...) are applied here
         // in one step, so orbits and world time move too, and the riders below are carried along.
-        const bool playing = gameState == 1 && !loading;
+        const bool playing = simState == 1 && !loading;
         const double timeSkip = playing ? gTimeSkipSeconds : 0.0;
         if (playing) gTimeSkipSeconds = 0.0;
         advanceBodies(world, playing ? (float)(simDt * timeScale * gDebugTimeScale * Rocket_Warp() + timeSkip) : 0.0f); // bodies only spin while playing (warped with a coasting rocket); before riders update
-        if (gameState == 1) {
+        if (simState == 1) {
             ship.lastImpact = 0.0f;
             Station_Update(world); // stations on their orbits, before anything rides on them
             if (ship.piloted) {
@@ -10444,7 +10468,7 @@ int main(int argc, char** argv)
                     static double heldFor = -1.0; // the loadStart this hold belongs to
                     // Before the step (it runs ahead of player.update) and once more on the frame the screen ends, so the first
                     // step starts from where the body has just carried the player (after it: a step late, 1.5 m off at the spin).
-                    if ((loading || heldFor >= 0.0) && gameState == 1) {
+                    if ((loading || heldFor >= 0.0) && simState == 1) {
                         if (loading && heldFor != loadStart) {
                             heldFor = loadStart;
                             Planetoid* b = player.nearest;
@@ -13075,6 +13099,8 @@ int main(int argc, char** argv)
         // --test-teams (#604, with --host <save>): alice, bob and carol join over loopback (clients in this process); alice
         // invites bob, bob sees it and accepts; both hear a team of two (bob online, with his health); bob's team chat reaches
         // alice, not carol; carol (not the owner, another team) can't kick; alice kicks bob: a team of one again.
+        // (#1921) Built without ENABLE_GNS the host never listens: SKIP rather than wait for it until the timeout.
+        if (benchTeams && gameState == 1 && !loading && WorldIdle() && !Net_Available()) { printf("bench: teams: built without ENABLE_GNS -> SKIP\n"); benchTeams = false; }
         if (benchTeams && gameState == 1 && !loading && WorldIdle() && Host_Listening()) {
             static NetClient alice, bob, carol;
             static int step = 0;
@@ -13542,10 +13568,11 @@ int main(int argc, char** argv)
         if (benchPause && !loading && WorldIdle() && (gameState == 1 || gameState == 2)) {
             static int pf = 0;
             static double t0 = -1.0, clock0 = 0.0, sim0 = 0.0;
+            static Vector3 spin0{};
             static Image first{};
             ++pf;
             if (pf == 30) menuEsc = true; // as the key going down
-            if (pf == 60) { first = LoadImageFromScreen(); clock0 = GameClock(); sim0 = SimTime(); t0 = GetTime(); }
+            if (pf == 60) { first = LoadImageFromScreen(); clock0 = GameClock(); sim0 = SimTime(); t0 = GetTime(); if (!world.objects.empty()) spin0 = world.objects[0]->rotation; }
             if (t0 >= 0.0 && GetTime() - t0 > 3.0) {
                 Image now = LoadImageFromScreen();
                 long moved = 0, total = 0;
@@ -13557,9 +13584,15 @@ int main(int argc, char** argv)
                 }
                 UnloadImage(first); UnloadImage(now);
                 const double pct = total ? 100.0 * moved / total : 100.0;
-                const bool ok = gameState == 2 && GameClock() == clock0 && SimTime() == sim0 && pct < 0.02; // (grass swaying in the bench view: ~0.07%)
-                printf("bench: pause: paused %d; over %.1f s the animation clock moved %.3f s, the simulation %.3f s, %.3f%% of pixels changed: %s\n",
-                       (int)(gameState == 2), GetTime() - t0, GameClock() - clock0, SimTime() - sim0, pct, ok ? "PASS" : "FAIL");
+                // (#1923) Hosting (--host) or joined, the menu stops nothing: the simulation runs on and the planet turns.
+                const bool shared = gNetRole != NetRole::Offline;
+                const Vector3 spin1 = world.objects.empty() ? spin0 : world.objects[0]->rotation;
+                const bool turned = spin1.x != spin0.x || spin1.y != spin0.y || spin1.z != spin0.z;
+                const bool ok = shared ? gameState == 2 && SimTime() - sim0 > 2.0 && turned
+                                       : gameState == 2 && GameClock() == clock0 && SimTime() == sim0 && pct < 0.02; // (grass swaying in the bench view: ~0.07%)
+                printf("bench: pause: %s, paused %d; over %.1f s the animation clock moved %.3f s, the simulation %.3f s, the planet turned %d, %.3f%% of pixels changed: %s\n",
+                       shared ? "shared (the world must run on)" : "single player (everything must stop)", (int)(gameState == 2), GetTime() - t0,
+                       GameClock() - clock0, SimTime() - sim0, (int)turned, pct, ok ? "PASS" : "FAIL");
                 benchPause = false;
             }
         }

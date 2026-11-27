@@ -259,12 +259,56 @@ Rulings 2026-11-24 to 2026-11-26 (user)
   develop -> main, each promotion only when the user says so.
 - CI (user, 2026-11-26, #1871): run fewer tests per change; the full suite before staging -> develop and always before
   develop -> main.
-- Sessions (user, 2026-11-26): the user clears sessions near 250K tokens. A Tools and CI session owns CI and tooling
+- Sessions (user, 2026-11-26): the coordinator may stop and restart topic sessions itself near 250K tokens
+  (`tools/coord/cycle_session.sh`, #1897; before it, the user cleared them by hand). A Tools and CI session owns CI and tooling
   (#1871, #1874). Local model plan: the coordinator drives the subject sessions; they design and decide, and implement
   through the local model once it runs.
 - Research picks (user, 2026-11-26): progression state (research, blueprints, map) is team-scoped and sent to late
   joiners; world saves get a name palette (part/item names in the save instead of relying on enum order). Twelve
   research items moved to the front of the session queues.
+
+Rulings recorded 2026-11-27 (user, via the coordinator; dated where the ruling names its day, the rest are from
+2026-11-26/27)
+- Terrain:
+  - Hillslope about 15 (#1884).
+  - Terrain v2 is option B (#1964). B is the default with the guessed values: 100 m bake, dt 4, valleys 15-60 m,
+    half-width 40 m plus 4x for rivers, breach <= 8 m, bake version 33. They get tuned later in a playtest (2026-11-27
+    morning).
+  - Bake <-> biome coupling is in scope (#1964).
+  - Ponds on B come from the 50 m routing (#2039, 2026-11-27). This is the coordinator's default while the user hasn't
+    picked, and is revertible.
+- Biomes and foliage:
+  - #1964:
+    - The table is kept, with 4 rares; oceans come later.
+    - Biome names show in the UI.
+    - Creature models are reused.
+    - Latex comes at 1/3 rate.
+    - Biomes are 2-3x as many, as variants.
+    - Priority P1.
+  - Every biome gets its own grass and foliage tint (#2032, 2026-11-27).
+  - Trees (#1995):
+    - Blocky low-poly with more structure.
+    - Shapes per species, seeded variants and size classes.
+    - Bark and bush textures. Blender is allowed.
+- Fluids:
+  - Fluids scale by the body's g (#1942).
+  - Drying (#1944): keep 1 mm per 20 s under 5 cm; pools never dry.
+  - Option A pressure pass (#1898).
+- Machines: the trip hammer is bloom-only; the rotary pump's 20 L/s is kept (#1734).
+- Progression and multiplayer:
+  - Blueprints are team plus personal; a team switch keeps the explored map (#1886).
+  - The creative-fly trust rule stands (#1922).
+- CI and tooling:
+  - Runner tiers (#1871): affected scenarios per PR, a batched staging run, the full suite at promotion and nightly.
+  - 2026-11-27 morning:
+    - The one-file `selfhosted.yml` PR into main was OK'd for the coordinator to merge (#2027).
+    - CI-only PRs may merge with known-flaky failures (the merge bot's gate, `.github/CI.md`).
+    - The reservation check covers `kErosionBakeVersion` too (#2009).
+    - The logger `_assert` fix.
+- Process:
+  - The coordinator may restart topic sessions (#1897).
+  - The playtest build comes later (2026-11-27 morning).
+  - Research budget floor $30: no new research jobs without the user.
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

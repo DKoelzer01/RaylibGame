@@ -22,6 +22,9 @@ namespace {
     std::map<int, QuestBookState> books; // loaded team books (by team id)
     // (#338 slice 3) the map tiles each team has explored, by body: saved with its book (team_tiles lines), never sent to clients
     std::map<int, std::map<std::string, std::unordered_set<uint64_t>>> tiles;
+    // (#1886) the map tiles each player revealed themselves, by player id: a player who changes teams carries them along
+    // (the user, on #1886); saved in the world (player_tiles blocks)
+    std::map<std::string, NavTiles> playerTiles;
 
     // The book selected while `fn` runs (every QuestBook_* call works on the selected one), then the local one again.
     template <class F> void With(QuestBookState& b, F fn) {
@@ -122,7 +125,46 @@ void TeamQuests_StoreAll() {
     }
 }
 
-void TeamQuests_Reset() { books.clear(); tiles.clear(); }
+void TeamQuests_Reset() { books.clear(); tiles.clear(); playerTiles.clear(); }
+
+std::string TeamQuests_TilesText(int team) {
+    TeamQuests_Book(team); // (its stored tiles load with it)
+    return Nav_TilesText(tiles[team]);
+}
+
+int TeamQuests_CarryPlayer(const std::string& uuid, int team) {
+    auto it = playerTiles.find(uuid);
+    if (it == playerTiles.end() || !team) return 0;
+    QuestBookState& dst = TeamQuests_Book(team);
+    size_t added = 0, all = 0;
+    for (const auto& [body, set] : it->second) {
+        auto& into = tiles[team][body];
+        const size_t before = into.size();
+        into.insert(set.begin(), set.end());
+        added += into.size() - before;
+    }
+    for (const auto& [body, set] : tiles[team]) all += set.size();
+    if (all) dst.counts["explored"] = std::max(dst.counts["explored"], (double)all);
+    return (int)added;
+}
+
+void TeamQuests_SavePlayers(FILE* f) {
+    for (const auto& [uuid, t] : playerTiles) {
+        const std::string text = Nav_TilesText(t);
+        if (!text.empty()) fprintf(f, "player_tiles %s\n%splayer_tiles_end\n", uuid.c_str(), text.c_str());
+    }
+}
+
+bool TeamQuests_LoadPlayerLine(const char* tok, FILE* f) {
+    if (strcmp(tok, "player_tiles") != 0) return false;
+    char uuid[64] = {};
+    if (fscanf(f, " %63s", uuid) != 1) return true;
+    std::string text;
+    char word[64];
+    while (fscanf(f, " %63s", word) == 1 && strcmp(word, "player_tiles_end") != 0) { text += word; text += ' '; } // (the tile text reads as words)
+    Nav_TilesFromText(text, playerTiles[uuid]);
+    return true;
+}
 
 void TeamQuests_ApplyText(const std::string& text) {
     QuestBook_Select(nullptr);
@@ -195,8 +237,9 @@ bool TeamQuests_SelfTest() {
     return ok;
 }
 
-int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius) {
+int TeamQuests_Explore(int team, const std::string& body, Vector3 up, float radius, const std::string& uuid) {
     TeamQuests_Book(team); // (its stored tiles load with it)
+    if (!uuid.empty()) Nav_RevealTiles(up, radius, playerTiles[uuid][body]); // (#1886) theirs too, to carry on a team change
     if (Nav_RevealTiles(up, radius, tiles[team][body]) == 0) return 0;
     size_t all = 0;
     for (const auto& [b, set] : tiles[team]) all += set.size();

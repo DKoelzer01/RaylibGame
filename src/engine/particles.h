@@ -34,7 +34,7 @@ struct ParticleBurst {
     float life = 1.0f;             // s (each particle +-30%)
     float speed = 1.0f;            // m/s, along `dir` plus a random cone of `spread`
     float spread = 0.6f;           // 0 = straight along dir, 1 = any direction
-    Vector3 dir = { 0, 1, 0 };     // body-local; zero = away from the body centre ("up")
+    Vector3 dir = { 0, 0, 0 };     // body-local; zero (the default, #1859 L8) = away from the body centre ("up")
     Vector3 baseVel = { 0, 0, 0 }; // body-local velocity added to every particle (a moving emitter)
 };
 

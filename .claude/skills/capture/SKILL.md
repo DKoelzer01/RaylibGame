@@ -30,13 +30,15 @@ The script builds `build/check` first (it stops if the build fails), runs the ga
 The game resolves the root: `RAYLIBGAME_CAPTURE_ROOT` if set; else the Claude media store on deweyserver, `\\DEWEYSERVER\files\claude-media\raylib-captures`, when reachable; else `%USERPROFILE%\RaylibCaptures`. The root is kept under 10 GB (`RAYLIBGAME_CAPTURE_MAX_GB`): the oldest captures are deleted first. Don't rely on old captures existing; re-capture a baseline when you need one. Captures never go in the repo. The user can also press **F10** in normal play to record (`<root>/<date>/<HHMMSS>/`, every 2 frames until F10 again, at most 30 min; GIF of the first 30 s + sheet).
 
 ## Look at it
-1. Read the contact sheet: the whole run at a glance. Either:
-   - `mcp__deweyserver__media_get(path="raylib-captures/<YYYY-MM-DD>/<name>-<HHMMSS>")` (path relative to the media store
-     root; a capture folder returns its `sheet.png`, scaled to `max_width`, default 1280), or
-   - the Read tool on the printed `sheet.png` path (UNC paths work: `\\DEWEYSERVER\files\...`; local captures under
-     `%USERPROFILE%\RaylibCaptures` need Read).
+1. Read the contact sheet: the whole run at a glance.
+   - Captures on deweyserver (the default): `mcp__deweyserver__media_get(path="raylib-captures/<YYYY-MM-DD>/<name>-<HHMMSS>")`
+     (path relative to the media store root, i.e. the printed path after `claude-media/`; a capture folder returns its
+     `sheet.png`, scaled to `max_width`, default 1280). **Don't use the Read tool on a `\\DEWEYSERVER\...` or
+     `//DEWEYSERVER/...` path:** a Read of a UNC path asks for permission whatever the allow rules say, and the session
+     stops until someone answers.
+   - Local captures (`%USERPROFILE%\RaylibCaptures`, or a `RAYLIBGAME_CAPTURE_ROOT` on this PC): the Read tool.
 2. Look at single frames where something changes or looks wrong: `media_get(path=<capture>, frame=N)` (use
-   `max_width=0` for full size when details matter), or Read `frame_NNNN.png`.
+   `max_width=0` for full size when details matter); Read `frame_NNNN.png` only for a local capture.
 3. To find captures (also ones the user recorded with F10): `mcp__deweyserver__media_list(path="raylib-captures")` lists
    days newest first; `path="raylib-captures/<day>"` lists captures with frame counts and whether a sheet or GIF exists.
    The media tools are read-only; only the game writes captures.
