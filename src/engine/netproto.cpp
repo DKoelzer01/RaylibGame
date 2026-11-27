@@ -14,6 +14,7 @@ const char* NetMsgName(NetMsg m) {
         case NetMsg::Input: return "input"; case NetMsg::PlayerState: return "player state"; case NetMsg::TerrainEdit: return "terrain edit"; case NetMsg::Shower: return "shower"; case NetMsg::Roster: return "roster"; case NetMsg::Loadout: return "loadout";
         case NetMsg::PartRequest: return "part request"; case NetMsg::PartRefused: return "part refused"; case NetMsg::PlotEdit: return "plot edit";
         case NetMsg::EditRequest: return "edit request"; case NetMsg::EditRefused: return "edit refused"; case NetMsg::InventoryDelta: return "inventory delta"; case NetMsg::Chat: return "chat"; case NetMsg::PlayerSnapshot: return "player snapshot"; case NetMsg::Animals: return "animals"; case NetMsg::AnimalHit: return "animal hit"; case NetMsg::Damage: return "damage"; case NetMsg::Vitals: return "vitals"; case NetMsg::UseItem: return "use item"; case NetMsg::BedUse: return "bed use"; case NetMsg::Graves: return "graves"; case NetMsg::QuestBook: return "quest book"; case NetMsg::CraftRequest: return "craft request"; case NetMsg::MachineAction: return "machine action"; case NetMsg::MachineView: return "machine view"; case NetMsg::MachineStates: return "machine states"; case NetMsg::TeamState: return "team state"; case NetMsg::PlantAction: return "plant action"; case NetMsg::Plants: return "plants"; case NetMsg::FarmFields: return "farm fields"; case NetMsg::Claims: return "claims"; case NetMsg::DropItems: return "drop items"; case NetMsg::CreativeGive: return "creative give"; case NetMsg::SkillState: return "skill state"; case NetMsg::SkillSpend: return "skill spend"; case NetMsg::CreatureFx: return "creature fx"; case NetMsg::SetGem: return "set gem";
+        case NetMsg::BeltSnapshot: return "belt snapshot"; case NetMsg::BeltSteps: return "belt steps"; case NetMsg::BeltResync: return "belt resync"; // (#1735)
         case NetMsg::SyncIndex: return "sync index"; case NetMsg::SyncWant: return "sync want"; case NetMsg::SyncData: return "sync data"; case NetMsg::SyncDone: return "sync done";
         default: return "?";
     }
@@ -572,6 +573,9 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Claims: { MsgClaims m; return NetRead(r, m); }
         case NetMsg::SkillState: { MsgSkillState m; return NetRead(r, m); }
         case NetMsg::SkillSpend: { MsgSkillSpend m; return NetRead(r, m); }
+        case NetMsg::BeltSnapshot: { MsgBeltSnapshot m; return NetRead(r, m); }
+        case NetMsg::BeltSteps: { MsgBeltSteps m; return NetRead(r, m); }
+        case NetMsg::BeltResync: { MsgBeltResync m; return NetRead(r, m); }
         default: return false;
     }
 }

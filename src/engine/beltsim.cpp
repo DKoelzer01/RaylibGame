@@ -99,7 +99,7 @@ bool MoveItems(BeltLine& L) {
 }
 } // namespace
 
-void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink) {
+void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink, std::vector<int>* taken) {
     std::vector<char> changed(lines.size(), 0);
     for (size_t i = 0; i < lines.size(); ++i) {
         BeltLine& L = lines[i];
@@ -113,6 +113,7 @@ void Belt_Step(std::vector<BeltLine>& lines, const BeltSinkFn& sink) {
             bool left = false;
             if (L.end == BeltEnd::Sink && sink) {
                 left = sink(L.sink, item);
+                if (left && taken) taken->push_back((int)i);
             } else if (L.end == BeltEnd::Belt && L.outLine >= 0 && (size_t)L.outLine < lines.size() && (size_t)L.outLine != i) {
                 left = Belt_TryInsert(lines[L.outLine], item, L.outPos); // the target's own items have the right of way
                 if (left) changed[L.outLine] = 1;
