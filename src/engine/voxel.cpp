@@ -594,7 +594,11 @@ PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const
     for (int i = 0; i < (int)ponds.size(); ++i) {
         const Vector3 s = Vector3Scale(ponds[i].dir, radius);
         // Water shows at the hollow's middle, by whatever rule (pond, lake or river): the ground stands under the water.
-        if (elevation(ponds[i].dir, 0.0f) < waterElevation(ponds[i].dir, 0.0f) - 0.1f) ++c.wet;
+        if (elevation(ponds[i].dir, 0.0f) < waterElevation(ponds[i].dir, 0.0f) - 0.1f) {
+            ++c.wet;
+            const float arc = acosf(std::clamp(Vector3DotProduct(Vector3Normalize(dir), ponds[i].dir), -1.0f, 1.0f)) * radius;
+            if (c.nearestWet < 0.0f || arc < c.nearestWet) { c.nearestWet = arc; c.nearestWetDir = ponds[i].dir; }
+        }
         if (best[PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell))] != i) { ++c.shadowed; continue; }
         int reason = 0;
         const Pond p = bakePond(i, reason);

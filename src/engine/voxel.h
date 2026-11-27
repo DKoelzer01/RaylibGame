@@ -288,7 +288,8 @@ public:
     // kept one (-1: none); smallest: the least radius kept (m).
     // nearWater = inLake (in a lake's water; lakeIsPond of those at the pond's own level) + lakeBank + river.
     struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, inLake = 0, lakeIsPond = 0, lakeCellsMax = 0, lakeBank = 0, river = 0,
-                        low = 0, depth = 0, within = 0, wet = 0; float nearest = -1.0f, smallest = -1.0f; };
+                        low = 0, depth = 0, within = 0, wet = 0; float nearest = -1.0f, smallest = -1.0f;
+                        float nearestWet = -1.0f; Vector3 nearestWetDir{ 0, 1, 0 }; }; // the nearest hollow showing water (any rule)
     PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
