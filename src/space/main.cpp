@@ -849,6 +849,7 @@ int main(int argc, char** argv)
     DVec3 walkLast{};
     Vector3 benchCamOffset = { -70.0f, 35.0f, 70.0f }; // --cam dx dy dz: bench camera offset from the planetoid
     float benchViewHeight = 40.0f; // --bench-height H: a planet bench's view height over the start (m)
+    bool hasBenchToward = false; Vector3 benchToward{}; // --bench-toward x y z: the bench view faces this body-local direction (#1988)
     float benchPitch = -999.0f; bool benchUphill = false; // --bench-pitch DEG (up > 0), --bench-uphill: face up the eroded slope (#357 cliff shots)
     float benchTurn = 0.0f; // --bench-turn DEG_PER_S (#134): the camera yaws on the spot through the timed run (Hi-Z pop checks)
     bool benchCamGiven = false;   // --cam given: use the offset (otherwise a planet bench looks along the surface from 40 m up, #291)
@@ -929,6 +930,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--bench-pitch" && i + 1 < argc) benchPitch = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-turn" && i + 1 < argc) benchTurn = (float)atof(argv[i + 1]);
         if (std::string(argv[i]) == "--bench-uphill") benchUphill = true;
+        if (std::string(argv[i]) == "--bench-toward" && i + 3 < argc) { hasBenchToward = true; benchToward = Vector3Normalize({ (float)atof(argv[i + 1]), (float)atof(argv[i + 2]), (float)atof(argv[i + 3]) }); }
         if (std::string(argv[i]) == "--bench-pond") gSpawnPond = true; // start at the nearest pond's rim (#251 crack checks)
         if (std::string(argv[i]) == "--bench-biome" && i + 1 < argc) { // start the bench (and the player) in the nearest deep patch of a biome (#133 checks)
             for (int b = 0; b < (int)Biome::Count; ++b) if (!strcmp(BiomeName((Biome)b), argv[i + 1])) gSpawnBiome = b;
@@ -2156,7 +2158,7 @@ int main(int argc, char** argv)
             float mpp = 1.0f;
             for (int k = 1; k + 1 < argc; ++k) if (std::string(argv[k]) == "--hillshade-mpp") mpp = (float)atof(argv[k + 1]);
             const int N = 1024;
-            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 home = hasSpawnDir ? spawnDir : pf->findSpawnDir(p->seed); // --spawn-dir: anywhere (#1988: a face edge)
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
             std::vector<float> h((size_t)N * N);
             std::vector<std::thread> team;
@@ -2184,7 +2186,7 @@ int main(int argc, char** argv)
                 }
             ExportImage(img, "bench_hillshade.png");
             UnloadImage(img);
-            printf("bench: hillshade: %d px at %.2f m/px, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, curv / std::max<long long>(1, nc));
+            printf("bench: hillshade: %d px at %.2f m/px around dir %.4f %.4f %.4f, mean |d2h| %.5f m -> bench_hillshade.png\n", N, mpp, home.x, home.y, home.z, curv / std::max<long long>(1, nc));
             return 0;
         }
 
@@ -2272,8 +2274,19 @@ int main(int argc, char** argv)
         if (!benchAtSave && !benchCamGiven && benchPlanet && dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
             // A planet (#291): 40 m above the start, looking ahead along the surface and a little down (the asteroid
             // offset below put the camera under the terrain). It rides the planet from here (#127).
+            const auto* pfs = dynamic_cast<const PlanetField*>(benchPlanet->field.get());
+            if (hasSpawnDir && !spawnDirLocal) { // --spawn-dir (body-local here, as --shot-hillshade): the player and the view there (#1988 A/B poses)
+                const DVec3 at = benchPlanet->toWorldD(DVec3(spawnDir) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(spawnDir, 1.0f)) + 1.0f));
+                player.position = at;
+                player.up = benchPlanet->dirToWorld(spawnDir);
+                player.forward = Vector3Normalize(Vector3CrossProduct(player.up, { 1, 0, 0 }));
+            }
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
+            if (hasBenchToward) { // --bench-toward x y z: face a body-local direction (a mountain, a valley)
+                const Vector3 d = (benchPlanet->toWorldD(DVec3(benchToward) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(benchToward, 1.0f)))) - player.position).toFloat(), dt = Vector3Subtract(d, Vector3Scale(player.up, Vector3DotProduct(d, player.up)));
+                if (Vector3Length(dt) > 1e-3f) ahead = Vector3Normalize(dt);
+            }
             if (benchUphill) // --bench-uphill (#357): face up the eroded slope, toward the cliff above
                 if (const auto* pfb = dynamic_cast<const PlanetField*>(benchPlanet->field.get())) {
                     const Vector3 dl = Vector3Normalize(benchPlanet->toLocal(feet));

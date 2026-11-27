@@ -706,6 +706,9 @@ RiverNetwork::RiverNetwork(const PlanetErosion& ero, float radius, const Params&
         const Vector3 b = nodeParent[k] >= 0 ? centreN[nodeParent[k]] : centreN[k];
         pos[k] = Vector3Normalize(Vector3Add(Vector3Scale(centreN[k], 0.5f), Vector3Add(Vector3Scale(a, 0.25f), Vector3Scale(b, 0.25f))));
     }
+    // #1988 (option B): the meander. Every node moves along the bake's noise field, so the links wind off the 50 m grid
+    // path (lake nodes stay: the lake is the bake's); the valley carve follows the moved line.
+    if (params.meanderShift) for (int k = 0; k < M; ++k) if (!fineLake.count(nodeCell[k])) pos[k] = params.meanderShift(pos[k], area[k]);
     // Widths and depths by drainage. A head's trickle is at least 2 m wide and 0.5 m deep (#631: a 1.6 m x 0.3 m one showed
     // as an empty trench - the water mesh draws nothing under 0.15 m, and coarser terrain never resolved the channel).
     // Discharge (#637, user: most rivers 10-20 m wide, the big ones where several join 30-50 m and several metres deep): each
@@ -948,6 +951,19 @@ bool RiverNetwork::nearestHead(Vector3 dir, float minLevel, Vector3& head, Vecto
     head = Vector3Normalize(pc.a);
     down = Vector3Normalize(Vector3Subtract(pc.b, pc.a));
     return true;
+}
+
+void RiverNetwork::forEachPieceNear(Vector3 dir, float reach, const std::function<void(float, float, float)>& fn) const {
+    const auto& list = index[cellOf(dir)];
+    const Vector3 p = Vector3Scale(dir, R);
+    for (int i : list) {
+        const Piece& pc = pieces[i];
+        if (pc.inLake || Vector3Distance(p, pc.mid) - pc.halfLen >= reach) continue;
+        float t;
+        const float d = SegDist(p, pc.a, pc.b, t);
+        if (d >= reach) continue;
+        fn(d, pc.fallT < 0.0f ? pc.la + (pc.lb - pc.la) * t : t < pc.fallT ? pc.la : pc.lb, pc.wa + (pc.wb - pc.wa) * t);
+    }
 }
 
 float RiverNetwork::carve(Vector3 dir, float h) const {

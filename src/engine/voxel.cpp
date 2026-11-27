@@ -336,11 +336,13 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.coarseDt = envf("RAYLIBGAME_EROSION_DT", p.coarseDt); // #1957 (1: the old 400 small coarse steps, A/B)
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
+    p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", (float)p.bFace); // #1988: option B on face 0-5, 6 every face (default), -1 none (A)
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
     const auto tl0 = std::chrono::steady_clock::now();
     const bool loaded = !cachePath.empty() && b.load(cachePath, radius, fieldSeed, ErosionParamsKey(p));
+    if (loaded) b.bFace = p.bFace; // #1988 (the key holds it)
     const float loadMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - tl0).count();
     if (!loaded) {
         int threads = std::max(1u, std::thread::hardware_concurrency());
@@ -404,7 +406,15 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
     if (eroded) {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
-        if (gGullies && fp < 450.0f) h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+        if (gGullies && fp < 450.0f) {
+            // #1988: option B on its face, the 50 m detail made here (the bake's routed drainage keeps valley floors smooth),
+            // blended with the A gullies across the face edge.
+            const float wb = eroded->bWeight(dir);
+            const Vector3 sp = { sx, sy, sz };
+            const float a = wb < 1.0f ? ErosionGullies(sp, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)) : 0.0f;
+            const float b = wb > 0.0f ? TerrainBDetail(sp, dir, s.grad, fp, fieldSeed, s.h, eroded->drainageAt(dir)) : 0.0f;
+            h += (l.relief = a + wb * (b - a));
+        }
         { const float cf = cliffFace({ sx, sy, sz }, h, s.grad, fp); h += cf; l.relief += cf; } // one face per steep resistant layer (#588)
         { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)
             const float top = maxElevation - 65.0f, knee = top - 200.0f;
@@ -748,6 +758,12 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
             if (rh.found) h -= l.relief * (1.0f - Smoothstep(rh.halfWidth + 20.0f, rh.halfWidth + 140.0f, rh.dist));
         }
         const float cw = std::clamp(2.0f - fp / 16.0f, 0.0f, 1.0f) * Smoothstep(-2.0f, 0.5f, l.h);
+        // #1988 (option B): each river's valley along its (meandering) line, down to just above the water.
+        if (fp < 512.0f && erosion()->bFace >= 0) {
+            float cut = 0.0f; // the deepest of every piece's valley (the nearest piece switches between rivers at other levels)
+            netAll->forEachPieceNear(dir, 175.0f, [&](float d, float lv, float hw) { cut = std::max(cut, erosion()->valleyCut(dir, h, d, lv, hw)); });
+            h -= cut * std::clamp(2.0f - fp / 256.0f, 0.0f, 1.0f);
+        }
         if (cw > 0.0f) { const float c = netAll->carve(dir, h); h += (c - h) * cw; }
     }
     else if (const RiverNetwork* net = netAll) {
@@ -788,10 +804,20 @@ float PlanetField::elevation(Vector3 dir, float fp) const {
     // ground falls away. Faded out where samples are too far apart to resolve them.
     const float pw = std::clamp(2.0f - fp / 48.0f, 0.0f, 1.0f);
     if (pw > 0.0f) {
+        const PlanetErosion* ero = erosion();
         ForPondCellsNear(Vector3Scale(dir, radius), kPondReach, [&](int x, int y, int z) {
             const Pond p = pondOfCell(x, y, z);
             if (!p.exists) return;
             const float dist = Vector3Distance(dir, p.dir) * radius;
+            // #2039: on option B the ground around a pond is the chunk-time detail over the smooth bake, metres above the
+            // routing's level, and the bowl alone left a sheer ring wall: a bank slopes from the water out to kPondBank.
+            const float wb = ero ? ero->bWeight(p.dir) : 0.0f;
+            constexpr float kPondBank = 30.0f; // m past the pond's radius
+            if (wb > 0.0f && dist >= p.r && dist < p.r + kPondBank && h > p.level + 0.4f) {
+                const float bank = p.level + 0.4f + (h - p.level - 0.4f) * Smoothstep(p.r, p.r + kPondBank, dist);
+                h += (bank - h) * wb * pw;
+                return;
+            }
             if (dist >= 1.8f * p.r) return;
             float target;
             if (dist < p.r) {
@@ -952,6 +978,7 @@ const RiverNetwork* PlanetField::rivers() const {
         if (ero && ero->hasFlow()) {
             // Bake-native rivers (#547): the bake's own final drainage on its 50 m grid; streams from 1 km^2.
             rp.riverArea = 1.0e6f; rp.lakeDepth = 1.5f;
+            if (ero->bFace >= 0) rp.meanderShift = [ero](Vector3 d, float a) { return ero->meanderShift(d, a); }; // #1988 (option B)
             // Runoff (#637): moister climates and a busier water cycle put more water into every km^2 drained (wider, deeper rivers).
             rp.runoff = [this](Vector3 d) { return (0.5f + climateAt(d, 100.0f).moist) * gen.waterCycle; };
             // (#637) Rivers fill their worn valley floors from a water cycle of 1 up; at 0.5 only the discharge width (narrow streams).
