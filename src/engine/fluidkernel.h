@@ -70,6 +70,9 @@ struct Grid {
     std::vector<uint32_t> dem, cap;
     std::vector<uint16_t> pairCode;
     std::vector<uint32_t> sinkOut; // per slot: fill units its sinks took in (river flow, #656; the caller zeroes it)
+    // Per slot: the root of its body's gravity over Terra's (#1942; 1 on Terra): G k k drives the momentum, k scales the
+    // levelling share. The GPU reads it from inS.
+    std::vector<float> gRoot;
     // The pressure pass (#1168), per cell: the head H of the free surface a water cell is connected to, in fill units (255 a
     // row) above the cell's own bottom. pr: the last substep's (read by the vertical pass), prN: this substep's (written by it);
     // the apply pass copies prN to pr per cell. The host carries pr per brick between ticks, as faceP.
