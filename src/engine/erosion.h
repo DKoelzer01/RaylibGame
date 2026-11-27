@@ -28,7 +28,7 @@ using StrataFn = std::function<StrataColumn(Vector3)>; // #587: the rock column 
 
 // Bump with any change to the bake's code (Simulate, SetRock, the refinement, the pond extraction): a cache from
 // another version or other parameters is baked again rather than loaded (#355 review).
-constexpr uint32_t kErosionBakeVersion = 31; // 31: 30 with the deterministic libm of 28-29 (#1905, #1967); 30: creep never fills the fine pass's hollows (ponds, #1965); 28-29: deterministic libm (#1967); 27: hillslope diffusion, random receivers (#1884); 26: varied talus limits, lateral erosion on the fine grid (#633); 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
+constexpr uint32_t kErosionBakeVersion = 32; // 32: creep spares only hollows 0.4 m+ deep, shallow pits drain (#2018); 31: 30 with the deterministic libm of 28-29 (#1905, #1967); 30: creep never fills the fine pass's hollows (ponds, #1965); 28-29: deterministic libm (#1967); 27: hillslope diffusion, random receivers (#1884); 26: varied talus limits, lateral erosion on the fine grid (#633); 25: final drainage, diagonal channel corners worn, channels in the bake (#547); 22: graded canyon floors (#544), divides past 400 m of cut; 19: formations kept inside the elevation bound; 18: // 18: glacial 2.0 (#548); 17: // 16: volcanoes (#593); 15: karst (#592); // 13: fold outcrops raised in the bake input; 12: folded strata (#591); 11: narrower fault steps; 10: fault scarps in the bake input (#590); 9: canyons in the bake input (#544); 8: rock strata (#587); 7: the noise seed offsets changed (#532); 6: wind (aeolian) erosion, #370
 struct ErosionParams {
     float cell = 200.0f;      // m, coarse cell at a face centre (gnomonic cells shrink toward the face edges)
     int steps = 400;
@@ -52,6 +52,8 @@ struct ErosionParams {
                               // V-notches (user 2026-11-26: 15, not 40, to keep the gullies and sharper crests; 0: off)
     bool randomReceivers = true; // #1884: each flood gives a cell a receiver among its lower neighbours, odds by slope,
                               // instead of the steepest one: channels stop following the 8 grid directions (false: steepest)
+    float coarseDt = 1.0f;    // #1957: the coarse pass runs steps / coarseDt steps, each coarseDt times larger (implicit stream power:
+                              // stable; dt 4: 21 s -> 6 s at the same landforms). 1: the 400 small steps (default until the user rules)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
 bool BakeRiversOld(); // #547 A/B: RAYLIBGAME_RIVERS_OLD=1 = the 200 m river network and its carving (no final drainage in the bake)

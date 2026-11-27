@@ -19,7 +19,9 @@ machine, which only the PC has.
   renumbers a NetMsg or bumps `kNetProtocol` says so in the job summary (a NetMsg change without a bump is a warning);
   erosion bake code changed without a `kErosionBakeVersion` bump is a warning; a new `gh project` command in `tools/` is
   an error; a `kNetProtocol` not reserved in `tools/ci/protocol_reservations.txt` (or one marked "(unused)") is an error
-  (#1480). It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
+  (#1480), and so is a `kSaveVersion` (`save <n>` lines, #1881) or a changed `kErosionBakeVersion` (`erosion <n>` lines,
+  #2009). Check 7 (`tools/ci/reservation_clash.sh`, #2009) fails a number this branch reserves when `origin/staging`,
+  `origin/ladder` or an open PR into them reserves it for another issue. It also decides whether the builds run: a change touching only Markdown, `docs/`, root images or `.claude/`
   skips them.
 - **Windows build + unit tests (w64devkit)**: w64devkit 2.0.0 (GCC 14.2, the shipping toolchain, SHA-256 pinned),
   MinGW Makefiles, `-DENABLE_GNS=ON`, targets `game` and `game_tests`, then `game_tests.exe` from the repo root.
@@ -63,6 +65,13 @@ volume's device and inode, and its slot. (Before, concurrent jobs shared one `ou
 other's binary and saves mid-run: the failures of 2026-11-21 from ~15:30 UTC, #1407, #1406.)
 After the tests, the GPU job's summary lists every `-> FAIL` line of its logs marked **known (#N)** from
 `tools/ci/known_failures.txt` or **NEW** (`tools/ci/mark_failures.sh`, #1479; the runner-check skill's matching).
+**The merge bot's runner gate** (`runner-evidence` PRs, deweyserver `mergebot`) passes a red run when every failure is
+known: in the run's own `known_failures.txt` or the base branch's current one. **Known-flaky** (user, 2026-11-27): in a
+PR that touches nothing under `src/` or `resources/`, a NEW *scenario* failure also passes when that scenario passed at
+least 60% of its newest 20 runner results on staging (at least 5 results; `m84-integration` counts as staging). Such a
+PR can't have made a scenario fail, and each staging flake otherwise cost it another ~2 h runner round. Bench, join and
+server lines never qualify, nor a new scenario without 5 results; the bot's log names the flakes it let through. File
+the flake (an issue and a known line) all the same.
 The runner has no LAN access: the server package reaches the Pterodactyl server through the host-side script
 `tools/ci/deweyserver-update-server.sh` (see `docs/ci-deweyserver.md`).
 

@@ -6,4 +6,8 @@ fluid/u-bend               # 1 of 5 checks; GPU 2/2
 fluid/u-bend-cpu           # 1 of 5 checks; GPU 2/2
 water/film-on-tiles        # 1 of 3 checks; GPU 20/20
 world/spawn-by-water       # 1 of 5 checks; GPU 15/16
+# Baselines that fail by design everywhere (#1168: the pressure pass off, the U-bend never levels); the runner skips
+# them by tag and known_failures.txt lists them (#2034).
+fluid/u-bend-off           # 1 of 5 checks by design
+fluid/u-bend-off-cpu       # 1 of 5 checks by design
 # (The net joins and craft/recursive-circuit were here: their deadlines now count wall time as well, s.realTime, #1972.)

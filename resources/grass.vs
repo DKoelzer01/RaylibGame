@@ -20,6 +20,7 @@ out float fragHeight;      // 0 root .. 1 tip
 out float fragHash;
 out float fragLatitude;    // |body-local up.y|: 0 equator, 1 pole
 out vec3 fragClimate;      // Plan 5 B: temperature (C), moisture, 1 if known (packed in the up vector's length)
+flat out float fragBiome; // (#2032) the biome variant id (biometint.glsl), 0 if none
 out float fragBlade;       // per-blade shade variation in [0, 1)
 
 void main()
@@ -70,7 +71,9 @@ void main()
     fragHash = h;
     fragLatitude = abs(normalize(instUpHash.xyz).y);
     float cl = length(instUpHash.xyz);
-    fragClimate = cl > 1.5 ? vec3((floor(cl) - 2.0) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    float clN = floor(cl) - 2.0, clId = floor(clN / 64.0); // (#2032) 64 x the variant id rides on the step
+    fragClimate = cl > 1.5 ? vec3((clN - 64.0 * clId) / 62.0 * 70.0 - 30.0, fract(cl), 1.0) : vec3(0.0); // codes from 2 (#254)
+    fragBiome = cl > 1.5 ? clId : 0.0;
     fragBlade = fract(float(gl_VertexID / 3) * 0.618034 + h * 7.0);
     gl_Position = matViewProj * vec4(p, 1.0);
     // Thin clumps with distance: past 30% of the draw distance drop a growing share of the blades (down to a third by
