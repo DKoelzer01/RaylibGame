@@ -390,13 +390,19 @@ void TerrainArena_Pack(const ChunkMeshData& d, ArenaPacked& out) {
         if (tan) {
             // The climate (2 + temperature step 0-62 + moisture < 1; under 1.5: none) as bit fields, so it comes back exact:
             // (step + 1) * 1024 + moisture * 1023, 0 = none (lighting.vs rebuilds 2 + step + moisture).
+            // (#2032) The code's biome variant id (64 x id on the step) has no room there: it rides in the canopy's top 6
+            // bits instead (canopy cover keeps 10 bits: id * 1024 + canopy * 1023); lighting.vs puts it back in the code.
             const float c = d.tangents[i * 4 + 1];
             uint16_t packed = 0;
+            int variant = 0;
             if (c >= 1.5f) {
-                const int step = std::clamp((int)floorf(c) - 2, 0, 62);
+                const int n = (int)floorf(c) - 2;
+                variant = std::clamp(n / 64, 0, 63);
+                const int step = std::clamp(n - 64 * (n / 64), 0, 62);
                 packed = (uint16_t)((step + 1) * 1024 + std::clamp((int)((c - floorf(c)) * 1023.0f + 0.5f), 0, 1023));
             }
-            o.tan[0] = un16(d.tangents[i * 4]); o.tan[1] = packed;
+            const int canopy = std::clamp((int)(d.tangents[i * 4] * 1023.0f + 0.5f), 0, 1023);
+            o.tan[0] = (uint16_t)(variant * 1024 + canopy); o.tan[1] = packed;
             o.tan[2] = un16(d.tangents[i * 4 + 2]); o.tan[3] = un16(d.tangents[i * 4 + 3]);
         } else { o.tan[0] = o.tan[1] = o.tan[2] = 0; o.tan[3] = 65535; }
         o.occ = d.occlusion.size() >= (size_t)nv0 ? un16(d.occlusion[i]) : 0;

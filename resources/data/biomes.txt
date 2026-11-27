@@ -85,7 +85,7 @@ variant swamp.peat_bog
 
 variant taiga.spruce
   name    Spruce taiga
-  tint    0.85 0.95 1.0   0.75 0.85 1.0
+  tint    0.72 0.86 0.92   0.65 0.8 0.98
   weight  40
 variant taiga.pine_barrens
   name    Pine barrens
@@ -175,11 +175,11 @@ variant badlands.red_canyon
 
 variant savanna.grassland
   name    Grass savanna
-  tint    2.5 1.55 0.5   1.5 1.15 0.55
+  tint    2.5 1.25 0.38   1.5 1.1 0.5
   weight  40
 variant savanna.acacia
   name    Acacia woodland
-  tint    2.2 1.45 0.55   - - -
+  tint    2.2 1.2 0.42   - - -
   weight  35
   flora   4.0 0.9 0.8 1.1
   species oak 3
