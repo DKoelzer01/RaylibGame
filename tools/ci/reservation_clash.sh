@@ -7,7 +7,7 @@
 #                                          this branch's (a clash among them is an error); without BASE every line is
 #                                          checked and a clash is a warning
 #
-# Sources: origin/staging and origin/ladder (fetched, depth 1), and the lines that open PRs into staging and ladder add to
+# Sources: origin/staging and origin/ladder (fetched; at depth 1 only in a shallow clone), and the lines that open PRs into staging and ladder add to
 # the file (GitHub API; needs gh with a token, else that part is skipped with a note). A number reserved twice for the
 # same issue is no clash (a sync between the bases repeats lines). Prints ::error / ::warning lines; exit 1 on an error.
 set -uo pipefail
@@ -35,9 +35,12 @@ else
 fi
 [ -n "$mine" ] || { echo "reservation_clash: this branch adds no reservation"; exit 0; }
 
+depth=""; [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ] && depth="--depth=1"
 others=""
 for b in staging ladder; do
-    git fetch -q --no-tags --depth=1 origin "$b" 2>/dev/null
+    # (#2009 incident) --depth only in a clone that is already shallow: a depth fetch into a full clone makes it shallow
+    # (the shared repo lost its history this way on 2026-11-27 and every merge of origin/staging failed)
+    git fetch -q --no-tags $depth origin "$b" 2>/dev/null
     lines="$(git show "origin/$b:$RES" 2>/dev/null | parse)"
     [ -n "$lines" ] && others+="$(sed "s/\$/\torigin\/$b/" <<< "$lines")"$'\n'
 done
