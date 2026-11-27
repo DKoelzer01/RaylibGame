@@ -2541,8 +2541,9 @@ int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) co
 
 int PlanetField::variantAt(Vector3 dir, float elev) const { return variantAt(dir, elev, dir); }
 
-int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const {
-    Climate c = climateAt(dir, elev);
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const { return variantAt(dir, elev, uDir, climateAt(dir, elev)); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir, Climate c) const {
     const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
     c.temp += 1.2f * j;
     c.moist += 0.035f * j;
@@ -3853,7 +3854,19 @@ void BuildChunkMeshFromBase(const DensityField& field, const TerrainDeltas& delt
                     const float d = Vector3Length(p);
                     const Vector3 up = Vector3Scale(p, 1.0f / d);
                     const PlanetField::Climate cl = planetLife->climateAt(up, d - planetLife->radius);
-                    out.tangents[v * 4 + 1] = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2 (#254)
+                    // (#2032) The biome variant for its grass and canopy tints, read ~100 m off at random per vertex as the
+                    // flora reads it per plant (trees.cpp), so neighbouring variants' colours cross-fade over ~200 m.
+                    int variant = -1;
+                    if (BiomeTintOn()) {
+                        uint32_t hv = (uint32_t)(int32_t)floorf(p.x * 2.0f) * 0x8da6b343u ^ (uint32_t)(int32_t)floorf(p.y * 2.0f) * 0xd8163841u ^ (uint32_t)(int32_t)floorf(p.z * 2.0f) * 0xcb1ab31fu;
+                        hv ^= hv >> 15; hv *= 0x2c1b3c6du; hv ^= hv >> 12;
+                        const float ox = (float)(hv & 0xffffu) / 65535.0f * 2.0f - 1.0f, oy = (float)(hv >> 16) / 65535.0f * 2.0f - 1.0f, k = 100.0f / planetLife->radius;
+                        const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
+                        const Vector3 u2 = Vector3CrossProduct(u1, up);
+                        const Vector3 uDir = Vector3Normalize(Vector3Add(up, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
+                        variant = planetLife->variantAt(up, d - planetLife->radius, uDir, cl); // cl: the same climateAt (#2032)
+                    }
+                    out.tangents[v * 4 + 1] = BiomeClimateCode(cl.temp, cl.moist, variant); // from 2 (#254)
                     // Distant forests: canopy cover (x), painted in where the real trees fade out.
                     if (sky > 0.9f && (m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith)) {
                         const float steep = 1.0f - Vector3DotProduct(n, up);
@@ -4089,6 +4102,42 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1905) The CPU terrain the same on every platform: the planet (seed 42, the erosion bake left out) sampled at 24 fixed
+// directions (integer lattice points, normalised: no libm in choosing them), its elevation and the density 2 m above, 3 m
+// below and 40 m below the surface, hashed bit for bit against one golden that the Windows (w64devkit) and Linux (GCC) CI legs
+// both check. Every sample is printed as hex bits, so a failing leg's log shows which direction and depth differ first.
+TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    static const int kDirs[24][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 }, { -1, 0, 0 }, { 0, -1, 0 }, { 0, 0, -1 },
+                                      { 1, 1, 0 }, { 1, 0, 1 }, { 0, 1, 1 }, { -1, 1, 0 }, { 1, -1, 1 }, { 0, -1, -1 },
+                                      { 2, 1, 0 }, { 1, 2, 3 }, { -3, 1, 2 }, { 2, -3, 1 }, { 1, 1, -3 }, { -2, -1, 3 },
+                                      { 3, 2, 1 }, { -1, 3, -2 }, { 2, 2, -1 }, { -3, -2, -1 }, { 1, -2, -2 }, { 3, -1, 2 } };
+    auto bits = [](float v) { uint32_t u; memcpy(&u, &v, sizeof u); return u; };
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint32_t u) { for (int b = 0; b < 4; ++b) h = (h ^ ((u >> (8 * b)) & 0xFF)) * 1099511628211ull; };
+    for (int k = 0; k < 24; ++k) {
+        const Vector3 dir = Vector3Normalize({ (float)kDirs[k][0], (float)kDirs[k][1], (float)kDirs[k][2] });
+        const float e = f.elevation(dir);
+        const float r = f.radius + e;
+        const float above = f.baseDensity(Vector3Scale(dir, r + 2.0f)), below = f.baseDensity(Vector3Scale(dir, r - 3.0f)),
+                    deep = f.baseDensity(Vector3Scale(dir, r - 40.0f));
+        for (float v : { e, above, below, deep }) mix(bits(v));
+        printf("terrain probe %2d: elevation %08x (%.6f m), density +2 m %08x, -3 m %08x, -40 m %08x\n", k, bits(e), e, bits(above), bits(below), bits(deep));
+    }
+    PlanetField::tIgnoreBake = false;
+    // The C library's float functions on fixed arguments (printed only): where the two legs' lines differ, so does libm.
+    // a = 2.39996323 i are WorldFingerprint's own sample angles.
+    for (int i = 1; i <= 8; ++i) {
+        const float a = 2.39996323f * (float)i, x = 0.1234567f * (float)i;
+        printf("libm probe %d: sinf %08x cosf %08x expf %08x powf %08x logf %08x asinf %08x\n", i, bits(sinf(a)), bits(cosf(a)),
+               bits(expf(-x * 3.0f)), bits(powf(x * 7.0f, 0.45f)), bits(logf(x * 1000.0f)), bits(asinf(x - 0.5f)));
+    }
+    printf("terrain probe hash %016llx\n", (unsigned long long)h);
+    constexpr uint64_t kGolden = 16656868793744975483ull; // e72915ea8175667b, Linux GCC (sandbox)
+    EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
+}
+
 // (#1905) The erosion bake's input heights give the same bits on every platform: a Linux server and a Windows client
 // baked different planets from one seed, and their first difference was already in these samples. Each term is hashed
 // on its own and printed, so the hosted CI's two legs show which one parts.

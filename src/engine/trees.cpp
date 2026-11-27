@@ -610,6 +610,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             // The variant (#1978), read ~100 m off at random per plant so neighbouring variants' flora cross-fade over
             // ~200 m instead of meeting on a line (its own hash: the cell's draws below stay as they were).
             const BiomeVariantDef* vdef = nullptr;
+            int plantVariant = -1; // (#2032) its id, for the leaf tint
             Biome biome = Biome::Forest;
             if (!onIsland) {
                 uint32_t sv = Hash(s ^ 0x19780bu);
@@ -619,7 +620,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const Vector3 uDir = Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(u1, ox * k), Vector3Scale(u2, oy * k))));
                 const int vid = f.variantAt(dir, e, uDir);
                 const BiomeVariantTable& vt = BiomeVariants();
-                if (vid >= 0 && vid < (int)vt.defs.size()) { vdef = &vt.defs[vid]; biome = vdef->type; }
+                if (vid >= 0 && vid < (int)vt.defs.size()) { vdef = &vt.defs[vid]; biome = vdef->type; plantVariant = vid; }
                 else biome = f.biomeAt(dir, e);
             }
             const BiomeFlora flora = FloraOf(biome, vdef);
@@ -741,7 +742,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
             // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
             const PlanetField::Climate cl = f.climateAt(dir, e);
-            const float code = 2.0f + floorf(std::clamp((cl.temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f) + std::min(cl.moist, 0.999f); // from 2: below 1.5 means no climate (#254)
+            const float code = BiomeClimateCode(cl.temp, cl.moist, plantVariant); // from 2: below 1.5 means no climate (#254); the variant for its tint (#2032)
             // #1995: one of the variant's forms, by its own hash (the cell's draws stay as they were); stones have one.
             const int form = TreeFormsOn() && v != kStoneVariant ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
             const int mesh = TreeMeshOf(v, form);

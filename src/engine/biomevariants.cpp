@@ -1,5 +1,8 @@
 #include "biomevariants.h"
+#include "envflag.h"
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -14,6 +17,20 @@ namespace {
         char* end = nullptr;
         out = strtof(tok.c_str(), &end);
         return end && *end == 0 && end != tok.c_str();
+    }
+
+    // (#2032) Each id's tints: its own, else its type's base's, else 1.
+    void Tints(BiomeVariantTable& t) {
+        t.grassTint.assign(t.defs.size(), Vector3{ 1.0f, 1.0f, 1.0f });
+        t.leafTint.assign(t.defs.size(), Vector3{ 1.0f, 1.0f, 1.0f });
+        for (size_t i = 0; i < t.defs.size(); ++i) {
+            const int b = t.base(t.defs[i].type);
+            const BiomeVariantDef& own = t.defs[i];
+            const BiomeVariantDef* g = own.grassTint[0] >= 0.0f ? &own : b >= 0 && t.defs[b].grassTint[0] >= 0.0f ? &t.defs[b] : nullptr;
+            const BiomeVariantDef* l = own.leafTint[0] >= 0.0f ? &own : b >= 0 && t.defs[b].leafTint[0] >= 0.0f ? &t.defs[b] : nullptr;
+            if (g) t.grassTint[i] = { g->grassTint[0], g->grassTint[1], g->grassTint[2] };
+            if (l) t.leafTint[i] = { l->leafTint[0], l->leafTint[1], l->leafTint[2] };
+        }
     }
 
     void Bands(BiomeVariantTable& t) {
@@ -93,6 +110,20 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
         } else if (key == "rubber") { // (#2012)
             std::string extra;
             if (!(ls >> d.rubber) || (ls >> extra) || d.rubber < 0 || d.rubber > 100) return fail(lineNo, "rubber takes one whole percent 0..100");
+        } else if (key == "tint") { // (#2032)
+            std::string v[6], extra;
+            ls >> v[0] >> v[1] >> v[2] >> v[3] >> v[4] >> v[5] >> extra;
+            float* dst[6] = { &d.grassTint[0], &d.grassTint[1], &d.grassTint[2], &d.leafTint[0], &d.leafTint[1], &d.leafTint[2] };
+            // Each group is three numbers 0..4, or "- - -" for the type's base's (a base: 1).
+            const char* kUse = "tint takes '<grass r g b> <leaf r g b>' (numbers 0..4, or - - - to keep the base's)";
+            for (int g = 0; g < 2; ++g) {
+                const bool keep = v[3 * g] == "-";
+                for (int i = 3 * g; i < 3 * g + 3; ++i) {
+                    if (keep) { if (v[i] != "-") return fail(lineNo, kUse); continue; }
+                    if (v[i] == "-" || !Bound(v[i], 1.0f, *dst[i]) || *dst[i] < 0.0f || *dst[i] > 4.0f) return fail(lineNo, kUse);
+                }
+            }
+            if (!extra.empty()) return fail(lineNo, kUse);
         } else if (key == "cover") {
             std::string v, extra;
             ls >> v >> extra;
@@ -117,7 +148,9 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
         if (t.byType[b].empty()) return fail(lineNo, "no variants for " + Lower(BiomeName((Biome)b)));
         if (t.defs[t.byType[b][0]].gated()) return fail(lineNo, "the base (first) variant of " + Lower(BiomeName((Biome)b)) + " has a gate: it is the fallback");
     }
+    if ((int)t.defs.size() > kMaxBiomeVariants) return fail(lineNo, "more than " + std::to_string(kMaxBiomeVariants) + " variants (biometint.glsl's arrays)");
     Bands(t);
+    Tints(t);
     out = std::move(t);
     return true;
 }
@@ -131,6 +164,7 @@ void BiomeVariants_Default(BiomeVariantTable& out) {
         out.defs.push_back(d);
     }
     Bands(out);
+    Tints(out);
 }
 
 const BiomeVariantTable& BiomeVariants() {
@@ -158,6 +192,48 @@ bool BiomeVariants_RubberRoll(int percent, uint64_t plantId) {
     uint64_t h = plantId * 0x9E3779B97F4A7C15ull; // a mix of the id: plant ids are spatial hashes, neighbours alike in their low bits
     h ^= h >> 31;
     return (int)(h % 100) < percent;
+}
+
+float BiomeClimateCode(float tempC, float moist, int variant) {
+    const float step = floorf(std::clamp((tempC + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f);
+    const float id = variant >= 0 && variant < kMaxBiomeVariants && BiomeTintOn() ? (float)variant : 0.0f;
+    return 2.0f + step + 64.0f * id + std::clamp(moist, 0.0f, 0.999f);
+}
+
+bool BiomeTintOn() { static const bool on = !(getenv("RAYLIBGAME_BIOME_TINT") && !EnvFlag("RAYLIBGAME_BIOME_TINT")); return on; }
+
+// GUESS (#2032): the climate gradient keeps 40% of its pull inside a biome; the biome's tint carries the rest.
+float BiomeClimateWeight() { return BiomeTintOn() ? 0.4f : 1.0f; }
+
+void BiomeTint_Bind(const Shader& s) {
+    // Locations per program (shaders hot-reload); the arrays are the same every frame, but a reload loses them.
+    struct Locs { unsigned int prog = 0; int grass = -1, leaf = -1, weight = -1; };
+    static Locs cache[8];
+    Locs* L = nullptr;
+    for (Locs& c : cache) if (c.prog == s.id) { L = &c; break; }
+    if (!L) {
+        static int next = 0;
+        L = &cache[next++ % 8];
+        L->prog = s.id;
+        L->grass = GetShaderLocation(s, "biomeGrassTint");
+        L->leaf = GetShaderLocation(s, "biomeLeafTint");
+        L->weight = GetShaderLocation(s, "biomeClimateWeight");
+    }
+    static Vector3 grass[kMaxBiomeVariants], leaf[kMaxBiomeVariants];
+    static const bool filled = [] {
+        const BiomeVariantTable& t = BiomeVariants();
+        for (int i = 0; i < kMaxBiomeVariants; ++i) {
+            const bool on = BiomeTintOn() && i < (int)t.defs.size();
+            grass[i] = on ? t.grassTint[i] : Vector3{ 1.0f, 1.0f, 1.0f };
+            leaf[i] = on ? t.leafTint[i] : Vector3{ 1.0f, 1.0f, 1.0f };
+        }
+        return true;
+    }();
+    (void)filled;
+    const float w = BiomeClimateWeight();
+    if (L->grass >= 0) SetShaderValueV(s, L->grass, grass, SHADER_UNIFORM_VEC3, kMaxBiomeVariants);
+    if (L->leaf >= 0) SetShaderValueV(s, L->leaf, leaf, SHADER_UNIFORM_VEC3, kMaxBiomeVariants);
+    if (L->weight >= 0) SetShaderValue(s, L->weight, &w, SHADER_UNIFORM_FLOAT);
 }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
@@ -266,5 +342,35 @@ TEST(BiomeVariants, RubberPercentAndRoll) {
     EXPECT_NEAR(yes, 990, 90) << "about a third of 3000 trees";
     EXPECT_FALSE(BiomeVariants_RubberRoll(0, 5));
     EXPECT_TRUE(BiomeVariants_RubberRoll(100, 5));
+}
+
+// (#2032) Tints: a base's is its type's; a variant takes its own group, or its base's for "- - -", or 1; bad lines fail.
+TEST(BiomeVariants, Tints) {
+    BiomeVariantTable t;
+    std::string err;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("savanna") + "variant savanna.base\n  tint 2 1.5 0.5  1.5 1.2 0.6\n"
+                                    "variant savanna.x\n  tint - - -  0.8 0.9 1\nvariant savanna.y\n", t, &err)) << err;
+    const int b = t.find("savanna.base"), x = t.find("savanna.x"), y = t.find("savanna.y"), f = t.find("forest.base");
+    EXPECT_FLOAT_EQ(t.grassTint[b].x, 2.0f); EXPECT_FLOAT_EQ(t.leafTint[b].z, 0.6f);
+    EXPECT_FLOAT_EQ(t.grassTint[x].y, 1.5f) << "grass from the base"; EXPECT_FLOAT_EQ(t.leafTint[x].x, 0.8f) << "its own leaves";
+    EXPECT_FLOAT_EQ(t.grassTint[y].z, 0.5f); EXPECT_FLOAT_EQ(t.leafTint[y].y, 1.2f);
+    EXPECT_FLOAT_EQ(t.grassTint[f].x, 1.0f); EXPECT_FLOAT_EQ(t.leafTint[f].y, 1.0f);
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  tint 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  tint 1 - 1  1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  tint 1 1 9  1 1 1\n", t, &err));
+}
+
+// (#2032) The climate code the shaders decode (biometint.glsl): the step, the variant id and the moisture survive.
+TEST(BiomeVariants, ClimateCodeRoundTrip) {
+    if (!BiomeTintOn()) GTEST_SKIP() << "RAYLIBGAME_BIOME_TINT=0";
+    for (int id : { -1, 0, 7, 63 })
+        for (float temp : { -30.0f, 4.3f, 39.9f })
+            for (float moist : { 0.0f, 0.37f, 0.999f }) {
+                const float code = BiomeClimateCode(temp, moist, id);
+                const float n = floorf(code) - 2.0f, gotId = floorf(n / 64.0f), step = n - 64.0f * gotId;
+                EXPECT_EQ((int)gotId, std::max(id, 0)) << code;
+                EXPECT_EQ(step, floorf(std::clamp((temp + 30.0f) / 70.0f, 0.0f, 1.0f) * 62.0f)) << code;
+                EXPECT_NEAR(code - floorf(code), moist, 1e-3f) << code; // float precision at codes up to ~4100
+            }
 }
 #endif

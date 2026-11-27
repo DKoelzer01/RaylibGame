@@ -117,6 +117,7 @@ void main()
         if (nrm.y < 0.0) nrm.xz = (1.0 - abs(nrm.zx)) * vec2(nrm.x >= 0.0 ? 1.0 : -1.0, nrm.z >= 0.0 ? 1.0 : -1.0);
         nrm = normalize(nrm);
         { float raw = floor(tng.y * 65535.0 + 0.5); tng.y = raw < 0.5 ? 0.0 : 1.0 + floor(raw / 1024.0) + mod(raw, 1024.0) / 1023.0; } // the climate's bit fields: 2 + step + moisture
+        { float raw = floor(tng.x * 65535.0 + 0.5); tng.x = mod(raw, 1024.0) / 1023.0; if (tng.y > 1.5) tng.y += 64.0 * floor(raw / 1024.0); } // (#2032) canopy (10 bits) + the variant id (6), back in the code
     }
     fragNormal = normalize(mat3(model) * nrm);
     fragTexPos = vertexPosition + texOrigin;
