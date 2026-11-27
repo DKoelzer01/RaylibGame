@@ -94,7 +94,8 @@ SCENARIO("fluid/luna-pour") {
     s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" } };
     s.world = ScenarioWorld::Planet;
     s.timeout = 840.0;
-    s.step("find Terra and Luna", 30.0, [](ScenarioCtx& c) {
+    // 120 s: an idle world took over 30 s on a busy runner.
+    s.step("find Terra and Luna", 120.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
         S = State{};
