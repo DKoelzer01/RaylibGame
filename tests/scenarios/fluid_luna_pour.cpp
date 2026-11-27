@@ -47,7 +47,8 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
         player.flyMode = false;
         return c.t > 2.0 && player.grounded && WorldIdle() && player.nearest == p.body;
     });
-    s.step(TextFormat("pour 1 m^3 on %s", name), 240.0, // (fluid time runs at ~0.1 x sim on the headless CPU kernel) [which](ScenarioCtx& c) {
+    // 240 s: fluid time runs at ~0.1 x sim on the headless CPU kernel with the films kept.
+    s.step(TextFormat("pour 1 m^3 on %s", name), 240.0, [which](ScenarioCtx& c) {
         Pour& p = S.*which;
         if (p.tick0 < 0) {
             p.at = BesidePlayer(*p.body);
