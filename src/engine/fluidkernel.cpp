@@ -165,9 +165,7 @@ struct Pass {
         const int keep = (int)F(c) - (int)fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0); // as the vertical pass's outF
         // At most kPushMax a substep: the giver stays nearly full and is refilled from below the next substep, so the column
         // rises as a whole (a whole cell lifted at once left a hole under it, and the lifted water fell straight back).
-        // At sqrt(g) as the sideways share (#1942): a moon's pressure pushes slower; Terra's scale 1 keeps the bits.
-        const int push = (int)((float)std::min(excess / 2, kPushMax) * g.gRoot[(size_t)gc / 4096]);
-        return std::max(0, std::min({ push, room, keep }));
+        return std::max(0, std::min({ excess / 2, room, keep, kPushMax }));
     }
     static constexpr int kPushMax = 32; // fill units (1/8 of a row) a substep
     // The vertical pass's fall (downFlux), except into a cell held up by pressure (#1168): water does not fall into a cell
