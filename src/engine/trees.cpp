@@ -478,7 +478,7 @@ void MangroveV2(VariantMesh& m, unsigned int seed, int cls) {
         const float w = (1.8f + 1.0f * U(r)) * c * 1.3f;
         const Vector3 at = { cosf(a) * o, H * (0.8f + 0.2f * U(r)), sinf(a) * o };
         if (o > 0.8f) Prism(m, { 0, H * 0.7f, 0 }, at, tw * 0.4f, tw * 0.25f, a, false, Shade(r));
-        Prism(m, Vector3Subtract(at, { 0, w * 0.3f, 0 }), Vector3Add(at, { 0, w * 0.4f, 0 }), w, w * 0.85f, U(r) * 1.5f, true, Shade(r));
+        Prism(m, Vector3Subtract(at, { 0, w * 0.12f, 0 }), Vector3Add(at, { 0, w * 0.22f, 0 }), w * 1.15f, w, U(r) * 1.5f, true, Shade(r)); // flat, spreading layers (a cube read as a box)
     }
 }
 
@@ -895,7 +895,7 @@ uint64_t PlantId(const TreeTileKey& k, int cell) {
 }
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
-void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
+void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out, TreeScatterStats* st = nullptr) {
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -918,6 +918,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float pBushBase = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
             const float pStoneBase = 0.025f;                              // loose stones: the first stone tools' stone
             if (roll >= pTreeMax + pBushBase * fmax.bushes + pStoneBase * fmax.stones) continue;
+            if (st) ++st->candidates;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             // Floating islands (Plan 5 C) have woods on their tops: the column's ground is the island's top.
@@ -944,8 +945,10 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
-            if (!tree && !stone && roll >= pTree + pBush) continue;
-            if (!onIsland && (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f))) continue;   // beach / sea, above the tree line
+            if (!tree && !stone && roll >= pTree + pBush) { if (st) ++st->odds; continue; }
+            // (#1995) A variant growing krummholz takes its trees past the tree line, to 1100 m: the stunted band above it.
+            const bool krummholzLine = vdef && vdef->species[(int)WoodSpecies::Krummholz] > 0.0f;
+            if (!onIsland && (e < 4.0f || e > (tree ? (krummholzLine ? 1100.0f : 900.0f) : stone ? 1300.0f : 1100.0f))) { if (st) ++st->elevation; continue; }   // beach / sea, above the tree line
             Vector3 normal = dir;
             Vector3 ground = Vector3Scale(dir, R + e);
             if (onIsland) {
@@ -953,7 +956,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 bool found = false;
                 for (float hh = 6.0f; hh > -10.0f && !found; hh -= 0.25f)
                     if (solid(Vector3Scale(dir, R + e + hh))) { ground = Vector3Scale(dir, R + e + hh + 0.1f); found = true; }
-                if (!found) continue;
+                if (!found) { if (st) ++st->noGround; continue; }
             } else {
                 // Slope from the height a few metres away.
                 const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
@@ -963,13 +966,13 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
                 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
                 const float slope = 1.0f - Vector3DotProduct(normal, dir);
-                if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
+                if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) { if (st) ++st->slope; continue; }
                 // The drawn surface is the density field (3D band, crags, tors), up to metres off the height map
                 // (#34: bushes and stones floated or sank). Walk down from 3 m above it to the first solid sample,
                 // at the footprint the finest chunks mesh with, and interpolate the crossing.
                 auto dens = [&](float hh) { return f.density(Vector3Scale(dir, R + e + hh), &edits, 1.0f); };
                 float prevH = 3.0f, prevD = dens(prevH);
-                if (prevD >= ISO_LEVEL) continue;                    // buried under an overhang or a tor
+                if (prevD >= ISO_LEVEL) { if (st) ++st->buried; continue; }                    // buried under an overhang or a tor
                 bool found = false;
                 for (float hh = 2.75f; hh >= -4.0f; hh -= 0.25f) {
                     const float d = dens(hh);
@@ -981,21 +984,23 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                     }
                     prevH = hh; prevD = d;
                 }
-                if (!found) continue;
+                if (!found) { if (st) ++st->noGround; continue; }
             }
             // Never under inland water (#189): a pond the fluid simulation took over, a lake or river bed - asked of the
             // generated water itself, not through the bed's material (the strata, #587, put trees in a taken-over pond).
             if (f.inlandWaterNear(dir, 0.0f)) {
                 const float w = f.waterElevation(dir, 0.0f);
-                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
+                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) { if (st) ++st->water; continue; }
             }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             // Trees and bushes root in turf or soil; loose stones lie on any natural ground but snow and ice (#893: the swamp's clay
             // and mud and the desert's sand had none, though their biomes call for them; the mountaintops stay bare by height).
-            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith)) continue;
+            // (Krummholz, #1995: a variant growing it roots its trees in the alpine gravel too.)
+            const bool rooted = m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith || (tree && krummholzLine && m == VoxelMaterial::Gravel);
+            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : !rooted) { if (st) ++st->material; continue; }
             // Solid ground underfoot and open air above (caves, ravines, edits).
-            if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
-            if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
+            if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) { if (st) ++st->underfoot; continue; }
+            if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) { if (st) ++st->cramped; continue; }
             int v;
             float scale;
             if (tree) {
@@ -1427,7 +1432,7 @@ static void TilesAround(Vector3 dir, float radius, TreeTileKey out[9], int& n) {
 
 // (#893 tests) The scatter around `dir` as generated (no edits, removals or clearings), counted within `range` m of the
 // ground point there: trees, bushes and loose stones. Builds the tiles itself (the tree system need not have them).
-void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones) {
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones, TreeScatterStats* stats) {
     trees = bushes = stones = 0;
     const Vector3 d = Vector3Normalize(dir);
     const Vector3 at = Vector3Scale(d, f.radius + f.elevation(d));
@@ -1438,7 +1443,7 @@ void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float 
     const std::vector<Vector4> noClearings;
     for (int k = 0; k < n; ++k) {
         TreeTile t;
-        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t);
+        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t, stats);
         for (const Plant& p : t.plants) {
             if (Vector3Distance(p.base, at) > range) continue;
             if (p.stone()) ++stones; else if (p.tree()) ++trees; else ++bushes;

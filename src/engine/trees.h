@@ -136,7 +136,10 @@ struct TreeTile {
 
 // (#893 tests) the scatter around dir as generated (no edits or removals), counted within range m: trees, bushes, loose stones.
 class PlanetField;
-void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones);
+// stats (#1995 tests): why the candidates around it were dropped, over its 3x3 tiles (not limited to range). seed: the
+// field's foliageSeed for the planet's own trees.
+struct TreeScatterStats { int candidates = 0, odds = 0, elevation = 0, noGround = 0, slope = 0, buried = 0, water = 0, material = 0, underfoot = 0, cramped = 0; };
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones, TreeScatterStats* stats = nullptr);
 class TreeSystem {
 public:
     TreeSystem(std::shared_ptr<const PlanetField> field, unsigned int seed);

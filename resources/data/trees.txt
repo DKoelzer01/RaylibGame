@@ -38,14 +38,14 @@ species acacia                 # savanna: flat umbrella crowns
   leaf    0.8 1.0 1.35         # grey-green against the savanna's yellow tint
 species kapok                  # jungle emergent
   log     birch_log
-  bark    2.4 2.4 2.3          # pale grey
+  bark    3.0 4.0 5.0          # pale grey
   leaf    1.05 1.1 1.0
   texture smooth
   size    1.15
 species mangrove               # swamp: stilt roots
   log     oak_log
   bark    0.95 0.85 0.8
-  leaf    0.85 1.05 0.9        # dark glossy green
+  leaf    1.0 1.2 0.95         # glossy green
 species krummholz              # alpine: wind-stunted
   log     spruce_log
   bark    0.8 0.7 0.65
@@ -53,11 +53,11 @@ species krummholz              # alpine: wind-stunted
   texture plates
 species snag                   # dead standing trees (burnt taiga, old growth)
   log     pine_log
-  bark    2.6 2.6 2.7          # weathered silver-grey
+  bark    3.2 4.4 6.0          # weathered silver-grey (the base bark is brown: blue-heavy to grey it)
   texture smooth
 species baobab                 # savanna: bottle trunks
   log     birch_log
-  bark    2.6 2.2 2.0          # grey-pink
+  bark    3.0 3.4 4.0          # grey-pink
   leaf    0.85 1.0 1.2
   texture smooth
 species tree_fern              # cloud forest
