@@ -363,6 +363,13 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
         }
         b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d, float h0) { return bakeStrataColumn(d, h0); }); // + the rock strata (#587) and the biome (#1990)
         erosionState->gradeOn = false;
+        { // #1990: the bake's ponds per biome type (the bake-free estimate at the water level): dry types should hold few
+            int n[(int)Biome::Count] = {};
+            for (const auto& q : b.ponds()) ++n[(int)biomeOf(climateAt(q.dir, q.level), q.level)];
+            std::string s;
+            for (int t = 0; t < (int)Biome::Count; ++t) if (n[t]) s += std::string(" ") + BiomeName((Biome)t) + " " + std::to_string(n[t]);
+            LOG_INFO("Erosion", "bake ponds by biome (#1990):%s\n", s.c_str());
+        }
         erosionState->grade = CanyonGrade(); // only the bake's input needs it
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) {
