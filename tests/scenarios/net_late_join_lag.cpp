@@ -15,8 +15,17 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace {
+// A frame at most every 1/60 s of wall time: scenarios step a fixed 1/60 s a frame as fast as the machine goes (thousands
+// a second headless), and a client sending an input a frame that fast is a flood the server kicks. A game is real time.
+void RealTime() {
+    static double next = 0.0;
+    const double now = GetTime();
+    if (next > now) std::this_thread::sleep_for(std::chrono::duration<double>(next - now));
+    next = std::max(now, next) + 1.0 / 60.0;
+}
 constexpr uint16_t kPort = 27954;
 constexpr int kStrokes = 3000;
 struct State {
@@ -60,7 +69,7 @@ SCENARIO("net/late-join-lag") {
             NetClient_Connect(S.bob, TextFormat("127.0.0.1:%d", kPort), "bob");
             S.t0 = c.t;
         }
-        NetClient_Update(S.bob);
+        RealTime(); NetClient_Update(S.bob);
         if (!S.bobSelf && S.bob.state == NetClient::State::Joined && S.bob.haveOwn && !S.bob.syncing)
             if (Planetoid* b = Planetoid::findNet(S.bob.own.body)) {
                 S.bobSelf = std::make_unique<Player>();
@@ -86,7 +95,7 @@ SCENARIO("net/late-join-lag") {
     });
     s.step("dave and frank join together, late", 120.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
-        for (NetClient* n : { &S.bob, &S.dave, &S.frank }) NetClient_Update(*n);
+        RealTime(); for (NetClient* n : { &S.bob, &S.dave, &S.frank }) NetClient_Update(*n);
         StepBob(c);
         if (S.bob.state != NetClient::State::Joined) { c.fail(TextFormat("bob lost the server (%s)", StateName(S.bob))); return true; }
         // bob digs at his feet once both syncs are under way: they must hold it until their sync is done.
