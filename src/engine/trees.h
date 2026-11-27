@@ -138,7 +138,7 @@ struct TreeTile {
 class PlanetField;
 // stats (#1995 tests): why the candidates around it were dropped, over its 3x3 tiles (not limited to range). seed: the
 // field's foliageSeed for the planet's own trees.
-struct TreeScatterStats { int candidates = 0, odds = 0, elevation = 0, noGround = 0, slope = 0, buried = 0, water = 0, material = 0, underfoot = 0, cramped = 0; };
+struct TreeScatterStats { int candidates = 0, odds = 0, elevation = 0, noGround = 0, slope = 0, buried = 0, water = 0, material = 0, underfoot = 0, cramped = 0, variant = -1; float pTree = 0, pBush = 0, pStone = 0; }; // p*: summed odds; variant: the last read
 void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones, TreeScatterStats* stats = nullptr);
 class TreeSystem {
 public:

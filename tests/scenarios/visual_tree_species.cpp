@@ -40,25 +40,24 @@ SCENARIO("visual/tree-species") {
         const std::string name = kWoodSpeciesNames[(int)kSubjects[k].species];
         s.step("to the " + std::string(kSubjects[k].variant), 5.0, [k](ScenarioCtx& c) {
             const int v = BiomeVariants().find(kSubjects[k].variant);
-            // The nearest patch to the start, else to points 4 km off each way: the first that grows trees (savanna is
-            // open country with lone trees, so a patch can hold none).
+            // The nearest patch to the start and to points 4 and 8 km off each way: the one growing the most trees (savanna
+            // is open country with lone trees, and a patch can be a steep hillside that grows none).
             const Vector3 home = c.field->findSpawnDir(c.body->seed), h1 = Tangent(home), h2 = Vector3CrossProduct(home, h1);
-            const float off = 4000.0f / c.field->radius;
-            const Vector3 homes[5] = { home, Vector3Add(home, Vector3Scale(h1, off)), Vector3Subtract(home, Vector3Scale(h1, off)),
-                                       Vector3Add(home, Vector3Scale(h2, off)), Vector3Subtract(home, Vector3Scale(h2, off)) };
+            std::vector<Vector3> homes = { home };
+            for (float km : { 4.0f, 8.0f })
+                for (Vector3 d : { h1, Vector3Negate(h1), h2, Vector3Negate(h2) }) homes.push_back(Vector3Add(home, Vector3Scale(d, km * 1000.0f / c.field->radius)));
             Vector3 at{};
-            int trees = 0, bushes = 0, stones = 0;
+            int trees = -1, bushes = 0, stones = 0;
             TreeScatterStats why;
-            bool any = false;
-            for (int i = 0; i < 5 && v >= 0; ++i) {
+            for (size_t i = 0; i < homes.size() && v >= 0 && trees < 20; ++i) {
                 const Vector3 cand = c.field->nearestVariantDir(Vector3Normalize(homes[i]), v);
                 if (c.field->variantAt(cand, c.field->elevation(cand)) != v) continue;
                 TreeScatterStats st;
                 int t = 0, b = 0, sn = 0;
                 Trees_CountScatter(*c.field, c.field->foliageSeed, cand, 96.0f, t, b, sn, &st);
-                if (!any || (trees == 0 && t > 0)) { at = cand; trees = t; bushes = b; stones = sn; why = st; any = true; }
-                if (t > 0) break;
+                if (t > trees) { at = cand; trees = t; bushes = b; stones = sn; why = st; }
             }
+            const bool any = trees >= 0;
             if (!any) {
                 c.note(std::string("no patch of ") + kSubjects[k].variant + " (skipped)");
                 V[k].skip = true;
@@ -67,8 +66,10 @@ SCENARIO("visual/tree-species") {
             V[k].patch = Vector3Scale(at, c.field->radius + c.field->elevation(at));
             V[k].generated = trees + bushes + stones;
             c.note(TextFormat("%s: dropped of %d candidates (3x3 tiles): odds %d, elevation %d, slope %d, buried %d, no ground %d, water %d, "
-                              "material %d, underfoot %d, cramped %d", kSubjects[k].variant, why.candidates, why.odds, why.elevation, why.slope,
-                              why.buried, why.noGround, why.water, why.material, why.underfoot, why.cramped));
+                              "material %d, underfoot %d, cramped %d; mean odds tree %.4f bush %.4f stone %.4f; plants read variant %s",
+                              kSubjects[k].variant, why.candidates, why.odds, why.elevation, why.slope,
+                              why.buried, why.noGround, why.water, why.material, why.underfoot, why.cramped, why.pTree / std::max(1, why.candidates),
+                              why.pBush / std::max(1, why.candidates), why.pStone / std::max(1, why.candidates), BiomeVariantName(why.variant)));
             // The ground's materials over the patch (trees and bushes root only in grass or regolith).
             int mats[(int)VoxelMaterial::Count] = {};
             const Vector3 e1 = Tangent(at), e2 = Vector3CrossProduct(at, e1);

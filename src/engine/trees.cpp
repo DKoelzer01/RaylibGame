@@ -943,6 +943,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             }
             const BiomeFlora flora = FloraOf(biome, vdef);
             const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
+            if (st) { st->pTree += pTree; st->pBush += pBush; st->pStone += pStone; st->variant = plantVariant; }
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
             if (!tree && !stone && roll >= pTree + pBush) { if (st) ++st->odds; continue; }
@@ -1014,8 +1015,8 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const float area = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 400.0f), seed ^ 0x7a3c19u);
                 const float pick = Unit(s);
                 WoodSpecies sp;
-                // (The cloud forest is a jungle up high: its tree ferns stay, no conifer fallback there.)
-                if (vdef && vdef->hasSpecies() && (flora.cold || !high || biome == Biome::Jungle)) {
+                // (Tropical types keep their own mix up high: the cloud forest's tree ferns, the savanna plateaus' acacias.)
+                if (vdef && vdef->hasSpecies() && (flora.cold || !high || biome == Biome::Jungle || biome == Biome::Savanna)) {
                     // The variant's own mix (#1978): its weights, with the area's dominant species (one of the listed,
                     // by the same ~400 m patch) counted double, so stands still form inside the mix.
                     int listed[BiomeVariantDef::kSpecies], n = 0;
