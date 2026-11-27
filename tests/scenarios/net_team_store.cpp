@@ -64,6 +64,9 @@ SCENARIO("net/team-store") {
             S.skip = true; return true;
         }
         if (S.bob.state == NetClient::State::Idle) {
+            // The host's save outlives a run where saves/ persists (the runner): a previous run left carol in bob's team.
+            // A fresh team of one each (new ids, so no research carried over either); dave joins bob's again by the env.
+            for (const char* n : { "bob", "carol", "dave" }) Teams_CreateSolo(PlayerId_FromName(n), n);
             const std::string addr = TextFormat("127.0.0.1:%d", kPort);
             NetClient_Connect(S.bob, addr.c_str(), "bob");
             NetClient_Connect(S.carol, addr.c_str(), "carol");
