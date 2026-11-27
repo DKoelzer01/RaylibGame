@@ -27,6 +27,21 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
     if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    else if (!body.flat) {
+        // (#2000) No mesh there yet (a body far from where the player was: nothing built near): the raycast missed and
+        // R + 5 m could be far above the ground (a deadly fall) or under it. Find the surface on the field itself: march
+        // down from maxRadius in 2 m steps, then halve to ~1 cm. Unedited ground; edits only exist where chunks were built.
+        const DensityField& f = *body.field;
+        const Vector3 local = body.dirToLocal(dir); // the field is in the body's own (turning) axes
+        const float top = f.maxRadius(), bottom = std::max(0.0f, f.minRadius());
+        for (float r = top; r > bottom; r -= 2.0f) {
+            if (f.baseDensity(Vector3Scale(local, r - 2.0f)) < ISO_LEVEL) continue;
+            float lo = r - 2.0f, hi = r; // lo solid, hi air
+            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.baseDensity(Vector3Scale(local, m)) >= ISO_LEVEL ? lo : hi) = m; }
+            feet = Vector3Add(c, Vector3Scale(dir, hi * body.scale + 0.2f));
+            break;
+        }
+    }
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));

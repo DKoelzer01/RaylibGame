@@ -1,5 +1,5 @@
 #!/bin/bash
-# (#2009) Static check 7: a kNetProtocol or kSaveVersion number this branch reserves in tools/ci/protocol_reservations.txt
+# (#2009) Static check 7: a kNetProtocol, kSaveVersion or kErosionBakeVersion number this branch reserves in tools/ci/protocol_reservations.txt
 # must not be reserved for another issue on the other integration base or in an open PR. Check 6 reads only this
 # branch's own copy, so #2006 (into ladder) and #2008 (into staging) both took kNetProtocol 56.
 #
@@ -21,8 +21,8 @@ GH_REPO="${GH_REPO:-DKoelzer01/RaylibGame}"
 
 # "<key>\t<issue>\t<line>" for each reservation line: key = the number, or "save <n>"
 parse() {
-    tr -d '\r' | sed -nE 's/^\+?[[:space:]]*((save[[:space:]]+)?[0-9]+)[[:space:]]*\|[^|]*\|[[:space:]]*(#[0-9]+)[[:space:]]*\|.*$/\1\t\3\t&/p' |
-        grep -v '(unused)' | sed -E 's/^save[[:space:]]+/save /; s/\t\+/\t/'
+    tr -d '\r' | sed -nE 's/^\+?[[:space:]]*(((save|erosion)[[:space:]]+)?[0-9]+)[[:space:]]*\|[^|]*\|[[:space:]]*(#[0-9]+)[[:space:]]*\|.*$/\1\t\4\t&/p' |
+        grep -v '(unused)' | sed -E 's/^(save|erosion)[[:space:]]+/\1 /; s/\t\+/\t/'
 }
 
 mine_all="$(parse < "$RES")"
@@ -66,7 +66,9 @@ while IFS=$'\t' read -r key issue line; do
     [ -n "$key" ] || continue
     hits="$(awk -F'\t' -v k="$key" -v i="$issue" '$1 == k && $2 != i {print $4 " (" $2 ")"}' <<< "$others" | sort -u | paste -sd ';' -)"
     if [ -n "$hits" ]; then
-        what="kNetProtocol $key"; [[ "$key" == save* ]] && what="kSaveVersion ${key#save }"
+        what="kNetProtocol $key"
+        [[ "$key" == save* ]] && what="kSaveVersion ${key#save }"
+        [[ "$key" == erosion* ]] && what="kErosionBakeVersion ${key#erosion }"
         echo "::$level file=$RES::static check 7: $what is reserved here for $issue and also in $hits: take the next free number (#2009)"
         clashes=$((clashes + 1))
     fi
