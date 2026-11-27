@@ -5,7 +5,7 @@
 // holds (extras, plots, machines, fluid, rings) is in that format. A save-breaking change bumps this and adds one step to
 // the migration table (savemigrate.cpp); the readers only ever know the current format. See docs/notes/architecture.md,
 // "Saves and migrations (#1693)".
-constexpr int kSaveVersion = 13;
+constexpr int kSaveVersion = 14; // 14 (#1881): a part_palette line after the camera line; part numbers index it
 // The oldest world file this build still opens (older ones are refused with a message, not half-loaded).
 constexpr int kOldestSaveVersion = 13;
 // The player record's own number ("RAYLIBGAME_PLAYER <n>", <save>.players/<id>.player); it has its own migration chain.
