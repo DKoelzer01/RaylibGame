@@ -16,7 +16,7 @@ uint64_t bodyId = 0;
 int chestA = -1, chestB = -1;
 
 int Stone(int part) {
-    static int last[2] = { 0, 0 };
+    static int last[2] = { -1, -1 }; // -1 until the factory has filled a view
     const MachineView v = Factory::View(bodyId, plot->id, part);
     int& l = last[part == chestA ? 0 : 1];
     if (v.valid) {
@@ -72,17 +72,21 @@ SCENARIO("factory/belts") {
     s.step("the stone rides the belt into the second chest", 40.0, [](ScenarioCtx& c) {
         Look(c);
         Factory::Sync(c.world);
-        const int a = Stone(chestA), b = Stone(chestB);
-        static int seen = -1;
-        if (a * 100 + b != seen) { seen = a * 100 + b; c.note(TextFormat("t %.2f s: chest A %d stone, chest B %d", c.t, a, b)); }
-        c.waitingFor(TextFormat("chest A %d stone, chest B %d", a, b));
+        const int b = Stone(chestB); // one view at a time: the factory fills the machine asked for last
+        c.waitingFor(TextFormat("chest B holds %d stone", b));
         if (b < 12 && c.t < 35.0) return false;
         c.metric("12 stone across after", c.t, "s", false);
         c.eq("chest B holds all 12 stone", b, 12);
-        c.eq("chest A is empty", a, 0);
         // 12 items at 7.5 a second, plus the 2.4-cell belt's 1.3 s ride: about 3 s
         c.lt("at the basic belt's 7.5 items/s, a few seconds (s)", c.t, 6.0);
         c.gt("and no faster than the belt allows (s)", c.t, 2.0);
+        return true;
+    });
+    s.step("the first chest is empty", 5.0, [](ScenarioCtx& c) {
+        Look(c);
+        const int a = Stone(chestA);
+        if (c.t < 1.0) return false;
+        c.eq("chest A gave all its stone", a, 0);
         return true;
     });
 }
