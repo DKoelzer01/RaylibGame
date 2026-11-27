@@ -1,4 +1,6 @@
 #include <functional>
+#include <map>
+#include <tuple>
 #include <unordered_map>
 #include <filesystem>
 #include <cstring>
@@ -2424,12 +2426,30 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
     return biomeOf(c, elev);
 }
 
+static constexpr int kSpawnCandidates = 12;     // #1883: temperate start spots scored by their surroundings (each ~90 ms to find at -O1)
+static constexpr float kSpawnReachM = 300.0f;   // #1883: how far the score looks (m)
+// #1883 A/B (0: the old pick). Read per search, not once at startup: a scenario sets it (s.env) in-process after the
+// statics are made (the place-bound planet tests keep the old start this way).
+static bool ScoreSpawn() { const char* e = getenv("RAYLIBGAME_SPAWN_SCORE"); return !(e && e[0] == '0'); }
+
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
+    // (#1883) Scoring the candidates costs ~10k height and water samples: once per field, land and seed.
+    static std::mutex cacheMx;
+    static std::map<std::tuple<const PlanetField*, uint32_t, unsigned int>, Vector3> picked;
+    const auto key = std::make_tuple(this, caveEpoch, seed);
+    Vector3 best = { 0, 1, 0 };
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(cacheMx);
+        if (auto it = picked.find(key); it != picked.end()) { best = it->second; cached = true; }
+    }
+    if (!cached) {
+    const bool scoring = ScoreSpawn() && !sandbox; // (the flat test plane keeps the old pick: its tests stay where they were)
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
-    Vector3 best = { 0, 1, 0 };
     float bestScore = -1e30f;
-    for (int attempt = 0; attempt < 4000; ++attempt) {
+    std::vector<std::pair<float, Vector3>> temperateSpots; // (#1883) the acceptable temperate spots: (old score, dir)
+    for (int attempt = 0; attempt < 4000 && (!scoring || (int)temperateSpots.size() < kSpawnCandidates); ++attempt) {
         // Temperate band: 25-45 degrees north or south.
         const float lat = (25.0f + 20.0f * unit(rng)) * DEG2RAD * (unit(rng) < 0.5f ? 1.0f : -1.0f);
         const float lon = unit(rng) * 2.0f * PI;
@@ -2445,6 +2465,10 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         const Vector3 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
         const float slope = 1.0f - Vector3DotProduct(normal, dir);
         if (slope > 0.05f) continue;
+        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
+        const Biome b = biomeAt(dir, e);
+        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        if (scoring && !temperate && bestScore > -1e29f) continue; // (#1883: a fallback is known; the checks below cost)
         const Vector3 surface = Vector3Scale(dir, radius + e - 0.3f);
         if (materialLod(surface, 1.0f, 0.0f, normal) != VoxelMaterial::Grass) continue;
         // Solid underfoot (caves and ravines carve the density, not the height map).
@@ -2452,13 +2476,22 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         for (float depth : { 1.0f, 3.0f, 6.0f, 12.0f })
             if (baseDensity(Vector3Scale(dir, radius + e - depth)) < ISO_LEVEL) { solid = false; break; }
         if (!solid) continue;
-        // Prefer flat, low ground: good enough is good enough.
-        // Start in a temperate forest or meadow (Plan 5 B); other biomes only when none is found.
-        const Biome b = biomeAt(dir, e);
-        const bool temperate = b == Biome::Forest || b == Biome::Meadow;
+        // Prefer flat, low ground (without scoring, #1883: the first flat temperate spot is good enough).
         const float score = -slope * 100.0f - e * 0.01f - (temperate ? 0.0f : 1000.0f);
         if (score > bestScore) { bestScore = score; best = dir; }
-        if (slope < 0.01f && temperate) break;
+        if (temperate) temperateSpots.push_back({ score, dir });
+        if (!scoring && slope < 0.01f && temperate) break; // (A/B: the first flat temperate spot, as before #1883)
+    }
+    if (!scoring) temperateSpots.clear();
+    // (#1883) Before, the first flat temperate spot won ("good enough is good enough"); now the temperate spot whose
+    // surroundings score best: flat land to build on, fresh water, the first ores (ties: the flatter, lower spot).
+    float bestSurround = -1e30f;
+    for (const auto& [score, dir] : temperateSpots) {
+        const float s = spawnScore(dir).score + 0.001f * score;
+        if (s > bestSurround) { bestSurround = s; best = dir; }
+    }
+    std::lock_guard<std::mutex> lock(cacheMx);
+    picked[key] = best;
     }
     if (gSpawnPond && !moon) { // bench override: the rim of the nearest pond within 6 km (cached per field)
         static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
@@ -2508,6 +2541,7 @@ Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
         if (close <= best) continue;
         const float e = elevation(d, 32.0f);
         if (e < 6.0f || biomeAt(d, e) != b) continue;
+        if (inlandWaterNear(d, 0.0f)) continue; // (#1937: a patch's land, not the lake in it: seed 42's jungle was a lake)
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
         bool deep = true;
         for (int s = 0; s < 4 && deep; ++s) {
@@ -3837,6 +3871,61 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
                 if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
             }
     return best;
+}
+
+PlanetField::SpawnScore PlanetField::spawnScore(Vector3 dir) const {
+    SpawnScore s;
+    if (moon) return s;
+    const Vector3 a = fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
+    const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, a)), t2 = Vector3CrossProduct(t1, dir);
+    auto at = [&](float x, float y) { return Vector3Normalize(Vector3Add(dir, Vector3Add(Vector3Scale(t1, x / radius), Vector3Scale(t2, y / radius)))); };
+    // Water: the centre and 16 directions on rings every 50 m out to 300 m (a stream is a few metres wide), inside out,
+    // up to the first ring with fresh water. Flat land: the centre and 8 directions at 100, 200 and 300 m (25 points).
+    int flat = 0, n = 0;
+    for (int ring = 0; ring <= 6; ++ring) {
+        const float r = ring * kSpawnReachM / 6.0f;
+        const bool flatRing = ring % 2 == 0, waterRing = s.waterM > kSpawnReachM;
+        if (!flatRing && !waterRing) continue;
+        for (int k = 0; k < (ring ? 16 : 1); ++k) {
+            const bool flatPoint = flatRing && k % 2 == 0;
+            if (!flatPoint && !waterRing) continue;
+            const float ang = k * (2.0f * PI / 16.0f);
+            const Vector3 d = at(r * cosf(ang), r * sinf(ang));
+            const WaterSource ws = waterSourceAt(d);
+            if (ws.kind >= 1 && ws.kind <= 3) s.waterM = std::min(s.waterM, r);
+            if (!flatPoint) continue;
+            const float e = elevation(d);
+            ++n;
+            if (e < 2.0f || (ws.kind != 0 && ws.level > e)) continue; // under water or at the shore: not building land
+            // Flat as findSpawnDir's own test: the normal from the heights 4 m away within 0.05 of up.
+            const Vector3 u1 = Vector3Normalize(Vector3CrossProduct(d, a)), u2 = Vector3CrossProduct(u1, d);
+            const float ang4 = 4.0f / (radius + e);
+            const float e1 = elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(u1, ang4))));
+            const float e2 = elevation(Vector3Normalize(Vector3Add(d, Vector3Scale(u2, ang4))));
+            const Vector3 normal = Vector3Normalize(Vector3Subtract(d, Vector3Add(Vector3Scale(u1, (e1 - e) / 4.0f), Vector3Scale(u2, (e2 - e) / 4.0f))));
+            if (1.0f - Vector3DotProduct(normal, d) <= 0.05f) ++flat;
+        }
+    }
+    s.flat = (float)flat / (float)n;
+    // Deposits of the tier 0-3 ores (kinds 0-3) whose centre lies within reach along the ground and 40 m or less down.
+    const Vector3 p = Vector3Scale(dir, radius + elevation(dir));
+    const float reach = kSpawnReachM + 40.0f;
+    unsigned kinds = 0;
+    for (int z = (int)floorf((p.z - reach) / kDepositCell); z <= (int)floorf((p.z + reach) / kDepositCell); ++z)
+        for (int y = (int)floorf((p.y - reach) / kDepositCell); y <= (int)floorf((p.y + reach) / kDepositCell); ++y)
+            for (int x = (int)floorf((p.x - reach) / kDepositCell); x <= (int)floorf((p.x + reach) / kDepositCell); ++x) {
+                const Deposit d = DepositOf(x, y, z, oreSeed);
+                if (!d.exists || d.kind > 3 || (kinds >> d.kind & 1u)) continue;
+                const float len = Vector3Length(d.centre);
+                const Vector3 dd = Vector3Scale(d.centre, 1.0f / len);
+                if (acosf(std::clamp(Vector3DotProduct(dd, dir), -1.0f, 1.0f)) * radius > kSpawnReachM) continue;
+                const float depth = radius + elevation(dd) - len;
+                if (depth >= MinDepth(d.kind) - d.radius && depth <= 40.0f) kinds |= 1u << d.kind;
+            }
+    s.ores = __builtin_popcount(kinds);
+    // Flat land counts most (a base), then water within reach (nearer is better), then each ore kind. (Weights: GUESS.)
+    s.score = 40.0f * s.flat + (s.waterM <= kSpawnReachM ? 20.0f + 10.0f * (1.0f - s.waterM / kSpawnReachM) : 0.0f) + 5.0f * s.ores;
+    return s;
 }
 
 StrataColumn PlanetField::strataColumn(Vector3 dir) const {

@@ -285,8 +285,14 @@ public:
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
-    // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
+    // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed. (#1883) Of the first
+    // kSpawnCandidates (12) such spots, the one whose surroundings score best (spawnScore). Cached per field and seed.
     Vector3 findSpawnDir(unsigned int seed) const;
+    // #1883: what a start spot has within kSpawnReachM: the share of flat dry land (25 points on rings of 100, 200 and
+    // 300 m), the nearest fresh water (river, lake or pond; 1e9 if none), and how many of the tier 0-3 ores (iron,
+    // copper, tin, coal) have a deposit within reach no deeper than 40 m. score: what findSpawnDir maximises.
+    struct SpawnScore { float flat = 0.0f, waterM = 1e9f; int ores = 0; float score = 0.0f; };
+    SpawnScore spawnScore(Vector3 dir) const;
     Vector3 nearestBiomeDir(Vector3 home, Biome b) const; // nearest deep patch of b (home if none)
     // Biomes (Plan 5 B): climate from latitude, height and regional noise (2-5 km patches); the biome
     // from it (Whittaker-style: temperature x moisture). biomeAt jitters the climate a little at a fine
