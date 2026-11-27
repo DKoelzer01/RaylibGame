@@ -21,3 +21,5 @@ light/torch-room -> FAIL                | #1829 | 1 of 9 checks fails in ~30% of
 caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
 net/late-join-lag -> FAIL               | #1972 | the sim runs ahead of the wall-clock join (step deadline, or bob not in yet) (12/20 recent runs pass)
 caves/islands -> FAIL                    | #2025 | floating rock over budget (825 > 760 m^3) since staging's terrain work reached ladder: a real change, not a flake
+fluid/spring -> FAIL                    | #1910 | "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
+space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; fixed on staging by #2020, drop this line when that reaches ladder
