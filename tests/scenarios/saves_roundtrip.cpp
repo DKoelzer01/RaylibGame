@@ -25,6 +25,7 @@ const std::vector<std::pair<std::string, std::string>> kMoves = {
     { "player ", "the absolute position: a load takes player_body's (#346), so it comes back within the rounding of a rotation" },
     { "player_up ", "a load with player_body rebuilds 'up' from the body at the next update (zero until then)" },
     { "player_vel ", "a load with player_body starts at rest" },
+    { "last_seen ", "a player record's wall-clock stamp (whole seconds): the two saves can fall either side of a second (#2045)" },
 };
 
 struct State { uint32_t plotId = 0; int chest = -1, fire = -1; fs::path a, b; long loadFrame = -1; } R;
