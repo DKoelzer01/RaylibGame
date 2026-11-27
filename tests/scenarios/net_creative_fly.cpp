@@ -18,9 +18,18 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace {
 constexpr uint16_t kPort = 27953;
+// A frame at most every 1/60 s of wall time: scenarios step a fixed 1/60 s a frame as fast as the machine goes (thousands
+// a second headless), and a client sending an input a frame that fast is a flood the server kicks. A game is real time.
+void RealTime() {
+    static double next = 0.0;
+    const double now = GetTime();
+    if (next > now) std::this_thread::sleep_for(std::chrono::duration<double>(next - now));
+    next = std::max(now, next) + 1.0 / 60.0;
+}
 constexpr double kFlySeconds = 5.0, kFlySpeed = 15.0, kHeight = 30.0; // s, m/s, m above the ground
 struct State {
     NetClient cl;
@@ -64,7 +73,7 @@ static void BuildFly(ScenarioDef& s) {
             NetClient_Connect(S.cl, TextFormat("127.0.0.1:%d", kPort), "flyer");
             S.t0 = c.t;
         }
-        NetClient_Update(S.cl);
+        RealTime(); NetClient_Update(S.cl);
         c.waitingFor("the client to join and get its state");
         if (S.cl.state != NetClient::State::Joined || !S.cl.haveOwn) {
             if (c.t - S.t0 > 30.0) c.fail(TextFormat("not joined after 30 s (state %d)", (int)S.cl.state));
@@ -86,7 +95,7 @@ static void BuildFly(ScenarioDef& s) {
     });
     s.step("fly 75 m, then hover", 30.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
-        NetClient_Update(S.cl);
+        RealTime(); NetClient_Update(S.cl);
         if (S.cl.state != NetClient::State::Joined) { c.fail("the client lost the server"); return true; }
         Planetoid* b = Planetoid::findNet(S.cl.own.body);
         if (!b) { c.fail("the client's body is gone"); return true; }
