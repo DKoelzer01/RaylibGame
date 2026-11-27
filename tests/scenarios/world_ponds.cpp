@@ -23,8 +23,9 @@ SCENARIO("world/ponds") {
         c.note(TextFormat("bake ponds %d: kept %d, shadowed (same 260 m cell) %d, by a lake or river %d, level too low %d, bowl depth %d; "
                           "kept within 5 km of the spawn %d, nearest %.0f m, smallest radius %.1f m",
                           n.bake, n.kept, n.shadowed, n.nearWater, n.low, n.depth, n.within, n.nearest, n.smallest));
-        c.note(TextFormat("by water: in a lake's water %d (at the pond's own level %d, largest lake %d cells), on a lake's bank %d, by a river %d",
-                          n.inLake, n.lakeIsPond, n.lakeCellsMax, n.lakeBank, n.river));
+        c.note(TextFormat("by water: in a lake's water %d (at the pond's own level %d, the largest of those lakes %d cells), on a lake's bank %d, by a river %d; "
+                          "bake hollows with water at their middle (any rule) %d of %d",
+                          n.inLake, n.lakeIsPond, n.lakeCellsMax, n.lakeBank, n.river, n.wet, n.bake));
         c.metric("ponds kept", n.kept, "", true);
         c.metric("ponds within 5 km of the spawn", n.within, "", true);
         c.metric("nearest pond", n.nearest, "m", false);

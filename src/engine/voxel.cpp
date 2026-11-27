@@ -593,6 +593,8 @@ PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const
     const Vector3 d = Vector3Normalize(dir);
     for (int i = 0; i < (int)ponds.size(); ++i) {
         const Vector3 s = Vector3Scale(ponds[i].dir, radius);
+        // Water shows at the hollow's middle, by whatever rule (pond, lake or river): the ground stands under the water.
+        if (elevation(ponds[i].dir, 0.0f) < waterElevation(ponds[i].dir, 0.0f) - 0.1f) ++c.wet;
         if (best[PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell))] != i) { ++c.shadowed; continue; }
         int reason = 0;
         const Pond p = bakePond(i, reason);
@@ -601,8 +603,10 @@ PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const
             ++c.inLake;
             float lv, lo; int id = -1;
             if (const RiverNetwork* net = rivers(); net && net->lakeAt(ponds[i].dir, lv, lo, id) && id >= 0) {
-                if (fabsf(lv - ponds[i].level) < 1.5f) ++c.lakeIsPond; // the network's lake is this very hollow
-                if (c.lakeCellsMax < net->lakeInfo(id).cells) c.lakeCellsMax = net->lakeInfo(id).cells;
+                if (fabsf(lv - ponds[i].level) < 1.5f) { // the network's lake is this very hollow
+                    ++c.lakeIsPond;
+                    c.lakeCellsMax = std::max(c.lakeCellsMax, net->lakeInfo(id).cells);
+                }
             }
         } else if (reason == 4) ++c.lakeBank; else if (reason == 5) ++c.river;
         else if (reason == 2) ++c.low; else if (reason == 3) ++c.depth;
