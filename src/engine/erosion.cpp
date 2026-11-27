@@ -1238,7 +1238,8 @@ void PlanetErosion::routeFinal(int threads) {
                     int p = c, steps = 0;
                     // need counts the cut earlier breaches already made (#2069): measured on the lowered heights alone,
                     // a smooth basin passed step by step and its rim was cut to the basin's full depth.
-                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, breachCut[p] + h[p] - t);
+                    static const bool dbgOld = getenv("DBG2069") != nullptr; // DEBUG #2069
+                    for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, (dbgOld ? 0.0f : breachCut[p]) + h[p] - t);
                     if (need <= kBreach && steps < 400) {
                         t = h[o];
                         for (p = c; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f); p = recv[p]) { breachCut[p] += h[p] - t; h[p] = hf[p] = t; }
@@ -1889,7 +1890,8 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     // A crater 60 m deep and ~450 m across (option B breaches basins up to 8 m deep): the lake the wetness test needs.
     auto height = [](Vector3 d, float) {
         const float crater = 60.0f * std::max(0.0f, 1.0f - Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f }) / 0.075f);
-        return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater;
+        const float sea = 500.0f * std::max(0.0f, -0.2f - d.y); // the south under the sea: the routing's outlets
+        return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater - sea;
     };
     b.build(height, R, 5u, p, 2);
     ASSERT_TRUE(b.ready());
