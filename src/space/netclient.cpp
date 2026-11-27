@@ -39,6 +39,7 @@
 #include <set>
 
 extern const char* kGameVersion; // "<branch> <commit>" (#501)
+#include "buildcommit.h"
 
 namespace {
     // A player's state from the server - its own message, or decoded from a snapshot (#769): the same handling either way.
@@ -56,7 +57,7 @@ namespace {
         NetWriter w; NetWrite(w, m);
         Net_Send(c.conn, w.bytes.data(), (uint32_t)w.bytes.size(), true);
     }
-    std::string Commit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string Commit() { return Build_CommitOf(kGameVersion); } // (#1906) the hash, not "changes" from " +local changes"
     void End(NetClient& c, NetClient::State s) {
         if (c.conn) Net_Close(c.conn);
         c.conn = 0;

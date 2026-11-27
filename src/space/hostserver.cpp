@@ -61,6 +61,7 @@
 #include <unordered_map>
 
 extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmake, #501)
+#include "buildcommit.h"
 
 namespace {
     bool listening = false;
@@ -1113,7 +1114,7 @@ namespace {
 
     void Send(uint32_t conn, const NetWriter& w) { Net_Send(conn, w.bytes.data(), (uint32_t)w.bytes.size(), true); }
     template <class M> void SendMsg(uint32_t conn, const M& m) { NetWriter w; NetWrite(w, m); Send(conn, w); }
-    std::string BuildCommit() { const std::string v = kGameVersion; const size_t sp = v.rfind(' '); return sp == std::string::npos ? v : v.substr(sp + 1); }
+    std::string BuildCommit() { return Build_CommitOf(kGameVersion); } // (#1906)
 
     template <class M> void SendToJoined(const M& m) { NetWriter w; NetWrite(w, m); for (const auto& [c, p] : peers) if (p.joined) Send(c, w); }
     // The roster (#750): everyone online, to everyone joined, on each join and leave (reliable; the whole list each time:
@@ -1507,7 +1508,9 @@ namespace {
     bool Loopback(const std::string& host) { if (getenv("RAYLIBGAME_MAX_PER_ADDRESS")) return false; return host.empty() || host == "127.0.0.1" || host == "::1" || host == "[::1]" || host.rfind("[::ffff:127.", 0) == 0; }
     void OnHello(Scene& world, uint32_t conn, const MsgHello& h) {
         if (h.protocol != kNetProtocol) { Refuse(conn, NetReject::Protocol, TextFormat("server %u, client %u", kNetProtocol, h.protocol)); return; }
-        if (!h.build.empty() && h.build != BuildCommit()) { Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return; }
+        if (!h.build.empty() && !Build_SameCommit(Build_CommitOf(h.build), BuildCommit())) { // (#1906) e5f5f13 == e5f5f132
+            Refuse(conn, NetReject::Build, "server " + BuildCommit() + ", client " + h.build); return;
+        }
         if (!password.empty() && h.password != password) { Refuse(conn, NetReject::Password, ""); return; }
         if (joinCheck) { // (#345) bans and the whitelist
             std::string why;
@@ -2587,6 +2590,19 @@ bool Host_SetCreative(const std::string& name, bool on) {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
+// (#1906) git abbreviates the same commit to 7 digits in a shallow clone and 8+ in a big one: the join compares by prefix.
+TEST(HostBuild, TheSameCommitAbbreviatedToDifferentLengthsMatches) {
+    EXPECT_EQ(Build_CommitOf("playtest-20261124b e5f5f13"), "e5f5f13");
+    EXPECT_EQ(Build_CommitOf("staging e5f5f132 +local changes"), "e5f5f132") << "not \"changes\"";
+    EXPECT_EQ(Build_CommitOf("detached unknown"), "unknown");
+    EXPECT_TRUE(Build_SameCommit("e5f5f13", "e5f5f132"));
+    EXPECT_TRUE(Build_SameCommit("E5F5F132", "e5f5f13"));
+    EXPECT_FALSE(Build_SameCommit("e5f5f13", "e5f5f142")) << "a different commit";
+    EXPECT_FALSE(Build_SameCommit("e5f5f1", "e5f5f132")) << "6 digits: too short to tell commits apart";
+    EXPECT_FALSE(Build_SameCommit("unknown", "e5f5f13"));
+    EXPECT_TRUE(Build_SameCommit("unknown", "unknown")) << "(unchanged: equal strings match)";
+}
+
 TEST(HostTimeout, ALoadingClientGetsLongerThanOneInTheGame) { // (#1033)
     EXPECT_DOUBLE_EQ(Host_SilenceLimit(true, true), 15.0) << "in the game: pings every second, 15 s of silence is gone";
     EXPECT_GE(Host_SilenceLimit(true, false), 60.0) << "joined, still loading: one long frame (~37 s on the runner) must not drop it";

@@ -386,8 +386,10 @@ void GameSave_Register() {
     };
     loadDoneHook = [] { // (#901) body-frame positions back to world space with the bodies in their saved state
         for (const PendingFrame& pf : pendingFrames)
-            if (const Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
+            if (Planetoid* b = Planetoid::findNet((NetId)pf.body)) {
                 pf.p->position = b->toWorldD(pf.local);
+                pf.p->nearest = b; // (#1881) a save before the next update wrote no player_body line without it
+
                 if (pf.p == &player) { loadedFrameSet = true; loadedFrameBody = pf.body; loadedFrameLocal = pf.local; } // the hold's spot
             }
         pendingFrames.clear();
