@@ -80,6 +80,7 @@ enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, S
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
+inline int gSpawnVariant = -1; // ...or of this biome variant (--bench-biome forest.birch_grove; #1977)
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
 // Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
@@ -210,6 +211,8 @@ public:
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter, caveMouths;
+    SimplexNoise variantNoise;      // biome variants (#1977): not in gpuNoiseParams (CPU only so far)
+    float variantQ[65] = {};        // ...its quantiles over the sphere (variantU maps through them to an even 0..1)
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -294,6 +297,15 @@ public:
     Climate climateAt(Vector3 dir, float elev) const;
     Biome biomeAt(Vector3 dir, float elev) const;
     Biome biomeOf(const Climate& c, float elev) const;
+    // Biome variants (#1977, biomevariants.h): a ~2.5 km variant noise, mapped to an even 0..1 over the planet
+    // (variantU), split into each type's weighted bands; a gated variant passes the point to its type's next band.
+    // variantAt returns an id into BiomeVariants().defs (its .type == biomeAt's biome). CPU only: nothing on the
+    // GPU path reads it yet (#1985 adds it to terrain.glsl when a variant changes the 3D density).
+    float variantU(Vector3 dir) const;
+    int variantOf(Biome type, const Climate& c, float elev, float u) const;
+    int variantAt(Vector3 dir, float elev) const;
+    Vector3 nearestVariantDir(Vector3 home, int variant) const; // as nearestBiomeDir, for --bench-biome <type>.<id>
+    Vector3 nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const; // ...is(dir, elev) 200 m out on four sides
     // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
     // mesas (flat tops on steep risers), swamps flattened toward the water table.
     float biomeShape(Vector3 dir, float h, float fp) const;

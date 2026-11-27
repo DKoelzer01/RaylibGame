@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "envflag.h"
 #include "wind.h"
 #include "gpumem.h"
 #include "headless.h"
@@ -169,6 +170,11 @@ void KickGpu() { rlDrawRenderBatchActive(); if (glad_glFlush) glad_glFlush(); }
 static float FarForestOn() {
     static const float on = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 0.0f : 1.0f; }();
     return on;
+}
+// #1979: per-tree height, width, lean and leaf hue (trees.vs / trees.fs). On by default; RAYLIBGAME_TREE_VARIATION=0: off (A/B).
+static float TreeVariationOff() {
+    static const float off = [] { const char* e = getenv("RAYLIBGAME_TREE_VARIATION"); return e && e[0] && !EnvFlag("RAYLIBGAME_TREE_VARIATION") ? 1.0f : 0.0f; }();
+    return off;
 }
 
 static int SceneSamples() {
@@ -597,7 +603,7 @@ void Scene::drawScene(int gamestate) {
                     // Casters fade with the main view's distance fade (tree_depth.fs, #541): from the real camera.
                     tctx.treeFadeLoc = GetShaderLocation(ts, "fadeEnd");
                     rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-                    { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+                    { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
                     for (const auto& obj : objects)
                         if (auto* p = dynamic_cast<Planetoid*>(obj.get()); p && p->isActive && p->trees) {
                             p->trees->setShadowSun(p->dirToLocal(shadowSun));
@@ -875,7 +881,7 @@ void Scene::drawScene(int gamestate) {
         ctx.ambient = effAmbient;
         if (farSphere.shader.id > 0) {
             Shader& fs = farSphere.shader;
-            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &lightDirection, SHADER_UNIFORM_VEC3);
+            SetShaderValue(fs, GetShaderLocation(fs, "sunDir"), &sun, SHADER_UNIFORM_VEC3); // (#1859 L6: the sun, as their rings; lightDirection is the moon at night)
             SetShaderValue(fs, GetShaderLocation(fs, "viewPos"), &camera.position, SHADER_UNIFORM_VEC3);
             SetShaderValue(fs, GetShaderLocation(fs, "ambient"), &effAmbient, SHADER_UNIFORM_VEC3);
             const float fshell[4] = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z,
@@ -995,7 +1001,7 @@ void Scene::drawScene(int gamestate) {
             rlSetUniform(GetShaderLocation(ts, "sunDir"), &lightDirection, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "sunFade"), &sunFade, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "viewPos"), &camera.position, RL_SHADER_UNIFORM_VEC3, 1);
-            { const float ff = FarForestOn(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); }
+            { const float ff = FarForestOn(), tv = TreeVariationOff(); rlSetUniform(GetShaderLocation(ts, "farForest"), &ff, RL_SHADER_UNIFORM_FLOAT, 1); rlSetUniform(GetShaderLocation(ts, "treeVariationOff"), &tv, RL_SHADER_UNIFORM_FLOAT, 1); }
             rlSetUniform(GetShaderLocation(ts, "ambient"), &effAmbient, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "ambientUp"), &hemiUp, RL_SHADER_UNIFORM_VEC3, 1);
             rlSetUniform(GetShaderLocation(ts, "fogColor"), &effFog, RL_SHADER_UNIFORM_VEC3, 1);
