@@ -87,7 +87,10 @@ SCENARIO("net/late-join-lag") {
         if (c.t - S.t0 < 2.0) return false; // (walking first)
         S.correctionsAtJoin = S.bob.corrections; S.worstAtJoin = S.bob.worstError; S.bob.worstError = 0.0;
         S.dave.syncAssumeEmpty = S.frank.syncAssumeEmpty = true; // nothing cached: everything comes over
-        NetClient_SetLoadout(S.bob, "stone_pickaxe", false, 0); // (his dig mid-sync must be one the server takes)
+        // His dig mid-sync must be one the server takes: a pickaxe stroke. The server takes a held tool only from the player's
+        // inventory (#1868), or anything from a creative player: bob is made creative (his walk is the same).
+        c.check("the server makes bob creative (/gamemode)", Host_SetCreative("bob", true));
+        NetClient_SetLoadout(S.bob, "stone_pickaxe", false, 0);
         const std::string addr = TextFormat("127.0.0.1:%d", kPort);
         NetClient_Connect(S.dave, addr.c_str(), "dave");
         NetClient_Connect(S.frank, addr.c_str(), "frank");
