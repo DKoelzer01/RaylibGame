@@ -153,7 +153,10 @@ SCENARIO("saves/golden-load") {
             std::error_code ec;
             fs::remove_all(L.copy, ec);
             fs::create_directories(L.copy, ec);
-            fs::copy(dir, L.copy, fs::copy_options::recursive, ec);
+            // Entry by entry: a directory copied onto an existing one fails on MinGW's libstdc++ ("File exists") and the
+            // load found no file there (#1881: the scenario had only run on Linux).
+            for (const auto& e : fs::directory_iterator(dir, ec))
+                fs::copy(e.path(), L.copy / e.path().filename(), fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
             L.facts = ReadFacts(L.copy / "facts.txt");
             SetWorldSavePath((L.copy / "world.sav").string().c_str());
             const bool loaded = LoadWorldSave(c.world);
