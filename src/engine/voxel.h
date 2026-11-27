@@ -286,6 +286,14 @@ public:
     WaterSource waterSourceAt(Vector3 dir) const;
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
+    // Tests (#1965): what becomes of the bake's ponds - each through the same rules as the terrain (bakePond). Counts by
+    // outcome; within: the ones kept whose centre lies within `within` m (surface arc) of `dir`; nearest: m to the closest
+    // kept one (-1: none); smallest: the least radius kept (m).
+    // nearWater = inLake (in a lake's water; lakeIsPond of those at the pond's own level) + lakeBank + river.
+    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, inLake = 0, lakeIsPond = 0, lakeCellsMax = 0, lakeBank = 0, river = 0,
+                        low = 0, depth = 0, within = 0, wet = 0; float nearest = -1.0f, smallest = -1.0f;
+                        float nearestWet = -1.0f; Vector3 nearestWetDir{ 0, 1, 0 }; }; // the nearest hollow showing water (any rule)
+    PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -413,6 +421,7 @@ public:
     void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
     float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
     float testBroadLand(Vector3 dir, float footprint) const { return broadLand(land(dir, footprint), dir, footprint); } // (#1856 M11 tests) rivers' smooth land
+    float testBakeInputHeight(Vector3 dir, float footprint) const { tBakeInput = true; const float h = land(dir, footprint).h; tBakeInput = false; return h; } // (#1905 tests) the erosion bake's input
     // Base density (no edits) at p, |p| = d, in a column whose surface elevation and Column3D are known (a block grid's):
     // skips the height map. The sky probe's up ray uses it (#387).
     float densityInColumn(Vector3 p, float d, float elev, float footprint, const Column3D* col) const { return densityNear(p, d, radius + elev, footprint, col); }
@@ -424,6 +433,8 @@ private:
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
+    // A bake pond through the terrain's rules (#360): reason 0 kept, 1 by a lake or river, 2 level too low, 3 bowl depth.
+    Pond bakePond(int index, int& reason) const;
     float riverWeight(const Land& l) const;
     // A river here: its weight (0: none), water level (smooth: from the land without its fine hills
     // and detail, so it does not follow every bump) and width factor (wider toward the sea).

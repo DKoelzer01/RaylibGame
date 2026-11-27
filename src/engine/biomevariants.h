@@ -21,6 +21,9 @@ struct BiomeVariantDef {
     static constexpr int kSpecies = 5;
     float trees = 1.0f, bushes = 1.0f, stones = 1.0f, size = 1.0f, cover = -1.0f;
     float species[kSpecies] = {};
+    // (#2012) Rubber: the percent of its felled trees that give one rubber (deterministic per tree:
+    // BiomeVariants_RubberRoll). The jungle type gives it from every tree whatever this says.
+    int rubber = 0;
     bool hasSpecies() const { for (float w : species) if (w > 0.0f) return true; return false; }
     bool gated() const { return elevMin > -1e8f || elevMax < 1e8f || tempMin > -1e8f || tempMax < 1e8f || moistMin > -1e8f || moistMax < 1e8f; }
     bool admits(float elev, float temp, float moist) const {
@@ -43,3 +46,6 @@ void BiomeVariants_Default(BiomeVariantTable& out); // one base variant per type
 // resources/data/biomes.txt, loaded on first use (thread-safe); the defaults if it is missing or bad (logged).
 const BiomeVariantTable& BiomeVariants();
 const char* BiomeVariantName(int id); // its display name; "" for an unknown id
+// (#2012) Whether the plant with this id is among a percent of trees: a hash of the id, so a host and its clients agree
+// and a tree gives the same answer however often it is asked.
+bool BiomeVariants_RubberRoll(int percent, uint64_t plantId);
