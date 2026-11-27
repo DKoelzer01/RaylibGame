@@ -283,6 +283,11 @@ public:
     WaterSource waterSourceAt(Vector3 dir) const;
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
+    // Tests (#1965): what becomes of the bake's ponds - each through the same rules as the terrain (bakePond). Counts by
+    // outcome; within: the ones kept whose centre lies within `within` m (surface arc) of `dir`; nearest: m to the closest
+    // kept one (-1: none); smallest: the least radius kept (m).
+    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, low = 0, depth = 0, within = 0; float nearest = -1.0f, smallest = -1.0f; };
+    PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -410,6 +415,8 @@ private:
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
+    // A bake pond through the terrain's rules (#360): reason 0 kept, 1 by a lake or river, 2 level too low, 3 bowl depth.
+    Pond bakePond(int index, int& reason) const;
     float riverWeight(const Land& l) const;
     // A river here: its weight (0: none), water level (smooth: from the land without its fine hills
     // and detail, so it does not follow every bump) and width factor (wider toward the sea).
