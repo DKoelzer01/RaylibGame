@@ -1,6 +1,7 @@
 #include "erosion.h"
 #include "detmath.h" // (#1905) expf/logf/powf/asinf with the same bits everywhere
 #include "utils/logger.h"
+#include "profiler.h"
 #include "envflag.h"
 #include <raymath.h>
 #include <algorithm>
@@ -104,12 +105,13 @@ namespace {
     // Seconds per part of Simulate (#605): setup, flood, glacial, stream power, talus, wind.
     struct SimProfile { double s[6] = {}; void add(const SimProfile& o) { for (int k = 0; k < 6; ++k) s[k] += o.s[k]; } };
     const char* const kSimParts[6] = { "setup", "flood", "glacial", "stream", "talus", "wind" };
-    // Faces refined at once (a face's working set is ~250 MB): 6, 3, 2 or 1 (whole rounds), at least 2 threads each. Each
-    // face's simulation runs on one thread, so 3 at a time left 13 of 16 threads idle through it (#605).
+    // Faces refined at once (a face's working set is ~250 MB): one per thread, up to all 6, each starting as soon as one
+    // finishes. Most of a face's simulation (flood, talus, glacial) runs on one thread, so 3 at a time left 13 of 16
+    // threads idle through it (#605), and the old rule of 2 threads a face ran 2 at a time on 4 threads, half the CPU
+    // idle (faces 76.5 s wall, now 64.3, #1914). The result doesn't depend on it (each face alone; their threads are exact).
     int kParallelFaces(int T) {
         if (gBakeOld) return std::clamp(T / 4, 1, 3);
-        for (int k : { 6, 3, 2 }) if (T >= 2 * k) return k;
-        return 1;
+        return std::clamp(T, 1, 6);
     }
 
     // A monotone radix heap for the priority flood (#605): it pops (height, cell) pairs in exactly the order the binary
@@ -263,7 +265,9 @@ namespace {
             const float bandK = capRock(hc) ? 0.15f : 1.6f;
             return k * (1.0f + (bandK - 1.0f) * d.strata[c]);
         };
-        std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells);
+        std::vector<float> hf(cells), area(cells), areaM(gBakeOld ? 0 : cells), areaG(gBakeOld ? 0 : cells), recvL(gBakeOld ? 0 : cells),
+                           areaMemo(gBakeOld ? 0 : cells, -1.0f); // #1914: the area areaM/areaG were computed for
+        std::vector<int> recvMemo(gBakeOld ? 0 : cells, -1);
         std::vector<int> receiver(cells), order;
         std::vector<float> hsDelta; // #1884: the hillslope pass's changes (applied after it, so the scan order doesn't matter)
         // Wind (#370): per cell its downwind and upwind neighbours (latitude bands: trade winds blowing west and toward the
@@ -298,6 +302,16 @@ namespace {
                 dryLat[c] = det::Expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * det::Expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
             }
         }
+        // #1914: the unit-sphere distance to each of the 8 neighbours, once (the talus took 8 square roots a cell every other
+        // step). The same bits as computing it in place. Only for the coarse grid (43 MB); a fine face's table would be
+        // 130 MB more on its ~250 MB, six at once, so the faces still compute it.
+        std::vector<float> nbD;
+        if (cells <= (size_t)2000000) {
+            nbD.resize(cells * 8);
+            for (size_t c = 0; c < cells; ++c)
+                for (int k = 0; k < 8; ++k) { const int o = nbOf(c, k); nbD[c * 8 + k] = o < 0 ? 0.0f : Vector3Distance(d.dir[c], d.dir[o]); }
+        }
+        auto nbDist = [&](size_t c, int k, int o) { return nbD.empty() ? Vector3Distance(d.dir[c], d.dir[o]) : nbD[c * 8 + k]; };
         std::vector<uint8_t> seen(cells);
         std::unique_ptr<StreamPool> pool; // #605: the stream power on `threads` threads (the coarse pass; the faces run side by side)
         if (threads > 1 && !gBakeOld) pool = std::make_unique<StreamPool>(threads);
@@ -341,7 +355,7 @@ namespace {
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf((size_t)c, k);
                         if (o < 0 || hf[o] >= hf[c]) continue;
-                        const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
+                        const float s = (hf[c] - hf[o]) / (nbDist((size_t)c, k, o) * R);
                         slope[n] = s * s; // (squared: the steepest still wins most rolls, so channels stay single threads; GUESS)
                         sum += slope[n]; lower[n++] = o;
                     }
@@ -356,7 +370,7 @@ namespace {
                 for (int k = 0; k < 8; ++k) {
                     const int o = nbOf((size_t)c, k);
                     if (o < 0 || hf[o] >= hf[c]) continue; // not lower: never steeper than 0 (#605: skips the distance)
-                    const float s = (hf[c] - hf[o]) / (Vector3Distance(d.dir[c], d.dir[o]) * R);
+                    const float s = (hf[c] - hf[o]) / (nbDist((size_t)c, k, o) * R);
                     if (s > best) { best = s; receiver[c] = o; }
                 }
             }
@@ -364,9 +378,10 @@ namespace {
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
             if (!gBakeOld) // #605: what the stream power needs per cell changes only here; once per flood, not every step
                 for (size_t c = 0; c < cells; ++c) {
-                    areaM[c] = det::Powf(area[c], p.m);
-                    areaG[c] = det::Root4f(area[c]);
-                    recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R;
+                    // #1914: recomputed only where the area or the receiver changed since the last flood (the same bits:
+                    // pure functions of them); most hillslope cells keep their own area, and the powers are the cost.
+                    if (area[c] != areaMemo[c]) { areaM[c] = det::Powf(area[c], p.m); areaG[c] = det::Root4f(area[c]); areaMemo[c] = area[c]; }
+                    if (receiver[c] != recvMemo[c]) { recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R; recvMemo[c] = receiver[c]; }
                 }
         };
         lap(0);
@@ -437,20 +452,28 @@ namespace {
             // at 0.1 a neighbour for stability. Crests round over and V shoulders soften; the sea floor stays put.
             if (p.hillslope > 0.0f && step % 2 == 0) {
                 hsDelta.assign(cells, 0.0f);
-                for (size_t c = 0; c < cells; ++c) {
-                    if (d.outlet[c]) continue;
-                    float dh = 0.0f;
-                    for (int k = 0; k < 4; ++k) {
-                        const int o = nbOf(c, k);
-                        if (o < 0) continue;
-                        const float L = Vector3Distance(d.dir[c], d.dir[o]) * R;
-                        dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                auto hillslopeCells = [&](size_t c0, size_t c1) { // reads the heights only: any split, the same result
+                    for (size_t c = c0; c < c1; ++c) {
+                        if (d.outlet[c]) continue;
+                        float dh = 0.0f;
+                        for (int k = 0; k < 4; ++k) {
+                            const int o = nbOf(c, k);
+                            if (o < 0) continue;
+                            const float L = nbDist(c, k, o) * R;
+                            dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
+                        }
+                        // #1965: on the fine pass creep never fills a closed hollow's floor (one the flood filled 5 cm+): it
+                        // filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it off, 223 on). Rims still round over.
+                        if (fine && dh > 0.0f && hf[c] > d.h[c] + 0.05f) dh = 0.0f;
+                        hsDelta[c] = dh;
                     }
-                    // #1965: on the fine pass creep never fills a closed hollow's floor (one the flood filled 5 cm+): it
-                    // filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it off, 223 on). Rims still round over.
-                    if (fine && dh > 0.0f && hf[c] > d.h[c] + 0.05f) dh = 0.0f;
-                    hsDelta[c] = dh;
-                }
+                };
+                if (threads > 1) { // #1914: on threads (it was serial: the coarse pass ran it on one of 16)
+                    std::vector<std::thread> team;
+                    const size_t per = (cells + threads - 1) / threads;
+                    for (int t = 0; t < threads; ++t) team.emplace_back(hillslopeCells, std::min(cells, per * t), std::min(cells, per * (t + 1)));
+                    for (auto& th : team) th.join();
+                } else hillslopeCells(0, cells);
                 for (size_t c = 0; c < cells; ++c) d.h[c] += hsDelta[c];
             }
             lap(3);
@@ -464,7 +487,7 @@ namespace {
                     for (int k = 0; k < 8; ++k) {
                         const int o = nbOf(c, k);
                         if (o < 0) continue;
-                        const float excess = d.h[c] - d.h[o] - maxSlope * Vector3Distance(d.dir[c], d.dir[o]) * R;
+                        const float excess = d.h[c] - d.h[o] - maxSlope * nbDist(c, k, o) * R;
                         if (excess > 0.0f) { const float mv = 0.5f * excess; d.h[c] -= mv; if (!d.outlet[o]) d.h[o] += mv; }
                     }
                 }
@@ -713,6 +736,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     struct BakingFlag { BakingFlag() { gBaking.store(true); ++gBakes; } ~BakingFlag() { gBaking.store(false); } } baking; // the loading screen tells a bake from a cache read (#505)
     paramsKey = ErosionParamsKey(p);
     const auto t0 = std::chrono::steady_clock::now();
+    double freeMB0 = 0.0; unsigned long long faults0 = 0; Profiler_MemoryHealth(freeMB0, faults0); // #1914: the machine's state, for the profile
     R = planetRadius; seed = seedIn;
     const int T = std::max(1, threads);
     static const int di[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, dj[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
@@ -776,8 +800,9 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
     StageHash("rock", -1, d, h0);
+    const double cpuSim0 = Profiler_ThreadCpuSeconds(); // #1914: the flood is serial: CPU well below wall = the thread waited (paging, other load); CPU = wall but slow = slow clocks
     Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
-    const double tSim = pt();
+    const double tSim = pt(), cpuSim = Profiler_ThreadCpuSeconds() - cpuSim0;
     StageHash("simulated", -1, d, h0);
     // Back to the input's height range: the 99th percentile of land as high as the input's. (Matching only the highest
     // peak left the ranges ~30% lower than the input: p90 1041 -> 723 m on seed 42.)
@@ -877,7 +902,12 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                     fd.h[c] = fh0[c] <= 0.0f ? fh0[c] : coarseUnscaledAt(fd.dir[c]);
                 }
             StageHash("rock", f, fd, fh0);
-            Simulate(fd, [FE](size_t c, int k) {
+            // #1914: a cell off the rim (every rim cell is an outlet) has all 8 neighbours inside the face: an offset, not
+            // the two integer divisions per lookup (8 lookups a cell in the flood, the talus and the receivers).
+            const int nbOff[8] = { 1, -1, FE, -FE, 1 + FE, 1 - FE, -1 + FE, -1 - FE };
+            const uint8_t* rimOrSea = fd.outlet.data();
+            Simulate(fd, [FE, nbOff, rimOrSea](size_t c, int k) {
+                if (!rimOrSea[c]) return (int)c + nbOff[k];
                 const int i = (int)(c % FE) + di[k], j = (int)(c / FE) + dj[k];
                 return (i < 0 || j < 0 || i >= FE || j >= FE) ? -1 : j * FE + i;
             }, p.refineSteps, p, R, seed, kScale, &filled, DumpOn() && f == dumpFace ? &windAcc : nullptr, &faceProf[f], sampleThreads, true); // #605: the face's share of the threads; fine (#633)
@@ -981,12 +1011,16 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             flap(3);
         };
         const int parallelFaces = kParallelFaces(T);
-        for (int f0 = 0; f0 < 6; f0 += parallelFaces) {
-            std::vector<std::thread> pool;
-            for (int f = f0; f < std::min(6, f0 + parallelFaces); ++f) pool.emplace_back(refineFace, f, std::max(1, T / parallelFaces));
-            for (auto& th : pool) th.join();
-            gBakeProgress.store(0.3f + 0.7f * (float)std::min(6, f0 + parallelFaces) / 6.0f, std::memory_order_relaxed);
-        }
+        std::atomic<int> nextFace{ 0 }, facesDone{ 0 };
+        std::vector<std::thread> pool;
+        for (int w = 0; w < parallelFaces; ++w)
+            pool.emplace_back([&] {
+                for (int f; (f = nextFace.fetch_add(1)) < 6;) {
+                    refineFace(f, std::max(1, T / parallelFaces));
+                    gBakeProgress.store(0.3f + 0.7f * (float)(facesDone.fetch_add(1) + 1) / 6.0f, std::memory_order_relaxed);
+                }
+            });
+        for (auto& th : pool) th.join();
     }
     pondList.clear();
     for (const auto& fp2 : facePonds) pondList.insert(pondList.end(), fp2.begin(), fp2.end()); // face order: deterministic
@@ -1006,6 +1040,8 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
         snprintf(pbuf, sizeof pbuf, "]); faces %.1f s wall, %d at a time; summed over faces: sampling %.2f, rock %.2f, simulate %.2f [", refineSeconds, kParallelFaces(T), ft4[0], ft4[1], ft4[2]); s += pbuf;
         for (int k = 0; k < 6; ++k) { snprintf(pbuf, sizeof pbuf, "%s%s %.2f", k ? ", " : "", kSimParts[k], fs.s[k]); s += pbuf; }
         snprintf(pbuf, sizeof pbuf, "], drift+ponds %.2f; final drainage %.1f s; total %.1f s", ft4[3], routeSeconds, buildSeconds); s += pbuf;
+        double freeMB1 = 0.0; unsigned long long faults1 = 0; Profiler_MemoryHealth(freeMB1, faults1);
+        snprintf(pbuf, sizeof pbuf, "; machine (#1914): bake thread CPU %.1f s of %.1f s in the coarse simulate, free RAM %.0f -> %.0f MB, %llu page faults", cpuSim, tSim, freeMB0, freeMB1, faults1 - faults0); s += pbuf;
         profile = s;
     }
 }
