@@ -719,6 +719,7 @@ uint64_t ErosionParamsKey(const ErosionParams& p) {
     auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
     const uint32_t ver = kErosionBakeVersion; mix(&ver, sizeof ver);
     for (float f : { p.cell, p.k, p.m, p.uplift, p.talusSoft, p.talusHard, p.glacial, p.glacialLine, p.start, p.wind, p.hillslope }) mix(&f, sizeof f);
+    if (p.coarseDt != 1.0f) mix(&p.coarseDt, sizeof p.coarseDt); // #1957 (default key unchanged)
     for (int i : { p.steps, p.floodEvery, p.refine, p.refineSteps, p.margin, (int)p.randomReceivers }) mix(&i, sizeof i);
     if (p.landKey) mix(&p.landKey, sizeof p.landKey); // #504: a world's generation parameters (0: defaults, old caches still load)
     { const float span = NoiseSeedSpanUnits(); if (span != 64.0f) mix(&span, sizeof span); } // #532: the noise offsets (an A/B span bakes its own)
@@ -792,13 +793,23 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
     for (float v : h0) maxH0 = std::max(maxH0, v);
     const double tSample = pt();
     StageHash("sampled", -1, d, h0);
-    SetRock(d, h0, maxH0, R, seed, p, &strata, T);
+    // #1957: the coarse pass takes coarseDt-times larger steps. The stream-power step is implicit (stable at any step), so
+    // steps / dt with the per-step rates x dt (erodibility, uplift, hillslope, wind; glacial follows the erodibility)
+    // reaches the same balance with dt-times fewer floods: 400 steps -> 100 gave the same ridges and valley network at
+    // 128 m/px, coarse pass 21 s -> 6 s (seed 42, -O3). The 50 m faces keep p.
+    ErosionParams pc = p;
+    if (p.coarseDt > 1.0f) {
+        pc.steps = std::max(1, (int)lroundf((float)p.steps / p.coarseDt));
+        const float dt = (float)p.steps / (float)pc.steps; // the exact ratio after rounding
+        pc.k *= dt; pc.uplift *= dt; pc.hillslope *= dt; pc.wind *= dt;
+    }
+    SetRock(d, h0, maxH0, R, seed, pc, &strata, T);
     const double tRock = pt();
     d.outlet.resize(d.cells); d.h.resize(d.cells);
     for (size_t c = 0; c < d.cells; ++c) { d.outlet[c] = h0[c] <= 0.0f; d.h[c] = h0[c] > 0.0f ? h0[c] * p.start : h0[c]; } // start low (uplift mode) or from the input (carve mode)
     StageHash("rock", -1, d, h0);
     const double cpuSim0 = Profiler_ThreadCpuSeconds(); // #1914: the flood is serial: CPU well below wall = the thread waited (paging, other load); CPU = wall but slow = slow clocks
-    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, p.steps, p, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
+    Simulate(d, [&](size_t c, int k) { return nb[c * 8 + k]; }, pc.steps, pc, R, seed, 1.0f, nullptr, nullptr, &coarseProf, T);
     const double tSim = pt(), cpuSim = Profiler_ThreadCpuSeconds() - cpuSim0;
     StageHash("simulated", -1, d, h0);
     // Back to the input's height range: the 99th percentile of land as high as the input's. (Matching only the highest
