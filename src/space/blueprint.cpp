@@ -87,8 +87,8 @@ std::string Blueprint_Text(const Plot& plot, const std::string& name) {
     }
     if (n == 0) return std::string();
     std::string s = TextFormat("# Blueprint: part type, cell x y z (from its lowest corner), orientation, material\nname %s\nparts %d\n", name.c_str(), n);
-    for (const Part& p : plot.parts)
-        if (p.type != PartType::Count) s += TextFormat("%d %d %d %d %d %d\n", (int)p.type, p.origin.x - lo.x, p.origin.y - lo.y, p.origin.z - lo.z, p.orient, p.material);
+    for (const Part& p : plot.parts) // (#1881) the type by name: a blueprint outlives the enum's order
+        if (p.type != PartType::Count) s += TextFormat("%s %d %d %d %d %d\n", PartSaveName(p.type), p.origin.x - lo.x, p.origin.y - lo.y, p.origin.z - lo.z, p.orient, p.material);
     return s;
 }
 
@@ -117,8 +117,11 @@ bool Blueprint_ParseText(const std::string& text, Blueprint& out) {
         if (sscanf(line, "name %127[^\n]", name) == 1) { out.name = name; continue; }
         if (sscanf(line, "parts %d", &n) == 1) continue;
         int t, x, y, z, o, m;
-        if (sscanf(line, "%d %d %d %d %d %d", &t, &x, &y, &z, &o, &m) == 6 && t >= 0 && t < (int)PartType::Count)
-            out.parts.push_back({ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) });
+        char type[64];
+        PartType pt = PartType::Count;
+        if (sscanf(line, "%d %d %d %d %d %d", &t, &x, &y, &z, &o, &m) == 6) pt = PartPalette_MapWith(PartPalette_V13(), t); // (#1881) before names: the old order
+        else if (sscanf(line, "%63s %d %d %d %d %d", type, &x, &y, &z, &o, &m) == 6) pt = PartFromSaveName(type);
+        if (pt != PartType::Count) out.parts.push_back({ pt, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) });
     }
     // Bottom up, so supports go in before what rests on them.
     std::stable_sort(out.parts.begin(), out.parts.end(), [](const Part& a, const Part& b) { return a.origin.y < b.origin.y; });
@@ -296,9 +299,9 @@ void Blueprint_SaveGhosts(FILE* f) {
 bool Blueprint_LoadGhostLine(const char* tok, FILE* f) {
     if (strcmp(tok, "ghost") != 0) return false;
     char body[64] = {}; unsigned plot = 0; int type = 0, x = 0, y = 0, z = 0, orient = 0, mat = 0;
-    if (fscanf(f, " %63s %u %d %d %d %d %d %d", body, &plot, &type, &x, &y, &z, &orient, &mat) == 8 && type >= 0 && type < (int)PartType::Count) {
+    if (fscanf(f, " %63s %u %d %d %d %d %d %d", body, &plot, &type, &x, &y, &z, &orient, &mat) == 8 && PartPalette_Map(type) != PartType::Count) { // (#1881) by the save's palette
         Ghost g; g.body = body; g.plot = plot;
-        g.part.type = (PartType)type; g.part.origin = { x, y, z }; g.part.orient = (uint8_t)orient; g.part.material = (uint8_t)mat;
+        g.part.type = PartPalette_Map(type); g.part.origin = { x, y, z }; g.part.orient = (uint8_t)orient; g.part.material = (uint8_t)mat;
         ghosts.push_back(g);
     }
     return true;
