@@ -47,7 +47,7 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
         player.flyMode = false;
         return c.t > 2.0 && player.grounded && WorldIdle() && player.nearest == p.body;
     });
-    s.step(TextFormat("pour 1 m^3 on %s", name), 60.0, [which](ScenarioCtx& c) {
+    s.step(TextFormat("pour 1 m^3 on %s", name), 240.0, // (fluid time runs at ~0.1 x sim on the headless CPU kernel) [which](ScenarioCtx& c) {
         Pour& p = S.*which;
         if (p.tick0 < 0) {
             p.at = BesidePlayer(*p.body);
@@ -91,7 +91,7 @@ SCENARIO("fluid/luna-pour") {
     // dried uncounted in 10 s. Without evaporation every unit is accounted for, as in fluid/mass-ledger.
     s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" } };
     s.world = ScenarioWorld::Planet;
-    s.timeout = 420.0;
+    s.timeout = 840.0;
     s.step("find Terra and Luna", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
