@@ -363,7 +363,18 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
         }
         b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d, float h0) { return bakeStrataColumn(d, h0); }); // + the rock strata (#587) and the biome (#1990)
         erosionState->gradeOn = false;
-        { // #1990: the bake's ponds per biome type (the bake-free estimate at the water level): dry types should hold few
+        if (BakeBiomeOn()) { // #1990: each variant keeps its `ponds` share of the bake's ponds (dry land few); a hash of the pond's place picks which
+            const BiomeVariantTable& t = BiomeVariants();
+            b.keepPonds([&](const PlanetErosion::Pond& q) {
+                const int v = variantAt(q.dir, q.level, q.dir, climateAt(q.dir, q.level));
+                const float share = v >= 0 && v < (int)t.bake.size() ? t.bake[v].ponds : 1.0f;
+                if (share >= 1.0f) return true;
+                uint32_t hh = (uint32_t)(int)lroundf(q.dir.x * 1e5f) * 73856093u ^ (uint32_t)(int)lroundf(q.dir.y * 1e5f) * 19349663u ^ (uint32_t)(int)lroundf(q.dir.z * 1e5f) * 83492791u;
+                hh ^= hh >> 13; hh *= 0x5bd1e995u; hh ^= hh >> 15;
+                return (hh & 0xFFFFFF) / 16777215.0f < share;
+            });
+        }
+        { // #1990: the bake's ponds per biome type (the bake-free estimate at the water level)
             int n[(int)Biome::Count] = {};
             for (const auto& q : b.ponds()) ++n[(int)biomeOf(climateAt(q.dir, q.level), q.level)];
             std::string s;

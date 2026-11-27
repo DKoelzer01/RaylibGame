@@ -38,6 +38,8 @@ namespace {
             const BiomeVariantDef& own = t.defs[i];
             const BiomeVariantDef* s = own.bake[0] >= 0.0f ? &own : b >= 0 && t.defs[b].bake[0] >= 0.0f ? &t.defs[b] : nullptr;
             if (s) t.bake[i] = { s->bake[0], s->bake[1], s->bake[2], s->bake[3] };
+            const BiomeVariantDef* ps = own.ponds >= 0.0f ? &own : b >= 0 && t.defs[b].ponds >= 0.0f ? &t.defs[b] : nullptr;
+            if (ps) t.bake[i].ponds = ps->ponds;
         }
     }
 
@@ -138,6 +140,10 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             for (int i = 0; i < BiomeVariantDef::kBake; ++i)
                 if (!Bound(v[i], 1.0f, d.bake[i]) || d.bake[i] < 0.0f || d.bake[i] > 8.0f) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>' (multipliers 0..8, or - for 1)");
             if (!extra.empty()) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>'");
+        } else if (key == "ponds") { // (#1990)
+            std::string v, extra;
+            ls >> v >> extra;
+            if (!extra.empty() || v == "-" || !Bound(v, 1.0f, d.ponds) || d.ponds < 0.0f || d.ponds > 1.0f) return fail(lineNo, "ponds takes one share 0..1");
         } else if (key == "cover") {
             std::string v, extra;
             ls >> v >> extra;
@@ -177,7 +183,7 @@ uint64_t BiomeVariants_BakeKey(const BiomeVariantTable& t) {
         mix(d.key.data(), d.key.size());
         const int type = (int)d.type; mix(&type, sizeof type);
         for (float f : { d.weight, d.elevMin, d.elevMax, d.tempMin, d.tempMax, d.moistMin, d.moistMax }) mix(&f, sizeof f);
-        if (i < t.bake.size()) for (float f : { t.bake[i].k, t.bake[i].talus, t.bake[i].creep, t.bake[i].glacial }) mix(&f, sizeof f);
+        if (i < t.bake.size()) for (float f : { t.bake[i].k, t.bake[i].talus, t.bake[i].creep, t.bake[i].glacial, t.bake[i].ponds }) mix(&f, sizeof f);
     }
     return h | 1; // never 0 (0 = the uncoupled bake)
 }
@@ -345,6 +351,18 @@ TEST(BiomeVariants, ParsesBakeMultipliers) {
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 1 1 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake -1 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 9 1 1 1\n", t, &err));
+    // The pond share: its own, else its base's, else 1; 0..1 only; it changes the key.
+    BiomeVariantTable pt;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  ponds 0.1\nvariant badlands.x\nvariant badlands.y\n  ponds 0.5\n", pt, &err)) << err;
+    EXPECT_FLOAT_EQ(pt.bake[pt.base(Biome::Badlands)].ponds, 0.1f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.find("badlands.x")].ponds, 0.1f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.find("badlands.y")].ponds, 0.5f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.base(Biome::Forest)].ponds, 1.0f);
+    BiomeVariantTable pt2;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  ponds 0.2\nvariant badlands.x\nvariant badlands.y\n  ponds 0.5\n", pt2, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(pt), BiomeVariants_BakeKey(pt2));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  ponds 1.5\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  ponds -\n", t, &err));
 }
 
 TEST(BiomeVariants, RefusesBadFiles) {

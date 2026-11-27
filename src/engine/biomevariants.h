@@ -31,6 +31,7 @@ struct BiomeVariantDef {
     // carving. A variant without its own takes its base's; < 0 = not given (resolved: BiomeVariantTable::bake).
     static constexpr int kBake = 4;
     float bake[kBake] = { -1.0f, -1.0f, -1.0f, -1.0f };
+    float ponds = -1.0f;      // (#1990) the share of the bake's ponds kept here (0..1; < 0 = its base's, else 1)
     bool hasSpecies() const { for (float w : species) if (w > 0.0f) return true; return false; }
     bool gated() const { return elevMin > -1e8f || elevMax < 1e8f || tempMin > -1e8f || tempMax < 1e8f || moistMin > -1e8f || moistMax < 1e8f; }
     bool admits(float elev, float temp, float moist) const {
@@ -43,7 +44,7 @@ struct BiomeVariantTable {
     std::vector<int> byType[(int)Biome::Count]; // ids per type in file order, the base first
     std::vector<float> bandLo, bandHi;          // per id: its band of the variant axis (0..1) within its type
     std::vector<Vector3> grassTint, leafTint;   // (#2032) per id, resolved: its own, else its base's, else 1
-    struct BakeMul { float k = 1.0f, talus = 1.0f, creep = 1.0f, glacial = 1.0f; };
+    struct BakeMul { float k = 1.0f, talus = 1.0f, creep = 1.0f, glacial = 1.0f, ponds = 1.0f; };
     std::vector<BakeMul> bake;                  // (#1990) per id, resolved like the tints
     int find(const std::string& key) const;     // -1 if none
     int base(Biome t) const { return byType[(int)t].empty() ? -1 : byType[(int)t][0]; }

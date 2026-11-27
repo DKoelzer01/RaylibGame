@@ -93,6 +93,8 @@ public:
     // spill level (m above sea level) and depth. Water levels come from these; PlanetField places its ponds here.
     struct Pond { Vector3 dir; float r, level, depth; };
     const std::vector<Pond>& ponds() const { return pondList; }
+    // #1990: drop the bake's ponds `keep` refuses (the biome's pond share), before the cache is written.
+    template <class F> void keepPonds(F keep) { std::vector<Pond> k; for (const Pond& q : pondList) if (keep(q)) k.push_back(q); pondList.swap(k); }
 
     // Drainage on the final terrain (#547, bake-native rivers): after the faces, one priority flood over every face's own
     // 50 m cells (a single grid across the face edges) gives each cell its receiver (steepest descent on the filled
