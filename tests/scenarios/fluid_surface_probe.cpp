@@ -4,7 +4,7 @@
 // surface metres down. A 2 x 2 m pit 3 m deep is filled by a steady pour; every frame, SurfaceAbove from 0.3 m over the
 // floor is compared with the top of the highest wet cell above that point (scanned down from over the rim). Counted: the
 // frames where the probe reads more than 0.2 m under that top. (A guard for a still pool filling: with the pressure pass
-// off this never showed the bug, before or after the fix. The test that fails without it is fluid/u-bend-pressure.)
+// off this never showed the bug, before or after the fix. The test that fails without it is fluid/u-bend.)
 #include "scenario.h"
 #include "fluid.h"
 #include "waterfield.h"

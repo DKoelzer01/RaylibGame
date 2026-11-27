@@ -44,8 +44,9 @@ Subsystem notes moved out of CLAUDE.md (#1478). Read the entries for the code yo
   (`RAYLIBGAME_ASYNC_SHADERS=0` = off; off by default on the headless Linux platform, where NVIDIA's driver does the
   work on the first status read anyway). `RAYLIBGAME_COLD_SHADERS=1` forces a cold compile to measure it: a cold cache
   is ~2.9 s for fluid_step.comp + 2.5 s for terrain_density.comp here, ~37 s on the runner (#1047).
-- Fluids: the U-bend pressure pass (#1168/#1395) is CPU-only and opt-in (`RAYLIBGAME_FLUID_PRESSURE=1`) until
-  fluid_step.comp has it - CPU and GPU kernels must agree (`RAYLIBGAME_FLUID_TRACE=1` = the parity trace, #968). Rivers
+- Fluids: the U-bend pressure pass (#1168/#1395) runs in both kernels and is on by default since #1898
+  (`RAYLIBGAME_FLUID_PRESSURE=0` turns it off; fluid/u-bend-off is the baseline). True compression (over-full cells) waits
+  for #642's 16-bit fill. CPU and GPU kernels must agree (`RAYLIBGAME_FLUID_TRACE=1` = the parity trace, #968). Rivers
   are infinite carved water with no dry reaches: a dry river bed is a bug (#1438). Shore stripes while a channel fills
   (#1091) are a moving flow pattern held by two deliberate rules (giver-not-resting, minSpread), parked for a spreading
   design.
