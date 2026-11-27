@@ -561,13 +561,14 @@ PlanetField::Pond PlanetField::bakePond(int index, int& reason) const {
     // gully the bake has not (one pond's middle lay 129 m under its level): no pond there.
     // Ponds stand apart from the network's water: none in a lake's region or by a river (one 16 m from a river
     // inside a lake's region never settled once drained).
-    bool apart = true;
+    int water = 0; // 0 apart, 1 in a lake's water, 4 on a lake's bank, 5 by a river
     if (const RiverNetwork* net = rivers()) {
         float lv, lo;
         const RiverNetwork::Hit rh = net->nearest(bp.dir, bp.r + 40.0f);
-        apart = !net->lakeAt(bp.dir, lv, lo) && !(rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f);
+        water = net->lakeAt(bp.dir, lv, lo) ? (lo < RiverNetwork::kLakeMargin ? 1 : 4)
+              : (rh.found && rh.dist < bp.r + rh.halfWidth + 20.0f) ? 5 : 0;
     }
-    reason = !apart ? 1 : !(level > 1.0f) ? 2 : !(level - bottom > -1.0f && level - bottom < 6.0f) ? 3 : 0;
+    reason = water ? water : !(level > 1.0f) ? 2 : !(level - bottom > -1.0f && level - bottom < 6.0f) ? 3 : 0;
     if (reason == 0) {
         p.exists = true; p.dir = bp.dir; p.r = bp.r; p.level = level;
         p.depth = std::clamp(bp.depth, 1.2f, 4.0f);
@@ -595,7 +596,16 @@ PlanetField::PondCensus PlanetField::pondCensus(Vector3 dir, float within) const
         if (best[PondId((int)floorf(s.x / kPondCell), (int)floorf(s.y / kPondCell), (int)floorf(s.z / kPondCell))] != i) { ++c.shadowed; continue; }
         int reason = 0;
         const Pond p = bakePond(i, reason);
-        if (reason == 1) ++c.nearWater; else if (reason == 2) ++c.low; else if (reason == 3) ++c.depth;
+        if (reason == 1 || reason == 4 || reason == 5) ++c.nearWater;
+        if (reason == 1) {
+            ++c.inLake;
+            float lv, lo; int id = -1;
+            if (const RiverNetwork* net = rivers(); net && net->lakeAt(ponds[i].dir, lv, lo, id) && id >= 0) {
+                if (fabsf(lv - ponds[i].level) < 1.5f) ++c.lakeIsPond; // the network's lake is this very hollow
+                if (c.lakeCellsMax < net->lakeInfo(id).cells) c.lakeCellsMax = net->lakeInfo(id).cells;
+            }
+        } else if (reason == 4) ++c.lakeBank; else if (reason == 5) ++c.river;
+        else if (reason == 2) ++c.low; else if (reason == 3) ++c.depth;
         if (!p.exists) continue;
         ++c.kept;
         const float arc = acosf(std::clamp(Vector3DotProduct(d, p.dir), -1.0f, 1.0f)) * radius;

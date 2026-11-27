@@ -286,7 +286,9 @@ public:
     // Tests (#1965): what becomes of the bake's ponds - each through the same rules as the terrain (bakePond). Counts by
     // outcome; within: the ones kept whose centre lies within `within` m (surface arc) of `dir`; nearest: m to the closest
     // kept one (-1: none); smallest: the least radius kept (m).
-    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, low = 0, depth = 0, within = 0; float nearest = -1.0f, smallest = -1.0f; };
+    // nearWater = inLake (in a lake's water; lakeIsPond of those at the pond's own level) + lakeBank + river.
+    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, inLake = 0, lakeIsPond = 0, lakeCellsMax = 0, lakeBank = 0, river = 0,
+                        low = 0, depth = 0, within = 0; float nearest = -1.0f, smallest = -1.0f; };
     PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
