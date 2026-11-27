@@ -19,6 +19,7 @@ namespace {
 struct State {
     Planetoid* luna = nullptr;
     double r0 = 0.0, apex = 0.0, pourAt = -1.0;
+    double spawnR = 0.0;                   // the feet's radius where spawnOn put them
     double settleR = -1.0, settleAt = 0.0; // 'land': the feet's radius and since when it held still
     int spawns0 = 0, deaths0 = 0;          // after the move to Luna: a change later is a respawn (#2000)
     float vol0 = 0.0f, poured = 0.0f;
@@ -30,8 +31,8 @@ double FeetRadius() { return S.luna->toLocalD(player.position).length(); } // m 
 Vector3 UpLocal() { return Vector3Normalize(S.luna->toLocalD(player.position).toFloat()); }
 // (#2000) A respawn puts the player back on Terra, ~600 km from Luna's centre, and the jump then never "lands". Say so.
 bool Respawned(ScenarioCtx& c) {
-    if (player.spawns == S.spawns0) return false;
-    c.fail(TextFormat("the player was respawned (deaths %d -> %d, last harm '%s', health %.0f, oxygen %.0f, vacuum %.0f s)", S.deaths0,
+    if (player.spawns == S.spawns0 && !survival.dead) return false;
+    c.fail(TextFormat("the player died or was respawned (deaths %d -> %d, last harm '%s', health %.0f, oxygen %.0f, vacuum %.0f s)", S.deaths0,
                       survival.deaths, survival.lastHarm, survival.health, survival.oxygen, survival.vacuumTime));
     return true;
 }
@@ -52,6 +53,7 @@ SCENARIO("space/luna-walk") {
         player.flyMode = false;
         S.spawns0 = player.spawns;
         S.deaths0 = survival.deaths;
+        S.spawnR = FeetRadius();
         return true;
     });
     // spawnOn raycasts the terrain built so far: on the runner Luna's near chunks came later and the player stood 2 m inside
@@ -63,7 +65,9 @@ SCENARIO("space/luna-walk") {
         if (!(player.grounded && WorldIdle() && player.nearest == S.luna) || std::fabs(r - S.settleR) > 0.05) { S.settleR = r; S.settleAt = c.t; }
         c.waitingFor(TextFormat("standing still on Luna in an idle world for 1 s (grounded %d, idle %d, still for %.1f s)", (int)player.grounded,
                                 (int)WorldIdle(), c.t - S.settleAt));
-        return c.t > 2.0 && c.t - S.settleAt > 1.0;
+        if (c.t <= 2.0 || c.t - S.settleAt <= 1.0) return false;
+        c.note(TextFormat("spawnOn put the feet at %.1f m from Luna's centre; they stand at %.1f m", S.spawnR, r));
+        return true;
     });
     s.step("jump (5 m/s up)", 30.0, [](ScenarioCtx& c) {
         if (Respawned(c)) return true;
