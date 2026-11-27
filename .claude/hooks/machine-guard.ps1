@@ -6,6 +6,29 @@
 # tools/sandbox.sh...) pass; the classifier is in machine-guard-classify.ps1, its tests in machine-guard.tests.ps1.
 # Fails open: any error here lets the command through, so a broken hook never blocks work.
 $ErrorActionPreference = 'Stop'
+
+# (#1919) The hold is named after the worktree slot.sh ran in, but the event's cwd is the session's start folder, so a
+# session (or its subagent) working in another worktree failed `slot.sh holds`. Its hold still counts when it carries
+# this session's id (slot.sh records CLAUDE_CODE_SESSION_ID; subagents share their session's id), or, for a hold
+# without one, when the command works in the holder's worktree (a path inside it, or a cd into it).
+function Test-HoldIsThisSession([string]$bash, [string]$slot, [string]$session, [string]$cmd) {
+    $info = (& $bash $slot holder-info 2>$null) -join ''
+    if ($LASTEXITCODE -ne 0 -or -not $info) { return $false }
+    $name, $sid = $info -split '\|', 2
+    if ($sid -and $session) { return $sid -eq $session }
+    if (-not $name) { return $false }
+    $lname = $name.ToLowerInvariant()
+    # one spelling for paths: forward slashes, lower case, /c/... -> c:/...
+    $c = (($cmd -replace '\\', '/').ToLowerInvariant()) -replace '(^|[\s"''=])/([a-z])/', '$1$2:/'
+    foreach ($line in (git worktree list --porcelain 2>$null)) {
+        if ($line -notlike 'worktree *') { continue }
+        $wt = ($line.Substring(9) -replace '\\', '/').ToLowerInvariant().TrimEnd('/')
+        if ((Split-Path -Leaf $wt) -eq $lname -and $c -match ([regex]::Escape($wt) + '([/\s"'';&|]|$)')) { return $true }
+    }
+    # a relative cd into it: cd .claude/worktrees/<name>
+    return $c -match ('(^|[;&|]\s*)cd\s+["'']?(\S*/)?' + [regex]::Escape($lname) + '/?["'']?(\s|$|;|&)')
+}
+
 try {
     $raw = [Console]::In.ReadToEnd()
     $evt = $raw | ConvertFrom-Json
@@ -31,7 +54,9 @@ try {
     try {
         if ($runs) {
             & $bash $slot holds *> $null
-            if ($LASTEXITCODE -ne 0) {
+            $held = $LASTEXITCODE -eq 0
+            if (-not $held) { $held = Test-HoldIsThisSession $bash $slot ([string]$evt.session_id) $cmd }
+            if (-not $held) {
                 $st = (& $bash $slot status 2>&1) -join "`n"
                 [Console]::Error.WriteLine("machine-guard: running the game/tests needs the machine slot (one session at a time, #1477).`n$st`nAsk with: tools/slot.sh request <minutes> [quiet] <what>   (run it in the background; it returns when the machine is yours), then tools/slot.sh free when done.")
                 exit 2
