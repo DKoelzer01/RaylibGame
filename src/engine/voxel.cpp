@@ -2428,7 +2428,9 @@ Biome PlanetField::biomeAt(Vector3 dir, float elev) const {
 
 static constexpr int kSpawnCandidates = 12;     // #1883: temperate start spots scored by their surroundings (each ~90 ms to find at -O1)
 static constexpr float kSpawnReachM = 300.0f;   // #1883: how far the score looks (m)
-static const bool kScoreSpawn = !(getenv("RAYLIBGAME_SPAWN_SCORE") && getenv("RAYLIBGAME_SPAWN_SCORE")[0] == '0'); // #1883 A/B (0: the old pick)
+// #1883 A/B (0: the old pick). Read per search, not once at startup: a scenario sets it (s.env) in-process after the
+// statics are made (the place-bound planet tests keep the old start this way).
+static bool ScoreSpawn() { const char* e = getenv("RAYLIBGAME_SPAWN_SCORE"); return !(e && e[0] == '0'); }
 
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
     // (#1883) Scoring the candidates costs ~10k height and water samples: once per field, land and seed.
@@ -2442,7 +2444,7 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         if (auto it = picked.find(key); it != picked.end()) { best = it->second; cached = true; }
     }
     if (!cached) {
-    const bool scoring = kScoreSpawn && !sandbox; // (the flat test plane keeps the old pick: its tests stay where they were)
+    const bool scoring = ScoreSpawn() && !sandbox; // (the flat test plane keeps the old pick: its tests stay where they were)
     std::mt19937 rng(seed ^ 0x5eedu);
     std::uniform_real_distribution<float> unit(0.0f, 1.0f);
     float bestScore = -1e30f;
@@ -2539,6 +2541,7 @@ Vector3 PlanetField::nearestBiomeDir(Vector3 home, Biome b) const {
         if (close <= best) continue;
         const float e = elevation(d, 32.0f);
         if (e < 6.0f || biomeAt(d, e) != b) continue;
+        if (inlandWaterNear(d, 0.0f)) continue; // (#1937: a patch's land, not the lake in it: seed 42's jungle was a lake)
         const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(d, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, d);
         bool deep = true;
         for (int s = 0; s < 4 && deep; ++s) {

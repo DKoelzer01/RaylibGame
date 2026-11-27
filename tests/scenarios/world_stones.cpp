@@ -25,6 +25,9 @@ SCENARIO("world/stones-per-biome") {
             if (c.field->biomeAt(dir, e) != (Biome)b) { c.note(std::string("no patch of ") + name + " found (skipped)"); continue; }
             int trees = 0, bushes = 0, stones = 0;
             Trees_CountScatter(*c.field, seed, dir, 200.0f, trees, bushes, stones);
+            if (trees + bushes + stones == 0) // (a bare patch: where, and what the scatter would stand on)
+                c.note(TextFormat("%s patch bare: dir %.5f,%.5f,%.5f, height %.1f m, inland water %d, ground material %d", name, dir.x, dir.y, dir.z, e,
+                                  (int)c.field->inlandWaterNear(dir, 0.0f), (int)c.field->materialLod(Vector3Scale(dir, c.field->radius + e - 0.3f), 1.0f, 0.0f, dir)));
             c.metric(std::string(name) + " trees within 200 m", trees, "", false);
             c.metric(std::string(name) + " bushes within 200 m", bushes, "", false);
             if ((Biome)b == Biome::Alpine) c.metric(std::string(name) + " stones within 200 m", stones, "", false);

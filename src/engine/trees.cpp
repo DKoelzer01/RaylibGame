@@ -428,7 +428,11 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float e = onIsland ? islandTop - R : f.elevation(dir);
             const Biome biome = onIsland ? Biome::Forest : f.biomeAt(dir, e);
             const BiomeFlora flora = FloraOf(biome);
-            const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
+            const float pStone = pStoneBase * flora.stones;
+            float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes;
+            // (#1936) Stones take the roll after trees and bushes: in dense jungle those filled it (seed 42: 1342 trees, 2 stones
+            // within 200 m). Where they would, they shrink to leave the stones their share.
+            if (pTree + pBush > 1.0f - pStone) { const float k = (1.0f - pStone) / (pTree + pBush); pTree *= k; pBush *= k; }
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
             if (!tree && !stone && roll >= pTree + pBush) continue;
