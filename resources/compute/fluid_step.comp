@@ -333,7 +333,7 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     // The levelling share, in the cells' own water heights (#454: a film on a half-buried cell stands higher and runs off).
     int localDiff = int(SH(d) + F(d)) - int(SH(r) + F(r));
     precise float share = 0.0;
-    if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d));            // a film over a drop runs off whole (#454)
+    if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d)) * gRootAt(ga);          // a film over a drop runs off whole (#454)
     else if (localDiff >= visc[kd]) share = (shareFloat != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd])) * gRootAt(ga); // #1041; at sqrt(g) (#1942)
     // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
     // under water (a leak into an open cell beside it: a pool dug into from the side).

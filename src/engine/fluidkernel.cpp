@@ -268,7 +268,7 @@ struct Pass {
         const float sgn = aGives ? 1.0f : -1.0f;
         const int localDiff = (int)(SH(d) + F(d)) - (int)(SH(r) + F(r));
         float share = 0.0f;
-        if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d);
+        if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d) * g.gRoot[(size_t)ga / 4096];
         else if (localDiff >= p.visc[kd]) share = (p.shareFloat ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd])) * g.gRoot[(size_t)ga / 4096]; // #1041; at sqrt(g) (#1942)
         const float depth = colDepth;
         const float dh = (float)std::abs(ha - hb) / p.hu;
