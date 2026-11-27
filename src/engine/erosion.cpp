@@ -444,9 +444,11 @@ namespace {
                         const float L = Vector3Distance(d.dir[c], d.dir[o]) * R;
                         dh += std::min(2.0f * p.hillslope / (L * L), 0.1f) * (d.h[o] - d.h[c]);
                     }
-                    // #1965: on the fine pass creep never fills a closed hollow's floor (one the flood filled 5 cm+): it
-                    // filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it off, 223 on). Rims still round over.
-                    if (fine && dh > 0.0f && hf[c] > d.h[c] + 0.05f) dh = 0.0f;
+                    // #1965: on the fine pass creep never fills a closed hollow's deep floor (the flood filled it 0.4 m+, half
+                    // a bake pond's 0.8 m minimum): it filled ~2/3 of the bake's ponds (seed 42: 609 hollows with it off, 223
+                    // on). Rims and shallow pits still round over: a 5 cm guard kept every pit on a slope, and their puddles
+                    // never drained (#2018: fluid/slope-drain, fluid/flow).
+                    if (fine && dh > 0.0f && hf[c] > d.h[c] + 0.4f) dh = 0.0f;
                     hsDelta[c] = dh;
                 }
                 for (size_t c = 0; c < cells; ++c) d.h[c] += hsDelta[c];
