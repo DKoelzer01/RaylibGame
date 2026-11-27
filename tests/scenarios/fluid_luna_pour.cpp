@@ -68,7 +68,8 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
         const double t = (double)(Fluid::GetStats().ticks - p.tick0) * 0.025;
         if (p.near1s < 0.0f && t >= 1.0) p.near1s = Fluid::WaterAt(*p.body, p.at, 1.5f) + Fluid::WaterAt(*p.body, Vector3Subtract(p.at, Vector3Scale(Vector3Normalize(p.at), 1.0f)), 1.5f);
         c.waitingFor(TextFormat("10 s of fluid time (%.1f s)", t));
-        return t >= 10.0;
+        // Ticks stop once every brick sleeps (Fluid::GetStats: started by Update): water at rest is as done as 10 s of it.
+        return t >= 10.0 || (t >= 1.0 && Fluid::Asleep());
     });
     s.step(TextFormat("judge %s", name), 1.0, [which, name](ScenarioCtx& c) {
         Pour& p = S.*which;
