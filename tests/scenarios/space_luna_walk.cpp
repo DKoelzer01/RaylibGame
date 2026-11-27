@@ -54,7 +54,7 @@ SCENARIO("space/luna-walk") {
         const double h = FeetRadius() - S.r0;
         S.apex = std::max(S.apex, h);
         if (!player.grounded) S.airborne = true;
-        c.waitingFor("back on the ground");
+        c.waitingFor(TextFormat("back on the ground (apex %.2f m, now %.2f m, airborne %d, grounded %d, fly %d, nearest luna %d)", S.apex, h, (int)S.airborne, (int)player.grounded, (int)player.flyMode, (int)(player.nearest == S.luna)));
         return S.airborne && player.grounded && c.t > 1.0;
     });
     s.step("pour 0.5 m^3 beside the player", 20.0, [](ScenarioCtx& c) {
