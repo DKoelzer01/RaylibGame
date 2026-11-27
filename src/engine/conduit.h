@@ -124,6 +124,9 @@ struct ConduitPlaceResult {
 ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupancy& occ, const std::map<int, ConduitRun>& runs,
                                       const std::function<bool(CInt3 cell)>& solidCell, const std::vector<ConduitPortAt>& ports);
 
+// (#1735 PR 3) The belt end rule above: a belt whose end point is `end` (the next point along it: `next`) meets `port`.
+bool Conduit_BeltEndAtPort(CInt3 end, CInt3 next, const ConduitPortAt& port);
+
 // "N:power_in E:power_in S:fluid_out@2,6:max2": whitespace-separated <face letter>:<kind>[@u,v][:max<n>].
 bool Conduit_ParsePorts(const std::string& spec, std::vector<ConduitPortDef>& out, std::string* why);
 // Face-centre ports. EU consumers: PowerIn on all 6 faces. Generators: PowerOut on all 6. Fluid machines: FluidIn on

@@ -1192,6 +1192,26 @@ Plot* PlotSet::createAt(uint32_t id, Vector3 b) {
     return plots.back().get();
 }
 
+int Plot::addBelt(ConduitRun run) {
+    run.kind = ConduitKind::Belt;
+    run.size = kBeltWidth;
+    if (!Conduit_ValidRun(run, nullptr)) return 0;
+    int id = 1;
+    for (const ConduitRun& b : belts) id = std::max(id, b.id + 1);
+    run.id = id;
+    belts.push_back(std::move(run));
+    ++version;
+    return id;
+}
+
+bool Plot::removeBelt(int id) {
+    const auto it = std::find_if(belts.begin(), belts.end(), [id](const ConduitRun& b) { return b.id == id; });
+    if (it == belts.end()) return false;
+    belts.erase(it);
+    ++version;
+    return true;
+}
+
 Plot* PlotSet::byId(uint32_t id) {
     for (auto& p : plots) if (p->id == id) return p.get();
     return nullptr;
@@ -1205,15 +1225,17 @@ int PlotSet::partCount() const {
 
 void PlotSet::save(FILE* f) const {
     int live = 0;
-    for (const auto& p : plots) if (p->partCount() > 0) ++live;
+    for (const auto& p : plots) if (p->partCount() > 0 || !p->belts.empty()) ++live;
     // plots4: every part slot, removed ones as "-1" placeholders, so part indices (what the factory
     // saves machine contents by) survive a reload; parts carry their material and plots their rocket
     // fuel. (plots3: live parts only; plots2: no fuel; plots: no materials.)
     // plots5: plots4 plus a "wear" line per plot (rocket part damage by part index).
     // plots6 (#1429 PR 3): plots5 plus a "formed <n> <part index>..." line after the wear line (the multiblock controllers whose structure is formed).
-    fprintf(f, "plots6 %d\n", live);
+    // plots7 (#1735 PR 3): plots6 plus a "belts <n>" line after the formed line and n belt runs, one per line, in the conduit
+    // save format ("run <id> belt <material> <size> <points> x y z ...").
+    fprintf(f, "plots7 %d\n", live);
     for (const auto& p : plots) {
-        if (p->partCount() == 0) continue;
+        if (p->partCount() == 0 && p->belts.empty()) continue;
         fprintf(f, "plot %u %.4f %.4f %.4f %d %.1f\n", p->id, p->origin.x, p->origin.y, p->origin.z, (int)p->parts.size(), p->fuel);
         for (const Part& part : p->parts) {
             if (part.type == PartType::Count) fprintf(f, "-1\n");
@@ -1227,6 +1249,8 @@ void PlotSet::save(FILE* f) const {
         fprintf(f, "formed %d", (int)p->formed.size());
         for (int i : p->formed) fprintf(f, " %d", i);
         fprintf(f, "\n");
+        fprintf(f, "belts %d\n", (int)p->belts.size());
+        fputs(Conduit_SaveRuns(p->belts).c_str(), f);
     }
 }
 
@@ -1234,8 +1258,9 @@ bool PlotSet::load(FILE* f) {
     plots.clear();
     int n = 0;
     char tag[16] = {};
-    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0 && strcmp(tag, "plots5") != 0 && strcmp(tag, "plots6") != 0)) return false;
-    const bool hasFormed = strcmp(tag, "plots6") == 0; // (#1429 PR 3)
+    if (fscanf(f, " %15s %d", tag, &n) != 2 || (strcmp(tag, "plots") != 0 && strcmp(tag, "plots2") != 0 && strcmp(tag, "plots3") != 0 && strcmp(tag, "plots4") != 0 && strcmp(tag, "plots5") != 0 && strcmp(tag, "plots6") != 0 && strcmp(tag, "plots7") != 0)) return false;
+    const bool hasBelts = strcmp(tag, "plots7") == 0;               // (#1735 PR 3)
+    const bool hasFormed = strcmp(tag, "plots6") == 0 || hasBelts; // (#1429 PR 3)
     const bool wear = strcmp(tag, "plots5") == 0 || hasFormed;
     const bool materials = strcmp(tag, "plots") != 0, hasFuel = strcmp(tag, "plots3") == 0 || strcmp(tag, "plots4") == 0 || wear;
     const bool slots = strcmp(tag, "plots4") == 0 || wear; // removed parts kept as placeholders
@@ -1286,6 +1311,18 @@ bool PlotSet::load(FILE* f) {
             int nf = 0;
             if (fscanf(f, " formed %d", &nf) != 1 || nf < 0) return false;
             for (int k = 0; k < nf; ++k) { int idx = 0; if (fscanf(f, " %d", &idx) != 1) return false; p->formed.push_back(idx); }
+        }
+        if (hasBelts) { // (#1735 PR 3) a run per line; a run that is no valid belt any more is dropped
+            int nb = 0;
+            char line[4096];
+            if (fscanf(f, " belts %d", &nb) != 1 || nb < 0 || !fgets(line, sizeof line, f)) return false; // (the rest of that line)
+            std::string text;
+            for (int k = 0; k < nb; ++k) { if (!fgets(line, sizeof line, f)) return false; text += line; }
+            std::vector<ConduitRun> runs;
+            if (!Conduit_LoadRuns(text, runs, nullptr)) return false;
+            for (ConduitRun& r : runs)
+                if (r.kind == ConduitKind::Belt && Conduit_ValidRun(r, nullptr) && std::none_of(p->belts.begin(), p->belts.end(), [&](const ConduitRun& b) { return b.id == r.id; }))
+                    p->belts.push_back(std::move(r));
         }
         Multiblock_Recheck(*p); // a definition that changed between versions loads unformed (also sorts and dedupes)
         nextId = std::max(nextId, id + 1);
@@ -1377,5 +1414,48 @@ TEST(BuildMaterials, OldSlotsKeepTheirIndexAndBecomeBricks) {
     EXPECT_EQ(pat("marble_brick"), PatMarble);
     EXPECT_EQ(pat("granite_brick"), PatPolished);
     EXPECT_EQ(PartPatternOf(Part{ PartType::Cube, { 0, 0, 0 }, 0, 40 }), PatBrick);
+}
+
+// (#1735 PR 3) A plot's belts: added with the next free id (an invalid run refused), removed by id, saved (plots7) and loaded;
+// a plot with only belts is saved too.
+TEST(PlotBelts, AddRemoveSaveLoad) {
+    auto plot = std::make_unique<Plot>();
+    plot->id = 4; plot->origin = DVec3(0.0, 100.0, 0.0);
+    plot->up = { 0, 1, 0 }; plot->east = { 1, 0, 0 }; plot->north = { 0, 0, 1 };
+    ConduitRun run; run.material = "basic"; run.points = { { 2, 0, 4 }, { 30, 0, 4 }, { 30, 0, 20 } };
+    const uint32_t v0 = plot->version;
+    EXPECT_EQ(plot->addBelt(run), 1);
+    EXPECT_NE(plot->version, v0) << "the factory sees the change";
+    run.points = { { 2, 8, 4 }, { 2, 8, 30 } };
+    EXPECT_EQ(plot->addBelt(run), 2);
+    ConduitRun bad = run; bad.points = { { 3, 0, 4 }, { 9, 0, 4 } };
+    EXPECT_EQ(plot->addBelt(bad), 0) << "off the quarter-cell grid";
+    EXPECT_TRUE(plot->removeBelt(1));
+    EXPECT_FALSE(plot->removeBelt(1));
+    run.points = { { 0, 0, 0 }, { 16, 0, 0 } };
+    EXPECT_EQ(plot->addBelt(run), 3);
+    const std::vector<ConduitRun> want = plot->belts;
+    PlotSet set;
+    set.plots.push_back(std::move(plot));
+    const char* path = "plot_belts_test.tmp";
+    FILE* f = fopen(path, "w");
+    ASSERT_NE(f, nullptr);
+    set.save(f);
+    fclose(f);
+    PlotSet back;
+    f = fopen(path, "r");
+    ASSERT_NE(f, nullptr);
+    ASSERT_TRUE(back.load(f));
+    fclose(f);
+    std::remove(path);
+    ASSERT_EQ(back.plots.size(), 1u) << "a plot with belts and no parts is kept";
+    const std::vector<ConduitRun>& got = back.plots[0]->belts;
+    ASSERT_EQ(got.size(), want.size());
+    for (size_t i = 0; i < got.size(); ++i) {
+        EXPECT_EQ(got[i].id, want[i].id);
+        EXPECT_EQ(got[i].material, want[i].material);
+        EXPECT_TRUE(got[i].kind == ConduitKind::Belt);
+        EXPECT_TRUE(got[i].points == want[i].points) << "run " << want[i].id;
+    }
 }
 #endif

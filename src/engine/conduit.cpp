@@ -245,6 +245,17 @@ size_t ConduitOccupancy::cellCount() const { return mask.size(); }
 
 // ---- placement ----
 
+bool Conduit_BeltEndAtPort(CInt3 end, CInt3 next, const ConduitPortAt& port) {
+    // The port's slot moved down to its cell's floor: belts enter a machine at floor level, under the face centre. Each
+    // horizontal axis may be off by one slot (belt points are even): a face centre (u = 4) on N and E is the odd slot 3
+    // (7 - u) across, and the E and S faces are the odd slot 7 along (#2051: the end is then slot 6, still in the cell).
+    const int axis = AxisOf(end, next);
+    const int cross = axis == 0 ? 2 : 0;
+    const CInt3 cell = Conduit_CellOf(port.slot);
+    return port.face < 4 && end.y == cell.y * 8 && std::abs(Get(end, axis) - Get(port.slot, axis)) <= 1
+        && Get(Conduit_CellOf(end), axis) == Get(cell, axis) && std::abs(Get(end, cross) - Get(port.slot, cross)) <= 1;
+}
+
 ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupancy& occ, const std::map<int, ConduitRun>& runs,
                                       const std::function<bool(CInt3 cell)>& solidCell, const std::vector<ConduitPortAt>& ports) {
     ConduitPlaceResult res;
@@ -282,12 +293,7 @@ ConduitPlaceResult Conduit_CheckPlace(const ConduitRun& run, const ConduitOccupa
             const ConduitPortAt& p = ports[i];
             if (!PortKindFits(run.kind, p.kind)) continue;
             if (belt) {
-                // The port's slot moved down to its cell's floor: belts enter a machine at floor level, under the face centre.
-                // The cross axis may be off by one: a face centre (u = 4) on N and E is the odd slot 3 (7 - u), and belt
-                // points are even.
-                const int cross = axis == 0 ? 2 : 0;
-                if (p.face >= 4 || pt.y != Conduit_CellOf(p.slot).y * 8 || Get(pt, axis) != Get(p.slot, axis)
-                    || std::abs(Get(pt, cross) - Get(p.slot, cross)) > 1) continue;
+                if (!Conduit_BeltEndAtPort(pt, other, p)) continue;
             } else if (!(p.slot == pt) || run.size > p.maxSize) {
                 continue;
             }
@@ -917,6 +923,25 @@ TEST(Conduit, BeltPorts) {
     r = Conduit_CheckPlace(Belt(1, { {10, 0, 4}, {40, 0, 4} }), plot.occ, plot.runs, solid, onlyPower);
     EXPECT_FALSE(r.ok);
     EXPECT_TRUE(r.portIdx.empty());
+
+    // (#2051) The E and S faces are the odd slot 7 along: a belt ends at slot 6, inside the cell.
+    def.face = 1; def.kind = ConduitPortKind::ItemIn;
+    ConduitPortAt e; e.slot = Conduit_PortSlot({ 5, 0, 0 }, 0, def); e.face = 1; e.kind = def.kind;
+    EXPECT_EQ(e.slot, (CInt3{ 47, 4, 3 }));
+    def.face = 2;
+    ConduitPortAt s; s.slot = Conduit_PortSlot({ 5, 0, 0 }, 0, def); s.face = 2; s.kind = def.kind;
+    EXPECT_EQ(s.slot, (CInt3{ 44, 4, 7 }));
+    const std::vector<ConduitPortAt> es = { e, s };
+    r = Conduit_CheckPlace(Belt(1, { {70, 0, 4}, {46, 0, 4} }), plot.occ, plot.runs, solid, es);
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.portIdx, std::vector<int>({ 0 }));
+    r = Conduit_CheckPlace(Belt(1, { {44, 0, 30}, {44, 0, 6} }), plot.occ, plot.runs, solid, es);
+    EXPECT_TRUE(r.ok) << r.why;
+    EXPECT_EQ(r.portIdx, std::vector<int>({ 1 }));
+    r = Conduit_CheckPlace(Belt(1, { {70, 0, 4}, {48, 0, 4} }), plot.occ, plot.runs, solid, es);
+    EXPECT_TRUE(r.portIdx.empty()) << "slot 8 is the next cell: no port";
+    r = Conduit_CheckPlace(Belt(1, { {70, 0, 4}, {44, 0, 4} }), plot.occ, plot.runs, solid, es);
+    EXPECT_FALSE(r.ok) << "past the face, into the machine";
 }
 
 TEST(Conduit, BeltSaveLoad) {
