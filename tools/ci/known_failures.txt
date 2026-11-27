@@ -17,7 +17,7 @@ perf/creatures-crowd -> FAIL: step .settle.  | #1821 | settle times out on the s
 light/torch-room -> FAIL                | #1829 | 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
 fluid/spring -> FAIL                    | #1910 | "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
 build/tile-walk-planet -> FAIL          | #1999 | the build step passes its 20 s sim deadline in ~20% of runs (16/20), on staging too
-net/late-join-lag -> FAIL: step .edits  | #1972 | the sim runs ahead of the wall-clock join and the step deadline passes (10/12 recent runs pass)
+fluid/slope-drain -> FAIL               | #2018 | checks fail intermittently on the runner (12/20 recent runs pass)
 caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
 creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | the sim outruns the wall clock and the 15 s step deadline passes (19/20 recent runs pass)
 fluid/flow -> FAIL                      | #2044 | a check fails intermittently on the runner (8/20 recent runs pass)

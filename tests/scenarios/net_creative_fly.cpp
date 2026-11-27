@@ -62,6 +62,7 @@ static void BuildFly(ScenarioDef& s) {
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--host", "saves/scenario-net-creative-fly.sav", "--port", std::to_string(kPort) };
     s.timeout = 120.0;
+    s.realTime = true; // (#1972) the join is over real sockets
     s.step("join as flyer", 40.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle()) return false;
@@ -71,12 +72,12 @@ static void BuildFly(ScenarioDef& s) {
         }
         if (S.cl.state == NetClient::State::Idle) {
             NetClient_Connect(S.cl, TextFormat("127.0.0.1:%d", kPort), "flyer");
-            S.t0 = c.t;
+            S.t0 = c.clock;
         }
         RealTime(); NetClient_Update(S.cl);
         c.waitingFor("the client to join and get its state");
         if (S.cl.state != NetClient::State::Joined || !S.cl.haveOwn) {
-            if (c.t - S.t0 > 30.0) c.fail(TextFormat("not joined after 30 s (state %d)", (int)S.cl.state));
+            if (c.clock - S.t0 > 30.0) c.fail(TextFormat("not joined after 30 s (state %d)", (int)S.cl.state));
             return false;
         }
         Planetoid* b = Planetoid::findNet(S.cl.own.body);
