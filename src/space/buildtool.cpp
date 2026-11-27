@@ -3,6 +3,7 @@
 #include "machinetiers.h"
 #include "machineact.h"
 #include "buildtool.h"
+#include "belttool.h"
 #include "researchgate.h"
 #include "playerinput.h"
 #include "waterworks.h"
@@ -587,9 +588,10 @@ void BuildTool_BenchAimAt(Plot& plot, Int3 cell) {
 void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     TickPlacedParts(world);
     BuildTool_ApplyPendingFoundations(kFoundationFrameMs); // (#1183) a placement's foundations, a frame's share at a time
-    if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; return; }
+    if (!usable) { buildTool.active = false; breakAiming = false; breakHeld = 0.0f; BeltTool_Cancel(); return; }
     RefreshLocalClaims(); // (#900) the map's claims in a game run here
-    UpdateBreak(world, in);
+    if (BeltTool_Update(world, in)) { breakAiming = false; breakHeld = 0.0f; breakPart = -1; } // (#2054) on a belt or dragging one: LMB is the belt tool's
+    else UpdateBreak(world, in);
     if (in.hit(Act::BuildMode)) {
         buildTool.active = !buildTool.active;
         buildTool.orientManual = false; // parts face you again (#196)
@@ -598,6 +600,7 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
     if (buildTool.part != buildTool.autoPart) { buildTool.autoPart = buildTool.part; buildTool.orientManual = false; } // another part: automatic facing
     aim = Aim{};
     if (!buildTool.active) return;
+    if (BeltTool_On()) return; // (#2054) the conveyor lays belts: BeltTool_Update aimed and placed
     if (in.enabled) {
         const float wheel = in.wheel;
         // The wheel picks the shape (any shape from the selected material); machines come from the hotbar.
@@ -787,6 +790,8 @@ void BuildTool_Update(Scene& world, const PlayerInput& in, bool usable) {
 
 void BuildTool_Draw3D(Scene& world) {
     DrawStructureGhosts(world); // (#1429 PR 5) in build mode or out: the parts go in with the build tool
+    BeltTool_Draw3D(world);     // (#2054) the conveyor in build mode: the belts laid and the run being dragged
+    if (BeltTool_On()) return;
     if (!buildTool.active || !aim.body) return;
     Planetoid& body = *aim.body;
     const Plot* frame = aim.plot;
@@ -876,6 +881,7 @@ void BuildTool_DrawHUD() {
     const int cx = GetScreenWidth() / 2, cy = GetScreenHeight() / 2;
     DrawLine(cx - 8, cy, cx + 8, cy, RAYWHITE);
     DrawLine(cx, cy - 8, cx, cy + 8, RAYWHITE);
+    if (BeltTool_On()) { BeltTool_DrawHUD(); return; } // (#2054)
     const Part p{ t, { 0, 0, 0 }, 0, (uint8_t)(IsMachine(t) || IsMultiblockPart(t) ? buildTool.variant : buildTool.material) };
     const char* item = PartItem(p);
     const char* label = IsShape(t) ? TextFormat("%s %s", GetBuildMaterial(buildTool.material).name, PartName(t)) : PartName(t);
@@ -1301,7 +1307,7 @@ void Machine_DrawHUD() {
 }
 
 // The world is going (#902): the aim points into its bodies and plots.
-void BuildTool_ForgetWorld() { aim = {}; }
+void BuildTool_ForgetWorld() { aim = {}; BeltTool_ForgetWorld(); }
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include "unit_helpers.h"
