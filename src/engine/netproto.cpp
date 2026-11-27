@@ -555,6 +555,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::Graves: { MsgGraves m; return NetRead(r, m); }
         case NetMsg::QuestBook: { MsgQuestBook m; return NetRead(r, m); }
         case NetMsg::TeamStore: { MsgTeamStore m; return NetRead(r, m); }
+        case NetMsg::MapPin: { MsgMapPin m; return NetRead(r, m); }
         case NetMsg::CraftRequest: { MsgCraftRequest m; return NetRead(r, m); }
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
@@ -749,6 +750,10 @@ bool NetProto_Test() {
         { // #1886
             MsgTeamStore a{ 7, "section research\ndone smelting\nsection_end\n" }, b; std::vector<uint8_t> s;
             check(RoundTrip(a, b, &s) && b.team == 7 && b.text == a.text, "team store"); samples.push_back(s);
+            MsgMapPin pa, pb; std::vector<uint8_t> s2;
+            pa.add = false; pa.body = "terra"; pa.name = "Copper hill"; pa.dir[0] = 0.6f; pa.dir[1] = 0.0f; pa.dir[2] = -0.8f;
+            check(RoundTrip(pa, pb, &s2) && !pb.add && pb.body == "terra" && pb.name == pa.name && pb.dir[0] == 0.6f && pb.dir[2] == -0.8f, "map pin");
+            samples.push_back(s2);
         }
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
@@ -953,6 +958,15 @@ bool NetRead(NetReader& r, MsgQuestBook& m) { m.team = r.u32(); m.text = r.str(6
 // (#1886) A longer text is the sender's bug (the host drops the map section first): written cut, and then read as broken.
 void NetWrite(NetWriter& w, const MsgTeamStore& m) { Id(w, NetMsg::TeamStore); w.u32(m.team); w.str(m.text.substr(0, MsgTeamStore::kMaxText)); }
 bool NetRead(NetReader& r, MsgTeamStore& m) { m.team = r.u32(); m.text = r.str(MsgTeamStore::kMaxText); return Done(r); }
+void NetWrite(NetWriter& w, const MsgMapPin& m) {
+    Id(w, NetMsg::MapPin); w.boolean(m.add); w.str(m.body.substr(0, 64)); w.str(m.name.substr(0, MsgMapPin::kMaxName));
+    w.f32(m.dir[0]); w.f32(m.dir[1]); w.f32(m.dir[2]);
+}
+bool NetRead(NetReader& r, MsgMapPin& m) {
+    m.add = r.boolean(); m.body = r.str(64); m.name = r.str(MsgMapPin::kMaxName);
+    m.dir[0] = r.f32(); m.dir[1] = r.f32(); m.dir[2] = r.f32();
+    return Done(r);
+}
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items

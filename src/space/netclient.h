@@ -74,6 +74,7 @@ struct NetClient {
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
     int teamStores = 0, teamStoreTeam = 0;      // (#1886) team progression stores heard, and the team of the last one
     std::string teamStoreText;                  // ...and its text
+    int mapPinsSent = 0;                        // (#1886) map pins added or removed for the team (NetClient_SendMapPin)
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
@@ -169,6 +170,8 @@ bool NetClient_Connect(NetClient& c, const char* address, const std::string& nam
 void NetClient_Update(NetClient& c);     // per frame: poll (unless a host here does), handle messages, ping, time out
 void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
+// (#1886) a map pin placed (add) or removed, for the team's shared pins; false when not joined (it stays a local waypoint)
+bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vector3 dir, const std::string& name);
 void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy

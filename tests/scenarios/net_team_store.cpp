@@ -5,7 +5,8 @@
 // bob's research with his join. carol joins bob's team by the real commands (/team invite, /team accept): she gets the
 // new team's store at once, and her old team's research doesn't come with her (the user, on #1886).
 // The clients run in this process, so they don't apply the text (the host's state is the real one here): the checks read
-// what each client received.
+// what each client received. Map pins (#1886): bob pins a spot; dave's late join brings it, carol's team doesn't see it
+// until she joins it, and her removing it takes it from bob's and dave's stores at the next tick.
 #include "scenario.h"
 #include "hostserver.h"
 #include "netclient.h"
@@ -13,6 +14,7 @@
 #include "playerrecord.h"
 #include "research.h"
 #include "world.h"
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -47,6 +49,15 @@ bool Has(const NetClient& n, const char* node) {
     }
     return false;
 }
+// (#1886) The pins section has the pin of this name.
+bool HasPin(const NetClient& n, const char* name) {
+    const size_t a = n.teamStoreText.find("section pins\n");
+    if (a == std::string::npos) return false;
+    std::istringstream in(n.teamStoreText.substr(a + 13, n.teamStoreText.find("section_end\n", a) - a - 13));
+    for (std::string line; std::getline(in, line);) if (line.rfind("pin ", 0) == 0 && line.size() > strlen(name) && line.compare(line.size() - strlen(name), std::string::npos, name) == 0) return true;
+    return false;
+}
+const Vector3 kPinDir = { 0.0f, 0.6f, 0.8f }; // body-local
 void UpdateAll() { RealTime(); for (NetClient* n : { &S.bob, &S.carol, &S.dave }) if (n->state != NetClient::State::Idle) NetClient_Update(*n); }
 }
 
@@ -100,6 +111,8 @@ SCENARIO("net/team-store") {
         c.note(TextFormat("heard after %.1f s (the host resends a changed store at most every 5 s)", c.t - S.t0));
         c.check("bob doesn't hear carol's team's research", !Has(S.bob, "basic_tools"));
         c.check("carol doesn't hear bob's team's research", !Has(S.carol, "smelting"));
+        // (#1886) bob pins a spot on his map: a pin for his team (as a click on the map does in the game)
+        c.check("bob's map pin is sent", NetClient_SendMapPin(S.bob, true, "terra", kPinDir, "Copper hill"));
         NetClient_Connect(S.dave, TextFormat("127.0.0.1:%d", kPort), "dave");
         S.t0 = c.t;
         return true;
@@ -116,6 +129,9 @@ SCENARIO("net/team-store") {
         c.eq("dave's store is bob's team's", S.dave.teamStoreTeam, S.bobTeam);
         c.check("dave has bob's team's research", Has(S.dave, "smelting"));
         c.check("...and not carol's", !Has(S.dave, "basic_tools"));
+        c.check("dave's join brings bob's map pin (the team's pins)", HasPin(S.dave, "Copper_hill"), S.dave.teamStoreText.substr(0, 300));
+        c.check("bob has his pin back from the host", HasPin(S.bob, "Copper_hill"));
+        c.check("carol's team doesn't see it", !HasPin(S.carol, "Copper_hill"));
         c.lt("s from dave's join to his store (it comes with the join, not the 5 s resend)", c.t - S.daveJoinedAt, 1.0);
         S.carolStoresBefore = S.carol.teamStores;
         NetClient_SendChat(S.bob, "/team invite carol");
@@ -135,6 +151,20 @@ SCENARIO("net/team-store") {
         c.eq("the host has carol in bob's team", Teams_Of(PlayerId_FromName("carol")), S.bobTeam);
         c.check("carol has her new team's research", Has(S.carol, "smelting"));
         c.check("carol's old team's research stayed behind", !Has(S.carol, "basic_tools"));
+        c.check("carol sees her new team's map pin", HasPin(S.carol, "Copper_hill"));
+        c.check("carol removes the pin", NetClient_SendMapPin(S.carol, false, "terra", kPinDir, "Copper_hill"));
+        S.t0 = c.t;
+        return true;
+    });
+    s.step("a pin removed by one member goes from the others' maps", 10.0, [](ScenarioCtx& c) {
+        if (S.skip) return true;
+        UpdateAll();
+        c.waitingFor(TextFormat("bob has the pin %d, dave %d", (int)HasPin(S.bob, "Copper_hill"), (int)HasPin(S.dave, "Copper_hill")));
+        if (HasPin(S.bob, "Copper_hill") || HasPin(S.dave, "Copper_hill")) {
+            if (c.t - S.t0 > 5.0) c.fail("the removed pin is still in bob's or dave's store 5 s later");
+            return false;
+        }
+        c.lt("s from carol's removal to bob's and dave's stores (sent at the next tick, not the 5 s resend)", c.t - S.t0, 2.0);
         c.eq("sends the transport refused", Net_SendFailures(), 0);
         for (NetClient* n : { &S.bob, &S.carol, &S.dave }) NetClient_Disconnect(*n);
         return true;

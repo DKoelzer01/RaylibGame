@@ -466,7 +466,11 @@ namespace {
     // goes without its map section (the client keeps the map it has; a known gap: the map needs deltas).
     std::map<int, std::string> teamStoreSent;  // team -> the store text its online members have
     std::map<int, long long> teamStoreSentAt;  // team -> SimTick of that send
+    // A changed store at most every 5 s: exploring grows the map's tiles often and each send is the whole text (research
+    // done right now waits up to 5 s; a map pin goes at the next tick)
+    constexpr long long kTeamStoreEvery = 5 * 60; // ticks
     int teamStoreMsgs = 0;
+    int mapPins = 0, mapPinsRefused = 0;       // (#1886) MsgMapPin taken, and refused (no team, a bad name or direction, 256 pins)
     // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
     bool TeamStoreTextForNet(int team, std::string& text) {
         text = TeamStore_Text(team);
@@ -870,8 +874,7 @@ namespace {
             }
             // (#1886) the progression store when it changed, at most every 5 s: exploring grows the map's tiles often and
             // each send is the whole text (research done right now waits up to 5 s)
-            constexpr long long kStoreEvery = 5 * 60; // ticks
-            if (SimTick() - teamStoreSentAt[team] >= kStoreEvery) {
+            if (SimTick() - teamStoreSentAt[team] >= kTeamStoreEvery) {
                 std::string store;
                 if (TeamStoreTextForNet(team, store) && store != teamStoreSent[team]) {
                     teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
@@ -2305,6 +2308,17 @@ namespace {
                 MsgAnimalHit h;
                 if (!it->second.joined || !NetRead(r, h)) return;
                 OnAnimalHit(world, it->second.session, h.netId, h.action);
+                return;
+            }
+            case NetMsg::MapPin: { // (#1886) a player's map pin, for their team's shared pins
+                MsgMapPin p;
+                if (!it->second.joined || !NetRead(r, p)) return;
+                const int team = TeamOfSession(it->second.session);
+                if (!team) { ++mapPinsRefused; return; }
+                if (!TeamQuests_SetPin(team, p.add, p.body, Vector3{ p.dir[0], p.dir[1], p.dir[2] }, p.name)) { ++mapPinsRefused; return; }
+                ++mapPins;
+                if (p.add) TeamEvent(it->second.session, "count", "waypoint"); // (the team's "place a waypoint" task)
+                teamStoreSentAt[team] = SimTick() - kTeamStoreEvery; // to the team at the next tick, not in up to 5 s
                 return;
             }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone

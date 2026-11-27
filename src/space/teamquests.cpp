@@ -16,7 +16,10 @@
 #include <string>
 #include <raylib.h>
 #include <raymath.h>
+#include <algorithm>
+#include <cmath>
 #include <map>
+#include <vector>
 
 namespace {
     std::map<int, QuestBookState> books; // loaded team books (by team id)
@@ -25,6 +28,9 @@ namespace {
     // (#1886) the map tiles each player revealed themselves, by player id: a player who changes teams carries them along
     // (the user, on #1886); saved in the world (player_tiles blocks)
     std::map<std::string, NavTiles> playerTiles;
+    // (#1886) each team's shared map pins (players place them from their maps: MsgMapPin); saved by the team store
+    // (team_pins blocks) and sent to the team in its "pins" section
+    std::map<int, std::vector<NavPin>> pins;
 
     // The book selected while `fn` runs (every QuestBook_* call works on the selected one), then the local one again.
     template <class F> void With(QuestBookState& b, F fn) {
@@ -125,7 +131,7 @@ void TeamQuests_StoreAll() {
     }
 }
 
-void TeamQuests_Reset() { books.clear(); tiles.clear(); playerTiles.clear(); }
+void TeamQuests_Reset() { books.clear(); tiles.clear(); playerTiles.clear(); pins.clear(); }
 
 std::string TeamQuests_TilesText(int team) {
     TeamQuests_Book(team); // (its stored tiles load with it)
@@ -263,6 +269,7 @@ void TeamQuests_Copy(int from, int to) {
     QuestBookState copy = TeamQuests_Book(from);
     TeamQuests_Book(to) = copy;
     tiles[to] = tiles[from];
+    pins[to] = pins[from];
 }
 
 void TeamQuests_Merge(int from, int into) {
@@ -282,9 +289,37 @@ void TeamQuests_Merge(int from, int into) {
     for (const auto& [body, set] : tiles[from]) tiles[into][body].insert(set.begin(), set.end());
     for (const auto& [body, set] : tiles[into]) all += set.size();
     if (all) dst.counts["explored"] = std::max(dst.counts["explored"], (double)all);
+    const std::vector<NavPin> carried = pins[from]; // (#1886) the joiner's pins come along, as their map does
+    for (const NavPin& p : carried) TeamQuests_SetPin(into, true, p.body, p.dir, p.name);
 }
 
-void TeamQuests_Forget(int team) { books.erase(team); tiles.erase(team); }
+void TeamQuests_Forget(int team) { books.erase(team); tiles.erase(team); pins.erase(team); }
+
+// (#1886) The team's shared map pins. A name already on that body gets a number added (two members' "WP1"s both stay).
+bool TeamQuests_SetPin(int team, bool add, const std::string& body, Vector3 dir, const std::string& rawName) {
+    const std::string name = Nav_PinName(rawName);
+    if (!team || body.empty() || Nav_PinName(body) != body || name.empty()) return false; // (one-word names: the text and the save)
+    std::vector<NavPin>& list = pins[team];
+    auto at = [&](const std::string& n) {
+        return std::find_if(list.begin(), list.end(), [&](const NavPin& p) { return p.body == body && p.name == n; });
+    };
+    if (!add) {
+        auto it = at(name);
+        if (it == list.end()) return false;
+        list.erase(it);
+        return true;
+    }
+    if (!std::isfinite(dir.x) || !std::isfinite(dir.y) || !std::isfinite(dir.z) || Vector3Length(dir) < 0.5f) return false;
+    if ((int)list.size() >= kMaxTeamPins) return false;
+    std::string unique = name;
+    for (int k = 2; at(unique) != list.end(); ++k) unique = name.substr(0, 44) + "_" + std::to_string(k);
+    list.push_back({ body, unique, Vector3Normalize(dir) });
+    return true;
+}
+
+std::string TeamQuests_PinsText(int team) { auto it = pins.find(team); return it == pins.end() ? std::string() : Nav_PinsText(it->second); }
+void TeamQuests_SetPinsText(int team, const std::string& text) { pins[team] = Nav_PinsFromText(text); }
+int TeamQuests_PinCount(int team) { auto it = pins.find(team); return it == pins.end() ? 0 : (int)it->second.size(); }
 
 int TeamQuests_BodiesReached(int team) { // (#343) planets and moons with explored ground (only PlanetField bodies explore)
     TeamQuests_Book(team);
