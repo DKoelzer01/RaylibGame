@@ -292,7 +292,21 @@ struct BodyRef {
     std::shared_ptr<const TerrainDeltas> edits;
     const PlanetField* pf = nullptr;
     std::shared_ptr<const PartSolid> parts; // build parts (#391), or null
+    float gScale = 1.0f; // the kernels' g over Terra's (#1942): FluidGravityScale
 };
+// Fluids flow by their body's gravity (#1942, user 2026-11-26): the kernels' g (9.81, tuned on Terra) times the body's
+// surface gravity over the home planet's (the planet that orbits nothing; else the first planet). Exactly 1 on Terra and
+// on a world with no planet (the sandbox), so their water is bit-identical to before. Main thread (Planetoid::All).
+static float FluidGravityScale(const Planetoid& b) {
+    const Planetoid* home = nullptr;
+    for (const Planetoid* q : Planetoid::All()) {
+        if (!q || q->kind != BodyKind::Planet || !q->field) continue;
+        if (!q->orbitParent) { home = q; break; }
+        if (!home) home = q;
+    }
+    if (!home || home == &b || home->surfaceGravity <= 0.0f || b.surfaceGravity == home->surfaceGravity) return 1.0f;
+    return std::max(0.01f, b.surfaceGravity / home->surfaceGravity); // > 0: the GPU's inS reads 0 as "not processed"
+}
 std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
 struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; uint64_t seq = 0; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind; seq: a take's number
@@ -324,6 +338,12 @@ void FlushEnsures() {
     ensureQueue.clear();
 }
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
+// A site's gravity scale (#1942) from the snapshot: 1 for a body the snapshot lacks.
+static float SiteGScale(const Site* s) {
+    if (!s) return 1.0f;
+    const auto it = refs.find(s->body);
+    return it != refs.end() ? it->second.gScale : 1.0f;
+}
 long long stepCount = 0;
 Fluid::Stats stats;
 long long settledTotal = 0;     // bricks put to sleep resting (#366), since the start
@@ -1877,19 +1897,21 @@ void GpuTick(int n) {
             }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
+    // inS: 0 = not run; a run slot holds its gravity scale's float bits (#1942: never 0, the shader reads both from it).
     std::vector<unsigned> inS(G.capacity, 0u);
+    auto SlotGBits = [](int slot) { float g = SiteGScale(G.ownerSite[slot]); unsigned u; memcpy(&u, &g, 4); return u; };
     std::vector<int> list;
     for (int slot = 0; slot < G.capacity; ++slot) {
         Brick* br = G.owner[slot];
         if (!br || !br->active) continue;
-        if (!inS[slot]) { inS[slot] = 1; list.push_back(slot); }
+        if (!inS[slot]) { inS[slot] = SlotGBits(slot); list.push_back(slot); }
         for (int fc = 0; fc < 6; ++fc) {
             Brick* o = br->nbr[fc];
             if (!o || o->slot < 0 || inS[o->slot]) continue;
             // Not run (#669): a brick of solid rock (water never enters it) or a dry brick above (water only rises into it
             // through sources, pours or levelling, which wake it): under and over a big pool they were most of the dispatch.
             if (!o->active && !RunsBeside(*o, fc)) continue;
-            inS[o->slot] = 1; list.push_back(o->slot);
+            inS[o->slot] = SlotGBits(o->slot); list.push_back(o->slot);
         }
     }
     if (list.empty()) return;
@@ -2078,6 +2100,7 @@ void CpuTick(int n) {
         }
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
+        g.gScale[i] = SiteGScale(slotSite[i]); // (#1942)
         // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
         // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
         uint32_t* m = &g.gmask[(size_t)i * 6];
@@ -2559,7 +2582,7 @@ void Fluid::Update(Scene& world, float dt) {
         for (uint64_t id : ids)
             if (Planetoid* p = Planetoid::find(id)) {
                 auto ps = partSnaps.find(id);
-                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr };
+                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr, FluidGravityScale(*p) };
             }
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
@@ -2624,8 +2647,10 @@ namespace {
     }
 }
 
+float Fluid::GravityScale(const Planetoid& body) { return FluidGravityScale(body); }
+
 float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
-    constexpr float kRhoG = 1000.0f * 9.81f; // Pa per metre of water
+    const float kRhoG = 1000.0f * 9.81f * FluidGravityScale(body); // Pa per metre of water (the body's g, #1942)
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;

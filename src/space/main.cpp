@@ -7027,7 +7027,7 @@ int main(int argc, char** argv)
                             constexpr float kDrain = 60.0f; // s judged after the hole opens (was 120: the test ran over 3 min at 0.25 m cells)
                             if (t > kDrain) {
                                 const float lip = benchLeakParts ? 1.0f : 0.5f; // the hole's bottom over the floor (blocks: block-aligned)
-                                const float g = 9.81f, head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre
+                                const float g = 9.81f * Fluid::GravityScale(*p), head = std::max(0.0f, h0 - (lip + 0.5f)); // over the hole's centre; the fluid's g (#1942)
                                 const float qIdeal = sqrtf(2.0f * g * head) * 1.0f, q = (vol3 - vol1) / 2.0f, final = depthAt(-10.0f);
                                 // The expected depth after kDrain: the pool (its area as dug: the water poured over its depth) through the hole as an orifice while
                                 // it is under water (0.6 sqrt(2 g h) x 1 m^2, h over its centre), then a weir over its lip (1.7 x 1 m x h^1.5) - it slows as it
@@ -7148,7 +7148,7 @@ int main(int argc, char** argv)
                             if (t > 1.0 && vol1 < 0.0f) vol1 = downstream();
                             if (t > 2.0 && vol2 < 0.0f) vol2 = downstream();
                             if (t > 3.0) {
-                                const float g = 9.81f, c = 2.0f * sqrtf(g * std::max(h0, 0.01f));
+                                const float g = 9.81f * Fluid::GravityScale(*p), c = 2.0f * sqrtf(g * std::max(h0, 0.01f)); // the fluid's g (#1942)
                                 const float dTheory = 4.0f / 9.0f * h0, qTheory = 8.0f / 27.0f * sqrtf(g) * powf(h0, 1.5f) * 4.0f;
                                 const float speed = front[1] > 0.0 ? 10.0f / (float)front[1] : 0.0f;
                                 printf("bench: dam-break: front at 5 m after %.2f s, 10 m after %.2f s, 20 m after %.2f s (theory %.2f / %.2f / %.2f s: %.1f m/s); mean speed to 10 m %.1f m/s = %.2f of theory\n",

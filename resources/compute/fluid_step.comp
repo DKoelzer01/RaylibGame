@@ -23,7 +23,7 @@ layout(std430, binding = 0) buffer CellsIn  { uint inC[]; };
 layout(std430, binding = 1) buffer CellsOut { uint outC[]; };
 layout(std430, binding = 2) readonly buffer Nbr { int nbr[]; };      // slot * 6 + face (-x +x -y +y -z +z), -1 none
 layout(std430, binding = 3) readonly buffer List { uint list[]; };   // processed slots
-layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 1 = processed this dispatch
+layout(std430, binding = 4) readonly buffer InS { uint inS[]; };     // per slot: 0 = not processed; else its gravity scale, float bits (#1942)
 layout(std430, binding = 5) buffer Flags { uint flagsOut[]; };      // per slot: bit 0 changed, bits 1-6 face requests
 // Flow readout (#392): bricks someone watches (water wheels, meters) get a block of 4096 cells x 4 ints; each cell adds the
 // fill units crossing its two faces on each axis, signed along the axis (+x, +y, +z = up), every substep. The CPU reads the
@@ -78,6 +78,9 @@ layout(std430, binding = 15) buffer PressN { int prN[]; };
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
+// G on this slot's body (#1942): inS holds a run slot's gravity scale (its body over Terra; 1 there) as float bits, 0 if
+// not run. G * 1.0 is G: Terra's water is unchanged.
+float gravityAt(int gi) { return G * uintBitsToFloat(inS[uint(gi) / 4096u]); }
 uniform float cellSize;    // m (Plan 10 W4c #642)
 // Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
 // same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
@@ -340,7 +343,7 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     // Water deeper than a film builds on 2 units of head (#680: the viscosity's 5-unit gate held a 1.6% slope for ever - a pool
     // stopped 0.3 m over an open hole; on 1 unit deep water never slept); a film (< 5 cm) keeps the 5-unit gate and rests.
     int gate = colDepth < 0.05 ? visc[kd] : 2;
-    precise float accel = abs(ha - hb) >= gate ? dt * G * depth * dh : 0.0;
+    precise float accel = abs(ha - hb) >= gate ? dt * gravityAt(ga) * depth * dh : 0.0;
     precise float fric = frictionLin[kd] + divRN(frictionQuad[kd] * speed, max(depth, 0.02));
     precise float denom = 1.0 + dt * fric;
     q = divRN(q + accel, denom);
@@ -529,7 +532,7 @@ float colPair(int gi, ColRun A, int dx, int dy, float qPrev, bool owner, out int
     int h = surfU - bedMax, dH = surfU - max(surfD, bedMax);
     precise float hm = divRN(float(h), HU), dHm = divRN(float(dH), HU);
     precise float q = qPrev;
-    if (h >= minSpread[kind] && dH >= 2) q += dt * G * hm * dHm * (aUp ? 1.0 : -1.0);
+    if (h >= minSpread[kind] && dH >= 2) q += dt * gravityAt(gi) * hm * dHm * (aUp ? 1.0 : -1.0);
     if (!wet && q < 0.0) q = 0.0;
     if (h < minSpread[kind]) q = 0.0;
     if (advect != 0 && h >= minSpread[kind]) {
