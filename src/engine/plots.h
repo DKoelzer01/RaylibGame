@@ -80,6 +80,19 @@ constexpr PartType kShapes[] = { PartType::Cube, PartType::Block, PartType::Slop
                                  PartType::Slab, PartType::Panel, PartType::Pane, PartType::Post };
 constexpr int kShapeCount = (int)(sizeof(kShapes) / sizeof(kShapes[0]));
 const char* PartName(PartType t);
+// (#1881) The name a part type is saved by (its enum name, "LandingLeg"): saves and blueprints go by names through a palette,
+// so a part type may be added anywhere in the enum. PartFromSaveName: Count when no type has the name.
+const char* PartSaveName(PartType t);
+PartType PartFromSaveName(const std::string& name);
+// The palette the reader is parsing by: saved number -> part type (Count: a type this build doesn't have). Identity unless
+// set: a world load sets its file's ("part_palette" line) for the load's length; a blueprint, its own.
+std::string PartPalette_Line();                              // "part_palette N <name 0> <name 1> ...": this build's order
+bool PartPalette_Parse(const std::string& line, std::vector<PartType>& out); // that line into a map (false: not one)
+void PartPalette_Set(std::vector<PartType> map);             // empty: identity
+PartType PartPalette_Map(int saved);                         // through the set palette (Count: unknown or out of range)
+PartType PartPalette_MapWith(const std::vector<PartType>& map, int saved);
+const char* PartPalette_V13Line();                    // the order saves up to version 13 used (frozen), as a palette line
+const std::vector<PartType>& PartPalette_V13();       // that, parsed
 int PartCostCount(PartType t);              // items one part costs (shapes: of their material)
 const char* PartCostItem(PartType t);       // shapes: stone brick (material 0); else the part's own item
 const char* PartMachineName(PartType t);    // machines.txt / recipe name ("kiln"), or nullptr

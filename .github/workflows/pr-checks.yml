@@ -263,6 +263,54 @@ jobs:
       - name: Dedicated server smoke test (null GL, sandbox world)
         timeout-minutes: 5
         run: EXE="$PWD/build/ci/bin/game" RAYLIBGAME_NO_GL=1 bash tools/test_server.sh
+      # (#1960) the game for the null-GL scenario shards, with any shared libraries it loads from the build tree
+      - name: Stage the game for the scenario shards
+        run: |
+          mkdir -p build/nogl-bin
+          cp build/ci/bin/game build/nogl-bin/
+          ldd build/ci/bin/game | awk '$3 ~ /^\// && $3 !~ /^\/(lib|usr)\// {print $3}' | xargs -r -I{} cp {} build/nogl-bin/
+          ls -la build/nogl-bin
+      - name: Save the game for the scenario shards
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/nogl-bin
+          key: nogl-bin-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # (#1960) The sandbox-world scenarios that pass without a GPU (tools/ci/nogl_scenarios.sh, ~61 of them, ~28 min one
+  # after another), in parallel shards on hosted runners: coverage on every PR with no self-hosted runner time. Not in
+  # "CI ok"'s needs yet, so it doesn't hold a merge or add to its wall time; see .github/CI.md.
+  nogl-scenarios:
+    name: Null-GL scenarios ${{ matrix.shard }}/8
+    needs: linux
+    if: ${{ !cancelled() && needs.linux.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libegl1
+      - name: Restore the game
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/nogl-bin
+          key: nogl-bin-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Scenarios (null GL, sandbox world)
+        timeout-minutes: 16
+        run: LD_LIBRARY_PATH="$PWD/build/nogl-bin" bash tools/ci/nogl_scenarios.sh "$PWD/build/nogl-bin/game" ${{ matrix.shard }} 8 build/nogl-out
+      - name: Upload the shard's results
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nogl-scenarios-${{ matrix.shard }}
+          path: build/nogl-out
+          retention-days: 5
 
   ok:
     name: CI ok

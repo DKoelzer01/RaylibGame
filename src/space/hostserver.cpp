@@ -61,9 +61,22 @@
 #include <unordered_map>
 
 extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmake, #501)
+#include "utils/logger.h"
+#include <cstdarg>
 #include "buildcommit.h"
 
 namespace {
+    // (#1916) A connection's life (connect, refusal, join, join sync, kick, disconnect): on stdout as "host: ..." as before
+    // (the console, Pterodactyl, tools/test_server.sh) and in log.txt under [Host], so a join can be read back afterwards.
+#if defined(__GNUC__)
+    __attribute__((format(gnu_printf, 1, 2)))
+#endif
+    void HostLog(const char* fmt, ...) {
+        char b[1024];
+        va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
+        printf("host: %s\n", b);
+        LOG_INFO("Host", "%s", b);
+    }
     bool listening = false;
     int joins = 0;
     std::set<uint32_t> localClients;                   // tests: client connections opened in this process
@@ -194,6 +207,17 @@ namespace {
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
     bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
+    // (#1922) A creative flyer's step: the pose its client flew to. Player::update's fly path moves world.camera (the
+    // player's own view), so on the server it flew the host's camera and the remote stayed put: the client's next state
+    // from us was far behind and pulled it back. Only creative players fly; it's their mode, so their pose is trusted.
+    bool FlyPoseTo(Scene& world, Player& p, const MsgInput& m) {
+        Player::NetState s;
+        if (!p.netState(world, s)) return false;
+        s.body = m.flyBody; s.local = m.flyLocal; s.vel = { m.fvx, m.fvy, m.fvz }; s.grounded = false;
+        if (!p.applyNetState(world, s)) return false; // (that body isn't here)
+        p.flyMode = true;
+        return true;
+    }
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -227,7 +251,15 @@ namespace {
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
                 r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
-                if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                if (!r.survival.dead && !(r.creative && m.fly && FlyPoseTo(world, r.player, m))) { // (#1922: a flyer's pose, above)
+                    // (#1922) Only the client flies: a step it didn't fly isn't flown here either (here fly mode flies
+                    // world.camera), and its F or double jump can't start flight here; the client's next step says it flies.
+                    const bool flyAllowed = r.player.flyAllowed;
+                    r.player.flyMode = false; r.player.flyAllowed = false;
+                    r.player.update(world, in, SimDt());
+                    r.player.flyAllowed = flyAllowed;
+                    if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false);
+                } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
@@ -1114,7 +1146,7 @@ namespace {
         if (it == peers.end()) return;
         for (Session& s : sessions) if (s.id == it->second.session && s.conn == conn) { s.online = false; s.conn = 0; }
         if (why != NetBye::Quit) SendMsg(conn, MsgBye{ why });
-        printf("host: connection %u (session %u) %s\n", conn, it->second.session, NetByeText(why));
+        HostLog("connection %u (session %u) %s", conn, it->second.session, NetByeText(why));
         if (eventHook && it->second.joined) { // (#345 audit)
             std::string name; for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
             eventHook("leave", it->second.session, name + " (" + NetByeText(why) + ")");
@@ -1140,7 +1172,7 @@ namespace {
     }
     void Refuse(uint32_t conn, NetReject why, const std::string& detail) {
         SendMsg(conn, MsgReject{ why, detail });
-        printf("host: refused connection %u: %s%s%s\n", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
+        HostLog("refused connection %u: %s%s%s", conn, NetRejectText(why), detail.empty() ? "" : ": ", detail.c_str());
         peers.erase(conn);
         Net_Close(conn); // (lingers: the reject goes out first)
     }
@@ -1184,7 +1216,7 @@ namespace {
         if (rm.record.firstSeen <= 0.0) rm.record.firstSeen = (double)time(nullptr);
         rm.joinedAt = GetTime();
         Teams_Join(s.uuid, s.name, 0); // a team of one to start with (#604 forms bigger ones)
-        printf("host: %s (%s): %s\n", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
+        HostLog("%s (%s): %s", s.name.c_str(), s.uuid.c_str(), loaded ? "their record loaded" : "a new player");
         return loaded;
     }
     bool SaveRecord(uint32_t session) {
@@ -1194,7 +1226,7 @@ namespace {
         const double now = GetTime();
         const bool ok = PlayerRecord_Write(PlayerRecord_Path(rm.record.uuid), rm.player, rm.inventory, rm.survival, rm.record, now - rm.joinedAt, &rm.skills);
         if (ok) { rm.record.playTime += now - rm.joinedAt; rm.joinedAt = now; }
-        else printf("host: could not write the record of %s\n", rm.record.name.c_str());
+        else HostLog("could not write the record of %s", rm.record.name.c_str());
         return ok;
     }
     int SaveAllRecords() { int n = 0; for (const auto& [id, rm] : remotes) n += SaveRecord(id); return n; }
@@ -1547,7 +1579,7 @@ namespace {
         SendAllPlants(world, conn); // (#335) the plants felled so far
         claimsSent.erase(conn); // (#343) the claims list goes with the next claims step
         ++joins;
-        printf("host: %s joined as session %u%s (connection %u, %d joins so far)\n", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
+        HostLog("%s joined as session %u%s (connection %u, %d joins so far)", h.name.c_str(), s->id, reconnected ? " (reconnected)" : "", conn, joins);
         if (eventHook) eventHook("join", s->id, h.name + " from " + Net_RemoteAddress(conn)); // (#345 audit)
         if (!hadRecord) { // (#804) a new player's starting kit, as single player's (the client's own inventory follows this one); (#346) never again for one with a record
             Host_Give(s->id, "telescope", 1);
@@ -1871,7 +1903,7 @@ namespace {
             for (size_t i = (size_t)pg * kSyncIndexPage; i < n && i < (size_t)(pg + 1) * kSyncIndexPage; ++i) x.entries.push_back(job.items[i].e);
             SendMsg(conn, x);
         }
-        printf("host: join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)\n", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
+        HostLog("join sync %u for session %u: %zu entries, %.1f MB as stored, indexed in %.0f ms (on a worker)", job.snapshot, job.session, n, raw / 1048576.0, (GetTime() - job.started) * 1000.0);
     }
     void OnSyncWant(Scene& world, uint32_t conn, const MsgSyncWant& w) {
         auto it = syncs.find(conn);
@@ -1915,7 +1947,7 @@ namespace {
                 job.statusAt = GetTime();
                 NetQueueStatus q;
                 if (Net_QueueStatus(it->first, q))
-                    printf("host: join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends\n",
+                    HostLog("join sync %u: %zu of %zu entries, %.2f MB sent; queue %d B reliable, %d B unreliable, %d B unacked, ping %d ms; %d refused sends",
                            job.snapshot, job.cur, job.order.size(), job.sent / 1048576.0, q.pendingReliable, q.pendingUnreliable, q.sentUnacked, q.pingMs, Net_SendFailures());
             }
             if (Net_PendingBytes(it->first) > kSyncMaxPending) { job.lastAt = GetTime(); ++it; continue; } // the link is behind: wait
@@ -1939,9 +1971,9 @@ namespace {
             }
             if (job.cur >= job.order.size()) {
                 SendMsg(it->first, MsgSyncDone{ job.snapshot, (uint32_t)job.wanted, job.sent });
-                printf("host: join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s\n", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
+                HostLog("join sync %u done: %d of %zu entries wanted, %.2f MB in %.2f s", job.snapshot, job.wanted, job.items.size(), job.sent / 1048576.0, GetTime() - job.started);
                 if (getenv("RAYLIBGAME_SYNC_FINGERPRINT")) // (tests: a client's after its sync must equal this; costs an encode of every region)
-                    printf("host: terrain fingerprint %016llx\n", (unsigned long long)NetSync_TerrainFingerprint(world));
+                    HostLog("terrain fingerprint %016llx", (unsigned long long)NetSync_TerrainFingerprint(world));
                 ++syncsDone;
                 it = syncs.erase(it);
             } else ++it;
@@ -1953,7 +1985,7 @@ namespace {
     void GuardKick(uint32_t conn, const std::string& why) {
         auto it = peers.find(conn);
         std::string name; if (it != peers.end()) for (const Session& s : sessions) if (s.id == it->second.session) name = s.name;
-        printf("host: kicked connection %u (%s) for flooding: %s\n", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
+        HostLog("kicked connection %u (%s) for flooding: %s", conn, name.empty() ? "not joined" : name.c_str(), why.c_str());
         if (eventHook) eventHook("kicked", it != peers.end() ? it->second.session : 0, (name.empty() ? std::string("connection") : name) + " (flooding: " + why + ")");
         if (it != peers.end() && it->second.joined) SendMsg(conn, MsgChat{ 0, "You were kicked: too many invalid messages" });
         ++guardKicks;
@@ -1986,7 +2018,7 @@ namespace {
             }
         if (const int v = AdmitVerdict(loop, same, pending)) {
             const char* why = v == 1 ? "too many connections from your address" : "too many players connecting at once: try again shortly";
-            printf("host: refused connection %u from %s: %s (%d from that address, %d not joined)\n", conn, host.c_str(), why, same, pending);
+            HostLog("refused connection %u from %s: %s (%d from that address, %d not joined)", conn, host.c_str(), why, same, pending);
             if (eventHook) eventHook("refused", 0, "connection from " + host + (v == 1 ? " (too many from one address)" : " (too many connecting)"));
             Refuse(conn, NetReject::Full, why);
             ++pendingRefused;
@@ -1994,6 +2026,7 @@ namespace {
         }
         Peer& p = peers[conn];
         p.firstHeard = p.lastHeard = GetTime();
+        HostLog("connection %u from %s", conn, host.empty() ? "?" : host.c_str());
         return true;
     }
     void OnMessage(Scene& world, const NetMessage& m) {

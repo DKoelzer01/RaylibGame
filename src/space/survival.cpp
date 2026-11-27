@@ -18,7 +18,10 @@
 #include "gameui.h"
 #include "world.h"
 #include "worldtypes.h"
+#include <cstring>
+#include <string>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
@@ -71,6 +74,7 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
+    int hereVariant = -1;           // ...its variant (BiomeVariants() id; -1 none)
     // (#337: for a given player - the local one, or a remote one a server simulates; only the local one sets the HUD's biome)
     float AirTemperature(Scene& world, const Player& player, const SurvivalState& survival, bool isLocal) {
         Planetoid* p = player.nearest;
@@ -88,7 +92,10 @@ namespace {
         // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
         const float ground = pf->elevation(up);
         const PlanetField::Climate c = pf->climateAt(up, ground);
-        if (isLocal) hereBiome = pf->biomeAt(up, ground);
+        if (isLocal) { // the variant (#1977) and its type
+            hereVariant = pf->variantAt(up, ground);
+            hereBiome = hereVariant >= 0 ? BiomeVariants().defs[hereVariant].type : pf->biomeAt(up, ground);
+        }
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
@@ -96,7 +103,15 @@ namespace {
     }
 }
 
-const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
+const char* Survival_BiomeName() {
+    if (hereBiome == Biome::Count) return "";
+    // "Birch grove (Forest)": the variant, then its type (#1977; the user: variant names show in the UI).
+    const char* v = BiomeVariantName(hereVariant);
+    if (!v[0] || !strcmp(v, BiomeName(hereBiome))) return BiomeName(hereBiome);
+    static thread_local std::string label;
+    label = std::string(v) + " (" + BiomeName(hereBiome) + ")";
+    return label.c_str();
+}
 
 // (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
 // the readout flickered between cold and fine at 5 C), and the band the readout shows changes only 1 C past each edge.
