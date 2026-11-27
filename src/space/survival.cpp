@@ -576,7 +576,9 @@ void QuestBook_Save(FILE* f) {
         for (size_t k = 0; k < tiers[i].tasks.size(); ++k)
             if (Done((int)i, (int)k)) fprintf(f, "quest_done %zu %zu\n", i, k);
     for (const std::string& p : Q().placed) fprintf(f, "placed %s\n", p.c_str());
-    for (const auto& kv : (Q().ownObtained ? Q().obtained : inventory.obtained)) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
+    // (#1881) by name: the map is unordered, and a save loaded and saved again wrote its lines in another order
+    const auto& got = Q().ownObtained ? Q().obtained : inventory.obtained;
+    for (const auto& kv : std::map<std::string, double>(got.begin(), got.end())) if (kv.second > 0.0) fprintf(f, "obtained %s %.2f\n", kv.first.c_str(), kv.second);
     fprintf(f, "quest_flags %d %d %d\n", Q().reachedOrbit ? 1 : 0, Q().visitedMoon ? 1 : 0, Q().visitedRing ? 1 : 0);
     for (const auto& kv : Q().counts) fprintf(f, "quest_count %s %.2f\n", kv.first.c_str(), kv.second);
     QuestTree_Save(f);

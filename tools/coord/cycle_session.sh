@@ -6,8 +6,14 @@ if [ -z "${BASH_VERSINFO:-}" ]; then for b in "C:/Program Files/Git/bin/bash.exe
 #
 #   tools/coord/cycle_session.sh status                   every background session: context tokens, state, cwd
 #   tools/coord/cycle_session.sh check <id|name>          exit 0 when it is over the threshold (250K), 1 when not
-#   tools/coord/cycle_session.sh restart <id|name> [--dry] stop it, take it off the list, start it again (same name, cwd,
+#   tools/coord/cycle_session.sh restart <id|name> [--dry] [--cwd <dir>] [--handoff <file>]
+#                                                         stop it, take it off the list, start it again (same name, cwd,
 #                                                         permission mode and model) with --autocompact 300000
+#     --cwd <dir>       start the new session there instead (and look for its handoff there) (#1928)
+#     --handoff <file>  the handoff the new session reads; default: <cwd>/build/session-handoff-<slug>.md when it
+#                       exists (slug = the name in lower case, dashes: "UI/UX and Adventure" -> ui-ux-and-adventure),
+#                       else <cwd>/build/session-handoff.md. The prompt names its absolute path.
+# Two live sessions in one cwd would read each other's build/session-handoff.md: status marks them (!), restart warns.
 #
 # The coordinator's steps, with its own tools in between:
 #   1. `check <name>`; over the threshold: SendMessage the session "finish your task, write build/session-handoff.md
@@ -61,15 +67,35 @@ find_one() { # <id or name> -> the agents line of that session (by id first; a n
     printf '%s\n' "$hits"
 }
 
+normcwd() { local p=${1//\\//}; p=${p%/}; printf '%s' "${p,,}"; }
+slug() { local s=${1,,}; s=$(printf '%s' "$s" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'); printf '%s' "$s"; }
+
+# the other live (not stopped) sessions whose cwd is <cwd>, excluding <id>: "name (id)" per line
+cwd_peers() { # <cwd> <id>
+    local want; want=$(normcwd "$1")
+    agents | while IFS=$'\t' read -r id sid name status state cwd; do
+        [ "$id" = "$2" ] && continue; [ "$status" = stopped ] && continue
+        [ "$(normcwd "$cwd")" = "$want" ] && echo "$name ($id)"
+    done
+}
+
 case "${1:-status}" in
 status)
+    all=$(agents)
     printf '%-26s %-9s %9s %-8s %-8s %s\n' name id context status state cwd
-    agents | while IFS=$'\t' read -r id sid name status state cwd; do
+    while IFS=$'\t' read -r id sid name status state cwd; do
+        [ -n "$id" ] || continue
         read -r ctx _ _ <<< "$(profile "$sid")"
         mark=""; [ "$ctx" != "?" ] && [ "$ctx" -ge "$threshold" ] && mark=" *"
+        if [ "$status" != stopped ]; then
+            n=$(printf '%s\n' "$all" | awk -F'\t' -v c="$(normcwd "$cwd")" -v me="$id" '
+                $1 != me && $4 != "stopped" { p = $6; gsub(/\\/, "/", p); sub(/\/$/, "", p); if (tolower(p) == c) k++ } END { print k + 0 }')
+            [ "$n" -gt 0 ] && mark="$mark !"
+        fi
         printf '%-26s %-9s %9s %-8s %-8s %s%s\n' "$name" "$id" "$ctx" "$status" "$state" "$cwd" "$mark"
-    done
-    echo "(* over $threshold tokens: cycle it at its next task boundary)" ;;
+    done <<< "$all"
+    echo "(* over $threshold tokens: cycle it at its next task boundary)"
+    echo "(! another live session shares this cwd: give each its own handoff (build/session-handoff-<slug>.md) or restart with --cwd)" ;;
 check)
     line=$(find_one "${2:?usage: check <name>}") || exit 2
     IFS=$'\t' read -r id sid name status state cwd <<< "$line"
@@ -77,18 +103,47 @@ check)
     echo "$name ($id): $ctx tokens of context (threshold $threshold), $status/$state"
     [ "$ctx" != "?" ] && [ "$ctx" -ge "$threshold" ] ;;
 restart)
-    dry=0; [ "${3:-}" = --dry ] && dry=1
-    line=$(find_one "${2:?usage: restart <id|name> [--dry]}") || exit 2
+    usage="usage: restart <id|name> [--dry] [--cwd <dir>] [--handoff <file>]"
+    who=${2:?$usage}; shift 2
+    dry=0; newcwd=""; handoff=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry) dry=1 ;;
+            --cwd) newcwd=${2:?$usage}; shift ;;
+            --handoff) handoff=${2:?$usage}; shift ;;
+            *) echo "cycle: unknown option '$1' ($usage)" >&2; exit 2 ;;
+        esac
+        shift
+    done
+    line=$(find_one "$who") || exit 2
     IFS=$'\t' read -r id sid name status state cwd <<< "$line"
     read -r ctx mode model <<< "$(profile "$sid")"
     [ "$status" = busy ] && { echo "cycle: '$name' is busy: wait for its idle notice first"; exit 3; }
-    prompt="You are the $name session, restarted with a fresh context (tools/coord/cycle_session.sh, #1897). Read CLAUDE.md and build/session-handoff.md, check your board_inbox, then continue the work the handoff names."
+    oldcwd=$cwd
+    if [ -n "$newcwd" ]; then
+        [ -d "$newcwd" ] || { echo "cycle: --cwd '$newcwd' is not a folder"; exit 2; }
+        cwd=$(cd "$newcwd" && pwd -W 2>/dev/null || pwd)
+    fi
+    fwd=${cwd//\\//}
+    if [ -z "$handoff" ]; then
+        handoff="$fwd/build/session-handoff-$(slug "$name").md"
+        [ -f "$handoff" ] || handoff="$fwd/build/session-handoff.md"
+    fi
+    case "$handoff" in /*|[A-Za-z]:*) ;; *) handoff="$fwd/$handoff" ;; esac
+    peers=$(cwd_peers "$cwd" "$id")
+    if [ -n "$peers" ]; then
+        echo "cycle: warning: other live sessions in $cwd: $(printf '%s' "$peers" | paste -sd, -)"
+        case "$handoff" in */build/session-handoff.md)
+            echo "cycle: warning: they share build/session-handoff.md: check it is $name's (or pass --handoff / --cwd)" ;; esac
+    fi
+    prompt="You are the $name session, restarted with a fresh context (tools/coord/cycle_session.sh, #1897). Read CLAUDE.md and your handoff $handoff, check your board_inbox, then continue the work the handoff names."
     args=(--bg -n "$name" --autocompact "$autocompact")
     [ "$mode" != - ] && args+=(--permission-mode "$mode")
     [ "$model" != - ] && args+=(--model "$model")
-    canrm=1; case "${cwd//\\//}" in */.claude/worktrees/*) canrm=0 ;; esac
-    echo "cycle: $name ($id, $ctx tokens, $status/$state) in $cwd"
-    [ -f "$cwd/build/session-handoff.md" ] || echo "cycle: warning: no build/session-handoff.md in $cwd: the new session starts from CLAUDE.md alone"
+    # rm deletes a Claude-made worktree: judge by the OLD session's cwd, which is what rm would act on
+    canrm=1; case "${oldcwd//\\//}" in */.claude/worktrees/*) canrm=0 ;; esac
+    echo "cycle: $name ($id, $ctx tokens, $status/$state) in $oldcwd${newcwd:+ -> restarts in $cwd}"
+    [ -f "$handoff" ] || echo "cycle: warning: no handoff at $handoff: the new session starts from CLAUDE.md alone"
     if [ $dry = 1 ]; then
         echo "  claude stop $id"
         [ $canrm = 1 ] && echo "  claude rm $id" || echo "  (no rm: the cwd is a Claude worktree; rm could delete it)"
@@ -100,5 +155,5 @@ restart)
     else echo "cycle: kept the stopped entry $id (its cwd is a Claude worktree, which rm could delete): 'claude agents' lists '$name' twice; the new one is the running one"; fi
     (cd "$cwd" && claude "${args[@]}" "$prompt") ;;
 *)
-    sed -n '4,22p' "$0"; exit 2 ;;
+    sed -n '4,28p' "$0"; exit 2 ;;
 esac
