@@ -54,6 +54,8 @@ struct ErosionParams {
                               // instead of the steepest one: channels stop following the 8 grid directions (false: steepest)
     int bFace = -1;           // #1988 prototype (terrain v2 option B): this cube face skips the 50 m refinement; its fine
                               // grid is the coarse surface resampled, and its detail comes at chunk time (-1: none)
+    float coarseDt = 1.0f;    // #1957: the coarse pass runs steps / coarseDt steps, each coarseDt times larger (implicit stream power:
+                              // stable; dt 4: 21 s -> 6 s at the same landforms). 1: the 400 small steps (default until the user rules)
 };
 uint64_t ErosionParamsKey(const ErosionParams& p); // FNV-1a over every field and kErosionBakeVersion
 bool BakeRiversOld(); // #547 A/B: RAYLIBGAME_RIVERS_OLD=1 = the 200 m river network and its carving (no final drainage in the bake)

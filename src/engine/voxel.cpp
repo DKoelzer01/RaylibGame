@@ -319,6 +319,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.glacial = envf("RAYLIBGAME_GLACIAL", p.glacial); p.glacialLine = envf("RAYLIBGAME_GLACIAL_LINE", p.glacialLine);
     p.wind = envf("RAYLIBGAME_WIND", p.wind); // #370: aeolian erosion (0: off, A/B)
     p.hillslope = envf("RAYLIBGAME_EROSION_HILLSLOPE", p.hillslope); // #1884 (0: off, A/B)
+    p.coarseDt = envf("RAYLIBGAME_EROSION_DT", p.coarseDt); // #1957 (1: the old 400 small coarse steps, A/B)
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
     p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", -1.0f); // #1988 prototype: this cube face (0-5) gets option B; unset: none
