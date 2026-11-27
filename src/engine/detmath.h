@@ -1,0 +1,69 @@
+#ifndef DETMATH_H
+#define DETMATH_H
+
+// (#1905) Transcendentals that give the same bits on every platform. The C libraries' expf/logf/powf/asinf differ in the
+// last bit between glibc and MinGW's CRT, and the erosion bake feeds them back through hundreds of iterations, so a Linux
+// server and a Windows client baked different planets from one seed. These use only + - * / (IEEE-exact everywhere with
+// -ffp-contract=off, which the engine builds with), sqrt (IEEE-exact) and frexp/ldexp (exact), in double, then round to
+// float: accurate to well under a float ulp, and identical everywhere. Inputs outside a function's domain give what the
+// bake needs, not NaN (noted per function).
+#include <cmath>
+
+namespace det {
+
+// Natural log, x > 0 (x <= 0: -1e30).
+inline double Log(double x) {
+    if (!(x > 0.0)) return -1e30;
+    int e = 0;
+    double m = std::frexp(x, &e); // x = m * 2^e, m in [0.5, 1)
+    if (m < 0.70710678118654752440) { m *= 2.0; --e; } // m in [sqrt(1/2), sqrt(2))
+    // log(m) = 2 atanh(s), s = (m - 1) / (m + 1), |s| < 0.172: the series to s^23 is below 1e-19
+    const double s = (m - 1.0) / (m + 1.0), z = s * s;
+    double t = 1.0 / 23.0;
+    for (int k = 21; k >= 1; k -= 2) t = t * z + 1.0 / k;
+    return 2.0 * s * t + e * 0.69314718055994530942;
+}
+
+// e^x (x < -745: 0; x > 709: 1e308).
+inline double Exp(double x) {
+    if (x < -745.0) return 0.0;
+    if (x > 709.0) return 1e308;
+    const double k = std::floor(x * 1.44269504088896340736 + 0.5); // nearest multiple of ln 2
+    const double r = (x - k * 6.93147180369123816490e-01) - k * 1.90821492927058770002e-10; // ln 2 in two parts: r exact to ~1e-17
+    // e^r, |r| <= 0.35: Taylor to r^16 (the next term is below 1e-21)
+    double t = 1.0;
+    for (int n = 16; n >= 1; --n) t = 1.0 + t * r / n;
+    return std::ldexp(t, (int)k);
+}
+
+// x^y for x >= 0 (0^y: 0 for y > 0, 1 for y == 0).
+inline double Pow(double x, double y) {
+    if (x == 0.0) return y > 0.0 ? 0.0 : 1.0;
+    return Exp(y * Log(x));
+}
+
+// asin, x clamped to [-1, 1].
+inline double Asin(double x) {
+    const double a = x < 0.0 ? -x : x, sign = x < 0.0 ? -1.0 : 1.0;
+    auto series = [](double v) { // asin(v), |v| <= 0.5: sum c_n v^(2n+1); the term past n = 30 is below 1e-20
+        const double z = v * v;
+        double term = v, sum = v;
+        for (int n = 1; n <= 30; ++n) {
+            term *= z * (2.0 * n - 1.0) * (2.0 * n - 1.0) / ((2.0 * n) * (2.0 * n + 1.0));
+            sum += term;
+        }
+        return sum;
+    };
+    if (a <= 0.5) return sign * series(a);
+    const double v = std::sqrt((1.0 - (a > 1.0 ? 1.0 : a)) * 0.5); // asin(a) = pi/2 - 2 asin(sqrt((1 - a) / 2))
+    return sign * (1.57079632679489661923 - 2.0 * series(v));
+}
+
+inline float Logf(float x) { return (float)Log(x); }
+inline float Expf(float x) { return (float)Exp(x); }
+inline float Powf(float x, float y) { return (float)Pow(x, y); }
+inline float Asinf(float x) { return (float)Asin(x); }
+
+} // namespace det
+
+#endif

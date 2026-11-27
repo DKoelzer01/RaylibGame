@@ -1,4 +1,5 @@
 #include "erosion.h"
+#include "detmath.h" // (#1905) expf/logf/powf/asinf with the same bits everywhere
 #include "utils/logger.h"
 #include <raymath.h>
 #include <algorithm>
@@ -278,7 +279,7 @@ namespace {
                 if (Vector3LengthSqr(east) < 1e-6f) continue; // the poles: calm
                 east = Vector3Normalize(east);
                 const Vector3 north = Vector3CrossProduct(up, east);
-                const float latDeg = asinf(std::clamp(up.y, -1.0f, 1.0f)) * RAD2DEG, a = fabsf(latDeg), hemi = latDeg >= 0.0f ? 1.0f : -1.0f;
+                const float latDeg = det::Asinf(std::clamp(up.y, -1.0f, 1.0f)) * RAD2DEG, a = fabsf(latDeg), hemi = latDeg >= 0.0f ? 1.0f : -1.0f;
                 Vector3 w; float speed;
                 if (a < 30.0f) { w = Vector3Add(Vector3Scale(east, -1.0f), Vector3Scale(north, -0.35f * hemi)); speed = 1.0f; }      // trades: west, equatorward
                 else if (a < 60.0f) { w = Vector3Add(east, Vector3Scale(north, 0.3f * hemi)); speed = 1.2f; }                         // westerlies: east, poleward
@@ -293,7 +294,7 @@ namespace {
                     if (dot < bestUp) { bestUp = dot; upwind[c] = o; }
                 }
                 windSpeed[c] = speed;
-                dryLat[c] = expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
+                dryLat[c] = det::Expf(-((a - 25.0f) * (a - 25.0f)) / (2.0f * 9.0f * 9.0f)) + 0.4f * det::Expf(-((a - 75.0f) * (a - 75.0f)) / (2.0f * 10.0f * 10.0f));
             }
         }
         std::vector<uint8_t> seen(cells);
@@ -362,8 +363,8 @@ namespace {
             for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (receiver[c] != c) area[receiver[c]] += area[c]; }
             if (!gBakeOld) // #605: what the stream power needs per cell changes only here; once per flood, not every step
                 for (size_t c = 0; c < cells; ++c) {
-                    areaM[c] = powf(area[c], p.m);
-                    areaG[c] = powf(area[c], 0.25f);
+                    areaM[c] = det::Powf(area[c], p.m);
+                    areaG[c] = det::Powf(area[c], 0.25f);
                     recvL[c] = Vector3Distance(d.dir[c], d.dir[receiver[c]]) * R;
                 }
         };
@@ -382,7 +383,7 @@ namespace {
                     for (int c : order) {
                         const float g = d.glacier[c];
                         if (g <= 0.0f || d.outlet[c]) continue;
-                        const float ice = g * std::min(200.0f, 1.4f * powf(area[c], 0.25f));
+                        const float ice = g * std::min(200.0f, 1.4f * det::Powf(area[c], 0.25f));
                         if (ice < 5.0f) continue;
                         const float top = d.h[c] + ice;
                         for (int k = 0; k < 8; ++k) {
@@ -399,11 +400,11 @@ namespace {
                 const int r = receiver[c];
                 const float L = gBakeOld ? Vector3Distance(d.dir[c], d.dir[r]) * R : recvL[c];
                 const float ek = erodibility(c, d.h[c]);
-                float f = ek * (gBakeOld ? powf(area[c], p.m) : areaM[c]) / L;
+                float f = ek * (gBakeOld ? det::Powf(area[c], p.m) : areaM[c]) / L;
                 if (const float g = d.glacier[c]; g > 0.0f) {
                     // Glacial: erosion grows more slowly with drainage area (A^0.25, matched to the fluvial rate at
                     // 1 km^2 and p.glacial x it), so it reaches up to the valley heads: cirques, steep headwalls.
-                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? powf(area[c], 0.25f) : areaG[c]) / L;
+                    const float fg = ek * p.glacial * 31.6f * (gBakeOld ? det::Powf(area[c], 0.25f) : areaG[c]) / L;
                     f += (fg - f) * g;
                 }
                 d.h[c] = std::max((d.h[c] + d.U[c] + f * hr) / (1.0f + f), hr);
@@ -475,7 +476,7 @@ namespace {
                 auto windCell = [&](size_t c, float& e, int& n, int& dropAt) {
                     const int dn = downwind[c], un = upwind[c];
                     if (dn < 0 || un < 0 || d.outlet[c] || d.h[c] <= 0.0f) return false;
-                    const float wet = std::clamp((logf(std::max(area[c], 1.0f)) - logf(2.0e6f)) / (logf(2.0e7f) - logf(2.0e6f)), 0.0f, 1.0f);
+                    const float wet = std::clamp((det::Logf(std::max(area[c], 1.0f)) - det::Logf(2.0e6f)) / (det::Logf(2.0e7f) - det::Logf(2.0e6f)), 0.0f, 1.0f);
                     const float dry = dryLat[c] * (1.0f - wet);
                     if (dry < 0.02f) return false;
                     const float L = Vector3Distance(d.dir[c], d.dir[un]) * R;
@@ -709,7 +710,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
             for (int i = 0; i < N; ++i) {
                 const float u = -1.0f + (i + 0.5f) * du, v = -1.0f + (j + 0.5f) * du;
                 d.dir[idx(f, i, j)] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(t1, u), Vector3Scale(t2, v))));
-                d.cellArea[idx(f, i, j)] = side * side / powf(1.0f + u * u + v * v, 1.5f);
+                d.cellArea[idx(f, i, j)] = side * side / det::Powf(1.0f + u * u + v * v, 1.5f);
             }
     }
     auto cellOf = [&](Vector3 dv) -> int {
@@ -820,7 +821,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
         };
         // Finer cells drain smaller areas: K is scaled by refine^(2m) so the coarse steady state holds, and the finer
         // valleys appear on top of it.
-        const float kScale = powf((float)(p.refine * p.refine), p.m);
+        const float kScale = det::Powf((float)(p.refine * p.refine), p.m);
         auto refineFace = [&, FE](int f, int sampleThreads) {
             Vector3 nrm, a1, a2; FaceAxes(f, nrm, a1, a2);
             Domain fd;
@@ -830,7 +831,7 @@ void PlanetErosion::build(const std::function<float(Vector3, float)>& height, fl
                 for (int i = 0; i < FE; ++i) {
                     const float u = -span + (i + 0.5f) * duf, v = -span + (j + 0.5f) * duf;
                     fd.dir[(size_t)j * FE + i] = Vector3Normalize(Vector3Add(nrm, Vector3Add(Vector3Scale(a1, u), Vector3Scale(a2, v))));
-                    fd.cellArea[(size_t)j * FE + i] = sideF * sideF / powf(1.0f + u * u + v * v, 1.5f);
+                    fd.cellArea[(size_t)j * FE + i] = sideF * sideF / det::Powf(1.0f + u * u + v * v, 1.5f);
                 }
             auto ft = std::chrono::steady_clock::now();
             auto flap = [&](int k) { const auto t = std::chrono::steady_clock::now(); faceT[f][k] += std::chrono::duration<double>(t - ft).count(); ft = t; };
@@ -1033,7 +1034,7 @@ float PlanetErosion::flowArea(int g) const {
 
 float PlanetErosion::IncisionDepth(float area) {
     // Light: 0.5 m where a stream starts (0.1 km^2), ~2 m at 10 km^2, at most 4 m.
-    return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * powf(area / kFlowArea0, 0.3f));
+    return area < kFlowArea0 ? 0.0f : std::min(4.0f, 0.5f * det::Powf(area / kFlowArea0, 0.3f));
 }
 
 void PlanetErosion::routeFinal(int threads) {
@@ -1103,7 +1104,7 @@ void PlanetErosion::routeFinal(int threads) {
         for (int g = 0; g < G; ++g) {
             const int r = g % (nf * nf), j = r / nf, i = r % nf;
             const float u = -1.0f + (i + 0.5f) * duf, v = -1.0f + (j + 0.5f) * duf;
-            area[g] = side * side / powf(1.0f + u * u + v * v, 1.5f);
+            area[g] = side * side / det::Powf(1.0f + u * u + v * v, 1.5f);
         }
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
     };
@@ -1439,7 +1440,7 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
         val /= wsum; dval /= wsum;
         // Sharp crests, V gullies (user 2026-11-14: ridges were too smooth): x = 0 at a crest, 1 at a gully floor;
         // x^0.6 rises steeply from the crest. (The bending below keeps the plain stripes' slope.)
-        { const float x = std::clamp(0.5f * (1.0f - val), 0.0f, 1.0f); val = 1.0f - 2.0f * powf(x, 0.6f); }
+        { const float x = std::clamp(0.5f * (1.0f - val), 0.0f, 1.0f); val = 1.0f - 2.0f * det::Powf(x, 0.6f); }
         const float amp = octaveAmp * lam * sf * fade * strength;
         h += amp * val;
         // The ribs' own slope across the contour bends the next octave: finer gullies run into these.
@@ -1447,3 +1448,35 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
     }
     return h;
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+#include "unit_helpers.h"
+#include <cstring>
+
+// #1905: the bake's transcendentals are within a float ulp of the C library's, and give the same bits on every platform.
+// The hash is over inputs like the bake's (drainage areas to a stream-power exponent, latitudes, wetness logs); hosted CI
+// runs this on Windows (MinGW) and Linux (glibc), whose own powf/expf/logf/asinf disagree in the last bit.
+TEST(DetMath, CloseToLibmAndTheSameBitsEverywhere) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) { h ^= (b >> (8 * i)) & 0xff; h *= 1099511628211ull; } };
+    auto rel = [](double a, double b) { return std::fabs(a - b) / std::max(std::fabs(b), 1e-30); };
+    double worst[4] = {};
+    for (int i = 1; i <= 200000; ++i) {
+        const float x = (float)i * 1.37f + 0.11f;
+        const float p = det::Powf(x * 1000.0f, 0.45f), q = det::Powf(x * 1000.0f, 0.25f), e = det::Expf(-x * 0.01f), l = det::Logf(1.0f + x * 37.0f);
+        const float a = det::Asinf(std::fmod(x * 0.001f, 2.0f) - 1.0f);
+        worst[0] = std::max(worst[0], rel(p, std::pow((double)(x * 1000.0f), 0.45)));
+        worst[1] = std::max(worst[1], rel(e, std::exp(-(double)(x * 0.01f))));
+        worst[2] = std::max(worst[2], rel(l, std::log(1.0 + (double)(x * 37.0f))));
+        worst[3] = std::max(worst[3], std::fabs(a - std::asin((double)(std::fmod(x * 0.001f, 2.0f) - 1.0f))));
+        mix(p); mix(q); mix(e); mix(l); mix(a);
+    }
+    EXPECT_LT(worst[0], 1.2e-7) << "Powf";  // float rounding: below 2^-23
+    EXPECT_LT(worst[1], 1.2e-7) << "Expf";
+    EXPECT_LT(worst[2], 1.2e-7) << "Logf";
+    EXPECT_LT(worst[3], 2.4e-7) << "Asinf"; // absolute, |asin| <= pi/2
+    EXPECT_FLOAT_EQ(det::Powf(0.0f, 0.45f), 0.0f);
+    EXPECT_FLOAT_EQ(det::Asinf(1.5f), 1.57079633f); // clamped
+    EXPECT_EQ(h, 0x0ull) << std::hex << "the bits differ from the other platforms': got 0x" << h;
+}
+#endif
