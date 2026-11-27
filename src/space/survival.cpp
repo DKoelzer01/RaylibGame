@@ -108,9 +108,10 @@ const char* Survival_BiomeName() {
     // "Birch grove (Forest)": the variant, then its type (#1977; the user: variant names show in the UI).
     const char* v = BiomeVariantName(hereVariant);
     if (!v[0] || !strcmp(v, BiomeName(hereBiome))) return BiomeName(hereBiome);
-    static thread_local std::string label;
-    label = std::string(v) + " (" + BiomeName(hereBiome) + ")";
-    return label.c_str();
+    // A plain char buffer: a thread_local with a destructor breaks the w64devkit link (#2015, as #1802).
+    static thread_local char label[96];
+    snprintf(label, sizeof label, "%s (%s)", v, BiomeName(hereBiome));
+    return label;
 }
 
 // (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
