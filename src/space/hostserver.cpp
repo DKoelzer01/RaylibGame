@@ -26,6 +26,7 @@
 #include "suit.h"
 #include "combat.h"
 #include "teamquests.h"
+#include "teamstore.h"
 #include "navigation.h"
 #include "recipebook.h"
 #include "craftplan.h"
@@ -460,9 +461,33 @@ namespace {
         else if (!strcmp(kind, "obtained")) TeamQuests_Obtained(team, what, n);
         questContributor[team] = session;
     }
+    // (#1886) The team's progression store (research, explored map, blueprint library) to one member: on join and team
+    // changes (with the book), and to every online member when it changes (TeamStoreTick). A text over the message cap
+    // goes without its map section (the client keeps the map it has; a known gap: the map needs deltas).
+    std::map<int, std::string> teamStoreSent;  // team -> the store text its online members have
+    std::map<int, long long> teamStoreSentAt;  // team -> SimTick of that send
+    int teamStoreMsgs = 0;
+    // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
+    bool TeamStoreTextForNet(int team, std::string& text) {
+        text = TeamStore_Text(team);
+        if (text.size() <= MsgTeamStore::kMaxText) return true;
+        const size_t full = text.size();
+        const size_t a = text.find("section map\n"), b = a == std::string::npos ? a : text.find("section_end\n", a);
+        if (b != std::string::npos) text.erase(a, b + strlen("section_end\n") - a);
+        const bool fits = text.size() <= MsgTeamStore::kMaxText;
+        printf("host: team %d's store is %zu KB: %s\n", team, full / 1024, fits ? "sent without its map" : "too big even without its map, not sent");
+        return fits;
+    }
+    void SendTeamStore(uint32_t conn, int team) {
+        MsgTeamStore m; m.team = (uint32_t)team;
+        if (!TeamStoreTextForNet(team, m.text)) return;
+        SendMsg(conn, m);
+        ++teamStoreMsgs;
+    }
     void SendQuestBook(uint32_t conn, int team) {
         MsgQuestBook m; m.team = (uint32_t)team; m.text = TeamQuests_Text(team);
         SendMsg(conn, m);
+        SendTeamStore(conn, team); // (#1886) a book goes out on join and team changes: the progression store with it
     }
     // ---- Machines (#332): the factory runs here only; players act on machines by request and see views ----
     // Each player's open machine (watch) gets its full view 5 times a second; the machines working on the plots within
@@ -841,7 +866,17 @@ namespace {
             const std::string text = TeamQuests_Text(team);
             if (text != questBookSent[team]) {
                 questBookSent[team] = text;
-                for (const auto& [s, c] : members) SendQuestBook(c, team);
+                for (const auto& [s, c] : members) { MsgQuestBook m; m.team = (uint32_t)team; m.text = text; SendMsg(c, m); }
+            }
+            // (#1886) the progression store when it changed, at most every 5 s: exploring grows the map's tiles often and
+            // each send is the whole text (research done right now waits up to 5 s)
+            constexpr long long kStoreEvery = 5 * 60; // ticks
+            if (SimTick() - teamStoreSentAt[team] >= kStoreEvery) {
+                std::string store;
+                if (TeamStoreTextForNet(team, store) && store != teamStoreSent[team]) {
+                    teamStoreSent[team] = store; teamStoreSentAt[team] = SimTick();
+                    for (const auto& [s, c] : members) { MsgTeamStore m; m.team = (uint32_t)team; m.text = store; SendMsg(c, m); ++teamStoreMsgs; }
+                }
             }
         }
     }

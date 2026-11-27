@@ -11,4 +11,5 @@ world/spawn-by-water       # 1 of 5 checks; GPU 15/16
 net/creative-fly           # client join over GNS sockets
 net/creative-fly-lag       # client join
 net/late-join-lag          # bob joins
+net/team-store             # bob and carol join (#1886)
 craft/recursive-circuit    # the craft queue
