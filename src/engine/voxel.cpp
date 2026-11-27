@@ -392,9 +392,13 @@ PlanetField::Land PlanetField::land(Vector3 dir, float fp) const {
         const PlanetErosion::Slope s = eroded->slopeAt(dir, fp);
         h = s.h;
         if (gGullies && fp < 450.0f) {
-            if (eroded->onBFace(dir)) { // #1988: option B, the 50 m detail made here (the bake's routed drainage keeps valley floors smooth)
-                h += (l.relief = TerrainBDetail({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, s.h, eroded->drainageAt(dir)));
-            } else h += (l.relief = ErosionGullies({ sx, sy, sz }, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)));
+            // #1988: option B on its face, the 50 m detail made here (the bake's routed drainage keeps valley floors smooth),
+            // blended with the A gullies across the face edge.
+            const float wb = eroded->bWeight(dir);
+            const Vector3 sp = { sx, sy, sz };
+            const float a = wb < 1.0f ? ErosionGullies(sp, dir, s.grad, fp, fieldSeed, Smoothstep(2.0f, 15.0f, s.h)) : 0.0f;
+            const float b = wb > 0.0f ? TerrainBDetail(sp, dir, s.grad, fp, fieldSeed, s.h, eroded->drainageAt(dir)) : 0.0f;
+            h += (l.relief = a + wb * (b - a));
         }
         { const float cf = cliffFace({ sx, sy, sz }, h, s.grad, fp); h += cf; l.relief += cf; } // one face per steep resistant layer (#588)
         { // inside the elevation bound (less its 65 m allowance): the bake and the faces can lift formations (#593)

@@ -79,7 +79,7 @@ public:
     float heightScale = 1.0f; // #587: the bake's result = its simulation heights x this (strata are laid in simulation heights)
     int cells() const { return 6 * n * n; }
     int bFace = -1;           // #1988: the option B face (ErosionParams::bFace; set by build and after a load)
-    bool onBFace(Vector3 dir) const; // dir lies on the B face: its detail comes from TerrainBDetail at chunk time
+    float bWeight(Vector3 dir) const; // 1 on the B face (TerrainBDetail at chunk time), 0 off it, blended across its edge
     int fineCells() const { return 6 * fe * fe; }
     float fineCell() const { return fe > 0 ? fineMetres : 0.0f; }
     // Ponds (#360): the small closed depressions the 50 m refinement left (at most 12 cells): centre, a radius, the

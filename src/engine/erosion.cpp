@@ -1542,7 +1542,17 @@ float ErosionGullies(Vector3 p, Vector3 dir, Vector3 grad, float footprint, unsi
     return h;
 }
 
-bool PlanetErosion::onBFace(Vector3 dir) const { return bFace >= 0 && FaceOf(dir) == bFace; }
+float PlanetErosion::bWeight(Vector3 dir) const {
+    // 1 on the B face, 0 off it, a smoothstep across its edge (gnomonic 0.97..1.03, ~1.5 km each side): the detail
+    // functions differ, and a hard switch drew the face edge as a straight line in the terrain.
+    if (bFace < 0) return 0.0f;
+    Vector3 nrm, t1, t2; FaceAxes(bFace, nrm, t1, t2);
+    const float s = Vector3DotProduct(dir, nrm);
+    if (s <= 0.0f) return 0.0f;
+    const float m = std::max(fabsf(Vector3DotProduct(dir, t1)), fabsf(Vector3DotProduct(dir, t2))) / s;
+    const float t = std::clamp((1.03f - m) / 0.06f, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
 
 namespace {
     // Value noise in [-1, 1] with its gradient (per unit of p): trilinear over lattice hashes, smoothstep-eased.

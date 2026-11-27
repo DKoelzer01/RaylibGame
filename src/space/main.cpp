@@ -2154,7 +2154,7 @@ int main(int argc, char** argv)
             float mpp = 1.0f;
             for (int k = 1; k + 1 < argc; ++k) if (std::string(argv[k]) == "--hillshade-mpp") mpp = (float)atof(argv[k + 1]);
             const int N = 1024;
-            const Vector3 home = pf->findSpawnDir(p->seed);
+            const Vector3 home = hasSpawnDir ? spawnDir : pf->findSpawnDir(p->seed); // --spawn-dir: anywhere (#1988: a face edge)
             const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(home, { 0, 1, 0 })), t2 = Vector3CrossProduct(t1, home);
             std::vector<float> h((size_t)N * N);
             std::vector<std::thread> team;
