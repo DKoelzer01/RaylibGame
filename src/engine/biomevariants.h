@@ -15,6 +15,13 @@ struct BiomeVariantDef {
     float elevMin = -1e9f, elevMax = 1e9f;   // m above sea level
     float tempMin = -1e9f, tempMax = 1e9f;   // C (the climate's annual mean, PlanetField::Climate::temp)
     float moistMin = -1e9f, moistMax = 1e9f; // 0..1
+    // Flora (#1978), applied over the type's own (trees.cpp FloraOf): density multipliers for trees, bushes and loose
+    // stones, a tree size multiplier, an optional closed-canopy floor (least tree odds; < 0 = the type's), and optional
+    // species weights in WoodSpecies order (oak, birch, maple, pine, spruce; all 0 = the type's broadleaf/conifer mix).
+    static constexpr int kSpecies = 5;
+    float trees = 1.0f, bushes = 1.0f, stones = 1.0f, size = 1.0f, cover = -1.0f;
+    float species[kSpecies] = {};
+    bool hasSpecies() const { for (float w : species) if (w > 0.0f) return true; return false; }
     bool gated() const { return elevMin > -1e8f || elevMax < 1e8f || tempMin > -1e8f || tempMax < 1e8f || moistMin > -1e8f || moistMax < 1e8f; }
     bool admits(float elev, float temp, float moist) const {
         return elev >= elevMin && elev <= elevMax && temp >= tempMin && temp <= tempMax && moist >= moistMin && moist <= moistMax;

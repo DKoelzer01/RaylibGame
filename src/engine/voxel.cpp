@@ -2463,12 +2463,14 @@ int PlanetField::variantOf(Biome type, const Climate& c, float elev, float u) co
     return ids[0];
 }
 
-int PlanetField::variantAt(Vector3 dir, float elev) const {
+int PlanetField::variantAt(Vector3 dir, float elev) const { return variantAt(dir, elev, dir); }
+
+int PlanetField::variantAt(Vector3 dir, float elev, Vector3 uDir) const {
     Climate c = climateAt(dir, elev);
     const float j = biomeJitter.fractal(2, dir.x * radius, dir.y * radius, dir.z * radius); // as biomeAt
     c.temp += 1.2f * j;
     c.moist += 0.035f * j;
-    return variantOf(biomeOf(c, elev), c, elev, variantU(dir));
+    return variantOf(biomeOf(c, elev), c, elev, variantU(uDir));
 }
 
 Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
