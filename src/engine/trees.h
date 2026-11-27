@@ -47,6 +47,14 @@ constexpr int kTreeVariants = 24;
 constexpr int kFirstBush = 20;
 constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
 constexpr int kStoneVariant = 23;           // loose stones on the ground: picked up for stone (the first stone tools)
+// (#1995) Each variant comes as kTreeForms seeded meshes (its own branching), so a stand of one species and size is not
+// made of clones. Tiles and draws key on the mesh (TreeMeshOf); plants, logs and picking keep the variant.
+// RAYLIBGAME_TREE_FORMS=0: form 0 only, with the shapes as before #1995 (A/B).
+constexpr int kTreeForms = 3;
+constexpr int kTreeMeshes = kTreeVariants * kTreeForms;
+inline int TreeMeshOf(int variant, int form) { return variant * kTreeForms + form; }
+inline int VariantOfTreeMesh(int mesh) { return mesh / kTreeForms; }
+bool TreeFormsOn();
 // Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
 // over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
 enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
@@ -107,10 +115,10 @@ struct TreeTile {
     bool ready = false;
     uint32_t version = 0;
     Vector3 centre{};                          // body-local, on the surface
-    std::vector<float> inst[kTreeVariants];    // 8 floats each: body-local position, scale, up, hash
+    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
     std::vector<Trunk> trunks;
     std::vector<Plant> plants;                 // every tree and bush (picking)
-    std::vector<uint64_t> ids[kTreeVariants];  // per instance, parallel to inst
+    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
     bool regrowing = false;                    // has saplings: rebuild now and then as they grow
     double builtAt = 0.0;                      // world time the build used
     bool pending = false;                      // a rebuild is queued
@@ -174,12 +182,12 @@ private:
     DVec3 anchor{};                            // body-local origin of the batch positions
     bool batchDirty = true;
     double lastBatch = -1.0;
-    // Two detail levels: [0..kTreeVariants) full meshes near the camera, then simple far meshes.
-    unsigned int vao[kTreeSets][2 * kTreeVariants] = {}, vbo[kTreeSets][2 * kTreeVariants] = {};
-    int count[kTreeSets][2 * kTreeVariants] = {};
+    // Two detail levels: [0..kTreeMeshes) full meshes near the camera, then simple far meshes.
+    unsigned int vao[kTreeSets][2 * kTreeMeshes] = {}, vbo[kTreeSets][2 * kTreeMeshes] = {};
+    int count[kTreeSets][2 * kTreeMeshes] = {};
     Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
-    unsigned int culledVao[2 * kTreeVariants] = {}, culledVbo[2 * kTreeVariants] = {}, cmdBuf = 0;
+    unsigned int culledVao[2 * kTreeMeshes] = {}, culledVbo[2 * kTreeMeshes] = {}, cmdBuf = 0;
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;

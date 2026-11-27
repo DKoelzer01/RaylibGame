@@ -15,6 +15,8 @@
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
 #      two branches can't ship the same number for different wire formats.
+#   7. A kNetProtocol / kSaveVersion number this branch reserves is not reserved for another issue on origin/staging,
+#      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
@@ -186,8 +188,9 @@ WF=.github/workflows/selfhosted.yml
 part1=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 1p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part2=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 2p | sed 's/--scenario //; s/tag://g; s/,/ /g')
 part3=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 3p | sed 's/--scenario //; s/tag://g; s/,/ /g')
-if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ]; then
-    echo "::error file=$WF::static check 5: the three headless scenario tag lists (part 1, part 2, pose twins) were not found in the workflow"
+part4=$(grep -o -- '--scenario tag:[a-z0-9_,:-]*' "$WF" | sed -n 4p | sed 's/--scenario //; s/tag://g; s/,/ /g') # (#1882) world generation metrics: the full tier and manual runs
+if [ -z "$part1" ] || [ -z "$part2" ] || [ -z "$part3" ] || [ "$part4" != worldgen ]; then
+    echo "::error file=$WF::static check 5: the four headless scenario tag lists (part 1, part 2, pose twins, worldgen) were not found in the workflow, in that order"
     errors=$((errors + 1))
 else
     unplaced=""
@@ -195,22 +198,23 @@ else
         name=$(grep -o 'SCENARIO("[^"]*")' "$f" | head -1 | sed 's/SCENARIO("\(.*\)")/\1/')
         [ -n "$name" ] || continue
         tags=$(grep -o 's.tags = {[^}]*}' "$f" | head -1 | grep -o '"[a-z0-9_-]*"' | tr -d '"' | tr '\n' ' ')
-        in1=0; in2=0; in3=0; local=0
+        in1=0; in2=0; in3=0; in4=0; local=0
         for t in $tags; do
             for x in $part1; do [ "$t" = "$x" ] && in1=1; done
             for x in $part2; do [ "$t" = "$x" ] && in2=1; done
             for x in $part3; do [ "$t" = "$x" ] && in3=1; done
+            for x in $part4; do [ "$t" = "$x" ] && in4=1; done
             for x in $LOCAL_ONLY_TAGS; do [ "$t" = "$x" ] && local=1; done
         done
-        if [ $((in1 + in2 + in3)) -gt 1 ]; then
+        if [ $((in1 + in2 + in3 + in4)) -gt 1 ]; then
             echo "::error file=$f::scenario $name matches more than one runner scenario step (tags: $tags): it would run twice"
             errors=$((errors + 1))
-        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $local = 0 ]; then
+        elif [ $in1 = 0 ] && [ $in2 = 0 ] && [ $in3 = 0 ] && [ $in4 = 0 ] && [ $local = 0 ]; then
             echo "::error file=$f::scenario $name matches neither runner scenario step (tags: $tags): add a tag to a list in $WF or a local-only tag ($LOCAL_ONLY_TAGS)"
             errors=$((errors + 1)); unplaced="$unplaced $name"
         fi
     done
-    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
+    sum ""; sum "**Scenario steps (#1367):** part 1 \`$part1\`, part 2 \`$part2\`, pose twins (nightly) \`$part3\`, world generation (full tier, manual runs) \`$part4\`; local-only tags \`$LOCAL_ONLY_TAGS\`${unplaced:+; not placed:$unplaced}"
 fi
 
 # ---- 6. kNetProtocol is reserved (#1480) ----
@@ -253,6 +257,16 @@ elif [ -f "$RES" ]; then
     else
         sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
     fi
+fi
+
+# ---- 7. (#2009) a number this branch reserves is not reserved for another issue on the other base or in an open PR ----
+# (check 6 reads only this branch's copy). RESERVATION_CLASH=0 skips it (offline).
+if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
+    rc_out=$(bash tools/ci/reservation_clash.sh "$BASE" 2>&1)
+    rc_rc=$?
+    printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
+    sum ""; sum "**Reservation clashes (check 7):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
+    [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
