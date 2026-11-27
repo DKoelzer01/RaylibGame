@@ -338,11 +338,13 @@ void FlushEnsures() {
     ensureQueue.clear();
 }
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
-// A site's gravity scale (#1942) from the snapshot: 1 for a body the snapshot lacks.
-static float SiteGScale(const Site* s) {
+// The kernels' gravity factor for a site (#1942): k = sqrt(scale), from the snapshot (1 for a body it lacks). The kernels use
+// G k k for the momentum and k for the levelling share (its rate goes as sqrt(g)); the host takes the root so the GPU and the
+// CPU multiply the same floats (GLSL's sqrt need not round as std::sqrt does). sqrt(1) is 1: Terra unchanged.
+static float SiteGRoot(const Site* s) {
     if (!s) return 1.0f;
     const auto it = refs.find(s->body);
-    return it != refs.end() ? it->second.gScale : 1.0f;
+    return it != refs.end() ? std::sqrt(it->second.gScale) : 1.0f;
 }
 long long stepCount = 0;
 Fluid::Stats stats;
@@ -1897,9 +1899,9 @@ void GpuTick(int n) {
             }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
-    // inS: 0 = not run; a run slot holds its gravity scale's float bits (#1942: never 0, the shader reads both from it).
+    // inS: 0 = not run; a run slot holds its gravity root's float bits (SiteGRoot, #1942: never 0, the shader reads both).
     std::vector<unsigned> inS(G.capacity, 0u);
-    auto SlotGBits = [](int slot) { float g = SiteGScale(G.ownerSite[slot]); unsigned u; memcpy(&u, &g, 4); return u; };
+    auto SlotGBits = [](int slot) { float g = SiteGRoot(G.ownerSite[slot]); unsigned u; memcpy(&u, &g, 4); return u; };
     std::vector<int> list;
     for (int slot = 0; slot < G.capacity; ++slot) {
         Brick* br = G.owner[slot];
@@ -2100,7 +2102,7 @@ void CpuTick(int n) {
         }
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
-        g.gScale[i] = SiteGScale(slotSite[i]); // (#1942)
+        g.gRoot[i] = SiteGRoot(slotSite[i]); // (#1942)
         // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
         // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
         uint32_t* m = &g.gmask[(size_t)i * 6];

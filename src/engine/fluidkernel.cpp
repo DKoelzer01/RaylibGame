@@ -21,7 +21,7 @@ void Grid::resize(int slots) {
     pairCode.assign((size_t)slots * 4096 * 4, (uint16_t)0);
     pr.assign((size_t)slots * 4096, 0); prN.assign((size_t)slots * 4096, 0);
     gmask.assign((size_t)slots * 6, 0u); gon.assign(slots, ~0ull); groupsFull = true;
-    gScale.assign(slots, 1.0f);
+    gRoot.assign(slots, 1.0f);
 }
 
 namespace {
@@ -70,6 +70,8 @@ struct Pass {
         x = l % 16; y = (l / 16) % 16; z = l / 256;
     }
     uint32_t readCell(int gi, bool processed) const { return (pass >= 1 && !processed) ? outC[gi] : inC[gi]; }
+    // G on this cell's body (#1942): G k k, k = the slot's gravity root (1 on Terra: G itself).
+    float gAt(int gi) const { const float r = g.gRoot[(size_t)gi / 4096]; return G * (r * r); }
 
     static uint32_t downFlux(uint32_t u, uint32_t l, bool lProc, bool lExists) {
         if (!lExists || !lProc) return 0u;
@@ -267,13 +269,13 @@ struct Pass {
         const int localDiff = (int)(SH(d) + F(d)) - (int)(SH(r) + F(r));
         float share = 0.0f;
         if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = (float)F(d);
-        else if (localDiff >= p.visc[kd]) share = p.shareFloat ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd]); // #1041
+        else if (localDiff >= p.visc[kd]) share = (p.shareFloat ? (float)localDiff / (float)p.visc[kd] : (float)(localDiff / p.visc[kd])) * g.gRoot[(size_t)ga / 4096]; // #1041; at sqrt(g) (#1942)
         const float depth = colDepth;
         const float dh = (float)std::abs(ha - hb) / p.hu;
         float q = std::max(qp * sgn, 0.0f);
         const float speed = q / (p.cellSize * std::max(depth, 0.02f)); // m/s through the face (a cell wide)
         const int gate = colDepth < 0.05f ? p.visc[kd] : 2; // films hold a slight slope; deeper water levels on 2 units (#680)
-        const float accel = std::abs(ha - hb) >= gate ? p.dt * (G * g.gScale[(size_t)ga / 4096]) * depth * dh : 0.0f;
+        const float accel = std::abs(ha - hb) >= gate ? p.dt * gAt(ga) * depth * dh : 0.0f;
         q = (q + accel) / (1.0f + p.dt * (p.frictionLin[kd] + p.frictionQuad[kd] * speed / std::max(depth, 0.02f)));
         if (accel == 0.0f && q * p.dt * p.units < 0.05f) q = 0.0f;
         qMom = q * sgn;
@@ -474,7 +476,7 @@ struct Pass {
         const int h = surfU - bedMax, dH = surfU - std::max(surfD, bedMax);
         const float hm = (float)h / p.hu, dHm = (float)dH / p.hu;
         float q = qPrev;
-        if (h >= p.minSpread[kind] && dH >= 2) q += p.dt * (G * g.gScale[(size_t)gi / 4096]) * hm * dHm * (aUp ? 1.0f : -1.0f);
+        if (h >= p.minSpread[kind] && dH >= 2) q += p.dt * gAt(gi) * hm * dHm * (aUp ? 1.0f : -1.0f);
         if (!wet && q < 0.0f) q = 0.0f;                      // a dry or lower neighbour never gives back
         if (h < p.minSpread[kind]) q = 0.0f;                 // films rest
         // Momentum is carried with the water (upwind advection, -u dQ/dx): a pair's flow eases toward the flow of the pair
@@ -934,10 +936,17 @@ TEST(FluidKernel, DamBreakConservesWaterExactly) {
 TEST(FluidKernel, FlowScalesWithBodyGravity) {
     const Params p = WaterParams();
     const float luna = 0.98f / 5.886f;
-    auto past = [](const Grid& g) { uint64_t t = 0; for (int s = 0; s < 3; ++s) for (int z = 0; z < 16; ++z) for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x)
-        if (s > 0 || x > 8) t += g.a[(size_t)s * 4096 + Idx(x, y, z)] & 255u; return t; };
+    auto past = [](const Grid& g) { // fill units past the dam (x > 8 of brick 0, and the later bricks)
+        uint64_t t = 0;
+        for (int s = 0; s < 3; ++s)
+            for (int z = 0; z < 16; ++z)
+                for (int y = 0; y < 16; ++y)
+                    for (int x = 0; x < 16; ++x)
+                        if (s > 0 || x > 8) t += g.a[(size_t)s * 4096 + Idx(x, y, z)] & 255u;
+        return t;
+    };
     Grid terra = DamBreak(3, true), moon = DamBreak(3, true);
-    std::fill(moon.gScale.begin(), moon.gScale.end(), luna);
+    std::fill(moon.gRoot.begin(), moon.gRoot.end(), std::sqrt(luna));
     const uint64_t before = TotalFill(moon);
     RunSubsteps(terra, p, 60); // 0.5 s
     RunSubsteps(moon, p, 60);

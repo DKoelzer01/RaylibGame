@@ -78,9 +78,10 @@ layout(std430, binding = 15) buffer PressN { int prN[]; };
 
 const uint SOLID = 1u, SOURCE = 2u, DUG = 8u, SINK = 16u; // a sink: a source that takes water in (reset to its level after: what is over it leaves, #361)
 const float G = 9.81;
-// G on this slot's body (#1942): inS holds a run slot's gravity scale (its body over Terra; 1 there) as float bits, 0 if
-// not run. G * 1.0 is G: Terra's water is unchanged.
-float gravityAt(int gi) { return G * uintBitsToFloat(inS[uint(gi) / 4096u]); }
+// G on this slot's body (#1942): inS holds a run slot's gravity root k (sqrt of its body's g over Terra's, from the host: 1
+// on Terra) as float bits, 0 if not run. G k k drives the momentum, k scales the levelling share; at k = 1 both are exact.
+float gRootAt(int gi) { return uintBitsToFloat(inS[uint(gi) / 4096u]); }
+float gravityAt(int gi) { precise float r = gRootAt(gi); precise float rr = r * r; return G * rr; }
 uniform float cellSize;    // m (Plan 10 W4c #642)
 // Fill units per m^3 and per metre of height: computed on the CPU as fluidkernel.cpp's Params does, so both sides use the
 // same floats (#680: a division here is not correctly rounded, and the CPU and GPU column models drifted by a unit).
@@ -331,9 +332,9 @@ void faceFlow(int ga, uint a, int gb, uint b, float qp, out float qTot, out floa
     float sgn = aGives ? 1.0 : -1.0;
     // The levelling share, in the cells' own water heights (#454: a film on a half-buried cell stands higher and runs off).
     int localDiff = int(SH(d) + F(d)) - int(SH(r) + F(r));
-    float share = 0.0;
+    precise float share = 0.0;
     if (F(r) == 0u && !rests(rs, rx, ry, rz, r)) share = float(F(d));            // a film over a drop runs off whole (#454)
-    else if (localDiff >= visc[kd]) share = shareFloat != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd]); // #1041
+    else if (localDiff >= visc[kd]) share = (shareFloat != 0 ? divRN(float(localDiff), float(visc[kd])) : float(localDiff / visc[kd])) * gRootAt(ga); // #1041; at sqrt(g) (#1942)
     // The momentum flow: the face's wetted height (1 m wide) is the giver's column for a surface cell, its own water for a cell
     // under water (a leak into an open cell beside it: a pool dug into from the side).
     precise float depth = colDepth;
