@@ -1,4 +1,5 @@
 #include "scene.h"
+#include "biomevariants.h"
 #include "envflag.h"
 #include "wind.h"
 #include "gpumem.h"
@@ -643,6 +644,7 @@ void Scene::drawScene(int gamestate) {
         SetShaderValue(s, GetShaderLocation(s, "treeDistance"), &treeDist, SHADER_UNIFORM_FLOAT);
         const float farForest = FarForestOn();
         SetShaderValue(s, GetShaderLocation(s, "farForest"), &farForest, SHADER_UNIFORM_FLOAT);
+        BiomeTint_Bind(s); // (#2032) ground grass and the canopy tint by biome
     }
     // Cascades: the near one's matrix; each cascade's texel in metres and the depth range (the bias
     // is sized from them: a texel's worth along the normal, and a slope term in depth units).
@@ -893,6 +895,7 @@ void Scene::drawScene(int gamestate) {
         }
         // Foliage lighting (grass, trees): the sun's shadow map and the headlamp, as the terrain gets.
         auto setFoliageLighting = [&](Shader& sh) {
+            BiomeTint_Bind(sh); // (#2032) the per-biome tints (grass.fs, trees.fs)
             const int slot = 6;
             rlActiveTextureSlot(slot);
             rlEnableTexture(shadowMap.depth.id);
