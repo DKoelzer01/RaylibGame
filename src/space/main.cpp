@@ -2284,8 +2284,7 @@ int main(int argc, char** argv)
             const Vector3 feet = (player.position - world.renderOrigin).toFloat();
             Vector3 ahead = Vector3Normalize(Vector3Subtract(player.forward, Vector3Scale(player.up, Vector3DotProduct(player.forward, player.up))));
             if (hasBenchToward) { // --bench-toward x y z: face a body-local direction (a mountain, a valley)
-                const Vector3 tw = (benchPlanet->toWorldD(DVec3(benchToward) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(benchToward, 1.0f)))) - world.renderOrigin).toFloat();
-                const Vector3 d = Vector3Subtract(tw, feet), dt = Vector3Subtract(d, Vector3Scale(player.up, Vector3DotProduct(d, player.up)));
+                const Vector3 d = (benchPlanet->toWorldD(DVec3(benchToward) * (double)(pfs->radius + std::max(0.0f, pfs->elevation(benchToward, 1.0f)))) - player.position).toFloat(), dt = Vector3Subtract(d, Vector3Scale(player.up, Vector3DotProduct(d, player.up)));
                 if (Vector3Length(dt) > 1e-3f) ahead = Vector3Normalize(dt);
             }
             if (benchUphill) // --bench-uphill (#357): face up the eroded slope, toward the cliff above
