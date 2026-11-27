@@ -15,7 +15,7 @@
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
 #      two branches can't ship the same number for different wire formats.
-#   7. A kNetProtocol / kSaveVersion number this branch reserves is not reserved for another issue on origin/staging,
+#   7. A kNetProtocol / kSaveVersion / kErosionBakeVersion number this branch reserves is not reserved for another issue on origin/staging,
 #      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
@@ -256,6 +256,26 @@ elif [ -f "$RES" ]; then
         errors=$((errors + 1))
     else
         sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+    fi
+fi
+# (#2009) kErosionBakeVersion: an "erosion <n> | ..." line when the branch CHANGES the version against BASE (a branch
+# that keeps its base's version needs none, so ladder's older bake still passes). Two branches that bumped to one number
+# would each bake different terrain under it, and a cache baked by one loads in the other.
+if [ -n "$BASE" ] && [ -f "$RES" ]; then
+    ero_ver() { tr -d '\r' | grep -oE 'kErosionBakeVersion = [0-9]+' | head -1 | grep -oE '[0-9]+$'; }
+    ero_new=$(ero_ver < "$EROSION_H" 2>/dev/null)
+    ero_old=$(git show "$BASE:$EROSION_H" 2>/dev/null | ero_ver)
+    if [ -n "$ero_new" ] && [ "$ero_new" != "$ero_old" ]; then
+        line=$(tr -d '\r' < "$RES" | grep -E "^erosion[[:space:]]+${ero_new}[[:space:]]*\|" | head -1)
+        if [ -z "$line" ]; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion ${ero_old:-?} -> $ero_new is not reserved in $RES: add a line \"erosion $ero_new | <branch> | #<issue> | <what>\" (#2009)"
+            errors=$((errors + 1))
+        elif echo "$line" | grep -q "(unused)"; then
+            echo "::error file=$EROSION_H::kErosionBakeVersion $ero_new is marked (unused) in $RES: reserve the next free number instead (#2009)"
+            errors=$((errors + 1))
+        else
+            sum ""; sum "**kErosionBakeVersion $ero_new** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
+        fi
     fi
 fi
 
