@@ -2,7 +2,7 @@
 // gravity over Terra's (Fluid::GravityScale: exactly 1 on Terra, 0.98 / 5.886 on Luna). The same 1 m^3 is poured 1 m over
 // the ground beside the player on Terra, then on Luna; after 1 s of fluid time (ticks x 25 ms, wall speed varies) the share
 // still within 1.5 m of the pour is noted for both (Luna's water spreads slower: it should keep more). Checked: the scales,
-// and each body's water against the mass ledger (#1885) after 10 s. Not a parity scenario (the pours wait on landing and
+// and the water within 30 m of each pour against the mass ledger (#1885) after 10 s. Not a parity scenario (the pours wait on landing and
 // streaming, wall-clock): fluid/mass-ledger-luna compares the GPU and the CPU at Luna's scale.
 // No c.camera(): it turns fly mode on, and the player's own placement is used.
 #include "scenario.h"
@@ -31,6 +31,15 @@ Vector3 BesidePlayer(Planetoid& b) {
     return Vector3Add(feet, Vector3Add(Vector3Scale(side, 3.0f), up));
 }
 
+// The simulated water within 30 m of a pour (m^3). Each body's water is judged by its own box: the world's total also
+// moved with the other body's water (Terra's pour, then left behind while the player stood on Luna).
+double NearPour(const Pour& p) {
+    const Vector3 up = Vector3Normalize(p.at);
+    const Vector3 ax = Vector3Normalize(Vector3CrossProduct(up, fabsf(up.z) < 0.9f ? Vector3{ 0, 0, 1 } : Vector3{ 1, 0, 0 }));
+    const Vector3 ay = Vector3CrossProduct(up, ax);
+    return Fluid::VolumeIn(*p.body, p.at, ax, ay, up, { 30.0f, 30.0f, 15.0f });
+}
+
 void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
     s.step(TextFormat("stand on %s", name), 90.0, [which](ScenarioCtx& c) {
         Pour& p = S.*which;
@@ -42,7 +51,7 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
         Pour& p = S.*which;
         if (p.tick0 < 0) {
             p.at = BesidePlayer(*p.body);
-            p.vol0 = Fluid::GetStats().volume;
+            p.vol0 = NearPour(p);
             p.l0 = Fluid::GetLedger();
             p.tick0 = 0;
             p.queued = Fluid::Pour(*p.body, p.at, 1.0f);
@@ -63,7 +72,7 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
     s.step(TextFormat("judge %s", name), 1.0, [which, name](ScenarioCtx& c) {
         Pour& p = S.*which;
         const Fluid::Ledger l = Fluid::GetLedger(), &l0 = p.l0;
-        const double held = Fluid::GetStats().volume - p.vol0;
+        const double held = NearPour(p) - p.vol0;
         const double net = (l.poured - l0.poured) - (l.taken - l0.taken) - (l.dried - l0.dried);
         c.note(TextFormat("%s: gravity %.3f m/s^2, fluid scale %.4f; %.2f m^3 queued, near the pour after 1 s %.3f m^3; after 10 s "
                           "held %.3f, ledger poured %.3f, dried %.3f, net %.3f", name, p.body->surfaceGravity, Fluid::GravityScale(*p.body),
