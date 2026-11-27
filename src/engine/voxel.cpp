@@ -2541,7 +2541,12 @@ Vector3 PlanetField::findSpawnDir(unsigned int seed) const {
         static std::mutex m; static std::unordered_map<const PlanetField*, Vector3> cache;
         std::lock_guard<std::mutex> lock(m);
         auto it = cache.find(this);
-        if (it == cache.end()) it = cache.emplace(this, nearestVariantDir(best, gSpawnVariant)).first;
+        if (it == cache.end()) {
+            it = cache.emplace(this, nearestVariantDir(best, gSpawnVariant)).first;
+            const Vector3 d = it->second;
+            printf("bench: --bench-biome: start in %s, %.1f km from the default start%s\n", BiomeVariantName(variantAt(d, elevation(d))),
+                   acosf(std::clamp(Vector3DotProduct(d, best), -1.0f, 1.0f)) * radius / 1000.0f, variantAt(d, elevation(d)) == gSpawnVariant ? "" : " (none found: the default start)");
+        }
         return it->second;
     }
     return best;
