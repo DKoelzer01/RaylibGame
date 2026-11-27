@@ -87,6 +87,9 @@ void AddSteps(ScenarioDef& s, Pour State::*which, const char* name) {
 
 SCENARIO("fluid/luna-pour") {
     s.tags = { "fluid", "space", "frames" };
+    // The ledger leaves out the kernels' evaporation (fluid.cpp, #454): Luna's pour spreads into films, and 0.03-0.16 m^3 of it
+    // dried uncounted in 10 s. Without evaporation every unit is accounted for, as in fluid/mass-ledger.
+    s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" } };
     s.world = ScenarioWorld::Planet;
     s.timeout = 420.0;
     s.step("find Terra and Luna", 30.0, [](ScenarioCtx& c) {
