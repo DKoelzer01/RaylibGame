@@ -53,6 +53,7 @@ ConduitRun planned;
 ConduitPlaceResult plannedCheck;
 Plot* planPlot = nullptr;
 Planetoid* planBody = nullptr;
+Planetoid* benchShow = nullptr;     // BeltTool_BenchShow
 
 Plot* PlotById(Planetoid* body, uint32_t id) { return body && body->plots ? body->plots->byId(id) : nullptr; }
 } // namespace
@@ -241,6 +242,7 @@ void BeltTool_BenchDrag(Planetoid* body, Plot* plot, CInt3 a, CInt3 b, bool xFir
     planPlot = plot; planBody = body;
     Replan();
 }
+void BeltTool_BenchShow(Planetoid* body) { benchShow = body; }
 const ConduitRun& BeltTool_Planned() { return planned; }
 const ConduitPlaceResult& BeltTool_PlannedCheck() { return plannedCheck; }
 
@@ -252,7 +254,7 @@ bool BeltTool_On() { return buildTool.active && beltMode && buildTool.part == (i
 
 void BeltTool_ForgetWorld() {
     drag = Drag{}; hover = Hover{}; planned = ConduitRun{}; plannedCheck = ConduitPlaceResult{};
-    planPlot = nullptr; planBody = nullptr;
+    planPlot = nullptr; planBody = nullptr; benchShow = nullptr;
 }
 
 void BeltTool_Cancel() {
@@ -443,8 +445,8 @@ void DrawRun(const ConduitRun& run, Color fill, Color edge, bool cross) {
 } // namespace
 
 void BeltTool_Draw3D(Scene& world) {
-    if (!BeltTool_On() && !drag.bench) return;
-    Planetoid* body = drag.bench ? planBody : player.nearest;
+    if (!BeltTool_On() && !drag.bench && !benchShow) return;
+    Planetoid* body = drag.bench ? planBody : benchShow ? benchShow : player.nearest;
     if (!body || !body->plots) return;
     auto under = [&](const Plot& p, const std::function<void()>& draw) {
         rlDrawRenderBatchActive();
@@ -540,7 +542,7 @@ TEST(BeltTool, EndsOnChestsSnapToTheirFacePorts) {
     EXPECT_TRUE(res.ok) << res.why;
     EXPECT_EQ(res.portIdx.size(), 2u) << "both ends on a port";
     // Reversed (B to A): the same faces, the other way.
-    const std::vector<CInt3> back = BeltTool_Plan(t.plot, { t.xb * 8 + 4, 0, 2 }, { 2, 0, 4 }, true);
+    const std::vector<CInt3> back = BeltTool_Plan(t.plot, { t.xb * 8 + 4, 0, 2 }, { 2, 0, 2 }, true);
     ASSERT_EQ(back.size(), 2u);
     EXPECT_EQ(back[0], (CInt3{ t.xb * 8, 0, 4 }));
     EXPECT_EQ(back[1], (CInt3{ t.xa * 8 + 6, 0, 4 }));

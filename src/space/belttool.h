@@ -53,6 +53,9 @@ bool BeltTool_Remove(Planetoid& body, Plot& plot, int id, bool refund);
 // (scenarios, captures) A drag held from a to b on `plot` of `body`, planned now: the ghost and the HUD show it as if
 // dragged; nothing places. A null plot ends it.
 void BeltTool_BenchDrag(Planetoid* body, Plot* plot, CInt3 a, CInt3 b, bool xFirst = true);
+// (scenarios, captures) Keep drawing `body`'s belts as build mode does (a scenario's build tool has no input, so it is off).
+// Null stops.
+void BeltTool_BenchShow(Planetoid* body);
 const ConduitRun& BeltTool_Planned();               // the drag's run (empty points without a drag)
 const ConduitPlaceResult& BeltTool_PlannedCheck();
 

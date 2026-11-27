@@ -97,6 +97,7 @@ SCENARIO("factory/belt-tool") {
         c.check("placed", ok);
         c.eq("one belt on the plot", (int)plot->belts.size(), 1);
         c.eq("conveyors spent", conveyorsBefore - inventory.count("conveyor"), cost);
+        BeltTool_BenchShow(c.body); // the laid belt's outline, as build mode shows it
         Factory::Sync(c.world);
         return true;
     });
@@ -125,6 +126,7 @@ SCENARIO("factory/belt-tool") {
         c.eq("the belt under its middle is found", BeltTool_RunAt(*plot, { (xa * 8 + 6 + xb * 8) / 2 / 2 * 2, 0, 4 }), id);
         c.check("removed", BeltTool_Remove(*c.body, *plot, id, true));
         c.eq("no belts left", (int)plot->belts.size(), 0);
+        BeltTool_BenchShow(nullptr);
         c.eq("conveyors back", inventory.count("conveyor"), conveyorsBefore);
         buildTool.active = false;
         return true;
