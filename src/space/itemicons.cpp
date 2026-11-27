@@ -623,7 +623,7 @@ void PaintItem(Canvas& cv, const ItemDef& d) {
         else if (ends("generator")) s = Sym::Bolt;
         else if (id == "battery") s = Sym::Plus;
         else if (ends("macerator")) s = Sym::Teeth;
-        else if (is({ "ore_washer", "water_pump", "boiler" })) s = Sym::Drop;
+        else if (is({ "ore_washer", "water_pump", "rotary_pump", "boiler" })) s = Sym::Drop;
         else if (is({ "electrolyzer", "chemical_reactor", "refinery" })) s = Sym::Flask;
         else if (id == "centrifuge" || id == "fusion_reactor") s = Sym::Ring;
         else if (id == "miner") s = Sym::Drill;

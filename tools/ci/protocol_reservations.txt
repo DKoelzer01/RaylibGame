@@ -20,6 +20,7 @@
 53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
 54 | ladder          | #1734 | the trip hammer and mixer part types in NetPart
 55 | ladder          | #1734 | the rotary sieve part type in NetPart
+56 | ladder          | #1734 | the rotary pump part type in NetPart
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
