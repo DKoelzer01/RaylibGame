@@ -54,6 +54,7 @@ SCENARIO("factory/belts") {
         while (xb > 0 && plot->partAt({ xb - 1, 0, 0 }) == chestB) --xb;
         ConduitRun run; run.material = "basic"; run.points = { { xa * 8 + 6, 0, 4 }, { xb * 8, 0, 4 } };
         const int id = plot->addBelt(run);
+        c.note(TextFormat("chest A's last cell x %d, chest B's first x %d: belt x %d .. %d at z 4", xa, xb, xa * 8 + 6, xb * 8));
         c.check("the belt added to the plot", id > 0);
         Factory::Sync(c.world);
         Look(c);
@@ -72,6 +73,8 @@ SCENARIO("factory/belts") {
         Look(c);
         Factory::Sync(c.world);
         const int a = Stone(chestA), b = Stone(chestB);
+        static int seen = -1;
+        if (a * 100 + b != seen) { seen = a * 100 + b; c.note(TextFormat("t %.2f s: chest A %d stone, chest B %d", c.t, a, b)); }
         c.waitingFor(TextFormat("chest A %d stone, chest B %d", a, b));
         if (b < 12 && c.t < 35.0) return false;
         c.metric("12 stone across after", c.t, "s", false);
