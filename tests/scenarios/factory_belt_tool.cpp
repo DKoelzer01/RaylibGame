@@ -64,7 +64,7 @@ SCENARIO("factory/belt-tool") {
     });
     s.step("a drag through chest B is red", 3.0, [](ScenarioCtx& c) {
         Look(c);
-        BeltTool_BenchDrag(plot, { 2, 0, 2 }, { (xb + 3) * 8 + 4, 0, 2 }); // into A's side, out past B's far side: through it
+        BeltTool_BenchDrag(c.body, plot, { 2, 0, 2 }, { (xb + 3) * 8 + 4, 0, 2 }); // into A's side, out past B's far side: through it
         if (c.t < 1.5) return false;
         const ConduitPlaceResult& r = BeltTool_PlannedCheck();
         c.note(TextFormat("why: %s", r.why.c_str()));
@@ -73,7 +73,7 @@ SCENARIO("factory/belt-tool") {
     });
     s.step("a drag from inside A to inside B snaps to their ports and is green", 3.0, [](ScenarioCtx& c) {
         Look(c);
-        BeltTool_BenchDrag(plot, { 2, 0, 2 }, { xb * 8 + 4, 0, 2 }); // off the face centres (z 2, not 4)
+        BeltTool_BenchDrag(c.body, plot, { 2, 0, 2 }, { xb * 8 + 4, 0, 2 }); // off the face centres (z 2, not 4)
         if (c.t < 1.5) return false;
         const ConduitRun& run = BeltTool_Planned();
         const ConduitPlaceResult& r = BeltTool_PlannedCheck();
@@ -90,7 +90,7 @@ SCENARIO("factory/belt-tool") {
     s.step("released: laid, charged", 5.0, [](ScenarioCtx& c) {
         Look(c);
         const ConduitRun run = BeltTool_Planned();
-        BeltTool_BenchDrag(nullptr, {}, {});
+        BeltTool_BenchDrag(nullptr, nullptr, {}, {});
         std::string why;
         const bool ok = BeltTool_Place(*c.body, *plot, run, true, &why);
         c.note(why.c_str());

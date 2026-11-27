@@ -233,12 +233,13 @@ bool BeltTool_Remove(Planetoid& body, Plot& plot, int id, bool refund) {
     return true;
 }
 
-void BeltTool_BenchDrag(Plot* plot, CInt3 a, CInt3 b, bool xFirst) {
-    if (!plot) { drag = Drag{}; return; }
+namespace { void Replan(); }
+void BeltTool_BenchDrag(Planetoid* body, Plot* plot, CInt3 a, CInt3 b, bool xFirst) {
+    if (!plot || !body) { drag = Drag{}; planned = ConduitRun{}; plannedCheck = ConduitPlaceResult{}; return; }
     drag.on = true; drag.bench = true;
-    drag.plot = plot->id; drag.a = a; drag.b = b; drag.xFirst = xFirst; drag.reversed = false;
-    drag.body = 0; // the update finds the body that holds the plot
-    planPlot = plot;
+    drag.body = body->id; drag.plot = plot->id; drag.a = a; drag.b = b; drag.xFirst = xFirst; drag.reversed = false;
+    planPlot = plot; planBody = body;
+    Replan();
 }
 const ConduitRun& BeltTool_Planned() { return planned; }
 const ConduitPlaceResult& BeltTool_PlannedCheck() { return plannedCheck; }
@@ -331,12 +332,7 @@ bool BeltTool_Update(Scene& world, const PlayerInput& in) {
         GameUI_Toast(beltMode ? "Belts: drag RMB to lay a run" : "Cell conveyors (the old kind): RMB places one");
     }
     hover = Hover{};
-    if (drag.bench) { // a scripted drag: find its plot's body, plan, nothing else
-        for (auto& o : world.objects)
-            if (auto* b = dynamic_cast<Planetoid*>(o.get()); b && b->plots && b->plots->byId(drag.plot) == planPlot) { planBody = b; break; }
-        Replan();
-        return false;
-    }
+    if (drag.bench) return false; // a scripted drag (BeltTool_BenchDrag plans it)
     if (!BeltTool_On()) { drag = Drag{}; planned = ConduitRun{}; return false; }
     Planetoid* body = player.nearest;
     if (!body) { drag = Drag{}; return false; }
