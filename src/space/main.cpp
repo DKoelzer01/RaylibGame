@@ -3522,6 +3522,10 @@ int main(int argc, char** argv)
                     benchFingerprint = false;
                     const unsigned seedWas = worldGen.seed;
                     const uint64_t fp1 = WorldFingerprint(world), fp1b = WorldFingerprint(world);
+                    // (#1905) now: the regenerations below bake twice more (minutes each on a slow machine), and comparing
+                    // platforms needs only this
+                    printf("bench: fingerprint: seed %u: %016llx\n", worldGen.lastSeed, (unsigned long long)fp1);
+                    fflush(stdout);
                     regenerateWorld(world);
                     const uint64_t fp2 = WorldFingerprint(world);
                     worldGen.seed = worldGen.lastSeed + 1;
