@@ -611,15 +611,15 @@ void WillowV2(VariantMesh& m, unsigned int seed, int cls) {
         const float out = (1.2f + 0.9f * U(r)) * c * 1.5f;
         const Vector3 e = { cosf(yaw) * out, H * (0.9f + 0.15f * U(r)), sinf(yaw) * out };
         Prism(m, { 0, fork, 0 }, e, tw * 0.55f, tw * 0.3f, U(r), false, Shade(r));
-        // A small cap over the limb's end, then 3-5 strands hanging from it, tip near the ground.
+        // A small cap over the limb's end, then 5-8 thin strands hanging from its rim, tips at varied heights.
         const float cw = (1.4f + 0.6f * U(r)) * c;
         Prism(m, Vector3Subtract(e, { 0, 0.2f, 0 }), Vector3Add(e, { 0, cw * 0.5f, 0 }), cw * 1.4f, cw * 1.1f, U(r), true, Shade(r));
-        const int strands = 3 + (int)(U(r) * 3.0f);
+        const int strands = 5 + (int)(U(r) * 4.0f);
         for (int s = 0; s < strands; ++s) {
-            const float a = U(r) * 2.0f * PI, o = cw * (0.3f + 0.4f * U(r));
+            const float a = U(r) * 2.0f * PI, o = cw * (0.55f + 0.2f * U(r)); // on the cap's rim: a curtain, not a block
             const Vector3 hang = { e.x + cosf(a) * o, e.y, e.z + sinf(a) * o };
-            const float low = std::max(0.5f, e.y * (0.15f + 0.25f * U(r)));
-            Prism(m, hang, { hang.x + cosf(a) * 0.3f, low, hang.z + sinf(a) * 0.3f }, 0.7f * c + 0.2f, 0.35f * c + 0.15f, a, true, Shade(r));
+            const float low = std::max(0.5f, e.y * (0.2f + 0.35f * U(r)));
+            Prism(m, hang, { hang.x + cosf(a) * 0.3f, low, hang.z + sinf(a) * 0.3f }, 0.32f * c + 0.12f, 0.16f * c + 0.08f, a, true, Shade(r));
         }
     }
 }

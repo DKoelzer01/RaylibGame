@@ -49,13 +49,19 @@ SCENARIO("visual/tree-species") {
             Vector3 at{};
             int trees = -1, bushes = 0, stones = 0;
             TreeScatterStats why;
+            // Each search can land on the same patch, so also try points 250 and 500 m around it (a hillside patch grows
+            // no trees: they need gentle slopes).
             for (size_t i = 0; i < homes.size() && v >= 0 && trees < 20; ++i) {
-                const Vector3 cand = c.field->nearestVariantDir(Vector3Normalize(homes[i]), v);
-                if (c.field->variantAt(cand, c.field->elevation(cand)) != v) continue;
-                TreeScatterStats st;
-                int t = 0, b = 0, sn = 0;
-                Trees_CountScatter(*c.field, c.field->foliageSeed, cand, 96.0f, t, b, sn, &st);
-                if (t > trees) { at = cand; trees = t; bushes = b; stones = sn; why = st; }
+                const Vector3 base = c.field->nearestVariantDir(Vector3Normalize(homes[i]), v), b1 = Tangent(base), b2 = Vector3CrossProduct(base, b1);
+                for (int j = 0; j < 17 && trees < 20; ++j) {
+                    const float a = (j - 1) * 0.785398f, r = j == 0 ? 0.0f : (j <= 8 ? 250.0f : 500.0f) / c.field->radius;
+                    const Vector3 cand = Vector3Normalize(Vector3Add(base, Vector3Add(Vector3Scale(b1, cosf(a) * r), Vector3Scale(b2, sinf(a) * r))));
+                    if (c.field->variantAt(cand, c.field->elevation(cand)) != v) continue;
+                    TreeScatterStats st;
+                    int t = 0, b = 0, sn = 0;
+                    Trees_CountScatter(*c.field, c.field->foliageSeed, cand, 96.0f, t, b, sn, &st);
+                    if (t > trees) { at = cand; trees = t; bushes = b; stones = sn; why = st; }
+                }
             }
             const bool any = trees >= 0;
             if (!any) {
