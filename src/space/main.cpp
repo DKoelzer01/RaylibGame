@@ -8378,7 +8378,7 @@ int main(int argc, char** argv)
                                 p->trees->speciesCounts(me, range, n, cls);
                                 int total = 0; for (int s = 0; s < (int)WoodSpecies::Count; ++s) total += n[s];
                                 printf("bench: forest: %d trees within %.0f m:", total, range);
-                                for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name, total ? 100 * n[s] / total : 0);
+                                for (int s = 0; s < (int)WoodSpecies::Count; ++s) printf(" %s %d%%", WoodSpeciesInfo((WoodSpecies)s).name.c_str(), total ? 100 * n[s] / total : 0);
                                 printf("; size classes S %d M %d L %d XL %d\n", cls[0], cls[1], cls[2], cls[3]);
                             }
                         }
@@ -11577,7 +11577,7 @@ int main(int argc, char** argv)
                 else {
                     const float v = tree.chopSize();
                     printf("bench: giant: class %d (%s) %.0f m away: trunk %.1f m x r %.2f m, chop size x%.2f -> %d stone-axe hits, %d logs\n", cls,
-                           WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name, Vector3Distance(me, tree.base), tree.height, tree.radius, v,
+                           WoodSpeciesInfo(SpeciesOfVariant(tree.variant)).name.c_str(), Vector3Distance(me, tree.base), tree.height, tree.radius, v,
                            (int)lroundf(4.0f + 9.0f * tree.trunkVolume()), std::clamp((int)lroundf(3.0f * v), 1, 48));
                     player.flyMode = true;
                 }

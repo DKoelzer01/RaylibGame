@@ -951,7 +951,8 @@ PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
         const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));
         const int logs = std::clamp((int)lroundf(3.0f * p.chopSize()), 1, 48); // the trunk (#274): 3-5 from a medium tree, ~26 from a giant
         d.items.push_back({ sp.log, logs });
-        d.toast = TextFormat("+%d %s log%s%s", logs, sp.name, logs > 1 ? "s" : "", rubber ? "  +1 rubber" : "");
+        const ItemDef* logDef = itemDB.find(sp.log); // (#1995 phase 2) the new species drop existing logs: name the item
+        d.toast = TextFormat("+%d %s%s%s", logs, logDef ? logDef->name.c_str() : sp.log.c_str(), logs > 1 && logDef ? "s" : "", rubber ? "  +1 rubber" : "");
         d.sound = 1;
     } else if (p.stone()) {
         const int n = 1 + (int)((p.id >> 3) & 1); // a stone or two, picked up off the ground
