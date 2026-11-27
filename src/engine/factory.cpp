@@ -2397,7 +2397,7 @@ void SimLoop() {
                 for (const PlotSim& ps : plots)
                     for (const Machine& m : ps.machines) {
                         if (Def(m.type).waterPerTick > 0) tankView[std::make_tuple(ps.body, ps.plot, m.part)] = kWaterTank - m.water;
-                        else if (m.type == PartType::WaterPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; }
+                        else if (m.type == PartType::WaterPump || m.type == PartType::RotaryPump) { int w = 0; for (int i = 0; i < kSlots; ++i) if (m.out[i].count > 0) w += m.out[i].count; pumpView[std::make_tuple(ps.body, ps.plot, m.part)] = w; } // (#1734) the rotary pump too
                     }
                 PublishRotation(reset || viewsRebuild); // (#1269)
                 // (#1207) Machines working and chest contents on the plots near the player (models, smoke, chest screens): each
@@ -3481,6 +3481,51 @@ TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
     EXPECT_EQ(CountItems(m.out, kSlots, tables.item("copper_ore")), 6);
     EXPECT_EQ(CountItems(m.out, kSlots, tables.item("tin_ore")), 4);
     EXPECT_TRUE(m.disCarry.empty()) << "100 gravel leave nothing carried";
+}
+
+// (#1734 PR 3) The rotary pump makes a water unit (0.5 m^3) in 500 ticks at its rated 32 RPM (20 L/s); on a motor's 64 RPM
+// twice as fast, so two units in 500 ticks and none before 250; and the units it holds are what waterworks may lift.
+TEST(Factory, ARotaryPumpMakesWaterAtItsShaftSpeed) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    LayoutMsg L{};
+    L.body = 7; L.plot = 93; L.version = 1;
+    int part = 0;
+    auto add = [&](PartType t, Int3 at, int orient = 0) {
+        const Part pt = RotationPlot_PartAt(t, at, orient);
+        std::vector<std::pair<Int3, CellShape>> fp;
+        Plot::Footprint(pt, fp);
+        if (IsMachine(t)) {
+            std::vector<Int3> cells;
+            for (const auto& c : fp) cells.push_back(c.first);
+            L.machines.push_back({ part, t }); L.machineCells.push_back(cells); L.machineVariant.push_back("");
+        }
+        RotationPartMsg rm;
+        if (RotationPlot_Describe(pt, part, rm)) L.rotation.push_back(rm);
+        return part++;
+    };
+    const int gen = add(PartType::Generator, { 0, 0, 0 });
+    L.cables.push_back({ 2, 0, 0 });
+    add(PartType::Motor, { 3, 0, 0 });
+    add(PartType::Shaft, { 5, 0, 0 }, RotationPlot_OrientFor({ 1, 0, 0 }));
+    const int pump = add(PartType::RotaryPump, { 6, 0, 0 });
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(7, 93);
+    Machine& m = ps.machines[ps.byPart.at(pump)];
+    int buckets = 0;
+    InsertInto(ps.machines[ps.byPart.at(gen)], tables.item("coal"), 64, true, buckets);
+    const int water = tables.item("water");
+    long long made = 0; int active = 0;
+    int firstAt = -1;
+    for (int t = 1; t <= 500; ++t) {
+        TickPlot(ps, 1, made, active);
+        if (firstAt < 0 && CountItems(m.out, kSlots, water) > 0) firstAt = t;
+    }
+    EXPECT_EQ(ps.rot.SpeedMilli(pump) / 1000, 64) << "the motor's 64 RPM";
+    EXPECT_GE(firstAt, 250) << "no water before 250 ticks at twice its rated speed";
+    EXPECT_LE(firstAt, 260) << "the first unit soon after (the motor's spin-up)";
+    EXPECT_GE(CountItems(m.out, kSlots, water), 1);
+    EXPECT_LE(CountItems(m.out, kSlots, water), 2) << "20 L/s at 32 RPM: at most 2 units (1 m^3) at 64 RPM in 25 s";
 }
 
 // (#1261, S1) A plot that leaves "near" measures for 60 s on the 20-tick step, then enters Summary with caps from what each

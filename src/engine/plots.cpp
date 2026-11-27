@@ -76,7 +76,7 @@ const char* PartName(PartType t) {
         case PartType::LvAssembler: return "LV assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
         case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
-        case PartType::TripHammer: return "trip hammer"; case PartType::Mixer: return "mixer"; case PartType::RotarySieve: return "rotary sieve"; // (#1734)
+        case PartType::TripHammer: return "trip hammer"; case PartType::Mixer: return "mixer"; case PartType::RotarySieve: return "rotary sieve"; case PartType::RotaryPump: return "rotary pump"; // (#1734)
         case PartType::MbController: return "multiblock controller"; case PartType::MbCasing: return "machine casing"; case PartType::MbHatch: return "machine hatch"; // (#1429)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
@@ -156,7 +156,7 @@ const char* PartMachineName(PartType t) {
         case PartType::LvAssembler: return "lv_assembler"; // (#1271 L6c)
         case PartType::Compressor: return "compressor"; case PartType::Cutter: return "cutter"; // (#1427 L7e)
         case PartType::Lathe: return "lathe"; case PartType::Wiremill: return "wiremill"; // (#1614)
-        case PartType::TripHammer: return "trip_hammer"; case PartType::Mixer: return "mixer"; case PartType::RotarySieve: return "rotary_sieve"; // (#1734)
+        case PartType::TripHammer: return "trip_hammer"; case PartType::Mixer: return "mixer"; case PartType::RotarySieve: return "rotary_sieve"; case PartType::RotaryPump: return "rotary_pump"; // (#1734)
         case PartType::FusionReactor: return "fusion_reactor";
         case PartType::MassDriver: return "mass_driver";
         case PartType::Millstone: return "millstone"; // (#1269) rotation-driven
@@ -343,7 +343,7 @@ static Color PartColor(PartType t) {
         case PartType::Gearbox: return { 150, 112, 70, 255 };     // (#1269) a wooden casing
         case PartType::StressGauge: return { 160, 120, 76, 255 };
         case PartType::Millstone: return { 140, 138, 132, 255 };
-        case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: return { 146, 108, 68, 255 };
+        case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: case PartType::RotaryPump: return { 146, 108, 68, 255 };
         case PartType::MbCasing: return { 142, 118, 92, 255 };     // (#1429) grey-bronze
         case PartType::MbController: return { 58, 60, 68, 255 };   // dark metal
         case PartType::MbHatch: return { 104, 120, 140, 255 };     // blue-grey
@@ -396,7 +396,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
         case PartType::GasVent: return PatMetal;
-        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: return PatPlanks; // (#1269) wooden frames
+        case PartType::Gearbox: case PartType::StressGauge: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: case PartType::RotaryPump: return PatPlanks; // (#1269) wooden frames
         case PartType::Millstone: return PatStone;
         default: return IsRocketPart(p.type) ? PatHull : PatMachine;
     }
@@ -435,7 +435,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
         case PartType::LvLab: case PartType::MvLab: case PartType::HvLab: case PartType::SteamLab: // (#1193; #1271 L6)
         case PartType::ResearchTable: case PartType::ManaSiphon: case PartType::ManaDynamo: // (#1252)
         case PartType::Distillery: case PartType::EssenceTank: case PartType::Cauldron: // (#1254)
-        case PartType::Millstone: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: // (#1269, #1614, #1734)
+        case PartType::Millstone: case PartType::Saw: case PartType::Press: case PartType::Lathe: case PartType::Wiremill: case PartType::TripHammer: case PartType::Mixer: case PartType::RotarySieve: case PartType::RotaryPump: // (#1269, #1614, #1734)
         case PartType::Bloomery: // (#1271 L2)
         case PartType::SteamAssembler: // (#1271 L6b-2)
         case PartType::LvAssembler: // (#1271 L6c)

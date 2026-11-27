@@ -9,10 +9,11 @@ steam_pack    | tier 3
 # (#1614) the steam-age component machines come with tier 3 (steam and steel)
 lathe         | tier 3
 wiremill      | tier 3
-# (#1734) the rotation-age machines: the trip hammer with iron and rotation, the mixer with steam, the sieve with the trip hammer
+# (#1734) the rotation-age machines: the trip hammer with iron and rotation, the mixer with steam, the sieve and the pump with the trip hammer
 trip_hammer   | tier 2
 mixer         | tier 3
 rotary_sieve  | tier 2
+rotary_pump   | tier 2
 # (#1271 L6c) the LV assembler comes with tier 4: it makes the LV packs tier 4's research needs
 lv_assembler  | tier 4
 # (#1427 L7b) the tiered machines come with their tier

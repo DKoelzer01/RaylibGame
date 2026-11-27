@@ -115,6 +115,7 @@ float TopReach(PartType type) {
     case PartType::Centrifuge: return 0.3f;
     case PartType::HandPump: return 0.71f;
     case PartType::WaterPump: return 0.45f;
+    case PartType::RotaryPump: return 0.56f; // (#1734) its wheel on top (rotationmodels: 0.32 up, 0.24 round)
     case PartType::Electrolyzer: return 0.5f;
     case PartType::ChemicalReactor: return 0.6f;
     case PartType::Refinery: return 1.85f;
@@ -138,7 +139,7 @@ void DrawMachine(PartType type, const Frame& f, const Painter& p, bool working) 
         Stack st[4];
         for (int i = 0, n = Stacks(type, f, st); i < n; ++i) Chimney(p, f, st[i].x, st[i].z, st[i].r, st[i].h, st[i].c);
     }
-    if (type == PartType::HandPump || type == PartType::WaterPump) { // the intake pipe, cut at a block below or above (#221)
+    if (type == PartType::HandPump || type == PartType::WaterPump || type == PartType::RotaryPump) { // the intake pipe, cut at a block below or above (#221; #1734 the rotary pump)
         const float lo = -std::min(0.6f, f.roomBelow), hi = top + std::min(0.3f, f.roomAbove);
         p.cyl({ x0 + 0.2f, lo, z0 + 0.2f }, type == PartType::HandPump ? 0.07f : 0.08f, type == PartType::HandPump ? 0.07f : 0.08f, hi - lo, kSteel);
     }

@@ -35,7 +35,7 @@ void Waterworks_Update(Scene& world, float dt) {
             std::unordered_map<int64_t, int> pipes, outlets, tanks; // cell -> part (tanks: machines that take water, boilers #229)
             for (int i = 0; i < (int)pl->parts.size(); ++i) {
                 const Part& part = pl->parts[i];
-                if (part.type == PartType::WaterPump || part.type == PartType::HandPump) pumps.push_back(i);
+                if (part.type == PartType::WaterPump || part.type == PartType::HandPump || part.type == PartType::RotaryPump) pumps.push_back(i); // (#1734) the rotary pump as the electric one
                 else if (part.type == PartType::Pipe || part.type == PartType::Outlet) {
                     Plot::Footprint(part, fp);
                     for (auto& c : fp) (part.type == PartType::Pipe ? pipes : outlets)[CellKey(c.first)] = i;

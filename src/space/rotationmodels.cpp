@@ -129,6 +129,11 @@ void DrawPart(PartType t) {
         for (float side : { -0.26f, 0.26f }) IB_Cylinder({ 0, side - 0.03f, 0 }, 0.26f, 0.26f, 0.06f, kSteel);
         for (int k = 0; k < 6; ++k) { rlPushMatrix(); rlRotatef(60.0f * k, 0, 1, 0); IB_Cube({ 0.25f, 0, 0 }, { 0.04f, 0.52f, 0.06f }, k == 0 ? kMark : kDarkWood); rlPopMatrix(); }
         break;
+    case PartType::RotaryPump: // (#1734) a chain pump's wheel: a steel rim on four spokes, one marked
+        IB_Cylinder({ 0, -0.1f, 0 }, 0.04f, 0.04f, 0.2f, kWood);
+        IB_Cylinder({ 0, -0.03f, 0 }, 0.24f, 0.24f, 0.06f, kSteel);
+        for (int k = 0; k < 4; ++k) { rlPushMatrix(); rlRotatef(90.0f * k, 0, 1, 0); IB_Cube({ 0.12f, 0, 0 }, { 0.22f, 0.07f, 0.04f }, k == 0 ? kMark : kDarkWood); rlPopMatrix(); }
+        break;
     case PartType::WaterWheel: // (#1270) two rims on spokes, paddles between them (1.5 m across)
         IB_Cylinder({ 0, -0.25f, 0 }, 0.07f, 0.07f, 0.5f, kWood);
         for (float side : { -0.2f, 0.2f }) {
