@@ -3973,7 +3973,7 @@ TEST(Voxel, BakeInputMatchesOneGoldenOnEveryPlatform) {
     }
     PlanetField::tIgnoreBake = false;
     for (int t = 0; t < kTerms; ++t) printf("bake input probe %-8s %016llx\n", kNames[t], (unsigned long long)h[t]);
-    constexpr uint64_t kGolden = 0x0ull; // the land hash, Linux GCC (sandbox)
+    constexpr uint64_t kGolden = 0x0bd1fdfcbb454251ull; // the land hash, Linux GCC (sandbox)
     EXPECT_EQ(h[kLand], kGolden) << std::hex << "(#1905) one CI leg only: the platforms' bake input differs (compare the legs' probe lines); both: a deliberate terrain change, update the constant. got 0x" << h[kLand];
 }
 
