@@ -39,6 +39,7 @@
 1 src/space/magicmachines.cpp
 1 src/space/magicsight.cpp
 159 src/space/main.cpp
+1 src/space/multiblockmodels.cpp
 1 src/space/navigation.cpp
 1 src/space/progression_test.cpp
 2 src/space/ring_test.cpp
