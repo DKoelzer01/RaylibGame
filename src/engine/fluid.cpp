@@ -65,8 +65,9 @@ constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry u
 constexpr unsigned kEvapEvery = 2400;   // awake bricks: films thin on one substep in this many (~20 s): only cells that stay put (#454)
 constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting specks dry (#454)
 constexpr int kFilmThinEvery = 10; // of those passes: every 20 s their films (3 units to the spread limit) lose a unit (#1944)
-// Shallow puddles dry too (#1944: "dry gradually"; GUESS 5 cm): standing water one cell deep on the ground, no water over it,
-// thinner than this, loses a unit every 20 s with the films (a 2 cm puddle: ~7 min). Deeper pools and ponds never dry.
+// Shallow puddles dry too (#1944: "dry gradually"; 5 cm and the rate are the user's ruling, 2026-11-26): standing water
+// one cell deep on the ground, no water over it, thinner than this, loses a unit every 20 s with the films (a 2 cm
+// puddle: ~7 min). Deeper pools and ponds never dry.
 constexpr float kPuddleDryDepth = 0.05f; // m
 std::atomic<bool> gFilmDryDue{ false }; // (#454) set by Update, taken by the next publish
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
