@@ -883,7 +883,8 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glUniform1ui(gTcCmd, (GLuint)slot);
             // #745: the far-forest boost grows far trees up to 1.7x in trees.vs; pad the bound to match (RAYLIBGAME_FAR_FOREST=0: off).
             static const float farPad = [] { const char* e = getenv("RAYLIBGAME_FAR_FOREST"); return e && e[0] == '0' ? 1.0f : 1.7f; }(); // on by default (user, 2026-11-19); up to 1.7x
-            glUniform1f(gTcRadius, Variant(v, lod).boundRadius * farPad);
+            constexpr float kVariationPad = 1.25f; // #1979: trees.vs stretches a tree up to 1.2x and leans it 4 degrees
+            glUniform1f(gTcRadius, Variant(v, lod).boundRadius * farPad * kVariationPad);
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
