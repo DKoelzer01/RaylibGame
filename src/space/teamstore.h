@@ -15,6 +15,12 @@ std::string TeamStore_Text(int team);
 // "" (research is cleared: the client mirrors the host). The map is added to the local map, never cleared: a player keeps
 // what they explored (the user, on #1886). Unknown sections are skipped (a newer host). False: no "section" line.
 bool TeamStore_SetText(int team, const std::string& text);
+// A client: the host's TeamStore message for our team. Applies it (an empty text, a team with nothing yet, clears
+// research and the library) and remembers the team: the host's id of our team, which the research tab reads (a client's
+// own team registry doesn't know the host's ids). TeamStore_LocalTeam: 0 = none (offline, a host, or not joined yet).
+void TeamStore_ApplyFromHost(int team, const std::string& text);
+int TeamStore_LocalTeam();
+void TeamStore_ResetLocalTeam(); // (left the server)
 
 // World save: writes the team's non-empty sections (called from Teams_Save for each team).
 void TeamStore_SaveTeam(FILE* f, int team);
