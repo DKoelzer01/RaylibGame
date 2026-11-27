@@ -15,6 +15,8 @@
 #   5. Every scenario lands in exactly one of the two runner scenario steps (or carries a local-only tag): else an error.
 #   6. kNetProtocol (src/engine/netproto.h) is reserved in tools/ci/protocol_reservations.txt (#1480): else an error, so
 #      two branches can't ship the same number for different wire formats.
+#   7. A kNetProtocol / kSaveVersion number this branch reserves is not reserved for another issue on origin/staging,
+#      origin/ladder or in an open PR into them (tools/ci/reservation_clash.sh, #2009): an error against BASE.
 #
 # Exit code 1 only for errors (duplicate / unparsable ids, checks 3 and 5). Warnings never fail the job.
 # Writes a Markdown summary to $GITHUB_STEP_SUMMARY when set (else to stdout) and ::warning/::error lines for annotations.
@@ -255,6 +257,16 @@ elif [ -f "$RES" ]; then
     else
         sum ""; sum "**kSaveVersion $savever** reserved: \`$(echo "$line" | sed 's/  */ /g')\`"
     fi
+fi
+
+# ---- 7. (#2009) a number this branch reserves is not reserved for another issue on the other base or in an open PR ----
+# (check 6 reads only this branch's copy). RESERVATION_CLASH=0 skips it (offline).
+if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
+    rc_out=$(bash tools/ci/reservation_clash.sh "$BASE" 2>&1)
+    rc_rc=$?
+    printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
+    sum ""; sum "**Reservation clashes (check 7):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
+    [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
 fi
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
