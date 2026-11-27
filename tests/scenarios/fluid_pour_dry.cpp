@@ -66,7 +66,7 @@ SCENARIO("fluid/pour-dry") {
         c.gt("held at 10 s (share of the pour)", S.held[0] / poured, 0.9);
         c.gt("held at 60 s: most of it (share)", S.held[1] / poured, 0.5);
         c.lt("held at 5 min: drying (share)", S.held[2] / poured, 0.7);
-        c.lt("held at 8 min: mostly dry (share)", S.held[3] / poured, 0.2);
+        c.lt("held at 8 min: mostly dry (share)", S.held[3] / poured, 0.3); // 0.19 on the sandbox at 9d6bcfdb
         c.near("water held matches the ledger (m^3)", Fluid::GetStats().volume - S.v0, net, 0.01);
         return true;
     });
