@@ -23,6 +23,8 @@ const Section kSections[] = {
     {"blueprints", Blueprint_TeamText, Blueprint_SetTeamText, Blueprint_ApplyTeamText}, // the team library: .bp texts
 };
 
+int localTeam = 0; // a client's team, in the host's ids
+
 const Section* FindSection(const std::string& name) {
     for (const Section& s : kSections) if (name == s.name) return &s;
     return nullptr;
@@ -63,6 +65,13 @@ bool TeamStore_SetText(int team, const std::string& text) {
     for (const Section& s : kSections) if (!seen[&s - kSections]) s.apply(team, "");
     return true;
 }
+
+void TeamStore_ApplyFromHost(int team, const std::string& text) {
+    localTeam = team;
+    if (!TeamStore_SetText(team, text)) for (const Section& s : kSections) s.apply(team, ""); // (no section: all empty)
+}
+int TeamStore_LocalTeam() { return localTeam; }
+void TeamStore_ResetLocalTeam() { localTeam = 0; }
 
 void TeamStore_SaveTeam(FILE* f, int team) {
     for (const Section& s : kSections) {

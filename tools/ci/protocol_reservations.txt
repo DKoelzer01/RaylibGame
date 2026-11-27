@@ -12,9 +12,19 @@
 45 | ladder          | #1446 | item instance data in inventory deltas, drops, graves
 46 | ladder          | #1446 | item instance data in chest and machine slots
 53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
+57 | staging         | #1886 | TeamStore: the team's progression store (research, map, blueprints) to its members
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
 # isn't listed. One line per version:
 #   save <number> | <branch or base> | <issue> | <what>
 save 13 | m84-integration | #1693 | one save version and the migration chain (the baseline)
+save 14 | staging         | #1881 | a part_palette line: part types saved by name (13 -> 14 inserts the frozen v13 order)
+
+# kErosionBakeVersion reservations (#2009), the same way: reserve the next bake version here, in your PR, BEFORE bumping
+# kErosionBakeVersion (src/engine/erosion.h). Two branches bumping to one number would let a cache baked by one load in
+# the other. A static check fails a branch that changes kErosionBakeVersion to a number not listed. One line per version:
+#   erosion <number> | <branch or base> | <issue> | <what>
+erosion 31 | staging         | #1967 | the bake as on staging 2026-11-27 (the baseline)
+erosion 32 | staging         | #2018 | creep spares only 0.4 m+ hollows, shallow slope pits drain again (PR #2019)
+erosion 33 | staging         | #1988 | Terrain v2 option B default (PR #2007)

@@ -1,4 +1,5 @@
 #include "terraintool.h"
+#include "biomevariants.h"
 #include "gamerng.h"
 #include "world.h"
 #include "playerinput.h"
@@ -923,18 +924,28 @@ void TerrainTool_ScalePlantDrops(PlantDrops& d, const Plant& p, const std::funct
 PlantDrops TerrainTool_PlantDrops(const Planetoid& body, const Plant& p) {
     PlantDrops d;
     auto add = [&](const char* item, int n) { d.items.push_back({ item, n }); };
-    // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber.
+    // The biome it grew in (Plan 5 B resources): desert scrub is cactus, jungle trees give rubber; (#2012) so does a
+    // share of the trees in variants with a `rubber` percent (biomes.txt: old growth, mangrove, acacia).
     Biome biome = Biome::Forest;
+    int rubberPercent = 0;
     if (const auto* pf = dynamic_cast<const PlanetField*>(body.field.get())) {
         const float r = Vector3Length(p.base);
-        if (r > 1.0f) biome = pf->biomeAt(Vector3Scale(p.base, 1.0f / r), r - pf->radius);
+        if (r > 1.0f) {
+            const Vector3 dir = Vector3Scale(p.base, 1.0f / r);
+            biome = pf->biomeAt(dir, r - pf->radius);
+            if (p.tree()) {
+                const int v = pf->variantAt(dir, r - pf->radius);
+                const auto& defs = BiomeVariants().defs;
+                if (v >= 0 && v < (int)defs.size()) rubberPercent = defs[v].rubber;
+            }
+        }
     }
     if (!p.tree() && !p.stone() && (biome == Biome::Desert || biome == Biome::Badlands) && itemDB.find("cactus")) {
         add("cactus", 2); d.toast = "+2 cactus";
         return d;
     }
     if (p.tree()) {
-        const bool rubber = biome == Biome::Jungle && itemDB.find("rubber");
+        const bool rubber = (biome == Biome::Jungle || BiomeVariants_RubberRoll(rubberPercent, p.id)) && itemDB.find("rubber");
         if (rubber) add("rubber", 1);
         // Logs of its species (saw them into planks: recipes take any planks).
         const WoodSpeciesDef& sp = WoodSpeciesInfo(SpeciesOfVariant(p.variant));

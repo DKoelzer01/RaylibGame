@@ -40,8 +40,9 @@ struct Params {
     bool columns = EnvFlag("FLUID_COLUMNS"); // #680 prototype: lateral flow per pair of water columns
     bool advect = !EnvFlag("FLUID_NOADVECT"); // #680: column flows carry their momentum downstream
     // The pressure pass (#1168): full cells carry the head of the free surface they connect to, so water climbs the far leg
-    // of a U-bend. CPU-only and opt-in (RAYLIBGAME_FLUID_PRESSURE=1) until fluid_step.comp has it: the two must agree.
-    bool pressure = EnvFlag("RAYLIBGAME_FLUID_PRESSURE");
+    // of a U-bend. CPU and GPU (fluid_step.comp) run the same pass; on by default since #1898, RAYLIBGAME_FLUID_PRESSURE=0
+    // turns it off (the fluid/u-bend-off baselines).
+    bool pressure = EnvFlagOr("RAYLIBGAME_FLUID_PRESSURE", true);
     void setCell(float cs, int column) {
         cellSize = cs; units = 255.0f / (cs * cs * cs); hu = 255.0f / cs; columnCells = column;
         wakeUnits = std::max(4, (int)(0.016f * hu + 0.5f));

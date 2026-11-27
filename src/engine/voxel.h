@@ -80,6 +80,7 @@ enum class VoxelMaterial : uint8_t { Rock = 0, Regolith = 1, Ice = 2, Ore = 3, S
 enum class Biome : uint8_t { Ocean = 0, Jungle, Savanna, Desert, Badlands, Forest, Meadow, Swamp, Taiga, Tundra, Alpine, Polar, Count };
 // Bench override (--bench-biome): findSpawnDir returns the nearest deep patch of this biome (-1: off).
 inline int gSpawnBiome = -1;
+inline int gSpawnVariant = -1; // ...or of this biome variant (--bench-biome forest.birch_grove; #1977)
 // Bench override (--bench-pond): findSpawnDir returns the rim of the nearest pond (#251 crack checks).
 inline bool gSpawnPond = false;
 // Erosion bake (Plan 7, #355): RAYLIBGAME_EROSION=1 bakes the whole planet at world creation (erosion.h); off until the plan's gate.
@@ -210,6 +211,8 @@ public:
     unsigned int foliageSeed = 0; // the tree system's seed (TreeCanopy matches its forests)
     unsigned int oreSeed = 0;     // ore deposits (oreKind)
     SimplexNoise continents, ridges, hills, valleys, detail, cavesA, cavesB, veins, climate, caverns, ravines, ravineMask, streams, rocks, rockMask, rugged, cliffs, warp3, tempNoise, moistNoise, biomeJitter, caveMouths;
+    SimplexNoise variantNoise;      // biome variants (#1977): not in gpuNoiseParams (CPU only so far)
+    float variantQ[65] = {};        // ...its quantiles over the sphere (variantU maps through them to an even 0..1)
     static constexpr float kTunnelLevel = 0.096f; // worm tunnel where both cave fields are within this of zero
     static constexpr float kCavernLevel = 0.68f;  // cavern where the cavern field exceeds this (rare)
 
@@ -283,6 +286,14 @@ public:
     WaterSource waterSourceAt(Vector3 dir) const;
     // Tests: the bake's ponds (#487: 309 ponds on seed 42, none near the start).
     std::vector<Vector3> bakePondsByDistance(Vector3 dir) const; // their centres, nearest first (empty without a bake)
+    // Tests (#1965): what becomes of the bake's ponds - each through the same rules as the terrain (bakePond). Counts by
+    // outcome; within: the ones kept whose centre lies within `within` m (surface arc) of `dir`; nearest: m to the closest
+    // kept one (-1: none); smallest: the least radius kept (m).
+    // nearWater = inLake (in a lake's water; lakeIsPond of those at the pond's own level) + lakeBank + river.
+    struct PondCensus { int bake = 0, kept = 0, shadowed = 0, nearWater = 0, inLake = 0, lakeIsPond = 0, lakeCellsMax = 0, lakeBank = 0, river = 0,
+                        low = 0, depth = 0, within = 0, wet = 0; float nearest = -1.0f, smallest = -1.0f;
+                        float nearestWet = -1.0f; Vector3 nearestWetDir{ 0, 1, 0 }; }; // the nearest hollow showing water (any rule)
+    PondCensus pondCensus(Vector3 dir, float within) const;
     // A body-local direction to a good start spot: temperate latitude, flat grassland a little above
     // the sea, solid ground underfoot (no cave mouth). Deterministic for a seed.
     Vector3 findSpawnDir(unsigned int seed) const;
@@ -294,6 +305,19 @@ public:
     Climate climateAt(Vector3 dir, float elev) const;
     Biome biomeAt(Vector3 dir, float elev) const;
     Biome biomeOf(const Climate& c, float elev) const;
+    // Biome variants (#1977, biomevariants.h): a ~2.5 km variant noise, mapped to an even 0..1 over the planet
+    // (variantU), split into each type's weighted bands; a gated variant passes the point to its type's next band.
+    // variantAt returns an id into BiomeVariants().defs (its .type == biomeAt's biome). CPU only: nothing on the
+    // GPU path reads it yet (#1985 adds it to terrain.glsl when a variant changes the 3D density).
+    float variantU(Vector3 dir) const;
+    int variantOf(Biome type, const Climate& c, float elev, float u) const;
+    int variantAt(Vector3 dir, float elev) const;
+    // ...with the variant noise read at uDir (a point near dir): the flora dithers its variant borders this way (#1978).
+    int variantAt(Vector3 dir, float elev, Vector3 uDir) const;
+    // ...with climateAt(dir, elev) already in hand (the mesher, #2032): the same answer without computing it again.
+    int variantAt(Vector3 dir, float elev, Vector3 uDir, Climate atDir) const;
+    Vector3 nearestVariantDir(Vector3 home, int variant) const; // as nearestBiomeDir, for --bench-biome <type>.<id>
+    Vector3 nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const; // ...is(dir, elev) 200 m out on four sides
     // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
     // mesas (flat tops on steep risers), swamps flattened toward the water table.
     float biomeShape(Vector3 dir, float h, float fp) const;
@@ -399,6 +423,7 @@ public:
     void bakeErosion(const std::string& cachePath); // loads the bake from cachePath when it matches, else bakes and saves it
     float profileLandHeight(Vector3 dir, float footprint) const; // land(dir, fp).h, for --profile-density
     float testBroadLand(Vector3 dir, float footprint) const { return broadLand(land(dir, footprint), dir, footprint); } // (#1856 M11 tests) rivers' smooth land
+    float testBakeInputHeight(Vector3 dir, float footprint) const { tBakeInput = true; const float h = land(dir, footprint).h; tBakeInput = false; return h; } // (#1905 tests) the erosion bake's input
     // Base density (no edits) at p, |p| = d, in a column whose surface elevation and Column3D are known (a block grid's):
     // skips the height map. The sky probe's up ray uses it (#387).
     float densityInColumn(Vector3 p, float d, float elev, float footprint, const Column3D* col) const { return densityNear(p, d, radius + elev, footprint, col); }
@@ -410,6 +435,8 @@ private:
     Land land(Vector3 dir, float footprint) const;     // the height map before rivers and ponds
     struct Pond { bool exists; Vector3 dir; float r, level, depth; };
     Pond pondOfCell(int cx, int cy, int cz) const;       // deterministic per cell (cached per thread)
+    // A bake pond through the terrain's rules (#360): reason 0 kept, 1 by a lake or river, 2 level too low, 3 bowl depth.
+    Pond bakePond(int index, int& reason) const;
     float riverWeight(const Land& l) const;
     // A river here: its weight (0: none), water level (smooth: from the land without its fine hills
     // and detail, so it does not follow every bump) and width factor (wider toward the sea).

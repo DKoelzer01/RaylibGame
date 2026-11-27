@@ -167,10 +167,14 @@ uint64_t WorldFingerprint(const Scene& world) {
         // Heights where the surface is: around sea level (planets, moons), else through the outer half (asteroids).
         const float sea = p->field->seaLevelRadius(), top = p->field->maxRadius();
         const float heights[3] = { sea > 0.0f ? sea - 40.0f : top * 0.5f, sea > 0.0f ? sea + 15.0f : top * 0.75f, sea > 0.0f ? sea + 150.0f : top * 0.95f };
-        for (int i = 0; i < 64; ++i) {
-            // A Fibonacci sphere of directions, three heights each.
-            const float y = 1.0f - 2.0f * (i + 0.5f) / 64.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
-            const Vector3 dir = { rr * cosf(a), y, rr * sinf(a) };
+        // (#1905) Directions from integer lattice points (every primitive one in [-2, 2]^3: 98), normalised with sqrtf, which
+        // IEEE rounds exactly: the same bits on every platform. The old Fibonacci sphere took them from cosf/sinf, whose
+        // last bits differ between the C libraries (MinGW, glibc), so a Windows client and a Linux server could sample
+        // different points before the terrain was even asked.
+        auto gcd = [](int a, int b) { a = std::abs(a); b = std::abs(b); while (b) { const int t = a % b; a = b; b = t; } return a; };
+        for (int x = -2; x <= 2; ++x) for (int y = -2; y <= 2; ++y) for (int z = -2; z <= 2; ++z) {
+            if (gcd(gcd(x, y), z) != 1) continue; // the origin, and repeats like (2, 2, 0) of (1, 1, 0)
+            const Vector3 dir = Vector3Normalize({ (float)x, (float)y, (float)z });
             for (float hgt : heights) {
                 const float r = p->flat ? 0.0f : hgt;
                 const float d = p->field->baseDensity(Vector3Scale(dir, r));
@@ -643,7 +647,7 @@ void Planetoid::drawTransparent(const RenderContext& ctx) {
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     ChunkBatch batch(*ctx.waterMaterial);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
-    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f }; // night side, planets and moons only, as for terrain (#1859 L9)
     batch.setUniform(ctx.waterOccluderLoc, occluder, SHADER_UNIFORM_VEC4);
     if (ctx.bindSunLighting) ctx.bindSunLighting(ctx.waterMaterial->shader); // cliffs and builds shade the water (slots 6-7)
     Fluid::BindKindUniforms(ctx.waterMaterial->shader); // per-vertex fluid kinds (oil, ...): their colours
@@ -666,7 +670,7 @@ void Planetoid::drawFoliage(const RenderContext& ctx) {
     if (!isActive || drawList.empty() || !ctx.grassShader) return;
     const ChunkPlacer placer(*this, ctx.renderOrigin);
     const Vector3 c = (worldPos - ctx.renderOrigin).toFloat();
-    const float occluder[4] = { c.x, c.y, c.z, std::max(0.0f, radius - 60.0f) * scale }; // night side, as for terrain
+    const float occluder[4] = { c.x, c.y, c.z, (kind == BodyKind::Planet || kind == BodyKind::Moon) ? std::max(0.0f, radius - 60.0f) * scale : 0.0f }; // night side, planets and moons only, as for terrain (#1859 L9)
     rlSetUniform(ctx.grassOccluderLoc, occluder, RL_SHADER_UNIFORM_VEC4, 1);
     for (Chunk* ch : drawList) if (ch->key.stride() <= 1.0f && !ch->fadeOut) ch->drawGrass(ctx, placer.model(ch->key)); // the levels that carry grass (foliage.cpp); not a node fading out (#243)
 }
@@ -2539,6 +2543,7 @@ bool SaveWorld(Scene& world) {
     for (const BodyDef& b : worldGen.system.bodies) fprintf(f, "%s\n", FormatBodyDef(b).c_str());
     fprintf(f, "time %.6f\n", worldTime); // v5: the world clock (orbits)
     fprintf(f, "camera %.6f %.6f %.6f %.6f %.6f %.6f\n", camWorld.x, camWorld.y, camWorld.z, tgtWorld.x, tgtWorld.y, tgtWorld.z);
+    fprintf(f, "%s\n", PartPalette_Line().c_str()); // v14 (#1881): part numbers below are indices into these names
     // Game-specific state (player, inventory, ...) written by whoever registered the hook.
     fprintf(f, "extras\n");
     if (saveExtrasHook) saveExtrasHook(f);
@@ -2703,6 +2708,16 @@ bool LoadWorldSave(Scene& world) {
     double savedTime = 0.0;
     if (ok) ok = fscanf(f, " time %lf", &savedTime) == 1;
     ok = ok && fscanf(f, " camera %lf %lf %lf %lf %lf %lf", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6;
+    // v14 (#1881): the part types' names in the order this file numbers them; every part number below goes through it
+    // (a v13 file got the old order from its migration). Back to identity when the load ends, however it ends.
+    std::vector<PartType> palette;
+    if (ok) {
+        static char pline[16384];
+        ok = fscanf(f, " ") == 0 && fgets(pline, sizeof pline, f) && PartPalette_Parse(pline, palette);
+        if (!ok) LOG_ERROR("World", "%s: no part palette after the camera line\n", SAVE_PATH);
+    }
+    PartPalette_Set(palette);
+    struct PaletteReset { ~PaletteReset() { PartPalette_Set({}); } } paletteReset;
     if (!ok) { fclose(f); LOG_ERROR("World", "%s: could not read the header\n", SAVE_PATH); gLastLoadError = std::string(SAVE_PATH) + ": could not read the header"; return false; }
 
     worldTime = savedTime; // before regenerating: orbiting bodies are placed for this time
