@@ -414,7 +414,7 @@ struct PlotSim {
     PlotStats stats;                        // (#1199)
     RotationPlot rot;                       // (#1269) its shaft networks (per plot: ticks on any worker)
     // (#1207) what this plot last put in the near-plot views (working machines, chests and a hash of their contents)
-    struct Published { bool near = false; std::vector<int> working, chests, stalled; uint64_t chestHash = 0; } pub;
+    struct Published { bool near = false; std::vector<int> working, chests, stalled; uint64_t chestHash = 0; std::vector<std::pair<int, int>> anvils; } pub; // anvils (#1613): (part, workpiece item)
     // (#1261) the summary sim's state (doc 2.1): Near ticks every tick; Measuring takes today's 20-tick step for 60 s and
     // counts each machine's crafts; Summary is advanced by rates (S2) until the plot comes near again.
     enum class Mode : uint8_t { Near, Measuring, Summary } mode = Mode::Near;
@@ -610,6 +610,7 @@ inline uint64_t WorkingKey(uint64_t body, uint32_t plot, int part) {
 }
 bool viewsRebuild = false; // (#1207) a moved plot: rebuild the near-plot views from scratch
 std::unordered_set<uint64_t> workingView;                          // machines working on near plots (viewMutex)
+std::map<std::tuple<uint64_t, uint32_t, int>, int> anvilView;     // (#1613) the workpiece on each anvil of a near plot (item; viewMutex)
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> workingByPlot; // (#332) the same, by plot
 std::map<std::pair<uint64_t, uint32_t>, std::vector<int>> stalledByPlot; // (#1243) machines stopped for a reason (no power, output full, no fuel, no water) on near plots (viewMutex)
 // (#1269) every rotation part of the plots near the player, as of the last tick (viewMutex): models, gauges, tooltips
@@ -2377,26 +2378,34 @@ void SimLoop() {
                 // plot republishes only what changed since it last did (they were rebuilt for every machine every tick: ~60%
                 // of a 5000-machine tick). A plot leaving "near" takes its entries away; a reset or a moved plot rebuilds all.
                 if (reset || viewsRebuild) {
-                    workingView.clear(); workingByPlot.clear(); chestView.clear(); stalledByPlot.clear();
+                    workingView.clear(); workingByPlot.clear(); chestView.clear(); stalledByPlot.clear(); anvilView.clear();
                     for (PlotSim& ps : plots) ps.pub = PlotSim::Published{};
                     viewsRebuild = false;
                 }
                 static std::vector<int> working, chests, stalled;
+                static std::vector<std::pair<int, int>> anvils;
                 for (PlotSim& ps : plots) {
                     PlotSim::Published& pub = ps.pub;
                     auto unpublishWorking = [&] { for (int part : pub.working) workingView.erase(WorkingKey(ps.body, ps.plot, part)); workingByPlot.erase({ ps.body, ps.plot }); pub.working.clear();
                                                   stalledByPlot.erase({ ps.body, ps.plot }); pub.stalled.clear(); };
                     auto unpublishChests = [&] { for (int part : pub.chests) chestView.erase(std::make_tuple(ps.body, ps.plot, part)); pub.chests.clear(); };
+                    auto unpublishAnvils = [&] { for (const auto& a : pub.anvils) anvilView.erase(std::make_tuple(ps.body, ps.plot, a.first)); pub.anvils.clear(); };
                     if (!ps.nearPlayer) {
-                        if (pub.near) { unpublishWorking(); unpublishChests(); pub.near = false; }
+                        if (pub.near) { unpublishWorking(); unpublishChests(); unpublishAnvils(); pub.near = false; }
                         continue;
                     }
-                    working.clear(); chests.clear(); stalled.clear();
+                    working.clear(); chests.clear(); stalled.clear(); anvils.clear();
                     uint64_t h = 1469598103934665603ull; // FNV-1a over the chests' parts and slots
                     auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
                     for (const Machine& m : ps.machines) {
                         if (m.status == MachineStatus::Working) working.push_back(m.part);
                         else if (m.status != MachineStatus::Idle && m.status != MachineStatus::NoLoad) stalled.push_back(m.part); // (#1243)
+                        if (m.type == PartType::Anvil) { // (#1613) its workpiece, drawn on it: the finished piece first, else the last put on
+                            int item = -1;
+                            for (int i = 0; i < kSlots && item < 0; ++i) if (!Empty(m.out[i])) item = m.out[i].item;
+                            for (int i = InSlots(m) - 1; i >= 0 && item < 0; --i) if (!Empty(m.in[i])) item = m.in[i].item;
+                            if (item >= 0) anvils.push_back({ m.part, item });
+                        }
                         if (m.type != PartType::Chest) continue;
                         chests.push_back(m.part);
                         mix((uint64_t)m.part);
@@ -2421,6 +2430,11 @@ void SimLoop() {
                         }
                         pub.chests = chests;
                         pub.chestHash = h;
+                    }
+                    if (!pub.near || anvils != pub.anvils) {
+                        unpublishAnvils();
+                        for (const auto& a : anvils) anvilView[std::make_tuple(ps.body, ps.plot, a.first)] = a.second;
+                        pub.anvils = anvils;
                     }
                     pub.near = true;
                 }
@@ -3057,6 +3071,13 @@ void Factory::Drain(uint64_t body, uint32_t plot, int part, const std::string& i
     { std::lock_guard<std::mutex> v(viewMutex); pumpPending[std::make_tuple(body, plot, part)] += count; } // PumpWater won't offer it twice
     std::lock_guard<std::mutex> q(queueMutex);
     itemQueue.push_back({ 5, body, plot, part, tables.item(item), count });
+}
+
+std::string Factory::Workpiece(uint64_t body, uint32_t plot, int part) {
+    std::lock_guard<std::mutex> v(viewMutex);
+    if (remoteMode) return std::string(); // (#1613) not replicated yet: a joined client sees a bare anvil (the MP pass, #1691)
+    auto it = anvilView.find(std::make_tuple(body, plot, part));
+    return it == anvilView.end() ? std::string() : tables.name(it->second);
 }
 
 bool Factory::Working(uint64_t body, uint32_t plot, int part) {

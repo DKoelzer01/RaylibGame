@@ -136,6 +136,9 @@ namespace Factory {
     // Whether a machine on a plot near the player is working (any number of calls a frame: models, smoke).
     // View() follows one machine at a time (the open machine screen) - never call it for many machines.
     bool Working(uint64_t bodyId, uint32_t plotId, int part);
+    // (#1613) The workpiece on an anvil of a near plot, drawn on it (any number of calls a frame): the finished piece, else
+    // the last one put on; "" when bare (and on a joined client for now).
+    std::string Workpiece(uint64_t bodyId, uint32_t plotId, int part);
     FactoryStats Stats();
     void ResetTickStats();   // the tick-time ring starts empty (a timed window: mean, p99 and worst then cover only it)
     // (#1199) The production statistics over a window: every simulated plot (onePlot false) or one plot. Waits for the tick.
