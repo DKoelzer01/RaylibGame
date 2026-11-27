@@ -3946,6 +3946,37 @@ std::vector<Vector3> PlanetField::bakePondsByDistance(Vector3 dir) const {
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 #include <gtest/gtest.h>
+// (#1905) The erosion bake's input heights give the same bits on every platform: a Linux server and a Windows client
+// baked different planets from one seed, and their first difference was already in these samples. Each term is hashed
+// on its own and printed, so the hosted CI's two legs show which one parts.
+TEST(Voxel, BakeInputMatchesOneGoldenOnEveryPlatform) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    enum { kLand, kCanyon, kFault, kVolcano, kKarst, kFold, kStrata, kTerms };
+    static const char* kNames[kTerms] = { "land", "canyon", "fault", "volcano", "karst", "fold", "strata" };
+    uint64_t h[kTerms];
+    for (uint64_t& v : h) v = 1469598103934665603ull;
+    auto mix = [&h](int t, float v) { uint32_t u; memcpy(&u, &v, sizeof u); for (int b = 0; b < 4; ++b) h[t] = (h[t] ^ ((u >> (8 * b)) & 0xFF)) * 1099511628211ull; };
+    for (int i = 0; i < 4096; ++i) { // a Fibonacci sphere of directions (det:: trig: the directions themselves don't differ)
+        const float y = 1.0f - 2.0f * (i + 0.5f) / 4096.0f, rr = sqrtf(std::max(0.0f, 1.0f - y * y)), a = 2.39996323f * (float)i;
+        const Vector3 dir = { rr * det::Cosf(a), y, rr * det::Sinf(a) };
+        const Vector3 s = Vector3Scale(dir, f.radius);
+        const float land = f.testBakeInputHeight(dir, 200.0f);
+        mix(kLand, land);
+        mix(kCanyon, f.canyonFault(s.x, s.y, s.z));
+        mix(kFault, Strata_FaultUplift(s, 42u));
+        mix(kVolcano, Strata_Volcano(s, f.radius, 42u));
+        mix(kKarst, Strata_KarstWeight(s, 42u) * Strata_KarstRelief(s, 42u));
+        const StrataColumn col = f.strataColumn(dir);
+        mix(kFold, Strata_FoldWeight(s, 42u) * Strata_OutcropBump(col, std::max(land, 1.0f), 42u));
+        mix(kStrata, col.offset); mix(kStrata, col.thick);
+    }
+    PlanetField::tIgnoreBake = false;
+    for (int t = 0; t < kTerms; ++t) printf("bake input probe %-8s %016llx\n", kNames[t], (unsigned long long)h[t]);
+    constexpr uint64_t kGolden = 0x0ull; // the land hash, Linux GCC (sandbox)
+    EXPECT_EQ(h[kLand], kGolden) << std::hex << "(#1905) one CI leg only: the platforms' bake input differs (compare the legs' probe lines); both: a deliberate terrain change, update the constant. got 0x" << h[kLand];
+}
+
 // (#1856 M11) The rivers' smooth land takes the world's roughness as land() does (without it, rivers left the land on a
 // rough or smooth world): linear in it, and its hills gone at roughness 0.
 TEST(Voxel, RiverLandFollowsRoughness) {
