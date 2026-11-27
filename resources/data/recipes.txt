@@ -252,6 +252,9 @@ tool_hammer 1        = steel_hammer_head 1, any_planks 1
 # (#1614) The steam-age component machines (tier 3)
 lathe 1              = iron_plate 4, mechanism 1, shaft 1, any_planks 4
 wiremill 1           = iron_plate 4, mechanism 1, iron_rod 2, any_planks 4
+# (#1734) Rotation-age machines: the trip hammer with tier 2, the mixer with tier 3 (GUESS counts; the hammer ingots are its head)
+trip_hammer 1        = mechanism 1, iron_rod 2, iron_ingot 2, any_log 4
+mixer 1              = mechanism 1, bronze_plate 2, any_planks 4
 # (#1614 PR 3) Steam-age assemblies (bronze and iron: the steam engine comes before the blast furnace's steel and zinc)
 mechanism 1          = cogwheel 2, iron_rod 1, iron_screw 2
 piston 1             = bronze_plate 1, iron_rod 2, iron_spring 1

@@ -18,6 +18,7 @@
 51 | ladder          | #1429 | the multiblock part types (controller, casing, hatch) in NetPart
 52 | ladder          | #1429 | multiblock forming: NetPartOp Form and the formed flag
 53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
+54 | ladder          | #1734 | the trip hammer and mixer part types in NetPart
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion
