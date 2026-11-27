@@ -18,6 +18,9 @@
 #include "waterfield.h"
 #include "watersurface.h"
 
+// #1990: the biome shapes the bake (biomes.txt `bake`); RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake (its own cache), A/B.
+static bool BakeBiomeOn() { static const bool on = EnvFlagOr("RAYLIBGAME_BAKE_BIOME", true); return on; }
+
 #include <cstring>
 #include <raymath.h>
 #include <algorithm>
@@ -337,6 +340,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
     p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", (float)p.bFace); // #1988: option B on face 0-5, 6 every face (default), -1 none (A)
+    if (BakeBiomeOn()) p.biomeKey = BiomeVariants_BakeKey(BiomeVariants()); // #1990 (RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake, A/B)
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
@@ -357,7 +361,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
             LOG_INFO("Erosion", "canyons graded (#544): %d canyons (%d drain both ways from a divide), %.0f km, %d corridor cells of 100 m; floors cut %.1f m on average (up to %.0f m), filled %.1f m (up to %.0f m); %.2f s\n",
                      g.canyons, g.divided, g.lengthKm, g.corridorCells, g.meanCut, g.maxCut, g.meanFill, g.maxFill, g.seconds);
         }
-        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
+        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d, float h0) { return bakeStrataColumn(d, h0); }); // + the rock strata (#587) and the biome (#1990)
         erosionState->gradeOn = false;
         erosionState->grade = CanyonGrade(); // only the bake's input needs it
         const auto ts0 = std::chrono::steady_clock::now();
@@ -4005,6 +4009,22 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
                 if (dist < reach && dist < bestD) { bestD = dist; best = d.kind; }
             }
     return best;
+}
+
+StrataColumn PlanetField::bakeStrataColumn(Vector3 dir, float h0) const {
+    StrataColumn col = strataColumn(dir);
+    if (!BakeBiomeOn()) return col;
+    // One sample per cell: at 100 m a step in rock across a biome border is what a real contact does, and the borders
+    // follow the climate noise (no straight lines). Lighting keeps biomeOf/variantAt bake-free (#1989), so the bake never
+    // reads itself.
+    const Climate c = climateAt(dir, h0);
+    const BiomeVariantTable& t = BiomeVariants();
+    const int v = variantAt(dir, h0, dir, c);
+    if (v >= 0 && v < (int)t.bake.size()) {
+        const BiomeVariantTable::BakeMul& m = t.bake[v];
+        col.kMul = m.k; col.talusMul = m.talus; col.creepMul = m.creep; col.glacialMul = m.glacial;
+    }
+    return col;
 }
 
 StrataColumn PlanetField::strataColumn(Vector3 dir) const {

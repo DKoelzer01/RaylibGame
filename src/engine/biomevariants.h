@@ -55,6 +55,9 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
 void BiomeVariants_Default(BiomeVariantTable& out); // one base variant per type, named after it
 // resources/data/biomes.txt, loaded on first use (thread-safe); the defaults if it is missing or bad (logged).
 const BiomeVariantTable& BiomeVariants();
+// (#1990) A hash of what the erosion bake reads from the table: each variant's key, type, weight, gates and bake
+// multipliers (tints, flora and names don't change the bake, so editing them doesn't bake again).
+uint64_t BiomeVariants_BakeKey(const BiomeVariantTable& t);
 const char* BiomeVariantName(int id); // its display name; "" for an unknown id
 // (#2012) Whether the plant with this id is among a percent of trees: a hash of the id, so a host and its clients agree
 // and a tree gives the same answer however often it is asked.

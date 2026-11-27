@@ -169,6 +169,19 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
     return true;
 }
 
+uint64_t BiomeVariants_BakeKey(const BiomeVariantTable& t) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
+    for (size_t i = 0; i < t.defs.size(); ++i) {
+        const BiomeVariantDef& d = t.defs[i];
+        mix(d.key.data(), d.key.size());
+        const int type = (int)d.type; mix(&type, sizeof type);
+        for (float f : { d.weight, d.elevMin, d.elevMax, d.tempMin, d.tempMax, d.moistMin, d.moistMax }) mix(&f, sizeof f);
+        if (i < t.bake.size()) for (float f : { t.bake[i].k, t.bake[i].talus, t.bake[i].creep, t.bake[i].glacial }) mix(&f, sizeof f);
+    }
+    return h | 1; // never 0 (0 = the uncoupled bake)
+}
+
 void BiomeVariants_Default(BiomeVariantTable& out) {
     out = BiomeVariantTable{};
     for (int b = 0; b < (int)Biome::Count; ++b) {
@@ -300,6 +313,38 @@ TEST(BiomeVariants, ParsesFlora) {
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  cover 2\n", t, &err));
+}
+
+// (#1990) The bake multipliers: parsed ("-" = 1), inherited from the type's base, 1 where neither gives them, and the
+// bake key follows them but not a tint.
+TEST(BiomeVariants, ParsesBakeMultipliers) {
+    BiomeVariantTable t;
+    std::string err;
+    const std::string body = "variant badlands.base\n  bake 2.5 0.7 - 1\nvariant badlands.x\nvariant badlands.y\n  bake 1 1 0.5 2\n";
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body, t, &err)) << err;
+    const auto& base = t.bake[t.base(Biome::Badlands)];
+    EXPECT_FLOAT_EQ(base.k, 2.5f); EXPECT_FLOAT_EQ(base.talus, 0.7f); EXPECT_FLOAT_EQ(base.creep, 1.0f); EXPECT_FLOAT_EQ(base.glacial, 1.0f);
+    const auto& x = t.bake[t.find("badlands.x")];
+    EXPECT_FLOAT_EQ(x.k, 2.5f); EXPECT_FLOAT_EQ(x.talus, 0.7f); // its base's
+    const auto& y = t.bake[t.find("badlands.y")];
+    EXPECT_FLOAT_EQ(y.k, 1.0f); EXPECT_FLOAT_EQ(y.creep, 0.5f); EXPECT_FLOAT_EQ(y.glacial, 2.0f);
+    const auto& forest = t.bake[t.base(Biome::Forest)];
+    EXPECT_FLOAT_EQ(forest.k, 1.0f); EXPECT_FLOAT_EQ(forest.talus, 1.0f);
+    const uint64_t key = BiomeVariants_BakeKey(t);
+    EXPECT_NE(key, 0u);
+    BiomeVariantTable tinted;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body + "variant badlands.z\n  tint 1 1 1  1 1 1\n", tinted, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(tinted), key); // a new variant moves the others' bands: the bake changes
+    BiomeVariantTable retinted;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body + "variant badlands.z\n  tint 2 1 1  1 1 1\n", retinted, &err)) << err;
+    EXPECT_EQ(BiomeVariants_BakeKey(retinted), BiomeVariants_BakeKey(tinted)); // a tint alone doesn't
+    BiomeVariantTable softer;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  bake 3 0.7 - 1\nvariant badlands.x\nvariant badlands.y\n  bake 1 1 0.5 2\n", softer, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(softer), key);
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 1 1 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake -1 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 9 1 1 1\n", t, &err));
 }
 
 TEST(BiomeVariants, RefusesBadFiles) {
