@@ -31,7 +31,10 @@ class Scene;
 constexpr double kReconcileError = 0.05;   // m
 constexpr double kInterpDelay = 0.1;       // s
 constexpr double kExtrapolate = 0.25;     // s: how far another player is carried on past their newest state
-struct NetPredicted { uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1; }; // fx..: the view sent with it
+struct NetPredicted { // fx..: the view sent with it; fly..: a creative flyer's state after the step, sent too (#1922)
+    uint32_t tick = 0; PlayerInput in; DVec3 local{}; float fx = 0, fy = 0, fz = 1;
+    bool fly = false; uint64_t flyBody = 0; DVec3 flyLocal{}; Vector3 flyVel{};
+};
 
 struct NetClient {
     enum class State { Idle, Connecting, AwaitingWelcome, Joined, Rejected, Closed };

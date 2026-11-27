@@ -194,6 +194,17 @@ namespace {
     // then dropping one to catch up, put the server off the client's path after every long frame: metres, with jumps.)
     constexpr long long kRestGapTicks = 6; // (#844) 0.1 s without a step counts as a gap (steps come 2 a frame at most)
     bool RestGapOff() { static const bool off = getenv("RAYLIBGAME_REST_GAP") && atoi(getenv("RAYLIBGAME_REST_GAP")) == 0; return off; } // A/B
+    // (#1922) A creative flyer's step: the pose its client flew to. Player::update's fly path moves world.camera (the
+    // player's own view), so on the server it flew the host's camera and the remote stayed put: the client's next state
+    // from us was far behind and pulled it back. Only creative players fly; it's their mode, so their pose is trusted.
+    bool FlyPoseTo(Scene& world, Player& p, const MsgInput& m) {
+        Player::NetState s;
+        if (!p.netState(world, s)) return false;
+        s.body = m.flyBody; s.local = m.flyLocal; s.vel = { m.fvx, m.fvy, m.fvz }; s.grounded = false;
+        if (!p.applyNetState(world, s)) return false; // (that body isn't here)
+        p.flyMode = true;
+        return true;
+    }
     void StepRemotes(Scene& world) {
         for (auto& [session, r] : remotes) {
             // (#337) a dead player's client sends no inputs: its death clock (respawn after 3 s) runs here on the sim clock
@@ -227,7 +238,15 @@ namespace {
                 // (no thrust, an empty tank); without this a remote player kept the Player defaults, a full, working jetpack
                 Suit_ApplyStatsTo(r.player, r.suitStats, (float)Skills_Stat(r.skills, "walk_speed"));
                 r.survival.invulnerable = r.creative; // (#1561) creative: no damage, no death (this player's own mode)
-                if (!r.survival.dead) { r.player.update(world, in, SimDt()); if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false); } // (dead: it lies still)
+                if (!r.survival.dead && !(r.creative && m.fly && FlyPoseTo(world, r.player, m))) { // (#1922: a flyer's pose, above)
+                    // (#1922) Only the client flies: a step it didn't fly isn't flown here either (here fly mode flies
+                    // world.camera), and its F or double jump can't start flight here; the client's next step says it flies.
+                    const bool flyAllowed = r.player.flyAllowed;
+                    r.player.flyMode = false; r.player.flyAllowed = false;
+                    r.player.update(world, in, SimDt());
+                    r.player.flyAllowed = flyAllowed;
+                    if (r.player.landingSpeed > 0.0f) Survival_OnLandingFor(r.survival, r.suitStats, r.player.landingSpeed, false);
+                } // (dead: it lies still)
                 if (!r.survival.dead) { r.restValid = r.player.netState(world, r.rest); r.restSpawns = r.player.spawns; r.restTick = SimTick(); }
                 Survival_StepFor(world, SimDt(), in, r.survival, r.player, r.inventory, r.suitStats, false); // (#337)
             }
