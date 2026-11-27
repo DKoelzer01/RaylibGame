@@ -1,7 +1,10 @@
 // Tier 2 scenario runner (#870); see scenario.h.
 #include "scenario.h"
 #include "cliptelemetry.h"
+#include "envflag.h"
+#include "factory.h"
 #include "survival.h"
+#include "waterfield.h"
 #include "fluid.h"
 #include "player.h"
 #include "playersession.h"
@@ -597,6 +600,101 @@ void ScenarioCtx::camera(Vector3 eyeLocal, Vector3 targetLocal, Vector3 upLocal)
     world.camera.up = body->dirToWorld(upLocal);
     player.flyMode = true;
     player.position = world.renderOrigin + world.camera.position;
+}
+
+// ---- State hashes against goldens (#1015) ----
+namespace {
+constexpr uint64_t kFnvBasis = 1469598103934665603ull;
+uint64_t Fnv(uint64_t h, const void* p, size_t n) {
+    const uint8_t* b = (const uint8_t*)p;
+    for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+// The body's edits as the save writes them (RGN5, regions and chunks in key order): equal edits, equal bytes.
+uint64_t EditsHash(const Planetoid* body) {
+    uint64_t h = kFnvBasis;
+    if (!body || !body->edits) return h;
+    for (const TerrainDeltas::Key r : Regions_List(*body->edits)) {
+        const std::vector<uint8_t> bytes = Region_Encode(*body->edits, r);
+        h = Fnv(h, &r, sizeof r);
+        h = Fnv(h, bytes.data(), bytes.size());
+    }
+    return h;
+}
+// Every site's bricks in key order: the simulated fill and the flags (not the drawn water, which eases on the main thread).
+uint64_t WaterHash() {
+    const WaterField::SnapshotPtr snap = WaterField::Current();
+    uint64_t h = kFnvBasis;
+    for (const WaterField::Site& site : snap->sites) {
+        h = Fnv(h, &site.body, sizeof site.body);
+        std::vector<int64_t> keys;
+        for (const auto& kv : site.bricks) keys.push_back(kv.first);
+        std::sort(keys.begin(), keys.end());
+        for (const int64_t k : keys) {
+            const WaterField::Brick& b = *site.bricks.at(k);
+            h = Fnv(h, &k, sizeof k);
+            h = Fnv(h, b.fill.data(), b.fill.size());
+            h = Fnv(h, b.flags.data(), b.flags.size());
+        }
+    }
+    return h;
+}
+const char* kGoldenFile = "tests/scenarios/golden_hashes.txt";
+// The runner's run folder links only resources/ and assets/ from the checkout (as saves/golden-load, #1940): there the
+// goldens are beside the real resources/.
+std::string GoldenFilePath() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::is_regular_file(kGoldenFile, ec)) return kGoldenFile;
+    const fs::path beside = fs::canonical("resources", ec).parent_path() / kGoldenFile;
+    return !ec && fs::is_regular_file(beside, ec) ? beside.string() : kGoldenFile;
+}
+}
+
+bool ScenarioCtx::hashState(const std::string& label, const std::vector<std::string>& subsystems) {
+    const bool update = EnvFlag("RAYLIBGAME_GOLDEN_UPDATE");
+    std::vector<std::string> lines;
+    const std::string goldenPath = GoldenFilePath();
+    bool haveFile = false;
+    if (FILE* f = fopen(goldenPath.c_str(), "rb")) {
+        haveFile = true;
+        char b[512];
+        while (fgets(b, sizeof b, f)) { std::string s = b; while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back(); lines.push_back(s); }
+        fclose(f);
+    }
+    bool all = true, changed = false;
+    for (const std::string& sub : subsystems) {
+        const std::string name = "hash " + label + " " + sub;
+        uint64_t h = 0;
+        if (sub == "factory") h = Factory::StateHash();
+        else if (sub == "edits") h = EditsHash(body);
+        else if (sub == "water") h = WaterHash();
+        else { all = Record(name, 0.0, "is", "a subsystem", false, "unknown subsystem (factory, edits, water)") && all; continue; }
+        char hex[24]; snprintf(hex, sizeof hex, "%016llx", (unsigned long long)h);
+        const std::string key = R.def.name + " " + label + " " + sub + " ";
+        auto it = std::find_if(lines.begin(), lines.end(), [&](const std::string& l) { return l.rfind(key, 0) == 0; });
+        const std::string want = it == lines.end() ? std::string() : it->substr(key.size());
+        if (want == hex) { Record(name, 1.0, "==", want, true); continue; }
+        if (update) {
+            if (it == lines.end()) lines.push_back(key + hex); else *it = key + hex;
+            changed = true;
+            note(name + ": golden " + (want.empty() ? "added" : "updated from " + want) + ": " + hex + " (RAYLIBGAME_GOLDEN_UPDATE)");
+            Record(name, 1.0, "==", hex, true);
+            continue;
+        }
+        all = Record(name, 0.0, "==", want.empty() ? "a golden" : want, false,
+                     !haveFile ? "got " + std::string(hex) + "; the goldens file wasn't found (" + goldenPath + ", nor beside resources/)"
+                     : want.empty() ? "got " + std::string(hex) + "; no golden: add the line '" + key + hex + "' to " + kGoldenFile
+                                  : "got " + std::string(hex) + " (a deliberate change: RAYLIBGAME_GOLDEN_UPDATE=1 and say why in the PR; else the run doesn't repeat)") && all;
+    }
+    if (changed) {
+        // Into the run's folder, never the checkout: a shared work tree (the sandbox, the runner) with a changed tracked file
+        // refuses the next branch's checkout (#1908). Copy it over tests/scenarios/golden_hashes.txt by hand.
+        const std::string out = R.runDir + "/golden_hashes.txt";
+        if (FILE* f = fopen(out.c_str(), "wb")) { for (const std::string& l : lines) fprintf(f, "%s\n", l.c_str()); fclose(f); note("updated goldens written to " + out + ": copy it over " + kGoldenFile); }
+        else note("could not write " + out);
+    }
+    return all;
 }
 
 // ---- Visual checks against baselines (#870 visual tier) ----

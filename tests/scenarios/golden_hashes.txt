@@ -1,0 +1,7 @@
+# (#1015) Golden state hashes for ScenarioCtx::hashState: "<scenario> <label> <subsystem> <16 hex digits>", one per line.
+# A scenario whose hash differs fails. One platform failing: the simulation differs between machines (a float or libm
+# result, undefined behaviour): fix that, not the line. Every run failing after a deliberate rule change: rerun with
+# RAYLIBGAME_GOLDEN_UPDATE=1 (it writes the updated file into the run's folder: copy it here) and say why in the PR.
+determinism/state-hash cranked edits ef4394ca259e9bd3
+determinism/state-hash cranked factory e44289aa5d798c3e
+determinism/state-hash flowing water aa7b57252cbfc4b4

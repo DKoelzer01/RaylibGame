@@ -15,6 +15,7 @@
 #include "worldtypes.h"
 #include "simclock.h"
 #include "scene.h"
+#include "envflag.h"
 #include <raymath.h>
 
 #include <raylib.h>
@@ -644,6 +645,11 @@ std::atomic<long long> tickCredit{ 0 };
 std::condition_variable creditCv;
 std::mutex creditMutex;
 double creditAccum = 0.0; // main thread: fractional ticks owed
+// (#1015) Lockstep (RAYLIBGAME_FACTORY_LOCKSTEP, set by scenarios that hash state): Advance waits until the ticks it
+// granted have run, uncapped, so every tick falls in a known frame and a command sent in a frame lands on the same tick in
+// every run. Off, the thread takes its credit whenever it gets to it, which is fine for play but not for a golden hash.
+std::atomic<long long> ticksTaken{ 0 }; // credits the sim thread has taken (a tick started); tickCount counts them done
+bool Lockstep() { static const bool on = EnvFlag("RAYLIBGAME_FACTORY_LOCKSTEP"); return on; }
 void GrantTicks(long long n, long long cap) {
     {
         std::lock_guard<std::mutex> lk(creditMutex);
@@ -2224,6 +2230,7 @@ void SimLoop() {
             if (!running) break;
             if (tickCredit.load() <= 0) continue;
             --tickCredit;
+            ++ticksTaken;
         }
         const auto t0 = clk::now();
         {
@@ -2495,6 +2502,24 @@ void SimLoop() {
 }
 
 std::string PlotKey(uint64_t body, uint32_t plot) { return std::to_string(body) + ":" + std::to_string(plot); }
+
+// FNV-1a over a plot's simulated state: every machine's slots, recipe, progress, energy, fuel, status, water and heat, the
+// item networks' credit and round-robin, and the shaft networks. The unit tests' determinism gates and (#1015) the
+// scenarios' state hashes (Factory::StateHash).
+uint64_t StateHash(const PlotSim& ps) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](long long v) { h = (h ^ (uint64_t)v) * 1099511628211ull; };
+    for (const Machine& m : ps.machines) {
+        mix(m.part); mix((int)m.type); mix(m.recipe); mix(m.progress); mix(m.energy); mix(m.fuelEU); mix((int)m.status);
+        mix(m.water); mix(m.heat); mix(m.fuel.item); mix(m.fuel.count);
+        for (const Stack& s : m.in) { mix(s.item); mix(s.count); }
+        for (const Stack& s : m.out) { mix(s.item); mix(s.count); }
+    }
+    for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
+    for (const Machine& m : ps.machines) mix(m.rotAcc);
+    mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
+    return h;
+}
 
 } // namespace
 
@@ -2954,7 +2979,21 @@ void Factory::Advance(float simDt) {
     creditAccum += (double)simDt * kTicksPerSecond * speed;
     const long long n = (long long)creditAccum;
     creditAccum -= (double)n;
-    if (n > 0) GrantTicks(n, std::max(2, kTicksPerSecond * speed / 4)); // at most 250 ms behind
+    if (n <= 0) return;
+    if (!Lockstep()) { GrantTicks(n, std::max(2, kTicksPerSecond * speed / 4)); return; } // at most 250 ms behind
+    GrantTicks(n, 0);
+    std::unique_lock<std::mutex> lk(tickCvMutex); // (#1015) every granted tick taken and finished
+    tickCv.wait_for(lk, std::chrono::seconds(30), [] { return tickCredit.load() == 0 && tickCount.load() == ticksTaken.load(); });
+}
+
+uint64_t Factory::StateHash() {
+    std::lock_guard<std::mutex> lock(simMutex); // between ticks
+    std::vector<std::pair<std::pair<uint64_t, uint32_t>, uint64_t>> byPlot;
+    for (const PlotSim& ps : plots) byPlot.push_back({ { ps.body, ps.plot }, StateHash(ps) });
+    std::sort(byPlot.begin(), byPlot.end()); // the plot list's order depends on when each plot was first seen
+    uint64_t h = 1469598103934665603ull;
+    for (const auto& [key, ph] : byPlot) for (uint64_t v : { key.first, (uint64_t)key.second, ph }) h = (h ^ v) * 1099511628211ull;
+    return h;
 }
 
 void Factory::WaitTicks(int n) {
@@ -3209,21 +3248,6 @@ LayoutMsg TestChains(uint32_t plotId, int groups, std::vector<std::array<int, 4>
         *rot = { add(PartType::HandCrank, { 70, 7, 0 }, up), a, b, c };
     }
     return L;
-}
-
-uint64_t StateHash(const PlotSim& ps) {
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h](long long v) { h = (h ^ (uint64_t)v) * 1099511628211ull; };
-    for (const Machine& m : ps.machines) {
-        mix(m.part); mix((int)m.type); mix(m.recipe); mix(m.progress); mix(m.energy); mix(m.fuelEU); mix((int)m.status);
-        mix(m.water); mix(m.heat); mix(m.fuel.item); mix(m.fuel.count);
-        for (const Stack& s : m.in) { mix(s.item); mix(s.count); }
-        for (const Stack& s : m.out) { mix(s.item); mix(s.count); }
-    }
-    for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
-    for (const Machine& m : ps.machines) mix(m.rotAcc);
-    mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
-    return h;
 }
 
 struct ChainsRun { uint64_t hash = 0; long long made = 0; int asleepMachines = 0, asleepNets = 0, sandInLateChest = 0, gravelMilled = 0; };
