@@ -9,6 +9,7 @@
 #include "itemdata.h"
 #include "rotationplot.h"
 #include "rotationsources.h"
+#include "beltsim.h"
 #include "conduitnet.h"
 #include "multiblock.h"
 #include "utils/logger.h"
@@ -432,6 +433,12 @@ struct PlotSim {
     std::vector<std::pair<int, int>> completed;         // (#1728) (item, count) of recipes this plot really finished since the last hand-over (TickPlot only: never the summary sim); emptied under viewMutex
     bool hasStructures = false;                         // (#1429 PR 4) a formed multiblock: far, it keeps the 20-tick step (not in the summary sim yet: #1763)
     int mbRR = 0;                                       // (#1429 PR 4) the controller (machine index) that tries to start a recipe first next
+    // (#1735 PR 3) Thin belts: one line per belt run (in run id order, beltRuns parallel to it); the machines that load a line's
+    // start ((line, machine), line order); per machine the lines that end in it (woken when it changes).
+    std::vector<ConduitRun> beltRuns;
+    std::vector<BeltLine> belts;
+    std::vector<std::pair<int, int>> beltLoads;
+    std::vector<std::vector<int>> beltsInto;
 };
 
 // (#1261) The summary sim's plot states. RAYLIBGAME_FACTORY_SUMMARY=0: far plots keep today's 20-tick step (A/B).
@@ -566,6 +573,7 @@ struct LayoutMsg {
     std::vector<std::string> machineVariant;              // per machine: its one output item ("" any)
     std::vector<int> machineTier;                          // (#1427 L7a) per machine: its voltage tier (a tiered machine's variant)
     std::vector<Int3> conveyors, cables;
+    std::vector<ConduitRun> belts;                        // (#1735 PR 3) the plot's belt runs
     uint32_t refundTo = 0;                                // (#854) who removed machines in this change (their contents go to that player)
     std::vector<RotationPartMsg> rotation;                // (#1269) shafts, cogs, cranks and rotation machines
     // (#1429 PR 4) per machine its hatch kind (kHatch*; empty: none); and the formed structures: controller part, the machine
@@ -579,6 +587,7 @@ struct ItemMsg { int kind; uint64_t body; uint32_t plot; int part; int item; int
 std::mutex simMutex;                          // state (sim thread holds it for a tick)
 std::vector<PlotSim> plots;
 std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingStates; // from a load
+std::map<std::tuple<uint64_t, uint32_t, int>, std::vector<std::string>> pendingBelts;  // (#1735 PR 3) from a load: by belt run id, "n item gap ..."
 
 std::mutex queueMutex;                        // main thread -> sim
 std::vector<LayoutMsg> layoutQueue;
@@ -956,6 +965,88 @@ void BuildNets(PlotSim& ps, const LayoutMsg& L) {
     }
 }
 
+// (#1735 PR 3) The plot's belt lines from its runs. A run that is still there unchanged (same id and points) keeps its items;
+// one that changed or went away gives its items back to the player who edited (as a removed machine's contents). A run seen
+// for the first time takes the items a save left for it. Ends, checked in a fixed order: the last point on a machine's item
+// port feeds that machine, else on another belt's centreline merges into it there; the first point on a machine's item port
+// is loaded from that machine. Item ports (GUESS, until machines declare theirs): the centre of every outer side face of
+// each machine cell, in and out alike (the belt's direction says which).
+void BuildBelts(PlotSim& ps, const LayoutMsg& L) {
+    std::map<int, std::pair<ConduitRun, BeltLine>> old;
+    for (size_t i = 0; i < ps.belts.size() && i < ps.beltRuns.size(); ++i) old[ps.beltRuns[i].id] = { std::move(ps.beltRuns[i]), std::move(ps.belts[i]) };
+    auto refund = [&](const BeltLine& line) {
+        for (const BeltItem& it : line.items) { ItemOut r; r.item = it.item; r.count = 1; r.to = L.refundTo; refunds.push_back(r); }
+    };
+    ps.belts.clear(); ps.beltRuns.clear(); ps.beltLoads.clear();
+    std::vector<const ConduitRun*> runs;
+    for (const ConduitRun& r : L.belts) if (r.kind == ConduitKind::Belt && r.points.size() >= 2) runs.push_back(&r);
+    std::stable_sort(runs.begin(), runs.end(), [](const ConduitRun* a, const ConduitRun* b) { return a->id < b->id; });
+    for (const ConduitRun* r : runs) {
+        const ConduitMaterial* mat = Conduit_Materials().find(r->material);
+        BeltLine line = Belt_MakeLine(*r, mat ? mat->speed : 0);
+        const auto o = old.find(r->id);
+        if (o != old.end()) {
+            if (o->second.first.points == r->points) { line.items = std::move(o->second.second.items); line.tailPos = o->second.second.tailPos; }
+            else refund(o->second.second);
+            old.erase(o);
+        } else if (const auto pend = pendingBelts.find({ L.body, L.plot, r->id }); pend != pendingBelts.end()) {
+            // "item gap ...": front first; kept while the gaps fit the run (a run shortened since: the rest is dropped)
+            const std::vector<std::string>& s = pend->second;
+            int64_t pos = line.length;
+            for (size_t k = 0; 2 * k + 1 < s.size(); ++k) {
+                const int item = tables.item(s[2 * k]);
+                const int64_t gap = atoll(s[2 * k + 1].c_str());
+                if (item < 0 || gap < (k == 0 ? 0 : kBeltGap) || pos - gap < 0) break;
+                pos -= gap;
+                line.items.push_back({ item, gap });
+            }
+            line.tailPos = pos;
+            pendingBelts.erase(pend);
+        }
+        ps.belts.push_back(std::move(line));
+        ps.beltRuns.push_back(*r);
+    }
+    for (const auto& [id, gone] : old) refund(gone.second);
+    // The machines' item ports, in machine, cell and face order (N E S W).
+    std::vector<std::pair<ConduitPortAt, int>> ports;
+    const Int3 side[4] = { { 0, 0, -1 }, { 1, 0, 0 }, { 0, 0, 1 }, { -1, 0, 0 } };
+    for (size_t mi = 0; mi < ps.machines.size(); ++mi) {
+        const std::vector<Int3>& cells = ps.machines[mi].cells;
+        for (const Int3& c : cells)
+            for (int f = 0; f < 4; ++f) {
+                const Int3 n = { c.x + side[f].x, c.y, c.z + side[f].z };
+                if (std::find(cells.begin(), cells.end(), n) != cells.end()) continue; // an inner face
+                ConduitPortDef def; def.face = f; def.kind = ConduitPortKind::ItemIn;
+                ConduitPortAt p; p.slot = Conduit_PortSlot({ c.x, c.y, c.z }, 0, def); p.face = f; p.kind = def.kind;
+                ports.push_back({ p, (int)mi });
+            }
+    }
+    auto machineAt = [&](CInt3 end, CInt3 next) {
+        for (const auto& [p, mi] : ports) if (Conduit_BeltEndAtPort(end, next, p)) return mi;
+        return -1;
+    };
+    ps.beltsInto.assign(ps.machines.size(), {});
+    for (size_t li = 0; li < ps.belts.size(); ++li) {
+        const std::vector<CInt3>& pts = ps.beltRuns[li].points;
+        const size_t n = pts.size();
+        BeltLine& line = ps.belts[li];
+        line.end = BeltEnd::None; line.sink = -1; line.outLine = -1; line.outPos = 0; line.asleep = false;
+        if (const int sink = machineAt(pts[n - 1], pts[n - 2]); sink >= 0) {
+            line.end = BeltEnd::Sink; line.sink = sink;
+            ps.beltsInto[sink].push_back((int)li);
+        } else {
+            for (size_t lj = 0; lj < ps.belts.size(); ++lj) {
+                if (lj == li) continue;
+                const int64_t at = Belt_PosOf(ps.beltRuns[lj], pts[n - 1]);
+                if (at < 0) continue;
+                line.end = BeltEnd::Belt; line.outLine = (int)lj; line.outPos = at;
+                break;
+            }
+        }
+        if (const int src = machineAt(pts[0], pts[1]); src >= 0) ps.beltLoads.push_back({ (int)li, src });
+    }
+}
+
 void ApplyLayout(const LayoutMsg& L) {
     PlotSim* ps = FindPlot(L.body, L.plot);
     if (!ps) { plots.push_back({}); ps = &plots.back(); ps->body = L.body; ps->plot = L.plot; plotIndexDirty = true; }
@@ -1085,6 +1176,7 @@ void ApplyLayout(const LayoutMsg& L) {
     if (!ps->nearPlayer) BeginMeasuring(*ps, tickCount.load()); // (#1261) a layout change while far measures again
     ps->byPart = std::move(byPart);
     BuildNets(*ps, L);
+    BuildBelts(*ps, L); // (#1735 PR 3)
     ps->rot.Set(L.rotation); // (#1269)
 }
 
@@ -1443,6 +1535,45 @@ void MbStep(PlotSim& ps, int dt, long long& made, int& active) {
     }
 }
 
+// One item into dst from a conveyor network or a belt; false when it doesn't take it or has no room. A chest stores it; a
+// machine keeps a buffer of kFeedMax (fuel counted), fuel goes to its fuel slot and a water bucket into a boiler's tank
+// (its empty bucket to the outputs, so that needs room). Marks dst dirty (#1214: new input, it looks again next tick).
+bool FeedOne(Machine& dst, int item) {
+    if (!AcceptsIn(dst, item)) return false;
+    bool moved = false;
+    if (dst.type == PartType::Chest) moved = AddItems(dst.in.data(), kChestSlots, item, 1) == 0;
+    else if (CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
+             !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
+        int buckets = 0;
+        if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
+    }
+    if (moved) dst.dirty = true;
+    return moved;
+}
+
+// (#1735 PR 3) Belts, dt ticks: each tick every loader (in line order) puts one item from its machine's outputs (a chest: its
+// contents) onto its line's start when there is room, then the lines move (Belt_Step, line order) and the front items go
+// into their sink machines. Deterministic: integer positions, fixed orders, no time.
+void StepBelts(PlotSim& ps, int dt) {
+    for (int t = 0; t < dt; ++t) {
+        for (const auto& [li, mi] : ps.beltLoads) {
+            BeltLine& line = ps.belts[li];
+            if (!Belt_HasRoom(line, 0)) continue;
+            Machine& src = ps.machines[mi];
+            const bool chest = src.type == PartType::Chest;
+            Stack* from = chest ? src.in.data() : src.out;
+            const int fromN = chest ? kChestSlots : kSlots;
+            for (int i = 0; i < fromN; ++i) {
+                if (from[i].count <= 0 || !Plain(from[i])) continue; // (#1446) an item with data stays (one lane of plain ids)
+                const int item = from[i].item;
+                if (Belt_TryInsert(line, item, 0)) { TakeItems(from, fromN, item, 1); src.dirty = true; }
+                break;
+            }
+        }
+        Belt_Step(ps.belts, [&ps](int sink, int item) { return sink >= 0 && sink < (int)ps.machines.size() && FeedOne(ps.machines[sink], item); });
+    }
+}
+
 void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     gCount = &ps.stats; // (#1199) BurnFuel counts into this plot
     MbDemand(ps); // (#1429 PR 4) what the energy hatches ask
@@ -1719,10 +1850,13 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
     }
     // (#1199) Time per status by machine kind: every machine, every tick of this step.
     for (const Machine& m : ps.machines) ps.stats.statusTicks[(int)m.type][(int)m.status & 7] += dt;
-    // (#1214) A machine whose contents changed wakes its conveyor network (the change is seen; the flag is spent).
-    for (Machine& m : ps.machines) {
+    // (#1214) A machine whose contents changed wakes its conveyor network (the change is seen; the flag is spent), and
+    // (#1735 PR 3) the belts it takes from (it may have room now).
+    for (size_t mi = 0; mi < ps.machines.size(); ++mi) {
+        Machine& m = ps.machines[mi];
         if (!m.dirty) continue;
         if (m.itemNet >= 0 && m.itemNet < (int)ps.itemNets.size()) ps.itemNets[m.itemNet].asleep = false;
+        if (mi < ps.beltsInto.size()) for (int li : ps.beltsInto[mi]) Belt_Wake(ps.belts[li]);
         m.dirty = false;
     }
     // Items: each conveyor network moves items from outputs (and chests) to machines that take them.
@@ -1744,14 +1878,8 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
                     const int item = from[i].item;
                     for (int d = 1; d < n && !moved; ++d) {
                         Machine& dst = ps.machines[net.machines[(net.rr + s + d) % n]];
-                        if (&dst == &src || (chest && dst.type == PartType::Chest) || !AcceptsIn(dst, item)) continue;
-                        if (dst.type == PartType::Chest && !chest) { if (AddItems(dst.in.data(), kChestSlots, item, 1) == 0) moved = true; }
-                        else if (dst.type != PartType::Chest && CountItems(dst.in.data(), kSlots, item) + (dst.fuel.item == item ? dst.fuel.count : 0) < kFeedMax && // a buffer, fuel too (#566)
-                                 !(item == WaterBucketItem() && Def(dst.type).waterPerTick > 0 && !RoomFor(dst.out, kSlots, BucketItem()))) { // the empty bucket needs an output slot (#229 review)
-                            int buckets = 0; // fuel to the fuel slot, water buckets into a boiler's tank (its empty bucket to its outputs)
-                            if (InsertInto(dst, item, 1, false, buckets) == 0) { moved = true; if (buckets > 0) AddItems(dst.out, kSlots, BucketItem(), buckets); }
-                        }
-                        if (moved) { TakeItems(from, fromN, item, 1); dst.dirty = true; } // (#1214) new input: it looks again next tick
+                        if (&dst == &src || (chest && dst.type == PartType::Chest)) continue;
+                        if (FeedOne(dst, item)) { moved = true; TakeItems(from, fromN, item, 1); }
                     }
                 }
             }
@@ -1760,6 +1888,7 @@ void TickPlot(PlotSim& ps, int dt, long long& made, int& active) {
             net.credit -= kTicksPerSecond;
         }
     }
+    if (!ps.belts.empty()) StepBelts(ps, dt);
 }
 
 // (#997, user decision 2026-11-21) Parallel plots: plots share no conveyors, cables or machines, so the plots due this tick
@@ -2518,6 +2647,7 @@ uint64_t StateHash(const PlotSim& ps) {
     for (const Net& n : ps.itemNets) { mix(n.credit); mix(n.rr); }
     for (const Machine& m : ps.machines) mix(m.rotAcc);
     mix((long long)ps.rot.Hash()); // (#1269) the shaft networks' speeds, statuses and cranks
+    for (const BeltLine& b : ps.belts) mix(Belt_Checksum(b)); // (#1735 PR 3) every item on every belt
     return h;
 }
 
@@ -2620,6 +2750,7 @@ void Factory::Sync(Scene& world) {
                     else if (part.type == PartType::Cable) L.cables.push_back(part.origin);
                     if (RotationPartMsg rm; RotationPlot_Describe(part, (int)i, rm)) L.rotation.push_back(std::move(rm)); // (#1269)
                 }
+                L.belts = pl->belts; // (#1735 PR 3)
                 std::lock_guard<std::mutex> q(queueMutex);
                 layoutQueue.push_back(std::move(L));
                 sentVersions[key] = pl->version;
@@ -3014,7 +3145,29 @@ void Factory::Save(FILE* f, uint64_t bodyId) {
     // (#1881) Loaded machines wait in pendingStates until their plot reaches the sim (the next Sync): a save before that
     // wrote "machines 0" and lost every chest and machine on the body. Those go back out as they were read.
     for (const auto& [key, rest] : pendingStates) if (std::get<0>(key) == bodyId) ++n;
+    // (#1735 PR 3) Belts with items ride in the same block: "b <plot> <run id> <item> <gap> ..." front first, at most
+    // kBeltItemsPerLine items a line (ReadSaved's lines are 4096 chars; a run's lines are joined in order on load). Loaded
+    // ones still waiting for their plot go back out as they were read.
+    constexpr size_t kBeltItemsPerLine = 64;
+    std::vector<std::tuple<uint32_t, int, std::vector<std::string>>> beltOut;
+    for (const auto& [key, rest] : pendingBelts) if (std::get<0>(key) == bodyId) beltOut.push_back({ std::get<1>(key), std::get<2>(key), rest });
+    for (const PlotSim& ps : plots) {
+        if (ps.body != bodyId) continue;
+        for (const BeltLine& b : ps.belts) {
+            if (b.items.empty()) continue;
+            std::vector<std::string> words;
+            for (const BeltItem& it : b.items) { words.push_back(tables.name(it.item)); words.push_back(std::to_string(it.gap)); }
+            beltOut.push_back({ ps.plot, b.id, std::move(words) });
+        }
+    }
+    for (const auto& b : beltOut) n += (int)((std::get<2>(b).size() / 2 + kBeltItemsPerLine - 1) / kBeltItemsPerLine);
     fprintf(f, "machines %d\n", n);
+    for (const auto& [plot, id, words] : beltOut)
+        for (size_t at = 0; at + 1 < words.size(); at += 2 * kBeltItemsPerLine) {
+            fprintf(f, "b %u %d", plot, id);
+            for (size_t k = at; k < std::min(words.size(), at + 2 * kBeltItemsPerLine); ++k) fprintf(f, " %s", words[k].c_str());
+            fprintf(f, "\n");
+        }
     for (const auto& [key, rest] : pendingStates) {
         if (std::get<0>(key) != bodyId) continue;
         fprintf(f, "m %u %d", std::get<1>(key), std::get<2>(key));
@@ -3082,7 +3235,8 @@ void Factory::LoadSaved(uint64_t bodyId, const std::vector<std::string>& lines) 
         std::vector<std::string> rest;
         std::string w;
         while (ss >> w) { if (const char* now = RetiredItem(w); *now) w = now; rest.push_back(w); } // #1090: item ids only match it
-        pendingStates[{ bodyId, plot, part }] = rest;
+        if (tag == "b") { auto& b = pendingBelts[{ bodyId, plot, part }]; b.insert(b.end(), rest.begin(), rest.end()); } // (#1735 PR 3) a belt's items (part = its run id), lines in order
+        else pendingStates[{ bodyId, plot, part }] = rest;
     }
 }
 
@@ -3261,7 +3415,7 @@ ChainsRun RunChains(bool sleep, int workers = 1) {
     const int minWas = parallelMinMachines;
     sleepOn = sleep;
     parallelMinMachines = 0; // (these plots are small: split them anyway)
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     constexpr int kPlots = 6;
     std::vector<std::vector<std::array<int, 4>>> parts(kPlots);
     std::vector<std::array<int, 4>> rot(kPlots); // (#1269) crank, 3 millstones per plot
@@ -3345,7 +3499,7 @@ TEST(Factory, SleepingMachinesAndNetworksChangeNothingButTheTime) {
 //  - an LV generator cabled to an electric motor turning a shaft into a second press: EU back into rotation.
 TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 90; L.version = 1;
     int part = 0;
@@ -3413,7 +3567,7 @@ TEST(Factory, ASteamEngineDrivesAPressAndADynamoAndAMotorTurnsAShaft) {
 // tin (dust or crushed ore) 3 to 1 into bronze dust. Each on its own motor (64 RPM, over the mixer's 32 RPM minimum).
 TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 91; L.version = 1;
     int part = 0;
@@ -3463,7 +3617,7 @@ TEST(Factory, ATripHammerWorksBloomsAndAMixerMakesBronzeDust) {
 // and 4 tin ore with their 100 sand, and nothing is left carried.
 TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 92; L.version = 1;
     int part = 0;
@@ -3511,7 +3665,7 @@ TEST(Factory, ARotarySieveGivesItsChanceOutputsExactly) {
 // twice as fast, so two units in 500 ticks and none before 250; and the units it holds are what waterworks may lift.
 TEST(Factory, ARotaryPumpMakesWaterAtItsShaftSpeed) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 93; L.version = 1;
     int part = 0;
@@ -3560,7 +3714,7 @@ TEST(Factory, AFarPlotMeasuresThenEntersSummaryWithItsCaps) {
     const bool was = summaryOn;
     for (const bool on : { true, false }) {
         summaryOn = on;
-        plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+        plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
         std::vector<std::array<int, 4>> parts;
         ApplyLayout(TestChains(1, 10, parts));
         PlotSim& ps = *FindPlot(7, 1);
@@ -3628,7 +3782,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
     LoadRecipes();
     std::vector<std::pair<Recipe*, int>> restore; // (the tables outlive the test: LoadRecipes doesn't reload them)
     if (maceratorTicks > 0) for (Recipe& r : tables.recipes) if (r.machine == PartType::Macerator) { restore.push_back({ &r, r.ticks }); r.ticks = maceratorTicks; }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     const std::vector<Int3> cable12 = Row(0, 12, -1);
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
@@ -3670,7 +3824,7 @@ std::vector<std::map<std::string, long long>> OracleRun(bool far, long long tick
 // them only when leaving exactly on a 30 s boundary: the in-game run used the measuring window alone and made 82.5%).
 TEST(Factory, LeavingNearAtAnyTimeKeepsTheNearCaps) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     ApplyLayout(OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1)));
     PlotSim& ps = *FindPlot(9, 1);
     int b = 0;
@@ -3726,7 +3880,7 @@ TEST(Factory, TheSummaryNeverMakesMoreThanTheFullSimWithLongCrafts) {
 // stalled (5 / 8 = 0 ticks, every tick); now the share adds up, and the line runs at about 5/8 of its full speed.
 TEST(Factory, AnOverloadedPowerNetSlowsItsMachinesNearThePlayerAndDoesNotStallThem) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Macerator, 9, 0 },
                                   { PartType::Macerator, 12, 0 }, { PartType::Macerator, 15, 0 }, { PartType::Macerator, 18, 0 } }, {}, Row(0, 19, -1)));
     PlotSim& ps = *FindPlot(9, 2);
@@ -3752,7 +3906,7 @@ namespace {
 struct CableRun { long long used = 0, made = 0; };
 CableRun RunCableLine(uint32_t plotId, const std::vector<Int3>& cables, int ticks) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     std::vector<OraclePart> parts = { { PartType::Generator, 1, 0 }, { PartType::Generator, 4, 0 } };
     for (int k = 0; k < 8; ++k) parts.push_back({ PartType::Macerator, 7 + 3 * k, 0 });
     ApplyLayout(OracleLayout(plotId, parts, {}, cables));
@@ -3791,7 +3945,7 @@ TEST(Factory, ParallelCablesCarryMore) {
 // (#1847) A machine whose craft is done but can't get out (outputs full) draws no power: its generator stops burning.
 TEST(Factory, AMachineWithFullOutputsDrawsNoPower) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     ApplyLayout(OracleLayout(2, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 } }, {}, Row(0, 4, -1)));
     PlotSim& ps = *FindPlot(9, 2);
     int b = 0;
@@ -3819,7 +3973,7 @@ TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     LoadRecipes();
     const bool was = summaryOn;
     summaryOn = true;
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     const LayoutMsg layout = OracleLayout(1, { { PartType::Generator, 0, 0 }, { PartType::Chest, 3, 0 }, { PartType::Macerator, 6, 0 }, { PartType::Chest, 9, 0 } }, Row(3, 10, 2), Row(0, 7, -1));
     ApplyLayout(layout);
     PlotSim* ps = FindPlot(9, 1);
@@ -3853,7 +4007,7 @@ TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     std::remove(path.c_str());
     ASSERT_EQ(lines.size(), ps->machines.size());
     // Load into a fresh factory: the layout arrives, the plot is far from the start.
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     Factory::LoadSaved(9, lines);
     ApplyLayout(layout);
     ps = FindPlot(9, 1);
@@ -3866,7 +4020,7 @@ TEST(Factory, APlotSavedInTheSummaryGoesOnInItWhenLoadedFar) {
     // An old save (no caps) measures first, as before.
     std::vector<std::string> old = lines;
     for (std::string& l : old) { const size_t at = l.find(" sum"); if (at != std::string::npos) l.erase(at); }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     Factory::LoadSaved(9, old);
     ApplyLayout(layout);
     ps = FindPlot(9, 1);
@@ -4055,7 +4209,7 @@ TEST(Factory, AChestKeepsAnItemsRecordAndOnlyADisassemblerTakesOne) {
     std::remove(path.c_str());
     bool saved = false; for (const std::string& l : lines) saved |= l.find(" bronze_pickaxe|" + d1 + " 1") != std::string::npos;
     EXPECT_TRUE(saved) << "a record is saved as name|record";
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     Factory::LoadSaved(11, lines);
     ApplyLayout(L);
     PlotSim* ps = FindPlot(11, 2);
@@ -4101,7 +4255,7 @@ TEST(Factory, TheOreSplitGivesHalfAgainAtLvAndTwiceAtMv) {
 // packs into research units while a hand crank on its shaft turns, at the crank's speed; with nobody cranking it waits.
 TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 91; L.version = 1;
     int part = 0;
@@ -4139,7 +4293,7 @@ TEST(Factory, ASteamLabResearchesWhileItsShaftTurns) {
 // shaft cranked, make it up to twice as fast; an anvil hammers a bloom into an ingot only as far as a player's strikes go.
 TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     auto run = [](bool cranked) {
         LayoutMsg L{};
         L.body = 7; L.plot = cranked ? 93 : 92; L.version = 1;
@@ -4200,7 +4354,7 @@ TEST(Factory, ABloomeryWithBellowsAndAnAnvilMakeIron) {
 TEST(Factory, AnAnvilRepairsACopyAndTakesAGemOut) {
     LoadRecipes();
     ASSERT_TRUE(Composed_Load());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L{};
     L.body = 7; L.plot = 95; L.version = 1;
     L.machines.push_back({ 0, PartType::Anvil }); L.machineCells.push_back({ { 0, 0, 0 } }); L.machineVariant.push_back("");
@@ -4267,7 +4421,7 @@ TEST(Factory, AnAnvilRepairsACopyAndTakesAGemOut) {
 TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     LoadRecipes();
     ASSERT_TRUE(Composed_Load());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     const size_t nRecipes = tables.recipes.size();
     decltype(tables.recipes)::value_type r; r.machine = PartType::LvAssembler; r.ticks = 20; r.eu = 1;
     r.in = { Stack{ tables.item("bronze_pick_head"), 1 }, Stack{ tables.item("wood_handle"), 1 } };
@@ -4317,7 +4471,7 @@ TEST(Factory, AMachineMakesComposedCopiesAndConveyorsLeaveRecordsAlone) {
     const std::vector<std::string> lines = Factory::ReadSaved(f);
     fclose(f);
     std::remove(path.c_str());
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     Factory::LoadSaved(9, lines);
     ApplyLayout(L);
     ps = FindPlot(9, 7);
@@ -4400,7 +4554,7 @@ TEST(Factory, EachAlloyOfTheMaterialColumnIsMadeByItsTier) {
 TEST(Factory, AnLvAssemblerMakesCircuitsAndWaitsWhenSetToDisassemble) {
     LoadRecipes();
     Disassembly_Build({}, nullptr); // (#1427 L7c) nothing to take apart here (other tests leave their own index)
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     ApplyLayout(OracleLayout(5, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 } }, {}, Row(0, 4, -1)));
     PlotSim& ps = *FindPlot(9, 5);
     Machine& gen = ps.machines[ps.byPart.at(0)];
@@ -4447,7 +4601,7 @@ TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
     forward.push_back({ "copper_wire", 2, { { "copper_ingot", 1 } }, 0, 0 });
     Disassembly_Build(forward, [](const std::string& item) { return item == "basic_circuit" ? 4 : -1; });
     for (const std::string& n : Disassembly_Items()) { const int id = tables.item(n); if (id >= (int)disassemblable.size()) disassemblable.resize(id + 1, 0); disassemblable[id] = 1; }
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L = OracleLayout(7, { { PartType::Generator, 0, 0 }, { PartType::LvAssembler, 3, 0 }, { PartType::LvAssembler, 6, 0 } }, {}, Row(0, 7, -1));
     L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("LV"), MachineTiers_ByName("MV") };
     ApplyLayout(L);
@@ -4507,7 +4661,7 @@ TEST(Factory, AnAssemblerSetToDisassembleGivesBackPartsAtItsTiersYield) {
 // tick); a recipe a tier above a machine never starts in it.
 TEST(Factory, AHigherTierMachineOverclocksALowerRecipeAndALowerOneRefusesAHigherRecipe) {
     LoadRecipes();
-    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear();
     LayoutMsg L = OracleLayout(6, { { PartType::Generator, 0, 0 }, { PartType::Macerator, 3, 0 }, { PartType::Macerator, 6, 0 } }, {}, Row(0, 7, -1));
     L.machineTier = { MachineTiers_ByName("LV"), MachineTiers_ByName("MV"), MachineTiers_ByName("LV") };
     ApplyLayout(L);
@@ -4565,7 +4719,7 @@ const Recipe* RecipeFor(PartType machine, const char* input) {
     for (const Recipe& r : tables.recipes) if (r.machine == machine && !r.in.empty() && r.in[0].item == tables.item(input) && !r.out.empty()) return &r;
     return nullptr;
 }
-void MbReset() { plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear(); }
+void MbReset() { plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); refunds.clear(); }
 } // namespace
 
 // A coke oven battery (parallel 2) takes coal from two input hatches as one pool: inputs claimed at the start, two cokes at
@@ -4728,6 +4882,140 @@ TEST(Factory, AStructuresJobsSaveAndARemovedControllerGivesBackItsClaimedInputs)
     int back = 0;
     for (const ItemOut& r : refunds) if (r.item == tables.item("coal")) back += r.count;
     EXPECT_EQ(back, coke->in[0].count);
+    MbReset();
+}
+
+// (#1735 PR 3) Belts in the factory. Machines are one cell each: part 0 at cell (0,0,0), part 1 at (4,0,0), part 2 at
+// (2,0,3). Belt 1 runs from part 0's E face (slot 6, #2051) to part 1's W face (slot 32) along z = 4; belt 2 from part 2's N
+// face (z = 24) down to belt 1's centreline at x = 20 (a side merge).
+namespace {
+ConduitRun BeltRun(int id, std::vector<CInt3> pts) {
+    ConduitRun r; r.id = id; r.kind = ConduitKind::Belt; r.material = "basic"; r.size = kBeltWidth; r.points = std::move(pts);
+    return r;
+}
+LayoutMsg BeltLayout(const std::vector<PartType>& types, std::vector<ConduitRun> belts) {
+    const Int3 at[3] = { { 0, 0, 0 }, { 4, 0, 0 }, { 2, 0, 3 } };
+    LayoutMsg L{};
+    L.body = 9; L.plot = 7; L.version = 1;
+    for (size_t i = 0; i < types.size(); ++i) {
+        L.machines.push_back({ (int)i, types[i] }); L.machineCells.push_back({ at[i] }); L.machineVariant.push_back("");
+    }
+    L.belts = std::move(belts);
+    return L;
+}
+const ConduitRun kBelt1 = BeltRun(1, { { 6, 0, 4 }, { 32, 0, 4 } });
+const ConduitRun kBelt2 = BeltRun(2, { { 20, 0, 24 }, { 20, 0, 4 } });
+int OnBelts(const PlotSim& ps) { int n = 0; for (const BeltLine& b : ps.belts) n += (int)b.items.size(); return n; }
+} // namespace
+
+// A chest loads a belt from its contents, one item a tick while there is room; the belt carries them into another chest.
+// The same layout and contents give the same state hash every tick (the MP checksum relies on it).
+TEST(Factory, AChestLoadsABeltThatFeedsAnotherChest) {
+    LoadRecipes();
+    const int stone = tables.item("stone");
+    auto run = [&](std::vector<uint64_t>& hashes) {
+        MbReset();
+        ApplyLayout(BeltLayout({ PartType::Chest, PartType::Chest }, { kBelt1 }));
+        PlotSim& ps = *FindPlot(9, 7);
+        EXPECT_EQ(ps.belts.size(), 1u);
+        EXPECT_EQ(ps.belts[0].end, BeltEnd::Sink);
+        EXPECT_EQ(ps.belts[0].sink, ps.byPart.at(1));
+        EXPECT_EQ(ps.beltLoads.size(), 1u);
+        Machine& a = ps.machines[ps.byPart.at(0)];
+        Machine& b = ps.machines[ps.byPart.at(1)];
+        AddItems(a.in.data(), kChestSlots, stone, 10);
+        long long made = 0; int active = 0;
+        TickPlot(ps, 1, made, active);
+        EXPECT_EQ(CountItems(a.in.data(), kChestSlots, stone), 9);
+        EXPECT_EQ(OnBelts(ps), 1);
+        for (int t = 0; t < 300; ++t) { TickPlot(ps, 1, made, active); hashes.push_back(StateHash(ps)); }
+        EXPECT_EQ(CountItems(a.in.data(), kChestSlots, stone), 0);
+        EXPECT_EQ(OnBelts(ps), 0);
+        EXPECT_EQ(CountItems(b.in.data(), kChestSlots, stone), 10) << "every stone arrived";
+        EXPECT_TRUE(ps.belts[0].asleep) << "an empty belt sleeps";
+    };
+    std::vector<uint64_t> h1, h2;
+    run(h1);
+    run(h2);
+    EXPECT_EQ(h1, h2);
+    MbReset();
+}
+
+// A full machine backs the belt up (nothing lost); the items on it save and load; a re-layout that keeps the run keeps them,
+// one that changes it gives them back.
+TEST(Factory, ABeltBacksUpSavesAndGivesItsItemsBackWhenChanged) {
+    LoadRecipes();
+    MbReset();
+    const int stone = tables.item("stone");
+    const LayoutMsg L = BeltLayout({ PartType::Chest, PartType::Macerator }, { kBelt1 });
+    ApplyLayout(L);
+    PlotSim* ps = FindPlot(9, 7);
+    AddItems(ps->machines[ps->byPart.at(0)].in.data(), kChestSlots, stone, 80);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 400; ++t) TickPlot(*ps, 1, made, active);
+    auto counts = [&](PlotSim& p) {
+        return std::array<int, 3>{ CountItems(p.machines[p.byPart.at(0)].in.data(), kChestSlots, stone), OnBelts(p), CountItems(p.machines[p.byPart.at(1)].in.data(), kSlots, stone) };
+    };
+    const std::array<int, 3> c = counts(*ps);
+    EXPECT_EQ(c[2], kFeedMax) << "the unpowered macerator keeps a buffer";
+    EXPECT_EQ(c[1], 14) << "a 3.25-cell belt holds 14 items a quarter cell apart (0 .. 208)";
+    EXPECT_EQ(c[0] + c[1] + c[2], 80) << "nothing lost";
+    EXPECT_TRUE(ps->belts[0].asleep) << "backed up: it sleeps";
+    const uint32_t sum = Belt_Checksum(ps->belts[0]);
+
+    const std::string path = (std::filesystem::temp_directory_path() / "raylibgame_factory_belt_test.txt").string();
+    FILE* f = fopen(path.c_str(), "w+");
+    ASSERT_TRUE(f);
+    Factory::Save(f, 9);
+    rewind(f);
+    const std::vector<std::string> lines = Factory::ReadSaved(f);
+    fclose(f);
+    std::remove(path.c_str());
+    MbReset();
+    Factory::LoadSaved(9, lines);
+    ApplyLayout(L);
+    ps = FindPlot(9, 7);
+    ASSERT_TRUE(ps);
+    EXPECT_EQ(counts(*ps), c) << "the chest, the belt and the macerator came back";
+    EXPECT_EQ(Belt_Checksum(ps->belts[0]), sum) << "every item where it was";
+
+    LayoutMsg same = L; same.version = 2;
+    ApplyLayout(same);
+    ps = FindPlot(9, 7);
+    EXPECT_EQ(Belt_Checksum(ps->belts[0]), sum) << "an unchanged run keeps its items";
+    refunds.clear();
+    LayoutMsg changed = L; changed.version = 3;
+    changed.belts = { BeltRun(1, { { 6, 0, 4 }, { 30, 0, 4 } }) };
+    ApplyLayout(changed);
+    ps = FindPlot(9, 7);
+    int back = 0;
+    for (const ItemOut& r : refunds) if (r.item == stone) back += r.count;
+    EXPECT_EQ(back, c[1]) << "a changed run gives its items back";
+    EXPECT_EQ(OnBelts(*ps), 0);
+    EXPECT_EQ(ps->belts[0].end, BeltEnd::None) << "one slot short of the macerator: no end";
+    MbReset();
+}
+
+// A belt ending on another's side merges into it: both chests' items reach the end chest.
+TEST(Factory, ASideBeltMergesIntoAnother) {
+    LoadRecipes();
+    MbReset();
+    const int stone = tables.item("stone"), dirt = tables.item("dirt");
+    ApplyLayout(BeltLayout({ PartType::Chest, PartType::Chest, PartType::Chest }, { kBelt2, kBelt1 }));
+    PlotSim& ps = *FindPlot(9, 7);
+    ASSERT_EQ(ps.belts.size(), 2u);
+    EXPECT_EQ(ps.belts[0].id, 1) << "lines in run id order";
+    EXPECT_EQ(ps.belts[1].end, BeltEnd::Belt);
+    EXPECT_EQ(ps.belts[1].outLine, 0);
+    EXPECT_EQ(ps.belts[1].outPos, (20 - 6) * kBeltSub);
+    AddItems(ps.machines[ps.byPart.at(0)].in.data(), kChestSlots, stone, 6);
+    AddItems(ps.machines[ps.byPart.at(2)].in.data(), kChestSlots, dirt, 6);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 600; ++t) TickPlot(ps, 1, made, active);
+    const Machine& end = ps.machines[ps.byPart.at(1)];
+    EXPECT_EQ(CountItems(end.in.data(), kChestSlots, stone), 6);
+    EXPECT_EQ(CountItems(end.in.data(), kChestSlots, dirt), 6);
+    EXPECT_EQ(OnBelts(ps), 0);
     MbReset();
 }
 #endif

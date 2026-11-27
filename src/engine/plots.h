@@ -19,6 +19,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "conduit.h" // ConduitRun (#1735 belts)
 #include "dvec3.h"
 #include "voxel.h" // Int3
 
@@ -146,6 +147,11 @@ public:
     std::vector<Int3> changedCells;     // (#830) cells parts were placed in or removed from, since the grass last looked
     std::vector<int> formed;            // (#1429 PR 3) part indices of the multiblock controllers whose structure is formed (sorted, unique; saved). Members are derived by validation: a part may belong to several structures
     uint32_t refundTo = 0;              // (#854) a server: the player whose removal is next to reach the factory (its machines' contents go to them)
+    // (#1735 PR 3) thin belts: conduit runs of kind Belt (slot coordinates, ids unique in the plot; saved). The factory moves
+    // items along them; addBelt / removeBelt bump the version so it resyncs. Placement rules are the placer's (Conduit_CheckPlace).
+    std::vector<ConduitRun> belts;
+    int addBelt(ConduitRun run);        // gives it the next free id; returns it, or 0 when the run is not a valid belt
+    bool removeBelt(int id);
 
     // Plot space <-> body-local.
     Vector3 toPlot(Vector3 bodyLocal) const;

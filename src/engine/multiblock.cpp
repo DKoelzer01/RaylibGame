@@ -1169,7 +1169,7 @@ TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
     fclose(f);
     std::string text;
     { std::ifstream in(path); std::stringstream ss; ss << in.rdbuf(); text = ss.str(); }
-    EXPECT_EQ(text.compare(0, 6, "plots6"), 0);
+    EXPECT_EQ(text.compare(0, 6, "plots7"), 0) << "plots7 (#1735): plots6 plus the belts";
     EXPECT_NE(text.find("\nformed 1 " + std::to_string(ctl) + "\n"), std::string::npos);
     PlotSet back;
     f = fopen(path, "r");
@@ -1178,12 +1178,14 @@ TEST(MultiblockForming, SavesAsPlots6AndOldSavesLoadUnformed) {
     fclose(f);
     ASSERT_EQ(back.plots.size(), 1u);
     EXPECT_EQ(back.plots[0]->formed, std::vector<int>{ ctl });
-    // the same text as plots5 (no formed line): nothing formed
+    // the same text as plots5 (no formed or belts line): nothing formed
     std::string old = text;
     old.replace(0, 6, "plots5");
-    const size_t fl = old.find("formed ");
-    ASSERT_NE(fl, std::string::npos);
-    old.erase(fl, old.find('\n', fl) - fl + 1);
+    for (const char* tag : { "formed ", "belts " }) {
+        const size_t fl = old.find(tag);
+        ASSERT_NE(fl, std::string::npos) << tag;
+        old.erase(fl, old.find('\n', fl) - fl + 1);
+    }
     { std::ofstream out(path, std::ios::binary); out << old; }
     PlotSet older;
     f = fopen(path, "r");
