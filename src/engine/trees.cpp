@@ -219,7 +219,7 @@ namespace {
 struct BroadSpecies { float h, crown, trunk, reach, elevLo, elevHi, yLo, yHi; int branches; float blockW, blockH; };
 const BroadSpecies kBroadV2[3] = {
     { 1.00f, 1.25f, 1.30f, 1.30f, 15.0f, 38.0f, 0.42f, 0.78f, 2, 1.30f, 0.65f }, // oak: low, wide, flat-topped blocks
-    { 1.40f, 0.62f, 0.65f, 0.55f, 55.0f, 75.0f, 0.35f, 0.95f, 2, 0.75f, 1.15f }, // birch: steep short twigs all up the stem
+    { 1.40f, 0.62f, 0.65f, 0.95f, 45.0f, 65.0f, 0.5f, 0.92f, 1, 0.95f, 0.85f },  // birch: steep twigs up a long bare white stem
     { 1.05f, 1.05f, 1.00f, 0.90f, 32.0f, 55.0f, 0.55f, 0.85f, 1, 1.00f, 0.95f }, // maple: a round cluster
 };
 void BroadleafV2(VariantMesh& m, unsigned int seed, int sp, int cls) {
@@ -336,7 +336,7 @@ void BushV2(VariantMesh& m, unsigned int seed, int kind) {
         float c = 0.7f + 0.6f * U(r), h = c;
         Vector3 o = { (U(r) - 0.5f) * 0.9f, 0.15f + 0.4f * U(r), (U(r) - 0.5f) * 0.9f };
         if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = 0.1f + 0.15f * U(r); }
-        if (kind == 2) { c *= 0.7f; h = c * 1.6f; o.x *= 0.5f; o.z *= 0.5f; o.y = 0.2f + 0.5f * k; }
+        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = 0.25f + 0.3f * k; } // upright, not a pillar
         Prism(m, Vector3Subtract(o, { 0, h * 0.45f, 0 }), Vector3Add(o, { 0, h * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
     }
     if (kind == 2) Prism(m, { 0, -0.1f, 0 }, { 0, 0.4f, 0 }, 0.12f, 0.08f, 0.0f, false, Shade(r)); // a woody stem under the clump
