@@ -26,6 +26,17 @@ const Subject kSubjects[] = {
 constexpr int kN = sizeof(kSubjects) / sizeof(kSubjects[0]);
 struct Visit { bool skip = false; int generated = 0; Vector3 patch{}; Plant tree{}; Vector3 eye{}, target{}, up{}; };
 Visit V[kN];
+// Whether plant q stands in the view of p from eye: near the sight line, or near the eye (crowns overhang it).
+bool InTheWay(const Plant& p, Vector3 eye, const Plant& q) {
+    if (q.id == p.id) return false;
+    const Vector3 seg = Vector3Subtract(p.base, eye);
+    const float t = std::clamp(Vector3DotProduct(Vector3Subtract(q.base, eye), seg) / std::max(Vector3LengthSqr(seg), 1e-3f), 0.0f, 1.0f);
+    Vector3 off = Vector3Subtract(q.base, Vector3Add(eye, Vector3Scale(seg, t)));
+    off = Vector3Subtract(off, Vector3Scale(p.up, Vector3DotProduct(off, p.up))); // across the ground only
+    return Vector3Length(off) < 3.0f + 4.0f * q.scale || Vector3Distance(q.base, eye) < 12.0f + 6.0f * q.scale;
+}
+bool cleared2[kN] = {};
+double clearedAt[kN] = {}; // step time of the second clearing
 Vector3 Tangent(Vector3 up) { return Vector3Normalize(Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 })); }
 }
 
@@ -102,18 +113,17 @@ SCENARIO("visual/tree-species") {
             for (const Plant& p : plants) near += Vector3Distance(p.base, V[k].patch) <= 96.0f;
             const bool loaded = near >= V[k].generated && c.body->trees->readyTilesNear(V[k].patch, 300.0f) >= 40 && WorldIdle();
             if (c.t < 2.0 || (!loaded && c.t < 60.0)) return false;
-            // A mature tree (class 2) nearest the patch, else the largest class there is.
+            // Mature trees (class 2) nearest the patch, else the largest class there is: up to 6 candidates for the view.
             static const int kPrefer[4] = { 2, 3, 1, 0 };
-            bool found = false;
+            std::vector<Plant> cands;
             for (int cls : kPrefer) {
-                float best = 1e9f;
                 for (const Plant& p : plants)
-                    if (p.tree() && SpeciesOfVariant(p.variant) == kSubjects[k].species && SizeClassOfVariant(p.variant) == cls) {
-                        const float d = Vector3Distance(p.base, V[k].patch);
-                        if (d < best) { best = d; V[k].tree = p; found = true; }
-                    }
-                if (found) break;
+                    if (p.tree() && SpeciesOfVariant(p.variant) == kSubjects[k].species && SizeClassOfVariant(p.variant) == cls) cands.push_back(p);
+                if (!cands.empty()) break;
             }
+            std::sort(cands.begin(), cands.end(), [&](const Plant& a, const Plant& b) { return Vector3Distance(a.base, V[k].patch) < Vector3Distance(b.base, V[k].patch); });
+            if (cands.size() > 6) cands.resize(6);
+            const bool found = !cands.empty();
             int count = 0, bySpecies[kWoodSpecies] = {};
             for (const Plant& p : plants) if (p.tree()) ++bySpecies[(int)SpeciesOfVariant(p.variant)];
             count = bySpecies[(int)kSubjects[k].species];
@@ -121,28 +131,47 @@ SCENARIO("visual/tree-species") {
             for (int sp = 0; sp < kWoodSpecies; ++sp) if (bySpecies[sp]) mix += TextFormat(" %s %d", kWoodSpeciesNames[sp], bySpecies[sp]);
             c.note(TextFormat("%s: %d %s trees within 400 m (%d plants; trees:%s)", kSubjects[k].variant, count, name.c_str(), (int)plants.size(), mix.c_str()));
             if (!c.check(name + " grows in " + kSubjects[k].variant, found)) { V[k].skip = true; return true; }
-            // Beside it at its mid-height, back far enough for the crown; lifted clear of the ground at the eye.
-            const Plant& p = V[k].tree;
-            const float h = std::max(p.height, 2.0f) * 1.3f, back = 6.0f + 1.6f * h;
-            const Vector3 side = Tangent(p.up);
-            Vector3 eye = Vector3Add(p.base, Vector3Add(Vector3Scale(side, back), Vector3Scale(p.up, 0.45f * h + 1.0f)));
-            const Vector3 ed = Vector3Normalize(eye);
-            const float ground = c.field->radius + c.field->elevation(ed) + 2.0f;
-            if (Vector3Length(eye) < ground) eye = Vector3Scale(ed, ground);
-            V[k].eye = eye; V[k].target = Vector3Add(p.base, Vector3Scale(p.up, 0.5f * h)); V[k].up = p.up;
-            // A clear line of sight: fell every other plant whose crown could stand between the eye and the subject.
-            int cleared = 0;
-            const Vector3 seg = Vector3Subtract(p.base, eye);
-            const float segLen2 = std::max(Vector3LengthSqr(seg), 1e-3f);
-            for (const Plant& q : plants) {
-                if (q.id == p.id) continue;
-                const float t = std::clamp(Vector3DotProduct(Vector3Subtract(q.base, eye), seg) / segLen2, 0.0f, 1.0f);
-                const Vector3 onSeg = Vector3Add(eye, Vector3Scale(seg, t));
-                Vector3 off = Vector3Subtract(q.base, onSeg);
-                off = Vector3Subtract(off, Vector3Scale(p.up, Vector3DotProduct(off, p.up))); // across the ground only
-                if (Vector3Length(off) < 3.0f + 4.0f * q.scale) { c.body->trees->remove(q.id); ++cleared; }
+            // The whole tree from 15-30 m at its mid-height, from whichever candidate and side (8 headings) has open ground
+            // between (terrain doesn't cut the sight line) and the fewest other plants in the way. Those are felled: the ones
+            // near the sight line and any near the eye.
+            int bestCost = 1 << 30;
+            float bestBack = 0.0f;
+            for (const Plant& p : cands) {
+                // (A tree under ~3 m, the krummholz, is framed closer: from 15 m it is a speck.)
+                const float h = std::max(p.height, 1.0f) * 1.3f, back = std::clamp(6.0f + 2.0f * h, std::min(15.0f, 5.0f + 3.0f * h), 30.0f);
+                const Vector3 e1 = Tangent(p.up), e2 = Vector3CrossProduct(p.up, e1);
+                for (int d = 0; d < 8; ++d) {
+                    const float a = d * 0.785398f;
+                    const Vector3 side = Vector3Add(Vector3Scale(e1, cosf(a)), Vector3Scale(e2, sinf(a)));
+                    Vector3 eye = Vector3Add(p.base, Vector3Add(Vector3Scale(side, back), Vector3Scale(p.up, 0.45f * h + 1.0f)));
+                    const Vector3 ed = Vector3Normalize(eye);
+                    const float ground = c.field->radius + c.field->elevation(ed) + 1.7f;
+                    if (Vector3Length(eye) < ground) eye = Vector3Scale(ed, ground);
+                    const Vector3 target = Vector3Add(p.base, Vector3Scale(p.up, 0.5f * h));
+                    // Open: no rock (terrain, tors, overhangs) on the sight line, nor within 5 m of the eye (the
+                    // camera-clip flag, #1442).
+                    auto rock = [&](Vector3 q) { return c.field->density(q, nullptr) >= ISO_LEVEL; };
+                    bool open = true;
+                    // Five sight lines: the low trunk, mid-height, the crown, and either side of the crown.
+                    const Vector3 across = Vector3Normalize(Vector3CrossProduct(p.up, Vector3Subtract(target, eye)));
+                    const Vector3 aims[5] = { Vector3Add(p.base, Vector3Scale(p.up, 0.15f * h)), target, Vector3Add(p.base, Vector3Scale(p.up, 0.85f * h)),
+                                              Vector3Add(target, Vector3Scale(across, 0.4f * h)), Vector3Subtract(target, Vector3Scale(across, 0.4f * h)) };
+                    for (const Vector3& aim : aims)
+                        for (int i = 1; i < 20 && open; ++i) open = !rock(Vector3Lerp(eye, aim, i / 20.0f));
+                    const Vector3 dirs[5] = { e1, Vector3Negate(e1), e2, Vector3Negate(e2), p.up }; // (not down: the eye stands 1.7 m up)
+                    for (const Vector3& dv : dirs)
+                        for (float r : { 2.5f, 5.0f }) open = open && !rock(Vector3Add(eye, Vector3Scale(dv, r)));
+                    int cost = open ? 0 : 1000;
+                    cost += (int)((Vector3Length(eye) - ground) * 2.0f); // eye pushed up a slope: a worse angle
+                    for (const Plant& q : plants) cost += InTheWay(p, eye, q) ? (q.stone() ? 50 : 1) : 0; // (stones stay: remove() fells only plants)
+                    if (cost < bestCost) { bestCost = cost; bestBack = back; V[k].tree = p; V[k].eye = eye; V[k].target = target; V[k].up = p.up; }
+                }
             }
-            c.note(TextFormat("%s: %.0f m tall (class %d), viewed from %.0f m; %d plants cleared from the view", name.c_str(), p.height, SizeClassOfVariant(p.variant), back, cleared));
+            const Plant& p = V[k].tree;
+            int cleared = 0;
+            for (const Plant& q : plants) if (InTheWay(p, V[k].eye, q)) { c.body->trees->remove(q.id); ++cleared; }
+            c.note(TextFormat("%s: %.0f m tall (class %d), viewed from %.0f m; %d plants cleared from the view%s", name.c_str(), p.height,
+                              SizeClassOfVariant(p.variant), bestBack, cleared, bestCost >= 1000 ? " (terrain in the sight line: no open side)" : ""));
             return true;
         });
         s.step("look at the " + name, 60.0, [k, name](ScenarioCtx& c) {
@@ -150,6 +179,18 @@ SCENARIO("visual/tree-species") {
             c.camera(V[k].eye, V[k].target, V[k].up);
             c.waitingFor("the view settled (an idle world)");
             if (c.t < 3.0 || (!WorldIdle() && c.t < 30.0)) return false;
+            // Again from the eye: tiles that loaded only once the camera got here hold plants the first pass never saw.
+            if (!cleared2[k]) {
+                cleared2[k] = true;
+                std::vector<Plant> near;
+                c.body->trees->plantsNear(V[k].eye, 80.0f, near);
+                int n = 0;
+                for (const Plant& q : near) if (InTheWay(V[k].tree, V[k].eye, q)) { c.body->trees->remove(q.id); ++n; }
+                c.note(TextFormat("%s: %d more plants cleared from the eye", name.c_str(), n));
+                clearedAt[k] = n ? c.t : 0.0;
+                return false;
+            }
+            if (c.t < clearedAt[k] + 3.0 || (!WorldIdle() && c.t < clearedAt[k] + 30.0)) return false;
             c.shot(name, 100.0); // a picture to judge by eye: the look is meant to change (#1995)
             return true;
         });
