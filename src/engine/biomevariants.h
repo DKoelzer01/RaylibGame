@@ -27,6 +27,10 @@ struct BiomeVariantDef {
     // (#2032) Colour multipliers (linear RGB) on the grass and on leaves (trees, bushes, the far canopy), over the climate
     // colour. A variant without its own takes its type's base's; < 0 = not given (resolved: BiomeVariantTable::grassTint).
     float grassTint[3] = { -1.0f, -1.0f, -1.0f }, leafTint[3] = { -1.0f, -1.0f, -1.0f };
+    // (#1990) The erosion bake's multipliers here: stream-power erodibility, talus limit, hillslope creep, glacial
+    // carving. A variant without its own takes its base's; < 0 = not given (resolved: BiomeVariantTable::bake).
+    static constexpr int kBake = 4;
+    float bake[kBake] = { -1.0f, -1.0f, -1.0f, -1.0f };
     bool hasSpecies() const { for (float w : species) if (w > 0.0f) return true; return false; }
     bool gated() const { return elevMin > -1e8f || elevMax < 1e8f || tempMin > -1e8f || tempMax < 1e8f || moistMin > -1e8f || moistMax < 1e8f; }
     bool admits(float elev, float temp, float moist) const {
@@ -39,6 +43,8 @@ struct BiomeVariantTable {
     std::vector<int> byType[(int)Biome::Count]; // ids per type in file order, the base first
     std::vector<float> bandLo, bandHi;          // per id: its band of the variant axis (0..1) within its type
     std::vector<Vector3> grassTint, leafTint;   // (#2032) per id, resolved: its own, else its base's, else 1
+    struct BakeMul { float k = 1.0f, talus = 1.0f, creep = 1.0f, glacial = 1.0f; };
+    std::vector<BakeMul> bake;                  // (#1990) per id, resolved like the tints
     int find(const std::string& key) const;     // -1 if none
     int base(Biome t) const { return byType[(int)t].empty() ? -1 : byType[(int)t][0]; }
 };

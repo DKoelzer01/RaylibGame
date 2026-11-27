@@ -31,6 +31,14 @@ namespace {
             if (g) t.grassTint[i] = { g->grassTint[0], g->grassTint[1], g->grassTint[2] };
             if (l) t.leafTint[i] = { l->leafTint[0], l->leafTint[1], l->leafTint[2] };
         }
+        // (#1990) The bake multipliers, the same way: its own, else its base's, else 1.
+        t.bake.assign(t.defs.size(), BiomeVariantTable::BakeMul{});
+        for (size_t i = 0; i < t.defs.size(); ++i) {
+            const int b = t.base(t.defs[i].type);
+            const BiomeVariantDef& own = t.defs[i];
+            const BiomeVariantDef* s = own.bake[0] >= 0.0f ? &own : b >= 0 && t.defs[b].bake[0] >= 0.0f ? &t.defs[b] : nullptr;
+            if (s) t.bake[i] = { s->bake[0], s->bake[1], s->bake[2], s->bake[3] };
+        }
     }
 
     void Bands(BiomeVariantTable& t) {
@@ -124,6 +132,12 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
                 }
             }
             if (!extra.empty()) return fail(lineNo, kUse);
+        } else if (key == "bake") { // (#1990)
+            std::string v[BiomeVariantDef::kBake], extra;
+            ls >> v[0] >> v[1] >> v[2] >> v[3] >> extra;
+            for (int i = 0; i < BiomeVariantDef::kBake; ++i)
+                if (!Bound(v[i], 1.0f, d.bake[i]) || d.bake[i] < 0.0f || d.bake[i] > 8.0f) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>' (multipliers 0..8, or - for 1)");
+            if (!extra.empty()) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>'");
         } else if (key == "cover") {
             std::string v, extra;
             ls >> v >> extra;
