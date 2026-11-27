@@ -121,11 +121,18 @@ namespace {
         for (const auto& r : mr) {
             bool makes = false;
             for (const auto& o : r.out) makes |= o.first == id;
+            for (const auto& o : r.chance) makes |= o.first == id;
             if (!makes) continue;
             if (!any) { Heading("Made in machines"); any = true; }
             Link(MachineItem(r.machine), 0, uid++);
             ImGui::SameLine(); ImGui::TextDisabled("(%.1f s%s)", r.ticks / 20.0f, r.eu > 0 ? TextFormat(", %d EU/t", r.eu) : "");
-            ImGui::Indent(); RecipeLine(r.in, r.out, uid); ImGui::Unindent(); // on its own line: machine recipes ran off the page
+            ImGui::Indent(); RecipeLine(r.in, r.out, uid); // on its own line: machine recipes ran off the page
+            if (!r.chance.empty()) { // (#1734) outputs by chance: "and sometimes Iron ore (8%), ..."
+                std::string s = "and sometimes";
+                for (size_t k = 0; k < r.chance.size(); ++k) { const ItemDef* d = itemDB.find(r.chance[k].first); s += TextFormat("%s %s (%d%%)", k ? "," : "", d ? d->name.c_str() : r.chance[k].first.c_str(), r.chance[k].second); }
+                ImGui::TextDisabled("%s", s.c_str());
+            }
+            ImGui::Unindent();
         }
         any = false;
         for (const Recipe& r : itemDB.recipes()) {

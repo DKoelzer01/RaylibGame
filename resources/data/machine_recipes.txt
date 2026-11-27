@@ -174,6 +174,11 @@ mixer            | bronze_dust 4      | copper_dust 3, tin_dust 1         | 200 
 mixer            | bronze_dust 4      | copper_crushed 3, tin_crushed 1   | 200 | 0
 kiln             | bronze_ingot 1     | bronze_dust 1             | 100 | 0
 furnace          | bronze_ingot 1     | bronze_dust 1             | 100 | 8
+# (#1734) the rotary sieve: what passes the mesh, and now and then something caught in it ("8%": an outcome by chance, carried
+# per machine in hundredths, so every 100 gravel give exactly 8 iron ore). GUESS rates; the ores by biome later (#1982).
+rotary_sieve     | sand 1, iron_ore 8%, copper_ore 6%, tin_ore 4%           | gravel 1 | 40 | 0
+rotary_sieve     | clay 1, tin_ore 10%                                      | sand 4   | 60 | 0
+rotary_sieve     | fibre 1, grain_seeds 10%, root_seeds 5%, flax_seeds 5%   | dirt 2   | 40 | 0
 # (#1271 L6b-2) the steam assembler makes steam packs (twice as fast as by hand, and without you)
 steam_assembler  | steam_pack 1       | iron_plate 1, cogwheel 1, coal 1 | 100 | 0
 # (#1271 L6c) the LV assembler: the real route for circuits and the LV/MV packs, and with tiers (#1427 L7b) the MV pack in an MV assembler and up, the HV and rocket packs in an HV one
