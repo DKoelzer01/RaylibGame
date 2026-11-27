@@ -252,7 +252,10 @@ int upMove(int gc) {
     int room = int(CAP(a)) - int(F(a)) - fallIn;
     int gb = neighbour(s, x, y, z, 0, 0, -1, pb, fb);
     int keep = int(F(c)) - int(fall(c, gb, gb >= 0 ? inC[gb] : 0u, pb, gb >= 0));
-    return max(0, min(min(excess / 2, kPushMax), min(room, keep)));
+    // At sqrt(g) as the sideways share (#1942): a moon's pressure pushes slower; Terra's scale 1 keeps the bits (FluidKernel).
+    precise float pushF = float(min(excess / 2, kPushMax)) * gRootAt(gc);
+    int push = int(pushF);
+    return max(0, min(push, min(room, keep)));
 }
 // The water surface over a cell's floor (fill units, 255 a cell): its own height, plus the cells above while it is full.
 int headOf(int g, uint c) {
