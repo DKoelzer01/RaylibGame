@@ -6,10 +6,4 @@ fluid/u-bend               # 1 of 5 checks; GPU 2/2
 fluid/u-bend-cpu           # 1 of 5 checks; GPU 2/2
 water/film-on-tiles        # 1 of 3 checks; GPU 20/20
 world/spawn-by-water       # 1 of 5 checks; GPU 15/16
-# Not GPU: on the hosted runners the sim runs 30-50x real time, and these wait on wall-clock work past a sim-time
-# deadline (#1972). Pass on the GPU runner and the deweyserver sandbox.
-net/creative-fly           # client join over GNS sockets
-net/creative-fly-lag       # client join
-net/late-join-lag          # bob joins
-net/team-store             # bob and carol join (#1886)
-craft/recursive-circuit    # the craft queue
+# (The net joins and craft/recursive-circuit were here: their deadlines now count wall time as well, s.realTime, #1972.)
