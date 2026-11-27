@@ -262,7 +262,7 @@ fi
 if [ "${RESERVATION_CLASH:-1}" != 0 ]; then
     rc_out=$(bash tools/ci/reservation_clash.sh "$BASE" 2>&1)
     rc_rc=$?
-    printf '%s\n' "$rc_out" | grep '^::'
+    printf '%s\n' "$rc_out" | grep -E '^(::|reservation_clash:)'
     sum ""; sum "**Reservation clashes (check 7):** $(printf '%s\n' "$rc_out" | grep '^reservation_clash:' | sed 's/^reservation_clash: //')"
     [ "$rc_rc" -ne 0 ] && errors=$((errors + 1))
 fi
