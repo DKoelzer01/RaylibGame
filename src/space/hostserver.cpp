@@ -25,6 +25,7 @@
 #include "footsteps.h" // (#1224) players' step noise for creature hearing
 #include "suit.h"
 #include "combat.h"
+#include "research.h"
 #include "teamquests.h"
 #include "teamstore.h"
 #include "navigation.h"
@@ -471,6 +472,7 @@ namespace {
     constexpr long long kTeamStoreEvery = 5 * 60; // ticks
     int teamStoreMsgs = 0;
     int mapPins = 0, mapPinsRefused = 0;       // (#1886) MsgMapPin taken, and refused (no team, a bad name or direction, 256 pins)
+    int researchQueueActs = 0, researchQueueRefused = 0; // (#1886) MsgResearchQueue applied, and refused (Research_QueueAction)
     // The text a member gets: false when even without the map it is over the cap (logged; nothing sent).
     bool TeamStoreTextForNet(int team, std::string& text) {
         text = TeamStore_Text(team);
@@ -2319,6 +2321,17 @@ namespace {
                 ++mapPins;
                 if (p.add) TeamEvent(it->second.session, "count", "waypoint"); // (the team's "place a waypoint" task)
                 teamStoreSentAt[team] = SimTick() - kTeamStoreEvery; // to the team at the next tick, not in up to 5 s
+                return;
+            }
+            case NetMsg::ResearchQueue: { // (#1886) the research tab's queue changes: the team's research is kept here
+                MsgResearchQueue q;
+                if (!it->second.joined || !NetRead(r, q)) return;
+                const int team = TeamOfSession(it->second.session);
+                const bool ok = team && q.op >= 1 && q.op <= 3 &&
+                                Research_QueueAction(Research_Team(team), (ResearchQueueOp)q.op, q.node, TeamQuests_Book(team).tier);
+                if (!ok) { ++researchQueueRefused; return; } // (the client's mirror is put right by the next store)
+                ++researchQueueActs;
+                teamStoreSentAt[team] = SimTick() - kTeamStoreEvery;
                 return;
             }
             case NetMsg::Chat: { // (#326) a player's line: the server's handler (commands, logging), else to everyone

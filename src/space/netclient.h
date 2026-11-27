@@ -172,6 +172,8 @@ void NetClient_Disconnect(NetClient& c); // a clean Bye(quit)
 void NetClient_SendChat(NetClient& c, const std::string& text); // (#326) a chat line; "/command" lines go to ops' commands on the server
 // (#1886) a map pin placed (add) or removed, for the team's shared pins; false when not joined (it stays a local waypoint)
 bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vector3 dir, const std::string& name);
+// (#1886) a research queue change (op: ResearchQueueOp 1 add, 2 remove, 3 up); the host's next team store shows the result
+bool NetClient_SendResearchQueue(NetClient& c, uint8_t op, const std::string& node);
 void NetClient_HitAnimal(NetClient& c, uint64_t netId);         // (#334) a swing at an animal: the server checks and applies it
 void NetClient_UseAnimal(NetClient& c, uint64_t netId, int action); // (#334) 1 feed, 2 take its product (the server checks and applies)
 void NetClient_UseItem(NetClient& c, const std::string& item);       // (#337) eat or use an item: the server applies it to its copy

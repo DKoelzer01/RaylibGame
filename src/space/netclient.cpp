@@ -709,6 +709,12 @@ bool NetClient_SendMapPin(NetClient& c, bool add, const std::string& body, Vecto
     return true;
 }
 
+bool NetClient_SendResearchQueue(NetClient& c, uint8_t op, const std::string& node) {
+    if (c.state != NetClient::State::Joined || !c.conn) return false;
+    SendMsg(c, MsgResearchQueue{ op, node });
+    return true;
+}
+
 // ---- Join sync (#776) helpers ----
 
 // A body's plots as the save writes them (text; the same file mode both ways, so equal plots give equal bytes).

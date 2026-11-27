@@ -6,14 +6,18 @@
 // new team's store at once, and her old team's research doesn't come with her (the user, on #1886).
 // The clients run in this process, so they don't apply the text (the host's state is the real one here): the checks read
 // what each client received. Map pins (#1886): bob pins a spot; dave's late join brings it, carol's team doesn't see it
-// until she joins it, and her removing it takes it from bob's and dave's stores at the next tick.
+// until she joins it, and her removing it takes it from bob's and dave's stores at the next tick. Research from a client
+// (#1886): bob queues a node his team sees and the host keeps it; carol's ask for a node her team can't see is refused.
 #include "scenario.h"
 #include "hostserver.h"
 #include "netclient.h"
 #include "net.h"
 #include "playerrecord.h"
 #include "research.h"
+#include "survival.h"
+#include "teamquests.h"
 #include "world.h"
+#include <algorithm>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -113,6 +117,11 @@ SCENARIO("net/team-store") {
         c.check("carol doesn't hear bob's team's research", !Has(S.carol, "smelting"));
         // (#1886) bob pins a spot on his map: a pin for his team (as a click on the map does in the game)
         c.check("bob's map pin is sent", NetClient_SendMapPin(S.bob, true, "terra", kPinDir, "Copper hill"));
+        // (#1886) research from a client: bob queues a tier 3 node for his team (at tier 3: it shows in full); carol asks for
+        // a tier 5 node her team can't see, which the host refuses
+        TeamQuests_Book(S.bobTeam).tier = 3; TeamQuests_Book(S.carolTeam).tier = 3;
+        c.check("bob's research queue change is sent", NetClient_SendResearchQueue(S.bob, (uint8_t)ResearchQueueOp::Add, "steelmaking"));
+        c.check("carol's is sent", NetClient_SendResearchQueue(S.carol, (uint8_t)ResearchQueueOp::Add, "aluminium"));
         NetClient_Connect(S.dave, TextFormat("127.0.0.1:%d", kPort), "dave");
         S.t0 = c.t;
         return true;
@@ -132,6 +141,10 @@ SCENARIO("net/team-store") {
         c.check("dave's join brings bob's map pin (the team's pins)", HasPin(S.dave, "Copper_hill"), S.dave.teamStoreText.substr(0, 300));
         c.check("bob has his pin back from the host", HasPin(S.bob, "Copper_hill"));
         c.check("carol's team doesn't see it", !HasPin(S.carol, "Copper_hill"));
+        const auto& bq = Research_Team(S.bobTeam).queue;
+        c.check("the host queued bob's research for his team", std::find(bq.begin(), bq.end(), "steelmaking") != bq.end());
+        c.check("...and dave's store shows it", S.dave.teamStoreText.find("queue steelmaking") != std::string::npos);
+        c.check("the host refused carol's hidden node", Research_Team(S.carolTeam).queue.empty());
         c.lt("s from dave's join to his store (it comes with the join, not the 5 s resend)", c.t - S.daveJoinedAt, 1.0);
         S.carolStoresBefore = S.carol.teamStores;
         NetClient_SendChat(S.bob, "/team invite carol");

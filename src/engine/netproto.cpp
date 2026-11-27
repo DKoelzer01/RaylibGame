@@ -556,6 +556,7 @@ bool ParseAny(const std::vector<uint8_t>& b) {
         case NetMsg::QuestBook: { MsgQuestBook m; return NetRead(r, m); }
         case NetMsg::TeamStore: { MsgTeamStore m; return NetRead(r, m); }
         case NetMsg::MapPin: { MsgMapPin m; return NetRead(r, m); }
+        case NetMsg::ResearchQueue: { MsgResearchQueue m; return NetRead(r, m); }
         case NetMsg::CraftRequest: { MsgCraftRequest m; return NetRead(r, m); }
         case NetMsg::MachineAction: { MsgMachineAction m; return NetRead(r, m); }
         case NetMsg::MachineView: { MsgMachineView m; return NetRead(r, m); }
@@ -754,6 +755,8 @@ bool NetProto_Test() {
             pa.add = false; pa.body = "terra"; pa.name = "Copper hill"; pa.dir[0] = 0.6f; pa.dir[1] = 0.0f; pa.dir[2] = -0.8f;
             check(RoundTrip(pa, pb, &s2) && !pb.add && pb.body == "terra" && pb.name == pa.name && pb.dir[0] == 0.6f && pb.dir[2] == -0.8f, "map pin");
             samples.push_back(s2);
+            MsgResearchQueue ra{ 3, "steam_power" }, rb; std::vector<uint8_t> s3;
+            check(RoundTrip(ra, rb, &s3) && rb.op == 3 && rb.node == "steam_power", "research queue"); samples.push_back(s3);
         }
         { // #604
             MsgTeamState a, b; std::vector<uint8_t> s;
@@ -967,6 +970,8 @@ bool NetRead(NetReader& r, MsgMapPin& m) {
     m.dir[0] = r.f32(); m.dir[1] = r.f32(); m.dir[2] = r.f32();
     return Done(r);
 }
+void NetWrite(NetWriter& w, const MsgResearchQueue& m) { Id(w, NetMsg::ResearchQueue); w.u8(m.op); w.str(m.node.substr(0, 64)); }
+bool NetRead(NetReader& r, MsgResearchQueue& m) { m.op = r.u8(); m.node = r.str(64); return Done(r); }
 void NetWrite(NetWriter& w, const MsgCraftRequest& m) { Id(w, NetMsg::CraftRequest); w.u32(m.recipe); w.str(m.output.substr(0, 64)); w.u8(m.count); w.boolean(m.useChests); w.boolean(m.recursive); }
 bool NetRead(NetReader& r, MsgCraftRequest& m) { m.recipe = r.u32(); m.output = r.str(64); m.count = r.u8(); m.useChests = r.boolean(); m.recursive = r.boolean(); return Done(r) && !m.output.empty() && m.count >= 1 && m.count <= 64; }
 // (#865, #866) drops and creative items
