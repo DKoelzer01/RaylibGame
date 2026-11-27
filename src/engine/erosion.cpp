@@ -1168,6 +1168,7 @@ void PlanetErosion::routeFinal(int threads) {
     auto isB = [&](int g) { return bFace == 6 || (bFace >= 0 && g / (nf * nf) == bFace); };
     static const float kBreach = getenv("RAYLIBGAME_B_BREACH") ? (float)atof(getenv("RAYLIBGAME_B_BREACH")) : 8.0f;
     std::vector<float> breachCut(bFace >= 0 ? G : 0, 0.0f);
+    std::vector<uint8_t> keepPond; // #2039: B's pond cells, never breached (filled; empty: none)
     auto route = [&](bool preferD4, bool breach) {
         RadixHeap heap;
         std::fill(seen.begin(), seen.end(), 0);
@@ -1188,7 +1189,7 @@ void PlanetErosion::routeFinal(int threads) {
                 // must drop more than kBreach. The smooth 100-200 m surface leaves hollows the 50 m simulation would have
                 // worn an outlet through on A; filled, they stood as still ponds where A had a stream. Deeper basins
                 // stay lakes.
-                if (breach && h[o] < hf[c] - 0.05f && isB(o)) { // (a hollow, not the jitter across a flat)
+                if (breach && h[o] < hf[c] - 0.05f && isB(o) && (keepPond.empty() || !keepPond[o])) { // (a hollow, not the jitter across a flat; not a pond, #2039)
                     float need = 0.0f, t = h[o];
                     int p = c, steps = 0;
                     for (; p >= 0 && !outlet[p] && h[p] > (t -= 1e-3f) && steps < 400; p = recv[p], ++steps) need = std::max(need, h[p] - t);
@@ -1236,6 +1237,38 @@ void PlanetErosion::routeFinal(int threads) {
         }
         for (size_t k = order.size(); k-- > 0;) { const int c = order[k]; if (!outlet[c] && recv[c] >= 0) area[recv[c]] += area[c]; }
     };
+    if (bFace >= 0 && kBreach > 0.0f) {
+        // #2039: option B's ponds. B has no 50 m simulation, whose flood left the hollows A's ponds come from (#360), and
+        // the breach drains shallow basins. A first routing without breaching finds the closed basins: a small one (A's
+        // pond rule: <= 12 cells, 0.8 m+ deep) that no stream runs through (its catchment under kFlowArea0) becomes a pond
+        // and is filled, not breached. Basins a stream crosses are still breached (#1988 pose 2); shallower pits drain
+        // or stay dry, as fluid/flow and fluid/slope-drain need (Water, 2026-11-27).
+        route(false, false);
+        keepPond.assign(G, 0);
+        std::vector<uint8_t> done(G, 0);
+        std::vector<int> stack, members;
+        auto pit = [&](int g) { return !outlet[g] && isB(g) && hf[g] - h[g] > 0.05f; };
+        int nb[8];
+        const size_t before = pondList.size();
+        for (int g0 = 0; g0 < G; ++g0) { // cell order: deterministic
+            if (done[g0] || !pit(g0)) continue;
+            members.clear(); stack.assign(1, g0); done[g0] = 1;
+            while (!stack.empty()) {
+                const int q = stack.back(); stack.pop_back();
+                members.push_back(q);
+                nbs(q, nb);
+                for (int k = 0; k < 8; ++k) if (const int o = nb[k]; o >= 0 && !done[o] && pit(o)) { done[o] = 1; stack.push_back(o); }
+            }
+            if (members.size() > 12) continue;
+            float level = -1e9f, low = 1e9f, inflow = 0.0f; Vector3 sum{ 0, 0, 0 };
+            for (int q : members) { level = std::max(level, hf[q]); low = std::min(low, h[q]); inflow = std::max(inflow, area[q]); sum = Vector3Add(sum, flowDir(q)); }
+            if (level - low < 0.8f || inflow >= kFlowArea0) continue;
+            for (int q : members) keepPond[q] = 1;
+            const float r = std::clamp(sqrtf((float)members.size() * side * side / PI) + 6.0f, 12.0f, 60.0f);
+            pondList.push_back({ Vector3Normalize(sum), r, level, level - low });
+        }
+        LOG_INFO("Erosion", "option B ponds (#2039): %d from the routing's closed basins\n", (int)(pondList.size() - before));
+    }
     route(false, bFace >= 0 && kBreach > 0.0f);
     // Diagonal channel links (#547): the line between two diagonal cells crosses the corner of the two cells beside them,
     // where the bilinear ground stands at the four cells' mean - up to half a V valley's side over the channel, which the
