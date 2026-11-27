@@ -1246,14 +1246,22 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
     // the 40 m the camera may move before the next rebuild): the shadow passes drew the whole 2 km forest twice,
     // ~1.3 ms a frame flying, for boxes a few hundred metres across.
     const float setReach[kTreeSets] = { 1e30f, kTreeShadowFarReach, kTreeShadowNearReach };
-    std::vector<float> buf[kTreeSets][2];
-    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
-        const int v = VariantOfTreeMesh(mesh);
-        const float reach = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
-        for (auto& s : buf) { s[0].clear(); s[1].clear(); }
-        for (auto& kv : tiles) {
-            const TreeTile& t = kv.second;
-            if (!t.ready || t.inst[mesh].empty() || Vector3Distance(t.centre, camLocal) > reach + kTreeTileSize) continue;
+    // One pass over the tiles sorts every instance into its mesh's buffers (#1995: a pass per mesh walked the tile map
+    // 180 times once phase 2 brought 14 species, ~14 ms a rebuild in a dense swamp). Main thread only, so the scratch
+    // buffers are shared by every TreeSystem and keep their capacity between rebuilds.
+    static std::vector<float> bufs[kTreeMeshes][kTreeSets][2];
+    for (auto& m : bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
+    const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
+    for (auto& kv : tiles) {
+        const TreeTile& t = kv.second;
+        if (!t.ready) continue;
+        const float tileDist = Vector3Distance(t.centre, camLocal);
+        if (tileDist > std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize) continue;
+        for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+            if (t.inst[mesh].empty()) continue;
+            const float reach = VariantOfTreeMesh(mesh) < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
+            if (tileDist > reach + kTreeTileSize) continue;
+            auto& buf = bufs[mesh];
             for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8) {
                 const float x = (float)(t.inst[mesh][k] - anchor.x), y = (float)(t.inst[mesh][k + 1] - anchor.y), z = (float)(t.inst[mesh][k + 2] - anchor.z);
                 const float d2 = x * x + y * y + z * z;
@@ -1263,12 +1271,14 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
                 // without a sun direction yet, by distance from the camera.
                 const float along = x * shadowSunLocal.x + y * shadowSunLocal.y + z * shadowSunLocal.z;
-                const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
                 const float perp2 = sunKnown ? std::max(0.0f, d2 - along * along) : d2;
                 for (int s = 0; s < kTreeSets; ++s)
                     if (s == 0 || perp2 <= setReach[s] * setReach[s]) buf[s][lod].insert(buf[s][lod].end(), inst, inst + 8);
             }
         }
+    }
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+        const auto& buf = bufs[mesh];
         for (int s = 0; s < kTreeSets; ++s)
             for (int lod = 0; lod < 2; ++lod) {
                 const int slot = mesh + lod * kTreeMeshes;
