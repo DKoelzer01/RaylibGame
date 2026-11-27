@@ -1914,6 +1914,10 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
         const Vector3 d = Vector3Normalize(Vector3{ r, 0.6f, 0.8f });
         printf("DBG r %.3f input %.1f baked %.1f flow %.1f\n", r, height(d, 0.0f), b.heightAt(d, 0.0f), b.flowHeight(b.flowCellOf(d)));
     }
+    for (int g = b.flowCellOf(Vector3Normalize(Vector3{ 0.0f, 0.6f, 0.8f })), s = 0; g >= 0 && s < 40; g = b.flowReceiver(g), ++s) {
+        const Vector3 d = b.flowDir(g);
+        printf("DBG path %d (%.3f %.3f %.3f) flow %.1f baked %.1f input %.1f\n", g, d.x, d.y, d.z, b.flowHeight(g), b.heightAt(d, 0.0f), height(d, 0.0f));
+    }
     printf("DBG cells %d flowCells %d ponds %d filled %d\n", b.cells(), b.flowCells(), (int)b.ponds().size(), (int)b.filledCells().size());
     ASSERT_FALSE(b.filledCells().empty()) << "no lakes or ponds on the test planet";
     int wet = 0;
