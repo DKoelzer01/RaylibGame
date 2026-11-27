@@ -58,8 +58,9 @@ struct State {
         }
         return kFloor;
     }
-    // Side on, a little above the ground: both pits and the line of the tunnel between them.
-    void camera(ScenarioCtx& c) const { c.camera(pt(0.0f, -18.0f, 5.0f), pt(0.0f, 0.0f, -2.0f), home); }
+    // Side on and high (~50 degrees down): the water in both pits and the line of the tunnel between them (from 5 m up the
+    // rims hid the water, which settles ~0.75 m down).
+    void camera(ScenarioCtx& c) const { c.camera(pt(0.0f, -12.0f, 14.0f), pt(0.0f, 0.0f, -1.0f), home); }
 } S;
 }
 
@@ -204,13 +205,12 @@ static void Build(ScenarioDef& s) {
     });
 }
 
+// The pressure pass (#1168) is on by default since #1898. The default (GPU) path; --scenario-parity fluid/u-bend runs it on
+// both kernels and compares them cell by cell (it sets FLUID_CPU itself, so this variant leaves it alone).
+SCENARIO("fluid/u-bend") { Build(s); }
+// The CPU kernel (a headless server's path).
+SCENARIO("fluid/u-bend-cpu") { s.env = { { "FLUID_CPU", "1" } }; Build(s); }
 // The baselines (the pass off) fail by design, so they carry their own tag, not "fluid": the runner's fluid set ran ~6 min
 // on two expected failures and its 45-min step ran out (runner 44920565503). --scenario tag:fluid-baseline runs them.
-SCENARIO("fluid/u-bend") { Build(s); s.tags = { "fluid-baseline", "water", "physics-reference" }; }
-// The CPU kernel without the pass: the baseline the pressure variant is compared with.
-SCENARIO("fluid/u-bend-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "0" } }; Build(s); s.tags = { "fluid-baseline", "water", "physics-reference" }; }
-// The pressure pass (#1168), on the default (GPU) path; --scenario-parity fluid/u-bend-pressure runs it on both and
-// compares them cell by cell (it sets FLUID_CPU itself, so this variant leaves it alone).
-SCENARIO("fluid/u-bend-pressure") { s.env = { { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }
-// The pass on the CPU kernel (a headless server's path).
-SCENARIO("fluid/u-bend-pressure-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "1" } }; Build(s); }
+SCENARIO("fluid/u-bend-off") { s.env = { { "RAYLIBGAME_FLUID_PRESSURE", "0" } }; Build(s); s.tags = { "fluid-baseline", "water", "physics-reference" }; }
+SCENARIO("fluid/u-bend-off-cpu") { s.env = { { "FLUID_CPU", "1" }, { "RAYLIBGAME_FLUID_PRESSURE", "0" } }; Build(s); s.tags = { "fluid-baseline", "water", "physics-reference" }; }

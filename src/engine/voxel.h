@@ -304,6 +304,8 @@ public:
     float variantU(Vector3 dir) const;
     int variantOf(Biome type, const Climate& c, float elev, float u) const;
     int variantAt(Vector3 dir, float elev) const;
+    // ...with the variant noise read at uDir (a point near dir): the flora dithers its variant borders this way (#1978).
+    int variantAt(Vector3 dir, float elev, Vector3 uDir) const;
     Vector3 nearestVariantDir(Vector3 home, int variant) const; // as nearestBiomeDir, for --bench-biome <type>.<id>
     Vector3 nearestDeepDir(Vector3 home, const std::function<bool(Vector3, float)>& is) const; // ...is(dir, elev) 200 m out on four sides
     // Biome landforms (Plan 5 B) added to the height before rivers carve it: desert dunes, badlands
