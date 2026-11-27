@@ -282,8 +282,8 @@ TEST(BiomeVariants, ParsesFlora) {
     EXPECT_FLOAT_EQ(d.species[1], 3.0f); EXPECT_FLOAT_EQ(d.species[3], 1.0f); EXPECT_FLOAT_EQ(d.species[0], 0.0f);
     const BiomeVariantDef& base = t.defs[t.base(Biome::Forest)];
     EXPECT_FLOAT_EQ(base.trees, 1.0f); EXPECT_LT(base.cover, 0.0f); EXPECT_FALSE(base.hasSpecies());
-    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species palm 2\n", t, &err));
-    EXPECT_NE(err.find("palm"), std::string::npos) << err;
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species fungus 2\n", t, &err));
+    EXPECT_NE(err.find("fungus"), std::string::npos) << err;
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species oak\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));
