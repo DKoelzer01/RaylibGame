@@ -1889,7 +1889,7 @@ TEST(ErosionBake, FieldsForTheBiomeAndTheirCache) {
     PlanetErosion b;
     // A crater 60 m deep and ~450 m across (option B breaches basins up to 8 m deep): the lake the wetness test needs.
     auto height = [](Vector3 d, float) {
-        const float crater = 60.0f * std::max(0.0f, 1.0f - Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f }) / 0.075f);
+        const float crater = 200.0f * std::max(0.0f, 1.0f - Vector3Distance(d, Vector3{ 0.0f, 0.6f, 0.8f }) / 0.3f);
         const float sea = 500.0f * std::max(0.0f, -0.2f - d.y); // the south under the sea: the routing's outlets
         return 80.0f + 250.0f * d.y * d.y + 90.0f * ValueNoise(Vector3Scale(d, 9.0f), 7u) - 45.0f - crater - sea;
     };
