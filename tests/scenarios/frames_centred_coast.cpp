@@ -127,9 +127,10 @@ SCENARIO("frames/centred-coast") {
         st.placed = false;
         return true;
     });
-    // (F8b-2) A placeAt mid-flight: the place's velocity (at rest on the turning ground), not the last flight's. placeAt
-    // anchors the player, so before the spawn count was checked the Fixed path took this for the same flight and rebuilt the
-    // stored 300+ m/s fall.
+    // (F8b-2) A placeAt mid-flight: the place's velocity (at rest on the turning ground), not the last flight's stored 300+
+    // m/s fall. In the game the loading hold moves the player after a spawn, which counts as moved from outside; the spawn
+    // count check (Player::update) covers placements with no hold (a server's remote players) and is not what this step
+    // tests: it passes without it (A/B, #2113).
     s.step("teleport mid-flight", 60.0, [](ScenarioCtx& c) {
         Planetoid& b = *c.body;
         survival.dead = false; survival.health = 100.0f;
