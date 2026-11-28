@@ -7,14 +7,15 @@
 // ruling on #1952: pockets thin out with depth, deposits fewer but bigger and richer, ore kinds per band) change in one
 // place. Creatures keep their own depth= ranges in creatures.txt (data, one per creature).
 //
-// The values are today's (a refactor: the --cave-stats hash is unchanged); band edges are GUESSES until the user confirms.
+// Band edges: the user's ruling (#1465, 2026-11-27): shallow 25-250 m, middle 250-500 m, deep 500 m to the mantle. Heat
+// with depth starts at the middle band (#1472). The other values are GUESSES.
 
 enum class DepthBand { Surface = -1, Shallow = 0, Middle, Deep };
 
 struct DepthTable {
-    // Bands (#2070, GUESS edges): shallow from the first caves down to `middle`, middle down to `deep`, deep down to the
-    // mantle (caves stop `mantleClearance` above it; the mantle itself is unmineable).
-    float shallow = 25.0f, middle = 150.0f, deep = 500.0f;
+    // Bands (#2070): shallow from the first caves down to `middle`, middle down to `deep`, deep down to the mantle (caves
+    // stop `mantleClearance` above it; the mantle itself is unmineable).
+    float shallow = 25.0f, middle = 250.0f, deep = 500.0f;
     float mantleClearance = 20.0f;   // m above the mantle radius (not under the ground)
     float mantleFade = 10.0f;        // m: caves fade out over this above the clearance
     // The noise caverns (#999) in the density field: from noiseCavernMin under the ground (faded in over noiseCavernFade)
@@ -23,7 +24,8 @@ struct DepthTable {
     float noiseCavernMin = 30.0f, noiseCavernFade = 20.0f, noiseCavernMantle = 40.0f;
 
     // Cave passages (#615, #999): a passage's axis stays at least passageMin + passagePerRadius x its radius deep (so it
-    // never reaches the surface) and at most passageMax (today the shallow band's floor); networks start passageMin +
+    // never reaches the surface) and at most passageMax (today's clamp, 100 m short of the shallow band's floor; #2070
+    // lifts it to the mantle); networks start passageMin +
     // passageStartSpan x U deep.
     float passageMin = 25.0f, passagePerRadius = 1.3f, passageMax = 150.0f, passageStartSpan = 95.0f;
     float chamberMin = 40.0f;        // #1058: chambers at passage vertices this deep

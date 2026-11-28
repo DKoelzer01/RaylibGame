@@ -100,6 +100,10 @@ TEST(DepthTable, BandsAndTheirOrder) {
     EXPECT_EQ(t.bandAt(t.middle), DepthBand::Middle);
     EXPECT_EQ(t.bandAt(t.deep), DepthBand::Deep);
     EXPECT_EQ(t.bandAt(5000.0f), DepthBand::Deep);
+    // The user's ruling (#1465, 2026-11-27): shallow 25-250 m, middle 250-500 m, deep 500 m on.
+    EXPECT_EQ(t.bandAt(200.0f), DepthBand::Shallow);
+    EXPECT_EQ(t.bandAt(300.0f), DepthBand::Middle);
+    EXPECT_EQ(t.bandAt(600.0f), DepthBand::Deep);
     EXPECT_LT(t.shallow, t.middle); EXPECT_LT(t.middle, t.deep);
     EXPECT_LE(t.passageMin, t.chamberMin); EXPECT_LE(t.chamberMin, t.passageMax) << "chambers hang off passage vertices";
     EXPECT_LE(t.cavernMin, t.passageMax) << "caverns hang off passage vertices";
