@@ -42,7 +42,7 @@ SCENARIO("factory/coke-oven-battery") {
         if (c.T < 1.0 || !WorldIdle()) return false;
         const MbDef* d = Multiblock_All().find("coke_oven_battery");
         if (!c.check("coke_oven_battery defined", d != nullptr)) return true;
-        c.eq("its machine", d->machine, std::string("coke_oven"));
+        c.check("its machine: the coke oven", d->machine == "coke_oven", d->machine.c_str());
         c.eq("parallel", d->parallel, 4);
         const Vector3 feet = c.body->toLocalD(player.position).toFloat();
         if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
