@@ -6,6 +6,7 @@
 #include "research.h"
 #include "researchgate.h"
 #include "survival.h"
+#include "teamstore.h"
 #include "tome.h"          // (#1251) tome pages per team
 #include "playersession.h" // the local player's magic state (found)
 #include "imgui.h"
@@ -47,6 +48,7 @@ ImU32 LineColour(const std::string& line) {
 
 // The team the tab shows: the player's (single player makes a team of one the first time, as claims do: buildtool's LocalTeam).
 int ResearchTab_Team() {
+    if (gNetRole == NetRole::Client && TeamStore_LocalTeam()) return TeamStore_LocalTeam(); // (#1886) the host's state, mirrored
     int team = Teams_Of(PlayerId_Local());
     if (!team) team = Teams_CreateSolo(PlayerId_Local(), settings.mpName);
     return team;
@@ -62,13 +64,13 @@ bool ResearchTab_TestNodeCenter(const std::string& id, Vector2& center) {
 void ResearchTab_Draw() {
     drawnCenters.clear();
     if (Research_Nodes().empty()) Research_Load();
-    const bool joined = gNetRole == NetRole::Client; // (the team's research is the server's: synced in a later step)
+    const bool joined = gNetRole == NetRole::Client; // (the team's research is the server's: mirrored by TeamStore, #1886)
     const int team = ResearchTab_Team();
     ResearchState& st = Research_Team(team);
     const int tier = QuestBook_Tier();
     ImGui::TextWrapped("Research from tier 3: labs turn research packs into the nodes below; a tier's core nodes are part of its milestone.");
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s%s", joined ? "Joined: your team's research is the server's (shown here in a later step). "
+    ImGui::TextWrapped("%s%s", joined ? "Joined: your team's research, as the server keeps it. "
                                       : ResearchGate_On() ? "Machines, recipes and machine recipes unlock with their node; labs research the queue from the top (I at a lab hands in what the milestone wants). Click a node to queue it. "
                                       : "Research gating is off (RAYLIBGAME_LADDER=0): nothing is locked. Click a node to queue it. ", // (#1271: the old "not active yet" note)
                        joined ? "" : "Drag to move, the wheel scrolls, Ctrl + wheel zooms.");

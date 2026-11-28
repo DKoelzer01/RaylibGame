@@ -72,6 +72,8 @@ struct NetClient {
     MsgTeamState team; int teamMsgs = 0;      // (#604) our team as the server last said (members, health, an invite waiting)
     int gravesMsgs = 0, lastGraves = 0;          // (#804) Graves lists heard, and the size of the last
     int questBooks = 0, questTeam = 0;          // (#338) team quest books heard, and our team
+    int teamStores = 0, teamStoreTeam = 0;      // (#1886) team progression stores heard, and the team of the last one
+    std::string teamStoreText;                  // ...and its text
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard

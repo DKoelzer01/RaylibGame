@@ -15,6 +15,7 @@ SCENARIO("craft/recursive-circuit") {
     s.tags = { "craft", "ui" };
     s.world = ScenarioWorld::Sandbox;
     s.timeout = 60.0;
+    s.realTime = true; // (#1972) the craft queue runs in wall time
     static int circuit = -1, steps = 0;
     s.step("queue a circuit from raw materials", 10.0, [](ScenarioCtx& c) {
         if (c.T < 0.5) return false;

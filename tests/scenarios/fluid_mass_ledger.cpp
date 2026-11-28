@@ -107,3 +107,6 @@ void Build(ScenarioDef& s) {
 
 SCENARIO("fluid/mass-ledger") { s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" } }; Build(s); }
 SCENARIO("fluid/mass-ledger-cpu") { s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" }, { "FLUID_CPU", "1" } }; Build(s); }
+// At Luna's fluid gravity (#1942: 0.98 / 5.886): the scaled kernels keep the ledger too, and (--scenario-parity) the GPU
+// and the CPU agree bit for bit with k != 1.
+SCENARIO("fluid/mass-ledger-luna") { s.env = { { "RAYLIBGAME_FLUID_NOEVAP", "1" }, { "RAYLIBGAME_FLUID_GSCALE", "0.16650" } }; Build(s); }

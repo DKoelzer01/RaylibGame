@@ -672,7 +672,7 @@ void SceneTarget_End() {
     glBindFramebuffer(GL_READ_FRAMEBUFFER, S.fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, S.resolveFbo);
     glBlitFramebuffer(0, 0, S.w, S.h, 0, 0, S.w, S.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    const bool contactOn = S.depthFbo && S.contactStrength > 0.0f;
+    const bool contactOn = S.depthFbo && S.contact && S.contactStrength > 0.0f; // (#1859 L7: RAYLIBGAME_CONTACT_SHADOWS=0 turns them off)
     const bool hizOn = S.depthFbo && S.hizTex && S.hizPending;
     const bool ssaoOn = S.depthFbo && S.ssao && S.hdr && S.ssaoStrength > 0.0f; // #933
     if (contactOn || hizOn || ssaoOn) { // #137 / #134 / #933: the depth too (a multisampled depth resolves to one of its samples)

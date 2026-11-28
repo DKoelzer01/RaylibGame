@@ -11,13 +11,94 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <sstream>
 
 // ---------------------------------------------------------------------------------------------
 // Part definitions
 // ---------------------------------------------------------------------------------------------
+
+namespace {
+// (#1881) Save names, in enum order: a new type gets its name here, where it goes in the enum.
+constexpr const char* kPartSaveNames[] = {
+    "Cube", "Block", "Slope", "Corner", "Beam2", "Beam4", "Beam8",
+    "Conveyor", "Cable",
+    "Chest", "Generator", "Furnace", "Macerator", "Battery",
+    "Campfire", "Kiln", "CokeOven", "BlastFurnace", "Boiler", "ForgeHammer", "AlloySmelter", "SteamMacerator",
+    "RocketEngine", "FuelTank", "Cockpit", "Guidance", "LandingLeg",
+    "OreWasher", "Centrifuge", "WaterPump",
+    "MvGenerator", "Electrolyzer", "ChemicalReactor", "Miner",
+    "HvGenerator", "ArcFurnace", "Refinery", "PrecisionAssembler",
+    "Farmland",
+    "Fence", "Gate",
+    "Cabin",
+    "StationCore",
+    "Slab", "Panel", "Pane", "Post",
+    "Pipe", "Outlet",
+    "FusionReactor", "MassDriver",
+    "HandPump",
+    "Torch",
+    "Snare",
+    "Meteorite",
+    "PressurePlate", "GasVent",
+    "Bed",
+    "ClaimBanner", "ClaimBanner2", "ClaimBanner3", "ClaimBanner4",
+    "Shaft", "Cogwheel", "LargeCogwheel", "Gearbox", "HandCrank", "StressGauge",
+    "Millstone", "Saw", "Press",
+    "WaterWheel", "Windmill",
+    "LvLab", "MvLab", "HvLab",
+    "ResearchTable", "ManaSiphon", "ManaDynamo",
+    "Distillery", "EssenceTank", "Cauldron",
+    "Ladder",
+    "Lever",
+};
+static_assert(sizeof(kPartSaveNames) / sizeof(kPartSaveNames[0]) == (size_t)PartType::Count, "a part type without a save name (kPartSaveNames)");
+std::vector<PartType> gPalette; // empty: identity
+}
+
+const char* PartSaveName(PartType t) { return t < PartType::Count ? kPartSaveNames[(int)t] : "-"; }
+PartType PartFromSaveName(const std::string& name) {
+    for (int t = 0; t < (int)PartType::Count; ++t) if (name == kPartSaveNames[t]) return (PartType)t;
+    return PartType::Count;
+}
+std::string PartPalette_Line() {
+    std::string s = "part_palette " + std::to_string((int)PartType::Count);
+    for (const char* n : kPartSaveNames) { s += ' '; s += n; }
+    return s;
+}
+bool PartPalette_Parse(const std::string& line, std::vector<PartType>& out) {
+    std::istringstream in(line);
+    std::string tag; int n = 0;
+    if (!(in >> tag >> n) || tag != "part_palette" || n < 0 || n > 4096) return false;
+    out.assign(n, PartType::Count);
+    for (int i = 0; i < n; ++i) { std::string name; if (!(in >> name)) return false; out[i] = PartFromSaveName(name); }
+    return true;
+}
+void PartPalette_Set(std::vector<PartType> map) { gPalette = std::move(map); }
+PartType PartPalette_MapWith(const std::vector<PartType>& map, int saved) {
+    if (map.empty()) return saved >= 0 && saved < (int)PartType::Count ? (PartType)saved : PartType::Count;
+    return saved >= 0 && saved < (int)map.size() ? map[saved] : PartType::Count;
+}
+PartType PartPalette_Map(int saved) { return PartPalette_MapWith(gPalette, saved); }
+
+// The order of save version 13 and older (and of blueprints before names), frozen: never edit it. A new type goes in
+// kPartSaveNames; this keeps mapping the old numbers.
+const char* PartPalette_V13Line() {
+    return "part_palette 84 Cube Block Slope Corner Beam2 Beam4 Beam8 Conveyor Cable Chest Generator Furnace Macerator Battery "
+           "Campfire Kiln CokeOven BlastFurnace Boiler ForgeHammer AlloySmelter SteamMacerator RocketEngine FuelTank Cockpit "
+           "Guidance LandingLeg OreWasher Centrifuge WaterPump MvGenerator Electrolyzer ChemicalReactor Miner HvGenerator "
+           "ArcFurnace Refinery PrecisionAssembler Farmland Fence Gate Cabin StationCore Slab Panel Pane Post Pipe Outlet "
+           "FusionReactor MassDriver HandPump Torch Snare Meteorite PressurePlate GasVent Bed ClaimBanner ClaimBanner2 "
+           "ClaimBanner3 ClaimBanner4 Shaft Cogwheel LargeCogwheel Gearbox HandCrank StressGauge Millstone Saw Press "
+           "WaterWheel Windmill LvLab MvLab HvLab ResearchTable ManaSiphon ManaDynamo Distillery EssenceTank Cauldron Ladder Lever";
+}
+const std::vector<PartType>& PartPalette_V13() {
+    static const std::vector<PartType> map = [] { std::vector<PartType> m; PartPalette_Parse(PartPalette_V13Line(), m); return m; }();
+    return map;
+}
 
 const char* PartName(PartType t) {
     switch (t) {
@@ -1290,9 +1371,12 @@ bool PlotSet::load(FILE* f) {
             if (fscanf(f, " %d %d %d %d", &x, &y, &z, &o) != 4) return false;
             if (materials && fscanf(f, " %d", &m) != 1) return false;
             // Old saves: beams were iron.
-            if (!materials && (t == (int)PartType::Beam2 || t == (int)PartType::Beam4 || t == (int)PartType::Beam8)) m = BuildMaterialForItem("iron_plate");
+            // (#1881) the saved number through the file's palette; a type this build doesn't have keeps its slot, empty
+            const PartType type = PartPalette_Map(t);
+            if (type == PartType::Count) { p->parts.push_back(dead); continue; }
+            if (!materials && IsBeam(type)) m = BuildMaterialForItem("iron_plate");
             // A part that no longer fits still keeps its slot, so the indices after it don't shift.
-            Part part{ (PartType)t, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
+            Part part{ type, { x, y, z }, (uint8_t)o, (uint8_t)std::clamp(m, 0, BuildMaterialCount() - 1) };
             if (IsBeam(part.type)) { // beams are single cubes now (#200): the first takes the slot, the rest go on the end
                 std::vector<Part> cubes;
                 Plot::SplitBeam(part, cubes);
@@ -1457,5 +1541,42 @@ TEST(PlotBelts, AddRemoveSaveLoad) {
         EXPECT_TRUE(got[i].kind == ConduitKind::Belt);
         EXPECT_TRUE(got[i].points == want[i].points) << "run " << want[i].id;
     }
+}
+
+// #1881: part types are saved by name. Every type has its own name, the palette line maps back to itself, the frozen
+// version-13 order still holds every type it had, and a palette with a type inserted mid-list (or one this build lacks)
+// maps each saved number to the right type.
+TEST(PartPalette, NamesRoundTripAndOldOrdersMap) {
+    std::set<std::string> names;
+    for (int t = 0; t < (int)PartType::Count; ++t) {
+        EXPECT_EQ(PartFromSaveName(PartSaveName((PartType)t)), (PartType)t) << PartSaveName((PartType)t);
+        names.insert(PartSaveName((PartType)t));
+    }
+    EXPECT_EQ(names.size(), (size_t)PartType::Count) << "two part types share a save name";
+    EXPECT_STREQ(PartSaveName(PartType::Cube), "Cube");
+    EXPECT_STREQ(PartSaveName(PartType::LandingLeg), "LandingLeg");
+    EXPECT_STREQ(PartSaveName(PartType::Lever), "Lever");
+
+    std::vector<PartType> now;
+    ASSERT_TRUE(PartPalette_Parse(PartPalette_Line(), now));
+    ASSERT_EQ(now.size(), (size_t)PartType::Count);
+    for (int t = 0; t < (int)PartType::Count; ++t) EXPECT_EQ(now[t], (PartType)t);
+
+    const std::vector<PartType>& v13 = PartPalette_V13();
+    ASSERT_EQ(v13.size(), 84u) << "the frozen version-13 order changed: it must never be edited";
+    for (size_t i = 0; i < v13.size(); ++i) EXPECT_NE(v13[i], PartType::Count) << "v13 type " << i << " has no type in this build";
+    EXPECT_EQ(v13[0], PartType::Cube);
+    EXPECT_EQ(v13[26], PartType::LandingLeg);
+    EXPECT_EQ(v13[83], PartType::Lever);
+
+    std::vector<PartType> shifted; // a save made by a build with a type ("Gizmo") before Chest, and one that is gone
+    ASSERT_TRUE(PartPalette_Parse("part_palette 4 Cube Gizmo Chest Lever", shifted));
+    EXPECT_EQ(PartPalette_MapWith(shifted, 0), PartType::Cube);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 1), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 2), PartType::Chest);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 3), PartType::Lever);
+    EXPECT_EQ(PartPalette_MapWith(shifted, 4), PartType::Count);
+    EXPECT_EQ(PartPalette_MapWith({}, (int)PartType::Chest), PartType::Chest); // no palette: identity
+    EXPECT_FALSE(PartPalette_Parse("camera 1 2 3", shifted));
 }
 #endif

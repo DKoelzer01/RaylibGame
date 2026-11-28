@@ -138,6 +138,7 @@ vec3 triplanarNormal(sampler2D tex, Triplanar t, vec3 n)
 #include "shadow.glsl"
 #include "skyphys_haze.glsl" // #142: the physical haze colour (off by default)
 #include "hemisphere.glsl"
+#include "biometint.glsl" // #2032
 // #138: past the far cascade (+-200 m) the wide terrain-only cascade (+-2 km, ~2 m texels, MATERIAL_MAP_EMISSION), so
 // mountains shadow valleys at dawn and dusk. It fills in exactly where the far cascade fades to lit at its edge.
 uniform sampler2DShadow shadowMapWide;
@@ -174,7 +175,7 @@ float shadowFactor(vec3 worldPos, vec3 n, vec3 l)
 bool decodeClimate(out float temp, out float moist)
 {
     float y = fragClimate;
-    temp = (floor(y) - 2.0) / 62.0 * 70.0 - 30.0;
+    temp = biomeTempOf(y); // (#2032: the variant id rides on the step)
     moist = fract(y);
     return y >= 1.5;
 }
@@ -358,7 +359,7 @@ void main()
             int i = min(aid[k], kMaterials - 1);
             shiny += shinyOf[i] * wi;
             vec3 c = cs[k];
-            if (hasClimate) c *= biomeTint(i, ctemp, cmoist);
+            if (hasClimate) c *= i == 6 ? mix(vec3(1.0), biomeTint(i, ctemp, cmoist), biomeClimateWeight) * biomeGrass(biomeIdOf(fragClimate)) : biomeTint(i, ctemp, cmoist); // #2032: grass by biome
             if (i == 3) {
                 // Ore: flecks of the mineral's colour in the stone, by kind: its colour and pattern from the ore table
                 // (#1466, ores.txt: iron rust, copper green, tin pale, coal black, bauxite red, ilmenite dark violet).
@@ -459,6 +460,7 @@ void main()
             // and wet warm lands, dark blue-green in the cold.
             vec3 crowns = cl ? mix(mix(temperate, dry, smoothstep(0.5, 0.25, cm) * smoothstep(12.0, 22.0, ct)), cold, smoothstep(8.0, 0.0, ct)) : temperate;
             vec2 crown = floor(fragTexPos.xz / 5.0); // ~5 m dapple, like the prism crowns
+            if (cl) crowns = biomeClimate(crowns, temperate) * biomeLeaf(biomeIdOf(fragClimate)); // #2032: as the trees
             crowns *= 0.75 + 0.5 * fract(sin(dot(crown, vec2(12.9898, 78.233))) * 43758.5453);
             albedo = mix(albedo, crowns * (farForest > 0.5 ? 0.32 : 0.5), c); // crowns in their own shade read darker than open grass
             r = mix(r, 0.95, c);

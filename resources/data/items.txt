@@ -36,6 +36,7 @@ campfire        | Campfire        |  20 | 200, 90, 40 | Burns logs and planks: b
 fibre_torch     | Fibre torch     |  20 | 220,170, 90 | Hold it (hotbar or off hand) for a little light.
 torch           | Torch           |  20 | 250,150, 60 | Hold it (hotbar or off hand) for warm light around you, or stand it on the ground (RMB).
 lantern         | Lantern         |  20 | 255,205,130 | Hold it (hotbar or off hand) for a steady light that never burns out.
+flare           | Flare           |  20 | 230, 60, 50 | Throw it (RMB) to light a cave: it burns red for a minute where it lands.
 kiln            | Kiln            |  20 | 150, 95, 70 | Fuel-fired: smelts ore into ingots, sand into glass, alloys bronze.
 coke_oven       | Coke oven       |  20 | 120, 80, 60 | Bakes coal into coke (no fuel needed).
 blast_furnace   | Blast furnace   |  20 |  90, 70, 70 | Burns coke to make steel from iron.
@@ -199,6 +200,7 @@ flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV)
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
 thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
+gas_sensor         | Gas sensor         |  tool | 170,220,120 | Suit module: warns of cave gas from 15 m, and where it is.
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.
 grip_boots         | Grip boots         |  tool | 110,90,70   | Suit module: walk up steeper ground.
 food_pouch         | Food pouch         |  tool | 160,120,80  | Suit module: hunger 25% slower.

@@ -18,7 +18,10 @@
 #include "gameui.h"
 #include "world.h"
 #include "worldtypes.h"
+#include <cstring>
+#include <string>
 #include "voxel.h"
+#include "biomevariants.h"
 #include "scene.h"
 #include "combat.h"
 #include "playersession.h"
@@ -35,6 +38,7 @@
 #include <unordered_map>
 #include <vector>
 #include "dungeontraps.h"
+#include "cavegas.h"
 
 // (survival: the local PlayerSession's, src/space/playersession.cpp, #313)
 int worldDifficulty = 1;
@@ -71,6 +75,7 @@ namespace {
     // 32 at the equator falling to about -25 at the poles, 6.5 colder per km of height, +-7 between
     // noon and midnight, and underground drifting toward a cave's steady 12.
     Biome hereBiome = Biome::Count; // where the player stands, as of the last update (Count: none)
+    int hereVariant = -1;           // ...its variant (BiomeVariants() id; -1 none)
     // (#337: for a given player - the local one, or a remote one a server simulates; only the local one sets the HUD's biome)
     float AirTemperature(Scene& world, const Player& player, const SurvivalState& survival, bool isLocal) {
         Planetoid* p = player.nearest;
@@ -88,7 +93,10 @@ namespace {
         // more between day and night (deserts: +-14 C, jungles and swamps: +-5).
         const float ground = pf->elevation(up);
         const PlanetField::Climate c = pf->climateAt(up, ground);
-        if (isLocal) hereBiome = pf->biomeAt(up, ground);
+        if (isLocal) { // the variant (#1977) and its type
+            hereVariant = pf->variantAt(up, ground);
+            hereBiome = hereVariant >= 0 ? BiomeVariants().defs[hereVariant].type : pf->biomeAt(up, ground);
+        }
         float t = c.temp - 6.5f * std::max(height - std::max(ground, 0.0f), 0.0f) / 1000.0f + (5.0f + 9.0f * (1.0f - c.moist)) * sun;
         const float depth = ground - height;                  // below the surface here
         if (depth > 3.0f) t += (12.0f - t) * std::min(1.0f, (depth - 3.0f) / 12.0f);
@@ -101,7 +109,16 @@ namespace {
     }
 }
 
-const char* Survival_BiomeName() { return hereBiome == Biome::Count ? "" : BiomeName(hereBiome); }
+const char* Survival_BiomeName() {
+    if (hereBiome == Biome::Count) return "";
+    // "Birch grove (Forest)": the variant, then its type (#1977; the user: variant names show in the UI).
+    const char* v = BiomeVariantName(hereVariant);
+    if (!v[0] || !strcmp(v, BiomeName(hereBiome))) return BiomeName(hereBiome);
+    // A plain char buffer: a thread_local with a destructor breaks the w64devkit link (#2015, as #1802).
+    static thread_local char label[96];
+    snprintf(label, sizeof label, "%s (%s)", v, BiomeName(hereBiome));
+    return label;
+}
 
 // (#1099) The felt temperature eases toward the air's (the sun angle, rain and the position jitter it frame to frame:
 // the readout flickered between cold and fine at 5 C), and the band the readout shows changes only 1 C past each edge.
@@ -250,7 +267,20 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
         // A planet's air is breathable up to ~15 km: the suit tops up its oxygen from it instead.
         const auto& atm = world.atmosphere;
         const Vector3 head = Vector3Add(pr, Vector3Scale(player.up, player.eyeHeight));
-        survival.inGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas pocket
+        const bool ventGas = DungeonTraps_InGas(world, head); // (#719) a dungeon's gas vent
+        const CaveGasKind caveGas = CaveGas_At(world, player.nearest, head); // (#1472) a cave's gas pocket
+        survival.caveGas = (uint8_t)caveGas;
+        survival.inGas = ventGas || caveGas != CaveGasKind::None;
+        const float gasDrain = ventGas || caveGas == CaveGasKind::CO2 ? 3.0f : caveGas == CaveGasKind::Methane ? 1.5f : 1.0f;
+        // (#1472) A methane blast near this player (the authority's step; clients take the health the host sends).
+        if (Net_IsAuthority()) {
+            if (const float blast = CaveGas_BlastDamage(head, survival.lastGasBlast); blast > 0.0f) {
+                DamageEvent e;
+                e.amount = blast; e.kind = DamageKind::Other; e.knockback = 6.0f;
+                Combat_DamageFor(survival, player, e);
+                survival.lastHarm = "methane blast";
+            }
+        }
         survival.breathable = atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude && !IsUnderwater(world, head) && !survival.inGas;
         // Vacuum (outside the air): a suit not rated for it holds 60 s, then it hurts (4 a second).
         survival.inVacuum = !(atm.enabled && Vector3Distance(pr, atm.centre) < atm.radius + survival.breathableAltitude);
@@ -262,7 +292,7 @@ void Survival_StepFor(Scene& world, float dt, const PlayerInput& in, SurvivalSta
             // Underwater drains it faster (a rebreather slows that); bigger tanks last longer.
             const bool underwater = atm.enabled && IsUnderwater(world, head);
             survival.underwater = underwater;
-            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * (survival.inGas ? 3.0f : 1.0f) / stats.oxygen * dt);
+            survival.oxygen = std::max(0.0f, survival.oxygen - survival.oxygenDrainPerSec * (underwater ? stats.underwater : 1.0f) * gasDrain / stats.oxygen * dt);
         }
         survival.power = std::max(0.0f, survival.power - (1.0f / stats.power) * (survival.powerDrainPerSec
                                                           + (survival.headlamp && !(local && ship.piloted) ? survival.headlampPowerPerSec : 0.0f)) * dt);

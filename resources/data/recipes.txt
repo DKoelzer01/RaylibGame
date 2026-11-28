@@ -12,6 +12,9 @@ fibre_torch 2     = any_planks 1, fibre 3
 torch 4           = any_planks 1, coal 1
 torch 4           = any_planks 1, charcoal 1
 lantern 1         = iron_plate 1, glass 1, torch 1
+# (#2062) Thrown flares for caves: cheap and early (coal or charcoal like the torch; counts confirmed by the user 2026-11-27).
+flare 2           = fibre 2, coal 1
+flare 2           = fibre 2, charcoal 1
 kiln 1            = any_stone 16, clay 8, fired_crucible 1
 chest 1           = any_planks 8
 copper_wire 2     = copper_ingot 1
@@ -117,6 +120,7 @@ flight_pack 1        = mv_hull 1, good_circuit 2, thruster_pack 1
 lamp_upgrade 1       = glass 2, copper_wire 2, basic_circuit 1
 thermal_regulator 1  = copper_wire 6, basic_circuit 2, cloth 2
 ore_scanner 1        = basic_circuit 3, copper_wire 4, glass 1
+gas_sensor 1         = copper_wire 3, glass 1, iron_plate 1
 servo_legs 1         = steel_rod 4, basic_circuit 2
 grip_boots 1         = hide 4, steel_plate 2
 food_pouch 1         = hide 2, cloth 2

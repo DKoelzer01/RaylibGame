@@ -1255,8 +1255,8 @@ bool Structures_LoadLine(const char* tok, FILE* f) {
     }
     if (strcmp(tok, "structure_break") == 0) { // (#1641 slice 2c) a prop that breaks open
         char name[128], table[64]; unsigned plot = 0, seed = 0; int part = 0, x = 0, y = 0, z = 0, type = 0;
-        if (fscanf(f, " %127s %u %d %d %d %d %d %63s %u", name, &plot, &part, &x, &y, &z, &type, table, &seed) == 9 && type >= 0 && type < (int)PartType::Count)
-            breakables.push_back({ name, plot, part, { x, y, z }, (PartType)type, table, seed });
+        if (fscanf(f, " %127s %u %d %d %d %d %d %63s %u", name, &plot, &part, &x, &y, &z, &type, table, &seed) == 9 && PartPalette_Map(type) != PartType::Count) // (#1881) by the save's palette
+            breakables.push_back({ name, plot, part, { x, y, z }, PartPalette_Map(type), table, seed });
         return true;
     }
     if (strcmp(tok, "structure_loot") == 0) {

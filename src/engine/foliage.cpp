@@ -244,7 +244,12 @@ void Foliage_Upload(FoliageGpu& g, const std::vector<float>& inst) {
         const int8_t u4[4] = { sbyte(s[4] * inv), sbyte(s[5] * inv), sbyte(s[6] * inv), sbyte(s[7] * 2.0f - 1.0f) };
         memcpy(d + 8, u4, 4);
         uint8_t c4[4] = { 0, 0, 0, 0 };
-        if (len > 1.5f) { c4[0] = (uint8_t)std::clamp((int)floorf(len) - 2 + 1, 1, 255); c4[1] = (uint8_t)std::clamp((int)lroundf((len - floorf(len)) * 255.0f), 0, 255); }
+        if (len > 1.5f) { // the float form's step carries 64 x the biome variant id (#2032): the id gets its own byte
+            const int stepId = (int)floorf(len) - 2;
+            c4[0] = (uint8_t)std::clamp(stepId % 64 + 1, 1, 255);
+            c4[1] = (uint8_t)std::clamp((int)lroundf((len - floorf(len)) * 255.0f), 0, 255);
+            c4[2] = (uint8_t)std::clamp(stepId / 64, 0, 255);
+        }
         memcpy(d + 12, c4, 4);
     }
     GpuMemTag gm133_("grass"); // VRAM accounting (#302)

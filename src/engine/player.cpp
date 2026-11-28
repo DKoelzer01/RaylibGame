@@ -27,6 +27,21 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
     if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
+    else if (!body.flat) {
+        // (#2000) No mesh there yet (a body far from where the player was: nothing built near): the raycast missed and
+        // R + 5 m could be far above the ground (a deadly fall) or under it. Find the surface on the field itself: march
+        // down from maxRadius in 2 m steps, then halve to ~1 cm. Unedited ground; edits only exist where chunks were built.
+        const DensityField& f = *body.field;
+        const Vector3 local = body.dirToLocal(dir); // the field is in the body's own (turning) axes
+        const float top = f.maxRadius(), bottom = std::max(0.0f, f.minRadius());
+        for (float r = top; r > bottom; r -= 2.0f) {
+            if (f.baseDensity(Vector3Scale(local, r - 2.0f)) < ISO_LEVEL) continue;
+            float lo = r - 2.0f, hi = r; // lo solid, hi air
+            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.baseDensity(Vector3Scale(local, m)) >= ISO_LEVEL ? lo : hi) = m; }
+            feet = Vector3Add(c, Vector3Scale(dir, hi * body.scale + 0.2f));
+            break;
+        }
+    }
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
@@ -1079,6 +1094,36 @@ void Player::updateFrame(Scene& world) {
     const Vector3 vw = ground ? Vector3Add(velocity, ground->surfaceVelocity(feet)) : velocity;
     const FrameRef to = Frames_Choose(Planetoid::All(), position, frame.frame, grounded);
     if (to.body != 0) Frames_FromGlobal(position, DVec3(vw.x, vw.y, vw.z), to, frame);
+}
+
+bool Player::restoreFrame(const FramePos& f) {
+    Planetoid* b = Planetoid::findNet(f.frame.body);
+    DVec3 pg, vg;
+    if (!b || !Frames_ToGlobal(f, pg, vg)) return false;
+    position = pg;
+    frame = f;
+    nearest = b;
+    grounded = false; groundBody = nullptr;
+    // Carried with the body from here as any airborne player (update's airBody path), and not "moved from outside": the
+    // velocity below is already in the terms the next update expects.
+    airBody = b; airId = b->id; airLocal = b->toLocalD(position);
+    airFrameVel = b->linearVelocity;
+    lastEndPosition = position;
+    viewBody = 0;
+    const double vl = f.vel.length();
+    if (f.frame.kind == FrameKind::Fixed) { // the frame velocity (against the ground), kept in the body's axes
+        const DVec3 d = vl > 1e-12 ? f.vel * (1.0 / vl) : DVec3{};
+        airVelDir = { (float)d.x, (float)d.y, (float)d.z };
+        airVelLen = (float)vl;
+        airVelBody = b->id;
+        velocity = Vector3Scale(b->dirToWorld(airVelDir), airVelLen);
+        fxActive = true;
+    } else { // Centred: the airborne path's world-frame velocity
+        velocity = vg.toFloat();
+        airVelBody = 0;
+        fxActive = false;
+    }
+    return true;
 }
 
 // Plan 11 F2b (#1146): the acceleration an airborne player feels in the nearest body's Fixed frame (felt gravity, Coriolis
