@@ -147,9 +147,18 @@ SCENARIO("frames/centred-coast") {
             return false;
         }
         if (player.spawns != spawns0) { c.fail("placed again (a respawn) during the check"); return true; }
+        // The hold holds the player (with a world-frame velocity, no update) until the place loads: measure from its release.
+        static double releasedAt = -1.0;
+        if (after == 0) releasedAt = -1.0;
+        ++after;
+        if (releasedAt < 0.0) {
+            c.waitingFor("the hold to release the player");
+            if ((b.toLocalD(player.position) - st.startLocal).length() < 0.01) return false;
+            releasedAt = c.T;
+        }
         fastest = std::max(fastest, (double)Vector3Length(player.groundVelocity(c.world)));
-        c.waitingFor("a second after the teleport");
-        if (++after < 2 || c.t < 1.0) return false;
+        c.waitingFor("a second after the release");
+        if (c.T - releasedAt < 1.0) return false;
         // From rest a second's fall at ~9 m/s^2 is ~10 m/s; the old flight would be 300+.
         c.lt("fastest against the ground in the second after the teleport (m/s)", fastest, 30.0);
         return true;
