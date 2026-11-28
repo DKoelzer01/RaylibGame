@@ -115,6 +115,10 @@ struct ScenarioDef {
     // up to 50x real time, so a sim-time deadline expired before the work could finish, and a loaded machine runs it slower
     // than real time. With this set, the step deadlines and the timeout count ScenarioCtx::clock, the lesser of sim and wall.
     bool realTime = false;
+    // (#2126) Terrain detail (--lod, the default is 2.5): 1.5 builds ~2.6x fewer chunks and runs a settle-heavy scenario
+    // 20-38% faster. A coarser world than players see, so only for scenarios that check no terrain shape, lighting or
+    // rendering. 0: the game's default. A --lod on the command line still wins.
+    double lod = 0.0;
     std::vector<ScenarioStep> steps;
     void step(const std::string& name, double deadline, std::function<bool(ScenarioCtx&)> run) { steps.push_back({ name, deadline, std::move(run) }); }
     bool hasTag(const std::string& t) const { for (const auto& x : tags) if (x == t) return true; return false; }
