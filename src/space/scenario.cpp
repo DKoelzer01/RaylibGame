@@ -43,6 +43,20 @@ namespace fs = std::filesystem;
 void Scenario_LegacySetup();  // (below: the legacyDrives mode)
 void Scenario_LegacyFinish();
 
+std::string FailedChecksReason(const std::vector<ScenarioCheck>& checks) {
+    constexpr int kNamed = 3; // more names would push the timing tail of the verdict line out of the logs' grep width
+    int failed = 0;
+    std::string names;
+    for (const auto& k : checks) {
+        if (k.pass) continue;
+        if (failed++ < kNamed) names += (names.empty() ? "" : "; ") + k.name;
+    }
+    std::string r = std::to_string(failed) + " of " + std::to_string(checks.size()) + " checks failed";
+    if (failed > 0) r += ": " + names;
+    if (failed > kNamed) r += " and " + std::to_string(failed - kNamed) + " more";
+    return r;
+}
+
 namespace {
 
 struct Entry { std::string name, file; ScenarioBuild build; };
@@ -507,7 +521,7 @@ bool Scenario_Frame(Scene& world) {
         R.stepSim = SimTime(); R.stepWall = now;
         if (++R.step >= (int)R.def.steps.size()) {
             int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
-            Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " checks failed" : R.checks.empty() ? "no checks" : "");
+            Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? FailedChecksReason(R.checks) : R.checks.empty() ? "no checks" : "");
             return false;
         }
     } else if (c.clock > st.deadline) {
@@ -718,3 +732,19 @@ void Scenario_LegacyFinish() {
     int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
     Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " shots differ from their baselines" : "");
 }
+
+#ifdef RAYLIBGAME_UNIT_TESTS
+// ---- Unit tests (#2187) ----
+#include <gtest/gtest.h>
+
+TEST(ScenarioVerdict, FailedChecksAreNamed) {
+    auto check = [](const char* name, bool pass) { ScenarioCheck k; k.name = name; k.pass = pass; return k; };
+    // the prefix stays "<n> of <m> checks failed", so the known lines written before the names keep matching
+    EXPECT_EQ(FailedChecksReason({ check("hash cranked edits", true), check("hash flowing water", false) }),
+              "1 of 2 checks failed: hash flowing water");
+    EXPECT_EQ(FailedChecksReason({ check("a", false), check("b", true), check("c", false) }), "2 of 3 checks failed: a; c");
+    EXPECT_EQ(FailedChecksReason({ check("a", false), check("b", false), check("c", false), check("d", false), check("e", false) }),
+              "5 of 5 checks failed: a; b; c and 2 more");
+    EXPECT_EQ(FailedChecksReason({ check("a", true) }), "0 of 1 checks failed");
+}
+#endif
