@@ -823,10 +823,10 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
         const Part q = cp->parts[machineAim.part];
         if (in.hit(Act::Use)) {
             if (CacheOpened(q)) { GameUI_Toast("Opened already: empty"); return; }
-            const std::string missing = CacheMissing(inventory, CacheKindOf(q));
+            const std::string missing = CacheMissing(*cb, *cp, machineAim.part, inventory);
             if (!missing.empty()) { GameUI_Toast(missing.c_str()); Audio_Play(Sfx::Error, 0.5f); return; }
         }
-        if (!in.down(Act::Use) || CacheOpened(q) || !CacheMissing(inventory, CacheKindOf(q)).empty()) { h.part = -1; return; }
+        if (!in.down(Act::Use) || CacheOpened(q) || !CacheMissing(*cb, *cp, machineAim.part, inventory).empty()) { h.part = -1; return; }
         const bool same = h.part == machineAim.part && h.body == machineAim.body && h.plot == machineAim.plot && GetTime() - h.at < 0.2;
         if (!same) { h = { machineAim.body, machineAim.plot, machineAim.part, 0.0f, 0.0 }; Audio_Play(Sfx::Pickup, 0.35f, 0.6f); }
         h.at = GetTime();
@@ -969,7 +969,7 @@ void Machine_DrawHUD() {
         Plot* cp = cb && cb->plots ? cb->plots->byId(machineAim.plot) : nullptr;
         if (!cp || machineAim.part >= (int)cp->parts.size()) return;
         const Part& q = cp->parts[machineAim.part];
-        const std::string missing = CacheMissing(inventory, CacheKindOf(q));
+        const std::string missing = CacheMissing(*cb, *cp, machineAim.part, inventory);
         const char* what = CacheOpened(q) ? "opened: empty" : !missing.empty() ? missing.c_str() : "hold E to open it";
         const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
         DrawRectangle(x - 8, y - 6, std::max(300, MeasureText(what, 16) + 16), 52, Fade(BLACK, 0.55f));
