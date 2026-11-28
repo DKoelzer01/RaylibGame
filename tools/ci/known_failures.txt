@@ -1,26 +1,30 @@
 # Known failures on the self-hosted runner (#1479): a failure line matching a pattern here is already tracked.
 # Don't re-diagnose these; read the issue. Remove a line when its issue is fixed.
-#   <extended regex matched against the failure line> | <issue> | <note>
+#   <extended regex matched against the failure line> | <issue> | [<owner>, until <YYYY-MM-DD>] <note>
 # No '|' inside a pattern: the line is split on it (one line per alternative instead).
-join: creature \(                      | #1421 | clients spend the join sync while the creature lives (fix in review)
-bench: join \([a-z]+, session          | #1421 | each session's verdict includes the creature check above
-join: team \(                          | #1421 | the creature killed a player, who respawned far from the other (the fix keeps them alive)
-parity fluid/                          | #968  | CPU vs GPU fluid paths part by a unit (diagnostic, informational)
-bench: half:                           | #968  | the exact-halfway rounding check (diagnostic)
-fluid/flow-meter                       | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
-fluid/pond                             | #1447 | the runner's GPU fluid step is ~35x slower; local-only since #1448
-bench: flow: reached the channel end   | #1512 | --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
-fluid/u-bend-off -> FAIL               | #1168 | baseline by design: the pressure pass off (RAYLIBGAME_FLUID_PRESSURE=0), the pits stand ~1.77 m apart (want < 0.15)
-fluid/u-bend-off-cpu -> FAIL           | #1168 | the CPU twin of fluid/u-bend-off, same check
-frames/build-hold(-pose)? -> FAIL         | #1759 | 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
-frames/long-fall(-pose)? -> FAIL          | #2038 | the 100 m equator drop barely falls in some runner runs (long-fall 16/20, -pose 18/20 recent runs pass); Water owns the fix
-perf/creatures-crowd -> FAIL: step .settle.  | #1821 | settle times out on the slow runner (26 of its 30 s on the sandbox); not -200
-light/torch-room -> FAIL                | #1829 | 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
-fluid/spring -> FAIL                    | #1910 | "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
-build/tile-walk-planet -> FAIL          | #1999 | the build step passes its 20 s sim deadline in ~20% of runs (16/20), on staging too
-fluid/slope-drain -> FAIL               | #2018 | checks fail intermittently on the runner (12/20 recent runs pass)
-caves/cavern-view -> FAIL                | #1828 | "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
-creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | the sim outruns the wall clock and the 15 s step deadline passes (19/20 recent runs pass)
-saves/roundtrip -> FAIL                 | #2045 | 2 of 7 checks fail intermittently (18/20 recent runs pass)
-space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; drop this line when the open fix PR lands
-world/spawn-by-water -> FAIL            | #2002 | the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
+# (#2122) Owner: L&G, Water, UI/UX, Progression, Space, Tools or Coordinator. "until" is at most 7 days ahead (static check
+# 8); past it the owner fixes the failure, drops the line or renews it. "until never" only for a baseline or diagnostic kept
+# by design. Tools and CI's 4-hourly digest proposes dropping a line after 5 passes in a row, and a line for any runner
+# scenario under 90% pass that has none.
+join: creature \(                      | #1421 | [UI/UX, until 2026-12-05] clients spend the join sync while the creature lives (fix in review)
+bench: join \([a-z]+, session          | #1421 | [UI/UX, until 2026-12-05] each session's verdict includes the creature check above
+join: team \(                          | #1421 | [UI/UX, until 2026-12-05] the creature killed a player, who respawned far from the other (the fix keeps them alive)
+parity fluid/                          | #968  | [Water, until never] CPU vs GPU fluid paths part by a unit (diagnostic, informational)
+bench: half:                           | #968  | [Water, until never] the exact-halfway rounding check (diagnostic)
+fluid/flow-meter                       | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
+fluid/pond                             | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
+bench: flow: reached the channel end   | #1512 | [Water, until 2026-12-05] --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
+fluid/u-bend-off -> FAIL               | #1168 | [Water, until never] baseline by design: the pressure pass off (RAYLIBGAME_FLUID_PRESSURE=0), the pits stand ~1.77 m apart (want < 0.15)
+fluid/u-bend-off-cpu -> FAIL           | #1168 | [Water, until never] the CPU twin of fluid/u-bend-off, same check
+frames/build-hold(-pose)? -> FAIL         | #1759 | [Water, until 2026-12-05] 1 of 3 checks fails in ~10% of runs, on m84 too (run 45238791747); flaky, being made deterministic
+frames/long-fall(-pose)? -> FAIL          | #2038 | [Water, until 2026-12-05] the 100 m equator drop barely falls in some runner runs (long-fall 16/20, -pose 18/20 recent runs pass); Water owns the fix
+perf/creatures-crowd -> FAIL: step .settle.  | #1821 | [L&G, until 2026-12-05] settle times out on the slow runner (26 of its 30 s on the sandbox); not -200
+light/torch-room -> FAIL                | #1829 | [L&G, until 2026-12-05] 1 of 9 checks fails in ~30% of runs (14/20), on staging too (run 45883519247); flaky
+fluid/spring -> FAIL                    | #1910 | [Water, until 2026-12-05] "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
+build/tile-walk-planet -> FAIL          | #1999 | [Progression, until 2026-12-05] the build step passes its 20 s sim deadline in ~20% of runs (16/20), on staging too
+fluid/slope-drain -> FAIL               | #2018 | [Water, until 2026-12-05] checks fail intermittently on the runner (12/20 recent runs pass)
+caves/cavern-view -> FAIL                | #1828 | [L&G, until 2026-12-05] "look 4" misses its 8 s deadline on fast runner runs (88 s wall), passes on slow ones (200 s)
+creatures/arena-scavenger -> FAIL: step .a dropped pile | #1972 | [Tools, until 2026-12-05] the sim outruns the wall clock and the 15 s step deadline passes (19/20 recent runs pass)
+saves/roundtrip -> FAIL                 | #2045 | [UI/UX, until 2026-12-05] 2 of 7 checks fail intermittently (18/20 recent runs pass)
+space/luna-walk -> FAIL                 | #2000 | [Space, until 2026-12-05] the player leaves Luna on a jump; drop this line when the open fix PR lands
+world/spawn-by-water -> FAIL            | #2002 | [Tools, until 2026-12-05] the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
