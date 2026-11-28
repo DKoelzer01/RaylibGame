@@ -242,8 +242,8 @@ int StationTest_Update(Scene& world) {
         if (!Rocket_Dock()) { // (#1460) why: Rocket_Dock says so only in a toast (no station near, > 40 m, or > 2 m/s)
             DVec3 c; Vector3 v;
             Planetoid* st = Rocket_TestState(c, v) ? Station_Nearest(world, c, 1e9f) : nullptr;
-            if (st) printf("bench: station: re-dock refused: its nearest part %.1f m away (centre %.1f m), closing at %.2f m/s (rocket %s)\n",
-                           Rocket_TestStationGap(), (st->worldPos - c).length(), Vector3Length(Vector3Subtract(v, st->linearVelocity)), Frames_On() ? "framed" : "global");
+            if (st) printf("bench: station: re-dock refused: its nearest part %.1f m away (centre %.1f m), closing at %.2f m/s\n",
+                           Rocket_TestStationGap(), (st->worldPos - c).length(), Vector3Length(Vector3Subtract(v, st->linearVelocity)));
             else printf("bench: station: re-dock refused: no flying rocket or no station\n");
         }
         SCheck(Rocket_DockedAtStation(), "docked again");

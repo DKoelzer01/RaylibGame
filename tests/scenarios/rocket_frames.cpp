@@ -1,12 +1,10 @@
 // Plan 11 F5 (#1457) gates for the rocket in body frames. Both build and board --test-rocket's rocket on the planet, launch
 // it, then place it coasting (Rocket_TestSetState: engine off, autopilot off):
 //   rocket/orbit-closure: a near-circular orbit 45 km over Terra, 10 orbits at 100x warp; the drift of its lowest and
-//     highest points from the first orbit to the 10th (Luna's pull makes it ~400 m: compare the frames-off and -pose runs,
-//     which must agree; the gate only guards against a blow-up).
+//     highest points from the first orbit to the 10th (Luna's pull makes it ~400 m; the gate only guards against a blow-up).
 //   rocket/soi-trip: a flyby of Luna, from 1.3 SOI radii out, passing ~2 radii from its centre: it enters Luna's SOI
 //     (Centred(Terra) -> Centred(Luna)) and leaves again. Each frame, the global path's second difference (a smooth path:
 //     ~a dt^2) is measured; at every frame switch it must stay under 1 mm (a switch re-expresses the same state).
-// The -pose variants run with RAYLIBGAME_FRAMES=1; without it the switch counts are 0 (the global path has no frames).
 #include "scenario.h"
 #include "buildtool.h"
 #include "inventory.h"
@@ -133,17 +131,16 @@ static void OrbitClosure(ScenarioDef& s) {
         c.waitingFor(TextFormat("10 orbits (%.1f so far)", orbits));
         if (orbits < 10.0) return false;
         Rocket_SetWarp(0);
-        c.note(TextFormat("%.1f orbits of %.0f s at %.0f km: distance from the centre %.1f-%.1f m (band %.2f m); %d frame switches (%s)",
-                          orbits, S.period, (r - R) / 1000.0, S.rMin, S.rMax, S.rMax - S.rMin, S.switches, Frames_On() ? "frames on" : "frames off"));
+        c.note(TextFormat("%.1f orbits of %.0f s at %.0f km: distance from the centre %.1f-%.1f m (band %.2f m); %d frame switches",
+                          orbits, S.period, (r - R) / 1000.0, S.rMin, S.rMax, S.rMax - S.rMin, S.switches));
         // The start isn't exactly circular (the other bodies pull, the ring), so the band is reported; the gate is the drift:
         // the 10th orbit's lowest and highest points against the first's.
         const double drift = std::max(fabs(S.doneMin - S.firstMin), fabs(S.doneMax - S.firstMax));
         c.note(TextFormat("first orbit %.1f-%.1f m, last %.1f-%.1f m from the centre: drift %.2f m", S.firstMin, S.firstMax, S.doneMin, S.doneMax, drift));
         c.metric("radius band", S.rMax - S.rMin, "m", true);
         c.metric("orbit drift over 10 orbits", drift, "m");
-        // ~400 m both ways on seed 42 (off 399.05, frames on 397.76): Luna's pull precesses the orbit over its ~4 h, so the
-        // plan's 10 m bound (two bodies only) doesn't apply; what F5 has to show is that both paths agree (compare the two
-        // results). This guards against a blow-up.
+        // ~400 m on seed 42 (frames on 397.76; the global path, before F8b, 399.05): Luna's pull precesses the orbit over its
+        // ~4 h, so the plan's 10 m bound (two bodies only) doesn't apply. This guards against a blow-up.
         c.lt("the orbit's drift over 10 orbits (m; physics, ~400 m with Luna)", drift, 600.0);
         return true;
     });
@@ -176,14 +173,12 @@ static void SoiTrip(ScenarioDef& s) {
         c.waitingFor(TextFormat("through Luna's SOI and out (%.0f km from it)", d / 1000.0));
         if (!S.leftLuna && c.T - S.t0 < 280.0) return false;
         Rocket_SetWarp(0);
-        c.note(TextFormat("closest %.1f km (Luna R %.1f km, SOI %.1f km); %d frame switches; the path's jump (third difference): worst %.4f mm at a switch, %.4f mm elsewhere (%s)",
-                          S.closest / 1000.0, Rm / 1000.0, soi / 1000.0, S.switches, S.worstSwitch * 1000.0, S.worstSmooth * 1000.0, Frames_On() ? "frames on" : "frames off"));
+        c.note(TextFormat("closest %.1f km (Luna R %.1f km, SOI %.1f km); %d frame switches; the path's jump (third difference): worst %.4f mm at a switch, %.4f mm elsewhere",
+                          S.closest / 1000.0, Rm / 1000.0, soi / 1000.0, S.switches, S.worstSwitch * 1000.0, S.worstSmooth * 1000.0));
         c.metric("worst jump at a switch", S.worstSwitch * 1000.0, "mm");
         c.check("entered Luna's SOI and left it", S.inLuna && S.leftLuna);
-        if (Frames_On()) {
-            c.check("the frame switched entering and leaving", S.switches >= 2, TextFormat("%d switches", S.switches));
-            c.lt("the global path's jump at a frame switch (m)", S.worstSwitch, 0.001);
-        }
+        c.check("the frame switched entering and leaving", S.switches >= 2, TextFormat("%d switches", S.switches));
+        c.lt("the global path's jump at a frame switch (m)", S.worstSwitch, 0.001);
         return true;
     });
 }
@@ -224,9 +219,8 @@ static void StationHold(ScenarioDef& s) {
         }
         c.waitingFor(TextFormat("30 s beside the station (%.2f m apart)", sep));
         if (c.T - S.t0 < 30.0) return false;
-        c.note(TextFormat("after 30 s: %.3f m apart (from %.1f), the separation changed by up to %.3f m; frame %s(%s) (%s)", sep, sep0, S.rMax,
-                          f.kind == FrameKind::Fixed ? "Fixed" : "Centred", f.body == st->netId ? "the station" : f.body == t.netId ? "Terra" : "?",
-                          Frames_On() ? "frames on" : "frames off"));
+        c.note(TextFormat("after 30 s: %.3f m apart (from %.1f), the separation changed by up to %.3f m; frame %s(%s)", sep, sep0, S.rMax,
+                          f.kind == FrameKind::Fixed ? "Fixed" : "Centred", f.body == st->netId ? "the station" : f.body == t.netId ? "Terra" : "?"));
         { // Which frame the SOI rule gives here, and the station's own numbers (stations as Fixed(station) frames, F5)
             const std::vector<Planetoid*> all = Planetoid::All(); // (a copy: one vector for begin and end)
             const FrameRef pick = Frames_Choose(all, com, f);
@@ -293,10 +287,8 @@ static void FrameSave(ScenarioDef& s) {
     });
 }
 
-SCENARIO("rocket/frame-save") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; FrameSave(s); s.tags = { "frames", "saves", "local" }; }
+// (F8b #2113: the -pose twins folded in; frames are the only path.)
+SCENARIO("rocket/frame-save") { FrameSave(s); s.tags = { "frames", "saves", "local" }; }
 SCENARIO("rocket/orbit-closure") { OrbitClosure(s); }
-SCENARIO("rocket/orbit-closure-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; OrbitClosure(s); s.tags = { "pose", "local" }; }
 SCENARIO("rocket/soi-trip") { SoiTrip(s); }
-SCENARIO("rocket/soi-trip-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; SoiTrip(s); s.tags = { "pose", "local" }; }
 SCENARIO("rocket/station-hold") { StationHold(s); }
-SCENARIO("rocket/station-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; StationHold(s); s.tags = { "pose", "local" }; }

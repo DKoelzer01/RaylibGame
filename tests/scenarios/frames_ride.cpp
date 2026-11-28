@@ -5,7 +5,6 @@
 // took off). --test-ride spawned at a world direction at the wall-clock moment the world went idle, so its spot (and its
 // numbers) changed from run to run; slot 2 of #1144's gate saw 12.6 deg of view drift once with RAYLIBGAME_FRAMES=1. Gates:
 // view drift < 0.5 deg and feet < 5 cm standing; the jump's landing is reported (spin forces move it metres here).
-// frames/ride-pose runs the same with RAYLIBGAME_FRAMES=1.
 #include "scenario.h"
 #include "player.h"
 #include "world.h"
@@ -69,9 +68,9 @@ static void Build(ScenarioDef& s) {
         const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
         c.note(TextFormat("standing 3 s at %.0f deg/s, surface %.2f m/s, grounded %.0f%%: view drift %.3f deg (largest single step %.4f deg), feet %.4f m",
                           kSpinDeg, Vector3Length(b.surfaceVelocity(feet)), 100.0 * st.grounded / std::max(1, st.frames), st.viewDrift, st.maxStepTurn, st.posDrift));
-        if (Frames_On()) // (F2: is the frame path in use here? the frame must be Fixed on this body)
-            c.note(TextFormat("frame: body %llx (this body %llx), %s; frame speed %.4f m/s", (unsigned long long)player.frame.frame.body,
-                              (unsigned long long)b.netId, player.frame.frame.kind == FrameKind::Fixed ? "Fixed" : "Centred", player.frame.vel.length()));
+        // (F2: the frame must be Fixed on this body)
+        c.note(TextFormat("frame: body %llx (this body %llx), %s; frame speed %.4f m/s", (unsigned long long)player.frame.frame.body,
+                          (unsigned long long)b.netId, player.frame.frame.kind == FrameKind::Fixed ? "Fixed" : "Centred", player.frame.vel.length()));
         c.metric("view drift", st.viewDrift, "deg");
         c.metric("largest single-step view turn", st.maxStepTurn, "deg");
         c.metric("feet drift", st.posDrift, "m");
@@ -91,12 +90,10 @@ static void Build(ScenarioDef& s) {
         c.note(TextFormat("jump: landed %.3f m from takeoff after %.2f s (body frame)", land, c.T - st.t0));
         c.metric("jump landing from takeoff", land, "m");
         // (Reported, not gated: on a 10 deg/s body of r 50 m the spin forces are not small - Coriolis deflects a vertical jump by
-        // ~w g t^3 / 6 = ~3.7 m, and the centrifugal push is half of g - so ~2.7 m from takeoff is physics, not drift. The
-        // scenario compares the switch off and on: frames/ride against frames/ride-pose.)
+        // ~w g t^3 / 6 = ~3.7 m, and the centrifugal push is half of g - so ~2.7 m from takeoff is physics, not drift.)
         return true;
     });
 }
 }
 
-SCENARIO("frames/ride") { Build(s); }
-SCENARIO("frames/ride-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }
+SCENARIO("frames/ride") { Build(s); } // (F8b #2113: frames/ride-pose folded in)

@@ -3,8 +3,7 @@
 // ~1.7 m/s of ground speed at the start). The camera follows the player the game's own way (applyToCamera, every frame) and
 // the build tool aims from it every frame. Nothing moves in the body's frame, so the aimed placement must not either:
 // counted are the frames whose aimed cell (or new plot origin) differs from the first, and how far the new origin moved.
-// Reported, not gated yet (no baseline); frames/build-hold-pose runs the same with RAYLIBGAME_FRAMES=1. The recording
-// keeps the box in view (the camera is the player's).
+// The recording keeps the box in view (the camera is the player's).
 #include "scenario.h"
 #include "buildtool.h"
 #include "player.h"
@@ -104,8 +103,8 @@ void Build(ScenarioDef& s) {
         }
         c.waitingFor("10 s holding still");
         if (c.T - st.t0 < kHoldSeconds) return false;
-        c.note(TextFormat("%d frames held still: the aim changed in %d (no aim in %d); the new plot origin moved up to %.2f mm (%s)",
-                          st.frames, st.changed, st.none, st.maxMove * 1000.0, Frames_On() ? "frames on" : "frames off"));
+        c.note(TextFormat("%d frames held still: the aim changed in %d (no aim in %d); the new plot origin moved up to %.2f mm",
+                          st.frames, st.changed, st.none, st.maxMove * 1000.0));
         c.note(TextFormat("while still, in the body's frame: feet wandered %.3f mm, the camera %.3f mm, the view %.4f deg",
                           st.feetWob * 1000.0, st.camWob * 1000.0, st.fwdWob));
         c.metric("feet wobble", st.feetWob * 1000.0, "mm");
@@ -130,5 +129,4 @@ void Build(ScenarioDef& s) {
 }
 }
 
-SCENARIO("frames/build-hold") { Build(s); }
-SCENARIO("frames/build-hold-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }
+SCENARIO("frames/build-hold") { Build(s); } // (F8b #2113: frames/build-hold-pose folded in)

@@ -71,19 +71,20 @@ void StandStep(ScenarioDef& s, const char* name, bool equator, double maxStepBou
         if (maxStepBound > 0.0) c.lt(n + " largest single step", st.maxStep, maxStepBound);
         c.lt(n + " view turn", turn, 0.5);
         c.check(n + " still grounded", player.grounded);
-        if (Frames_On()) { // F2a (#1146): standing still is v = 0 in the Fixed frame of the body underfoot
-            const double v = player.frame.vel.length();
-            c.metric(n + " frame speed", v, "m/s");
-            c.check(n + " frame: Fixed on the body underfoot", player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == b.netId);
-            c.lt(n + " frame speed standing", v, 0.01);
-        }
+        // F2a (#1146): standing still is v = 0 in the Fixed frame of the body underfoot
+        const double v = player.frame.vel.length();
+        c.metric(n + " frame speed", v, "m/s");
+        c.check(n + " frame: Fixed on the body underfoot", player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == b.netId);
+        c.lt(n + " frame speed standing", v, 0.01);
         st.placed = false;
         return true;
     });
 }
 }
 
-static void Build(ScenarioDef& s, double maxStepBound) {
+// Body poses from the double spin angle (Plan 11 F1, #667): no single step over 1 mm. (F8b #2113: the -pose twin folded in;
+// the float Euler path it was compared with is gone.)
+SCENARIO("frames/still") {
     s.tags = { "frames", "physics", "planet" };
     s.world = ScenarioWorld::Planet;
     s.timeout = 900.0;
@@ -92,16 +93,6 @@ static void Build(ScenarioDef& s, double maxStepBound) {
         c.waitingFor("an idle world");
         return c.T > 1.0 && WorldIdle();
     });
-    StandStep(s, "start", false, maxStepBound);
-    StandStep(s, "equator", true, maxStepBound);
-}
-
-// Today's frames (the float Euler body angle): single steps are only reported (13-31 mm at F0).
-SCENARIO("frames/still") { Build(s, 0.0); }
-
-// Plan 11 F1 (#667): RAYLIBGAME_FRAMES=1 - body poses from the double spin angle; no single step over 1 mm.
-SCENARIO("frames/still-pose") {
-    s.env = { { "RAYLIBGAME_FRAMES", "1" } };
-    Build(s, 0.001);
-    s.tags = { "pose" }; // nightly-only twin: left out of the PR run's tag:frames selection (#1768)
+    StandStep(s, "start", false, 0.001);
+    StandStep(s, "equator", true, 0.001);
 }

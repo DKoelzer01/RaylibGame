@@ -92,9 +92,8 @@ static void BuildLongFall(ScenarioDef& s) {
                 st.started = true;
                 return false;
             }
-            if (!player.grounded) {
-                const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-                st.peakSpeed = std::max(st.peakSpeed, (double)Vector3Length(Frames_On() ? player.velocity : Vector3Subtract(player.velocity, b.surfaceVelocity(feet))));
+            if (!player.grounded) { // (the airborne velocity is the frame velocity, against the ground already: F2b)
+                st.peakSpeed = std::max(st.peakSpeed, (double)Vector3Length(player.velocity));
                 st.lowAir = std::min(st.lowAir, b.toLocalD(player.position).length() - st.groundR);
             }
             st.deadSeen = st.deadSeen || survival.dead;
@@ -108,11 +107,7 @@ static void BuildLongFall(ScenarioDef& s) {
             c.waitingFor("touchdown");
             if (fallen < 0.5 * d.height) { st.maxLanding = 0.0; return false; } // (a landing flag left from before the drop)
             st.maxLanding = std::max(st.maxLanding, (double)player.landingSpeed); // into the floor (its normal: less on a slope)
-            if (!player.grounded) { // the fall speed against the turning ground, the last airborne frame before touchdown
-                const Vector3 feet = (player.position - c.world.renderOrigin).toFloat();
-                // (with RAYLIBGAME_FRAMES=1 the airborne velocity is the frame velocity, against the ground already: F2b)
-                st.fallSpeed = Frames_On() ? Vector3Length(player.velocity) : Vector3Length(Vector3Subtract(player.velocity, b.surfaceVelocity(feet)));
-            }
+            if (!player.grounded) st.fallSpeed = Vector3Length(player.velocity); // against the turning ground, the last airborne frame
             if (!player.grounded) return false;
             const double t = c.T - st.t0;
             const DVec3 land = b.toLocalD(player.position);
@@ -151,6 +146,5 @@ static void BuildLongFall(ScenarioDef& s) {
     }
 }
 
+// The player's velocity in the Fixed frame, Frames_Acceleration's spin forces (Plan 11 F2b, #1146; F8b #2113: the -pose twin folded in).
 SCENARIO("frames/long-fall") { BuildLongFall(s); }
-// Plan 11 F2b (#1146): the same with RAYLIBGAME_FRAMES=1 (the player's velocity in the Fixed frame, Frames_Acceleration's spin forces).
-SCENARIO("frames/long-fall-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; BuildLongFall(s); s.tags = { "pose" }; }

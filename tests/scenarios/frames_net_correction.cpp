@@ -1,4 +1,4 @@
-// frames/net-correction (#1855 M3, M4; Plan 11 F2b): with RAYLIBGAME_FRAMES=1 the player falls from 60 m over the start. One
+// frames/net-correction (#1855 M3, M4; Plan 11 F2b): the player falls from 60 m over the start. One
 // second into the fall its net state is taken (as a server sends it), given 5 m/s more upward (a server's correction) and applied.
 // Checked: right after, the velocity against the ground is the old one plus the 5 m/s (M3: the frame path's airborne velocity,
 // against the ground already, had the ground's motion taken off it again - ~105 m/s near a spinning planet), and one frame
@@ -22,7 +22,6 @@ struct State {
 SCENARIO("frames/net-correction") {
     s.tags = { "frames", "physics", "planet", "multiplayer" };
     s.world = ScenarioWorld::Planet;
-    s.env = { { "RAYLIBGAME_FRAMES", "1" } };
     s.step("place 60 m over the ground", 30.0, [](ScenarioCtx& c) {
         c.waitingFor("an idle world");
         if (c.T < 1.0 || !WorldIdle() || !c.field) return false;
@@ -43,10 +42,10 @@ SCENARIO("frames/net-correction") {
             if (S.tFall < 0.0) return false;
             if (c.t - S.tFall < 1.0) return false;
             S.before = player.groundVelocity(c.world);
-            // The frame path needs frames on and the player in the body's Fixed frame (else nothing here is on the path).
-            const bool onPath = Frames_On() && player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == c.body->netId;
-            c.check("on the frame path (frames on, the body's Fixed frame)", onPath,
-                    TextFormat("frames %d, kind %d, frame body %llu, the body %llu", (int)Frames_On(), (int)player.frame.frame.kind,
+            // The frame path needs the player in the body's Fixed frame (else nothing here is on the path).
+            const bool onPath = player.frame.frame.kind == FrameKind::Fixed && player.frame.frame.body == c.body->netId;
+            c.check("on the frame path (the body's Fixed frame)", onPath,
+                    TextFormat("kind %d, frame body %llu, the body %llu", (int)player.frame.frame.kind,
                                (unsigned long long)player.frame.frame.body, (unsigned long long)c.body->netId));
             Player::NetState ns;
             if (!player.netState(c.world, ns)) { c.check("the player has a net state", false, "netState false"); return true; }

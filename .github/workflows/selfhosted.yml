@@ -136,7 +136,7 @@ jobs:
     runs-on: [self-hosted, linux, raylibgame-linux, gpu]
     timeout-minutes: 120
     env:
-      # (#1768, #1871) The slow report and twin steps (fluid parity, pose twins, perf budgets) run in the batch and full tiers;
+      # (#1768, #1871) The slow report and twin steps (fluid parity, perf budgets) run in the batch and full tiers;
       # a PR's run (the affected tier) skips them.
       FULL_RUN: ${{ needs.plan.outputs.tier != 'affected' && 'true' || 'false' }}
       TIER: ${{ needs.plan.outputs.tier }}
@@ -171,7 +171,7 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/assets" "$RUN/assets"
           rm -rf "$RUN/scenarios" "$RUN/join-logs"
           # (#1768) the nightly-only steps' logs from an earlier run in this slot must not show up in this run's failure list
-          rm -f "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-worldgen.log" "$RUN/scenarios-pose.log" "$RUN/parity.log" "$RUN/parity-pressure.log" "$RUN/half.log"
+          rm -f "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" "$RUN/half.log"
           mkdir -p "$RUN/join-logs"
           # (#1447) The GPU's state every 5 s for the whole job (performance state, clocks, utilisation, memory, the
           # processes on it): the runner's fluid step ran ~35x slower than the PC's, and the GPU is shared by three runners.
@@ -225,8 +225,8 @@ jobs:
       # (#1367) The scenarios in two parts, so one slow or frozen scenario (each still has its hard per-scenario cap) can't take
       # the rest down with it. The parts share no scenario (no file carries tags from both lists): fluid, frames and factory
       # (~40 min alone), then the rest. (#1768) The two parts run at the same time (both under the shared GPU lock, each with
-      # its own output folder and log): the step takes as long as the slower part, not the sum. The pose twins are tagged
-      # `pose` (not `frames`), so they are not in part 1; they run in their own step below, nightly and on integration branches.
+      # its own output folder and log): the step takes as long as the slower part, not the sum. (The frames-on `pose` twins
+      # and their step are gone: frames are the only path since Plan 11 F8b, #2113.)
       - name: Affected scenarios only (a PR's run, #1871)
         if: ${{ !cancelled() && steps.build.outcome == 'success' && env.AFFECTED != 'ALL' }}
         timeout-minutes: 60
@@ -273,23 +273,6 @@ jobs:
           done
           echo "scenarios part 1: exit $rc1; part 2: exit $rc2 (run in parallel)" | tee -a "$GITHUB_STEP_SUMMARY"
           [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ]
-      - name: Pose twins (frames/*-pose, rocket/*-pose; nightly and integration branches only, #1768)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.FULL_RUN == 'true' }}
-        timeout-minutes: 30
-        working-directory: ${{ env.RUN }}
-        env:
-          RAYLIBGAME_TIMING_GATES: "0"
-          RAYLIBGAME_FLUID_PRESSURE: ${{ inputs.fluid_pressure != '0' && '1' || '0' }}
-        run: |
-          set +e
-          bash "$GITHUB_WORKSPACE/tools/ci/gpu_lock.sh" shared 1200 -- "$OUT/bin/game" \
-            --scenario tag:pose --scenario-no-record --scenario-out "$RUN/scenarios/pose" \
-            > scenarios-pose.log 2>&1
-          rc=$?
-          set -e
-          grep -E "^scenario: " scenarios-pose.log | grep -vE "heartbeat|waiting" | tail -40 || true
-          echo "scenarios pose twins: exit $rc" >> "$GITHUB_STEP_SUMMARY"
-          exit $rc
       # (#1882, #1871) World generation metrics: 8 seeds, each an in-process erosion bake of ~60 s. Only in the full tier (the
       # nightly, develop, promotion) and on a manual dispatch; not in the timed batch. A PR that touches the terrain runs the
       # 1-seed variant by name through its affected set (tools/ci/scenario_map.txt).
@@ -371,7 +354,7 @@ jobs:
         # Each "-> FAIL" line of the run's logs, marked "known (#N)" from tools/ci/known_failures.txt or "NEW", into the job
         # summary (the runner-check skill's matching). Labels only: the steps above carry the verdicts.
         run: |
-          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-pose.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
+          bash tools/ci/mark_failures.sh "$RUN/scenarios-1.log" "$RUN/scenarios-2.log" "$RUN/scenarios-affected.log" "$RUN/scenarios-worldgen.log" "$RUN/parity.log" "$RUN/parity-pressure.log" \
             "$RUN/half.log" "$RUN/terrain-gpu.log" "$RUN/join-logs"
       - name: GPU state over the job (#1447)
         if: ${{ !cancelled() }}

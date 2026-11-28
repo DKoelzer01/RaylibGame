@@ -1,4 +1,4 @@
-// saves/frame-jump (Plan 11 F7a, #2074), RAYLIBGAME_FRAMES=1: the player jumps on Terra and the world is saved and loaded at
+// saves/frame-jump (Plan 11 F7a, #2074): the player jumps on Terra and the world is saved and loaded at
 // the top of the climb. The player's frame state (frame, double position and velocity against the ground) comes back from
 // the record's player_frame line to 1e-6 m and 1e-6 m/s, and the jump goes on from it: the player is still airborne and
 // still rising a step later, and lands within 0.5 m of where a jump of that speed comes down (before F7a a load zeroed the
@@ -27,7 +27,6 @@ double Radial(const FramePos& f) { const double l = f.pos.length(); return l > 0
 SCENARIO("saves/frame-jump") {
     s.tags = { "saves", "frames" };
     s.world = ScenarioWorld::Planet;
-    s.env = { { "RAYLIBGAME_FRAMES", "1" } };
     s.timeout = 240.0;
     s.step("an idle world", 120.0, [](ScenarioCtx& c) { c.waitingFor("an idle world"); return c.T > 1.0 && WorldIdle(); });
     s.step("stand, then jump", 30.0, [](ScenarioCtx& c) {

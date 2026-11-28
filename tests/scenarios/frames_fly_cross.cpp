@@ -4,9 +4,8 @@
 // 2 radii twice, where the carry switches between the body's spinning frame (inside) and its centre (outside). The view looks
 // at the moon. Each frame, the camera's move beyond the nudge is measured both in the moon's spinning frame and from its
 // centre; the smaller of the two is the step (the right frame gives ~0 on either side of the line, a missed or wrong carry
-// gives both ~the orbital speed x a frame). Gate: no frame's step over 0.05 m. frames/fly-cross-pose runs it with
-// RAYLIBGAME_FRAMES=1. (A ring rock's sphere of influence, the gate's second case, is not covered: ring rocks are not
-// fly-follow references.)
+// gives both ~the orbital speed x a frame). Gate: no frame's step over 0.05 m. (A ring rock's sphere of influence, the
+// gate's second case, is not covered: ring rocks are not fly-follow references.)
 #include "scenario.h"
 #include "player.h"
 #include "world.h"
@@ -76,8 +75,8 @@ void Build(ScenarioDef& s) {
         // The nudge (as input moves the fly camera): straight down for the first half, then up.
         const double half = (kFrom - kTo) / kRate;
         if (run >= 2.0 * half) {
-            c.note(TextFormat("%d frames, %d crossings of the 2-radius line; the camera's step beyond its nudge: worst %.4f m (at %.2f radii), mean %.5f m (%s)",
-                              st.frames, st.crossings, st.worst, st.worstAt, st.frames ? st.sum / st.frames : 0.0, Frames_On() ? "frames on" : "frames off"));
+            c.note(TextFormat("%d frames, %d crossings of the 2-radius line; the camera's step beyond its nudge: worst %.4f m (at %.2f radii), mean %.5f m",
+                              st.frames, st.crossings, st.worst, st.worstAt, st.frames ? st.sum / st.frames : 0.0));
             c.metric("worst step at a frame", st.worst, "m");
             c.check("crossed the altitude line both ways", st.crossings >= 2, TextFormat("%d crossings", st.crossings));
             c.lt("the fly camera's worst step beyond its nudge (m)", st.worst, 0.05);
@@ -99,5 +98,4 @@ void Build(ScenarioDef& s) {
 }
 }
 
-SCENARIO("frames/fly-cross") { Build(s); }
-SCENARIO("frames/fly-cross-pose") { s.env = { { "RAYLIBGAME_FRAMES", "1" } }; Build(s); s.tags = { "pose" }; }
+SCENARIO("frames/fly-cross") { Build(s); } // (F8b #2113: frames/fly-cross-pose folded in)
