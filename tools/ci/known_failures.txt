@@ -7,8 +7,6 @@ bench: join \([a-z]+, session          | #1421 | [UI/UX, until 2026-12-05] each 
 join: team \(                          | #1421 | [UI/UX, until 2026-12-05] the creature killed a player, who respawned far from the other (the fix keeps them alive)
 parity fluid/                          | #968  | [Water, until never] CPU vs GPU fluid paths part by a unit (diagnostic, informational)
 bench: half:                           | #968  | [Water, until never] the exact-halfway rounding check (diagnostic)
-factory/stats                          | #1406 | [Progression, until 2026-12-05] the EU window on the slow runner (fix in review)
-farm/till-rmb                          | #1176 | [UI/UX, until 2026-12-05] no RMB stroke runs on the runner (#1178)
 fluid/flow-meter                       | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
 fluid/pond                             | #1447 | [Water, until never] the runner's GPU fluid step is ~35x slower; local-only since #1448
 bench: flow: reached the channel end   | #1512 | [Water, until 2026-12-05] --test-flow-sea passed on a river mouth; re-baselining at a genuine sea spot (fails there with the valley widths off too)
