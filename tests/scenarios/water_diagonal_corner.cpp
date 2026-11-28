@@ -44,6 +44,9 @@ void CornerCamera(ScenarioCtx& c) { // close outside the open corner, looking in
 
 SCENARIO("water/diagonal-corner") {
     s.tags = { "fluid", "water", "build" };
+    // (#2130) Drawn even in no-render tiers: water remeshes are wall-clock paced, and the faster no-render frames show
+    // intermediate meshes that still reach 3.7 cm past the corner (#1773). Drop this once the mesher clips those too.
+    s.needsRender = true;
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" };
     s.timeout = 120.0;
