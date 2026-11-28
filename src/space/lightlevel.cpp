@@ -1,5 +1,6 @@
 #include "lightlevel.h"
 #include "envflag.h"
+#include "flares.h"
 #include "locallights.h"
 #include "player.h"
 #include "plots.h"
@@ -25,6 +26,7 @@
 namespace {
 constexpr float kTorchReach = 12.0f, kLampReach = 20.0f; // m (GUESS)
 constexpr float kGain = 2.0f;                            // GUESS
+constexpr float kFlareColour[3] = { 1.0f, 0.38f, 0.28f };  // a red flare (#2062, GUESS)
 // (#1739 profile b39ba4fb: 8 ms runs while hovering, 42-45 ms after big moves) The work a frame is bounded in time, not
 // cells: brick reads (a terrain density block each) and relight slices until kWorkMs is spent; the rest waits.
 constexpr double kWorkMs = 1.0;                          // ms a frame (GUESS)
@@ -180,6 +182,12 @@ void LightLevel_Update(Scene& world, bool inGame) {
             it = S.plots.erase(it);
         }
     } else S.plots.clear();
+    // (#2062) Burning flares at rest: sources like torches; their fade is a few whole-metre steps, each a swap here.
+    static std::vector<FlareLight> flareLights;
+    flareLights.clear();
+    Flares_Lights(*body, flareLights);
+    for (const FlareLight& f : flareLights)
+        ++want[{ FloorI(f.local.x), FloorI(f.local.y), FloorI(f.local.z), LightGrid::Emission(f.reach, kFlareColour[0], kFlareColour[1], kFlareColour[2]) }];
     for (uint64_t k : changed) S.refresh.insert(k); // re-read below, in the frame's time budget
     // Sources: the difference between what the plots hold and what the grid has.
     for (auto it = S.current.begin(); it != S.current.end();) {
