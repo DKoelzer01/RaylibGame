@@ -84,7 +84,7 @@ SCENARIO("net/alt-recipe") {
         Host_TestPutPlayerAt(c.world, S.carol.welcome.session, S.bob.welcome.session);
         uint64_t body = 0; DVec3 local;
         if (!c.check("bob is in the world on the host", Host_PlayerLocal(c.world, S.bob.welcome.session, body, local))) return true;
-        Planetoid* b = Planetoid::findNet((NetId)body);
+        Planetoid* b = Planetoid::findNet(body);
         if (!c.check("on the scenario's body", b == c.body)) return true;
         S.bodyNet = body;
         terrainTool.creative = true;
