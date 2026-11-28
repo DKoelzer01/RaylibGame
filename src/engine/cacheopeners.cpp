@@ -33,6 +33,11 @@ std::string Thousands(long long v) {
     return s;
 }
 std::string ItemName(const std::string& id) { const ItemDef* d = itemDB.find(id); return d ? d->name : id; }
+// "a Crowbar", "an Iron ingot"
+std::string WithArticle(const std::string& name) {
+    const char c = name.empty() ? 'x' : (char)tolower((unsigned char)name[0]);
+    return (std::string("aeiou").find(c) != std::string::npos ? "an " : "a ") + name;
+}
 } // namespace
 
 bool CacheOpeners_Parse(const std::string& text, std::string* error) {
@@ -95,8 +100,8 @@ const CacheOpener* CacheOpenerOf(const Part& p) {
 std::string CacheOpener_NeedText(const CacheOpener& o) {
     switch (o.kind) {
     case OpenerKind::Power: return "needs " + Thousands(o.eu) + " EU at " + std::to_string(o.minVolts) + " V or more (a battery bank or a cable)";
-    case OpenerKind::Tool: return "needs a " + ItemName(o.item) + " (kept)";
-    case OpenerKind::Part: return "needs a " + ItemName(o.item) + " (used up)";
+    case OpenerKind::Tool: return "needs " + WithArticle(ItemName(o.item)) + " (kept)";
+    case OpenerKind::Part: return "needs " + WithArticle(ItemName(o.item)) + " (used up)";
     }
     return "";
 }
@@ -132,6 +137,9 @@ TEST_F(CacheOpenersTest, ParsesTheThreeKinds) {
     EXPECT_EQ(CacheOpener_ByIndex(3)->kind, OpenerKind::Part);
     EXPECT_EQ(CacheOpener_ByIndex(3)->item, "ruin_key");
     EXPECT_EQ(CacheOpener_NeedText(*p), "needs 2,000 EU at 8 V or more (a battery bank or a cable)");
+    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(3)), "needs a ruin_key (used up)"); // (no item data here: the id)
+    ASSERT_TRUE(CacheOpeners_Parse("opener 1 ingot part iron_ingot\n"));
+    EXPECT_EQ(CacheOpener_NeedText(*CacheOpener_ByIndex(1)), "needs an iron_ingot (used up)");
 }
 
 TEST_F(CacheOpenersTest, APartKeepsItsOpenerElseItsKindsDefault) {

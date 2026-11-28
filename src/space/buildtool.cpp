@@ -970,11 +970,17 @@ void Machine_DrawHUD() {
         if (!cp || machineAim.part >= (int)cp->parts.size()) return;
         const Part& q = cp->parts[machineAim.part];
         const std::string missing = CacheMissing(*cb, *cp, machineAim.part, inventory);
-        const char* what = CacheOpened(q) ? "opened: empty" : !missing.empty() ? missing.c_str() : "hold E to open it";
-        const int x = GetScreenWidth() / 2 + 20, y = GetScreenHeight() / 2 + 40;
-        DrawRectangle(x - 8, y - 6, std::max(300, MeasureText(what, 16) + 16), 52, Fade(BLACK, 0.55f));
+        const std::string what = CacheOpened(q) ? "opened: empty" : !missing.empty() ? missing : "hold E to open it";
+        // A power need is long ("... (a battery bank or a cable)"): its parenthesis on a second line, and the panel kept on
+        // screen (at 960 px it ran off the right edge).
+        std::vector<std::string> lines{ what };
+        if (const size_t paren = what.find(" ("); paren != std::string::npos) lines = { what.substr(0, paren), what.substr(paren + 1) };
+        int w = std::max(300, MeasureText(CacheKindName(CacheKindOf(q)), 20));
+        for (const std::string& l : lines) w = std::max(w, MeasureText(l.c_str(), 16));
+        const int x = std::max(8, std::min(GetScreenWidth() / 2 + 20, GetScreenWidth() - w - 16)), y = GetScreenHeight() / 2 + 40;
+        DrawRectangle(x - 8, y - 6, w + 16, 32 + 20 * (int)lines.size(), Fade(BLACK, 0.55f));
         DrawText(CacheKindName(CacheKindOf(q)), x, y, 20, SKYBLUE);
-        DrawText(what, x, y + 24, 16, RAYWHITE);
+        for (size_t i = 0; i < lines.size(); ++i) DrawText(lines[i].c_str(), x, y + 24 + 20 * (int)i, 16, RAYWHITE);
         return;
     }
     if (machineAim.type == PartType::Gate) { // (#1641) a vault door
