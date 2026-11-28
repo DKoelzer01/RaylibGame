@@ -24,3 +24,4 @@ net/late-join-lag -> FAIL               | #1972 | the sim runs ahead of the wall
 caves/islands -> FAIL                    | #2025 | floating rock over budget (825 > 760 m^3) since staging's terrain work reached ladder: a real change, not a flake
 fluid/spring -> FAIL                    | #1910 | "moving water" fails in most runner runs (4/20 pass), on staging too; drop this line when PR #1941 lands
 space/luna-walk -> FAIL                 | #2000 | the player leaves Luna on a jump; fixed on staging by #2020, drop this line when that reaches ladder
+world/spawn-by-water -> FAIL            | #2002 | the load takes 11.8 s against the 10 s limit in ~5% of runs (19/20; run 46106594620)
