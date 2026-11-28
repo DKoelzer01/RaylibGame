@@ -32,18 +32,25 @@ struct State {
     NetClient bob, carol;
     uint64_t body = 0;
     uint32_t plot = 0;
+    Int3 cell{ 0, 0, 0 }; // the cache's cell: the one bob stands in (the host's 4 m reach check)
+    DVec3 feet;           // bob's spot on the host when the cache was placed (body-local)
     double t0 = 0.0;
     bool skip = false, asked = false;
-    size_t bobChatSeen = 0;
 } S;
 bool Joined(const NetClient& n) { return n.state == NetClient::State::Joined; }
 void UpdateAll() { RealTime(); for (NetClient* n : { &S.bob, &S.carol }) if (n->state != NetClient::State::Idle) NetClient_Update(*n); }
 Plot* ThePlot() { Planetoid* b = Planetoid::findNet(S.body); return b && b->plots ? b->plots->byId(S.plot) : nullptr; }
-int CacheIndex() { Plot* p = ThePlot(); return p ? p->partAt({ 0, 0, 0 }) : -1; }
+int CacheIndex() { Plot* p = ThePlot(); return p ? p->partAt(S.cell) : -1; }
 bool Opened() { Plot* p = ThePlot(); const int i = CacheIndex(); return i >= 0 && CacheOpened(p->parts[i]); }
-void Ask(NetClient& n) { NetClient_MachineAction(n, S.body, S.plot, CacheIndex(), kMachineActOpenCache, std::string(), 0, 0, 0); }
+// The request, from the cache's side. These clients don't play, so they send the host no player states: the host's copy
+// of the player has no body and a stale place. A real client's states keep both current; here the host puts them there.
+void Ask(ScenarioCtx& c, NetClient& n) {
+    Host_TeleportPlayer(c.world, n.welcome.session, S.body, S.feet, false);
+    NetClient_MachineAction(n, S.body, S.plot, CacheIndex(), kMachineActOpenCache, std::string(), 0, 0, 0); }
 bool Heard(const NetClient& n, const std::string& text) { return std::any_of(n.chat.begin(), n.chat.end(), [&](const MsgChat& m) { return m.from == 0 && m.text == text; }); }
 bool HeardStart(const NetClient& n, const std::string& head) { return std::any_of(n.chat.begin(), n.chat.end(), [&](const MsgChat& m) { return m.from == 0 && m.text.rfind(head, 0) == 0; }); }
+// What the server said to this client (a failure message: why a wait timed out).
+std::string Said(const NetClient& n) { std::string s; for (const MsgChat& m : n.chat) if (m.from == 0) s += "[" + m.text + "] "; return s.empty() ? "nothing" : s; }
 // The opening's part edit: a cache placed into our plot with the opened bit.
 bool SawOpened(const NetClient& n) {
     return std::any_of(n.plotLog.begin(), n.plotLog.end(), [](const MsgPlotEdit& e) {
@@ -73,7 +80,7 @@ SCENARIO("net/ruin-cache") {
         }
         UpdateAll();
         c.waitingFor(TextFormat("bob %s, carol %s", NetClient_StateName(S.bob.state), NetClient_StateName(S.carol.state)));
-        DVec3 feet;
+        DVec3& feet = S.feet;
         if (!(Joined(S.bob) && Joined(S.carol) && Host_PlayerLocal(c.world, S.bob.welcome.session, S.body, feet))) {
             if (c.t - S.t0 > 30.0) c.fail("bob and carol not both joined after 30 s");
             return false;
@@ -84,9 +91,10 @@ SCENARIO("net/ruin-cache") {
         // (the host's save outlives a run on the runner: a fresh plot each time, at bob's feet now)
         Plot* plot = b->plots->plotFor(feet.toFloat(), 0.0f, true);
         S.plot = plot->id;
-        const int i = plot->partAt({ 0, 0, 0 });
+        S.cell = plot->cellAt(plot->toPlot(feet));
+        const int i = plot->partAt(S.cell);
         if (i >= 0) plot->remove(i);
-        c.check("the cache placed on the host", plot->place({ PartType::RuinCache, { 0, 0, 0 }, 0, (uint8_t)CacheKind::Small }) >= 0);
+        c.check("the cache placed on the host", plot->place({ PartType::RuinCache, S.cell, 0, (uint8_t)CacheKind::Small }) >= 0);
         for (const char* item : { "power_cell", "stone" }) {
             const int have = Host_ItemCount(S.bob.welcome.session, item);
             if (have > 0) Host_TestGive(S.bob.welcome.session, item, -have);
@@ -94,7 +102,7 @@ SCENARIO("net/ruin-cache") {
             if (carolHas > 0) Host_TestGive(S.carol.welcome.session, item, -carolHas);
         }
         S.bob.chat.clear(); S.carol.chat.clear();
-        Ask(S.bob); // no power cell yet
+        Ask(c, S.bob); // no power cell yet
         S.t0 = c.t;
         return true;
     });
@@ -102,8 +110,8 @@ SCENARIO("net/ruin-cache") {
         if (S.skip) return true;
         UpdateAll();
         c.waitingFor("the host's answer to bob");
-        if (!HeardStart(S.bob, "Needs")) {
-            if (c.t - S.t0 > 5.0) c.fail("bob heard no refusal 5 s after asking without a power cell");
+        if (!Heard(S.bob, "Sealed: its lock needs a power cell")) {
+            if (c.t - S.t0 > 5.0) c.fail("bob heard no refusal 5 s after asking without a power cell; heard: " + Said(S.bob));
             return false;
         }
         c.check("still sealed on the host", !Opened());
@@ -115,10 +123,10 @@ SCENARIO("net/ruin-cache") {
     s.step("with a power cell: the host opens it; bob gets the result, carol sees it opened", 15.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
         UpdateAll();
-        if (!S.asked && c.t - S.t0 > 0.5) { Ask(S.bob); S.asked = true; S.t0 = c.t; } // (after the give reached the host's copy)
+        if (!S.asked && c.t - S.t0 > 0.5) { Ask(c, S.bob); S.asked = true; S.t0 = c.t; } // (after the give reached the host's copy)
         c.waitingFor("bob's result and carol's part edit");
         if (!S.asked || !(Heard(S.bob, "  4 stone") && SawOpened(S.carol))) {
-            if (S.asked && c.t - S.t0 > 10.0) c.fail(TextFormat("10 s after asking: bob's result %d, carol saw it opened %d, opened on the host %d", (int)Heard(S.bob, "  4 stone"), (int)SawOpened(S.carol), (int)Opened()));
+            if (S.asked && c.t - S.t0 > 10.0) c.fail(std::string(TextFormat("10 s after asking: bob's result %d, carol saw it opened %d, opened on the host %d", (int)Heard(S.bob, "  4 stone"), (int)SawOpened(S.carol), (int)Opened())) + "; bob heard: " + Said(S.bob));
             return false;
         }
         c.check("opened on the host", Opened());
@@ -132,9 +140,8 @@ SCENARIO("net/ruin-cache") {
         for (const MsgChat& m : S.bob.chat) if (m.from == 0 && RuinCache_TakeHostLine(m.text)) ++taken;
         c.eq("bob's result lines the panel took (title + 1)", taken, 2);
         c.check("bob's result panel shows the reward", RuinCache_LastResult() == std::vector<std::string>{ "4 stone" });
-        c.check("a refusal line isn't taken", !RuinCache_TakeHostLine("Needs a power cell"));
-        // carol comes to the cache with a power cell of her own
-        c.check("carol at bob's spot", Host_TestPutPlayerAt(c.world, S.carol.welcome.session, S.bob.welcome.session));
+        c.check("a refusal line isn't taken", !RuinCache_TakeHostLine("Sealed: its lock needs a power cell"));
+        // carol comes to the cache (Ask puts her at bob's spot) with a power cell of her own
         c.check("carol gets a power cell", Host_TestGive(S.carol.welcome.session, "power_cell", 1));
         S.carol.chat.clear();
         S.asked = false; S.t0 = c.t;
@@ -143,10 +150,10 @@ SCENARIO("net/ruin-cache") {
     s.step("carol can't open it again: refused, her cell kept", 15.0, [](ScenarioCtx& c) {
         if (S.skip) return true;
         UpdateAll();
-        if (!S.asked && c.t - S.t0 > 0.5) { Ask(S.carol); S.asked = true; S.t0 = c.t; }
+        if (!S.asked && c.t - S.t0 > 0.5) { Ask(c, S.carol); S.asked = true; S.t0 = c.t; }
         c.waitingFor("the host's answer to carol");
         if (!S.asked || !Heard(S.carol, "Opened already: empty")) {
-            if (S.asked && c.t - S.t0 > 5.0) c.fail("carol heard no refusal 5 s after asking at the opened cache");
+            if (S.asked && c.t - S.t0 > 5.0) c.fail("carol heard no refusal 5 s after asking at the opened cache; heard: " + Said(S.carol));
             return false;
         }
         c.check("still opened", Opened());
