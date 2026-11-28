@@ -18,6 +18,9 @@
 #include "waterfield.h"
 #include "watersurface.h"
 
+// #1990: the biome shapes the bake (biomes.txt `bake`); RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake (its own cache), A/B.
+static bool BakeBiomeOn() { static const bool on = EnvFlagOr("RAYLIBGAME_BAKE_BIOME", true); return on; }
+
 #include <cstring>
 #include <raymath.h>
 #include <algorithm>
@@ -314,6 +317,7 @@ struct PlanetField::ErosionState {
 };
 
 bool PlanetField::caveBaked() const { return erosion() != nullptr; }
+uint64_t PlanetField::erosionHash() const { const PlanetErosion* e = erosion(); return e ? e->hash() : 0; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;
@@ -337,6 +341,7 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
     p.randomReceivers = envf("RAYLIBGAME_EROSION_RANDOM", p.randomReceivers ? 1.0f : 0.0f) != 0.0f; // #1884 (0: steepest descent, A/B)
     p.refine = (int)envf("RAYLIBGAME_EROSION_REFINE", (float)p.refine); p.refineSteps = (int)envf("RAYLIBGAME_EROSION_REFINE_STEPS", (float)p.refineSteps);
     p.bFace = (int)envf("RAYLIBGAME_TERRAIN_B", (float)p.bFace); // #1988: option B on face 0-5, 6 every face (default), -1 none (A)
+    if (BakeBiomeOn()) p.biomeKey = BiomeVariants_BakeKey(BiomeVariants()); // #1990 (RAYLIBGAME_BAKE_BIOME=0: the uncoupled bake, A/B)
     if (!gen.isDefault()) { p.k *= gen.erosionStrength; p.uplift *= gen.mountains; p.landKey = gen.key(); } // #504: the world's parameters (defaults: the key and bake as before)
     // The cache must match the seed, radius, parameters and bake code version (#355 review): tuning runs and code
     // changes bake again instead of loading a stale bake.
@@ -357,8 +362,26 @@ void PlanetField::bakeErosion(const std::string& cachePath) {
             LOG_INFO("Erosion", "canyons graded (#544): %d canyons (%d drain both ways from a divide), %.0f km, %d corridor cells of 100 m; floors cut %.1f m on average (up to %.0f m), filled %.1f m (up to %.0f m); %.2f s\n",
                      g.canyons, g.divided, g.lengthKm, g.corridorCells, g.meanCut, g.maxCut, g.meanFill, g.maxFill, g.seconds);
         }
-        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d) { return strataColumn(d); }); // + the rock strata (#587)
+        b.build([this](Vector3 d, float fp) { tBakeInput = true; const float h = land(d, fp).h; tBakeInput = false; return h; }, radius, fieldSeed, p, threads, [this](Vector3 d, float h0) { return bakeStrataColumn(d, h0); }); // + the rock strata (#587) and the biome (#1990)
         erosionState->gradeOn = false;
+        if (BakeBiomeOn()) { // #1990: each variant keeps its `ponds` share of the bake's ponds (dry land few); a hash of the pond's place picks which
+            const BiomeVariantTable& t = BiomeVariants();
+            b.keepPonds([&](const PlanetErosion::Pond& q) {
+                const int v = variantAt(q.dir, q.level, q.dir, climateAt(q.dir, q.level));
+                const float share = v >= 0 && v < (int)t.bake.size() ? t.bake[v].ponds : 1.0f;
+                if (share >= 1.0f) return true;
+                uint32_t hh = (uint32_t)(int)lroundf(q.dir.x * 1e5f) * 73856093u ^ (uint32_t)(int)lroundf(q.dir.y * 1e5f) * 19349663u ^ (uint32_t)(int)lroundf(q.dir.z * 1e5f) * 83492791u;
+                hh ^= hh >> 13; hh *= 0x5bd1e995u; hh ^= hh >> 15;
+                return (hh & 0xFFFFFF) / 16777215.0f < share;
+            });
+        }
+        { // #1990: the bake's ponds per biome type (the bake-free estimate at the water level)
+            int n[(int)Biome::Count] = {};
+            for (const auto& q : b.ponds()) ++n[(int)biomeOf(climateAt(q.dir, q.level), q.level)];
+            std::string s;
+            for (int t = 0; t < (int)Biome::Count; ++t) if (n[t]) s += std::string(" ") + BiomeName((Biome)t) + " " + std::to_string(n[t]);
+            LOG_INFO("Erosion", "bake ponds by biome (#1990):%s\n", s.c_str());
+        }
         erosionState->grade = CanyonGrade(); // only the bake's input needs it
         const auto ts0 = std::chrono::steady_clock::now();
         if (!cachePath.empty()) {
@@ -1955,8 +1978,12 @@ void PlanetField::shaftsNear(Vector3 lo, Vector3 hi, std::vector<CaveShaft>& out
 
 // (#1223) The cave graph's segments and entrances near a box, for creature spawning (creatures.cpp / animals.cpp): from the
 // cells within kCaveCellReach of the box's corners projected onto the sea-level sphere, as shaftsNear looks them up.
+// (#2153) No box half the radius down or deeper: no caves reach there, and a box round the centre projects its corners
+// onto opposite sides of the sphere, so the loops would run over the whole planet's cells (~1e8 CaveCell builds: a hang).
 static void CaveCellsAround(const PlanetField& f, Vector3 lo, Vector3 hi, int clo[3], int chi[3], bool& ok) {
-    ok = true;
+    const Vector3 mid = Vector3Scale(Vector3Add(lo, hi), 0.5f);
+    ok = Vector3Length(mid) - 0.5f * Vector3Distance(lo, hi) > 0.5f * f.radius;
+    if (!ok) return;
     for (int a = 0; a < 3; ++a) { clo[a] = INT32_MAX; chi[a] = INT32_MIN; }
     for (int k = 0; k < 8; ++k) {
         const Vector3 q = { (k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z };
@@ -4007,6 +4034,22 @@ int PlanetField::depositNear(Vector3 p, float reach) const {
     return best;
 }
 
+StrataColumn PlanetField::bakeStrataColumn(Vector3 dir, float h0) const {
+    StrataColumn col = strataColumn(dir);
+    if (!BakeBiomeOn()) return col;
+    // One sample per cell: at 100 m a step in rock across a biome border is what a real contact does, and the borders
+    // follow the climate noise (no straight lines). Lighting keeps biomeOf/variantAt bake-free (#1989), so the bake never
+    // reads itself.
+    const Climate c = climateAt(dir, h0);
+    const BiomeVariantTable& t = BiomeVariants();
+    const int v = variantAt(dir, h0, dir, c);
+    if (v >= 0 && v < (int)t.bake.size()) {
+        const BiomeVariantTable::BakeMul& m = t.bake[v];
+        col.kMul = m.k; col.talusMul = m.talus; col.creepMul = m.creep; col.glacialMul = m.glacial;
+    }
+    return col;
+}
+
 StrataColumn PlanetField::strataColumn(Vector3 dir) const {
     // The continent value at a fixed coarse footprint: the bake's cells and the mesher's vertices see the same province.
     const float sx = dir.x * radius, sy = dir.y * radius, sz = dir.z * radius;
@@ -4146,6 +4189,20 @@ TEST(Voxel, TerrainSamplesMatchOneGoldenOnEveryPlatform) {
     printf("terrain probe hash %016llx\n", (unsigned long long)h);
     constexpr uint64_t kGolden = 16656868793744975483ull; // e72915ea8175667b, Linux GCC (sandbox)
     EXPECT_EQ(h, kGolden) << "(#1905) one CI leg only: the platforms' terrain differs (compare the two legs' probe lines); both: a deliberate terrain change, update the constant";
+}
+
+// (#2153) A cave query round the planet's centre (a player whose body-local place was never set, from a stale save):
+// nothing, at once. It used to run over the whole planet's cave cells (~1e8 builds), freezing the game on load.
+TEST(Voxel, CaveQueriesAtTheCentreReturnNothing) {
+    PlanetField::tIgnoreBake = true;
+    PlanetField f(42u, 32000.0f, false);
+    std::vector<PlanetField::CaveSpan> spans{ PlanetField::CaveSpan{} };
+    f.caveSpansNear({ -50.0f, -10.0f, -50.0f }, { 50.0f, 90.0f, 50.0f }, spans);
+    EXPECT_TRUE(spans.empty());
+    std::vector<PlanetField::CaveEntrance> entrances{ PlanetField::CaveEntrance{} };
+    f.caveEntrancesNear({ -50.0f, -10.0f, -50.0f }, { 50.0f, 90.0f, 50.0f }, entrances);
+    EXPECT_TRUE(entrances.empty());
+    PlanetField::tIgnoreBake = false;
 }
 
 // (#1905) The erosion bake's input heights give the same bits on every platform: a Linux server and a Windows client

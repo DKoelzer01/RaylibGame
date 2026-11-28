@@ -1508,6 +1508,12 @@ int main(int argc, char** argv)
         if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1);
         if (worldDifficulty == 0) inventory.add("berries", 6);
     });
+    GameSave_SetServerSpawnHook([&world] { // (#2157) a dedicated server's player: at the start, as on a new world
+        Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        if (start) player.spawnOn(world, *start, StartSpawnDir(*start));
+    });
 
     bool windowKeepAlive = true;
 
@@ -1677,7 +1683,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Flares_Draw3D(world); Machines_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
+    // GPU timer marks between the groups (no-ops unless timing; the culling audit's per-path costs).
+    world.onDraw3D = [&world] { Farm_Draw3D(world); GpuTimer_Mark("3d:farm"); Animals_Draw3D(world); GpuTimer_Mark("3d:animals"); Flares_Draw3D(world); Machines_Draw3D(world); GpuTimer_Mark("3d:machines"); Avatar_Draw3D(world, gAvatars); GpuTimer_Mark("3d:avatars"); InstanceBatch_Flush(world); GpuTimer_Mark("3d:instances"); Weather_Draw3D(world); GpuTimer_Mark("3d:weather"); Waterfalls_Draw3D(world); GpuTimer_Mark("3d:waterfalls"); Particles_Draw(world); GpuTimer_Mark("3d:particles"); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
