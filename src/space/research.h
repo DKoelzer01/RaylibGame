@@ -5,6 +5,8 @@
 // kept as save lines in the team record, the join rule and what a player may see. Labs, packs, the Research tab, tier
 // milestones and the recipe gating come in their own steps (doc section 8); nothing is gated by research yet.
 
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
@@ -58,6 +60,13 @@ void Research_Merge(const ResearchState& from, ResearchState& into);
 // and leaves the queue; the names of the nodes done are returned.
 const ResearchNode* Research_HeadFor(const ResearchState& s, int maxTier);
 std::vector<std::string> Research_AddUnits(ResearchState& s, int tier, int units);
+
+// (#1886) A change to the queue, as the research tab makes it: Add a node the team sees in full (not done, not queued; at
+// most kResearchQueueMax), Remove it, or move it Up one place. The tab applies it here offline; a joined client sends it
+// to the host (MsgResearchQueue), which applies it to the team's state with the team's tier. False: refused or no change.
+enum class ResearchQueueOp : uint8_t { Add = 1, Remove = 2, Up = 3 };
+constexpr size_t kResearchQueueMax = 32;
+bool Research_QueueAction(ResearchState& s, ResearchQueueOp op, const std::string& node, int teamTier);
 
 // The team record's block (saved with the world as team_research <id> ... team_research_end).
 ResearchState& Research_Team(int team);

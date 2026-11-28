@@ -31,6 +31,16 @@ namespace {
             if (g) t.grassTint[i] = { g->grassTint[0], g->grassTint[1], g->grassTint[2] };
             if (l) t.leafTint[i] = { l->leafTint[0], l->leafTint[1], l->leafTint[2] };
         }
+        // (#1990) The bake multipliers, the same way: its own, else its base's, else 1.
+        t.bake.assign(t.defs.size(), BiomeVariantTable::BakeMul{});
+        for (size_t i = 0; i < t.defs.size(); ++i) {
+            const int b = t.base(t.defs[i].type);
+            const BiomeVariantDef& own = t.defs[i];
+            const BiomeVariantDef* s = own.bake[0] >= 0.0f ? &own : b >= 0 && t.defs[b].bake[0] >= 0.0f ? &t.defs[b] : nullptr;
+            if (s) t.bake[i] = { s->bake[0], s->bake[1], s->bake[2], s->bake[3] };
+            const BiomeVariantDef* ps = own.ponds >= 0.0f ? &own : b >= 0 && t.defs[b].ponds >= 0.0f ? &t.defs[b] : nullptr;
+            if (ps) t.bake[i].ponds = ps->ponds;
+        }
     }
 
     void Bands(BiomeVariantTable& t) {
@@ -107,6 +117,22 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             for (int i = 0; i < 4; ++i)
                 if (!Bound(v[i], 1.0f, *dst[i]) || *dst[i] < 0.0f) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (numbers >= 0 or - for 1)");
             if (!extra.empty() || !(d.size > 0.0f)) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (size > 0)");
+        } else if (key == "sizes") { // (#1995 phase 3)
+            std::string v[3], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float* dst[3] = { &d.bushSize, &d.stoneSize, &d.grassSize };
+            for (int i = 0; i < 3; ++i)
+                if (!Bound(v[i], 0.0f, *dst[i]) || *dst[i] < -2.0f || *dst[i] > 2.0f) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (numbers -2..2, or - for 0)");
+            if (!extra.empty()) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (three values)");
+        } else if (key == "shrubs") { // (#1995 phase 3)
+            std::string v[BiomeVariantDef::kShrubKinds], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float total = 0.0f;
+            for (int i = 0; i < BiomeVariantDef::kShrubKinds; ++i) {
+                if (!Bound(v[i], 0.0f, d.shrubs[i]) || v[i] == "-" || d.shrubs[i] < 0.0f) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights (numbers >= 0)");
+                total += d.shrubs[i];
+            }
+            if (!extra.empty() || !(total > 0.0f)) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights, at least one > 0");
         } else if (key == "rubber") { // (#2012)
             std::string extra;
             if (!(ls >> d.rubber) || (ls >> extra) || d.rubber < 0 || d.rubber > 100) return fail(lineNo, "rubber takes one whole percent 0..100");
@@ -124,6 +150,16 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
                 }
             }
             if (!extra.empty()) return fail(lineNo, kUse);
+        } else if (key == "bake") { // (#1990)
+            std::string v[BiomeVariantDef::kBake], extra;
+            ls >> v[0] >> v[1] >> v[2] >> v[3] >> extra;
+            for (int i = 0; i < BiomeVariantDef::kBake; ++i)
+                if (!Bound(v[i], 1.0f, d.bake[i]) || d.bake[i] < 0.0f || d.bake[i] > 8.0f) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>' (multipliers 0..8, or - for 1)");
+            if (!extra.empty()) return fail(lineNo, "bake takes '<k> <talus> <creep> <glacial>'");
+        } else if (key == "ponds") { // (#1990)
+            std::string v, extra;
+            ls >> v >> extra;
+            if (!extra.empty() || v == "-" || !Bound(v, 1.0f, d.ponds) || d.ponds < 0.0f || d.ponds > 1.0f) return fail(lineNo, "ponds takes one share 0..1");
         } else if (key == "cover") {
             std::string v, extra;
             ls >> v >> extra;
@@ -155,6 +191,19 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
     Tints(t);
     out = std::move(t);
     return true;
+}
+
+uint64_t BiomeVariants_BakeKey(const BiomeVariantTable& t) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](const void* v, size_t n) { const unsigned char* b = (const unsigned char*)v; for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } };
+    for (size_t i = 0; i < t.defs.size(); ++i) {
+        const BiomeVariantDef& d = t.defs[i];
+        mix(d.key.data(), d.key.size());
+        const int type = (int)d.type; mix(&type, sizeof type);
+        for (float f : { d.weight, d.elevMin, d.elevMax, d.tempMin, d.tempMax, d.moistMin, d.moistMax }) mix(&f, sizeof f);
+        if (i < t.bake.size()) for (float f : { t.bake[i].k, t.bake[i].talus, t.bake[i].creep, t.bake[i].glacial, t.bake[i].ponds }) mix(&f, sizeof f);
+    }
+    return h | 1; // never 0 (0 = the uncoupled bake)
 }
 
 void BiomeVariants_Default(BiomeVariantTable& out) {
@@ -194,6 +243,40 @@ bool BiomeVariants_RubberRoll(int percent, uint64_t plantId) {
     uint64_t h = plantId * 0x9E3779B97F4A7C15ull; // a mix of the id: plant ids are spatial hashes, neighbours alike in their low bits
     h ^= h >> 31;
     return (int)(h % 100) < percent;
+}
+
+SmallFloraSizes SmallFloraSizesOf(int variant, Biome fallback) {
+    const BiomeVariantTable& t = BiomeVariants();
+    const BiomeVariantDef* d = variant >= 0 && variant < (int)t.defs.size() ? &t.defs[variant] : nullptr;
+    // The types' own (GUESS, #1995 phase 3): the jungle's undergrowth is rank, the savanna's and meadow's grass tall, the
+    // tundra's scrub and grass stunted, the mountains and badlands strewn with rocks and boulders, the desert with stones.
+    SmallFloraSizes s;
+    switch (d ? d->type : fallback) {
+        case Biome::Jungle:   s = { 0.6f, 0.0f, 0.4f }; break;
+        case Biome::Savanna:  s = { 0.0f, 0.2f, 0.9f }; break;
+        case Biome::Desert:   s = { -0.5f, 0.3f, -0.5f }; break;
+        case Biome::Badlands: s = { -0.3f, 0.6f, -0.3f }; break;
+        case Biome::Meadow:   s = { 0.0f, -0.3f, 0.4f }; break;
+        case Biome::Swamp:    s = { 0.3f, -0.5f, 0.6f }; break;
+        case Biome::Taiga:    s = { -0.2f, 0.3f, -0.2f }; break;
+        case Biome::Tundra:   s = { -0.7f, 0.3f, -0.7f }; break;
+        case Biome::Alpine:   s = { -0.5f, 0.7f, -0.5f }; break;
+        case Biome::Forest:   s = { 0.0f, 0.0f, -0.3f }; break; // shade: shorter grass under the trees
+        default: break;
+    }
+    if (d) { s.bush += d->bushSize; s.stone += d->stoneSize; s.grass += d->grassSize; }
+    return s;
+}
+
+int SmallFloraSizeClass(float shift, float patch, float u) {
+    // Base shares 30 / 42 / 21 / 7 %, tilted by exp(t * (class - 1.5)): t > 0 moves weight to the big classes.
+    static const float kBase[4] = { 0.30f, 0.42f, 0.21f, 0.07f };
+    const float t = std::clamp(shift + 1.4f * (patch - 0.5f), -2.5f, 2.5f);
+    float w[4], total = 0.0f;
+    for (int k = 0; k < 4; ++k) total += (w[k] = kBase[k] * expf(t * ((float)k - 1.5f)));
+    float at = u * total;
+    for (int k = 0; k < 3; ++k) if ((at -= w[k]) < 0.0f) return k;
+    return 3;
 }
 
 float BiomeClimateCode(float tempC, float moist, int variant) {
@@ -288,6 +371,50 @@ TEST(BiomeVariants, ParsesFlora) {
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  cover 2\n", t, &err));
+}
+
+// (#1990) The bake multipliers: parsed ("-" = 1), inherited from the type's base, 1 where neither gives them, and the
+// bake key follows them but not a tint.
+TEST(BiomeVariants, ParsesBakeMultipliers) {
+    BiomeVariantTable t;
+    std::string err;
+    const std::string body = "variant badlands.base\n  bake 2.5 0.7 - 1\nvariant badlands.x\nvariant badlands.y\n  bake 1 1 0.5 2\n";
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body, t, &err)) << err;
+    const auto& base = t.bake[t.base(Biome::Badlands)];
+    EXPECT_FLOAT_EQ(base.k, 2.5f); EXPECT_FLOAT_EQ(base.talus, 0.7f); EXPECT_FLOAT_EQ(base.creep, 1.0f); EXPECT_FLOAT_EQ(base.glacial, 1.0f);
+    const auto& x = t.bake[t.find("badlands.x")];
+    EXPECT_FLOAT_EQ(x.k, 2.5f); EXPECT_FLOAT_EQ(x.talus, 0.7f); // its base's
+    const auto& y = t.bake[t.find("badlands.y")];
+    EXPECT_FLOAT_EQ(y.k, 1.0f); EXPECT_FLOAT_EQ(y.creep, 0.5f); EXPECT_FLOAT_EQ(y.glacial, 2.0f);
+    const auto& forest = t.bake[t.base(Biome::Forest)];
+    EXPECT_FLOAT_EQ(forest.k, 1.0f); EXPECT_FLOAT_EQ(forest.talus, 1.0f);
+    const uint64_t key = BiomeVariants_BakeKey(t);
+    EXPECT_NE(key, 0u);
+    BiomeVariantTable tinted;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body + "variant badlands.z\n  tint 1 1 1  1 1 1\n", tinted, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(tinted), key); // a new variant moves the others' bands: the bake changes
+    BiomeVariantTable retinted;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + body + "variant badlands.z\n  tint 2 1 1  1 1 1\n", retinted, &err)) << err;
+    EXPECT_EQ(BiomeVariants_BakeKey(retinted), BiomeVariants_BakeKey(tinted)); // a tint alone doesn't
+    BiomeVariantTable softer;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  bake 3 0.7 - 1\nvariant badlands.x\nvariant badlands.y\n  bake 1 1 0.5 2\n", softer, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(softer), key);
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 1 1 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake -1 1 1 1\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  bake 9 1 1 1\n", t, &err));
+    // The pond share: its own, else its base's, else 1; 0..1 only; it changes the key.
+    BiomeVariantTable pt;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  ponds 0.1\nvariant badlands.x\nvariant badlands.y\n  ponds 0.5\n", pt, &err)) << err;
+    EXPECT_FLOAT_EQ(pt.bake[pt.base(Biome::Badlands)].ponds, 0.1f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.find("badlands.x")].ponds, 0.1f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.find("badlands.y")].ponds, 0.5f);
+    EXPECT_FLOAT_EQ(pt.bake[pt.base(Biome::Forest)].ponds, 1.0f);
+    BiomeVariantTable pt2;
+    ASSERT_TRUE(BiomeVariants_Parse(AllBases("badlands") + "variant badlands.base\n  ponds 0.2\nvariant badlands.x\nvariant badlands.y\n  ponds 0.5\n", pt2, &err)) << err;
+    EXPECT_NE(BiomeVariants_BakeKey(pt), BiomeVariants_BakeKey(pt2));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  ponds 1.5\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  ponds -\n", t, &err));
 }
 
 TEST(BiomeVariants, RefusesBadFiles) {

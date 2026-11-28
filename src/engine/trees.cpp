@@ -3,6 +3,8 @@
 #include "envflag.h"
 #include "gpumem.h"
 #include "jobsystem.h"
+#include "profiler.h"
+#include "scenetarget.h"
 #include "worldtypes.h"
 #include "world.h"
 
@@ -624,75 +626,153 @@ void WillowV2(VariantMesh& m, unsigned int seed, int cls) {
     }
 }
 
-// Bushes (#1995): three kinds - a round shrub, a low spreading mat and an upright clump.
-void BushV2(VariantMesh& m, unsigned int seed, int kind) {
+// Bushes (#1995): three kinds - a round shrub, a low spreading mat and an upright clump - in four size classes (phase 3)
+// that differ in form, not only in scale: a seedling of one or two lobes; the bush as before; a large bush with more,
+// bigger lobes over a few woody stems; a thicket, a wide domed tangle of many lobes on several stems, taller than a man.
+struct BushClass { int lobes, lobesRand; float size, spread, lift; int stems; };
+constexpr BushClass kBushClass[kSmallFloraClasses] = {
+    { 1, 2, 0.5f, 0.45f, 0.6f, 0 },  // small: knee-high, ~0.5 m across
+    { 2, 3, 1.0f, 0.9f, 1.0f, 0 },   // medium: as before phase 3 (~1-1.5 m)
+    { 4, 3, 1.3f, 1.5f, 1.35f, 2 },  // large: ~2 m across, chest-high
+    { 7, 4, 1.55f, 2.6f, 1.7f, 4 },  // extra large: a thicket ~3.5 m across, ~2.5 m tall
+};
+void BushV2(VariantMesh& m, unsigned int seed, int kind, int cls) {
     std::mt19937 r(seed);
-    const int n = (kind == 1 ? 3 : 2) + (int)(U(r) * 3.0f);
+    const BushClass& b = kBushClass[std::clamp(cls, 0, kSmallFloraClasses - 1)];
+    const int n = b.lobes + (kind == 1 ? 1 : 0) + (int)(U(r) * b.lobesRand);
+    std::vector<Vector3> tops; // lobe centres, for the woody stems
     for (int k = 0; k < n; ++k) {
-        float c = 0.7f + 0.6f * U(r), h = c;
-        Vector3 o = { (U(r) - 0.5f) * 0.9f, 0.15f + 0.4f * U(r), (U(r) - 0.5f) * 0.9f };
-        if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = 0.1f + 0.15f * U(r); }
-        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = 0.25f + 0.3f * k; } // upright, not a pillar
+        float c = (0.7f + 0.6f * U(r)) * b.size, h = c;
+        Vector3 o = { (U(r) - 0.5f) * b.spread, (0.15f + 0.4f * U(r)) * b.lift, (U(r) - 0.5f) * b.spread };
+        // A dome: the lobes near the middle sit higher (a thicket's crown), the rim ones low.
+        o.y += 0.35f * (b.size - 0.5f) * std::max(0.0f, 1.0f - 2.0f * sqrtf(o.x * o.x + o.z * o.z) / std::max(b.spread, 0.1f));
+        if (kind == 1) { c *= 1.25f; h = c * 0.45f; o.x *= 1.6f; o.z *= 1.6f; o.y = (0.1f + 0.15f * U(r)) * b.lift; }
+        if (kind == 2) { c *= 0.8f; h = c * 1.15f; o.x *= 0.8f; o.z *= 0.8f; o.y = (0.25f + 0.3f * (k % 3)) * std::min(b.lift, 1.15f); } // upright, not a pillar (big ones grow wider, not taller)
         Prism(m, Vector3Subtract(o, { 0, h * 0.45f, 0 }), Vector3Add(o, { 0, h * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
+        tops.push_back(o);
     }
-    if (kind == 2) Prism(m, { 0, -0.1f, 0 }, { 0, 0.4f, 0 }, 0.12f, 0.08f, 0.0f, false, Shade(r)); // a woody stem under the clump
-    m.trunkRadius = 0.0f;
-    m.trunkHeight = 0.0f;
-}
-
-void Bush(VariantMesh& m, unsigned int seed) {
-    std::mt19937 r(seed);
-    const int n = 2 + (int)(U(r) * 3.0f);
-    for (int k = 0; k < n; ++k) {
-        const float c = 0.7f + 0.6f * U(r);
-        const Vector3 o = { (U(r) - 0.5f) * 0.9f, 0.15f + 0.4f * U(r), (U(r) - 0.5f) * 0.9f };
-        Prism(m, Vector3Subtract(o, { 0, c * 0.45f, 0 }), Vector3Add(o, { 0, c * 0.55f, 0 }), c, c * 0.8f, U(r) * 1.5f, true, Shade(r));
+    const int stems = b.stems + (kind == 2 ? 1 : 0);
+    for (int k = 0; k < stems && k < (int)tops.size(); ++k) { // woody stems from the ground into the lobes
+        const Vector3 o = tops[k], foot = { o.x * 0.35f, -0.1f, o.z * 0.35f };
+        const float w = 0.05f + 0.05f * b.size;
+        Prism(m, foot, { o.x, std::max(0.4f, o.y), o.z }, w, w * 0.6f, U(r), false, Shade(r));
     }
     m.trunkRadius = 0.0f;
     m.trunkHeight = 0.0f;
 }
 
-// Loose stones: two to four low, tilted lumps a hand or two across, lying on the ground.
-void Stones(VariantMesh& m, unsigned int seed) {
+// Loose stones (#1995 phase 3) in four size classes: a scatter of pebbles; two to four lumps a hand or two across (as
+// before); a knee-high rock with chips beside it; a boulder taller than a man, a second block leaning on it.
+void Stones(VariantMesh& m, unsigned int seed, int cls) {
     std::mt19937 r(seed);
     gStoneFlag = 255;
-    const int n = 2 + (int)(U(r) * 3.0f);
-    for (int k = 0; k < n; ++k) {
-        const float c = 0.22f + 0.28f * U(r);
-        const Vector3 o = { (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f };
-        const Vector3 tilt = { (U(r) - 0.5f) * 0.3f, 0.0f, (U(r) - 0.5f) * 0.3f };
-        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, tilt), { 0, c * 0.45f, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    auto lump = [&](Vector3 o, float c, float tall, float tilt) {
+        const Vector3 lean = { (U(r) - 0.5f) * tilt * c, 0.0f, (U(r) - 0.5f) * tilt * c };
+        Prism(m, Vector3Subtract(o, { 0, c * 0.25f, 0 }), Vector3Add(Vector3Add(o, lean), { 0, c * tall, 0 }), c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+    };
+    if (cls <= 0) {
+        const int n = 3 + (int)(U(r) * 4.0f);
+        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.6f, 0.0f, (U(r) - 0.5f) * 0.6f }, 0.1f + 0.1f * U(r), 0.4f, 0.6f);
+    } else if (cls == 1) {
+        const int n = 2 + (int)(U(r) * 3.0f);
+        for (int k = 0; k < n; ++k) lump({ (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f }, 0.22f + 0.28f * U(r), 0.45f, 1.2f);
+    } else if (cls == 2) {
+        const float c = 0.7f + 0.3f * U(r);
+        lump({ 0.0f, 0.0f, 0.0f }, c, 0.55f, 0.4f);
+        Prism(m, { 0.0f, c * 0.2f, 0.0f }, { 0.05f * c, c * 0.68f, 0.0f }, c * 0.8f, c * 0.45f, U(r) * 1.5f, false, Shade(r)); // a rounded top
+        const int chips = 1 + (int)(U(r) * 2.0f);
+        for (int k = 0; k < chips; ++k) { const float a = U(r) * 6.283f; lump({ cosf(a) * 0.65f * c, 0.0f, sinf(a) * 0.65f * c }, 0.2f + 0.12f * U(r), 0.45f, 1.0f); }
+    } else {
+        // A boulder: three stacked blocks (wider in the middle: a rounded mass), turned against each other.
+        const float c = 1.6f + 0.5f * U(r);
+        Prism(m, { 0.0f, -0.3f, 0.0f }, { 0.0f, c * 0.35f, 0.0f }, c * 0.85f, c, U(r) * 1.5f, false, Shade(r));
+        Prism(m, { 0.0f, c * 0.35f, 0.0f }, { 0.08f * c, c * 0.7f, 0.0f }, c, c * 0.7f, U(r) * 1.5f, false, Shade(r));
+        Prism(m, { 0.08f * c, c * 0.7f, 0.0f }, { 0.1f * c, c * 0.88f, 0.05f * c }, c * 0.7f, c * 0.35f, U(r) * 1.5f, false, Shade(r));
+        const float a = U(r) * 6.283f, c2 = c * (0.5f + 0.15f * U(r)); // the second block, leaning on the first
+        lump({ cosf(a) * 0.6f * c, 0.0f, sinf(a) * 0.6f * c }, c2, 0.7f, 0.8f);
+        const int chips = 2 + (int)(U(r) * 3.0f);
+        for (int k = 0; k < chips; ++k) { const float b = U(r) * 6.283f, d = (0.75f + 0.3f * U(r)) * c; lump({ cosf(b) * d, 0.0f, sinf(b) * d }, 0.15f + 0.2f * U(r), 0.45f, 1.0f); }
     }
     gStoneFlag = 0;
     m.trunkRadius = 0.0f;
     m.trunkHeight = 0.0f;
 }
 
-// Far meshes: the same silhouette from a few prisms (trunk + crown; trunk + two cones; one block).
+// A triangle facing away from `centre` (Quad's rule, for the lathe's caps).
+void Tri(VariantMesh& m, Vector3 a, Vector3 b, Vector3 c, Vector3 centre, bool leaf, unsigned char shade) {
+    Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a)));
+    const Vector3 mid = Vector3Scale(Vector3Add(Vector3Add(a, b), c), 1.0f / 3.0f);
+    if (Vector3DotProduct(n, Vector3Subtract(mid, centre)) < 0.0f) { n = Vector3Negate(n); std::swap(b, c); }
+    Emit(m, a, n, leaf, shade); Emit(m, b, n, leaf, shade); Emit(m, c, n, leaf, shade);
+}
+
+// (#1995 phase 4) A six-sided crown turned about the vertical through `c`: rings at heights y0 + (y1 - y0) * prof[k][0]
+// with radius R * prof[k][1], capped top and bottom. Six sides read round at a distance where the old four-sided
+// blocks read as boxes.
+void Lathe(VariantMesh& m, Vector3 c, const float (*prof)[2], int n, float y0, float y1, float R, float twist, bool leaf, unsigned char shade) {
+    constexpr int S = 6;
+    auto at = [&](int k, int s) {
+        const float a = twist + 6.2831853f * s / S, r = R * prof[k][1];
+        return Vector3{ c.x + cosf(a) * r, y0 + (y1 - y0) * prof[k][0], c.z + sinf(a) * r };
+    };
+    const Vector3 centre = { c.x, (y0 + y1) * 0.5f, c.z };
+    for (int k = 0; k + 1 < n; ++k)
+        for (int s = 0; s < S; ++s) Quad(m, at(k, s), at(k, s + 1), at(k + 1, s + 1), at(k + 1, s), centre, leaf, shade);
+    for (int end : { 0, n - 1 }) {
+        if (prof[end][1] < 0.02f) continue; // a point: no cap
+        const Vector3 hub = { c.x, y0 + (y1 - y0) * prof[end][0], c.z };
+        for (int s = 0; s < S; ++s) Tri(m, hub, at(end, s), at(end, s + 1), centre, leaf, shade);
+    }
+}
+
+// Far meshes (past kTreeNearDistance): the full mesh's silhouette from a trunk and a crown shaped by its kind (#1995
+// phase 4; it was one four-sided block for every broadleaf and every bush, so palms, willows and acacias all read as
+// boxes). The crown's spread is the 90th percentile of the leaves' distance from its axis, not their bounding box, so a
+// few long branches don't blow it up.
 void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     float lo[3] = { 1e9f, 1e9f, 1e9f }, hi[3] = { -1e9f, -1e9f, -1e9f };
     for (size_t k = 0; k + 2 < full.pos.size(); k += 3)
         if (full.col[(k / 3) * 4] > 128) // leaf vertices: the crown's extent
             for (int a = 0; a < 3; ++a) { lo[a] = std::min(lo[a], full.pos[k + a]); hi[a] = std::max(hi[a], full.pos[k + a]); }
-    const float w = std::max(hi[0] - lo[0], hi[2] - lo[2]) * 0.8f;
-    const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
     const unsigned char shade = 160;
-    if (lo[1] > hi[1]) { // leafless (snags): the trunk alone
-        Prism(m, { 0, -0.4f, 0 }, { 0, full.trunkHeight, 0 }, full.trunkRadius * 2.0f, full.trunkRadius, 0.0f, false, shade);
-        m.trunkRadius = full.trunkRadius;
-        m.trunkHeight = full.trunkHeight;
-        return;
-    }
-    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
-    if (v < kFirstBush && WoodSpeciesInfo(SpeciesOfVariant(v)).conifer) {
-        const float mid = lo[1] + (hi[1] - lo[1]) * 0.55f;
-        Prism(m, { c.x, lo[1], c.z }, { c.x, mid, c.z }, w, w * 0.6f, 0.785f, true, shade);
-        Prism(m, { c.x, mid, c.z }, { c.x, hi[1], c.z }, w * 0.6f, 0.15f, 0.0f, true, shade);
-    } else {
-        Prism(m, { c.x, lo[1], c.z }, { c.x, hi[1], c.z }, w, w * 0.8f, 0.4f, true, shade);
-    }
     m.trunkRadius = full.trunkRadius;
     m.trunkHeight = full.trunkHeight;
+    if (lo[1] > hi[1]) { // leafless (snags): the trunk alone
+        Prism(m, { 0, -0.4f, 0 }, { 0, full.trunkHeight, 0 }, full.trunkRadius * 2.0f, full.trunkRadius, 0.0f, false, shade);
+        return;
+    }
+    const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
+    std::vector<float> spread;
+    for (size_t k = 0; k + 2 < full.pos.size(); k += 3)
+        if (full.col[(k / 3) * 4] > 128) spread.push_back(sqrtf((full.pos[k] - c.x) * (full.pos[k] - c.x) + (full.pos[k + 2] - c.z) * (full.pos[k + 2] - c.z)));
+    std::nth_element(spread.begin(), spread.begin() + spread.size() * 9 / 10, spread.end());
+    const float R = std::max(spread[spread.size() * 9 / 10], 0.3f);
+    const float H = hi[1] - lo[1];
+    const WoodSpecies sp = v < kFirstBush ? SpeciesOfVariant(v) : WoodSpecies::Count;
+    const bool fronds = sp == WoodSpecies::Palm || sp == WoodSpecies::TreeFern;
+    // The trunk: to the crown's foot, or for fronds to their hub (the crown's top third).
+    const float hub = lo[1] + H * 0.7f;
+    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, fronds ? hub : std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
+    if (fronds) {
+        // Four flat fronds from the hub (the crown's top), drooping to the crown's foot at its spread.
+        for (int k = 0; k < 4; ++k) {
+            const float a = 1.5707963f * k + 0.3f;
+            const Vector3 tip = { c.x + cosf(a) * R * 1.1f, lo[1] + H * 0.25f, c.z + sinf(a) * R * 1.1f };
+            Prism(m, { c.x, std::max(hub, hi[1] - 0.3f), c.z }, tip, R * 0.45f, R * 0.12f, 0.0f, true, shade, 0.2f);
+        }
+    } else {
+        // Crown profiles: { height fraction, radius fraction } from the crown's foot to its top.
+        static const float kRound[3][2] = { { 0.0f, 0.55f }, { 0.4f, 1.0f }, { 1.0f, 0.4f } };                       // broadleaf, bushes
+        static const float kCone[4][2] = { { 0.0f, 0.95f }, { 0.5f, 0.6f }, { 0.55f, 0.75f }, { 1.0f, 0.03f } };     // conifers: two tiers
+        static const float kUmbrella[3][2] = { { 0.0f, 0.55f }, { 0.55f, 1.0f }, { 1.0f, 0.8f } };                   // acacia, baobab
+        static const float kWeeping[3][2] = { { 0.0f, 0.85f }, { 0.6f, 1.0f }, { 1.0f, 0.35f } };                    // willow: a dome and its skirt
+        if (sp != WoodSpecies::Count && WoodSpeciesInfo(sp).conifer) Lathe(m, c, kCone, 4, lo[1], hi[1], R, 0.4f, true, shade);
+        else if (sp == WoodSpecies::Acacia || sp == WoodSpecies::Baobab) Lathe(m, c, kUmbrella, 3, lo[1], hi[1], R, 0.4f, true, shade);
+        else if (sp == WoodSpecies::Willow) Lathe(m, c, kWeeping, 3, lo[1], hi[1], R, 0.4f, true, shade);
+        else Lathe(m, c, kRound, 3, lo[1], hi[1], R, 0.4f, true, shade);
+    }
+    // A mesh already about as cheap as this (the small bushes) stands in for itself.
+    if (m.pos.size() >= full.pos.size()) { m.pos = full.pos; m.nrm = full.nrm; m.col = full.col; }
 }
 
 void BuildVariants() {
@@ -702,10 +782,21 @@ void BuildVariants() {
         VariantMesh& m = gVariants[0][mesh];
         // The phase-2 species have no pre-#1995 shape: with forms off their form 0 is still their own.
         const bool newSpecies = v < kFirstBush && SpeciesOfVariant(v) >= WoodSpecies::Acacia;
-        if ((forms || (newSpecies && form == 0)) && v != kStoneVariant) {
+        if (v >= kFirstBush) {
+            // The small flora (#1995 phase 3): each kind in its size classes; stones have one form (their scatter varies them).
+            const int cls = SmallFloraClassOfVariant(v);
+            if (IsStoneVariant(v)) {
+                if (form == 0) Stones(m, 4000u + v * 7919u, cls);
+                else { m = gVariants[0][TreeMeshOf(v, 0)]; m.vboPos = m.vboNrm = m.vboCol = 0; }
+            } else if (forms || form == 0) {
+                BushV2(m, 3000u + v * 7919u + (unsigned)form * 104729u, BushKindOfVariant(v), cls);
+            } else {
+                m = gVariants[0][TreeMeshOf(v, 0)]; m.vboPos = m.vboNrm = m.vboCol = 0;
+            }
+        } else if (forms || (newSpecies && form == 0)) {
             // #1995: form 0 keeps the variant's old seed; the others are their own trees.
             const unsigned int fs = (unsigned)form * 104729u;
-            if (v < kFirstBush) {
+            {
                 const int sp = (int)SpeciesOfVariant(v), cls = SizeClassOfVariant(v);
                 const unsigned int s2 = 5000u + v * 7919u + fs;
                 switch ((WoodSpecies)sp) {
@@ -722,13 +813,11 @@ void BuildVariants() {
                     case WoodSpecies::Willow: WillowV2(m, s2, cls); break;
                     case WoodSpecies::Count: break;
                 }
-            } else {
-                BushV2(m, 3000u + v * 7919u + fs, v - kFirstBush);
             }
         } else if (form > 0) {
-            m = gVariants[0][TreeMeshOf(v, 0)]; // without forms (and for stones, already varied by their scatter) form 0 stands in
+            m = gVariants[0][TreeMeshOf(v, 0)]; // without forms form 0 stands in
             m.vboPos = m.vboNrm = m.vboCol = 0;
-        } else if (v < kFirstBush) {
+        } else {
             // The species' shape (oak broad and heavy, birch tall and slender, maple round and full; pine tall and
             // sparse, spruce dense and broad), then the size class's rules (#274): small = young and thin with few
             // branches; medium = the species as it was; large = taller, thicker, more and longer branches; extra
@@ -751,14 +840,12 @@ void BuildVariants() {
                 Broadleaf(m, 1000u + v * 7919u, b);
             }
         }
-        else if (v == kStoneVariant) Stones(m, 4000u + v * 7919u);
-        else Bush(m, 3000u + v * 7919u);
         m.vertexCount = (int)(m.pos.size() / 3);
-        if (v == kStoneVariant) gVariants[1][mesh] = m; // already a few prisms (and no crown for FarFrom to fit)
+        if (IsStoneVariant(v)) gVariants[1][mesh] = m; // already a few prisms (and no crown for FarFrom to fit)
         else FarFrom(m, v, gVariants[1][mesh]);
         gVariants[1][mesh].vertexCount = (int)(gVariants[1][mesh].pos.size() / 3);
-        BakeFoliageAo(gVariants[0][mesh], v == kStoneVariant);
-        BakeFoliageAo(gVariants[1][mesh], v == kStoneVariant);
+        BakeFoliageAo(gVariants[0][mesh], IsStoneVariant(v));
+        BakeFoliageAo(gVariants[1][mesh], IsStoneVariant(v));
     }
 }
 // By mesh id (TreeMeshOf, #1995).
@@ -896,6 +983,7 @@ uint64_t PlantId(const TreeTileKey& k, int cell) {
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
 void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out, TreeScatterStats* st = nullptr) {
+    PROFILE_SCOPE("trees: build tile"); // (#1995 phase 4) the cost of a farther tree distance
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -905,6 +993,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
         out.centre = Vector3Scale(cd, R + std::max(0.0f, f.elevation(cd, 16.0f)));
     }
     auto solid = [&](Vector3 p) { return f.density(p, &edits) >= ISO_LEVEL; };
+    auto di = std::make_shared<TreeTileInstances>();
     for (int ci = 0; ci < kCells; ++ci)
         for (int cj = 0; cj < kCells; ++cj) {
             uint32_t s = Hash(seed ^ Hash((uint32_t)key.face * 2654435761U ^ (uint32_t)(key.i * kCells + ci) * 40503U ^ (uint32_t)(key.j * kCells + cj) * 9973U));
@@ -1043,12 +1132,31 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 v = (int)sp * kTreeClasses + cls;
                 scale = (0.8f + 0.35f * sz + 0.15f * forest) * flora.size; // the class carries the size; a little spread within it
                 scale *= WoodSpeciesInfo(sp).size; // (trees.txt: birch slender, kapok emergent)
-            } else if (stone) {
-                v = kStoneVariant;
-                scale = 0.8f + 0.6f * sz;
             } else {
-                v = kFirstBush + (int)(h * 3.0f) % 3;
-                scale = 0.7f + 0.7f * sz;
+                // (#1995 phase 3) The size class: the biome's and variant's shift, a ~40 m patch (stands of big bushes,
+                // a boulder field) and the plant's own draw (its own hash: the cell's draws stay as they were). The class
+                // carries the size in its mesh; the scale spreads it a little.
+                const SmallFloraSizes sizes = SmallFloraSizesOf(plantVariant, biome);
+                const float patch = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 40.0f), seed ^ (stone ? 0x57013eu : 0xb05e5u));
+                uint32_t sc = Hash(s ^ 0x1995c3u);
+                const int cls = SmallFloraSizeClass(stone ? sizes.stone : sizes.bush, patch, Unit(sc));
+                if (stone) {
+                    v = kFirstStone + cls;
+                    scale = 0.8f + 0.5f * sz;
+                } else {
+                    // The kind: the variant's shrub weights (biomes.txt), else the three alike, by the plant's hash h.
+                    int kind = (int)(h * 3.0f) % 3;
+                    if (vdef) {
+                        float total = 0.0f;
+                        for (float w : vdef->shrubs) total += w;
+                        if (total > 0.0f) {
+                            float at = h * total;
+                            for (int i = 0; i < kBushKinds; ++i) if (vdef->shrubs[i] > 0.0f) { kind = i; if ((at -= vdef->shrubs[i]) < 0.0f) break; }
+                        }
+                    }
+                    v = BushVariant(kind, cls);
+                    scale = 0.8f + 0.4f * sz;
+                }
             }
             bool cleared = false;
             for (const Vector4& c : clearings) if (Vector3Distance(ground, { c.x, c.y, c.z }) < c.w) { cleared = true; break; }
@@ -1063,23 +1171,33 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (growth < 1.0f) out.regrowing = true;
                 scale *= growth;
             }
-            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, 0.15f)); // sink the base a little
+            // Sink the base a little; (#1995 phase 3) stones by their size: 0.15 m buried pebbles whole, a boulder sits deeper.
+            static const float kStoneSink[kSmallFloraClasses] = { 0.02f, 0.08f, 0.15f, 0.25f };
+            const float sink = stone ? kStoneSink[SmallFloraClassOfVariant(v)] : 0.15f;
+            const Vector3 p = Vector3Subtract(ground, Vector3Scale(dir, sink));
             // The climate (Plan 5 B) in the up vector's length, packed as for the terrain (trees.vs decodes it).
             const PlanetField::Climate cl = f.climateAt(dir, e);
             const float code = BiomeClimateCode(cl.temp, cl.moist, plantVariant); // from 2: below 1.5 means no climate (#254); the variant for its tint (#2032)
             // #1995: one of the variant's forms, by its own hash (the cell's draws stay as they were); stones have one.
-            const int form = TreeFormsOn() && v != kStoneVariant ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
+            const int form = TreeFormsOn() && !IsStoneVariant(v) ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
             const int mesh = TreeMeshOf(v, form);
-            out.inst[mesh].insert(out.inst[mesh].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
-            out.ids[mesh].push_back(id);
+            di->inst[mesh].insert(di->inst[mesh].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
+            di->ids[mesh].push_back(id);
             const VariantMesh& vm = Variant(mesh);
             if (vm.trunkRadius > 0.0f) {
                 out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
                 out.plants.push_back({ id, p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale, scale, v });
             } else {
-                out.plants.push_back({ id, p, dir, (stone ? 0.5f : 1.2f) * scale, 0.7f * scale, scale, v });
+                // Bushes and stones: height and radius from the class's mesh (#1995 phase 3: a pebble to a 3 m thicket).
+                const VariantBounds& vb = BoundsOf(v);
+                out.plants.push_back({ id, p, dir, vb.maxY * scale, 0.8f * vb.reach * scale, scale, v });
+                // A boulder blocks the way: a trunk to collide with, a little inside its blocks.
+                if (stone && SmallFloraClassOfVariant(v) >= kBoulderClass) out.trunks.push_back({ p, dir, vb.maxY * scale, 0.6f * vb.reach * scale });
             }
         }
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh)
+        if (!di->inst[mesh].empty()) di->meshes.push_back((uint16_t)mesh);
+    out.draw = std::move(di);
 }
 
 } // namespace
@@ -1112,6 +1230,18 @@ struct TreeSystem::Shared {
 TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
     : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<TerrainDeltas>()),
       removed(std::make_shared<PlantRemovals>()), clearings(std::make_shared<std::vector<Vector4>>()) {}
+
+// (#2133) A batch rebuild in flight: the tiles' instance blocks as they were when it started (shared, immutable), the
+// camera and sun then, and the sorted buffers the job fills. The main thread uploads them once `done` is set. The job
+// holds its own reference, so the system may go away while it runs.
+struct TreeSystem::BatchWork {
+    std::atomic<bool> done{ false };
+    DVec3 anchor{};
+    Vector3 sun{};
+    struct Tile { std::shared_ptr<const TreeTileInstances> draw; Vector3 centre; };
+    std::vector<Tile> tiles;
+    std::vector<float> bufs[kTreeMeshes][kTreeSets][2]; // keep their capacity between rebuilds
+};
 
 TreeSystem::~TreeSystem() {
     shared->alive = false;
@@ -1240,7 +1370,17 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
     }
     const double now = GetTime();
     const bool moved = Vector3Distance(camLocal, Vector3{ (float)anchor.x, (float)anchor.y, (float)anchor.z }) > 40.0f; // keep the near/far split current
-    if ((batchDirty || moved) && now - lastBatch > 0.2) rebuildBatches(camLocal);
+    // (#2133) A sort the job finished uploads here; the next starts only after that (the job owns its buffers meanwhile).
+    // The first batch waits for its job: a world just loaded draws its trees on its first frame.
+    if (batchInFlight && (batchWork->done.load(std::memory_order_acquire) || lastBatch < 0.0)) {
+        while (!batchWork->done.load(std::memory_order_acquire)) std::this_thread::yield();
+        finishBatch();
+    }
+    if (!batchInFlight && (batchDirty || moved) && now - lastBatch > 0.2) {
+        const bool first = lastBatch < 0.0;
+        startBatch(camLocal);
+        if (first) { while (!batchWork->done.load(std::memory_order_acquire)) std::this_thread::yield(); finishBatch(); }
+    }
 }
 
 int TreeSystem::readyTilesNear(Vector3 local, float range) const {
@@ -1251,89 +1391,117 @@ int TreeSystem::readyTilesNear(Vector3 local, float range) const {
     return n;
 }
 
-void TreeSystem::rebuildBatches(Vector3 camLocal) {
-    lastBatch = GetTime();
-    batchDirty = false;
-    anchor = DVec3(camLocal);
-    EnsureVariantGpu();
-    drawnInstances = 0;
+// Sorts every instance into its mesh's, detail level's and shadow set's buffer. A job: reads only `w`.
+static void SortBatch(TreeSystem::BatchWork& w) {
+    PROFILE_SCOPE("trees: batch sort");
+    for (auto& m : w.bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
     // Set 0: everything drawn (to the draw distance). Sets 1 and 2: the shadow casters for the far (+-200 m) and
     // near (+-32 m) cascades, only the trees within reach of their boxes (with room for long low-sun shadows and
     // the 40 m the camera may move before the next rebuild): the shadow passes drew the whole 2 km forest twice,
     // ~1.3 ms a frame flying, for boxes a few hundred metres across.
     const float setReach[kTreeSets] = { 1e30f, kTreeShadowFarReach, kTreeShadowNearReach };
-    // One pass over the tiles sorts every instance into its mesh's buffers (#1995: a pass per mesh walked the tile map
-    // 180 times once phase 2 brought 14 species, ~14 ms a rebuild in a dense swamp). Main thread only, so the scratch
-    // buffers are shared by every TreeSystem and keep their capacity between rebuilds.
-    static std::vector<float> bufs[kTreeMeshes][kTreeSets][2];
-    for (auto& m : bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
-    const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
-    for (auto& kv : tiles) {
-        const TreeTile& t = kv.second;
-        if (!t.ready) continue;
-        const float tileDist = Vector3Distance(t.centre, camLocal);
-        if (tileDist > std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize) continue;
-        for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
-            if (t.inst[mesh].empty()) continue;
+    const Vector3 sun = w.sun, cam = { (float)w.anchor.x, (float)w.anchor.y, (float)w.anchor.z };
+    const bool sunKnown = sun.x != 0.0f || sun.y != 0.0f || sun.z != 0.0f;
+    // RAYLIBGAME_TREE_NEAR=<m>: the switch distance for A/Bs (0: every tree far, to judge the far meshes up close).
+    static const float nearD = [] { const char* e = getenv("RAYLIBGAME_TREE_NEAR"); return e && *e ? (float)atof(e) : kTreeNearDistance; }();
+    // One pass over the tiles (#1995: a pass per mesh walked the tile map 180 times, ~14 ms a rebuild in a dense swamp),
+    // over each tile's non-empty meshes only.
+    for (const auto& t : w.tiles) {
+        const float tileDist = Vector3Distance(t.centre, cam);
+        for (uint16_t mesh : t.draw->meshes) {
             const float reach = VariantOfTreeMesh(mesh) < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
             if (tileDist > reach + kTreeTileSize) continue;
-            auto& buf = bufs[mesh];
-            for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8) {
-                const float x = (float)(t.inst[mesh][k] - anchor.x), y = (float)(t.inst[mesh][k + 1] - anchor.y), z = (float)(t.inst[mesh][k + 2] - anchor.z);
+            auto& buf = w.bufs[mesh];
+            const std::vector<float>& in = t.draw->inst[mesh];
+            for (size_t k = 0; k + 7 < in.size(); k += 8) {
+                const float x = (float)(in[k] - w.anchor.x), y = (float)(in[k + 1] - w.anchor.y), z = (float)(in[k + 2] - w.anchor.z);
                 const float d2 = x * x + y * y + z * z;
                 if (d2 > reach * reach) continue;
-                const int lod = d2 < kTreeNearDistance * kTreeNearDistance ? 0 : 1;
-                const float inst[8] = { x, y, z, t.inst[mesh][k + 3], t.inst[mesh][k + 4], t.inst[mesh][k + 5], t.inst[mesh][k + 6], t.inst[mesh][k + 7] };
+                const int lod = d2 < nearD * nearD ? 0 : 1;
+                const float inst[8] = { x, y, z, in[k + 3], in[k + 4], in[k + 5], in[k + 6], in[k + 7] };
                 // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
                 // without a sun direction yet, by distance from the camera.
-                const float along = x * shadowSunLocal.x + y * shadowSunLocal.y + z * shadowSunLocal.z;
+                const float along = x * sun.x + y * sun.y + z * sun.z;
                 const float perp2 = sunKnown ? std::max(0.0f, d2 - along * along) : d2;
                 for (int s = 0; s < kTreeSets; ++s)
                     if (s == 0 || perp2 <= setReach[s] * setReach[s]) buf[s][lod].insert(buf[s][lod].end(), inst, inst + 8);
             }
         }
     }
+}
+
+// (#2133) The rebuild ran on the main thread: ~3 ms of sorting and ~3.8 ms of GL object churn every 40 m of camera
+// movement at 2 km, 13-17 ms at 5 km. Now the main thread takes a snapshot of the tiles' shared instance blocks (a
+// pointer copy each) and a job sorts; a later frame's update uploads the result (finishBatch). The batches lag the camera
+// by a frame or two, inside the 40 m slack the near/far split and the shadow sets already allow.
+void TreeSystem::startBatch(Vector3 camLocal) {
+    PROFILE_SCOPE("trees: batch start");
+    lastBatch = GetTime();
+    batchDirty = false;
+    EnsureVariantGpu();
+    if (!batchWork) batchWork = std::make_shared<BatchWork>();
+    BatchWork& w = *batchWork;
+    w.done = false;
+    w.anchor = DVec3(camLocal);
+    w.sun = shadowSunLocal;
+    w.tiles.clear();
+    const float range = std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize;
+    for (const auto& kv : tiles)
+        if (kv.second.ready && Vector3Distance(kv.second.centre, camLocal) <= range) w.tiles.push_back({ kv.second.draw, kv.second.centre });
+    auto job = batchWork;
+    JobSystem::tagNext(JobTag::Trees);
+    WorldJobs().submit(-1.0e9f, [job] { SortBatch(*job); job->done.store(true, std::memory_order_release); }); // ahead of every tile build
+    batchInFlight = true;
+}
+
+void TreeSystem::finishBatch() {
+    PROFILE_SCOPE("trees: batch upload");
+    BatchWork& w = *batchWork;
+    batchInFlight = false;
+    anchor = w.anchor;
+    drawnInstances = 0;
+    const auto& bufs = w.bufs;
+    // (#2133) The buffers and their VAOs live as long as the system: a rebuild refills them in place (orphaned, grown by
+    // half when too small) instead of deleting and re-creating up to ~1,700 GL objects, ~3.8 ms a rebuild at 2 km.
+    constexpr int stride = 8 * (int)sizeof(float);
+    auto makeVao = [](unsigned int buffer, const VariantMesh& m) {
+        const unsigned int va = rlLoadVertexArray();
+        rlEnableVertexArray(va);
+        rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
+        rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
+        rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+        rlEnableVertexBuffer(buffer);
+        rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
+        rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
+        rlDisableVertexArray();
+        rlDisableVertexBuffer();
+        return va;
+    };
+    // Room for n instances in `buffer` (made on first use), then the data if any. True when the buffer is new.
+    auto fill = [](unsigned int& buffer, int& capacity, const float* data, int n) {
+        const bool made = !buffer;
+        if (made) glGenBuffers(1, &buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        GpuMemTag gm_("trees"); // VRAM accounting (#302)
+        if (n > capacity) capacity = std::max({ n, capacity + capacity / 2, 64 });
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)capacity * stride, nullptr, GL_DYNAMIC_DRAW); // orphan: no stall on the old one
+        if (data && n) glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)n * stride, data);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        return made;
+    };
     for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
         const auto& buf = bufs[mesh];
         for (int s = 0; s < kTreeSets; ++s)
             for (int lod = 0; lod < 2; ++lod) {
                 const int slot = mesh + lod * kTreeMeshes;
-                unsigned int& va = vao[s][slot];
-                unsigned int& vb = vbo[s][slot];
-                if (va) { rlUnloadVertexArray(va); va = 0; }
-                if (vb) { rlUnloadVertexBuffer(vb); vb = 0; }
-                count[s][slot] = (int)(buf[s][lod].size() / 8);
-                if (!count[s][slot]) continue;
-                if (s == 0) drawnInstances += count[s][slot];
+                const int n = (int)(buf[s][lod].size() / 8);
+                count[s][slot] = n;
+                if (!n) continue; // the buffer keeps its old contents; nothing draws it
+                if (s == 0) drawnInstances += n;
                 const VariantMesh& m = Variant(mesh, lod);
-                va = rlLoadVertexArray();
-                rlEnableVertexArray(va);
-                rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
-                rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
-                rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
-                GpuMemTag gm667_("trees"); // VRAM accounting (#302)
-                vb = rlLoadVertexBuffer(buf[s][lod].data(), (int)(buf[s][lod].size() * sizeof(float)), false);
-                const int stride = 8 * (int)sizeof(float);
-                rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
-                rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
-                rlDisableVertexArray();
-                rlDisableVertexBuffer();
-                if (s == 0) {
-                    // #292: room for the visible instances of this slot (the view cull writes them), and a VAO on it.
-                    if (culledVao[slot]) { rlUnloadVertexArray(culledVao[slot]); culledVao[slot] = 0; }
-                    if (culledVbo[slot]) { rlUnloadVertexBuffer(culledVbo[slot]); culledVbo[slot] = 0; }
-                    culledVao[slot] = rlLoadVertexArray();
-                    rlEnableVertexArray(culledVao[slot]);
-                    rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
-                    rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
-                    rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
-                    GpuMemTag gm682_("trees"); // VRAM accounting (#302)
-                    culledVbo[slot] = rlLoadVertexBuffer(nullptr, (int)(buf[s][lod].size() * sizeof(float)), true);
-                    rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
-                    rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
-                    rlDisableVertexArray();
-                    rlDisableVertexBuffer();
-                }
+                if (fill(vbo[s][slot], capacity[s][slot], buf[s][lod].data(), n)) vao[s][slot] = makeVao(vbo[s][slot], m);
+                // #292: room for the visible instances of this slot (the view cull writes them), and a VAO on it.
+                if (s == 0 && fill(culledVbo[slot], culledCapacity[slot], nullptr, n)) culledVao[slot] = makeVao(culledVbo[slot], m);
             }
     }
 }
@@ -1343,6 +1511,7 @@ namespace {
     ComputeProgram gTreeCull;
     int gTreeCullState = 0; // 0 untried, 1 ok, -1 unavailable
     GLint gTcN = -1, gTcCmd = -1, gTcModel = -1, gTcRadius = -1, gTcPlanes = -1;
+    GLint gTcHizOn = -1, gTcHizTex = -1, gTcHizSize = -1, gTcHizLevels = -1, gTcPrevVP = -1, gTcPrevModel = -1, gTcCam = -1, gTcHizNear = -1; // (#2141)
     bool TreeCullReady() {
         if (gTreeCullState == 0) {
             const char* e = getenv("RAYLIBGAME_TREE_CULL");
@@ -1351,10 +1520,25 @@ namespace {
                 const GLuint p = gTreeCull.id;
                 gTcN = glGetUniformLocation(p, "n"); gTcCmd = glGetUniformLocation(p, "cmdIndex"); gTcModel = glGetUniformLocation(p, "model");
                 gTcRadius = glGetUniformLocation(p, "radius"); gTcPlanes = glGetUniformLocation(p, "planes");
+                gTcHizOn = glGetUniformLocation(p, "hizOn"); gTcHizTex = glGetUniformLocation(p, "hizTex");
+                gTcHizSize = glGetUniformLocation(p, "hizSize"); gTcHizLevels = glGetUniformLocation(p, "hizLevels");
+                gTcPrevVP = glGetUniformLocation(p, "prevViewProj"); gTcPrevModel = glGetUniformLocation(p, "prevModel");
+                gTcCam = glGetUniformLocation(p, "camPos"); gTcHizNear = glGetUniformLocation(p, "hizNear");
             }
         }
         return gTreeCullState == 1;
     }
+}
+
+int TreeSystem::visibleInstances() const {
+    if (!cmdBuf) return -1;
+    GLuint cmds[2 * kTreeMeshes][4];
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmdBuf);
+    glGetBufferSubData(GL_DRAW_INDIRECT_BUFFER, 0, sizeof(cmds), cmds);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    int n = 0;
+    for (int slot = 0; slot < 2 * kTreeMeshes; ++slot) if (count[0][slot]) n += (int)cmds[slot][1];
+    return n;
 }
 
 void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyLod, int set) {
@@ -1382,6 +1566,34 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
         glUseProgram(gTreeCull.id);
         glUniformMatrix4fv(gTcModel, 1, GL_FALSE, MatrixToFloat(model));
         glUniform4fv(gTcPlanes, 6, (const float*)ctx.frustum->planes);
+        // (#2141) Occlusion against last frame's Hi-Z pyramid (the terrain's, #134), with the placement these instances had
+        // in that frame: the model then, moved by how far the anchor has moved since (a batch upload re-anchors them).
+        // RAYLIBGAME_TREE_HIZ=0: off (A/Bs).
+        static const bool hizAllowed = !(getenv("RAYLIBGAME_TREE_HIZ") && !EnvFlag("RAYLIBGAME_TREE_HIZ"));
+        unsigned hizTex = 0; int hizW = 0, hizH = 0, hizLevels = 0; Matrix hizVP{};
+        const bool hiz = hizAllowed && hizFrame >= 0 && SceneTarget_HiZFrame() == hizFrame && SceneTarget_HiZ(hizTex, hizW, hizH, hizLevels, hizVP);
+        glUniform1i(gTcHizOn, hiz ? 1 : 0);
+        constexpr int kHizUnit = 31; // its own unit: 7 (the terrain cull's) holds the near shadow cascade the tree draw samples
+        if (hiz) {
+            Matrix prev = hizModel;
+            const Vector3 d = (anchor - hizAnchor).toFloat();
+            prev.m12 += prev.m0 * d.x + prev.m4 * d.y + prev.m8 * d.z;
+            prev.m13 += prev.m1 * d.x + prev.m5 * d.y + prev.m9 * d.z;
+            prev.m14 += prev.m2 * d.x + prev.m6 * d.y + prev.m10 * d.z;
+            glActiveTexture(GL_TEXTURE0 + kHizUnit);
+            glBindTexture(GL_TEXTURE_2D, hizTex);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(gTcHizTex, kHizUnit);
+            glUniform2f(gTcHizSize, (float)hizW, (float)hizH);
+            glUniform1i(gTcHizLevels, hizLevels);
+            glUniformMatrix4fv(gTcPrevVP, 1, GL_FALSE, MatrixToFloat(hizVP));
+            glUniformMatrix4fv(gTcPrevModel, 1, GL_FALSE, MatrixToFloat(prev));
+            glUniform3f(gTcCam, ctx.cameraPos.x, ctx.cameraPos.y, ctx.cameraPos.z);
+            // As the terrain's (#910): last frame's depth was seen from another eye; near trees move most across the screen.
+            static const float hizNear = getenv("RAYLIBGAME_HIZ_NEAR") ? (float)atof(getenv("RAYLIBGAME_HIZ_NEAR")) : 64.0f;
+            glUniform1f(gTcHizNear, hizNear);
+        }
+        if (hizFrame != SceneTarget_Frame()) { hizModel = model; hizAnchor = anchor; hizFrame = SceneTarget_Frame(); }
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, cmdBuf);
         for (int slot = 0; slot < kCmds; ++slot) {
             const int mesh = slot % kTreeMeshes, lod = slot / kTreeMeshes;
@@ -1397,6 +1609,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
             glDispatchCompute((GLuint)((count[0][slot] + 63) / 64), 1, 1);
         }
         glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+        if (hiz) { glActiveTexture(GL_TEXTURE0 + kHizUnit); glBindTexture(GL_TEXTURE_2D, 0); glActiveTexture(GL_TEXTURE0); }
         glUseProgram(ctx.treeShader->id);
     }
     for (int slot = 0; slot < 2 * kTreeMeshes; ++slot) {
@@ -1421,7 +1634,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
                 offLoc = glGetUniformLocation(prog, "foliageTexOff");
             }
             static const float texOff = getenv("RAYLIBGAME_FOLIAGE_TEX") && !EnvFlag("RAYLIBGAME_FOLIAGE_TEX") ? 1.0f : 0.0f;
-            const float kind = v < kFirstBush ? (float)(int)WoodSpeciesInfo(SpeciesOfVariant(v)).texture : v == kStoneVariant ? 6.0f : 5.0f; // BarkTexture 0-4
+            const float kind = v < kFirstBush ? (float)(int)WoodSpeciesInfo(SpeciesOfVariant(v)).texture : IsStoneVariant(v) ? 6.0f : 5.0f; // BarkTexture 0-4
             if (kindLoc >= 0) glUniform1f(kindLoc, kind);
             if (offLoc >= 0) glUniform1f(offLoc, texOff);
         }
@@ -1522,11 +1735,14 @@ void TreeSystem::remove(uint64_t id, double when) {
     auto it = tiles.find(TileOfPlant(id));
     if (it == tiles.end()) return;
     TreeTile& t = it->second;
-    for (int v = 0; v < kTreeMeshes; ++v) // by mesh (#1995)
-        for (size_t k = 0; k < t.ids[v].size(); ++k)
-            if (t.ids[v][k] == id) {
-                t.ids[v].erase(t.ids[v].begin() + k);
-                t.inst[v].erase(t.inst[v].begin() + k * 8, t.inst[v].begin() + k * 8 + 8);
+    for (uint16_t v : t.draw->meshes) // by mesh (#1995)
+        for (size_t k = 0; k < t.draw->ids[v].size(); ++k)
+            if (t.draw->ids[v][k] == id) {
+                // A new copy (#2133): a batch sort on a job may be reading the old one.
+                auto copy = std::make_shared<TreeTileInstances>(*t.draw);
+                copy->ids[v].erase(copy->ids[v].begin() + k);
+                copy->inst[v].erase(copy->inst[v].begin() + k * 8, copy->inst[v].begin() + k * 8 + 8);
+                t.draw = std::move(copy);
                 break;
             }
     t.plants.erase(std::remove_if(t.plants.begin(), t.plants.end(), [id](const Plant& p) { return p.id == id; }), t.plants.end());
@@ -1661,9 +1877,9 @@ void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpec
     for (const auto& kv : tiles) {
         const TreeTile& t = kv.second;
         if (!t.ready) continue;
-        for (int mesh = 0; mesh < kFirstBush * kTreeForms; ++mesh) { const int v = VariantOfTreeMesh(mesh);
-            for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8)
-                if (Vector3Distance({ t.inst[mesh][k], t.inst[mesh][k + 1], t.inst[mesh][k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; } }
+        for (int mesh = 0; mesh < kFirstBush * kTreeForms; ++mesh) { const int v = VariantOfTreeMesh(mesh); const auto& in = t.draw->inst[mesh];
+            for (size_t k = 0; k + 7 < in.size(); k += 8)
+                if (Vector3Distance({ in[k], in[k + 1], in[k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; } }
     }
 }
 
@@ -1690,7 +1906,7 @@ TEST(Trees, FormsAndSizeClasses) {
         EXPECT_GT(Variant(mesh, 1).vertexCount, 0) << mesh;
     }
     for (int v = 0; v < kTreeVariants; ++v) {
-        if (v == kStoneVariant) continue;
+        if (IsStoneVariant(v)) continue;
         const VariantMesh &a = Variant(TreeMeshOf(v, 0)), &b = Variant(TreeMeshOf(v, 1)), &c = Variant(TreeMeshOf(v, 2));
         EXPECT_TRUE(a.pos != b.pos && b.pos != c.pos && a.pos != c.pos) << "variant " << v << ": forms are clones";
         if (v < kFirstBush) { EXPECT_GT(a.trunkRadius, 0.0f) << v; EXPECT_GT(a.trunkHeight, 0.5f) << v; }
@@ -1705,6 +1921,79 @@ TEST(Trees, FormsAndSizeClasses) {
             prev = h;
         }
     }
+}
+
+// (#1995 phase 4) Every far mesh stands in for its full mesh: cheap (at most 180 vertices, and no more than the
+// full mesh), as tall as it (top within 15%), and no wider (reach within 115%: fronds and lathes overshoot the 90th
+// percentile a little).
+TEST(Trees, FarMeshesFitTheirTree) {
+    auto extent = [](const VariantMesh& m, float& top, float& reach) {
+        top = -1e9f; reach = 0.0f;
+        for (size_t i = 0; i + 2 < m.pos.size(); i += 3) {
+            top = std::max(top, m.pos[i + 1]);
+            reach = std::max(reach, sqrtf(m.pos[i] * m.pos[i] + m.pos[i + 2] * m.pos[i + 2]));
+        }
+    };
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+        const int v = VariantOfTreeMesh(mesh);
+        if (IsStoneVariant(v)) continue; // the stones' far mesh is their full one
+        const VariantMesh &full = Variant(mesh, 0), &far = Variant(mesh, 1);
+        float fullTop, fullReach, farTop, farReach;
+        extent(full, fullTop, fullReach);
+        extent(far, farTop, farReach);
+        EXPECT_LE(far.vertexCount, 180) << "mesh " << mesh;
+        EXPECT_LE(far.vertexCount, full.vertexCount) << "mesh " << mesh;
+        EXPECT_NEAR(farTop, fullTop, 0.15f * fullTop) << "mesh " << mesh;
+        EXPECT_LE(farReach, 1.25f * fullReach) << "mesh " << mesh;
+    }
+}
+
+// (#1995 phase 3) The small flora's size classes grow (height and reach, over the forms) for every bush kind and the
+// stones; a boulder stands taller than a man; a positive shift moves the mix to the big classes; biomes.txt's keys parse.
+TEST(Trees, SmallFloraSizeClasses) {
+    auto extent = [](int v, float& top, float& reach) {
+        top = reach = 0.0f;
+        for (int form = 0; form < kTreeForms; ++form) {
+            const VariantMesh& m = Variant(TreeMeshOf(v, form));
+            for (size_t i = 0; i + 2 < m.pos.size(); i += 3) {
+                top = std::max(top, m.pos[i + 1]);
+                reach = std::max(reach, sqrtf(m.pos[i] * m.pos[i] + m.pos[i + 2] * m.pos[i + 2]));
+            }
+        }
+    };
+    for (int kind = 0; kind <= kBushKinds; ++kind) { // kBushKinds: the stones
+        float prevTop = 0.0f, prevReach = 0.0f;
+        for (int cls = 0; cls < kSmallFloraClasses; ++cls) {
+            const int v = kind < kBushKinds ? BushVariant(kind, cls) : kFirstStone + cls;
+            EXPECT_EQ(kind < kBushKinds ? !IsStoneVariant(v) : IsStoneVariant(v), true) << v;
+            EXPECT_EQ(SmallFloraClassOfVariant(v), cls) << v;
+            float top, reach;
+            extent(v, top, reach);
+            EXPECT_GT(top, prevTop) << "kind " << kind << " class " << cls;
+            EXPECT_GT(reach, prevReach) << "kind " << kind << " class " << cls;
+            prevTop = top; prevReach = reach;
+        }
+        if (kind == kBushKinds) EXPECT_GT(prevTop, 1.9f) << "a boulder is taller than a man";
+    }
+    auto share = [](float shift, int cls) {
+        int n = 0;
+        for (int i = 0; i < 1000; ++i) n += SmallFloraSizeClass(shift, 0.5f, (i + 0.5f) / 1000.0f) == cls;
+        return n / 1000.0f;
+    };
+    EXPECT_NEAR(share(0.0f, 1), 0.42f, 0.03f);
+    EXPECT_GT(share(1.0f, 3), 2.0f * share(0.0f, 3));
+    EXPECT_GT(share(-1.0f, 0), share(0.0f, 0));
+    BiomeVariantTable t;
+    std::string err;
+    std::string all;
+    for (int b = 0; b < (int)Biome::Count; ++b) { std::string n = BiomeName((Biome)b); for (char& ch : n) ch = (char)tolower((unsigned char)ch); all += "variant " + n + ".base\n"; }
+    ASSERT_TRUE(BiomeVariants_Parse(all + "variant forest.thicket\n  sizes 0.8 - -0.5\n  shrubs 1 0 2\n", t, &err)) << err;
+    const BiomeVariantDef& d = t.defs[t.find("forest.thicket")];
+    EXPECT_FLOAT_EQ(d.bushSize, 0.8f); EXPECT_FLOAT_EQ(d.stoneSize, 0.0f); EXPECT_FLOAT_EQ(d.grassSize, -0.5f);
+    EXPECT_FLOAT_EQ(d.shrubs[2], 2.0f);
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  sizes 1 2\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  shrubs 0 0 0\n", t, &err));
+    EXPECT_FALSE(BiomeVariants_Parse(all + "variant forest.x\n  sizes 3 0 0\n", t, &err));
 }
 
 // (#1995 phase 2) trees.txt parses and names every species; bad lines are errors; each species' log is a real item name.

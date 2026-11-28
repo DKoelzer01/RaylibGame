@@ -20,7 +20,9 @@ struct SuitStats {
     float jetFuel = 1.0f, jetThrust = 1.0f, walk = 1.0f, lamp = 1.0f, food = 1.0f;
     float underwater = 2.0f;             // oxygen drain multiplier underwater (rebreather: 0.5)
     float cold = 1.0f;                   // share of the cold's extra hunger felt (insulation 0.4, regulator 0)
-    bool heatProof = false;              // thermal regulator: no heat damage
+    // (#1472, #1465) the heat rating: the depth bands' heat (0 above 250 m, 1 to 500 m, 2 below) this suit stands. The best
+    // module wins, no stacking: a cooling vest 1, the thermal regulator 2 with suit power (1 without).
+    int heat = 0;
     bool grip = false, scanner = false, servo = false;
     bool gasSensor = false;              // (#1472) cave gas warnings from 15 m, with a direction
     bool hover = false;                  // flight pack (#163): hover mode (H)
@@ -43,6 +45,7 @@ struct SuitState {
 
 const SuitStats& Suit_Stats();
 SuitStats Suit_StatsOf(const SuitState& suit); // (#337) any player's (a server's remote players)
+int Suit_HeatRating(const SuitState& suit);    // (#1472) SuitStats::heat of any player's suit: the depth heat it stands
 // (#1840) Packs fitted modules forward into `slots` slots; returns the ones that don't fit (each once), for the inventory.
 std::vector<std::string> Suit_PackSlots(std::vector<std::string>& fitted, int slots);
 const std::string& Suit_Worn();                       // the worn suit's item id

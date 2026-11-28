@@ -76,6 +76,7 @@ tool_axe 1         = stone_axe_head 1, any_planks 2, fibre 2
 tool_hoe 1         = stone_hoe_head 1, any_planks 2, fibre 1
 wooden_shield 1    = any_planks 4, fibre 3
 tool_pickaxe 1     = iron_pick_head 1, any_planks 2
+crowbar 1          = iron_ingot 2
 tool_shovel 1      = iron_shovel_head 1, any_planks 2
 tool_axe 1         = iron_axe_head 1, any_planks 2
 tool_hoe 1         = iron_hoe_head 1, any_planks 2

@@ -29,6 +29,10 @@
 #include "menus.h"
 #include "net.h"
 #include "hostserver.h" // (#1684) Host_BroadcastPartEdits
+#include "ruincache.h"  // (#2072)
+#include "navigation.h" // (#2072) Nav_MinimapRect: the cache panel keeps clear of the minimap
+#include "combat.h"     // (#2072) Combat_Drop: a cache's overflow
+#include "playersession.h"
 #include "multiblock.h" // (#1429 PR 3)
 #include "composed.h"   // (#1613) the smith's hammer an anvil needs
 #include "forge.h"
@@ -909,6 +913,16 @@ bool BuildTool_GhostShown(uint64_t body, uint32_t plot, Int3 controllerCell) {
     const StructureGhost g{ body, plot, controllerCell };
     return (wrenchGhostOn && wrenchGhost == g) || std::find(ghostsOn.begin(), ghostsOn.end(), g) != ghostsOn.end();
 }
+bool BuildTool_AimingUsable() {
+    if (machineAim.part < 0) return false;
+    const PartType t = machineAim.type;
+    if (t == PartType::Campfire || t == PartType::RuinCache || t == PartType::Lever) return true;
+    if (t != PartType::Gate) return false; // E acts on a gate only while it is a locked vault door (a fence gate: the inventory)
+    Planetoid* gb = Planetoid::find(machineAim.body);
+    Plot* gp = gb && gb->plots ? gb->plots->byId(machineAim.plot) : nullptr;
+    return gp && machineAim.part < (int)gp->parts.size() && GateLocked(gp->parts[machineAim.part]);
+}
+PartType BuildTool_AimedType() { return machineAim.part >= 0 ? machineAim.type : PartType::Count; }
 
 namespace {
 // (#1716) Does RMB on the aimed part do something of its own (open a screen, work a pump, pull a lever...)? Cables and the
@@ -966,7 +980,7 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
         if (pl->raycast(lo, ld, best, c, f, d)) {
             const int part = pl->partAt(c);
             const PartType pt = part >= 0 ? pl->parts[part].type : PartType::Count;
-            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever || pt == PartType::MbController)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
+            if (part >= 0 && (IsMachine(pt) || IsRotationPart(pt) || pt == PartType::HandPump || pt == PartType::Cable || pt == PartType::Bed || GateLocked(pl->parts[part]) || pt == PartType::Lever || pt == PartType::MbController || pt == PartType::RuinCache)) { // vault doors and levers (#1641); cables: their network (#570); beds (#800); shafts (#1269)
                 best = d;
                 machineAim = { body->id, pl->id, part, pt, c };
             }
@@ -1043,6 +1057,40 @@ void MachineInteract(Scene& world, const PlayerInput& in) {
         if (gNetRole == NetRole::Host) Host_BroadcastPartEdits(*lb, *lp, edits); // (#1684)
         GameUI_Toast(gates <= 0 ? "The lever clicks, and nothing happens" : "Somewhere, a gate grinds open");
         Audio_Play(Sfx::Pickup, 0.5f, 0.5f);
+        return;
+    }
+    if (machineAim.type == PartType::RuinCache) { // (#2072) hold E (kCacheHoldSeconds) to open it; letting go or looking away starts over
+        static struct { uint64_t body = 0; uint32_t plot = 0; int part = -1; float t = 0.0f; double at = -1.0; } h;
+        Planetoid* cb = Planetoid::find(machineAim.body);
+        Plot* cp = cb && cb->plots ? cb->plots->byId(machineAim.plot) : nullptr;
+        if (!cp || machineAim.part >= (int)cp->parts.size()) return;
+        const Part q = cp->parts[machineAim.part];
+        if (in.hit(Act::Use)) {
+            if (CacheOpened(q)) { GameUI_Toast("Opened already: empty"); return; }
+            const std::string missing = CacheMissing(*cb, *cp, machineAim.part, inventory);
+            if (!missing.empty()) { GameUI_Toast(missing.c_str()); Audio_Play(Sfx::Error, 0.5f); return; }
+        }
+        if (!in.down(Act::Use) || CacheOpened(q) || !CacheMissing(*cb, *cp, machineAim.part, inventory).empty()) { h.part = -1; return; }
+        const bool same = h.part == machineAim.part && h.body == machineAim.body && h.plot == machineAim.plot && GetTime() - h.at < 0.2;
+        if (!same) { h = { machineAim.body, machineAim.plot, machineAim.part, 0.0f, 0.0 }; Audio_Play(Sfx::Pickup, 0.35f, 0.6f); }
+        h.at = GetTime();
+        h.t += GameFrameTime();
+        RuinCache_SetHold(h.t / kCacheHoldSeconds);
+        if (h.t < kCacheHoldSeconds) return;
+        h.part = -1;
+        RuinCache_SetHold(-1.0f);
+        if (MachineAct_Remote()) { gMachineRequest(machineAim.body, machineAim.plot, machineAim.part, kMachineActOpenCache, std::string(), 0, 0, 0); return; } // joined: the host opens it
+        std::vector<CacheRoll> rolls;
+        std::vector<std::pair<std::string, int>> overflow;
+        std::vector<PartEdit> edits;
+        std::string why;
+        if (!Cache_Open(*cb, *cp, machineAim.part, inventory, LocalTeam(), rolls, overflow, &edits, &why)) { if (!why.empty()) GameUI_Toast(why.c_str()); return; }
+        if (gNetRole == NetRole::Host) Host_BroadcastPartEdits(*cb, *cp, edits); // everyone sees it opened
+        for (const auto& [item, n] : overflow) Combat_Drop(LocalSession(), InvSlot{ item, (int64_t)n * 100 });
+        std::vector<std::string> lines;
+        for (const CacheRoll& r : rolls) lines.push_back(r.text);
+        RuinCache_ShowResult(CacheKindOf(q), lines);
+        Audio_Play(Sfx::Pickup, 0.6f, 0.8f);
         return;
     }
     if (machineAim.type == PartType::Cable) return; // looked at only: its panel shows the network (#570)
@@ -1215,6 +1263,30 @@ void Machine_DrawHUD() {
         DrawRectangle(x - 8, y - 6, 300, 52, Fade(BLACK, 0.55f));
         DrawText("lever", x, y, 20, SKYBLUE);
         DrawText("RMB / E to pull it", x, y + 24, 16, RAYWHITE);
+        return;
+    }
+    if (machineAim.type == PartType::RuinCache) { // (#2072)
+        Planetoid* cb = Planetoid::find(machineAim.body);
+        Plot* cp = cb && cb->plots ? cb->plots->byId(machineAim.plot) : nullptr;
+        if (!cp || machineAim.part >= (int)cp->parts.size()) return;
+        const Part& q = cp->parts[machineAim.part];
+        const std::string missing = CacheMissing(*cb, *cp, machineAim.part, inventory);
+        const std::string what = CacheOpened(q) ? "opened: empty" : !missing.empty() ? missing : "hold E to open it";
+        // A power need is long ("... (a battery bank or a cable)"): its parenthesis on a second line, and the panel kept on
+        // screen (at 960 px it ran off the right edge).
+        std::vector<std::string> lines{ what };
+        if (const size_t paren = what.find(" ("); paren != std::string::npos) lines = { what.substr(0, paren), what.substr(paren + 1) };
+        int w = std::max(300, MeasureText(CacheKindName(CacheKindOf(q)), 20));
+        for (const std::string& l : lines) w = std::max(w, MeasureText(l.c_str(), 16));
+        const int y = GetScreenHeight() / 2 + 40, h = 32 + 20 * (int)lines.size();
+        // Clear of the minimap too: at 960x540 the panel's rows are the minimap's and it covered the line's end.
+        const Rectangle mm = Nav_MinimapRect();
+        const bool besideMap = mm.width > 0.0f && y - 6 < mm.y + mm.height && y - 6 + h > mm.y;
+        const int right = besideMap ? (int)mm.x - 8 : GetScreenWidth() - 8; // the panel's right edge, px
+        const int x = std::max(8, std::min(GetScreenWidth() / 2 + 20, right - w - 8));
+        DrawRectangle(x - 8, y - 6, w + 16, h, Fade(BLACK, 0.55f));
+        DrawText(CacheKindName(CacheKindOf(q)), x, y, 20, SKYBLUE);
+        for (size_t i = 0; i < lines.size(); ++i) DrawText(lines[i].c_str(), x, y + 24 + 20 * (int)i, 16, RAYWHITE);
         return;
     }
     if (machineAim.type == PartType::Gate) { // (#1641) a vault door

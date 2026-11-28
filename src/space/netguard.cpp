@@ -28,6 +28,8 @@ Limit LimitOf(NetMsg k) {
         case NetMsg::CreativeGive: return { 8, 20 };  // (#866: Catalog clicks and middle-clicks, a drag across the Catalog)
         case NetMsg::SkillSpend: return { 2, 6 };    // (#920: Learn clicks on the Skills tab)
         case NetMsg::BeltResync: return { 2, 8 };    // (#1735: a client asks at most once a second per plot; a few plots at once)
+        case NetMsg::MapPin: return { 4, 12 };       // (#1886: clicks on the full map, right clicks removing pins)
+        case NetMsg::ResearchQueue: return { 4, 12 }; // (#1886: research tab clicks, Up and Remove)
         case NetMsg::Bye: return { 1, 2 };
         default: return { 0, 0 };                    // a server-to-client kind, or unknown: never from a client
     }

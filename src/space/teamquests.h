@@ -28,7 +28,14 @@ std::string TeamQuests_TilesText(int team);
 // (#1886) a player moving into `team` brings the tiles they explored themselves (the user, on #1886): the team's set
 // becomes the union and "explored" rises to it. How many tiles were new to the team.
 int TeamQuests_CarryPlayer(const std::string& uuid, int team);
-void TeamQuests_SavePlayers(FILE* f);                      // player_tiles <uuid> ... player_tiles_end, in the world file
+// (#1886) The team's shared map pins (on the host). Add: a name already on that body gets "_2", "_3"... (kept one word,
+// Nav_PinName); at most kMaxTeamPins. Remove: by body and name. True when the pins changed.
+constexpr int kMaxTeamPins = 256;
+bool TeamQuests_SetPin(int team, bool add, const std::string& body, Vector3 dir, const std::string& name);
+std::string TeamQuests_PinsText(int team);                         // Nav_PinsText lines: the store's "pins" section
+void TeamQuests_SetPinsText(int team, const std::string& text);    // its save block back (replaces the team's pins)
+int TeamQuests_PinCount(int team);
+void TeamQuests_SavePlayers(FILE* f);                    // player_tiles <uuid> ... player_tiles_end, in the world file
 bool TeamQuests_LoadPlayerLine(const char* tok, FILE* f);  // true if it consumed a player_tiles block
 double TeamQuests_Explored(int team);
 void TeamQuests_Visit(int team, bool moon);           // a moon visited (else the ring)

@@ -1982,7 +1982,7 @@ static void DrawStats() {
         { "Jet fuel", TextFormat("x%.2f", su.jetFuel) }, { "Thrust", TextFormat("x%.2f", su.jetThrust) },
         { "Walk", TextFormat("x%.2f", su.walk) }, { "Lamp", TextFormat("x%.2f", su.lamp) },
         { "Hunger", TextFormat("x%.2f", su.food) }, { "Underwater O2", TextFormat("x%.1f", su.underwater) },
-        { "Cold felt", TextFormat("%.0f%%", su.cold * 100.0f) }, { "Heat", su.heatProof ? "regulated" : "hurts > 35 C" },
+        { "Cold felt", TextFormat("%.0f%%", su.cold * 100.0f) }, { "Heat rating", su.heat >= 2 ? "2: any depth" : su.heat == 1 ? "1: to 500 m down" : "0: above 250 m" }, // (#1472)
         { "Grip", su.grip ? "on" : "off" }, { "Ore scanner", su.scanner ? "on" : "off" } };
     // (#887, #1148) Labels in a column as wide as the longest one, never wrapped (stretched columns squeezed them to a letter
     // a line in a narrow panel); two stats to a row only where both pairs fit, else one.

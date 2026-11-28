@@ -40,7 +40,25 @@
             "shell": "powershell",
             "command": "$f = Join-Path \"$env:CLAUDE_PROJECT_DIR\" '.claude/hooks/machine-guard.ps1'; if (-not (Test-Path $f)) { $r = git rev-parse --show-toplevel 2>$null; if ($r) { $f = Join-Path $r '.claude/hooks/machine-guard.ps1' } }; if (Test-Path $f) { & $f; exit $LASTEXITCODE }",
             "timeout": 30
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$f = Join-Path \"$env:CLAUDE_PROJECT_DIR\" '.claude/hooks/lookup-hint.ps1'; if (-not (Test-Path $f)) { $r = git rev-parse --show-toplevel 2>$null; if ($r) { $f = Join-Path $r '.claude/hooks/lookup-hint.ps1' } }; if (Test-Path $f) { & $f; exit $LASTEXITCODE }",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "mcp__deweyserver__code_.*",
+        "hooks": [
           {
             "type": "command",
             "shell": "powershell",
@@ -51,6 +69,17 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "mcp__deweyserver__code_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$f = Join-Path \"$env:CLAUDE_PROJECT_DIR\" '.claude/hooks/lookup-hint.ps1'; if (-not (Test-Path $f)) { $r = git rev-parse --show-toplevel 2>$null; if ($r) { $f = Join-Path $r '.claude/hooks/lookup-hint.ps1' } }; if (Test-Path $f) { & $f; exit $LASTEXITCODE }",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "Edit|Write",
         "hooks": [

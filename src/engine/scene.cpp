@@ -655,6 +655,9 @@ void Scene::drawScene(int gamestate) {
     }
     GpuTimer_Mark("shadow");
     KickGpu();
+    // (#2143) The flush's own segment: no GPU commands, but when the CPU is behind the GPU idles here until the next
+    // submission, and that idle time read as ~0.7 ms of "sky" (factory-scale). Its own name keeps it off the next pass.
+    GpuTimer_Mark("kick-idle");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
@@ -780,6 +783,7 @@ void Scene::drawScene(int gamestate) {
     // #142: the physical sky's look-up tables (on by default; RAYLIBGAME_SKY_PHYS=0: off), rebuilt as the camera height and the sun move.
     if (atmosphere.enabled && SkyPhys_On())
         SkyPhys_Update(atmosphere.radius, atmosphere.radius + atmosphere.height, Vector3Distance(camera.position, atmosphere.centre), Vector3DotProduct(atmUp, sun));
+    GpuTimer_Mark("sky:luts"); // (#2143) the sky's parts apart
     {   // #142: the physical haze colour on lit surfaces (skyphys_haze.glsl): its LUT (#819) on unit 15, by the air and weather.
         const unsigned lut = atmosphere.enabled ? SkyPhys_HazeTexture() : 0;
         const bool underwaterFog = effFogDensity >= 0.06f;
@@ -812,9 +816,11 @@ void Scene::drawScene(int gamestate) {
         SceneTarget_SetContact(sunView, strength);
         SceneTarget_SetHiZView(MatrixMultiply(view, rlGetMatrixProjection())); // #134: the view this frame's depth is drawn with
     }
+        GpuTimer_Mark("sky:target");
         rlDisableBackfaceCulling();
         rlDisableDepthMask();
         if (drawSkybox) DrawModel(skybox, (Vector3){0, 0, 0}, 1.0f, WHITE); // skybox.vs strips translation and scales the cube
+        GpuTimer_Mark("sky:stars");
         if (drawSkybox) {
             // The sky (and the sun disc, also in space) blended over the stars.
             Shader& as = atmosphereShader.shader;
@@ -1098,7 +1104,9 @@ void Scene::drawScene(int gamestate) {
         drawTrees(-1);
         GpuTimer_Mark("trees");
         for (const auto& obj : objects) if (obj && !isFar(obj.get())) obj->draw(ctx);
+        GpuTimer_Mark("terrain"); // after "parts" (world.cpp): the bodies' chunks
         for (const auto& obj : rootObject.children) if (obj) obj->draw(ctx);
+        GpuTimer_Mark("objects");
         if (drawPassExtra) drawPassExtra(ctx, revZ); // one pass: it also rebuilds (the mid pass did)
         GpuTimer_Mark("near");
         KickGpu();
@@ -1203,7 +1211,12 @@ void Scene::drawScene(int gamestate) {
         frameLighting = setFoliageLighting;
         frameSun = lightDirection; frameAmbient = effAmbient; frameFog = effFog; frameFogDensity = effFogDensity; frameAmbientUp = hemiUp;
         frameFogShell = { atmosphere.centre.x, atmosphere.centre.y, atmosphere.centre.z, atmosphere.enabled && effFogDensity < 0.06f ? atmosphere.radius + atmosphere.hazeHeight : 0.0f };
+        frameFrustum = Frustum::fromViewProj(MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection())); // (#2140) this pass's planes
+        // A/B switch: RAYLIBGAME_FRAME_CULL=0 draws these paths as before (distance cuts only).
+        static const bool frameCull = [] { const char* e = getenv("RAYLIBGAME_FRAME_CULL"); return !(e && e[0]) || EnvFlag("RAYLIBGAME_FRAME_CULL"); }();
+        frameFrustumOn = frameCull;
         if (onDraw3D) onDraw3D();
+        frameFrustumOn = false;
         frameLighting = nullptr;
     EndMode3D();
     GpuTimer_Mark("draw3d");

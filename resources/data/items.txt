@@ -83,6 +83,7 @@ stone_shovel     | Stone shovel     | tool | 150,130,110 | Digs dirt, sand, grav
 stone_axe        | Stone axe        | tool | 150,120,100 | Fells trees in half the swings.
 wooden_shield    | Wooden shield    | tool | 160,115, 70 | Put it in the off-hand cell (inventory) and hold RMB to block: stops three quarters of a hit from the front, for stamina.
 iron_pickaxe     | Iron pickaxe     | tool | 175,170,175 | Mines bauxite too; a bigger bite than stone.
+crowbar          | Crowbar          | tool | 120,118,124 | Pries open a sealed vault in a ruin (hold E on it). Kept after use.
 iron_shovel      | Iron shovel      | tool | 175,165,155 | A wider, faster shovel.
 iron_axe         | Iron axe         | tool | 175,160,150 | Fells trees faster.
 steel_pickaxe    | Steel pickaxe    | tool | 125,128,140 | Mines ilmenite (titanium ore) too.
@@ -198,7 +199,8 @@ rebreather         | Rebreather         |  tool | 70,140,200  | Suit module: oxy
 thruster_pack      | Thruster pack      |  tool | 200,110,60  | Suit module: +60% jetpack fuel and thrust.
 flight_pack        | Flight pack        |  tool | 90,150,220  | Suit module (MV): hover with H - holds height, no drift; Space/Ctrl climb and descend, Shift boosts. Runs on suit power; catches a fatal fall.
 lamp_upgrade       | Lamp upgrade       |  tool | 255,244,200 | Suit module: a longer headlamp beam.
-thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold.
+thermal_regulator  | Thermal regulator  |  tool | 230,120,90  | Suit module: steady body temperature in heat and cold. With suit power it stands the deep band's heat.
+cooling_vest       | Cooling vest       |  tool | 150,200,220 | Suit module: a vest of coolant lines. Stands the heat of the middle band (250-500 m down).
 ore_scanner        | Ore scanner        |  tool | 255,190,110 | Suit module: shows the nearest ore within 64 m.
 gas_sensor         | Gas sensor         |  tool | 170,220,120 | Suit module: warns of cave gas from 15 m, and where it is.
 servo_legs         | Servo legs         |  tool | 150,150,170 | Suit module: +20% walk speed, safer landings.

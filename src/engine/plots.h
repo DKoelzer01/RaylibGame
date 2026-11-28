@@ -63,6 +63,7 @@ enum class PartType : uint8_t {
     Distillery, EssenceTank, Cauldron,                               // (#1254) alchemy: items into essences (EU), a tank of one aspect, a cauldron brewing potions over its own fire
     Ladder,                                                          // (#1105) a wooden ladder against one face of its cell: walked through, climbed (W up, S down)
     Lever,                                                           // (#1641 slice 2c) a dungeon floor lever: pulled, it opens the portcullis gates near it (appended: saves and NetPart ids go by order)
+    RuinCache,                                                       // (#2072) a sealed cache in a ruin: opened (hold E), never broken; material = its kind | kCacheOpened
     SteamEngine, Dynamo, Motor,                                      // (#1271 L3) a boiler's steam into rotation; rotation into 32 V EU and back
     SteamLab,                                                        // (#1271 L6) the first lab: steam packs into tier 3 research, driven by a shaft
     Bloomery, Bellows, Anvil,                                        // (#211, #1271 L2) iron blooms from ore and charcoal; air for a bloomery or blast furnace (a shaft); the smith's anvil
@@ -128,7 +129,7 @@ bool PartBlocksSky(const Part& p); // (#908) a building block that isn't glass: 
 inline bool GateLocked(const Part& p) { return p.type == PartType::Gate && p.material == 1; } // (#1641) a vault door (a dungeon_key opens it): solid, where a plain gate is walked through
 inline bool GatePortcullis(const Part& p) { return p.type == PartType::Gate && p.material == 2; } // (#1641 slice 2c) a dungeon portcullis: solid like a vault door, opened by the lever in its dungeon
 inline bool GateSolid(const Part& p) { return GateLocked(p) || GatePortcullis(p); }                   // a gate people cannot walk through
-inline bool PartUnbreakable(const Part& p) { return GateSolid(p) || p.type == PartType::Lever; }       // vault doors, portcullises and levers are opened, never broken
+inline bool PartUnbreakable(const Part& p) { return GateSolid(p) || p.type == PartType::Lever || p.type == PartType::RuinCache; }       // vault doors, portcullises and levers are opened, never broken
 const char* PartItem(const Part& p);         // the item it costs and refunds
 
 // A cell's solid shape in cell space [0,1]^3: the cube cut by up to two half-spaces

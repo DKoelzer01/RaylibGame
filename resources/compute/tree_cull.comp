@@ -3,6 +3,7 @@
 // variant mesh's radius x the instance scale, centred on its base) lies outside the view frustum are dropped; the rest
 // are appended to a compacted instance buffer and counted into this variant's indirect draw command
 // (glDrawArraysIndirect). Trees in a 2 km disc are mostly outside a ~60 degree view: the vertex work was spent on all.
+// (#2141) Then occlusion: last frame's Hi-Z pyramid (the terrain's, #134), as chunk_cull.comp tests chunks.
 layout(local_size_x = 64) in;
 
 layout(std430, binding = 0) readonly buffer In { vec4 inst[]; };      // 2 vec4 per instance: pos + scale, up + hash
@@ -15,6 +16,44 @@ uniform uint cmdIndex;   // its command
 uniform mat4 model;      // anchor-relative body-local -> render space (TreeSystem::draw's matModel)
 uniform float radius;    // variant mesh bounding radius (m, at scale 1)
 uniform vec4 planes[6];  // render space, inside: dot(n, p) + d >= 0
+// Hi-Z (#2141): last frame's min-depth pyramid (reverse-Z: smaller = farther), its view-projection, and where these
+// instances stood in that frame's render space (the same anchor-relative positions through last frame's placement).
+uniform int hizOn;
+uniform sampler2D hizTex;
+uniform vec2 hizSize;
+uniform int hizLevels;
+uniform mat4 prevViewProj;
+uniform mat4 prevModel;
+uniform vec3 camPos;     // render space
+uniform float hizNear;   // instances whose sphere comes this close to the camera are never Hi-Z culled (walking parallax)
+
+// The sphere's box, projected with last frame's view, lies wholly on last frame's screen and its nearest point is
+// farther than the farthest depth drawn over its rectangle. The same test as chunk_cull.comp's (#910, #1532 notes there).
+bool hizOccluded(vec3 c, float r) {
+    vec2 lo = vec2(1e9), hi = vec2(-1e9);
+    float nearest = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        vec3 corner = c + (vec3(float(k & 1), float((k >> 1) & 1), float((k >> 2) & 1)) * 2.0 - 1.0) * r;
+        vec4 p = prevViewProj * vec4(corner, 1.0);
+        if (p.w <= 1e-3) return false;                 // reaches behind last frame's camera
+        vec3 ndc = p.xyz / p.w;
+        lo = min(lo, ndc.xy); hi = max(hi, ndc.xy);
+        nearest = max(nearest, ndc.z);                 // reverse-Z: larger = nearer
+    }
+    if (lo.x < -1.0 || lo.y < -1.0 || hi.x > 1.0 || hi.y > 1.0) return false; // part of it off last frame's screen
+    if (lo.x >= hi.x || lo.y >= hi.y) return false;
+    vec2 p0 = (lo * 0.5 + 0.5) * hizSize, p1 = (hi * 0.5 + 0.5) * hizSize;
+    vec2 px = p1 - p0;
+    int level = int(clamp(ceil(log2(max(max(px.x, px.y) * 0.5, 1.0))), 0.0, float(hizLevels - 1)));
+    ivec2 size = textureSize(hizTex, level);
+    float cell = exp2(float(level));
+    ivec2 t0 = clamp(ivec2(floor(p0 / cell)), ivec2(0), size - 1), t1 = clamp(ivec2(floor(p1 / cell)), ivec2(0), size - 1);
+    t1 = min(t1, t0 + 3);
+    float far0 = 1e30;
+    for (int y = t0.y; y <= t1.y; ++y)
+        for (int x = t0.x; x <= t1.x; ++x) far0 = min(far0, texelFetch(hizTex, ivec2(x, y), level).r);
+    return nearest < far0 * 0.9999;
+}
 
 void main() {
     uint i = gl_GlobalInvocationID.x;
@@ -24,6 +63,7 @@ void main() {
     float r = radius * ps.w * length(model[0].xyz);
     for (int k = 0; k < 6; ++k)
         if (dot(planes[k].xyz, c) + planes[k].w < -r) return;
+    if (hizOn == 1 && distance(c, camPos) - r > hizNear && hizOccluded((prevModel * vec4(ps.xyz, 1.0)).xyz, r)) return;
     uint o = atomicAdd(cmds[cmdIndex].instanceCount, 1u);
     outInst[2u * o] = ps;
     outInst[2u * o + 1u] = inst[2u * i + 1u];

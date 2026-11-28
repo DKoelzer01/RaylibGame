@@ -63,6 +63,7 @@
 #include "telescope.h"
 #include "glcaps.h"
 #include "buildtool.h"
+#include "ruincache.h" // (#2072)
 #include "recorder.h"
 #include "scenario.h"
 #include "cliptelemetry.h"
@@ -1469,12 +1470,17 @@ int main(int argc, char** argv)
                 prog.dispatch(n / 64);
                 std::vector<unsigned> r(n);
                 buf.download(r.data(), n * 4);
+                auto halfToFloat = [](unsigned h) { // the stored half, exactly (#2116: the shader returns the bits)
+                    const unsigned e = (h >> 10) & 31u, m = h & 1023u;
+                    const float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? INFINITY : ldexpf((float)(m | 1024u), (int)e - 25);
+                    return (h & 0x8000u) ? -v : v;
+                };
                 for (unsigned k = 0; k < n; ++k) {
                     float f; std::memcpy(&f, &in[k], 4);
                     const float c = FluidKernel::HalfRound(f);
-                    uint32_t cb; std::memcpy(&cb, &c, 4);
-                    if (cb != r[k]) {
-                        float g; std::memcpy(&g, &r[k], 4);
+                    const float g = halfToFloat(r[k]);
+                    uint32_t cb, gb; std::memcpy(&cb, &c, 4); std::memcpy(&gb, &g, 4);
+                    if (cb != gb) {
                         if (bad < 5) printf("bench: half: %.9g -> GPU %.9g, CPU %.9g%s\n", f, g, c, k % 4 == 3 ? " (halfway)" : "");
                         ++bad; badHalfway += k % 4 == 3;
                     }
@@ -1544,6 +1550,12 @@ int main(int argc, char** argv)
         if (inventory.count("telescope") == 0) inventory.add("telescope", 1);
         if (inventory.count("map") == 0 && worldDifficulty < 2) inventory.add("map", 1);
         if (worldDifficulty == 0) inventory.add("berries", 6);
+    });
+    GameSave_SetServerSpawnHook([&world] { // (#2157) a dedicated server's player: at the start, as on a new world
+        Planetoid* start = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
+        player.velocity = { 0, 0, 0 };
+        player.flyMode = false;
+        if (start) player.spawnOn(world, *start, StartSpawnDir(*start));
     });
 
     bool windowKeepAlive = true;
@@ -1654,6 +1666,8 @@ int main(int argc, char** argv)
         // (#334) the server owns the animals: none decided here; a swing at one is a request to the server
         gAnimalsReplicated = true; Animals_Reset();
         gAnimalHitRequest = [](uint64_t netId, int flags) { NetClient_HitAnimal(gJoin, netId, flags); }; // (#1509) flags
+        gNavSharePin = [](bool add, const NavPin& p) { return NetClient_SendMapPin(gJoin, add, p.body, p.dir, p.name); }; // (#1886) the team's map pins
+        gResearchQueueRequest = [](ResearchQueueOp op, const std::string& node) { NetClient_SendResearchQueue(gJoin, (uint8_t)op, node); }; // (#1886) and its research queue
         gAnimalUseRequest = [](uint64_t netId, int action) { NetClient_UseAnimal(gJoin, netId, action); };
         gSurvivalUseRequest = [](const std::string& item) { NetClient_UseItem(gJoin, item); }; // (#337) the server owns our survival and inventory
         gDropRequest = [](const std::string& item, int64_t centi, const std::string& data) { NetClient_DropItems(gJoin, item, centi, data); }; // (#865; #1446 data)
@@ -1718,7 +1732,8 @@ int main(int argc, char** argv)
     bool spawnLoad = false;        // raised by a spawn or teleport (not entering the game): no minimum time
     int loadFrames = 0;
     int seenSpawns = 0;
-    world.onDraw3D = [&world] { Farm_Draw3D(world); Animals_Draw3D(world); Flares_Draw3D(world); Machines_Draw3D(world); Belts_Draw3D(world); Avatar_Draw3D(world, gAvatars); InstanceBatch_Flush(world); Belts_DrawIcons(world); Weather_Draw3D(world); Waterfalls_Draw3D(world); Particles_Draw(world); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
+    // GPU timer marks between the groups (no-ops unless timing; the culling audit's per-path costs).
+    world.onDraw3D = [&world] { Farm_Draw3D(world); GpuTimer_Mark("3d:farm"); Animals_Draw3D(world); GpuTimer_Mark("3d:animals"); Flares_Draw3D(world); Machines_Draw3D(world); Belts_Draw3D(world); GpuTimer_Mark("3d:machines"); Avatar_Draw3D(world, gAvatars); GpuTimer_Mark("3d:avatars"); InstanceBatch_Flush(world); Belts_DrawIcons(world); GpuTimer_Mark("3d:instances"); Weather_Draw3D(world); GpuTimer_Mark("3d:weather"); Waterfalls_Draw3D(world); GpuTimer_Mark("3d:waterfalls"); Particles_Draw(world); GpuTimer_Mark("3d:particles"); DungeonTraps_Draw(world); if (!ship.piloted && !buildTool.active && !Rocket_Boarded()) TerrainTool_Draw3D(); Fishing_Draw3D(world); Events_Draw3D(world); Combat_DrawGraves(world); Claims_DrawBorder(world); Magic_DrawDebug3D(world); MagicSight_Draw3D(world);BuildTool_Draw3D(world);
         if (player.nearest) Blueprint_DrawGhosts(*player.nearest, world.renderOrigin, player.nearest->toLocal(world.camera.position)); }; // (#1018) blueprint ghosts
     terrainTool.till = [&world](Planetoid& body, Vector3 ground, float radius) { return Farm_Till(world, body, ground, radius); }; // a hoe's RMB (#1085)
     terrainTool.swapHeld = [](const std::string& from, const std::string& to, const char* ev) { // a bucket filled or emptied
@@ -10550,7 +10565,7 @@ int main(int argc, char** argv)
         if (!bench && gameState == 1 && !DebugUI_IsOpen() && !Nav_MapOpen() && !GameUI_TextInputActive() && !CommandLine_Open()) {
             const bool onFoot = !Rocket_Boarded() && !ship.piloted;
             if (PlayerInput_BindingPressed(Act::Inventory)) GameUI_ToggleInventory();
-            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingCampfire() && !BuildTool_AimingController()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it; #1429: on a controller, its ghost)
+            else if (onFoot && PlayerInput_BindingPressed(Act::Use) && (GameUI_InventoryOpen() || (!Rocket_AimingCockpit() && !BuildTool_AimingUsable() && !BuildTool_AimingController()))) GameUI_ToggleInventory(); // (#1103: E on a campfire lights it; #2072: opens a cache, pulls a lever, unlocks a vault door)
             else if (onFoot && PlayerInput_BindingPressed(Act::Crafting)) GameUI_ShowScreen(GameScreen::Crafting);
             else if (onFoot && PlayerInput_BindingPressed(Act::Skills)) GameUI_ShowScreen(GameScreen::Skills);
             // (relocking the cursor centres it)
@@ -14000,8 +14015,8 @@ int main(int argc, char** argv)
                     NetClient_SaveCache(world, WorldSavePath(), gJoin.welcome.seed, gJoin.welcome.fingerprint);
                     NetClient_Disconnect(gJoin);
                 }
-                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSetGemRequest = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gMachineInsertData = nullptr; gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
-                gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; gFormRequest = nullptr;
+                gNetClient = nullptr; gJoin = NetClient{}; gNetRole = NetRole::Offline; joinAddr.clear(); gJoinSynced = false; gCraftRequest = nullptr; gSkillSpendRequest = nullptr; gDropRequest = nullptr; gCreativeGive = nullptr; gSurvivalUseRequest = nullptr; gBedUseRequest = nullptr; gMachineRequest = nullptr; gNavSharePin = nullptr; gResearchQueueRequest = nullptr; Nav_SetTeamPins(""); gFactoryRemoteWatch = nullptr; Factory::SetRemote(false); // (#338, #332) back to single player: crafting, eating, beds and machines act here again
+                gAnimalsReplicated = false; gAnimalHitRequest = nullptr; gTerrainToolNetEdit = nullptr; gBuildToolNetEdit = nullptr; gFormRequest = nullptr; gSetGemRequest = nullptr; gMachineInsertData = nullptr;
                 gPlantRequest = nullptr; gFarmRequest = nullptr; gFarmTillRequest = nullptr; // (#335)
                 if (hostedHere) { printf("host: stopping the server we hosted: %s\n", HostProcess_Stop(30.0) ? "saved and ended" : "ended (it didn't stop in time)"); hostedHere = false; gHostedServer.clear(); }
             };
@@ -14229,6 +14244,7 @@ int main(int argc, char** argv)
                 BuildTool_DrawHUD();
                 Hotbar_DrawHUD(ship.piloted);
                 Machine_DrawHUD();
+                RuinCache_DrawHUD(); // (#2072) the hold ring and an opened cache's result
                 if (!ship.piloted && !buildTool.active) Animals_DrawHUD();
                 Suit_DrawHUD();
                 CaveGas_DrawHUD(world);
