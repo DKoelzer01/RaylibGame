@@ -17,8 +17,10 @@
 #include <cstdio>
 #include <string>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <unordered_set>
+#include <vector>
 
 class Scene;
 
@@ -29,6 +31,18 @@ std::string Nav_TilesText(const NavTiles& tiles);
 void Nav_TilesFromText(const std::string& text, NavTiles& into); // adds to `into` (a union)
 // A client: the team's explored map added to the local one (the player keeps what they explored themselves).
 void Nav_MergeTilesText(const std::string& text);
+// (#1886) A team's shared map pins (the host keeps them per team, TeamQuests_SetPin; a client shows them beside its own
+// waypoints). Text: "pin <body> <x> <y> <z> <name>" a line, the direction body-local; names are one word (Nav_PinName).
+struct NavPin { std::string body, name; Vector3 dir; };
+std::string Nav_PinsText(const std::vector<NavPin>& pins);
+std::vector<NavPin> Nav_PinsFromText(const std::string& text);
+std::string Nav_PinName(const std::string& raw); // printable, spaces as '_', at most 48 bytes ("" if nothing is left)
+// A client: the team's pins as the host has them, replacing the team pins it showed ("" clears them, e.g. on leaving).
+void Nav_SetTeamPins(const std::string& text);
+int Nav_TeamPinCount();
+// Set by the game while joined to a server: a pin the player places (a click on the map) or removes is sent to the team
+// (true: sent; it shows as a team pin at once, and the host's store replaces it). Unset (single player, a host): local.
+extern std::function<bool(bool add, const NavPin& pin)> gNavSharePin;
 
 void Nav_Update(Scene& world, bool inputEnabled, bool gameInput); // once a frame: exploration, the map's input (inputEnabled), images; gameInput: the minimap zoom keys (#278)
 // (#338) the map tiles a player at body-local `up` (unit) reveals on a body of radius R, added to `set` (the same tiles and radius

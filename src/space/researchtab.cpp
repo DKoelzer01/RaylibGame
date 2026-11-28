@@ -63,13 +63,16 @@ bool ResearchTab_TestNodeCenter(const std::string& id, Vector2& center) {
 void ResearchTab_Draw() {
     drawnCenters.clear();
     if (Research_Nodes().empty()) Research_Load();
-    const bool joined = gNetRole == NetRole::Client; // (the team's research is the server's: mirrored by TeamStore, #1886)
     const int team = ResearchTab_Team();
     ResearchState& st = Research_Team(team);
     const int tier = QuestBook_Tier();
+    // A queue change: here at once; joined (the team's research is the server's, mirrored by TeamStore), the host is asked
+    // too and its next store replaces the mirror (#1886). Deferred to the end of the frame: the queue is being drawn.
+    std::vector<std::pair<ResearchQueueOp, std::string>> acts;
     ImGui::TextWrapped("Research from tier 3: labs turn research packs into the nodes below; a tier's core nodes are part of its milestone.");
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextWrapped("%s", joined ? "Joined: your team's research, as the server keeps it."
+    const bool joined = gNetRole == NetRole::Client;
+    ImGui::TextWrapped("%s", joined ? "Joined: your team's research, as the server keeps it. Click a node to queue it for your team."
                                     : "Not active yet: the labs come next, and nothing is locked behind research yet. Click a node to queue it. "
                                       "Drag to move, the wheel scrolls, Ctrl + wheel zooms.");
     ImGui::PopStyleColor();
@@ -153,14 +156,12 @@ void ResearchTab_Draw() {
                         else if (page && LocalSession().magic.found) ImGui::Text("Also needs the tome page: %s", page->name.c_str());
                         else ImGui::TextDisabled("Locked: something in the world resonates. Find it first.");
                     }
-                    if (!done && !joined) ImGui::TextDisabled(queued ? "Click: take it out of the queue" : "Click: queue it");
+                    if (!done) ImGui::TextDisabled(queued ? "Click: take it out of the queue" : "Click: queue it");
                 } else ImGui::TextDisabled("Its cost shows once your team reaches tier %d", n.tier);
                 ImGui::EndTooltip();
             }
-            if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && sight == ResearchSight::Full && !done && !joined) {
-                if (queued) st.queue.erase(std::remove(st.queue.begin(), st.queue.end(), n.id), st.queue.end());
-                else st.queue.push_back(n.id);
-            }
+            if (hover && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && sight == ResearchSight::Full && !done)
+                acts.push_back({ queued ? ResearchQueueOp::Remove : ResearchQueueOp::Add, n.id });
         }
         // Pan (middle button, or the left from an empty spot) and Ctrl + wheel zoom around the cursor, as the quest tree (#1078).
         static bool panning = false;
@@ -191,10 +192,9 @@ void ResearchTab_Draw() {
         ImGui::PushID((int)i);
         const ResearchNode* n = Research_Find(st.queue[i]);
         ImGui::Text("%zu. %s", i + 1, n ? n->name.c_str() : st.queue[i].c_str());
-        if (!joined) { // (on their own line: beside a long name they were pushed out of the panel)
-            if (i > 0) { if (ImGui::SmallButton("Up")) std::swap(st.queue[i], st.queue[i - 1]); ImGui::SameLine(); }
-            if (ImGui::SmallButton("Remove")) { st.queue.erase(st.queue.begin() + (long)i); ImGui::PopID(); break; }
-        }
+        // (on their own line: beside a long name they were pushed out of the panel)
+        if (i > 0) { if (ImGui::SmallButton("Up")) acts.push_back({ ResearchQueueOp::Up, st.queue[i] }); ImGui::SameLine(); }
+        if (ImGui::SmallButton("Remove")) acts.push_back({ ResearchQueueOp::Remove, st.queue[i] });
         ImGui::PopID();
     }
     ImGui::Spacing();
@@ -207,7 +207,13 @@ void ResearchTab_Draw() {
     ImGui::TextDisabled("Still to come with the milestones: an item delivery, a working build and an exploration find.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
+    for (const auto& [op, id] : acts) {
+        Research_QueueAction(st, op, id, tier);
+        if (joined && gResearchQueueRequest) gResearchQueueRequest(op, id);
+    }
 }
+
+std::function<void(ResearchQueueOp, const std::string&)> gResearchQueueRequest;
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#1192): the tab's clicks (a headless ImGui context, the mouse injected) ----
