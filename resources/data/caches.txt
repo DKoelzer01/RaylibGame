@@ -1,0 +1,59 @@
+# Ruin cache rewards (#2072; the user's request on the underground plan #1465). Every number here is a GUESS for the user
+# to confirm. A cache is rolled when it is opened, from the world seed, the cache and the opening team's progress, so it
+# always fits where the team is; the same team at the same point gets the same roll.
+#
+# cache <kind> | rolls <n> | parts <w> | blueprint <w> | alt <w> | boost <w>
+#   how many rewards it holds, and the weights of each reward's category. A category with nothing left for the team
+#   (every blueprint and alternate recipe already had, every research node done) rolls parts instead.
+cache small      | rolls 2 | parts 75 | blueprint 10 | alt 5  | boost 10
+cache vault      | rolls 3 | parts 60 | blueprint 15 | alt 10 | boost 15
+cache deep_vault | rolls 4 | parts 50 | blueprint 15 | alt 20 | boost 15
+#
+# rarity <name> <weight>: a parts reward's rarity. The tier it draws from (T: the team's tier): common T-1 or T (30/70),
+# uncommon T, rare T in the shallows and T+1 from the middle band down; the deep band rolls everything one tier up.
+rarity common   70
+rarity uncommon 25
+rarity rare     5
+#
+# parts <tier> <rarity> | item min-max | ...: one entry of the line is picked (evenly), then a count in min-max.
+parts 0 common   | stone 8-16 | any_log 4-8 | fibre 4-10 | rope 1-3 | torch 2-5
+parts 0 uncommon | clay 4-8 | charcoal 4-8 | stone_pickaxe 1-1 | bread 2-4
+parts 0 rare     | fired_crucible 1-1 | iron_pickaxe 1-1 | campfire 1-1
+parts 1 common   | charcoal 6-12 | coal 4-10 | copper_ingot 2-5 | tin_ingot 1-3 | clay 6-12
+parts 1 uncommon | bronze_ingot 3-6 | bronze_plate 2-4 | copper_wire 4-8 | kiln 1-1
+parts 1 rare     | bronze_gear 2-4 | crowbar 1-1 | iron_pickaxe 1-1
+parts 2 common   | iron_ingot 3-8 | iron_plate 2-6 | coal 6-12 | iron_rod 2-6
+parts 2 uncommon | shaft 4-8 | cogwheel 2-4 | iron_pickaxe 1-1 | bronze_gear 2-4
+parts 2 rare     | water_wheel 1-1 | mechanical_press 1-1 | gearbox 1-1
+parts 3 common   | steel_plate 4-10 | cogwheel 2-6 | copper_wire 4-12 | coke 4-10 | glass 2-6
+parts 3 uncommon | vacuum_tube 1-3 | steel_ingot 4-8 | steam_pack 4-10 | steel_gear 2-4
+parts 3 rare     | boiler 1-1 | blast_furnace 1-1 | steel_pickaxe 1-1
+parts 4 common   | cable 8-16 | iron_plate 6-12 | basic_circuit 1-3 | copper_wire 8-16
+parts 4 uncommon | lv_hull 1-1 | basic_circuit 3-6 | lv_pack 4-10 | power_cell 1-3
+parts 4 rare     | macerator 1-1 | electric_furnace 1-1 | lv_lab 1-1
+parts 5 common   | aluminium_ingot 2-6 | steel_plate 6-12 | basic_circuit 3-6 | gold_ingot 1-3
+parts 5 uncommon | mv_hull 1-1 | polyethylene 2-6 | mv_pack 4-10 | good_circuit 1-2
+parts 5 rare     | ore_washer 1-1 | centrifuge 1-1 | mv_lab 1-1
+parts 6 common   | titanium_ingot 2-5 | aluminium_plate 4-8 | good_circuit 2-4 | polyethylene 4-8
+parts 6 uncommon | hv_hull 1-1 | advanced_circuit 1-2 | hv_pack 4-10 | titanium_plate 2-4
+parts 6 rare     | arc_furnace 1-1 | precision_assembler 1-1 | titanium_pickaxe 1-1
+parts 7 common   | rocket_fuel 4-10 | titanium_alloy_plate 2-4 | oxygen_canister 2-4 | heat_shield_tile 2-6
+parts 7 uncommon | fuel_tank 1-1 | landing_leg 1-2 | rocket_pack 4-8 | advanced_circuit 2-4
+parts 7 rare     | rocket_engine 1-1 | guidance_computer 1-1 | cockpit 1-1
+parts 8 common   | rocket_fuel 8-16 | titanium_alloy_ingot 2-6 | oxygen_canister 3-6
+parts 8 uncommon | thruster_pack 1-1 | heat_shield_tile 4-8 | advanced_circuit 3-6
+parts 8 rare     | flight_pack 1-1 | rocket_engine 1-1
+parts 9 common   | platinum_ingot 1-3 | nickel_ingot 4-8 | anorthite 8-16
+parts 9 uncommon | superconductor 1-3 | iridium_ingot 1-2 | helium3 1-3
+parts 9 rare     | ev_hull 1-1 | superconductor 4-8
+#
+# blueprint <preset id> | tier <n> | <shown name>: a preset (resources/blueprints/<id>.bp) for the team's library, from
+# tier n on (deep caches: one tier early). More presets come with their layouts.
+blueprint starter_rocket | tier 7 | Starter rocket
+#
+# alt <id> | tier <n> | <shown name>: an alternate recipe (the factory's recipe flagged with that id) the team unlocks.
+# None yet: they come with their recipes (#2072 slice 2b).
+#
+# boost | share <percent> | min <units>: research units added straight into a node the team could start now (its tier at
+# most T, deep caches T+1; the tier's core nodes weigh twice).
+boost | share 25 | min 5
