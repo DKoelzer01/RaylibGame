@@ -1464,7 +1464,7 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.status = m.status;
     if (m.recipe >= 0) { v.progress = m.progress; v.duration = tables.recipes[m.recipe].ticks; }
     v.energy = m.energy;
-    v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : 0;
+    v.energyMax = m.type == PartType::Battery ? kBatteryCapacity : m.type == PartType::RuinCache ? m.lockEU : 0; // (#2181) a cache: its lock's EU, for a joined client's prompt
     v.hasFuelSlot = HasFuelSlot(m.type);
     v.hotOutputs = HeatsItems(m.type);
     v.canLight = m.type == PartType::Campfire;
@@ -2090,6 +2090,11 @@ void Factory::SetFire(uint64_t body, uint32_t plot, int part, bool lit) {
     itemQueue.push_back(ItemMsg{ 10, body, plot, part, -1, lit ? 1 : 0 });
 }
 float Factory::CacheCharged(uint64_t body, uint32_t plot, int part) { // (#2072)
+    if (remoteMode) { // (#2181) a joined client simulates none of the host's plots: the host's view of the cache (View asks
+                      // the host to watch it, so the prompt's first frames read 0 until the view arrives, ~0.2 s)
+        const MachineView v = View(body, plot, part);
+        return v.energyMax > 0 ? std::min(1.0f, (float)v.energy / (float)v.energyMax) : 0.0f;
+    }
     std::lock_guard<std::mutex> lock(cacheChargeMutex);
     auto it = cacheCharge.find({ body, plot, part });
     return it != cacheCharge.end() ? it->second : 0.0f;
@@ -2783,6 +2788,34 @@ TEST(Factory, ACachesLockChargesAtItsCapAndVoltage) {
     EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 4, 1), 0.0f) << "spent at once (the sim empties it next tick)";
     { std::lock_guard<std::mutex> q(queueMutex); itemQueue.clear(); }
     plots.clear(); plotIndexDirty = true;
+}
+
+// (#2181) A joined client simulates none of the host's plots: the cache's view carries its lock (energy of energyMax EU)
+// and the client's CacheCharged reads the host's view of it, not its own empty sim.
+TEST(Factory, AJoinedClientReadsACachesChargeFromTheHostsView) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); refunds.clear();
+    const CacheOpener* small = CacheOpener_Find("small_power");
+    ASSERT_TRUE(small);
+    LayoutMsg a = OracleLayout(7, { { PartType::Battery, 0, 0 }, { PartType::RuinCache, 2, 0 } }, {}, {});
+    a.machineVariant[1] = small->id;
+    ApplyLayout(a);
+    PlotSim& pa = *FindPlot(9, 7);
+    pa.machines[pa.byPart.at(0)].energy = 10000;
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 50; ++t) TickPlot(pa, 1, made, active);
+    MachineView v;
+    FillView(pa, 1, v); // (the host's view, as WatchMany publishes it to a watching client)
+    EXPECT_EQ(v.energyMax, small->eu) << "a cache's view carries its lock's size";
+    EXPECT_EQ(v.energy, 50 * small->capEUt);
+    plots.clear(); plotIndexDirty = true; // the client's own sim: nothing of the host's plots
+    { std::lock_guard<std::mutex> l(cacheChargeMutex); cacheCharge.clear(); }
+    Factory::SetRemote(true);
+    EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 7, 1), 0.0f) << "no view yet (View asks the host to watch it)";
+    Factory::SetRemoteView({ 9, 7, 1 }, v);
+    EXPECT_NEAR(Factory::CacheCharged(9, 7, 1), 50.0f * small->capEUt / small->eu, 1e-4) << "the host's charge";
+    Factory::SetRemote(false);
+    EXPECT_FLOAT_EQ(Factory::CacheCharged(9, 7, 1), 0.0f) << "offline again: the local sim";
 }
 
 // (#1302) A plot saved in the summary sim: the save first brings its chests up to now, and loaded far it goes on in the

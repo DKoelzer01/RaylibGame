@@ -76,6 +76,7 @@ struct NetClient {
     std::string teamStoreText;                  // ...and its text
     int mapPinsSent = 0;                        // (#1886) map pins added or removed for the team (NetClient_SendMapPin)
     int machineViews = 0, machineStates = 0;    // (#332) machine views and working lists heard
+    MsgMachineView lastMachineView;             // (#2181) the last one, as sent (tests: a cache's lock charge from the host)
     int plantLists = 0, plantsRemoved = 0, farmLists = 0; // (#335) plant removals and farm field lists heard
     int claimLists = 0;                          // (#343) claims lists heard
     SkillState skills;                           // (#920) this player's skills as the server keeps them (main.cpp applies gJoin's)

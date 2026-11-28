@@ -293,6 +293,7 @@ namespace {
                 MsgMachineView v;
                 if (c.state != NetClient::State::Joined || !NetRead(r, v)) return;
                 ++c.machineViews;
+                c.lastMachineView = v;
                 if (Planetoid* b = Planetoid::findNet(v.body)) Factory::SetRemoteView({ b->id, v.plot, v.part }, v.view);
                 return;
             }
