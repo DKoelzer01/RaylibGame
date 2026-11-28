@@ -1,0 +1,16 @@
+{
+  "id": "creature-chase",
+  "commit": "f3dd8a785158837adfcef95ccb92b5a7b2f3b177",
+  "base": "25f579b3333295e54d24a101a1eff23f5c0f6417",
+  "subject": "Creatures: a target taken within range= is chased out to chase= (it gave up at range=) (#1851)",
+  "kind": "unit",
+  "difficulty": "medium",
+  "files": [
+    "src/space/creatures.cpp"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=Creatures.ChaseKeptToChaseRange",
+  "ref_lines_changed": 25,
+  "file_tokens_k": {
+    "src/space/creatures.cpp": 8.5
+  }
+}

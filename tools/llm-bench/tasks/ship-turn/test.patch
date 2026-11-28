@@ -1,0 +1,24 @@
+diff --git a/src/space/ship.cpp b/src/space/ship.cpp
+index 98dde602..242f4c5a 100644
+--- a/src/space/ship.cpp
++++ b/src/space/ship.cpp
+@@ -239,3 +246,19 @@ void Ship::draw(const Scene& world) const {
+     // Life-support field hint when the player is outside.
+     if (!piloted) DrawSphereWires(p, lifeSupportRadius, 6, 12, Fade(SKYBLUE, 0.15f));
+ }
++
++#ifdef RAYLIBGAME_UNIT_TESTS
++#include <gtest/gtest.h>
++// (#1856 M22) A target dead behind: a real half turn (unit length), not raymath's all-zero quaternion.
++TEST(Ship, TurnsTowardATargetDeadBehind) {
++    const Vector3 fwd{ 0, 0, 1 }, back{ 0, 0, -1 }, up{ 0, 1, 0 };
++    const Quaternion q = TurnBetween(fwd, back, up);
++    EXPECT_NEAR(sqrtf(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w), 1.0f, 1e-5f);
++    const Vector3 r = Vector3RotateByQuaternion(fwd, q);
++    EXPECT_NEAR(r.z, -1.0f, 1e-4f);
++    const Vector3 u = Vector3RotateByQuaternion(up, q);
++    EXPECT_NEAR(u.y, 1.0f, 1e-4f); // about the up axis: up stays up
++    const Vector3 side = Vector3RotateByQuaternion(fwd, TurnBetween(fwd, { 1, 0, 0 }, up)); // an ordinary turn as before
++    EXPECT_NEAR(side.x, 1.0f, 1e-4f);
++}
++#endif

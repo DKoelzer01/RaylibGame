@@ -1,0 +1,16 @@
+{
+  "id": "fluid-cellkey",
+  "commit": "9ad4f65cd3d2522de930d745af93a3d69dce91b8",
+  "base": "9bdb5def6715e12cafee682c4e85cd915bc424a3",
+  "subject": "Fluid cell keys with 21-bit fields: cells past +-1024 merged in the levelling pass (#1855 M9)",
+  "kind": "unit",
+  "difficulty": "medium",
+  "files": [
+    "src/engine/fluid.cpp"
+  ],
+  "test_cmd": "$TESTS --gtest_brief=1 --gtest_filter=Fluid.CellKeysStayApartPastTheBrickKeysRange",
+  "ref_lines_changed": 28,
+  "file_tokens_k": {
+    "src/engine/fluid.cpp": 50.4
+  }
+}

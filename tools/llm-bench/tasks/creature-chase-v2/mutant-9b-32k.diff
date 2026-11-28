@@ -1,0 +1,18 @@
+diff --git a/src/space/creatures.cpp b/src/space/creatures.cpp
+index dc6de8c8..4f48c21b 100644
+--- a/src/space/creatures.cpp
++++ b/src/space/creatures.cpp
+@@ -339,10 +339,10 @@ BrainOut Brain_Step(BrainState& s, const CreatureSpec& c, const BrainInput& in,
+             const bool angryAt = in.now < s.angryUntil && p.id == s.angryAt;
+             const bool hostile = ft.stance(c.factionIdx, p.faction) == Stance::Hostile;
+             bool want = false;
+-            if (c.aggro == Aggro::Predator) want = hostile && p.dist < c.aggroRange && (p.seen || p.heard);
+-            else if (c.aggro == Aggro::Territorial) want = (hostile && p.dist < c.aggroRange && (p.seen || p.heard)) || angryAt;
++            if (c.aggro == Aggro::Predator) want = hostile && (p.dist < c.aggroRange || (p.id == s.target && s.target != 0)) && (p.seen || p.heard);
++            else if (c.aggro == Aggro::Territorial) want = ((hostile && (p.dist < c.aggroRange || (p.id == s.target && s.target != 0))) || angryAt);
+             else want = angryAt; // defensive
+-            if (!want || p.dist >= (c.aggro == Aggro::Predator ? c.aggroRange : c.chaseRange)) continue;
++            if (!want || p.dist >= c.chaseRange) continue;
+             if (!best || p.dist < best->dist) best = &p;
+         }
+     if (!best) {

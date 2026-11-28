@@ -1,0 +1,4 @@
+{"weather-seed": {"verdict": "correct", "note": ""}, "noise-seed": {"verdict": "correct", "note": ""},
+ "ship-turn": {"verdict": "minor", "note": "Normalizes the turn quaternion, not the slerped orientation as specified (slerp of unit quaternions stays ~unit)."},
+ "creature-chase": {"verdict": "correct", "note": "Matches the reference, seen/heard kept."}, "fluid-cellkey": {"verdict": "correct", "note": "All six call sites."},
+ "catalog-slots": {"verdict": "correct", "note": ""}, "site-query": {"verdict": "correct", "note": ""}}

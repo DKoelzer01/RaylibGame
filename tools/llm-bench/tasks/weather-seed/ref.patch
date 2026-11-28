@@ -1,0 +1,18 @@
+diff --git a/src/space/weather.cpp b/src/space/weather.cpp
+index 5ee64530..bfb5388e 100644
+--- a/src/space/weather.cpp
++++ b/src/space/weather.cpp
+@@ -17,10 +17,11 @@
+ 
+ namespace {
+     // The cloud field: a 3D noise over the sphere (features ~6 km) that drifts with the wind.
+-    struct Fields { SimplexNoise cloud, humid, wind; bool ready = false; };
++    struct Fields { SimplexNoise cloud, humid, wind; bool ready = false; unsigned int seed = 0; };
+     Fields fields;
+     void Init(unsigned int seed) {
+-        if (fields.ready) return;
++        if (fields.ready && fields.seed == seed) return; // (#1845) another world loaded in the session: its own weather
++        fields.seed = seed;
+         std::mt19937 rng(seed ^ 0x5ea7u);
+         std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+         auto make = [&](float f) { return SimplexNoise(f, 1.0f, 2.0f, 0.5f, unit(rng) * 10000.0f, unit(rng) * 10000.0f, unit(rng) * 10000.0f); };

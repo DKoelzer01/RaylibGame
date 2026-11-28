@@ -1,0 +1,9 @@
+{
+  "_about": "Claude's review of each passing diff (Aider 0.86.2, diff edit format, Qwen3.5-9B, one 128K slot). verdict: correct | minor | defect.",
+  "weather-seed": {"verdict": "correct", "note": "Same as the reference."},
+  "noise-seed": {"verdict": "correct", "note": "Same as the reference."},
+  "ship-turn": {"verdict": "correct", "note": "Same logic; M_PI instead of raymath's PI, normalize on its own line."},
+  "creature-chase": {"verdict": "correct", "note": "inRange factored out as in the reference; seen/heard kept."},
+  "catalog-slots": {"verdict": "defect", "note": "The fix is missing: DrawCreative still uses 48 px and neither drawn-cell value is ever set, so both stay 0 and the test's equality passes. Also rewrote an unrelated inventory line. The scenario ui/catalog-slots can't tell a no-op from the fix."},
+  "site-query": {"verdict": "defect", "note": "Not as specified: changed the sample spacing from half a tile to a whole tile instead of counting R in half-tile steps. Passes the scenario, but a different (coarser) scan than the design."}
+}

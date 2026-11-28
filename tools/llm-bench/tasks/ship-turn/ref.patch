@@ -1,0 +1,27 @@
+diff --git a/src/space/ship.cpp b/src/space/ship.cpp
+index 98dde602..242f4c5a 100644
+--- a/src/space/ship.cpp
++++ b/src/space/ship.cpp
+@@ -8,6 +8,13 @@
+ 
+ Ship ship;
+ 
++// (#1856 M22) The rotation taking unit `from` to unit `to`. raymath's is all zeros for opposite vectors (a target dead
++// behind): the autopilot never turned and the orientation decayed. Then it is a half turn about `axis` (the ship's up).
++Quaternion TurnBetween(Vector3 from, Vector3 to, Vector3 axis) {
++    if (Vector3DotProduct(from, to) < -0.9999f) return QuaternionFromAxisAngle(axis, PI);
++    return QuaternionFromVector3ToVector3(from, to);
++}
++
+ Vector3 Ship::renderPos(const Scene& world) const { return (position - world.renderOrigin).toFloat(); }
+ 
+ void Ship::parkNear(Scene& world, Vector3 point, Vector3 surfaceUp) {
+@@ -92,7 +99,7 @@ void Ship::update(Scene& world, const PlayerInput& in, float dt) {
+             const Vector3 away = Vector3Normalize(Vector3Subtract(renderPos(world), block.planetoid->position));
+             want = Vector3Normalize(Vector3Add(Vector3Scale(away, 1.0f), Vector3Scale(want, 0.35f)));
+         }
+-        orientation = QuaternionSlerp(orientation, QuaternionMultiply(QuaternionFromVector3ToVector3(forward(), want), orientation), std::min(1.0f, 2.0f * dt));
++        orientation = QuaternionNormalize(QuaternionSlerp(orientation, QuaternionMultiply(TurnBetween(forward(), want, up()), orientation), std::min(1.0f, 2.0f * dt)));
+         const float speed = Vector3Length(velocity);
+         const float stopDist = speed * speed / (2.0f * thrust) + 25.0f;
+         // Same energy rule as manual flight: no energy, no thrust.

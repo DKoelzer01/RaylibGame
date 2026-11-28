@@ -1,0 +1,23 @@
+diff --git a/src/engine/trees.cpp b/src/engine/trees.cpp
+index a62ff5b8..1b527cea 100644
+--- a/src/engine/trees.cpp
++++ b/src/engine/trees.cpp
+@@ -1073,3 +1081,18 @@ void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpec
+                 if (Vector3Distance({ t.inst[v][k], t.inst[v][k + 1], t.inst[v][k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; }
+     }
+ }
++
++#ifdef RAYLIBGAME_UNIT_TESTS
++#include <gtest/gtest.h>
++// (#1856 M20) A clearing reaches a tile still building (no centre yet: its key's is used), not only built ones.
++TEST(Trees, ClearingReachesATileStillBuilding) {
++    const float R = 60000.0f;
++    const TreeTileKey key{ 0, 5, 5 };
++    const Vector3 at = Vector3Scale(TreeTileCentreDir(key, R), R);
++    TreeTile building; // ready false, centre zero: its first build is pending
++    EXPECT_TRUE(TreeClearingReaches(key, building, R, Vector3Add(at, { 10.0f, 0.0f, 0.0f }), 20.0f));
++    EXPECT_FALSE(TreeClearingReaches(key, building, R, Vector3Scale(at, -1.0f), 20.0f)); // the far side of the planet
++    TreeTile built; built.ready = true; built.centre = at;
++    EXPECT_TRUE(TreeClearingReaches(key, built, R, at, 5.0f));
++}
++#endif

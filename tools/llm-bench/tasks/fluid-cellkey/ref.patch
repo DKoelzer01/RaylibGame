@@ -1,0 +1,70 @@
+diff --git a/src/engine/fluid.cpp b/src/engine/fluid.cpp
+index 44155f25..c4f5a3cd 100644
+--- a/src/engine/fluid.cpp
++++ b/src/engine/fluid.cpp
+@@ -107,7 +107,10 @@ constexpr int kInitPerStep = 24;       // bricks classified per step, in paralle
+ inline int MaxBricks() { static const int n = std::min(32768, (int)lroundf(4096.0f / (WaterField::CellSize() * WaterField::CellSize()))); return n; }
+ 
+ inline int Idx(int x, int y, int z) { return x + y * B + z * B * B; }
+-inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); }
++inline int64_t Key(int i, int j, int k) { return ((int64_t)(i + 1024) << 22) | ((int64_t)(j + 1024) << 11) | (int64_t)(k + 1024); } // bricks (+-1024)
++// A cell's key by site cell coordinates (#1855 M9): a site reaches 256 m, +-1024 cells of 0.25 m and past them at its edge, so
++// Key's 11-bit fields overflowed into the next one and cells merged in the levelling pass (Key(0, 0, 1030) == Key(0, 1, -1018)).
++inline int64_t CellKey(int i, int j, int k) { return ((int64_t)(i + (1 << 20)) << 42) | ((int64_t)(j + (1 << 20)) << 21) | (int64_t)(k + (1 << 20)); }
+ inline int FloorDiv(int a, int b) { return a >= 0 ? a / b : -((-a + b - 1) / b); }
+ // Partly solid cells (#454): RAYLIBGAME_WATER_SHUT=0 treats every open cell as wholly open (the old model, for A/B).
+ inline bool ShutOn() { static const bool on = !(getenv("RAYLIBGAME_WATER_SHUT") && getenv("RAYLIBGAME_WATER_SHUT")[0] == '0'); return on; }
+@@ -666,7 +669,7 @@ void LevelSite(Site& s) {
+         for (int i0 = 0; i0 < B3; ++i0) {
+             if (b0->fill[i0] < Cap(b0, i0) || (b0->flags[i0] & kSolid)) continue; // full: at its capacity (#454)
+             const int x0 = i0 % B, y0 = (i0 / B) % B, z0 = i0 / (B * B);
+-            const int64_t k0 = Key(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
++            const int64_t k0 = CellKey(b0->bi * B + x0, b0->bj * B + y0, b0->bk * B + z0);
+             if (seen.count(k0)) continue;
+             const uint8_t kind0 = b0->flags[i0] & kKindMask; // a body is all one kind
+             // BFS through full cells; partial and empty-above neighbours are leaves.
+@@ -689,7 +692,7 @@ void LevelSite(Site& s) {
+                     Brick* nb; int ni;
+                     if (!s.cell(nc[0], nc[1], nc[2], nb, ni) || (nb->flags[ni] & kSolid)) continue;
+                     if (nb->fill[ni] > 0 && (nb->flags[ni] & kKindMask) != kind0) continue; // the other fluid
+-                    const int64_t nk = Key(nc[0], nc[1], nc[2]);
++                    const int64_t nk = CellKey(nc[0], nc[1], nc[2]);
+                     if (nb->fill[ni] >= Cap(nb, ni)) {
+                         if (!seen.count(nk)) { seen.insert(nk); q.push_back({ nc[0], nc[1], nc[2] }); }
+                     } else if ((nb->fill[ni] > 0 || k == 4) && !leafSeen.count(nk)) {
+@@ -710,7 +713,7 @@ void LevelSite(Site& s) {
+                 for (const C& c : comp)
+                     if (c.leaf) {
+                         const int li = c.i, lx = c.b->bi * B + li % B, ly = c.b->bj * B + (li / B) % B;
+-                        leafAt.emplace(Key(lx, ly, c.ck), (int)parent.size());
++                        leafAt.emplace(CellKey(lx, ly, c.ck), (int)parent.size());
+                         leafPos.push_back({ lx, ly, c.ck });
+                         parent.push_back((int)parent.size());
+                     }
+@@ -721,7 +724,7 @@ void LevelSite(Site& s) {
+                         for (int dy = -1; dy <= 1; ++dy)
+                             for (int dx = -1; dx <= 1; ++dx) {
+                                 if ((dx != 0) + (dy != 0) + (dz != 0) == 0 || (dx != 0 && dy != 0)) continue; // side, up/down, side +- a layer
+-                                auto it = leafAt.find(Key(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
++                                auto it = leafAt.find(CellKey(leafPos[a][0] + dx, leafPos[a][1] + dy, leafPos[a][2] + dz));
+                                 if (it == leafAt.end()) continue;
+                                 const int ra = root((int)a), rb = root(it->second);
+                                 if (ra != rb) { parent[ra] = rb; --groups; }
+@@ -2621,7 +2624,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
+         const uint8_t kind = fl & kKindMask;
+         std::unordered_set<int64_t> seen;
+         std::deque<std::array<int, 3>> q;
+-        q.push_back({ ci, cj, ck }); seen.insert(Key(ci, cj, ck));
++        q.push_back({ ci, cj, ck }); seen.insert(CellKey(ci, cj, ck));
+         float level = -1e9f, top = (float)ck + 1.0f;
+         static const int d[6][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+         while (!q.empty() && seen.size() < 20000) {
+@@ -2632,7 +2635,7 @@ float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
+                 uint8_t nf, nfl, nsh;
+                 if (!s.cell(nx, ny, nz, nf, nfl, nsh) || (nfl & kSolid)) continue;
+                 if (nf > 0 && (nfl & kKindMask) != kind) continue;
+-                if (nf + nsh >= 255) { if (seen.insert(Key(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
++                if (nf + nsh >= 255) { if (seen.insert(CellKey(nx, ny, nz)).second) q.push_back({ nx, ny, nz }); }
+                 else if (nf > 0) level = std::max(level, nz + (nsh + nf) / 255.0f); // a partial cell: the surface
+                 else if (dd[2] == 1) level = std::max(level, (float)nz);      // open air right over a full cell
+             }

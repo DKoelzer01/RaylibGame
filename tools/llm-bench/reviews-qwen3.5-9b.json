@@ -1,0 +1,11 @@
+{
+  "_about": "Claude's review of each passing diff against the spec and the reference (#2095). verdict: correct | minor (works, deviates from the spec or style) | defect (a bug the test misses).",
+  "weather-seed": {"verdict": "correct", "note": "Same as the reference."},
+  "noise-seed": {"verdict": "correct", "note": "Same as the reference."},
+  "ship-turn": {"verdict": "correct", "note": "Same logic as the reference; a few redundant comments."},
+  "creature-chase": {"verdict": "defect", "note": "Territorial creatures lost the (p.seen || p.heard) condition: they now take hostile players they can neither see nor hear. The test uses sight=1000, so it can't notice."},
+  "trees-clearing": {"verdict": "minor", "note": "A tile counts as having a centre only when ready and centre.x != 0; the spec says any non-zero component. Equivalent in practice, not as specified."},
+  "fluid-cellkey": {"verdict": "correct", "note": "CellKey exact and all six cell-key call sites switched, as in the reference."},
+  "catalog-slots": {"verdict": "correct", "note": "Both assignments in the right functions; the test hook declared in gameui.h."},
+  "site-query": {"verdict": "correct", "note": "Same as the reference (without its comments)."}
+}

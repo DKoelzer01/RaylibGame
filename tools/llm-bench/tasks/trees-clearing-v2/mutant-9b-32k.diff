@@ -1,0 +1,35 @@
+diff --git a/src/engine/trees.cpp b/src/engine/trees.cpp
+index feb7faea..d7540aa9 100644
+--- a/src/engine/trees.cpp
++++ b/src/engine/trees.cpp
+@@ -1040,12 +1040,17 @@ float TreeCanopy(Vector3 dir, float radius, float elevation, unsigned int seed,
+     return Smooth(0.04f, 0.3f, TreeChanceFromForest(Forest(Vector3Scale(dir, radius), seed), trees)) * edge; // forest presence
+ }
+ 
++bool TreeClearingReaches(const TreeTileKey& key, const TreeTile& tile, float planetRadius, Vector3 c, float r) {
++    Vector3 centre = tile.ready && tile.centre.x != 0.0f ? tile.centre : Vector3Scale(TreeTileCentreDir(key, planetRadius), planetRadius);
++    return Vector3Distance(centre, c) < r + kTreeTileSize;
++}
++
+ void TreeSystem::addClearing(Vector3 c, float r) {
+     auto next = std::make_shared<std::vector<Vector4>>(*clearings);
+     next->push_back({ c.x, c.y, c.z, r });
+     clearings = next;
+     for (auto& kv : tiles)
+-        if (kv.second.ready && Vector3Distance(kv.second.centre, c) < r + kTreeTileSize) request(kv.first, kv.second, 0.0f);
++        if (TreeClearingReaches(kv.first, kv.second, radius, c, r)) request(kv.first, kv.second, 0.0f);
+ }
+ 
+ bool TreeSystem::nearestPlant(Vector3 local, float range, bool tree, Plant& out, bool stone, int sizeClass) const {
+diff --git a/src/engine/trees.h b/src/engine/trees.h
+index 9a6935d9..1fb6c070 100644
+--- a/src/engine/trees.h
++++ b/src/engine/trees.h
+@@ -191,6 +191,7 @@ private:
+ // Tile helpers (exposed for tests).
+ TreeTileKey TreeTileOf(Vector3 dir, float radius);
+ Vector3 TreeTileCentreDir(const TreeTileKey& key, float radius);
++bool TreeClearingReaches(const TreeTileKey& key, const TreeTile& tile, float planetRadius, Vector3 c, float r);
+ // Fraction of the ground under tree crowns around a body-local direction (the same forest field
+ // and odds as the placement), for painting distant forests into the terrain.
+ class PlanetField;
