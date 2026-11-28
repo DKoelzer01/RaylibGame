@@ -93,6 +93,7 @@ void Flares_Draw3D(Scene& world) {
         // Under the body's localModel (double translation): a float toWorld 60 km out steps ~4 mm and jitters (#271/#284).
         const Matrix m = body->localModel(f.pos, world.renderOrigin);
         if (Vector3Distance({ m.m12, m.m13, m.m14 }, world.camera.position) > 150.0f) continue;
+        if (!world.inView({ m.m12, m.m13, m.m14 }, 0.3f)) continue; // (#2140) a 0.25 m stick
         const Vector3 up = UpOf(f.pos);
         // Lying on its side once down; end over end in flight.
         Vector3 side = Vector3CrossProduct(up, fabsf(up.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 });
