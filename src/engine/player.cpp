@@ -465,7 +465,6 @@ void Player::stepPhysics(Scene& world, float dt, Vector3 wish, bool jetUp, bool 
     const Vector3 gvec = GravityAt(world, feet);       // world frame: airborne velocity is world-frame
     const Vector3 gFelt = FeltGravity(world, feet, nearest); // the ground's frame: grounded velocity is relative to it
     gravity = Vector3Length(gFelt);
-    const Vector3 gdir = gravity > 1e-6f ? Vector3Scale(gFelt, 1.0f / gravity) : Vector3{ 0, 0, 0 };
 
     // (#1105) A ladder: the capsule's lower or upper sphere over a ladder's cell. Climbing up from the ground starts as a
     // jump does (the ground branch takes it off, with its frame); in the air the ladder holds the climb speed (below).
