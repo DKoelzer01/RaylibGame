@@ -791,10 +791,10 @@ bool NetProto_Test() {
             check(!RoundTrip(bad, rb), "machine action: a bad record is refused");
         }
         MsgMachineView va2, vb2; va2.body = 9; va2.plot = 2; va2.part = 3; va2.view.status = MachineStatus::Working; va2.view.progress = 40; va2.view.duration = 120;
-        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.mode = 1; va2.view.pick = "lv_pack"; va2.view.valid = true;
+        va2.view.inSlots = { { "iron_ore", 3 }, { "", 0 } }; va2.view.outSlots = { { "iron_ingot", 2 } }; va2.view.hasFuelSlot = true; va2.view.fuelSlot = { "coal", 5 }; va2.view.hotOutputs = true; va2.view.canLight = true; va2.view.fire = kFireOut; va2.view.mode = 1; va2.view.pick = "lv_pack"; va2.view.depositLeft = 4321; va2.view.valid = true;
         std::vector<uint8_t> s11;
         check(RoundTrip(va2, vb2, &s11) && vb2.view.status == MachineStatus::Working && vb2.view.progress == 40 && vb2.view.inSlots.size() == 2 && vb2.view.inSlots[0].first == "iron_ore"
-              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.mode == 1 && vb2.view.pick == "lv_pack" && vb2.view.valid, "machine view"); samples.push_back(s11);
+              && vb2.view.outSlots[0].second == 2 && vb2.view.fuelSlot.first == "coal" && vb2.view.hotOutputs && vb2.view.canLight && vb2.view.fire == kFireOut && vb2.view.mode == 1 && vb2.view.pick == "lv_pack" && vb2.view.depositLeft == 4321 && vb2.view.valid, "machine view"); samples.push_back(s11);
         { // (#1446 2b) a slot's record rides along, sparse
             MsgMachineView a = va2, b; a.view.inSlots = { { "iron_ore", 3 }, { "tool_pickaxe", 1 }, { "", 0 } }; a.view.inData = { "", "head=bronze;w=4", "" }; std::vector<uint8_t> s;
             check(RoundTrip(a, b, &s) && b.view.inData.size() == 3 && b.view.inData[0].empty() && b.view.inData[1] == "head=bronze;w=4" && b.view.inData[2].empty(), "machine view: slot data"); samples.push_back(s);
@@ -1049,6 +1049,7 @@ void NetWrite(NetWriter& w, const MsgMachineView& m) {
         w.varu(n);
         for (size_t i = 0; i < v.outData.size() && i < kMaxViewSlots; ++i) if (!v.outData[i].empty()) { w.varu(i); w.str(v.outData[i].substr(0, 255)); }
     }
+    w.vari(v.depositLeft); // (#2071, protocol 63)
 }
 bool NetRead(NetReader& r, MsgMachineView& m) {
     m.body = r.varu(); m.plot = r.u32(); const int64_t part = r.vari();
@@ -1073,6 +1074,8 @@ bool NetRead(NetReader& r, MsgMachineView& m) {
         if (n > kMaxViewSlots) r.ok = false;
         for (uint64_t k = 0; k < n && r.ok; ++k) { const uint64_t i = r.varu(); std::string d = r.str(255); if (i >= v.outData.size() || !ItemData::Valid(d)) { r.ok = false; break; } v.outData[(size_t)i] = std::move(d); }
     }
+    v.depositLeft = r.vari(); // (#2071)
+    if (v.depositLeft < -1) r.ok = false;
     return Done(r);
 }
 void NetWrite(NetWriter& w, const MsgMachineStates& m) {

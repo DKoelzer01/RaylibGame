@@ -42,6 +42,7 @@ trip_hammer      | 0 | rotation | 0 |
 mixer            | 0 | rotation | 0 |
 rotary_sieve     | 0 | rotation | 0 |
 rotary_pump      | 0 | rotation | 0 |
+borehole_rig     | 0 | rotation | 0 |
 # (#1271 L3) steam: a boiler making steam (EU per tick = its steam at full heat) for the steam engines touching it; engine: a
 # steam engine (rotation from that steam); dynamo: rotation into EU at its voltage; motor: EU into rotation.
 steam_engine     | 0  | engine | 0  |
@@ -99,3 +100,5 @@ lv_assembler     | 32 | eu       | 0  |
 # (#1427 L7e) the LV successors of the press and the saw (the macerator and the electric furnace take the millstone's and kiln's jobs)
 compressor       | 32 | eu       | 0  |
 cutter           | 32 | eu       | 0  |
+# (#2071) the borehole rig's LV successor: twice its reach and rate
+lv_borehole_rig  | 32 | eu       | 0  |

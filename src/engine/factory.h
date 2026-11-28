@@ -65,6 +65,7 @@ struct MachineView {             // published per machine each tick
     float rpm = 0.0f;
     int speedPercent = 100, stressPercent = 0;
     const char* rotStatus = "";     // "Running", "Slowed", "Too slow", "Stopped", "Jammed"
+    long long depositLeft = -1;     // (#2071) a drill on a deposit: the units left in it (with its own unmined grant); -1: none
     bool valid = false;
 };
 

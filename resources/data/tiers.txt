@@ -36,6 +36,7 @@
     task | get copper_wire 4      | Draw copper wire (Tab)
     task | get vacuum_tube 1      | Craft a vacuum tube
     task | place steam_lab        | Build a steam lab and turn it with a shaft
+    task | place borehole_rig     | Set a borehole rig over an ore deposit (32 m down) and turn it with a shaft
 # (#1271) Tier 3's milestone (research; inert until the ladder's step L6): the tier's core research and every line below
     milestone | deliver steel_plate 50   | Hand in 50 steel plates at a lab
     milestone | deliver cogwheel 20      | Hand in 20 cogwheels at a lab
@@ -51,6 +52,7 @@
     task | place electric_furnace | Place the electric furnace and cable it to the generator
     task | place macerator        | Place a macerator: 2 ore crush into 3 (half again as many ingots)
     task | place lv_assembler     | Place an LV assembler: it makes circuits and the LV packs the research needs
+    task | place lv_borehole_rig  | Place an LV borehole rig over an ore deposit (64 m down) and cable it
 # (#1271) Tier 4's milestone
     milestone | deliver basic_circuit 40 | Hand in 40 basic circuits at a lab
     milestone | deliver cable 100        | Hand in 100 copper cable at a lab

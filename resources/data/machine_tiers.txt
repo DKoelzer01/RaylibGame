@@ -36,3 +36,4 @@ successor | bloomery | furnace
 successor | coke_oven | furnace
 successor | steam_assembler | lv_assembler
 successor | steam_lab | lv_lab
+successor | borehole_rig | lv_borehole_rig
