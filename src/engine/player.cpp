@@ -1097,6 +1097,36 @@ void Player::updateFrame(Scene& world) {
     if (to.body != 0) Frames_FromGlobal(position, DVec3(vw.x, vw.y, vw.z), to, frame);
 }
 
+bool Player::restoreFrame(const FramePos& f) {
+    Planetoid* b = Planetoid::findNet(f.frame.body);
+    DVec3 pg, vg;
+    if (!b || !Frames_ToGlobal(f, pg, vg)) return false;
+    position = pg;
+    frame = f;
+    nearest = b;
+    grounded = false; groundBody = nullptr;
+    // Carried with the body from here as any airborne player (update's airBody path), and not "moved from outside": the
+    // velocity below is already in the terms the next update expects.
+    airBody = b; airId = b->id; airLocal = b->toLocalD(position);
+    airFrameVel = b->linearVelocity;
+    lastEndPosition = position;
+    viewBody = 0;
+    const double vl = f.vel.length();
+    if (f.frame.kind == FrameKind::Fixed) { // the frame velocity (against the ground), kept in the body's axes
+        const DVec3 d = vl > 1e-12 ? f.vel * (1.0 / vl) : DVec3{};
+        airVelDir = { (float)d.x, (float)d.y, (float)d.z };
+        airVelLen = (float)vl;
+        airVelBody = b->id;
+        velocity = Vector3Scale(b->dirToWorld(airVelDir), airVelLen);
+        fxActive = true;
+    } else { // Centred: the airborne path's world-frame velocity
+        velocity = vg.toFloat();
+        airVelBody = 0;
+        fxActive = false;
+    }
+    return true;
+}
+
 // Plan 11 F2b (#1146): the acceleration an airborne player feels in the nearest body's Fixed frame (felt gravity, Coriolis
 // and centrifugal: Frames_Acceleration), in world axes. The velocity is the frame velocity (against the ground).
 Vector3 Player::frameGravity(Scene& world, Vector3 feet) const {

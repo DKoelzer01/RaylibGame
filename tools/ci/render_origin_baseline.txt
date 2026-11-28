@@ -30,9 +30,11 @@
 4 src/space/events.cpp
 1 src/space/farming.cpp
 1 src/space/fishing.cpp
+1 src/space/flares.cpp
 1 src/space/footsteps.cpp
 3 src/space/gameui.cpp
 1 src/space/hostserver.cpp
+1 src/space/lightlevel.cpp
 1 src/space/machinemodels.cpp
 2 src/space/magic.cpp
 1 src/space/magicdiscovery.cpp

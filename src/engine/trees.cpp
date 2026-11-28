@@ -12,19 +12,81 @@
 #include "external/glad.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <mutex>
 #include <random>
+#include <sstream>
 
-// Bark and leaf tints multiply the shader's bark brown and latitude leaf colour.
+// Species data (#1995 phase 2): code defaults (every species is complete without the file), then resources/data/trees.txt.
+// Bark and leaf tints multiply the shader's bark brown and climate leaf colour.
+static void WoodSpeciesDefaults(WoodSpeciesDef d[kWoodSpecies]) {
+    for (int i = 0; i < kWoodSpecies; ++i) {
+        d[i] = WoodSpeciesDef{};
+        d[i].name = kWoodSpeciesNames[i];
+        d[i].log = "oak_log";
+    }
+    d[(int)WoodSpecies::Birch].texture = BarkTexture::Birch;
+    d[(int)WoodSpecies::Birch].size = 0.85f;
+    d[(int)WoodSpecies::Pine].conifer = d[(int)WoodSpecies::Spruce].conifer = d[(int)WoodSpecies::Krummholz].conifer = true;
+    d[(int)WoodSpecies::Pine].texture = d[(int)WoodSpecies::Spruce].texture = d[(int)WoodSpecies::Krummholz].texture = BarkTexture::Plates;
+}
+bool WoodSpecies_Parse(const std::string& text, WoodSpeciesDef out[kWoodSpecies], std::string* err) {
+    std::istringstream in(text);
+    std::string line;
+    int lineNo = 0, cur = -1;
+    auto fail = [&](const std::string& why) { if (err) *err = "trees.txt:" + std::to_string(lineNo) + ": " + why; return false; };
+    auto rgb = [&](std::istringstream& ls, Vector3& v) { return (bool)(ls >> v.x >> v.y >> v.z) && v.x >= 0.0f && v.y >= 0.0f && v.z >= 0.0f; };
+    while (std::getline(in, line)) {
+        ++lineNo;
+        if (const size_t h = line.find('#'); h != std::string::npos) line.resize(h);
+        std::istringstream ls(line);
+        std::string key, extra;
+        if (!(ls >> key)) continue;
+        if (key == "species") {
+            std::string name;
+            ls >> name;
+            if ((cur = WoodSpeciesByName(name.c_str())) < 0) return fail("unknown species '" + name + "' (woodspecies.h lists them)");
+        } else if (cur < 0) {
+            return fail("'" + key + "' before any 'species <name>'");
+        } else if (key == "log") {
+            if (!(ls >> out[cur].log)) return fail("log takes an item name");
+        } else if (key == "bark") {
+            if (!rgb(ls, out[cur].bark)) return fail("bark takes three numbers >= 0");
+        } else if (key == "leaf") {
+            if (!rgb(ls, out[cur].leaf)) return fail("leaf takes three numbers >= 0");
+        } else if (key == "size") {
+            if (!(ls >> out[cur].size) || out[cur].size <= 0.0f) return fail("size takes a number > 0");
+        } else if (key == "texture") {
+            static const char* kTex[(int)BarkTexture::Count] = { "furrows", "birch", "plates", "rings", "smooth" };
+            std::string t;
+            ls >> t;
+            int k = -1;
+            for (int i = 0; i < (int)BarkTexture::Count; ++i) if (t == kTex[i]) k = i;
+            if (k < 0) return fail("texture is one of furrows birch plates rings smooth");
+            out[cur].texture = (BarkTexture)k;
+        } else {
+            return fail("unknown key '" + key + "'");
+        }
+        if (ls >> extra) return fail("extra '" + extra + "' after " + key);
+    }
+    return true;
+}
 const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s) {
-    static const WoodSpeciesDef kDefs[(int)WoodSpecies::Count] = {
-        { "oak_log",    "oak",    false, { 1.0f, 1.0f, 1.0f },  { 1.0f, 1.0f, 1.0f } },
-        { "birch_log",  "birch",  false, { 3.7f, 5.5f, 8.6f },  { 1.45f, 1.35f, 0.8f } },  // white bark, light yellow-green
-        { "maple_log",  "maple",  false, { 1.2f, 0.85f, 0.8f }, { 4.4f, 0.55f, 0.6f } },   // red-orange crowns
-        { "pine_log",   "pine",   true,  { 1.15f, 1.0f, 0.9f }, { 1.0f, 1.0f, 1.0f } },
-        { "spruce_log", "spruce", true,  { 0.75f, 0.7f, 0.7f }, { 0.7f, 0.85f, 1.7f } },   // dark blue-green
-    };
-    return kDefs[std::clamp((int)s, 0, (int)WoodSpecies::Count - 1)];
+    static const std::vector<WoodSpeciesDef> defs = [] {
+        std::vector<WoodSpeciesDef> d(kWoodSpecies);
+        WoodSpeciesDefaults(d.data());
+        std::ifstream f("resources/data/trees.txt", std::ios::binary);
+        if (!f) { fprintf(stderr, "trees.txt: missing; default species colours\n"); return d; }
+        std::stringstream ss;
+        ss << f.rdbuf();
+        std::vector<WoodSpeciesDef> parsed = d;
+        std::string err;
+        if (WoodSpecies_Parse(ss.str(), parsed.data(), &err)) return parsed;
+        fprintf(stderr, "%s; default species colours\n", err.c_str());
+        return d;
+    }();
+    return defs[std::clamp((int)s, 0, kWoodSpecies - 1)];
 }
 
 namespace {
@@ -59,8 +121,9 @@ void Quad(VariantMesh& m, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 ce
     Emit(m, a, n, leaf, shade); Emit(m, c, n, leaf, shade); Emit(m, d, n, leaf, shade);
 }
 
-// A prism from a to b with a square cross-section w0 wide at a, w1 at b, turned by `twist`.
-void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist, bool leaf, unsigned char shade) {
+// A prism from a to b with a square cross-section w0 wide at a, w1 at b, turned by `twist`; flat < 1 squashes the
+// section along its second axis (vertical for a near-horizontal a-b: fronds and flat crowns).
+void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist, bool leaf, unsigned char shade, float flat = 1.0f) {
     const Vector3 d = Vector3Normalize(Vector3Subtract(b, a));
     const Vector3 ref = fabsf(d.y) < 0.95f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 };
     Vector3 s = Vector3Normalize(Vector3CrossProduct(d, ref));
@@ -72,8 +135,8 @@ void Prism(VariantMesh& m, Vector3 a, Vector3 b, float w0, float w1, float twist
     const float sx[4] = { 1, -1, -1, 1 }, ty[4] = { 1, 1, -1, -1 };
     Vector3 A[4], B[4];
     for (int k = 0; k < 4; ++k) {
-        A[k] = Vector3Add(a, Vector3Add(Vector3Scale(s, sx[k] * w0 * 0.5f), Vector3Scale(t, ty[k] * w0 * 0.5f)));
-        B[k] = Vector3Add(b, Vector3Add(Vector3Scale(s, sx[k] * w1 * 0.5f), Vector3Scale(t, ty[k] * w1 * 0.5f)));
+        A[k] = Vector3Add(a, Vector3Add(Vector3Scale(s, sx[k] * w0 * 0.5f), Vector3Scale(t, ty[k] * w0 * 0.5f * flat)));
+        B[k] = Vector3Add(b, Vector3Add(Vector3Scale(s, sx[k] * w1 * 0.5f), Vector3Scale(t, ty[k] * w1 * 0.5f * flat)));
     }
     const Vector3 centre = Vector3Scale(Vector3Add(a, b), 0.5f);
     for (int k = 0; k < 4; ++k) Quad(m, A[k], A[(k + 1) % 4], B[(k + 1) % 4], B[k], centre, leaf, shade);
@@ -328,6 +391,239 @@ void ConiferV2(VariantMesh& m, unsigned int seed, int sp, int cls) {
         Prism(m, { 0, H - 0.2f, 0 }, { 0, H + 0.9f * kK[cls], 0 }, 0.7f * kK[cls], 0.15f, 0.4f, true, Shade(r));
 }
 
+// ---- #1995 phase 2: species with their own structure (all values GUESS for the playtest) ----
+// Each takes the size class (0 sapling .. 3 old) and grows its trunk taller with it (the FormsAndSizeClasses test).
+const float kAgeH[4] = { 0.4f, 0.8f, 1.15f, 1.6f }, kAgeT[4] = { 0.35f, 0.75f, 1.25f, 2.1f }, kAgeC[4] = { 0.5f, 0.8f, 1.1f, 1.4f };
+
+// A frond or a drooping leaf spray: up and out from `at`, then arching down; flat blades.
+void Frond(VariantMesh& m, std::mt19937& r, Vector3 at, float yaw, float len, float rise, float droop, float w) {
+    const Vector3 d = { cosf(yaw), 0.0f, sinf(yaw) };
+    const Vector3 mid = Vector3Add(at, { d.x * len * 0.55f, rise, d.z * len * 0.55f });
+    const Vector3 tip = Vector3Add(mid, { d.x * len * 0.45f, -droop, d.z * len * 0.45f });
+    Prism(m, at, mid, w * 0.6f, w, 0.0f, true, Shade(r), 0.25f);
+    Prism(m, mid, tip, w, w * 0.35f, 0.0f, true, Shade(r), 0.25f);
+}
+
+// Acacia: a short trunk forking into two or three leaning limbs, a flat, wide umbrella of thin slabs on top.
+void AcaciaV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    const float H = (4.6f + 1.2f * U(r)) * kAgeH[cls], tw = 0.45f * kAgeT[cls], c = kAgeC[cls];
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const float fork = H * (cls == 0 ? 0.7f : 0.38f + 0.1f * U(r));
+    Prism(m, { 0, -0.4f, 0 }, { 0, fork, 0 }, tw, tw * 0.8f, 0.0f, false, Shade(r));
+    const int limbs = cls == 0 ? 1 : 2 + (int)(U(r) * (cls >= 2 ? 2.0f : 1.0f));
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < limbs; ++k) {
+        const float yaw = yaw0 + k * 2.0f * PI / limbs + (U(r) - 0.5f) * 0.6f;
+        const float out = (limbs == 1 ? 0.3f : 1.2f + 1.0f * U(r)) * c * 1.6f;
+        const Vector3 top = { cosf(yaw) * out, H * (0.9f + 0.1f * U(r)), sinf(yaw) * out };
+        Prism(m, { 0, fork, 0 }, top, tw * 0.7f, tw * 0.4f, U(r), false, Shade(r));
+        // Two or three overlapping thin slabs per limb: the flat top.
+        const int slabs = 2 + (int)(U(r) * 2.0f);
+        for (int s = 0; s < slabs; ++s) {
+            const float a = U(r) * 2.0f * PI, o = (0.4f + 0.8f * U(r)) * c;
+            const float w = (2.6f + 1.4f * U(r)) * c * 1.4f, y = top.y + 0.2f + 0.25f * U(r);
+            const Vector3 at = { top.x + cosf(a) * o, y, top.z + sinf(a) * o };
+            Prism(m, at, Vector3Add(at, { 0, 0.45f * std::max(c, 0.6f), 0 }), w, w * 0.9f, U(r) * 1.5f, true, Shade(r));
+        }
+    }
+}
+
+// Kapok: an emergent - a tall straight bare trunk with buttresses, long level limbs only near the top, a broad crown.
+void KapokV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    const float H = (9.0f + 2.0f * U(r)) * kAgeH[cls], tw = 0.75f * kAgeT[cls], c = kAgeC[cls];
+    m.trunkRadius = 0.45f * tw;
+    m.trunkHeight = H;
+    Prism(m, { 0, -0.4f, 0 }, { 0, H * 0.6f, 0 }, tw, tw * 0.75f, 0.0f, false, Shade(r));
+    Prism(m, { 0, H * 0.6f, 0 }, { 0, H, 0 }, tw * 0.75f, tw * 0.45f, 0.3f, false, Shade(r));
+    if (cls >= 2) Buttress(m, r, tw * 1.2f, H * (cls == 3 ? 0.16f : 0.1f));
+    const int nb = cls == 0 ? 2 : 3 + cls + (int)(U(r) * 2.0f);
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < nb; ++k) {
+        const float y = H * (0.8f + 0.18f * U(r)), yaw = yaw0 + k * 2.39996f;
+        const float len = (2.0f + 1.5f * U(r)) * c * 1.5f;
+        const Vector3 s = { 0, y, 0 }, e = { cosf(yaw) * len, y + len * 0.25f, sinf(yaw) * len };
+        Prism(m, s, e, tw * 0.35f, tw * 0.2f, U(r), false, Shade(r));
+        const float w = (2.2f + 1.0f * U(r)) * c * 1.3f;
+        Prism(m, Vector3Subtract(e, { 0, w * 0.15f, 0 }), Vector3Add(e, { 0, w * 0.35f, 0 }), w, w * 0.85f, U(r) * 1.5f, true, Shade(r));
+    }
+    const float w = (2.6f + 0.8f * U(r)) * c * 1.3f;
+    Prism(m, { 0, H - 0.4f, 0 }, { 0, H + w * 0.45f, 0 }, w, w * 0.8f, U(r), true, Shade(r));
+}
+
+// Mangrove: a short trunk standing on arched stilt roots, a low, dense, wide crown.
+void MangroveV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    const float H = (4.0f + 1.0f * U(r)) * kAgeH[cls], tw = 0.4f * kAgeT[cls], c = kAgeC[cls];
+    const float hub = std::max(0.5f, H * 0.3f);
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const int roots = 4 + cls + (int)(U(r) * 3.0f);
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < roots; ++k) { // out and up from the hub, then down into the mud
+        const float yaw = yaw0 + k * 2.0f * PI / roots + (U(r) - 0.5f) * 0.5f;
+        const float out = (0.9f + 0.9f * U(r)) * (0.5f + 0.5f * cls);
+        const Vector3 h0 = { 0, hub * (0.7f + 0.3f * U(r)), 0 };
+        const Vector3 knee = { cosf(yaw) * out * 0.55f, hub * 1.05f, sinf(yaw) * out * 0.55f };
+        const Vector3 foot = { cosf(yaw) * out, -0.3f, sinf(yaw) * out };
+        Prism(m, h0, knee, tw * 0.35f, tw * 0.3f, yaw, false, Shade(r));
+        Prism(m, knee, foot, tw * 0.3f, tw * 0.25f, yaw, false, Shade(r));
+    }
+    Prism(m, { 0, hub * 0.6f, 0 }, { 0, H, 0 }, tw, tw * 0.6f, 0.0f, false, Shade(r));
+    const int blocks = 3 + cls + (int)(U(r) * 2.0f);
+    for (int k = 0; k < blocks; ++k) {
+        const float a = yaw0 + k * 2.39996f, o = (0.6f + 1.2f * U(r)) * c * 1.4f;
+        const float w = (1.8f + 1.0f * U(r)) * c * 1.3f;
+        const Vector3 at = { cosf(a) * o, H * (0.8f + 0.2f * U(r)), sinf(a) * o };
+        if (o > 0.8f) Prism(m, { 0, H * 0.7f, 0 }, at, tw * 0.4f, tw * 0.25f, a, false, Shade(r));
+        Prism(m, Vector3Subtract(at, { 0, w * 0.12f, 0 }), Vector3Add(at, { 0, w * 0.22f, 0 }), w * 1.15f, w, U(r) * 1.5f, true, Shade(r)); // flat, spreading layers (a cube read as a box)
+    }
+}
+
+// Krummholz: wind-stunted conifer - a low trunk bent hard downwind, foliage flagged to the lee side, a dense skirt mat.
+void KrummholzV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    static const float kKH[4] = { 0.5f, 0.75f, 1.0f, 1.3f };
+    const float H = (2.2f + 0.8f * U(r)) * kKH[cls], tw = 0.3f * kAgeT[cls] + 0.05f;
+    const float yaw = U(r) * 2.0f * PI, bend = (0.6f + 0.5f * U(r)) * H;
+    const Vector3 lee = { cosf(yaw), 0.0f, sinf(yaw) };
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const Vector3 mid = { lee.x * bend * 0.3f, H * 0.55f, lee.z * bend * 0.3f }, top = { lee.x * bend, H, lee.z * bend };
+    Prism(m, { 0, -0.4f, 0 }, mid, tw, tw * 0.7f, 0.0f, false, Shade(r));
+    Prism(m, mid, top, tw * 0.7f, tw * 0.35f, 0.0f, false, Shade(r));
+    // The skirt: low mats spreading downwind along the ground.
+    const int mats = 2 + cls;
+    for (int k = 0; k < mats; ++k) {
+        const float o = (0.3f + 0.5f * k) * (0.6f + 0.3f * cls), side = (U(r) - 0.5f) * 1.2f;
+        const Vector3 at = { lee.x * o - lee.z * side, 0.0f, lee.z * o + lee.x * side };
+        const float w = (1.1f + 0.6f * U(r)) * (0.6f + 0.25f * cls);
+        Prism(m, at, Vector3Add(at, { 0, 0.45f + 0.2f * cls, 0 }), w, w * 0.8f, yaw + U(r), true, Shade(r));
+    }
+    // Flags: short slabs off the trunk's lee side only.
+    const int flags = 1 + cls;
+    for (int k = 0; k < flags; ++k) {
+        const float f = 0.45f + 0.55f * (flags > 1 ? (float)k / (flags - 1) : 1.0f);
+        const Vector3 at = Vector3Add(Vector3Lerp(mid, top, f), { lee.x * 0.4f, 0.0f, lee.z * 0.4f });
+        const float w = (0.8f + 0.4f * U(r)) * (0.7f + 0.15f * cls);
+        Prism(m, at, Vector3Add(at, { lee.x * w * 0.8f, 0.35f, lee.z * w * 0.8f }), w, w * 0.6f, yaw, true, Shade(r), 0.6f);
+    }
+}
+
+// Snag: a dead tree - bare grey trunk with a broken, jagged top and a few stubs of branches; no leaves.
+void SnagV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    const float H = (6.0f + 3.0f * U(r)) * kAgeH[cls], tw = 0.5f * kAgeT[cls];
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const Vector3 lean = { (U(r) - 0.5f) * 0.8f, 0.0f, (U(r) - 0.5f) * 0.8f };
+    const Vector3 mid = { lean.x * 0.4f, H * 0.6f, lean.z * 0.4f }, top = { lean.x, H, lean.z };
+    Prism(m, { 0, -0.4f, 0 }, mid, tw, tw * 0.75f, 0.0f, false, Shade(r));
+    Prism(m, mid, top, tw * 0.75f, tw * 0.5f, 0.2f, false, Shade(r));
+    // The break: two or three splinters standing up from the top at odd angles.
+    for (int k = 0; k < 2 + (int)(U(r) * 2.0f); ++k) {
+        const float a = U(r) * 2.0f * PI, l = (0.4f + 0.6f * U(r)) * kAgeC[cls];
+        Prism(m, top, Vector3Add(top, { cosf(a) * tw * 0.3f, l, sinf(a) * tw * 0.3f }), tw * 0.25f, tw * 0.05f, a, false, Shade(r));
+    }
+    const int stubs = 1 + cls + (int)(U(r) * 2.0f);
+    for (int k = 0; k < stubs; ++k) {
+        const float y = H * (0.3f + 0.6f * U(r)), a = U(r) * 2.0f * PI, l = (0.6f + 1.2f * U(r)) * kAgeC[cls];
+        const Vector3 s = Vector3Lerp({ 0, 0, 0 }, top, y / H);
+        Prism(m, { s.x, y, s.z }, { s.x + cosf(a) * l, y + l * (U(r) - 0.3f), s.z + sinf(a) * l }, tw * 0.2f, tw * 0.08f, a, false, Shade(r));
+    }
+}
+
+// Baobab: a massive bottle trunk, wide in the middle, a few stubby limbs on top with small sparse leaf tufts.
+void BaobabV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    static const float kBT[4] = { 0.3f, 0.9f, 1.8f, 2.8f };
+    const float H = (5.5f + 1.5f * U(r)) * kAgeH[cls], tw = kBT[cls];
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    if (cls == 0) { // sapling: a thin, slightly swollen stem and a tuft
+        Prism(m, { 0, -0.4f, 0 }, { 0, H, 0 }, 0.25f, 0.1f, 0.0f, false, Shade(r));
+        Prism(m, { 0, H - 0.3f, 0 }, { 0, H + 0.5f, 0 }, 1.0f, 0.8f, U(r), true, Shade(r));
+        return;
+    }
+    Prism(m, { 0, -0.4f, 0 }, { 0, H * 0.45f, 0 }, tw, tw * 1.12f, 0.0f, false, Shade(r));
+    Prism(m, { 0, H * 0.45f, 0 }, { 0, H * 0.85f, 0 }, tw * 1.12f, tw * 0.65f, 0.4f, false, Shade(r));
+    Prism(m, { 0, H * 0.85f, 0 }, { 0, H, 0 }, tw * 0.65f, tw * 0.4f, 0.8f, false, Shade(r));
+    const int nb = 3 + cls + (int)(U(r) * 2.0f);
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < nb; ++k) {
+        const float yaw = yaw0 + k * 2.0f * PI / nb + (U(r) - 0.5f) * 0.4f;
+        const float len = (1.2f + 1.0f * U(r)) * kAgeC[cls] * 1.4f;
+        const Vector3 s = { cosf(yaw) * tw * 0.15f, H * 0.95f, sinf(yaw) * tw * 0.15f };
+        const Vector3 e = Vector3Add(s, { cosf(yaw) * len, len * (0.4f + 0.4f * U(r)), sinf(yaw) * len });
+        Prism(m, s, e, tw * 0.22f, tw * 0.1f, U(r), false, Shade(r));
+        const float w = (0.9f + 0.6f * U(r)) * kAgeC[cls] * 1.2f;
+        Prism(m, Vector3Subtract(e, { 0, w * 0.3f, 0 }), Vector3Add(e, { 0, w * 0.4f, 0 }), w, w * 0.8f, U(r), true, Shade(r));
+    }
+}
+
+// Tree fern: a thin dark trunk, a rosette of long arching fronds at the top (young ones have a short stem or none).
+void TreeFernV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    static const float kFH[4] = { 0.25f, 0.6f, 1.0f, 1.45f };
+    const float H = (3.2f + 1.2f * U(r)) * kFH[cls], tw = 0.18f + 0.07f * cls;
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    Prism(m, { 0, -0.4f, 0 }, { 0, H, 0 }, tw * 1.3f, tw, 0.0f, false, Shade(r));
+    const int n = 6 + (int)(U(r) * 4.0f);
+    const float yaw0 = U(r) * 2.0f * PI, len = (1.6f + 0.6f * U(r)) * (0.6f + 0.25f * cls);
+    for (int k = 0; k < n; ++k)
+        Frond(m, r, { 0, H, 0 }, yaw0 + k * 2.0f * PI / n + (U(r) - 0.5f) * 0.3f, len * (0.85f + 0.3f * U(r)), len * 0.35f, len * 0.5f, 0.45f + 0.1f * cls);
+    Prism(m, { 0, H - 0.1f, 0 }, { 0, H + len * 0.3f, 0 }, 0.35f, 0.1f, 0.0f, true, Shade(r)); // the unrolling crozier
+}
+
+// Palm: a slender curving ringed trunk, a crown of long drooping fronds.
+void PalmV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    static const float kPH[4] = { 0.25f, 0.65f, 1.0f, 1.35f };
+    const float H = (7.0f + 2.0f * U(r)) * kPH[cls], tw = 0.28f + 0.06f * cls;
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const float yaw = U(r) * 2.0f * PI, curve = (0.08f + 0.12f * U(r)) * H;
+    auto at = [&](float f) { return Vector3{ cosf(yaw) * curve * f * f, H * f, sinf(yaw) * curve * f * f }; };
+    for (int s = 0; s < 4; ++s) Prism(m, s == 0 ? Vector3{ 0, -0.4f, 0 } : at(s / 4.0f), at((s + 1) / 4.0f), tw * (1.25f - 0.08f * s), tw * (1.17f - 0.08f * s), 0.0f, false, Shade(r));
+    const Vector3 top = at(1.0f);
+    const int n = 7 + (int)(U(r) * 3.0f);
+    const float yaw0 = U(r) * 2.0f * PI, len = (2.6f + 0.8f * U(r)) * (0.45f + 0.25f * cls);
+    for (int k = 0; k < n; ++k)
+        Frond(m, r, top, yaw0 + k * 2.0f * PI / n + (U(r) - 0.5f) * 0.3f, len * (0.85f + 0.3f * U(r)), len * 0.2f, len * (0.55f + 0.2f * U(r)), 0.55f + 0.1f * cls);
+    Prism(m, Vector3Subtract(top, { 0, 0.3f, 0 }), Vector3Add(top, { 0, 0.4f, 0 }), tw * 1.8f, tw * 1.4f, 0.0f, true, Shade(r)); // the crown's heart
+}
+
+// Willow: a short stout trunk, limbs arching up and out, each hanging a curtain of long thin leaf strands.
+void WillowV2(VariantMesh& m, unsigned int seed, int cls) {
+    std::mt19937 r(seed);
+    const float H = (4.5f + 1.2f * U(r)) * kAgeH[cls], tw = 0.55f * kAgeT[cls], c = kAgeC[cls];
+    m.trunkRadius = 0.5f * tw;
+    m.trunkHeight = H;
+    const float fork = H * 0.55f;
+    Prism(m, { 0, -0.4f, 0 }, { 0, fork, 0 }, tw, tw * 0.8f, 0.0f, false, Shade(r));
+    const int limbs = 2 + cls + (int)(U(r) * 2.0f);
+    const float yaw0 = U(r) * 2.0f * PI;
+    for (int k = 0; k < limbs; ++k) {
+        const float yaw = yaw0 + k * 2.0f * PI / limbs + (U(r) - 0.5f) * 0.5f;
+        const float out = (1.2f + 0.9f * U(r)) * c * 1.5f;
+        const Vector3 e = { cosf(yaw) * out, H * (0.9f + 0.15f * U(r)), sinf(yaw) * out };
+        Prism(m, { 0, fork, 0 }, e, tw * 0.55f, tw * 0.3f, U(r), false, Shade(r));
+        // A small cap over the limb's end, then 5-8 thin strands hanging from its rim, tips at varied heights.
+        const float cw = (1.4f + 0.6f * U(r)) * c;
+        Prism(m, Vector3Subtract(e, { 0, 0.2f, 0 }), Vector3Add(e, { 0, cw * 0.5f, 0 }), cw * 1.4f, cw * 1.1f, U(r), true, Shade(r));
+        const int strands = 5 + (int)(U(r) * 4.0f);
+        for (int s = 0; s < strands; ++s) {
+            const float a = U(r) * 2.0f * PI, o = cw * (0.55f + 0.2f * U(r)); // on the cap's rim: a curtain, not a block
+            const Vector3 hang = { e.x + cosf(a) * o, e.y, e.z + sinf(a) * o };
+            const float low = std::max(0.5f, e.y * (0.2f + 0.35f * U(r)));
+            Prism(m, hang, { hang.x + cosf(a) * 0.3f, low, hang.z + sinf(a) * 0.3f }, 0.32f * c + 0.12f, 0.16f * c + 0.08f, a, true, Shade(r));
+        }
+    }
+}
+
 // Bushes (#1995): three kinds - a round shrub, a low spreading mat and an upright clump.
 void BushV2(VariantMesh& m, unsigned int seed, int kind) {
     std::mt19937 r(seed);
@@ -381,7 +677,13 @@ void FarFrom(const VariantMesh& full, int v, VariantMesh& m) {
     const float w = std::max(hi[0] - lo[0], hi[2] - lo[2]) * 0.8f;
     const Vector3 c = { (lo[0] + hi[0]) * 0.5f, 0.0f, (lo[2] + hi[2]) * 0.5f };
     const unsigned char shade = 160;
-    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, lo[1] + 0.3f, c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
+    if (lo[1] > hi[1]) { // leafless (snags): the trunk alone
+        Prism(m, { 0, -0.4f, 0 }, { 0, full.trunkHeight, 0 }, full.trunkRadius * 2.0f, full.trunkRadius, 0.0f, false, shade);
+        m.trunkRadius = full.trunkRadius;
+        m.trunkHeight = full.trunkHeight;
+        return;
+    }
+    if (full.trunkHeight > 0.0f) Prism(m, { 0, -0.4f, 0 }, { c.x, std::max(lo[1] + 0.3f, 0.3f), c.z }, full.trunkRadius * 2.0f, full.trunkRadius * 1.4f, 0.0f, false, shade);
     if (v < kFirstBush && WoodSpeciesInfo(SpeciesOfVariant(v)).conifer) {
         const float mid = lo[1] + (hi[1] - lo[1]) * 0.55f;
         Prism(m, { c.x, lo[1], c.z }, { c.x, mid, c.z }, w, w * 0.6f, 0.785f, true, shade);
@@ -398,13 +700,28 @@ void BuildVariants() {
     for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
         const int v = VariantOfTreeMesh(mesh), form = mesh % kTreeForms;
         VariantMesh& m = gVariants[0][mesh];
-        if (forms && v != kStoneVariant) {
+        // The phase-2 species have no pre-#1995 shape: with forms off their form 0 is still their own.
+        const bool newSpecies = v < kFirstBush && SpeciesOfVariant(v) >= WoodSpecies::Acacia;
+        if ((forms || (newSpecies && form == 0)) && v != kStoneVariant) {
             // #1995: form 0 keeps the variant's old seed; the others are their own trees.
             const unsigned int fs = (unsigned)form * 104729u;
             if (v < kFirstBush) {
                 const int sp = (int)SpeciesOfVariant(v), cls = SizeClassOfVariant(v);
-                if (WoodSpeciesInfo((WoodSpecies)sp).conifer) ConiferV2(m, 2000u + v * 7919u + fs, sp - (int)WoodSpecies::Pine, cls);
-                else BroadleafV2(m, 1000u + v * 7919u + fs, sp, cls);
+                const unsigned int s2 = 5000u + v * 7919u + fs;
+                switch ((WoodSpecies)sp) {
+                    case WoodSpecies::Oak: case WoodSpecies::Birch: case WoodSpecies::Maple: BroadleafV2(m, 1000u + v * 7919u + fs, sp, cls); break;
+                    case WoodSpecies::Pine: case WoodSpecies::Spruce: ConiferV2(m, 2000u + v * 7919u + fs, sp - (int)WoodSpecies::Pine, cls); break;
+                    case WoodSpecies::Acacia: AcaciaV2(m, s2, cls); break;
+                    case WoodSpecies::Kapok: KapokV2(m, s2, cls); break;
+                    case WoodSpecies::Mangrove: MangroveV2(m, s2, cls); break;
+                    case WoodSpecies::Krummholz: KrummholzV2(m, s2, cls); break;
+                    case WoodSpecies::Snag: SnagV2(m, s2, cls); break;
+                    case WoodSpecies::Baobab: BaobabV2(m, s2, cls); break;
+                    case WoodSpecies::TreeFern: TreeFernV2(m, s2, cls); break;
+                    case WoodSpecies::Palm: PalmV2(m, s2, cls); break;
+                    case WoodSpecies::Willow: WillowV2(m, s2, cls); break;
+                    case WoodSpecies::Count: break;
+                }
             } else {
                 BushV2(m, 3000u + v * 7919u + fs, v - kFirstBush);
             }
@@ -578,7 +895,7 @@ uint64_t PlantId(const TreeTileKey& k, int cell) {
 }
 TreeTileKey TileOfPlant(uint64_t id) { return { (int)(id >> 56), (int)((id >> 32) & 0xFFFFFF), (int)((id >> 8) & 0xFFFFFF) }; }
 
-void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out) {
+void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemovals& removed, const std::vector<Vector4>& clearings, double now, uint32_t seed, const TreeTileKey& key, TreeTile& out, TreeScatterStats* st = nullptr) {
     const float R = f.radius;
     const int N = TilesPerFace(R);
     const float da = 0.5f * PI / N, dc = da / kCells;
@@ -601,6 +918,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             const float pBushBase = 0.05f + 0.3f * Smooth(0.35f, 0.6f, forest);
             const float pStoneBase = 0.025f;                              // loose stones: the first stone tools' stone
             if (roll >= pTreeMax + pBushBase * fmax.bushes + pStoneBase * fmax.stones) continue;
+            if (st) ++st->candidates;
             const float lat = fabsf(dir.y);
             if (lat > 0.86f) continue;                                  // polar: nothing grows
             // Floating islands (Plan 5 C) have woods on their tops: the column's ground is the island's top.
@@ -625,10 +943,13 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             }
             const BiomeFlora flora = FloraOf(biome, vdef);
             const float pTree = std::max(TreeChanceFromForest(forest, flora.trees), flora.cover), pBush = pBushBase * flora.bushes, pStone = pStoneBase * flora.stones;
+            if (st) { st->pTree += pTree; st->pBush += pBush; st->pStone += pStone; st->variant = plantVariant; }
             const bool tree = roll < pTree;
             const bool stone = !tree && roll >= pTree + pBush && roll < pTree + pBush + pStone;
-            if (!tree && !stone && roll >= pTree + pBush) continue;
-            if (!onIsland && (e < 4.0f || e > (tree ? 900.0f : stone ? 1300.0f : 1100.0f))) continue;   // beach / sea, above the tree line
+            if (!tree && !stone && roll >= pTree + pBush) { if (st) ++st->odds; continue; }
+            // (#1995) A variant growing krummholz takes its trees past the tree line, to 1100 m: the stunted band above it.
+            const bool krummholzLine = vdef && vdef->species[(int)WoodSpecies::Krummholz] > 0.0f;
+            if (!onIsland && (e < 4.0f || e > (tree ? (krummholzLine ? 1100.0f : 900.0f) : stone ? 1300.0f : 1100.0f))) { if (st) ++st->elevation; continue; }   // beach / sea, above the tree line
             Vector3 normal = dir;
             Vector3 ground = Vector3Scale(dir, R + e);
             if (onIsland) {
@@ -636,7 +957,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 bool found = false;
                 for (float hh = 6.0f; hh > -10.0f && !found; hh -= 0.25f)
                     if (solid(Vector3Scale(dir, R + e + hh))) { ground = Vector3Scale(dir, R + e + hh + 0.1f); found = true; }
-                if (!found) continue;
+                if (!found) { if (st) ++st->noGround; continue; }
             } else {
                 // Slope from the height a few metres away.
                 const Vector3 t1 = Vector3Normalize(Vector3CrossProduct(dir, fabsf(dir.y) < 0.9f ? Vector3{ 0, 1, 0 } : Vector3{ 1, 0, 0 }));
@@ -646,13 +967,13 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const float e2 = f.elevation(Vector3Normalize(Vector3Add(dir, Vector3Scale(t2, ang))));
                 normal = Vector3Normalize(Vector3Subtract(dir, Vector3Add(Vector3Scale(t1, (e1 - e) / step), Vector3Scale(t2, (e2 - e) / step))));
                 const float slope = 1.0f - Vector3DotProduct(normal, dir);
-                if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) continue;
+                if (slope > (tree ? 0.12f : stone ? 0.3f : 0.2f)) { if (st) ++st->slope; continue; }
                 // The drawn surface is the density field (3D band, crags, tors), up to metres off the height map
                 // (#34: bushes and stones floated or sank). Walk down from 3 m above it to the first solid sample,
                 // at the footprint the finest chunks mesh with, and interpolate the crossing.
                 auto dens = [&](float hh) { return f.density(Vector3Scale(dir, R + e + hh), &edits, 1.0f); };
                 float prevH = 3.0f, prevD = dens(prevH);
-                if (prevD >= ISO_LEVEL) continue;                    // buried under an overhang or a tor
+                if (prevD >= ISO_LEVEL) { if (st) ++st->buried; continue; }                    // buried under an overhang or a tor
                 bool found = false;
                 for (float hh = 2.75f; hh >= -4.0f; hh -= 0.25f) {
                     const float d = dens(hh);
@@ -664,21 +985,23 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                     }
                     prevH = hh; prevD = d;
                 }
-                if (!found) continue;
+                if (!found) { if (st) ++st->noGround; continue; }
             }
             // Never under inland water (#189): a pond the fluid simulation took over, a lake or river bed - asked of the
             // generated water itself, not through the bed's material (the strata, #587, put trees in a taken-over pond).
             if (f.inlandWaterNear(dir, 0.0f)) {
                 const float w = f.waterElevation(dir, 0.0f);
-                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) continue;
+                if (w != PlanetField::kNoWater && Vector3Length(ground) - R < w + 0.2f) { if (st) ++st->water; continue; }
             }
             const VoxelMaterial m = f.materialLod(Vector3Subtract(ground, Vector3Scale(dir, 0.3f)), 1.0f, 0.0f, normal);
             // Trees and bushes root in turf or soil; loose stones lie on any natural ground but snow and ice (#893: the swamp's clay
             // and mud and the desert's sand had none, though their biomes call for them; the mountaintops stay bare by height).
-            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : (m != VoxelMaterial::Grass && m != VoxelMaterial::Regolith)) continue;
+            // (Krummholz, #1995: a variant growing it roots its trees in the alpine gravel too.)
+            const bool rooted = m == VoxelMaterial::Grass || m == VoxelMaterial::Regolith || (tree && krummholzLine && m == VoxelMaterial::Gravel);
+            if (stone ? (m == VoxelMaterial::Snow || m == VoxelMaterial::Ice || m == VoxelMaterial::Ore) : !rooted) { if (st) ++st->material; continue; }
             // Solid ground underfoot and open air above (caves, ravines, edits).
-            if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) continue;
-            if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) continue;
+            if (!solid(Vector3Subtract(ground, Vector3Scale(dir, 1.0f))) || !solid(Vector3Subtract(ground, Vector3Scale(dir, 4.0f)))) { if (st) ++st->underfoot; continue; }
+            if (solid(Vector3Add(ground, Vector3Scale(dir, 1.5f))) || (tree && solid(Vector3Add(ground, Vector3Scale(dir, 6.0f))))) { if (st) ++st->cramped; continue; }
             int v;
             float scale;
             if (tree) {
@@ -692,7 +1015,8 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const float area = ValueNoise(Vector3Scale(Vector3Scale(dir, R), 1.0f / 400.0f), seed ^ 0x7a3c19u);
                 const float pick = Unit(s);
                 WoodSpecies sp;
-                if (vdef && vdef->hasSpecies() && (flora.cold || !high)) {
+                // (Tropical types keep their own mix up high: the cloud forest's tree ferns, the savanna plateaus' acacias.)
+                if (vdef && vdef->hasSpecies() && (flora.cold || !high || biome == Biome::Jungle || biome == Biome::Savanna)) {
                     // The variant's own mix (#1978): its weights, with the area's dominant species (one of the listed,
                     // by the same ~400 m patch) counted double, so stands still form inside the mix.
                     int listed[BiomeVariantDef::kSpecies], n = 0;
@@ -718,7 +1042,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 const int cls = pc < pXL ? 3 : pc < pXL + pL ? 2 : pc < pXL + pL + pS ? 0 : 1;
                 v = (int)sp * kTreeClasses + cls;
                 scale = (0.8f + 0.35f * sz + 0.15f * forest) * flora.size; // the class carries the size; a little spread within it
-                if (sp == WoodSpecies::Birch) scale *= 0.85f; // slender
+                scale *= WoodSpeciesInfo(sp).size; // (trees.txt: birch slender, kapok emergent)
             } else if (stone) {
                 v = kStoneVariant;
                 scale = 0.8f + 0.6f * sz;
@@ -922,14 +1246,22 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
     // the 40 m the camera may move before the next rebuild): the shadow passes drew the whole 2 km forest twice,
     // ~1.3 ms a frame flying, for boxes a few hundred metres across.
     const float setReach[kTreeSets] = { 1e30f, kTreeShadowFarReach, kTreeShadowNearReach };
-    std::vector<float> buf[kTreeSets][2];
-    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
-        const int v = VariantOfTreeMesh(mesh);
-        const float reach = v < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
-        for (auto& s : buf) { s[0].clear(); s[1].clear(); }
-        for (auto& kv : tiles) {
-            const TreeTile& t = kv.second;
-            if (!t.ready || t.inst[mesh].empty() || Vector3Distance(t.centre, camLocal) > reach + kTreeTileSize) continue;
+    // One pass over the tiles sorts every instance into its mesh's buffers (#1995: a pass per mesh walked the tile map
+    // 180 times once phase 2 brought 14 species, ~14 ms a rebuild in a dense swamp). Main thread only, so the scratch
+    // buffers are shared by every TreeSystem and keep their capacity between rebuilds.
+    static std::vector<float> bufs[kTreeMeshes][kTreeSets][2];
+    for (auto& m : bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
+    const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
+    for (auto& kv : tiles) {
+        const TreeTile& t = kv.second;
+        if (!t.ready) continue;
+        const float tileDist = Vector3Distance(t.centre, camLocal);
+        if (tileDist > std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize) continue;
+        for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+            if (t.inst[mesh].empty()) continue;
+            const float reach = VariantOfTreeMesh(mesh) < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
+            if (tileDist > reach + kTreeTileSize) continue;
+            auto& buf = bufs[mesh];
             for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8) {
                 const float x = (float)(t.inst[mesh][k] - anchor.x), y = (float)(t.inst[mesh][k + 1] - anchor.y), z = (float)(t.inst[mesh][k + 2] - anchor.z);
                 const float d2 = x * x + y * y + z * z;
@@ -939,12 +1271,14 @@ void TreeSystem::rebuildBatches(Vector3 camLocal) {
                 // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
                 // without a sun direction yet, by distance from the camera.
                 const float along = x * shadowSunLocal.x + y * shadowSunLocal.y + z * shadowSunLocal.z;
-                const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
                 const float perp2 = sunKnown ? std::max(0.0f, d2 - along * along) : d2;
                 for (int s = 0; s < kTreeSets; ++s)
                     if (s == 0 || perp2 <= setReach[s] * setReach[s]) buf[s][lod].insert(buf[s][lod].end(), inst, inst + 8);
             }
         }
+    }
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
+        const auto& buf = bufs[mesh];
         for (int s = 0; s < kTreeSets; ++s)
             for (int lod = 0; lod < 2; ++lod) {
                 const int slot = mesh + lod * kTreeMeshes;
@@ -1071,7 +1405,7 @@ void TreeSystem::draw(const Planetoid& body, const RenderContext& ctx, int onlyL
                 offLoc = glGetUniformLocation(prog, "foliageTexOff");
             }
             static const float texOff = getenv("RAYLIBGAME_FOLIAGE_TEX") && !EnvFlag("RAYLIBGAME_FOLIAGE_TEX") ? 1.0f : 0.0f;
-            const float kind = v < kFirstBush ? (float)(int)SpeciesOfVariant(v) : v == kStoneVariant ? 6.0f : 5.0f;
+            const float kind = v < kFirstBush ? (float)(int)WoodSpeciesInfo(SpeciesOfVariant(v)).texture : v == kStoneVariant ? 6.0f : 5.0f; // BarkTexture 0-4
             if (kindLoc >= 0) glUniform1f(kindLoc, kind);
             if (offLoc >= 0) glUniform1f(offLoc, texOff);
         }
@@ -1109,7 +1443,7 @@ static void TilesAround(Vector3 dir, float radius, TreeTileKey out[9], int& n) {
 
 // (#893 tests) The scatter around `dir` as generated (no edits, removals or clearings), counted within `range` m of the
 // ground point there: trees, bushes and loose stones. Builds the tiles itself (the tree system need not have them).
-void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones) {
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones, TreeScatterStats* stats) {
     trees = bushes = stones = 0;
     const Vector3 d = Vector3Normalize(dir);
     const Vector3 at = Vector3Scale(d, f.radius + f.elevation(d));
@@ -1120,7 +1454,7 @@ void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float 
     const std::vector<Vector4> noClearings;
     for (int k = 0; k < n; ++k) {
         TreeTile t;
-        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t);
+        BuildTile(f, none, noRemovals, noClearings, 0.0, seed, keys[k], t, stats);
         for (const Plant& p : t.plants) {
             if (Vector3Distance(p.base, at) > range) continue;
             if (p.stone()) ++stones; else if (p.tree()) ++trees; else ++bushes;
@@ -1355,5 +1689,30 @@ TEST(Trees, FormsAndSizeClasses) {
             prev = h;
         }
     }
+}
+
+// (#1995 phase 2) trees.txt parses and names every species; bad lines are errors; each species' log is a real item name.
+TEST(Trees, SpeciesDataFile) {
+    std::ifstream f("resources/data/trees.txt", std::ios::binary);
+    ASSERT_TRUE(f) << "resources/data/trees.txt (tests run from the repo root)";
+    std::stringstream ss;
+    ss << f.rdbuf();
+    WoodSpeciesDef d[kWoodSpecies];
+    WoodSpeciesDefaults(d);
+    std::string err;
+    ASSERT_TRUE(WoodSpecies_Parse(ss.str(), d, &err)) << err;
+    for (int i = 0; i < kWoodSpecies; ++i) {
+        EXPECT_EQ(d[i].name, kWoodSpeciesNames[i]);
+        EXPECT_NE(ss.str().find("species " + d[i].name), std::string::npos) << d[i].name << " has no block";
+        EXPECT_EQ(d[i].log.substr(d[i].log.size() - 4), "_log") << d[i].name;
+    }
+    EXPECT_EQ(d[(int)WoodSpecies::Birch].texture, BarkTexture::Birch);
+    EXPECT_EQ(d[(int)WoodSpecies::Palm].texture, BarkTexture::Rings);
+    EXPECT_FALSE(WoodSpecies_Parse("species fungus\n", d, &err));
+    EXPECT_FALSE(WoodSpecies_Parse("log oak_log\n", d, &err));                  // before any species
+    EXPECT_FALSE(WoodSpecies_Parse("species oak\n  bark 1 1\n", d, &err));      // two numbers
+    EXPECT_FALSE(WoodSpecies_Parse("species oak\n  texture bumpy\n", d, &err));
+    EXPECT_FALSE(WoodSpecies_Parse("species oak\n  size 1 2\n", d, &err));      // extra
+    EXPECT_NE(err.find("trees.txt:2"), std::string::npos) << err;
 }
 #endif

@@ -129,13 +129,15 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             ls >> v >> extra;
             if (!extra.empty() || v == "-" || !Bound(v, 0.0f, d.cover) || d.cover < 0.0f || d.cover > 1.0f) return fail(lineNo, "cover takes one number 0..1");
         } else if (key == "species") {
-            static const char* kNames[BiomeVariantDef::kSpecies] = { "oak", "birch", "maple", "pine", "spruce" };
             std::string sp, w;
             int n = 0;
             while (ls >> sp) {
-                int k = -1;
-                for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) if (sp == kNames[i]) k = i;
-                if (k < 0) return fail(lineNo, "unknown species '" + sp + "' (oak birch maple pine spruce)");
+                const int k = WoodSpeciesByName(sp.c_str());
+                if (k < 0) {
+                    std::string known;
+                    for (const char* name : kWoodSpeciesNames) known += std::string(known.empty() ? "" : " ") + name;
+                    return fail(lineNo, "unknown species '" + sp + "' (" + known + ")");
+                }
                 if (!(ls >> w) || !Bound(w, 0.0f, d.species[k]) || w == "-" || d.species[k] < 0.0f) return fail(lineNo, "species takes '<name> <weight>' pairs");
                 ++n;
             }
@@ -280,8 +282,8 @@ TEST(BiomeVariants, ParsesFlora) {
     EXPECT_FLOAT_EQ(d.species[1], 3.0f); EXPECT_FLOAT_EQ(d.species[3], 1.0f); EXPECT_FLOAT_EQ(d.species[0], 0.0f);
     const BiomeVariantDef& base = t.defs[t.base(Biome::Forest)];
     EXPECT_FLOAT_EQ(base.trees, 1.0f); EXPECT_LT(base.cover, 0.0f); EXPECT_FALSE(base.hasSpecies());
-    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species palm 2\n", t, &err));
-    EXPECT_NE(err.find("palm"), std::string::npos) << err;
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species fungus 2\n", t, &err));
+    EXPECT_NE(err.find("fungus"), std::string::npos) << err;
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species oak\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));

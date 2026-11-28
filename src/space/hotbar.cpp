@@ -14,6 +14,7 @@
 #include "terraintool.h"
 #include "tools.h"
 #include "animals.h"
+#include "flares.h"
 #include "telescope.h"
 #include "worldtypes.h"
 #include <raymath.h>
@@ -180,7 +181,7 @@ int Hotbar_KeySlot() {
 
 void Hotbar_Press(int slot, bool piloting) { if (slot >= 0 && slot < kHotbarSlots) Select(slot, piloting); }
 
-void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
+void Hotbar_Update(Scene& world, const PlayerInput& in, bool piloting) {
     static bool initialised = false;
     if (!initialised) { Hotbar_Reset(); initialised = true; }
     // G (build mode on/off) is the build tool's; keep the selection in step with it.
@@ -233,6 +234,7 @@ void Hotbar_Update(Scene&, const PlayerInput& in, bool piloting) {
     const bool plainItem = !buildTool.active && inventory.count(selId) > 0 && plainHeldId(selId);
     terrainTool.holdingItem = !Hotbar_HeldFood().empty() || torchHeld || plainItem || terrainTool.heldTool == "fishing_rod"; // a torch in hand: RMB places it, not terrain (#218); a rod casts (#176)
     if (torchHeld && !piloting && in.hit(Act::Secondary)) Hotbar_PlaceTorch();
+    if (plainItem && selId == "flare" && !piloting && in.hit(Act::Secondary)) Flares_ThrowFromPlayer(world); // (#2062) RMB throws it
     // Eating (#202): hold right-click with food in hand for kEatSeconds (a bar under the crosshair); letting go cancels.
     UpdateEating(GameFrameTime(), !piloting && in.down(Act::Secondary));
 }

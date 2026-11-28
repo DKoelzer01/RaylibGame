@@ -59,8 +59,16 @@ inline int SiteBricks() {
 }
 constexpr float kSiteJoin = 180.0f;    // a disturbance within this of a site's origin joins it
 constexpr int kEvaporate = 2;          // resting specks this thin (~8 mm) dry up (user 2026-11-16: puddles should last a while)
-constexpr unsigned kEvapEvery = 1200;   // specks soak away on one step in this many (~10 s on the GPU): only the ones that stay put (#454)
-constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting films lose a unit (#454: a 9 mm film is gone in ~20 s)
+// Drying (#454, #1944 user 2026-11-27: "slow water film drying down to minutes"): a resting film (under the spread limit, ~1 cm)
+// thins a unit (~1 mm) every 20 s, so a fresh pour spread flat keeps ~2/3 at 60 s and is gone in ~3 min; specks (1-2 units,
+// too thin to draw) still go within 2 s in sleeping bricks, so slopes clear. (Was a unit every 2 s: half a pour gone in 10 s.)
+constexpr unsigned kEvapEvery = 2400;   // awake bricks: films thin on one substep in this many (~20 s): only cells that stay put (#454)
+constexpr int kFilmDryTicks = 80; // ticks (25 ms): every 2 s sleeping bricks' resting specks dry (#454)
+constexpr int kFilmThinEvery = 10; // of those passes: every 20 s their films (3 units to the spread limit) lose a unit (#1944)
+// Shallow puddles dry too (#1944: "dry gradually"; 5 cm and the rate are the user's ruling, 2026-11-26): standing water
+// one cell deep on the ground, no water over it, thinner than this, loses a unit every 20 s with the films (a 2 cm
+// puddle: ~7 min). Deeper pools and ponds never dry.
+constexpr float kPuddleDryDepth = 0.05f; // m
 std::atomic<bool> gFilmDryDue{ false }; // (#454) set by Update, taken by the next publish
 constexpr int kSubsteps = 3;           // CPU simulation steps per 50 ms (water moves a cell a step)
 constexpr double kTickSeconds = 0.025; // a tick (a job + meshes) every 25 ms: water moved in 1-3 cell jumps every 50-100 ms, hard to follow (#366)
@@ -292,7 +300,25 @@ struct BodyRef {
     std::shared_ptr<const TerrainDeltas> edits;
     const PlanetField* pf = nullptr;
     std::shared_ptr<const PartSolid> parts; // build parts (#391), or null
+    float gScale = 1.0f; // the kernels' g over Terra's (#1942): FluidGravityScale
 };
+// Fluids flow by their body's gravity (#1942, user 2026-11-26): the kernels' g (9.81, tuned on Terra) times the body's
+// surface gravity over the home planet's (the planet that orbits nothing; else the first planet). Exactly 1 on Terra and
+// on a world with no planet (the sandbox), so their water is bit-identical to before. Main thread (Planetoid::All).
+static float FluidGravityScale(const Planetoid& b) {
+    // Tests: RAYLIBGAME_FLUID_GSCALE=<s> forces the scale on every body (a sandbox scenario at Luna's water: the GPU and the
+    // CPU compared at k != 1 in lockstep, fluid/mass-ledger-luna).
+    static const float forced = getenv("RAYLIBGAME_FLUID_GSCALE") ? (float)atof(getenv("RAYLIBGAME_FLUID_GSCALE")) : 0.0f;
+    if (forced > 0.0f) return forced;
+    const Planetoid* home = nullptr;
+    for (const Planetoid* q : Planetoid::All()) {
+        if (!q || q->kind != BodyKind::Planet || !q->field) continue;
+        if (!q->orbitParent) { home = q; break; }
+        if (!home) home = q;
+    }
+    if (!home || home == &b || home->surfaceGravity <= 0.0f || b.surfaceGravity == home->surfaceGravity) return 1.0f;
+    return std::max(0.01f, b.surfaceGravity / home->surfaceGravity); // > 0: the GPU's inS reads 0 as "not processed"
+}
 std::unordered_map<uint64_t, std::shared_ptr<const PartSolid>> partSnaps; // per body (main thread): its plots' solid cells (#391)
 
 struct Command { int kind; uint64_t body; Vector3 c; float r, m3; int fluid = 0; float head = 0.0f; uint64_t seq = 0; }; // 0 edit, 1 take, 2 pour, 3 add a source (r = rate m^3/s); fluid = the kind; seq: a take's number
@@ -324,6 +350,14 @@ void FlushEnsures() {
     ensureQueue.clear();
 }
 std::unordered_map<uint64_t, BodyRef> refs;     // snapshot handed to the job
+// The kernels' gravity factor for a site (#1942): k = sqrt(scale), from the snapshot (1 for a body it lacks). The kernels use
+// G k k for the momentum and k for the levelling share (its rate goes as sqrt(g)); the host takes the root so the GPU and the
+// CPU multiply the same floats (GLSL's sqrt need not round as std::sqrt does). sqrt(1) is 1: Terra unchanged.
+static float SiteGRoot(const Site* s) {
+    if (!s) return 1.0f;
+    const auto it = refs.find(s->body);
+    return it != refs.end() ? std::sqrt(it->second.gScale) : 1.0f;
+}
 long long stepCount = 0;
 Fluid::Stats stats;
 long long settledTotal = 0;     // bricks put to sleep resting (#366), since the start
@@ -1126,24 +1160,30 @@ void RunJob() {
             if (kv.second->ready) outs.push_back({ s.get(), kv.first, kv.second.get() });
         }
     }
-    const bool filmDry = gFilmDryDue.exchange(false); // (#454) this publish dries sleeping bricks' films (Update sets it every 2 s)
+    const bool filmDry = gFilmDryDue.exchange(false); // (#454) this publish dries sleeping bricks' specks (Update sets it every 2 s)
+    static int dryPasses = 0; // (#1944) the job's; GPU and CPU count the same passes
+    const bool filmThin = filmDry && ++dryPasses % kFilmThinEvery == 0; // and every 20 s thins their films a unit
     auto publishBrick = [&](PubOut& out) {
             Brick& b = *out.b;
             // (#454) Films dry in sleeping bricks too: a film under the spread limit never moves, and the kernels' evaporation
-            // (every ~10 s) only reaches awake bricks - one asleep after 2-3 s kept its films on a slope for good
-            // ("water clings to slopes as a thin film after all water has flowed away"). The same rule here, every 2 s: resting
-            // films on the ground lose a unit, specks of 2 or less go. Puddles (the spread limit or more) stay.
+            // only reaches awake bricks - one asleep after 2-3 s kept its films on a slope for good
+            // ("water clings to slopes as a thin film after all water has flowed away"). Here: every 2 s resting specks of 2 or
+            // less go, every 20 s films and shallow puddles on the ground lose a unit (#1944). Deeper pools stay.
             static const bool noEvap = EnvFlag("RAYLIBGAME_FLUID_NOEVAP"); // (tests: water accounting)
             if (!b.active && !noEvap && filmDry) {
                 bool dried = false;
+                const int shallowUnits = (int)(kPuddleDryDepth * 255.0f / WaterField::CellSize()); // (#1944)
                 for (int z = 0; z < B; ++z)
                     for (int y = 0; y < B; ++y)
                         for (int x = 0; x < B; ++x) {
                             const int i = Idx(x, y, z), f = b.fill[i];
-                            if (f == 0 || (b.flags[i] & (kSolid | kSource)) || f >= kindMinSpread[CellKind(b.flags[i])]) continue;
+                            if (f == 0 || (b.flags[i] & (kSolid | kSource))) continue;
+                            const bool film = f < kindMinSpread[CellKind(b.flags[i])];
+                            if (!film && (!filmThin || f >= shallowUnits)) continue; // a pool: stays
                             const bool ground = b.shut[i] > 0 || (z > 0 ? (b.flags[Idx(x, y, z - 1)] & kSolid) != 0
                                                                         : b.nbr[4] && (b.nbr[4]->flags[Idx(x, y, B - 1)] & kSolid) != 0);
-                            if (!ground) continue;
+                            if (!ground || (f > 2 && !filmThin)) continue;
+                            if (!film && (z + 1 < B ? b.fill[Idx(x, y, z + 1)] != 0 : b.nbr[5] && b.nbr[5]->fill[Idx(x, y, 0)] != 0)) continue; // water over it: deeper than a puddle
                             b.fill[i] = (uint8_t)(f <= 2 ? 0 : f - 1);
                             ledgerUnits[kLedgerDried] += f <= 2 ? f : 1;
                             dried = true;
@@ -1877,19 +1917,21 @@ void GpuTick(int n) {
             }
     }
     // 4. The bricks to run: the awake ones and their neighbours (flux only between bricks both in the set).
+    // inS: 0 = not run; a run slot holds its gravity root's float bits (SiteGRoot, #1942: never 0, the shader reads both).
     std::vector<unsigned> inS(G.capacity, 0u);
+    auto SlotGBits = [](int slot) { float g = SiteGRoot(G.ownerSite[slot]); unsigned u; memcpy(&u, &g, 4); return u; };
     std::vector<int> list;
     for (int slot = 0; slot < G.capacity; ++slot) {
         Brick* br = G.owner[slot];
         if (!br || !br->active) continue;
-        if (!inS[slot]) { inS[slot] = 1; list.push_back(slot); }
+        if (!inS[slot]) { inS[slot] = SlotGBits(slot); list.push_back(slot); }
         for (int fc = 0; fc < 6; ++fc) {
             Brick* o = br->nbr[fc];
             if (!o || o->slot < 0 || inS[o->slot]) continue;
             // Not run (#669): a brick of solid rock (water never enters it) or a dry brick above (water only rises into it
             // through sources, pours or levelling, which wake it): under and over a big pool they were most of the dispatch.
             if (!o->active && !RunsBeside(*o, fc)) continue;
-            inS[o->slot] = 1; list.push_back(o->slot);
+            inS[o->slot] = SlotGBits(o->slot); list.push_back(o->slot);
         }
     }
     if (list.empty()) return;
@@ -2078,6 +2120,7 @@ void CpuTick(int n) {
         }
         for (int f = 0; f < 6; ++f) g.nbr[(size_t)i * 6 + f] = b->nbr[f] && b->nbr[f]->cpuSlot >= 0 ? b->nbr[f]->cpuSlot : -1;
         g.processed[i] = i < processedCount ? 1 : 0;
+        g.gRoot[i] = SiteGRoot(slotSite[i]); // (#1942)
         // The skip's history (#747), as the masks of substeps "0" (the last) and "2" (the one before): BeginTick adds the
         // groups wet now, the first substep (gcur 0 -> 1) reads 0 and 2.
         uint32_t* m = &g.gmask[(size_t)i * 6];
@@ -2559,7 +2602,7 @@ void Fluid::Update(Scene& world, float dt) {
         for (uint64_t id : ids)
             if (Planetoid* p = Planetoid::find(id)) {
                 auto ps = partSnaps.find(id);
-                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr };
+                refs[id] = { p->field, p->edits, dynamic_cast<const PlanetField*>(p->field.get()), ps != partSnaps.end() ? ps->second : nullptr, FluidGravityScale(*p) };
             }
     }
     // GPU substeps: twice the CPU's - the order-independent GPU step moves water one cell a substep, where the
@@ -2624,8 +2667,10 @@ namespace {
     }
 }
 
+float Fluid::GravityScale(const Planetoid& body) { return FluidGravityScale(body); }
+
 float Fluid::PressureAt(const Planetoid& body, Vector3 local) {
-    constexpr float kRhoG = 1000.0f * 9.81f; // Pa per metre of water
+    const float kRhoG = 1000.0f * 9.81f * FluidGravityScale(body); // Pa per metre of water (the body's g, #1942)
     const WaterField::SnapshotPtr snapNow = WaterField::Current();
     for (const WaterField::Site& s : snapNow->sites) {
         if (s.body != body.id) continue;

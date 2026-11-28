@@ -3,6 +3,7 @@
 // (PlanetField::variantAt); resources/data/biomes.txt lists them. A variant id indexes BiomeVariants().defs; the first
 // variant of each type is its base (the biome as it was before variants) and the fallback where a gate fails.
 #include "voxel.h"
+#include "woodspecies.h"
 #include <string>
 #include <vector>
 
@@ -17,8 +18,8 @@ struct BiomeVariantDef {
     float moistMin = -1e9f, moistMax = 1e9f; // 0..1
     // Flora (#1978), applied over the type's own (trees.cpp FloraOf): density multipliers for trees, bushes and loose
     // stones, a tree size multiplier, an optional closed-canopy floor (least tree odds; < 0 = the type's), and optional
-    // species weights in WoodSpecies order (oak, birch, maple, pine, spruce; all 0 = the type's broadleaf/conifer mix).
-    static constexpr int kSpecies = 5;
+    // species weights in WoodSpecies order (woodspecies.h; all 0 = the type's broadleaf/conifer mix).
+    static constexpr int kSpecies = kWoodSpecies;
     float trees = 1.0f, bushes = 1.0f, stones = 1.0f, size = 1.0f, cover = -1.0f;
     float species[kSpecies] = {};
     // (#2012) Rubber: the percent of its felled trees that give one rubber (deterministic per tree:

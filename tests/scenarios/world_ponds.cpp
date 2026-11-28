@@ -42,8 +42,10 @@ SCENARIO("world/ponds") {
         c.gt("bake ponds", n.bake, 0);
         c.gt("ponds kept", n.kept, 0);
         // Hillslope creep filled most hollows before the creep fix (bake 30): seed 42 had 182 wet, 1025335508 135; after it
-        // 370 and 342. Ponds near the spawn are the dedicated pond feature's job (#1965 item 3), reported above meanwhile.
-        c.gt("bake hollows showing water", n.wet, 300);
+        // 370 and 342. Option B (bake 33, #1988) takes its ponds from the 50 m routing's small closed basins (#2039): 607
+        // and 414 (820 and 575 bake ponds); the check is ~70% of the lower. Ponds near the spawn are the dedicated pond
+        // feature's job (#1965 item 3), reported above meanwhile.
+        c.gt("bake hollows showing water", n.wet, 290);
         S.wet = n.wet > 0;
         if (S.wet) {
             S.up = n.nearestWetDir;
