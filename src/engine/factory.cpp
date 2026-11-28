@@ -2458,6 +2458,10 @@ void FillView(const PlotSim& ps, int part, MachineView& v) {
     v.fire = m.fire;
     v.mode = m.mode; // (#1271 L6c)
     v.pick = m.pick >= 0 ? tables.name(m.pick) : std::string(); // (#1271 L6c)
+    if (m.drill && m.deposit) { // (#2071) its deposit's pool (not yet seeded: the full pool) and its own unmined grant
+        const auto d = depositLeft.find({ ps.body, m.deposit });
+        v.depositLeft = std::max(0LL, d != depositLeft.end() ? d->second : m.depositPool) + m.depBudget;
+    }
     if (m.fuel.count > 0) v.fuelSlot = { tables.name(m.fuel.item), m.fuel.count };
     if (Def(m.type).waterPerTick > 0) { v.water = m.water; v.waterMax = kWaterTank; v.heat = m.heat; v.heatMax = kHeatMax; }
     auto list = [](const Stack* s, int n) { // totals per item in slot order (#567: a chest of coal is "coal x3200", not 50 entries)
@@ -4223,7 +4227,14 @@ TEST(Factory, DrillsShareAFiniteDepositPayItsGradeAndStopDepleted) {
     InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
     long long made = 0; int active = 0;
     auto iron = [&](int part) { const Machine& m = ps.machines[ps.byPart.at(part)]; return CountItems(m.out, kSlots, tables.item("iron_ore")); };
+    MachineView view;
+    FillView(ps, 1, view);
+    EXPECT_EQ(view.depositLeft, 20) << "the view: the full pool before any drill drew on it";
+    FillView(ps, 0, view);
+    EXPECT_EQ(view.depositLeft, -1) << "not a drill";
     for (int t = 0; t < 4000; ++t) { GrantDeposits(); TickPlot(ps, 1, made, active); }
+    FillView(ps, 1, view);
+    EXPECT_EQ(view.depositLeft, 0);
     EXPECT_EQ(iron(1) + iron(3), 30) << "20 units at grade 1.5";
     EXPECT_GT(iron(1), 0); EXPECT_GT(iron(3), 0);
     EXPECT_EQ(iron(2), 0) << "too close mines nothing";
@@ -4251,6 +4262,31 @@ TEST(Factory, DrillsShareAFiniteDepositPayItsGradeAndStopDepleted) {
     PlotSim& ps2 = *FindPlot(9, 3);
     for (int t = 0; t < 40; ++t) { GrantDeposits(); TickPlot(ps2, 1, made, active); }
     EXPECT_EQ(ps2.machines[ps2.byPart.at(3)].status, MachineStatus::NoDeposit);
+    plots.clear(); plotIndexDirty = true; depositLeft.clear();
+}
+
+// (#2071 PR 2) The LV borehole rig drills its deposit at 1 unit per 40 ticks (2 s) on LV power, and deposits.txt gives the
+// rigs their reach: 32 m, 64 m, and the miner's 128 m.
+TEST(Factory, TheLvBoreholeRigDrillsOneOreEveryTwoSeconds) {
+    LoadRecipes();
+    plots.clear(); plotIndexDirty = true; pendingStates.clear(); pendingBelts.clear(); depositLeft.clear(); refunds.clear();
+    ASSERT_TRUE(Deposits_Drill(Deposits_All(), "borehole_rig") && Deposits_Drill(Deposits_All(), "lv_borehole_rig"));
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "borehole_rig")->reach, 32.0f);
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "lv_borehole_rig")->reach, 64.0f);
+    EXPECT_FLOAT_EQ(Deposits_Drill(Deposits_All(), "miner")->reach, 128.0f);
+    LayoutMsg L = OracleLayout(4, { { PartType::Generator, 0, 0 }, { PartType::LvBoreholeRig, 3, 0 } }, {}, Row(0, 4, -1));
+    L.machineDrill.resize(2);
+    L.machineVariant[1] = "copper_ore";
+    LayoutMsg::Drill& d = L.machineDrill[1]; d.drill = true; d.deposit = Deposits_Id(1, 2, 3); d.pool = 1000; d.grade = 100;
+    ApplyLayout(L);
+    PlotSim& ps = *FindPlot(9, 4);
+    int b = 0;
+    InsertInto(ps.machines[ps.byPart.at(0)], tables.item("coal"), 64, true, b);
+    long long made = 0; int active = 0;
+    for (int t = 0; t < 1000; ++t) { GrantDeposits(); TickPlot(ps, 1, made, active); }
+    const int ore = CountItems(ps.machines[ps.byPart.at(1)].out, kSlots, tables.item("copper_ore"));
+    EXPECT_GE(ore, 23) << "1000 ticks at 40 a unit: 25 (less the generator's start)";
+    EXPECT_LE(ore, 25);
     plots.clear(); plotIndexDirty = true; depositLeft.clear();
 }
 
