@@ -6,6 +6,7 @@
 #include "scenario.h"
 #include "buildtool.h"
 #include "cacheopeners.h"
+#include "factory.h"
 #include "gameui.h"
 #include "inventory.h"
 #include "player.h"
@@ -190,7 +191,7 @@ SCENARIO("adventure/ruin-cache") {
         c.check("opened", Opened(c, kKeyed));
         c.eq("one key spent", inventory.count(kKey), 1);
         gScenarioInput = false;
-        CacheOpeners_SetPower({});
+        Factory::InstallCachePower(); // the game's own hooks again (the factory's lock charge)
         CacheOpeners_Reset(); // the game's own catalogue again, without the test key
         return true;
     });

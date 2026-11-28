@@ -10,18 +10,17 @@
 #include <string>
 #include <vector>
 #include "caches.h"
+#include "cacheopeners.h" // kCacheOpened, CacheOpened (the factory reads them too)
 #include "plots.h"
 
 class Planetoid;
 class Inventory;
 struct PartEdit;
 
-constexpr uint8_t kCacheOpened = 0x10;      // a RuinCache part's material: kind in the low bits, this bit once opened
 constexpr float kCacheHoldSeconds = 3.0f;   // GUESS (the user confirms): how long E is held to open one
 constexpr float kCacheReach = 4.0f;         // m: the host's reach check (as machine actions)
 
 inline CacheKind CacheKindOf(const Part& p) { const int k = p.material & 3; return k > 2 ? CacheKind::Small : (CacheKind)k; }
-inline bool CacheOpened(const Part& p) { return (p.material & kCacheOpened) != 0; }
 const char* CacheKindName(CacheKind k);     // "sealed cache", "sealed vault", "deep vault"
 
 // What the cache needs is its opener (cacheopeners.h, resources/data/cache_openers.txt): power charged into its lock from a
