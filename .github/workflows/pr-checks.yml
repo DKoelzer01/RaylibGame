@@ -282,8 +282,8 @@ jobs:
           key: nogl-bin-${{ github.run_id }}-${{ github.run_attempt }}
 
   # (#1960) The sandbox-world scenarios that pass without a GPU (tools/ci/nogl_scenarios.sh, ~61 of them, ~28 min one
-  # after another), in parallel shards on hosted runners: coverage on every PR with no self-hosted runner time. Not in
-  # "CI ok"'s needs yet, so it doesn't hold a merge or add to its wall time; see .github/CI.md.
+  # after another), in parallel shards on hosted runners: coverage on every PR with no self-hosted runner time. (#2123)
+  # "CI ok" needs the shards; a shard fails only on a failure not listed in tools/ci/known_failures_nogl.txt.
   nogl-scenarios:
     name: Null-GL scenarios ${{ matrix.shard }}/8
     needs: linux
@@ -319,7 +319,7 @@ jobs:
 
   ok:
     name: CI ok
-    needs: [static, windows, linux]
+    needs: [static, windows, linux, nogl-scenarios]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2

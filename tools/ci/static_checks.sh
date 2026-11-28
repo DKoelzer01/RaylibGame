@@ -295,7 +295,8 @@ fi
 # The note starts "[<owner>, until <YYYY-MM-DD>]" (or "until never": a baseline by design). A line past its date is a
 # warning (its owner fixes it or renews it, at most 7 days ahead); a missing or malformed tag, or a date further out, is an
 # error. KNOWN_TODAY=<YYYY-MM-DD> overrides today (tests).
-KF=tools/ci/known_failures.txt
+# The null-GL shards' list (#2123) follows the same rules.
+for KF in tools/ci/known_failures.txt tools/ci/known_failures_nogl.txt; do
 if [ -f "$KF" ]; then
     today="${KNOWN_TODAY:-$(date -u +%F)}"
     latest=$(date -u -d "$today +7 days" +%F 2>/dev/null || echo 9999-12-31)
@@ -316,9 +317,10 @@ if [ -f "$KF" ]; then
         END { printf "known_lines: %d dated, %d never, %d expired, %d bad\n", lines, never, expired, bad; exit bad > 0 }')
     kf_rc=$?
     printf '%s\n' "$kf_out" | grep -E '^::'
-    sum ""; sum "**Known failures (check 8):** $(printf '%s\n' "$kf_out" | grep '^known_lines:' | sed 's/^known_lines: //')"
+    sum ""; sum "**Known failures (check 8, $(basename "$KF")):** $(printf '%s\n' "$kf_out" | grep '^known_lines:' | sed 's/^known_lines: //')"
     [ "$kf_rc" -ne 0 ] && errors=$((errors + 1))
 fi
+done
 
 if [ -z "$BASE" ]; then sum ""; sum "_No base commit: only the NetMsg id check ran._"; fi
 if [ "$errors" -gt 0 ]; then
