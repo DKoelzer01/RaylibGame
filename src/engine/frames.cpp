@@ -6,6 +6,7 @@
 #include "ring.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 // Plan 11 (#667). See frames.h.
 
@@ -13,7 +14,13 @@
 // static initialisers ran - read there, every "-pose" scenario ran with the switch off.
 static int gFramesOn = -1; // -1: not read yet
 bool Frames_On() {
-    if (gFramesOn < 0) { const char* e = getenv("RAYLIBGAME_FRAMES"); gFramesOn = (e && e[0] == '1') ? 1 : 0; }
+    // (F8a, #667: on by default, the user's OK 2026-11-27) RAYLIBGAME_FRAMES=0 is the escape to the old world-frame path
+    // for one playtest cycle; F8b (#2113) deletes it. EnvFlag's "off" words count as off too.
+    if (gFramesOn < 0) {
+        const char* e = getenv("RAYLIBGAME_FRAMES");
+        const bool off = e && (!strcmp(e, "0") || !strcmp(e, "false") || !strcmp(e, "off"));
+        gFramesOn = off ? 0 : 1;
+    }
     return gFramesOn == 1;
 }
 void Frames_SetOn(bool on) { gFramesOn = on ? 1 : 0; }
