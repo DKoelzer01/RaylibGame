@@ -169,6 +169,20 @@ namespace Factory {
     RotationView RotationAt(uint64_t bodyId, uint32_t plotId, int part);
     // (#1269) Every rotation part of a near plot: (part, signed RPM about its plot axis). Empty if none or far.
     void RotationSpeeds(uint64_t bodyId, uint32_t plotId, std::vector<std::pair<int, float>>& out);
+    // (#2053) A near plot's belts as of the factory's last tick, for drawing: per line (in run id order) its run id, speed
+    // and items, front first. Positions are 1/64 cell from the run's first point (beltsim.h), strictly decreasing.
+    struct BeltLineView { int run = 0; int speed = 0; bool asleep = false; int64_t length = 0; std::vector<int64_t> pos; std::vector<int> items; };
+    struct BeltPlotView {
+        long long tick = -1;           // the ticks done when it was published (TickClock's units)
+        std::vector<BeltLineView> lines;
+        std::vector<std::pair<int, std::string>> names; // the item ids on these lines, by name
+    };
+    // False (out emptied) when the plot is far, has no belts, or the factory hasn't ticked it yet.
+    bool BeltItems(uint64_t bodyId, uint32_t plotId, BeltPlotView& out);
+    // (#2053) Main thread: the factory's sim-time clock in ticks: the ticks done, granted and not yet done, and the fraction
+    // of the next one the game's sim time has reached. TickClock() - view.tick is how far to carry a view on (deterministic
+    // under --fixed-dt; above 1 while the factory thread is a tick behind).
+    double TickClock();
     // Water piped into a machine's tank (boilers), in litres; what doesn't fit is lost.
     void AddWater(uint64_t bodyId, uint32_t plotId, int part, int litres);
     int TankRoom(uint64_t bodyId, uint32_t plotId, int part); // litres a boiler can still take (less water already sent); 0 if unknown
