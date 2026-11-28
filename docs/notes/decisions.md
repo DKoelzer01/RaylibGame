@@ -259,6 +259,14 @@ Rulings 2026-11-24 to 2026-11-26 (user)
   develop -> main, each promotion only when the user says so.
 - CI (user, 2026-11-26, #1871): run fewer tests per change; the full suite before staging -> develop and always before
   develop -> main.
+- Test process review (user, 2026-11-28, #2107; findings https://claude.ai/artifact/D3nWzeGHwm4UHQTpEr2AND):
+  - A newer CI run cancels any run it supersedes (same workflow and branch/PR, queued or running), and scheduled runs
+    that duplicate another run on the same commit go too; self-hosted and hosted (#2117). The merge bot still needs a
+    passing run on the head SHA.
+  - "CI ok" gates on the null-GL scenario shards once #2110 and #2116 are in (#2123).
+  - Slow scenarios and the -cpu/-pose/-off twins run nightly only, plus when a PR's paths map to them (#2121).
+  - deweyserver: fixed cores per CI runner, everything else (sandbox, local model) niced (#2124).
+  - Each known-failure line has an owner and a 7-day expiry and drops off after 5 straight passes (#2122).
 - Sessions (user, 2026-11-26): the coordinator may stop and restart topic sessions itself near 250K tokens
   (`tools/coord/cycle_session.sh`, #1897; before it, the user cleared them by hand). A Tools and CI session owns CI and tooling
   (#1871, #1874). Local model plan: the coordinator drives the subject sessions; they design and decide, and implement
@@ -290,6 +298,22 @@ Rulings recorded 2026-11-27 (user, via the coordinator; dated where the ruling n
     - Blocky low-poly with more structure.
     - Shapes per species, seeded variants and size classes.
     - Bark and bush textures. Blender is allowed.
+- Underground (#1465, 2026-11-27 evening):
+  - Depth bands: shallow 25-250 m, middle 250-500 m, deep 500 m to the mantle (was 150/500). The depth table (#1952)
+    and anything keyed to it moves to 250 m (#1465 comment 7232413794).
+  - Heat gear is confirmed, but heat starts at 250 m: the cooling vest (T3) covers 250-500 m, the thermal regulator (T5)
+    500 m on. Timers confirmed: 3 min one tier short, 30 s two short, HUD warning at half a bar.
+  - The frozen-region limit (`frozenMax`) and crystal-pocket start (`crystalMin`) stay at 150 m: region thresholds,
+    independent of the band edges (#2070 comment 7232951132).
+  - Ore drill (#2071): the pools, yields, five drill tiers, 8 m head spacing and the hard stop on depletion are
+    confirmed. Names: the T3 machine is the "borehole rig" (LV version "LV borehole rig"); the contraption part is the
+    "drill head", different in name, look and recipe.
+  - Ruin caches (#2072 comment 7232931559): a cache opens with power, a specific part or a tool (later also a key from an
+    enemy or the ruin); each cache names its opener kinds. The 3 s hold is confirmed. Power comes from a real grid,
+    not the suit battery: a small cache opens from a deployed battery bank, better and deeper ones need enough power
+    for a line run down into the caves (amounts: GUESS, from UI/UX and Progression). Density is confirmed: one small
+    cache in most ruin sets, a vault in larger ones, deep vaults only underground.
+  - The flare recipe and light (#2062) and the tunnel lurker's dry-cave regions (#1740) are confirmed.
 - Fluids:
   - Fluids scale by the body's g (#1942).
   - Drying (#1944): keep 1 mm per 20 s under 5 cm; pools never dry.
@@ -309,6 +333,7 @@ Rulings recorded 2026-11-27 (user, via the coordinator; dated where the ruling n
   - The coordinator may restart topic sessions (#1897).
   - The playtest build comes later (2026-11-27 morning).
   - Research budget floor $30: no new research jobs without the user.
+  - Plan 11 body frames (#667) is P1, Water's main task (CLAUDE.md updated in #2091).
 
 Deferred by the user: moon mining launch (#116), motion sickness (#117; comfort options are #168). The history of
 the earlier playtest batches is in git history and the closed issues.

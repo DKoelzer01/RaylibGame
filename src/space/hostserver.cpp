@@ -65,6 +65,7 @@ extern const char* kGameVersion; // "<branch> <commit>" (cmake/game_version.cmak
 #include "utils/logger.h"
 #include <cstdarg>
 #include "buildcommit.h"
+#include "ruincache.h" // (#2072)
 
 namespace {
     // (#1916) A connection's life (connect, refusal, join, join sync, kick, disconnect): on stdout as "host: ..." as before
@@ -642,6 +643,28 @@ namespace {
         SendChangedItems(conn, rm.inventory, before);
         ++machineActions;
     }
+    // (#2072) A ruin cache the requester held E on: opened here (once per world), the rewards from their team's roll; the
+    // part edit tells everyone it is open, the requester gets the result lines.
+    void OnCacheAction(uint32_t conn, uint32_t session, Remote& rm, Planetoid& b, Plot& plot, int part) {
+        auto refuse = [&](const std::string& why) { ++machineActionsRefused; if (!why.empty()) SendMsg(conn, MsgChat{ 0, why }); };
+        const Part& pt = plot.parts[part];
+        const Vector3 at = plot.toBody({ (pt.origin.x + 0.5f) * kCellSize, (pt.origin.y + 0.5f) * kCellSize, (pt.origin.z + 0.5f) * kCellSize });
+        if (rm.player.nearest != &b || Vector3Distance(at, b.toLocalD(rm.player.position).toFloat()) > kCacheReach) { refuse("That is out of reach"); return; }
+        const auto before = AllAmounts(rm.inventory);
+        std::vector<CacheRoll> rolls;
+        std::vector<std::pair<std::string, int>> overflow;
+        std::vector<PartEdit> edits;
+        std::string why;
+        if (!Cache_Open(b, plot, part, rm.inventory, TeamOfSession(session), rolls, overflow, &edits, &why)) { refuse(why); return; }
+        SendPartEdits(b.netId, plot.id, edits);
+        SendChangedItems(conn, rm.inventory, before);
+        std::string name;
+        for (const Session& s : sessions) if (s.id == session) name = s.name;
+        for (const auto& [item, n] : overflow) Combat_DropFor(b.name, DVec3(at), InvSlot{ item, (int64_t)n * 100 }, name); // what didn't fit: at the cache
+        SendMsg(conn, MsgChat{ 0, std::string("Opened the ") + CacheKindName(CacheKindOf(pt)) + ":" }); // (a result screen for clients: a later slice)
+        for (const CacheRoll& r : rolls) SendMsg(conn, MsgChat{ 0, "  " + r.text });
+        ++machineActions;
+    }
     void OnMachineAction(uint32_t conn, uint32_t session, const MsgMachineAction& a) {
         auto rit = remotes.find(session);
         Planetoid* b = Planetoid::findNet(a.body);
@@ -653,6 +676,11 @@ namespace {
             const Vector3 at = plot->toBody({ (plot->parts[a.part].origin.x + 0.5f) * kCellSize, (plot->parts[a.part].origin.y + 0.5f) * kCellSize, (plot->parts[a.part].origin.z + 0.5f) * kCellSize });
             if (ClaimBlocks(session, b, at)) { const std::string why = ClaimRefusal(b, at); refuse(why.c_str()); return; } // (#343)
             OnDungeonAction(conn, rit->second, *b, *plot, a);
+            return;
+        }
+        if (a.action == kMachineActOpenCache) { // (#2072) a ruin cache: not a machine; ruins are never claimed ground
+            if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || plot->parts[a.part].type != PartType::RuinCache) { refuse("That isn't there any more"); return; }
+            OnCacheAction(conn, session, rit->second, *b, *plot, a.part);
             return;
         }
         if (!plot || a.part < 0 || a.part >= (int)plot->parts.size() || !IsMachine(plot->parts[a.part].type)) { refuse("That machine isn't there any more"); return; }
@@ -1819,7 +1847,7 @@ namespace {
             if (bannerClaim) { Claims_Remove(bannerClaim); TellTeam(bannerTeam, TextFormat("Claim #%u is gone: its banner was broken", bannerClaim)); }
         } else {
             const Part part = ToPart(q.part);
-            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
+            if (q.part.type >= (uint8_t)PartType::Count || part.type == PartType::Meteorite || part.type == PartType::PressurePlate || part.type == PartType::GasVent || part.type == PartType::Lever || part.type == PartType::RuinCache || (IsShape(part.type) && part.material >= BuildMaterialCount())) {
                 RefusePart(conn, q.seq, NetPartRefusal::Kind); return;
             }
             Plot* plot = nullptr;

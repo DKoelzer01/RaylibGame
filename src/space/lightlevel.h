@@ -1,8 +1,8 @@
 #ifndef LIGHTLEVEL_H
 #define LIGHTLEVEL_H
 
-// (#1739 PR 2) The game's static light-level grid (engine lightgrid.h) for the body the player is on: placed torches and
-// lamp blocks are its sources (no count limit, unlike the point lights), terrain and solid building blocks its walls.
+// (#1739 PR 2) The game's static light-level grid (engine lightgrid.h) for the body the player is on: placed torches,
+// lamp blocks and burning flares (flares.h, #2062) are its sources (no count limit, unlike the point lights), terrain and solid building blocks its walls.
 // Rebuilt from the world (nothing saved); terrain edits and plot changes relight only what they touch, a budget of cells
 // a frame. The GPU window round the camera is uploaded through LocalLights_UploadGrid. RAYLIBGAME_LIGHT_GRID=0: off
 // (torches and lamps go back to point lights).

@@ -50,6 +50,7 @@ constexpr const char* kPartSaveNames[] = {
     "Distillery", "EssenceTank", "Cauldron",
     "Ladder",
     "Lever",
+    "RuinCache",
 };
 static_assert(sizeof(kPartSaveNames) / sizeof(kPartSaveNames[0]) == (size_t)PartType::Count, "a part type without a save name (kPartSaveNames)");
 std::vector<PartType> gPalette; // empty: identity
@@ -147,6 +148,7 @@ const char* PartName(PartType t) {
         case PartType::Distillery: return "distillery"; case PartType::EssenceTank: return "essence tank"; case PartType::Cauldron: return "cauldron"; // (#1254)
         case PartType::Ladder: return "ladder"; // (#1105)
         case PartType::Lever: return "lever"; // (#1641 slice 2c)
+        case PartType::RuinCache: return "sealed cache"; // (#2072)
         case PartType::FusionReactor: return "fusion reactor";
         case PartType::MassDriver: return "mass driver";
         case PartType::HandPump: return "hand pump";
@@ -251,6 +253,7 @@ const char* PartCostItem(PartType t) {
         case PartType::Meteorite: return "nickel_iron_ore"; // what it is made of (breaking it gives more: buildtool.cpp, #177)
         case PartType::PressurePlate: case PartType::GasVent: return "stone"; // dungeon traps (#719): broken, a stone back
         case PartType::Lever: return "stone"; // (#1641 slice 2c) a dungeon lever (not placed from the hand; never broken)
+        case PartType::RuinCache: return "stone"; // (#2072) placed by ruins only; never broken
         case PartType::Shaft: return "shaft"; // (#1269)
         case PartType::Cogwheel: return "cogwheel";
         case PartType::LargeCogwheel: return "large_cogwheel";
@@ -364,6 +367,7 @@ static Color PartColor(PartType t) {
         case PartType::Distillery: return { 160, 120, 80, 255 }; case PartType::EssenceTank: return { 170, 190, 200, 255 }; case PartType::Cauldron: return { 60, 60, 66, 255 }; // (#1254) copper, glass, iron
         case PartType::Ladder: return { 160, 115, 70, 255 }; // (#1105) planks
         case PartType::Lever: return { 74, 70, 66, 255 }; // (#1641 slice 2c) dark iron
+        case PartType::RuinCache: return { 96, 84, 62, 255 }; // (#2072) old bronze-banded iron
         case PartType::FusionReactor: return { 200, 110, 240, 255 };
         case PartType::MassDriver: return { 150, 160, 185, 255 };
         case PartType::HandPump: return { 120, 90, 60, 255 };
@@ -428,6 +432,7 @@ static unsigned char PartPatternOf(const Part& p) {
         case PartType::Bed: return PatPlanks; // a wooden frame (#800)
         case PartType::Ladder: return PatLadder; // (#1105)
         case PartType::Lever: return PatMetal; // (#1641 slice 2c)
+        case PartType::RuinCache: return PatMetal; // (#2072)
         case PartType::ClaimBanner: return PatPlanks; case PartType::ClaimBanner2: case PartType::ClaimBanner3: case PartType::ClaimBanner4: return PatMetal; // (#343)
         case PartType::Meteorite: return PatCoal; // dark, pitted
         case PartType::PressurePlate: return PatStone;
@@ -446,6 +451,7 @@ static void PartCells(PartType t, std::vector<std::pair<Int3, CellShape>>& out) 
     switch (t) {
         case PartType::Cube: case PartType::Conveyor: case PartType::Cable: case PartType::Guidance: case PartType::LandingLeg: case PartType::Pipe: case PartType::Outlet:
         case PartType::Gearbox: case PartType::StressGauge: // (#1269)
+        case PartType::RuinCache: // (#2072) a 0.5 m strongbox (every kind, for now)
             out.push_back({ { 0, 0, 0 }, full }); break;
         case PartType::Shaft: case PartType::Cogwheel: case PartType::LargeCogwheel: case PartType::HandCrank: case PartType::Windmill: { // (#1269) the whole cell, but not "full":
             CellShape s; s.full = false; s.planes = 1; s.n[0] = { 0, 1, 0 }; s.d[0] = 1.0f; // they are drawn turning, so a neighbour keeps its face

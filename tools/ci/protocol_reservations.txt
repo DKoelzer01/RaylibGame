@@ -13,6 +13,7 @@
 46 | ladder          | #1446 | item instance data in chest and machine slots
 53 | staging         | #1922 | a creative flyer's pose (body, feet, velocity) in each input step
 57 | staging         | #1886 | TeamStore: the team's progression store (research, map, blueprints) to its members
+60 | staging         | #2072 | the ruin cache part type in NetPart; MachineAction 13 opens a cache
 
 # kSaveVersion reservations (#1881), the same way: reserve the next save version here, in your PR, BEFORE bumping
 # kSaveVersion (src/engine/saveversion.h) and adding its migration step; a static check fails a branch whose kSaveVersion

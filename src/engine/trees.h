@@ -31,22 +31,31 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "dvec3.h"
 #include "voxel.h"
+#include "woodspecies.h"
 
 class PlanetField;
 class Planetoid;
 struct RenderContext;
 
-// Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules):
-// 0-3 oak, 4-7 birch, 8-11 maple (broadleaf), 12-15 pine, 16-19 spruce
-// (conifers); then 20-22 bushes and 23 loose stones.
-constexpr int kTreeVariants = 24;
-constexpr int kFirstBush = 20;
+// Tree variants are species x 4 size classes (#274: small, medium, large, extra large, each built by its own rules), in
+// WoodSpecies order (woodspecies.h: oak 0-3, birch 4-7, ... willow 52-55); then the small flora (#1995 phase 3): 3 bush
+// kinds x 4 size classes, then the loose stones x 4 size classes (pebbles, stones, a rock, a boulder).
 constexpr int kTreeClasses = 4;              // small, medium, large, extra large (old-growth giants)
-constexpr int kStoneVariant = 23;           // loose stones on the ground: picked up for stone (the first stone tools)
+constexpr int kFirstBush = kWoodSpecies * kTreeClasses;
+constexpr int kBushKinds = 3;                // a round shrub, a low spreading mat, an upright clump
+constexpr int kSmallFloraClasses = 4;        // small, medium, large, extra large (a thicket; a boulder)
+constexpr int kFirstStone = kFirstBush + kBushKinds * kSmallFloraClasses; // loose stones: picked up for stone (the first stone tools)
+constexpr int kTreeVariants = kFirstStone + kSmallFloraClasses;
+inline bool IsStoneVariant(int v) { return v >= kFirstStone && v < kTreeVariants; }
+inline int BushVariant(int kind, int cls) { return kFirstBush + kind * kSmallFloraClasses + cls; }
+inline int BushKindOfVariant(int v) { return (v - kFirstBush) / kSmallFloraClasses; }   // bushes only
+inline int SmallFloraClassOfVariant(int v) { return (v - kFirstBush) % kSmallFloraClasses; } // bushes and stones: 0 small .. 3 extra large
+constexpr int kBoulderClass = 3;             // a stone of this class blocks the way (a trunk to collide with) and takes hits to break
 // (#1995) Each variant comes as kTreeForms seeded meshes (its own branching), so a stand of one species and size is not
 // made of clones. Tiles and draws key on the mesh (TreeMeshOf); plants, logs and picking keep the variant.
 // RAYLIBGAME_TREE_FORMS=0: form 0 only, with the shapes as before #1995 (A/B).
@@ -55,11 +64,20 @@ constexpr int kTreeMeshes = kTreeVariants * kTreeForms;
 inline int TreeMeshOf(int variant, int form) { return variant * kTreeForms + form; }
 inline int VariantOfTreeMesh(int mesh) { return mesh / kTreeForms; }
 bool TreeFormsOn();
-// Wood species: what a tree drops when felled (its log) and how it is drawn (bark and leaf tints
-// over the shader's latitude colours). An area has a dominant species (60%) and two others (20% each).
-enum class WoodSpecies : uint8_t { Oak, Birch, Maple, Pine, Spruce, Count };
-struct WoodSpeciesDef { const char* log; const char* name; bool conifer; Vector3 bark, leaf; };
+// Wood species (woodspecies.h): what a tree drops when felled (its log) and how it is drawn (bark and leaf tints over the
+// shader's climate colours, a bark texture, a size multiplier), from resources/data/trees.txt; the structure is code.
+// Without a variant's own mix an area has a dominant species (60%) and two others (20% each).
+enum class BarkTexture : uint8_t { Furrows, Birch, Plates, Rings, Smooth, Count }; // trees.fs foliageKind 0-4
+struct WoodSpeciesDef {
+    std::string log, name;
+    bool conifer = false;            // the far mesh's shape and the cold/high fallback (code: the form is a cone)
+    Vector3 bark{ 1, 1, 1 }, leaf{ 1, 1, 1 };
+    BarkTexture texture = BarkTexture::Furrows;
+    float size = 1.0f;               // scale multiplier over the biome's (birch slender 0.85, kapok emergent)
+};
 const WoodSpeciesDef& WoodSpeciesInfo(WoodSpecies s);
+// trees.txt's text over the defaults (`out` holds them on entry); false with a message naming the line on an error.
+bool WoodSpecies_Parse(const std::string& text, WoodSpeciesDef out[kWoodSpecies], std::string* err);
 inline WoodSpecies SpeciesOfVariant(int v) { return (WoodSpecies)(v / kTreeClasses); }  // trees only (v < kFirstBush)
 inline int SizeClassOfVariant(int v) { return v % kTreeClasses; }                          // 0 small .. 3 extra large
 
@@ -67,7 +85,9 @@ constexpr float kTreeTileSize = 64.0f;      // m
 constexpr float kTreeInterestRange = 192.0f; // m: tiles kept around other interest centres (other players, #318)
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
-constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
+// Full meshes inside this, simple ones beyond. #1995 phase 4: 400 m (was 200): the swap to the few-prism far mesh shows
+// less out there, for +0.01-0.07 ms a frame at -O3 (perf/forest-view, perf/planet-view; bushes now stay full to 300 m).
+constexpr float kTreeNearDistance = 400.0f;
 // Shadow casters (#204 perf): trees within these of the camera go into the far / near cascade passes (boxes +-200 m and
 // +-32 m, plus long low-sun shadows and the 40 m the camera may move between batch rebuilds).
 constexpr float kTreeShadowFarReach = 355.0f, kTreeShadowNearReach = 115.0f; // from the sun axis through the camera: box half-diagonal + 40 m drift + 30 m tree
@@ -92,7 +112,8 @@ struct Plant {
     float scale;
     int variant;
     bool tree() const { return variant < kFirstBush; }
-    bool stone() const { return variant == kStoneVariant; }
+    bool stone() const { return IsStoneVariant(variant); }
+    int smallClass() const { return tree() ? -1 : SmallFloraClassOfVariant(variant); } // bushes and stones (#1995): 0..3
     // A tree trunk's volume relative to a medium broadleaf at scale 1 (0.3 m radius, ~5.2 m): chop hits and logs (#274).
     float trunkVolume() const { return tree() ? radius * radius * height / (0.09f * 5.2f) : 0.0f; }
     // Chop work and yield grow a little slower than the volume (volume^0.7): a medium oak ~14 hits / 5 logs, a giant ~55 / 26.
@@ -111,14 +132,20 @@ struct Trunk {
     float height, radius;
 };
 
+// A tile's instances by mesh. Immutable once built and shared (#2133): the batch sort reads it on a job while the main
+// thread goes on; a change (a plant removed) makes a new copy.
+struct TreeTileInstances {
+    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
+    std::vector<uint16_t> meshes;              // the meshes with any instances (the sort skips the empty ~200 of 216)
+};
 struct TreeTile {
     bool ready = false;
     uint32_t version = 0;
     Vector3 centre{};                          // body-local, on the surface
-    std::vector<float> inst[kTreeMeshes];      // per mesh (TreeMeshOf): 8 floats each: body-local position, scale, up, hash
+    std::shared_ptr<const TreeTileInstances> draw = std::make_shared<TreeTileInstances>();
     std::vector<Trunk> trunks;
     std::vector<Plant> plants;                 // every tree and bush (picking)
-    std::vector<uint64_t> ids[kTreeMeshes];    // per instance, parallel to inst
     bool regrowing = false;                    // has saplings: rebuild now and then as they grow
     double builtAt = 0.0;                      // world time the build used
     bool pending = false;                      // a rebuild is queued
@@ -126,7 +153,10 @@ struct TreeTile {
 
 // (#893 tests) the scatter around dir as generated (no edits or removals), counted within range m: trees, bushes, loose stones.
 class PlanetField;
-void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones);
+// stats (#1995 tests): why the candidates around it were dropped, over its 3x3 tiles (not limited to range). seed: the
+// field's foliageSeed for the planet's own trees.
+struct TreeScatterStats { int candidates = 0, odds = 0, elevation = 0, noGround = 0, slope = 0, buried = 0, water = 0, material = 0, underfoot = 0, cramped = 0, variant = -1; float pTree = 0, pBush = 0, pStone = 0; }; // p*: summed odds; variant: the last read
+void Trees_CountScatter(const PlanetField& f, uint32_t seed, Vector3 dir, float range, int& trees, int& bushes, int& stones, TreeScatterStats* stats = nullptr);
 class TreeSystem {
 public:
     TreeSystem(std::shared_ptr<const PlanetField> field, unsigned int seed);
@@ -167,6 +197,8 @@ public:
     // Tests: trees per species in loaded tiles within `range` of a body-local point.
     void speciesCounts(Vector3 local, float range, int out[(int)WoodSpecies::Count], int* classes = nullptr) const; // classes: kTreeClasses counts (#274)
 
+    struct BatchWork;                          // (#2133) a batch sort in flight on a job (trees.cpp)
+
 private:
     struct Shared;                             // results queue shared with worker jobs
     std::shared_ptr<Shared> shared;
@@ -185,15 +217,22 @@ private:
     // Two detail levels: [0..kTreeMeshes) full meshes near the camera, then simple far meshes.
     unsigned int vao[kTreeSets][2 * kTreeMeshes] = {}, vbo[kTreeSets][2 * kTreeMeshes] = {};
     int count[kTreeSets][2 * kTreeMeshes] = {};
+    int capacity[kTreeSets][2 * kTreeMeshes] = {}; // (#2133) instances each vbo has room for (kept between rebuilds)
     Vector3 shadowSunLocal = { 0, 0, 0 };     // (0: unknown, the caster sets use distance from the camera)
     // Main-view GPU culling (#292): per slot of set 0, the visible instances (compacted) and its VAO; one command buffer.
     unsigned int culledVao[2 * kTreeMeshes] = {}, culledVbo[2 * kTreeMeshes] = {}, cmdBuf = 0;
+    int culledCapacity[2 * kTreeMeshes] = {};
     Vector3 lastWantCam = { 1e30f, 0, 0 };    // tile set recomputed after the camera moves 16 m
     std::vector<Vector3> interest, lastInterest; // other interest centres (#318) and where they were at the last recompute
     int drawnInstances = 0;
 
+    // (#2133) The batch rebuild: startBatch snapshots the tiles and sorts them on a job; finishBatch uploads the result.
+    std::shared_ptr<BatchWork> batchWork;
+    bool batchInFlight = false;
+
     void request(const TreeTileKey& key, TreeTile& tile, float priority);
-    void rebuildBatches(Vector3 camLocal);
+    void startBatch(Vector3 camLocal);
+    void finishBatch();
 };
 
 // Tile helpers (exposed for tests).

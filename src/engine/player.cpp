@@ -26,22 +26,27 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     const Vector3 above = body.flat ? Vector3Add(c, { 0, body.maxHeight + 20.0f, 0 }) : Vector3Add(c, Vector3Scale(dir, outer + 60.0f));
     TerrainHit hit;
     Vector3 feet = Vector3Add(c, Vector3Scale(dir, R + 5.0f));
-    if (RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit)) feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
-    else if (!body.flat) {
-        // (#2000) No mesh there yet (a body far from where the player was: nothing built near): the raycast missed and
-        // R + 5 m could be far above the ground (a deadly fall) or under it. Find the surface on the field itself: march
-        // down from maxRadius in 2 m steps, then halve to ~1 cm. Unedited ground; edits only exist where chunks were built.
+    bool found = false;
+    if (!body.flat) {
+        // (#2000) The surface from the field itself, edits included: march down from maxRadius in 2 m steps, then halve to
+        // ~1 cm. A mesh raycast only sees what is built so far: with no mesh there (a far body) R + 5 m could be a deadly
+        // fall or underground, and a coarse LOD mesh sits up to ~2 m under the real ground, so the player stood inside it
+        // when the fine chunks came and was thrown out ("fall" deaths on Luna, runner).
         const DensityField& f = *body.field;
+        const TerrainDeltas* ed = body.edits.get();
         const Vector3 local = body.dirToLocal(dir); // the field is in the body's own (turning) axes
         const float top = f.maxRadius(), bottom = std::max(0.0f, f.minRadius());
         for (float r = top; r > bottom; r -= 2.0f) {
-            if (f.baseDensity(Vector3Scale(local, r - 2.0f)) < ISO_LEVEL) continue;
+            if (f.density(Vector3Scale(local, r - 2.0f), ed) < ISO_LEVEL) continue;
             float lo = r - 2.0f, hi = r; // lo solid, hi air
-            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.baseDensity(Vector3Scale(local, m)) >= ISO_LEVEL ? lo : hi) = m; }
+            for (int i = 0; i < 8; ++i) { const float m = 0.5f * (lo + hi); (f.density(Vector3Scale(local, m), ed) >= ISO_LEVEL ? lo : hi) = m; }
             feet = Vector3Add(c, Vector3Scale(dir, hi * body.scale + 0.2f));
+            found = true;
             break;
         }
     }
+    if (!found && RaycastTerrain(world, Ray{ above, Vector3Negate(dir) }, body.flat ? body.maxHeight - body.minHeight + 40.0f : outer + 80.0f, hit))
+        feet = Vector3Add(hit.point, Vector3Scale(hit.normal, 0.2f));
     position = world.renderOrigin + feet;
     up = body.flat ? Vector3{ 0, 1, 0 } : Vector3Normalize(Vector3Subtract(feet, c));
     forward = Vector3Normalize(Vector3CrossProduct(up, { 1, 0, 0 }));
@@ -49,6 +54,10 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
     velocity = body.surfaceVelocity(feet); // move with the ground (a spinning planet's surface is fast)
     grounded = false;
     groundBody = nullptr;
+    // (#2000) The body put on is the nearest now, before the next update finds it: the spawn's loading screen holds the
+    // player in player.nearest's frame, and the old one (Terra, for a move to Luna) held them still against Terra while Luna
+    // moved on at ~1 km/s: released, its ground hit them at hundreds of m/s, a fatal "fall".
+    nearest = &body;
     anchorTo(body);
     flyMode = false;
 }
@@ -60,6 +69,13 @@ void Player::spawnOn(Scene& world, Planetoid& body, Vector3 dir) {
 // flying past ring rocks the planet stays the reference instead of "up" snapping between rocks.
 static bool FeltIsRelative(Vector3 feet, const Planetoid* nearest) {
     return nearest && nearest->orbitParent && Vector3Length(BodyGravityAt(*nearest, feet)) >= 0.1f;
+}
+// (#2149) Another body's surface motion at `at`, in the terms of the player's velocity. That velocity is measured against
+// the nearest body's ground less `nearestFrameVel` (collideFrameVel: the nearest's surface motion when it is world-frame,
+// airborne off the frame path; 0 when it is ground-relative, grounded or on the frame path). Passing the other body's
+// world-frame motion against a ground-relative velocity read a ring rock's orbit (km/s) as an impact.
+static Vector3 ContactFrameVelocity(const Planetoid& other, const Planetoid& nearest, Vector3 at, Vector3 nearestFrameVel) {
+    return Vector3Subtract(other.surfaceVelocity(at), Vector3Subtract(nearest.surfaceVelocity(at), nearestFrameVel));
 }
 static Vector3 FeltGravity(Scene& world, Vector3 feet, Planetoid* nearest) {
     const Vector3 g = GravityAt(world, feet);
@@ -821,7 +837,7 @@ bool Player::resolveCollisions(Scene& world, Vector3& feet) {
         auto* other = dynamic_cast<Planetoid*>(obj.get());
         if (!other || other == &p || other->flat || (other->vehicle && !other->freeFall)) continue; // not a flying rocket (as frames.cpp)
         if (Vector3Distance(mid, other->position) > other->radius * other->scale + 0.5f * height + radius) continue;
-        onGround = collideBody(*other, offsets, kSamples, feet, other->surfaceVelocity(mid), pushBudget, nullptr, world.renderOrigin) || onGround;
+        onGround = collideBody(*other, offsets, kSamples, feet, ContactFrameVelocity(*other, p, mid, collideFrameVel), pushBudget, nullptr, world.renderOrigin) || onGround;
     }
     if (p.plots) {
         // Standing on a part: a probe just below the feet sphere.
@@ -1088,6 +1104,36 @@ void Player::updateFrame(Scene& world) {
     if (to.body != 0) Frames_FromGlobal(position, DVec3(vw.x, vw.y, vw.z), to, frame);
 }
 
+bool Player::restoreFrame(const FramePos& f) {
+    Planetoid* b = Planetoid::findNet(f.frame.body);
+    DVec3 pg, vg;
+    if (!b || !Frames_ToGlobal(f, pg, vg)) return false;
+    position = pg;
+    frame = f;
+    nearest = b;
+    grounded = false; groundBody = nullptr;
+    // Carried with the body from here as any airborne player (update's airBody path), and not "moved from outside": the
+    // velocity below is already in the terms the next update expects.
+    airBody = b; airId = b->id; airLocal = b->toLocalD(position);
+    airFrameVel = b->linearVelocity;
+    lastEndPosition = position;
+    viewBody = 0;
+    const double vl = f.vel.length();
+    if (f.frame.kind == FrameKind::Fixed) { // the frame velocity (against the ground), kept in the body's axes
+        const DVec3 d = vl > 1e-12 ? f.vel * (1.0 / vl) : DVec3{};
+        airVelDir = { (float)d.x, (float)d.y, (float)d.z };
+        airVelLen = (float)vl;
+        airVelBody = b->id;
+        velocity = Vector3Scale(b->dirToWorld(airVelDir), airVelLen);
+        fxActive = true;
+    } else { // Centred: the airborne path's world-frame velocity
+        velocity = vg.toFloat();
+        airVelBody = 0;
+        fxActive = false;
+    }
+    return true;
+}
+
 // Plan 11 F2b (#1146): the acceleration an airborne player feels in the nearest body's Fixed frame (felt gravity, Coriolis
 // and centrifugal: Frames_Acceleration), in world axes. The velocity is the frame velocity (against the ground).
 Vector3 Player::frameGravity(Scene& world, Vector3 feet) const {
@@ -1109,6 +1155,7 @@ void Player::placeAt(Scene& world, Planetoid& body, Vector3 renderFeet) {
     velocity = body.surfaceVelocity(renderFeet);
     grounded = false;
     groundBody = nullptr;
+    nearest = &body; // (#2000) the loading screen's hold uses it (spawnOn)
     flyMode = false;
     anchorTo(body);
 }
@@ -1199,6 +1246,21 @@ TEST_F(PlayerNetTest, PlacedPlayerStaysPutOnATurningPlanet) {
     Player::NetState s;
     ASSERT_TRUE(p.netState(world, s));
     EXPECT_LT((s.local - local).length(), 0.02) << "float render feet: within 2 cm at 60 km";
+}
+
+// #2149: a second body's motion at a contact, in the player's velocity terms. Two ring rocks on near orbits, 3 km/s each:
+// ground-relative (grounded, or the frame path) the contact sees only their difference, never the orbit itself.
+TEST(PlayerContact, OtherBodyMotionIsInThePlayersTerms) {
+    Planetoid a("rockA", DVec3{ 0.0, 0.0, 0.0 }, Vector3{ 0, 0, 0 }, 1.0f, 7u, 20.0f);
+    Planetoid b("rockB", DVec3{ 45.0, 0.0, 0.0 }, Vector3{ 0, 0, 0 }, 1.0f, 8u, 20.0f);
+    a.linearVelocity = { 0, 0, 3000.0f };
+    b.linearVelocity = { 0, 0.5f, 3001.0f };
+    a.spin = b.spin = { 0, 0, 0 };
+    const Vector3 at = { 22.5f, 0, 0 };
+    const Vector3 rel = ContactFrameVelocity(b, a, at, Vector3{ 0, 0, 0 }); // ground-relative velocity
+    EXPECT_LT(Vector3Distance(rel, Vector3{ 0, 0.5f, 1.0f }), 1e-3f) << rel.x << " " << rel.y << " " << rel.z;
+    const Vector3 world = ContactFrameVelocity(b, a, at, a.surfaceVelocity(at)); // world-frame (airborne, frames off)
+    EXPECT_LT(Vector3Distance(world, b.surfaceVelocity(at)), 1e-3f);
 }
 
 TEST_F(PlayerNetTest, UnknownBodyIsRefused) {

@@ -27,3 +27,4 @@ part farmland 8 0 16 0 dirt
 part post 0 0 11 0 oak_log
 part post 9 0 11 0 oak_log
 loot 3 0 3 ruin_common
+cache small 15 0 6

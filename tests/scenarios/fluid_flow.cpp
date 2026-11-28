@@ -21,7 +21,7 @@ struct State {
 SCENARIO("fluid/flow") {
     s.tags = { "fluid", "water", "planet" };
     s.world = ScenarioWorld::Planet;
-    s.timeout = 180.0;
+    s.timeout = 270.0;
     s.legacyFlag = "--seed 42 --test-flow";
 
     s.step("dig", 60.0, [](ScenarioCtx& c) {
@@ -76,7 +76,7 @@ SCENARIO("fluid/flow") {
         S.cave = at(endDir, S.level - kCaveM);
         return true;
     });
-    s.step("flow", 125.0, [](ScenarioCtx& c) {
+    s.step("flow", 205.0, [](ScenarioCtx& c) {
         const Vector3 up = Vector3Normalize(S.end);
         c.camera(Vector3Add(Vector3Add(S.end, Vector3Scale(up, 9.0f)), Vector3Scale(S.out, 9.0f)), Vector3Subtract(S.end, Vector3Scale(S.out, 6.0f)), up);
         const double t = c.t;
@@ -86,7 +86,7 @@ SCENARIO("fluid/flow") {
         if (fs.steps != S.lastStep) { S.lastStep = fs.steps; if (fs.steps > 0 && S.sleepT < 0.0) { S.steps.push_back((float)fs.stepMs); S.stepT.push_back(t); } }
         if (S.reachT >= 0.0 && S.caveT >= 0.0 && S.sleepT < 0.0 && Fluid::Asleep()) S.sleepT = t;
         c.waitingFor(S.reachT < 0.0 ? "the channel's end wet" : S.caveT < 0.0 ? "the chamber wet" : "the water asleep");
-        if (!((S.sleepT >= 0.0 && t > S.sleepT + 1.0) || t > 120.0)) return false;
+        if (!((S.sleepT >= 0.0 && t > S.sleepT + 1.0) || t > 200.0)) return false; // (#2044) 200 s: the water reaches the end at 30-56 s and sleeps from 81 s to past 120 s, by the bake under the channel
         float roll = 0.0f; // the worst 1 s rolling mean of the step time (#627)
         for (size_t a = 0, b = 0; b < S.stepT.size(); ++b) {
             while (S.stepT[b] - S.stepT[a] > 1.0) ++a;

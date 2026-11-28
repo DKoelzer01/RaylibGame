@@ -317,6 +317,7 @@ struct PlanetField::ErosionState {
 };
 
 bool PlanetField::caveBaked() const { return erosion() != nullptr; }
+uint64_t PlanetField::erosionHash() const { const PlanetErosion* e = erosion(); return e ? e->hash() : 0; }
 const PlanetErosion* PlanetField::erosion() const {
     if (tIgnoreBake) return nullptr;
     return erosionState && erosionState->active.load(std::memory_order_acquire) ? &erosionState->bake : nullptr;

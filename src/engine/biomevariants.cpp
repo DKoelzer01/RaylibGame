@@ -117,6 +117,22 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             for (int i = 0; i < 4; ++i)
                 if (!Bound(v[i], 1.0f, *dst[i]) || *dst[i] < 0.0f) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (numbers >= 0 or - for 1)");
             if (!extra.empty() || !(d.size > 0.0f)) return fail(lineNo, "flora takes '<trees> <bushes> <stones> <size>' (size > 0)");
+        } else if (key == "sizes") { // (#1995 phase 3)
+            std::string v[3], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float* dst[3] = { &d.bushSize, &d.stoneSize, &d.grassSize };
+            for (int i = 0; i < 3; ++i)
+                if (!Bound(v[i], 0.0f, *dst[i]) || *dst[i] < -2.0f || *dst[i] > 2.0f) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (numbers -2..2, or - for 0)");
+            if (!extra.empty()) return fail(lineNo, "sizes takes '<bushes> <stones> <grass>' (three values)");
+        } else if (key == "shrubs") { // (#1995 phase 3)
+            std::string v[BiomeVariantDef::kShrubKinds], extra;
+            ls >> v[0] >> v[1] >> v[2] >> extra;
+            float total = 0.0f;
+            for (int i = 0; i < BiomeVariantDef::kShrubKinds; ++i) {
+                if (!Bound(v[i], 0.0f, d.shrubs[i]) || v[i] == "-" || d.shrubs[i] < 0.0f) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights (numbers >= 0)");
+                total += d.shrubs[i];
+            }
+            if (!extra.empty() || !(total > 0.0f)) return fail(lineNo, "shrubs takes '<round> <mat> <upright>' weights, at least one > 0");
         } else if (key == "rubber") { // (#2012)
             std::string extra;
             if (!(ls >> d.rubber) || (ls >> extra) || d.rubber < 0 || d.rubber > 100) return fail(lineNo, "rubber takes one whole percent 0..100");
@@ -149,13 +165,15 @@ bool BiomeVariants_Parse(const std::string& text, BiomeVariantTable& out, std::s
             ls >> v >> extra;
             if (!extra.empty() || v == "-" || !Bound(v, 0.0f, d.cover) || d.cover < 0.0f || d.cover > 1.0f) return fail(lineNo, "cover takes one number 0..1");
         } else if (key == "species") {
-            static const char* kNames[BiomeVariantDef::kSpecies] = { "oak", "birch", "maple", "pine", "spruce" };
             std::string sp, w;
             int n = 0;
             while (ls >> sp) {
-                int k = -1;
-                for (int i = 0; i < BiomeVariantDef::kSpecies; ++i) if (sp == kNames[i]) k = i;
-                if (k < 0) return fail(lineNo, "unknown species '" + sp + "' (oak birch maple pine spruce)");
+                const int k = WoodSpeciesByName(sp.c_str());
+                if (k < 0) {
+                    std::string known;
+                    for (const char* name : kWoodSpeciesNames) known += std::string(known.empty() ? "" : " ") + name;
+                    return fail(lineNo, "unknown species '" + sp + "' (" + known + ")");
+                }
                 if (!(ls >> w) || !Bound(w, 0.0f, d.species[k]) || w == "-" || d.species[k] < 0.0f) return fail(lineNo, "species takes '<name> <weight>' pairs");
                 ++n;
             }
@@ -225,6 +243,40 @@ bool BiomeVariants_RubberRoll(int percent, uint64_t plantId) {
     uint64_t h = plantId * 0x9E3779B97F4A7C15ull; // a mix of the id: plant ids are spatial hashes, neighbours alike in their low bits
     h ^= h >> 31;
     return (int)(h % 100) < percent;
+}
+
+SmallFloraSizes SmallFloraSizesOf(int variant, Biome fallback) {
+    const BiomeVariantTable& t = BiomeVariants();
+    const BiomeVariantDef* d = variant >= 0 && variant < (int)t.defs.size() ? &t.defs[variant] : nullptr;
+    // The types' own (GUESS, #1995 phase 3): the jungle's undergrowth is rank, the savanna's and meadow's grass tall, the
+    // tundra's scrub and grass stunted, the mountains and badlands strewn with rocks and boulders, the desert with stones.
+    SmallFloraSizes s;
+    switch (d ? d->type : fallback) {
+        case Biome::Jungle:   s = { 0.6f, 0.0f, 0.4f }; break;
+        case Biome::Savanna:  s = { 0.0f, 0.2f, 0.9f }; break;
+        case Biome::Desert:   s = { -0.5f, 0.3f, -0.5f }; break;
+        case Biome::Badlands: s = { -0.3f, 0.6f, -0.3f }; break;
+        case Biome::Meadow:   s = { 0.0f, -0.3f, 0.4f }; break;
+        case Biome::Swamp:    s = { 0.3f, -0.5f, 0.6f }; break;
+        case Biome::Taiga:    s = { -0.2f, 0.3f, -0.2f }; break;
+        case Biome::Tundra:   s = { -0.7f, 0.3f, -0.7f }; break;
+        case Biome::Alpine:   s = { -0.5f, 0.7f, -0.5f }; break;
+        case Biome::Forest:   s = { 0.0f, 0.0f, -0.3f }; break; // shade: shorter grass under the trees
+        default: break;
+    }
+    if (d) { s.bush += d->bushSize; s.stone += d->stoneSize; s.grass += d->grassSize; }
+    return s;
+}
+
+int SmallFloraSizeClass(float shift, float patch, float u) {
+    // Base shares 30 / 42 / 21 / 7 %, tilted by exp(t * (class - 1.5)): t > 0 moves weight to the big classes.
+    static const float kBase[4] = { 0.30f, 0.42f, 0.21f, 0.07f };
+    const float t = std::clamp(shift + 1.4f * (patch - 0.5f), -2.5f, 2.5f);
+    float w[4], total = 0.0f;
+    for (int k = 0; k < 4; ++k) total += (w[k] = kBase[k] * expf(t * ((float)k - 1.5f)));
+    float at = u * total;
+    for (int k = 0; k < 3; ++k) if ((at -= w[k]) < 0.0f) return k;
+    return 3;
 }
 
 float BiomeClimateCode(float tempC, float moist, int variant) {
@@ -313,8 +365,8 @@ TEST(BiomeVariants, ParsesFlora) {
     EXPECT_FLOAT_EQ(d.species[1], 3.0f); EXPECT_FLOAT_EQ(d.species[3], 1.0f); EXPECT_FLOAT_EQ(d.species[0], 0.0f);
     const BiomeVariantDef& base = t.defs[t.base(Biome::Forest)];
     EXPECT_FLOAT_EQ(base.trees, 1.0f); EXPECT_LT(base.cover, 0.0f); EXPECT_FALSE(base.hasSpecies());
-    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species palm 2\n", t, &err));
-    EXPECT_NE(err.find("palm"), std::string::npos) << err;
+    EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species fungus 2\n", t, &err));
+    EXPECT_NE(err.find("fungus"), std::string::npos) << err;
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  species oak\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1\n", t, &err));
     EXPECT_FALSE(BiomeVariants_Parse(AllBases() + "variant forest.x\n  flora 1 1 1 0\n", t, &err));
