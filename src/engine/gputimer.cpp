@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -101,12 +102,22 @@ void GpuTimer_BeginFrame() {
     open = true;
 }
 
-void GpuTimer_CpuMark(const char* name);
+static void CpuMarkOnly(const char* name);
+// (#2142) RAYLIBGAME_GPU_FINE=1: every CPU mark closes a GPU segment too, so a GPU span over CPU work (the update before the
+// draw) splits by name. Measured on this driver, a GL_TIME_ELAPSED segment does not count the GPU idle while the CPU works
+// (w-lod: ~1 ms CPU, ~0 GPU), so a sub-span's GPU time is its uploads and compute.
+static const bool gFine = [] { const char* e = getenv("RAYLIBGAME_GPU_FINE"); return e && e[0] && e[0] != '0'; }();
+static void GpuSegment(const char* name);
 void GpuTimer_Mark(const char* name) {
+    if (!enabled || cur < 0 || !open) return;
+    if (slots[cur].used >= kMarks) return;
+    CpuMarkOnly(name);
+    GpuSegment(name);
+}
+static void GpuSegment(const char* name) {
     if (!enabled || cur < 0 || !open) return;
     Slot& s = slots[cur];
     if (s.used >= kMarks) return;
-    GpuTimer_CpuMark(name);
     rlDrawRenderBatchActive(); // raylib's batched draws belong to the pass that made them
     glad_glEndQuery(kTimeElapsed);
     s.name[s.used] = name;          // this segment ends at the mark: charged to its name
@@ -148,6 +159,10 @@ void GpuTimer_CpuFrameStart(bool reportSlow) {
 }
 
 void GpuTimer_CpuMark(const char* name) {
+    CpuMarkOnly(name);
+    if (gFine) GpuSegment(name);
+}
+static void CpuMarkOnly(const char* name) {
     if (!enabled || !cpuStarted) return;
     const auto now = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(now - cpuLast).count();
