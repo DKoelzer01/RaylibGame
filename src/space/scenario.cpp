@@ -109,6 +109,10 @@ struct Run {
     std::vector<StepTime> stepTimes;
     int step = 0;
     double simStart = -1.0, stepSim = 0.0, wallStart = 0.0, stepWall = 0.0, lastBeat = 0.0, startedAt = 0.0;
+    // (#2119) Sim seconds of the current step spent held by wall-clock work: a waiting step while the world streams or
+    // builds, or a loading screen. The step's deadline doesn't count them (the scenario's wall backstop still does).
+    double stepHeld = 0.0, runHeld = 0.0, lastSim = -1.0;
+    bool loadingSinceFrame = false;
     long frames = 0;
     std::string started;
     std::string profile; // (#871) the profiler's summary, taken when the scenario finished
@@ -461,13 +465,23 @@ bool Scenario_Frame(Scene& world) {
         StartWatchdog(); // (#1422)
         if (Profiler_On()) { GpuTimer_KeepOn(true); Profiler_Reset(); } // (#871) the passes as cpu:/gpu: zones; the summary from here on (not the loading)
     }
+    // (#2119) The sim seconds since the last frame were held by wall-clock work when a loading screen ran in between, or
+    // when the step waits (it said what for last frame) while the world streams or builds: chunk and tree jobs run in wall
+    // time, the headless sim many times faster, so on a loaded machine a sim deadline ran out before the world did.
+    const double simNow = SimTime();
+    if (R.lastSim >= 0.0 && (R.loadingSinceFrame || (!R.waiting.empty() && !WorldIdle()))) {
+        R.stepHeld += simNow - R.lastSim;
+        R.runHeld += simNow - R.lastSim;
+    }
+    R.lastSim = simNow;
+    R.loadingSinceFrame = false;
     ScenarioCtx c{ world };
     c.body = world.objects.empty() ? nullptr : dynamic_cast<Planetoid*>(world.objects[0].get());
     c.field = c.body ? dynamic_cast<const PlanetField*>(c.body->field.get()) : nullptr;
     c.T = SimTime() - R.simStart;
     c.t = SimTime() - R.stepSim;
     c.wall = now - R.stepWall;
-    c.clock = R.def.realTime ? std::min(c.t, c.wall) : c.t;
+    c.clock = R.def.realTime ? std::min(c.t - R.stepHeld, c.wall) : c.t - R.stepHeld;
     c.frame = R.frames++;
     c.stepIndex = R.step;
     if (!c.body || (!c.field && R.def.needsPlanetField)) { Finish("ERROR", c.body ? "no planet field (body 0)" : "no body 0"); return false; }
@@ -475,7 +489,7 @@ bool Scenario_Frame(Scene& world) {
         if (now - R.wallStart > R.def.timeout) Finish("TIMEOUT", "the legacy bench (" + R.args + ") ran past the scenario's " + Num(R.def.timeout) + " s");
         return false;
     }
-    const double runClock = R.def.realTime ? std::min(c.T, now - R.wallStart) : c.T; // (#1972) as c.clock
+    const double runClock = R.def.realTime ? std::min(c.T - R.runHeld, now - R.wallStart) : c.T - R.runHeld; // (#1972) as c.clock
     if (runClock > R.def.timeout || now - R.wallStart > R.def.timeout * WallFactor()) { // sim time; wall time a backstop (#1054)
         const bool wall = runClock <= R.def.timeout;
         Finish("TIMEOUT", "step '" + R.def.steps[R.step].name + "' still running after the scenario's " + Num(R.def.timeout) + " s" +
@@ -485,8 +499,9 @@ bool Scenario_Frame(Scene& world) {
     }
     if (now - R.lastBeat >= 5.0) {
         R.lastBeat = now;
-        printf("scenario: %s heartbeat: step %d/%zu '%s' t=%.1f s (sim %.1f s, wall %.0f s)%s\n", R.def.name.c_str(), R.step + 1, R.def.steps.size(),
-               R.def.steps[R.step].name.c_str(), c.t, c.T, now - R.wallStart, R.waiting.empty() ? "" : (", waiting for " + R.waiting).c_str());
+        printf("scenario: %s heartbeat: step %d/%zu '%s' t=%.1f s (sim %.1f s, %.1f s of it held by world work, wall %.0f s)%s\n", R.def.name.c_str(),
+               R.step + 1, R.def.steps.size(), R.def.steps[R.step].name.c_str(), c.t, c.T, R.stepHeld, now - R.wallStart,
+               R.waiting.empty() ? "" : (", waiting for " + R.waiting).c_str());
     }
     if (Profiler_On()) { // (#871) named counters, once a frame
         const Fluid::Stats fs = Fluid::GetStats();
@@ -504,7 +519,7 @@ bool Scenario_Frame(Scene& world) {
         R.stepTimes[R.step] = { st.name, SimTime() - R.stepSim, now - R.stepWall, true };
         printf("scenario: %s: step '%s' done after %.1f s sim\n", R.def.name.c_str(), st.name.c_str(), SimTime() - R.stepSim);
         R.waiting.clear();
-        R.stepSim = SimTime(); R.stepWall = now;
+        R.stepSim = SimTime(); R.stepWall = now; R.stepHeld = 0.0;
         if (++R.step >= (int)R.def.steps.size()) {
             int failed = 0; for (const auto& k : R.checks) failed += k.pass ? 0 : 1;
             Finish(failed || R.checks.empty() ? "FAIL" : "PASS", failed ? std::to_string(failed) + " of " + std::to_string(R.checks.size()) + " checks failed" : R.checks.empty() ? "no checks" : "");
@@ -512,6 +527,7 @@ bool Scenario_Frame(Scene& world) {
         }
     } else if (c.clock > st.deadline) {
         Finish("FAIL", "step '" + st.name + "' passed its deadline of " + Num(st.deadline) + (R.def.realTime ? " s of both sim and wall time" : " s sim") +
+                           (R.stepHeld > 0.05 ? " (not counting " + Num(R.stepHeld) + " s held by world work)" : "") +
                            (R.waiting.empty() ? "" : " (waiting for " + R.waiting + ")"));
         return false;
     }
@@ -522,6 +538,7 @@ bool Scenario_Frame(Scene& world) {
 // run then, so a run held in a loading screen ended only when the parent killed it, with nothing said).
 void Scenario_Loading() {
     if (!R.active || R.finished || R.simStart < 0.0) return;
+    R.loadingSinceFrame = true; // (#2119) the sim time across this screen doesn't count toward the step's deadline
     const double now = Wall();
     gLastTouch = now;
     if (now - R.lastBeat >= 5.0) {
