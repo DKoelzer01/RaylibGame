@@ -1,0 +1,90 @@
+// factory/drill-deposit (#2071): a miner works the finite deposit below it. In the sandbox the scenario looks for ground
+// near the start with a deposit within the miner's 128 m reach (PlanetField::depositBelow), builds an MV generator, cables
+// and two miners 3 m apart there: the first mines the deposit's main ore, the second is too close to it (deposits.txt:
+// 8 m spacing) and says so. The camera looks at the row from the front.
+#include "scenario.h"
+#include "buildtool.h"
+#include "deposits.h"
+#include "factory.h"
+#include "oreveins.h"
+#include "plots.h"
+#include "terraintool.h"
+#include "voxel.h"
+#include "world.h"
+#include <raymath.h>
+#include <string>
+
+namespace {
+Plot* plot = nullptr;
+uint64_t bodyId = 0;
+int gen = -1, minerA = -1, minerB = -1;
+std::string ore; // the deposit's main ore, as the miner's variant
+
+bool Place(ScenarioCtx& c, PartType t, Int3 at) { return BuildTool_Place(*c.body, *plot, { t, at, 0 }, false); }
+MachineView Look(int part) { Factory::View(bodyId, plot->id, part); Factory::WaitTicks(2); return Factory::View(bodyId, plot->id, part); }
+int Count(int part, const std::string& item) {
+    int n = 0;
+    for (const auto& s : Look(part).outSlots) if (s.first == item) n += s.second;
+    return n;
+}
+}
+
+SCENARIO("factory/drill-deposit") {
+    s.tags = { "factory", "machines", "underground" };
+    s.world = ScenarioWorld::Sandbox;
+    s.args = { "--day" };
+    s.timeout = 120.0;
+    s.step("ground with a deposit in a miner's reach; an MV generator and two miners on it", 10.0, [](ScenarioCtx& c) {
+        if (c.T < 1.0) return false;
+        terrainTool.creative = true;
+        const DepositDrill* dd = Deposits_Drill(Deposits_All(), "miner");
+        if (!c.check("deposits.txt has the miner's reach", dd != nullptr)) return true;
+        const Vector3 dir = c.spawnDirLocal();
+        const Vector3 east = Vector3Normalize(Vector3CrossProduct({ 0, 1, 0 }, dir)), north = Vector3CrossProduct(dir, east);
+        // Rings of 24 m steps out to ~480 m: the first ground point with a deposit below it.
+        Vector3 ground = { 0, 0, 0 };
+        bool found = false;
+        for (int r = 1; r <= 20 && !found; ++r)
+            for (int a = 0; a < 8 * r && !found; ++a) {
+                const float ang = 6.2831853f * (float)a / (float)(8 * r), d = 24.0f * (float)r;
+                const Vector3 at = Vector3Normalize(Vector3Add(Vector3Scale(dir, c.field->radius), Vector3Add(Vector3Scale(east, d * cosf(ang)), Vector3Scale(north, d * sinf(ang)))));
+                const Vector3 g = Vector3Scale(at, c.field->radius + c.field->elevation(at));
+                VeinDeposit dep; int cx, cy, cz;
+                if (c.field->depositBelow(Vector3Subtract(g, Vector3Scale(at, 1.0f)), dd->reach - 8.0f, dep, cx, cy, cz)) { ground = Vector3Scale(at, c.field->radius + c.field->elevation(at) + 0.05f); found = true; }
+            }
+        if (!c.check("a deposit within reach of ground near the start", found)) return true;
+        if (!c.body->plots) c.body->plots = std::make_unique<PlotSet>();
+        plot = c.body->plots->plotFor(ground, 0.0f, true);
+        bodyId = c.body->id;
+        bool ok = Place(c, PartType::MvGenerator, { 0, 0, 0 }) && Place(c, PartType::Miner, { 3, 0, 0 }) && Place(c, PartType::Miner, { 6, 0, 0 });
+        for (int x = 0; x <= 7 && ok; ++x) ok = Place(c, PartType::Cable, { x, 0, -1 });
+        gen = plot->partAt({ 0, 0, 0 }); minerA = plot->partAt({ 3, 0, 0 }); minerB = plot->partAt({ 6, 0, 0 });
+        if (!c.check("a generator, two miners and a cable row placed", ok)) return true;
+        Factory::Insert(bodyId, plot->id, gen, "coal", 64);
+        c.camera(plot->toBody({ 4.0f, 4.0f, 9.0f }), plot->toBody({ 4.0f, 0.5f, 0.0f }), plot->up);
+        Factory::Sync(c.world);
+        return true;
+    });
+    s.step("the first miner works the deposit, the second is too close", 20.0, [](ScenarioCtx& c) {
+        Factory::Sync(c.world);
+        const MachineView a = Look(minerA), b = Look(minerB);
+        c.waitingFor(TextFormat("miner 1 %s, miner 2 %s", MachineStatusName(a.status), MachineStatusName(b.status)));
+        if ((a.status != MachineStatus::Working || b.status != MachineStatus::TooClose) && c.t < 15.0) return false;
+        c.check("the first miner works", a.status == MachineStatus::Working, MachineStatusName(a.status));
+        c.check("the second, 3 m away, is too close", b.status == MachineStatus::TooClose, MachineStatusName(b.status));
+        ore = a.output.substr(0, a.output.find(' '));
+        c.check("it mines an ore", ore.find("_ore") != std::string::npos || ore == "coal", a.output);
+        c.note("the deposit's ore: " + ore);
+        c.keepCapture("a miner on a finite deposit and one too close (#2071)");
+        return true;
+    });
+    s.step("5 s on: the first has mined its ore, the second nothing", 30.0, [](ScenarioCtx& c) {
+        Factory::Sync(c.world);
+        const int n = Count(minerA, ore);
+        c.waitingFor(TextFormat("%d %s", n, ore.c_str()));
+        if (n < 4 && c.t < 25.0) return false; // 1 unit a second at grade >= 1
+        c.gt("the first miner mined ore", n, 3);
+        c.eq("the too-close miner mined nothing", Count(minerB, ore), 0);
+        return true;
+    });
+}
