@@ -992,6 +992,7 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
         out.centre = Vector3Scale(cd, R + std::max(0.0f, f.elevation(cd, 16.0f)));
     }
     auto solid = [&](Vector3 p) { return f.density(p, &edits) >= ISO_LEVEL; };
+    auto di = std::make_shared<TreeTileInstances>();
     for (int ci = 0; ci < kCells; ++ci)
         for (int cj = 0; cj < kCells; ++cj) {
             uint32_t s = Hash(seed ^ Hash((uint32_t)key.face * 2654435761U ^ (uint32_t)(key.i * kCells + ci) * 40503U ^ (uint32_t)(key.j * kCells + cj) * 9973U));
@@ -1179,8 +1180,8 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
             // #1995: one of the variant's forms, by its own hash (the cell's draws stay as they were); stones have one.
             const int form = TreeFormsOn() && !IsStoneVariant(v) ? (int)(Hash(s ^ 0x1995a5u) % (uint32_t)kTreeForms) : 0;
             const int mesh = TreeMeshOf(v, form);
-            out.inst[mesh].insert(out.inst[mesh].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
-            out.ids[mesh].push_back(id);
+            di->inst[mesh].insert(di->inst[mesh].end(), { p.x, p.y, p.z, scale, dir.x * code, dir.y * code, dir.z * code, h });
+            di->ids[mesh].push_back(id);
             const VariantMesh& vm = Variant(mesh);
             if (vm.trunkRadius > 0.0f) {
                 out.trunks.push_back({ p, dir, vm.trunkHeight * scale, vm.trunkRadius * scale });
@@ -1193,6 +1194,9 @@ void BuildTile(const PlanetField& f, const TerrainDeltas& edits, const PlantRemo
                 if (stone && SmallFloraClassOfVariant(v) >= kBoulderClass) out.trunks.push_back({ p, dir, vb.maxY * scale, 0.6f * vb.reach * scale });
             }
         }
+    for (int mesh = 0; mesh < kTreeMeshes; ++mesh)
+        if (!di->inst[mesh].empty()) di->meshes.push_back((uint16_t)mesh);
+    out.draw = std::move(di);
 }
 
 } // namespace
@@ -1225,6 +1229,18 @@ struct TreeSystem::Shared {
 TreeSystem::TreeSystem(std::shared_ptr<const PlanetField> f, unsigned int s)
     : shared(std::make_shared<Shared>()), field(std::move(f)), seed(s), radius(field->radius), edits(std::make_shared<TerrainDeltas>()),
       removed(std::make_shared<PlantRemovals>()), clearings(std::make_shared<std::vector<Vector4>>()) {}
+
+// (#2133) A batch rebuild in flight: the tiles' instance blocks as they were when it started (shared, immutable), the
+// camera and sun then, and the sorted buffers the job fills. The main thread uploads them once `done` is set. The job
+// holds its own reference, so the system may go away while it runs.
+struct TreeSystem::BatchWork {
+    std::atomic<bool> done{ false };
+    DVec3 anchor{};
+    Vector3 sun{};
+    struct Tile { std::shared_ptr<const TreeTileInstances> draw; Vector3 centre; };
+    std::vector<Tile> tiles;
+    std::vector<float> bufs[kTreeMeshes][kTreeSets][2]; // keep their capacity between rebuilds
+};
 
 TreeSystem::~TreeSystem() {
     shared->alive = false;
@@ -1337,7 +1353,17 @@ void TreeSystem::update(Planetoid& body, Vector3 camLocal) {
     }
     const double now = GetTime();
     const bool moved = Vector3Distance(camLocal, Vector3{ (float)anchor.x, (float)anchor.y, (float)anchor.z }) > 40.0f; // keep the near/far split current
-    if ((batchDirty || moved) && now - lastBatch > 0.2) rebuildBatches(camLocal);
+    // (#2133) A sort the job finished uploads here; the next starts only after that (the job owns its buffers meanwhile).
+    // The first batch waits for its job: a world just loaded draws its trees on its first frame.
+    if (batchInFlight && (batchWork->done.load(std::memory_order_acquire) || lastBatch < 0.0)) {
+        while (!batchWork->done.load(std::memory_order_acquire)) std::this_thread::yield();
+        finishBatch();
+    }
+    if (!batchInFlight && (batchDirty || moved) && now - lastBatch > 0.2) {
+        const bool first = lastBatch < 0.0;
+        startBatch(camLocal);
+        if (first) { while (!batchWork->done.load(std::memory_order_acquire)) std::this_thread::yield(); finishBatch(); }
+    }
 }
 
 int TreeSystem::readyTilesNear(Vector3 local, float range) const {
@@ -1348,92 +1374,117 @@ int TreeSystem::readyTilesNear(Vector3 local, float range) const {
     return n;
 }
 
-void TreeSystem::rebuildBatches(Vector3 camLocal) {
-    PROFILE_SCOPE("trees: rebuild batches");
-    lastBatch = GetTime();
-    batchDirty = false;
-    anchor = DVec3(camLocal);
-    EnsureVariantGpu();
-    drawnInstances = 0;
+// Sorts every instance into its mesh's, detail level's and shadow set's buffer. A job: reads only `w`.
+static void SortBatch(TreeSystem::BatchWork& w) {
+    PROFILE_SCOPE("trees: batch sort");
+    for (auto& m : w.bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
     // Set 0: everything drawn (to the draw distance). Sets 1 and 2: the shadow casters for the far (+-200 m) and
     // near (+-32 m) cascades, only the trees within reach of their boxes (with room for long low-sun shadows and
     // the 40 m the camera may move before the next rebuild): the shadow passes drew the whole 2 km forest twice,
     // ~1.3 ms a frame flying, for boxes a few hundred metres across.
     const float setReach[kTreeSets] = { 1e30f, kTreeShadowFarReach, kTreeShadowNearReach };
-    // One pass over the tiles sorts every instance into its mesh's buffers (#1995: a pass per mesh walked the tile map
-    // 180 times once phase 2 brought 14 species, ~14 ms a rebuild in a dense swamp). Main thread only, so the scratch
-    // buffers are shared by every TreeSystem and keep their capacity between rebuilds.
-    static std::vector<float> bufs[kTreeMeshes][kTreeSets][2];
-    for (auto& m : bufs) for (auto& s : m) { s[0].clear(); s[1].clear(); }
-    const bool sunKnown = shadowSunLocal.x != 0.0f || shadowSunLocal.y != 0.0f || shadowSunLocal.z != 0.0f;
-    for (auto& kv : tiles) {
-        const TreeTile& t = kv.second;
-        if (!t.ready) continue;
-        const float tileDist = Vector3Distance(t.centre, camLocal);
-        if (tileDist > std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize) continue;
-        for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
-            if (t.inst[mesh].empty()) continue;
+    const Vector3 sun = w.sun, cam = { (float)w.anchor.x, (float)w.anchor.y, (float)w.anchor.z };
+    const bool sunKnown = sun.x != 0.0f || sun.y != 0.0f || sun.z != 0.0f;
+    // RAYLIBGAME_TREE_NEAR=<m>: the switch distance for A/Bs (0: every tree far, to judge the far meshes up close).
+    static const float nearD = [] { const char* e = getenv("RAYLIBGAME_TREE_NEAR"); return e && *e ? (float)atof(e) : kTreeNearDistance; }();
+    // One pass over the tiles (#1995: a pass per mesh walked the tile map 180 times, ~14 ms a rebuild in a dense swamp),
+    // over each tile's non-empty meshes only.
+    for (const auto& t : w.tiles) {
+        const float tileDist = Vector3Distance(t.centre, cam);
+        for (uint16_t mesh : t.draw->meshes) {
             const float reach = VariantOfTreeMesh(mesh) < kFirstBush ? kTreeDrawDistance : kBushDrawDistance;
             if (tileDist > reach + kTreeTileSize) continue;
-            auto& buf = bufs[mesh];
-            for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8) {
-                const float x = (float)(t.inst[mesh][k] - anchor.x), y = (float)(t.inst[mesh][k + 1] - anchor.y), z = (float)(t.inst[mesh][k + 2] - anchor.z);
+            auto& buf = w.bufs[mesh];
+            const std::vector<float>& in = t.draw->inst[mesh];
+            for (size_t k = 0; k + 7 < in.size(); k += 8) {
+                const float x = (float)(in[k] - w.anchor.x), y = (float)(in[k + 1] - w.anchor.y), z = (float)(in[k + 2] - w.anchor.z);
                 const float d2 = x * x + y * y + z * z;
                 if (d2 > reach * reach) continue;
-                // RAYLIBGAME_TREE_NEAR=<m>: the switch distance for A/Bs (0: every tree far, to judge the far meshes up close).
-                static const float nearD = [] { const char* e = getenv("RAYLIBGAME_TREE_NEAR"); return e && *e ? (float)atof(e) : kTreeNearDistance; }();
                 const int lod = d2 < nearD * nearD ? 0 : 1;
-                const float inst[8] = { x, y, z, t.inst[mesh][k + 3], t.inst[mesh][k + 4], t.inst[mesh][k + 5], t.inst[mesh][k + 6], t.inst[mesh][k + 7] };
+                const float inst[8] = { x, y, z, in[k + 3], in[k + 4], in[k + 5], in[k + 6], in[k + 7] };
                 // Casters: near the sun axis through the camera (the cascades' boxes are centred there and run along it);
                 // without a sun direction yet, by distance from the camera.
-                const float along = x * shadowSunLocal.x + y * shadowSunLocal.y + z * shadowSunLocal.z;
+                const float along = x * sun.x + y * sun.y + z * sun.z;
                 const float perp2 = sunKnown ? std::max(0.0f, d2 - along * along) : d2;
                 for (int s = 0; s < kTreeSets; ++s)
                     if (s == 0 || perp2 <= setReach[s] * setReach[s]) buf[s][lod].insert(buf[s][lod].end(), inst, inst + 8);
             }
         }
     }
+}
+
+// (#2133) The rebuild ran on the main thread: ~3 ms of sorting and ~3.8 ms of GL object churn every 40 m of camera
+// movement at 2 km, 13-17 ms at 5 km. Now the main thread takes a snapshot of the tiles' shared instance blocks (a
+// pointer copy each) and a job sorts; a later frame's update uploads the result (finishBatch). The batches lag the camera
+// by a frame or two, inside the 40 m slack the near/far split and the shadow sets already allow.
+void TreeSystem::startBatch(Vector3 camLocal) {
+    PROFILE_SCOPE("trees: batch start");
+    lastBatch = GetTime();
+    batchDirty = false;
+    EnsureVariantGpu();
+    if (!batchWork) batchWork = std::make_shared<BatchWork>();
+    BatchWork& w = *batchWork;
+    w.done = false;
+    w.anchor = DVec3(camLocal);
+    w.sun = shadowSunLocal;
+    w.tiles.clear();
+    const float range = std::max(kTreeDrawDistance, kBushDrawDistance) + kTreeTileSize;
+    for (const auto& kv : tiles)
+        if (kv.second.ready && Vector3Distance(kv.second.centre, camLocal) <= range) w.tiles.push_back({ kv.second.draw, kv.second.centre });
+    auto job = batchWork;
+    JobSystem::tagNext(JobTag::Trees);
+    WorldJobs().submit(-1.0e9f, [job] { SortBatch(*job); job->done.store(true, std::memory_order_release); }); // ahead of every tile build
+    batchInFlight = true;
+}
+
+void TreeSystem::finishBatch() {
+    PROFILE_SCOPE("trees: batch upload");
+    BatchWork& w = *batchWork;
+    batchInFlight = false;
+    anchor = w.anchor;
+    drawnInstances = 0;
+    const auto& bufs = w.bufs;
+    // (#2133) The buffers and their VAOs live as long as the system: a rebuild refills them in place (orphaned, grown by
+    // half when too small) instead of deleting and re-creating up to ~1,700 GL objects, ~3.8 ms a rebuild at 2 km.
+    constexpr int stride = 8 * (int)sizeof(float);
+    auto makeVao = [](unsigned int buffer, const VariantMesh& m) {
+        const unsigned int va = rlLoadVertexArray();
+        rlEnableVertexArray(va);
+        rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
+        rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
+        rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
+        rlEnableVertexBuffer(buffer);
+        rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
+        rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
+        rlDisableVertexArray();
+        rlDisableVertexBuffer();
+        return va;
+    };
+    // Room for n instances in `buffer` (made on first use), then the data if any. True when the buffer is new.
+    auto fill = [](unsigned int& buffer, int& capacity, const float* data, int n) {
+        const bool made = !buffer;
+        if (made) glGenBuffers(1, &buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, buffer);
+        GpuMemTag gm_("trees"); // VRAM accounting (#302)
+        if (n > capacity) capacity = std::max({ n, capacity + capacity / 2, 64 });
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)capacity * stride, nullptr, GL_DYNAMIC_DRAW); // orphan: no stall on the old one
+        if (data && n) glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)n * stride, data);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        return made;
+    };
     for (int mesh = 0; mesh < kTreeMeshes; ++mesh) {
         const auto& buf = bufs[mesh];
         for (int s = 0; s < kTreeSets; ++s)
             for (int lod = 0; lod < 2; ++lod) {
                 const int slot = mesh + lod * kTreeMeshes;
-                unsigned int& va = vao[s][slot];
-                unsigned int& vb = vbo[s][slot];
-                if (va) { rlUnloadVertexArray(va); va = 0; }
-                if (vb) { rlUnloadVertexBuffer(vb); vb = 0; }
-                count[s][slot] = (int)(buf[s][lod].size() / 8);
-                if (!count[s][slot]) continue;
-                if (s == 0) drawnInstances += count[s][slot];
+                const int n = (int)(buf[s][lod].size() / 8);
+                count[s][slot] = n;
+                if (!n) continue; // the buffer keeps its old contents; nothing draws it
+                if (s == 0) drawnInstances += n;
                 const VariantMesh& m = Variant(mesh, lod);
-                va = rlLoadVertexArray();
-                rlEnableVertexArray(va);
-                rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
-                rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
-                rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
-                GpuMemTag gm667_("trees"); // VRAM accounting (#302)
-                vb = rlLoadVertexBuffer(buf[s][lod].data(), (int)(buf[s][lod].size() * sizeof(float)), false);
-                const int stride = 8 * (int)sizeof(float);
-                rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
-                rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
-                rlDisableVertexArray();
-                rlDisableVertexBuffer();
-                if (s == 0) {
-                    // #292: room for the visible instances of this slot (the view cull writes them), and a VAO on it.
-                    if (culledVao[slot]) { rlUnloadVertexArray(culledVao[slot]); culledVao[slot] = 0; }
-                    if (culledVbo[slot]) { rlUnloadVertexBuffer(culledVbo[slot]); culledVbo[slot] = 0; }
-                    culledVao[slot] = rlLoadVertexArray();
-                    rlEnableVertexArray(culledVao[slot]);
-                    rlEnableVertexBuffer(m.vboPos); rlSetVertexAttribute(0, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(0);
-                    rlEnableVertexBuffer(m.vboNrm); rlSetVertexAttribute(1, 3, RL_FLOAT, false, 0, 0); rlEnableVertexAttribute(1);
-                    rlEnableVertexBuffer(m.vboCol); rlSetVertexAttribute(2, 4, RL_UNSIGNED_BYTE, true, 0, 0); rlEnableVertexAttribute(2);
-                    GpuMemTag gm682_("trees"); // VRAM accounting (#302)
-                    culledVbo[slot] = rlLoadVertexBuffer(nullptr, (int)(buf[s][lod].size() * sizeof(float)), true);
-                    rlSetVertexAttribute(10, 4, RL_FLOAT, false, stride, 0); rlEnableVertexAttribute(10); rlSetVertexAttributeDivisor(10, 1);
-                    rlSetVertexAttribute(11, 4, RL_FLOAT, false, stride, 4 * sizeof(float)); rlEnableVertexAttribute(11); rlSetVertexAttributeDivisor(11, 1);
-                    rlDisableVertexArray();
-                    rlDisableVertexBuffer();
-                }
+                if (fill(vbo[s][slot], capacity[s][slot], buf[s][lod].data(), n)) vao[s][slot] = makeVao(vbo[s][slot], m);
+                // #292: room for the visible instances of this slot (the view cull writes them), and a VAO on it.
+                if (s == 0 && fill(culledVbo[slot], culledCapacity[slot], nullptr, n)) culledVao[slot] = makeVao(culledVbo[slot], m);
             }
     }
 }
@@ -1622,11 +1673,14 @@ void TreeSystem::remove(uint64_t id, double when) {
     auto it = tiles.find(TileOfPlant(id));
     if (it == tiles.end()) return;
     TreeTile& t = it->second;
-    for (int v = 0; v < kTreeMeshes; ++v) // by mesh (#1995)
-        for (size_t k = 0; k < t.ids[v].size(); ++k)
-            if (t.ids[v][k] == id) {
-                t.ids[v].erase(t.ids[v].begin() + k);
-                t.inst[v].erase(t.inst[v].begin() + k * 8, t.inst[v].begin() + k * 8 + 8);
+    for (uint16_t v : t.draw->meshes) // by mesh (#1995)
+        for (size_t k = 0; k < t.draw->ids[v].size(); ++k)
+            if (t.draw->ids[v][k] == id) {
+                // A new copy (#2133): a batch sort on a job may be reading the old one.
+                auto copy = std::make_shared<TreeTileInstances>(*t.draw);
+                copy->ids[v].erase(copy->ids[v].begin() + k);
+                copy->inst[v].erase(copy->inst[v].begin() + k * 8, copy->inst[v].begin() + k * 8 + 8);
+                t.draw = std::move(copy);
                 break;
             }
     t.plants.erase(std::remove_if(t.plants.begin(), t.plants.end(), [id](const Plant& p) { return p.id == id; }), t.plants.end());
@@ -1761,9 +1815,9 @@ void TreeSystem::speciesCounts(Vector3 local, float range, int out[(int)WoodSpec
     for (const auto& kv : tiles) {
         const TreeTile& t = kv.second;
         if (!t.ready) continue;
-        for (int mesh = 0; mesh < kFirstBush * kTreeForms; ++mesh) { const int v = VariantOfTreeMesh(mesh);
-            for (size_t k = 0; k + 7 < t.inst[mesh].size(); k += 8)
-                if (Vector3Distance({ t.inst[mesh][k], t.inst[mesh][k + 1], t.inst[mesh][k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; } }
+        for (int mesh = 0; mesh < kFirstBush * kTreeForms; ++mesh) { const int v = VariantOfTreeMesh(mesh); const auto& in = t.draw->inst[mesh];
+            for (size_t k = 0; k + 7 < in.size(); k += 8)
+                if (Vector3Distance({ in[k], in[k + 1], in[k + 2] }, local) < range) { ++out[(int)SpeciesOfVariant(v)]; if (classes) ++classes[SizeClassOfVariant(v)]; } }
     }
 }
 
