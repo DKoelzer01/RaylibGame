@@ -43,6 +43,7 @@ SCENARIO("hazards/cave-gas") {
     s.tags = { "caves", "hazards", "survival" }; // (caves: the runner's headless part 2)
     s.world = ScenarioWorld::Sandbox;
     s.args = { "--day" }; // (the haze shows in the capture)
+    s.realTime = true; // (#2109) the spawn's terrain builds take wall time: a headless sim runs ~40x faster
     s.timeout = 90.0;
 
     s.step("settle", 30.0, [](ScenarioCtx& c) {
@@ -53,8 +54,9 @@ SCENARIO("hazards/cave-gas") {
         return true;
     });
     // (#2109) The settle step's spawn raises the loading screen, which holds the gas update until the terrain round the
-    // spawn is built: on the hosted null-GL loop that takes longer than the walk's deadline in sim time. So the walk
-    // starts only once the update sees the pocket (12 m away, inside the 40 m near range).
+    // spawn is built: wall-clock work (realTime counts the deadlines in the lesser of sim and wall), and the walk's
+    // distance runs on its step's sim time, so it starts only once the update sees the pocket (12 m away, inside the 40 m
+    // near range).
     s.step("a CO2 pocket 12 m ahead", 30.0, [](ScenarioCtx& c) {
         if (c.t < 0.5) return false;
         auto place = [&] {
