@@ -1992,6 +1992,54 @@ Vector3 GravityAt(Scene& world, Vector3 p) {
     return g;
 }
 
+// ---- (Plan 11 F8b-4a, #2113) the same queries from a global point in double (world.h) ----
+
+bool TerrainSurfaceDistanceD(const Planetoid& p, const DVec3& w, float& dist, Vector3& normal) {
+    const Vector3 l = p.toLocalD(w).toFloat();
+    const float d = p.densityAt(l);
+    const float e = 0.25f; // as TerrainSurfaceDistance
+    const Vector3 g = {
+        (p.densityAt({ l.x + e, l.y, l.z }) - p.densityAt({ l.x - e, l.y, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y + e, l.z }) - p.densityAt({ l.x, l.y - e, l.z })) / (2 * e),
+        (p.densityAt({ l.x, l.y, l.z + e }) - p.densityAt({ l.x, l.y, l.z - e })) / (2 * e),
+    };
+    const float glen = Vector3Length(g);
+    if (glen < 1e-5f) return false;
+    dist = (ISO_LEVEL - d) / glen * p.scale;
+    normal = Vector3Normalize(p.dirToWorld(Vector3Scale(g, -1.0f / glen))); // the scale is uniform: the rotation alone
+    return true;
+}
+
+Planetoid* NearestPlanetoidD(Scene& world, const DVec3& w) {
+    Planetoid* best = nullptr;
+    double bestDist = 1e300;
+    for (auto& obj : world.objects) {
+        Planetoid* b = dynamic_cast<Planetoid*>(obj.get());
+        if (!b || b->vehicle) continue; // as NearestPlanetoid
+        const double surface = b->gravityRadius > 0.0f ? (double)b->gravityRadius : (double)b->radius * b->scale;
+        const double d = b->flat ? -1e300 : (w - b->worldPos).length() - surface;
+        if (d < bestDist) { bestDist = d; best = b; }
+    }
+    return best;
+}
+
+DVec3 BodyGravityAtD(const Planetoid& b, const DVec3& w) {
+    if (b.flat) return { 0.0, -(double)b.surfaceGravity, 0.0 };
+    const DVec3 toC = b.worldPos - w;
+    const double d = toC.length();
+    if (d < 1e-4) return { 0, 0, 0 };
+    const double R = b.gravityRadius > 0.0f ? (double)b.gravityRadius : (double)b.radius * b.scale;
+    const double g = d >= R ? b.surfaceGravity * (R * R) / (d * d) : b.surfaceGravity * d / R; // as BodyGravityAt
+    return toC * (g / d);
+}
+
+DVec3 GravityAtD(Scene& world, const DVec3& w) {
+    DVec3 g{ 0, 0, 0 };
+    for (auto& obj : world.objects)
+        if (const Planetoid* b = dynamic_cast<const Planetoid*>(obj.get())) g += BodyGravityAtD(*b, w);
+    return g;
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // Generation
@@ -2895,12 +2943,11 @@ void loadWorld(Scene& world) {
 }
 
 
-Vector3 RiverCurrent(Planetoid* p, Vector3 renderPoint) {
-    if (!p || !p->field) return { 0, 0, 0 };
+// The render and the double entries share these body-local cores.
+static Vector3 RiverCurrentLocal(Planetoid* p, Vector3 local) {
     const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
     const RiverNetwork* net = pf ? pf->rivers() : nullptr;
     if (!net) return { 0, 0, 0 };
-    const Vector3 local = p->toLocal(renderPoint);
     const float d = Vector3Length(local);
     if (d < 1.0f || Fluid::Simulated(*p, local)) return { 0, 0, 0 };
     const Vector3 dir = Vector3Scale(local, 1.0f / d);
@@ -2913,13 +2960,12 @@ Vector3 RiverCurrent(Planetoid* p, Vector3 renderPoint) {
     const float speed = sqrtf(std::max(0.0f, 1.0f - h.dist / (h.halfWidth + 3.0f))); // as water.fs shows it (voxel.cpp)
     return p->dirToWorld(Vector3Scale(flow, speed / fl));
 }
+Vector3 RiverCurrent(Planetoid* p, Vector3 renderPoint) { return p && p->field ? RiverCurrentLocal(p, p->toLocal(renderPoint)) : Vector3{ 0, 0, 0 }; }
+Vector3 RiverCurrentD(Planetoid* p, const DVec3& w) { return p && p->field ? RiverCurrentLocal(p, p->toLocalD(w).toFloat()) : Vector3{ 0, 0, 0 }; }
 
-bool IsUnderwater(Scene& world, Vector3 renderPoint) {
-    Planetoid* p = NearestPlanetoid(world, renderPoint);
-    if (!p || !p->field) return false;
+static bool UnderwaterLocal(Planetoid* p, Vector3 local) {
     const auto* pf = dynamic_cast<const PlanetField*>(p->field.get());
     if (!pf) return false;
-    const Vector3 local = p->toLocal(renderPoint);
     const float d = Vector3Length(local);
     const float sea = pf->seaLevelRadius();
     if (sea <= 0.0f || d < 1.0f) return false;
@@ -2935,6 +2981,14 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint) {
     if (d >= surface) return false;
     return d > pf->radius + pf->elevation(dir); // above the bed
 }
+bool IsUnderwater(Scene& world, Vector3 renderPoint) {
+    Planetoid* p = NearestPlanetoid(world, renderPoint);
+    return p && p->field && UnderwaterLocal(p, p->toLocal(renderPoint));
+}
+bool IsUnderwaterD(Scene& world, const DVec3& w) {
+    Planetoid* p = NearestPlanetoidD(world, w);
+    return p && p->field && UnderwaterLocal(p, p->toLocalD(w).toFloat());
+}
 
 #ifdef RAYLIBGAME_UNIT_TESTS
 // ---- Unit tests (#869): body-local <-> world frames under spin ----
@@ -2949,6 +3003,26 @@ std::unique_ptr<Planetoid> MakeBody(DVec3 pos, Vector3 rot, float radius = 60000
     return b;
 }
 double Dist(const DVec3& a, const DVec3& b) { return (a - b).length(); }
+}
+
+// (F8b-4a, #2113) The double queries give what the render-space ones give with the render origin beside the point.
+TEST(WorldQueriesD, MatchTheRenderOnes) {
+    auto rock = MakeBody({ 50000.0, -3000.0, 20000.0 }, { 10.0f, 37.25f, -4.0f }, 2000.0f);
+    rock->surfaceGravity = 0.5f; rock->gravityRadius = 2000.0f;
+    for (const DVec3 local : { DVec3{ 30.0, 1995.0, -12.0 }, DVec3{ -700.0, 600.0, 1700.0 }, DVec3{ 0.0, 2400.0, 0.0 } }) {
+        const DVec3 w = rock->toWorldD(local);
+        const DVec3 origin = w + DVec3{ 3.0, -1.5, 2.0 }; // the render origin a few metres off, as around the local player
+        rock->position = (rock->worldPos - origin).toFloat();
+        const Vector3 r = (w - origin).toFloat();
+        float d0 = 0.0f, d1 = 0.0f;
+        Vector3 n0{}, n1{};
+        ASSERT_TRUE(TerrainSurfaceDistance(*rock, r, d0, n0));
+        ASSERT_TRUE(TerrainSurfaceDistanceD(*rock, w, d1, n1));
+        EXPECT_NEAR(d0, d1, 1e-3f) << "surface distance";
+        EXPECT_LT(Vector3Distance(n0, n1), 1e-4f) << "normal";
+        const Vector3 g0 = BodyGravityAt(*rock, r), g1 = BodyGravityAtD(*rock, w).toFloat();
+        EXPECT_LT(Vector3Distance(g0, g1), 1e-5f) << "gravity";
+    }
 }
 
 // local -> world -> local is exact to micrometres 60 km from the centre, the body 100 km from the origin, at any angle.

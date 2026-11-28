@@ -195,6 +195,14 @@ bool IsUnderwater(Scene& world, Vector3 renderPoint);
 // A river's current at a point (world-space velocity, m/s; zero outside generated river water, #361): ~1 m/s
 // downstream mid-channel, slower to the banks; a simulated (released, dammed) reach has none here.
 Vector3 RiverCurrent(Planetoid* body, Vector3 renderPoint);
+// (Plan 11 F8b-4a, #2113) The same from a global (absolute world) point in double, the render origin unused: a point enters
+// the body's voxel space through toLocalD. Results are in world axes (normals, accelerations, velocities).
+bool TerrainSurfaceDistanceD(const Planetoid& p, const DVec3& worldPoint, float& dist, Vector3& outwardNormal);
+Planetoid* NearestPlanetoidD(Scene& world, const DVec3& worldPoint);
+DVec3 BodyGravityAtD(const Planetoid& body, const DVec3& worldPoint); // BodyGravityAt's model in double
+DVec3 GravityAtD(Scene& world, const DVec3& worldPoint);
+bool IsUnderwaterD(Scene& world, const DVec3& worldPoint);
+Vector3 RiverCurrentD(Planetoid* body, const DVec3& worldPoint);
 void SetWorldSavePath(const char* path); // bench runs save to their own file, never the player's
 const char* WorldSavePath();
 // (#346) after each save, the world file and player records are copied to <save>.backups/<date-time>/; the newest

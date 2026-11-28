@@ -54,16 +54,7 @@ bool Frames_FromGlobal(const DVec3& posGlobal, const DVec3& velGlobal, FrameRef 
 bool Frames_Convert(const FramePos& f, FrameRef to, FramePos& out);
 
 // Gravity summed over every body (inverse-square outside, linear inside, as BodyGravityAt) at a global point, in double.
-DVec3 Frames_GravityGlobal(const std::vector<Planetoid*>& bodies, const DVec3& posGlobal);
-
-// (Plan 11 F8b-4a, #2113) Origin-free versions of the render-space queries the player uses, from a global point in
-// double, so a caller need not move the scene's render origin (RenderOriginScope) to ask them.
-// The body whose mean surface is nearest (NearestPlanetoid's rule: flat terrain always wins, vehicles have no ground).
-Planetoid* Frames_NearestBody(const std::vector<Planetoid*>& bodies, const DVec3& posGlobal);
-// TerrainSurfaceDistance's estimate (m, + outside) and outward normal (global axes) at a global point: the point goes into
-// the body's voxel space through toLocalD (rounded to float once), not through render space.
-bool Frames_SurfaceDistance(const Planetoid& body, const DVec3& posGlobal, float& dist, Vector3& outwardNormal);
-// The acceleration an unsupported thing feels in its frame: gravity (into the frame's axes) minus the frame body's own
+DVec3 Frames_GravityGlobal(const std::vector<Planetoid*>& bodies, const DVec3& posGlobal);// The acceleration an unsupported thing feels in its frame: gravity (into the frame's axes) minus the frame body's own
 // acceleration, plus in Fixed the fictitious terms: Coriolis -2 w x v and centrifugal -w x (w x x) (the user's decision,
 // #667: spin forces for anything airborne). spinForces = false leaves them out (A/B).
 DVec3 Frames_Acceleration(const std::vector<Planetoid*>& bodies, const FramePos& f, bool spinForces = true);
