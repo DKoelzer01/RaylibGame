@@ -13,7 +13,9 @@ on:
     branches: [develop]
   schedule:
     - cron: "0 5 * * *"     # nightly, 05:00 UTC: tier full (the schedule fires from the default branch's copy of this file)
-    - cron: "30 */4 * * *"  # the batched run of the integration branch every 4 h (GUESS: 4-6 h), only when it moved
+    # the batched run of the integration branch every 4 h (GUESS: 4-6 h), only when it moved; no 04:30 slot, which built
+    # the same commit as the 05:00 nightly beside it (#2117)
+    - cron: "30 0,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       ref:
@@ -53,9 +55,20 @@ on:
 permissions:
   contents: read
 
+# (#2117, user 2026-11-28) A newer run cancels the one it supersedes, queued or running. One group per branch the run
+# builds (the ref input, the integration branch for a schedule, else the branch it was started on), in three classes so
+# nothing cancels a run that covers more than it does:
+#   full   the nightly, a push to develop, tier=full: a newer full run supersedes it;
+#   timed  the 4-h batch and tier=scheduled: never cancelled; a duplicate queues and its plan step skips the commit the
+#          one before covered (tools/ci/ci_plan.sh's markers, also written by nightly, manual batch and full runs);
+#   run    everything else (a PR's evidence, manual batches): the newest dispatch on the branch wins. The merge bot's
+#          runner-evidence check reads the run on the PR's head SHA, which is the newest one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false # one GPU run at a time; a newer push waits instead of killing a run mid-test
+  group: >-
+    ${{ github.workflow }}-${{ inputs.ref || (github.event_name == 'schedule' && (vars.INTEGRATION_BRANCH || vars.NIGHTLY_BRANCH || 'staging')) || github.ref_name }}-${{
+    ((github.event_name == 'push' || inputs.tier == 'full' || github.event.schedule == '0 5 * * *') && 'full') ||
+    ((github.event_name == 'schedule' || inputs.tier == 'scheduled') && 'timed') || 'run' }}
+  cancel-in-progress: ${{ !((github.event_name == 'schedule' && github.event.schedule != '0 5 * * *') || inputs.tier == 'scheduled') }}
 
 # The nightly run builds this branch (a schedule always starts on the default branch, main, which lags); a manual run
 # builds its `ref` input, else the branch it was started on.
