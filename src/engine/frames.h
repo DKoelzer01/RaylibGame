@@ -14,7 +14,8 @@
 
 class Planetoid;
 
-// The switch (RAYLIBGAME_FRAMES=1): off by default until F2's gate passes; tests may set it.
+// The switch: on by default since F8a (#667); RAYLIBGAME_FRAMES=0 runs the old world-frame path until F8b (#2113).
+// Tests may set it.
 bool Frames_On();
 void Frames_SetOn(bool on);
 
