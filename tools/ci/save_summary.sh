@@ -25,6 +25,9 @@ if [ -n "$run" ] && [ -d "$run" ]; then
     # One line per scenario: name, verdict, reason, times (the full results.json files stay in the job's artifact).
     : > "$dest/scenarios.tsv"
     while IFS= read -r f; do
+        # (#2127) A list run's combined results.json (in the out folder, beside the per-scenario ones) holds every run; its
+        # first "scenario" key duplicated the part's first scenario (audio/directions, determinism/state-hash).
+        grep -q '^  "runs": \[' "$f" && continue
         # results.json is written by the game with one key per line: pull the few fields without jq
         name=$(grep -m1 '"scenario"' "$f" | sed 's/.*: *"\(.*\)",*/\1/')
         verdict=$(grep -m1 '"verdict"' "$f" | sed 's/.*: *"\(.*\)",*/\1/')
