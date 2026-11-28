@@ -28,7 +28,8 @@ void Frames_SetOn(bool on) { gFramesOn = on ? 1 : 0; }
 namespace {
 constexpr double kInf = 1e300;
 DVec3 Cross(const DVec3& a, const DVec3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
-double Dot(const DVec3& a, const DVec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+// Used only by the unit tests below.
+[[maybe_unused]] double Dot(const DVec3& a, const DVec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 DVec3 Mul(const double R[3][3], const DVec3& v) { // R v: body-local -> global axes
     return { R[0][0] * v.x + R[0][1] * v.y + R[0][2] * v.z, R[1][0] * v.x + R[1][1] * v.y + R[1][2] * v.z, R[2][0] * v.x + R[2][1] * v.y + R[2][2] * v.z };
 }
