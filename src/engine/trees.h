@@ -85,7 +85,9 @@ constexpr float kTreeTileSize = 64.0f;      // m
 constexpr float kTreeInterestRange = 192.0f; // m: tiles kept around other interest centres (other players, #318)
 inline float kTreeDrawDistance = 2000.0f;    // trees (simple meshes past kTreeNearDistance); --tree-dist
 constexpr float kBushDrawDistance = 300.0f;
-constexpr float kTreeNearDistance = 200.0f; // full meshes inside this, simple ones beyond
+// Full meshes inside this, simple ones beyond. #1995 phase 4: 400 m (was 200): the swap to the few-prism far mesh shows
+// less out there, for +0.01-0.07 ms a frame at -O3 (perf/forest-view, perf/planet-view; bushes now stay full to 300 m).
+constexpr float kTreeNearDistance = 400.0f;
 // Shadow casters (#204 perf): trees within these of the camera go into the far / near cascade passes (boxes +-200 m and
 // +-32 m, plus long low-sun shadows and the 40 m the camera may move between batch rebuilds).
 constexpr float kTreeShadowFarReach = 355.0f, kTreeShadowNearReach = 115.0f; // from the sun axis through the camera: box half-diagonal + 40 m drift + 30 m tree
