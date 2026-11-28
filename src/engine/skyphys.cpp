@@ -163,7 +163,6 @@ void main()
         Lut trans, multi, sky, haze;
         float builtR = -1.0f, builtRt = -1.0f, skyH = -1.0f, skyMu = -2.0f;
         float tint = 0.35f, exposure = 10.0f;
-        long rebuilds = 0; // sky-view and haze LUT rebuilds since the start (tests, #2143)
     } S;
 
     bool EnvOn() { const char* e = getenv("RAYLIBGAME_SKY_PHYS"); return !(e && e[0] == '0'); } // on by default (user, 2026-11-18); =0 off
@@ -242,7 +241,6 @@ bool SkyPhys_On()
     return S.ok;
 }
 float SkyPhys_Tint() { return S.tint; }
-long SkyPhys_Rebuilds() { return S.rebuilds; }
 float SkyPhys_Exposure() { return S.exposure; }
 unsigned SkyPhys_SkyViewTexture() { return S.ok && S.skyH > 0.0f ? S.sky.tex : 0; }
 unsigned SkyPhys_HazeTexture() { return S.ok && S.skyH > 0.0f ? S.haze.tex : 0; }
@@ -262,15 +260,10 @@ void SkyPhys_Update(float planetRadius, float airTop, float camDist, float sunCo
     if (!SkyPhys_On() || planetRadius <= 0.0f || airTop <= planetRadius) return;
     const float R = kLutR, Rt = kLutRt, viewHeight = SkyPhys_LutHeight(planetRadius, airTop, camDist);
     const bool planet = R != S.builtR || Rt != S.builtRt;
-    // The sky view moves with the camera height (1 m, or 0.1% higher up) and the sun. (#2143) A rebuild costs ~0.5 ms of GPU;
-    // at 1e-4 in cos(zenith) (~0.006 deg) the turning planet's sun crossed it nearly every frame (0.55 ms a frame in play;
-    // the perf scenes pin the sun with --day and never saw it). 4e-4 (~0.02-0.03 deg) rebuilds a quarter as often.
-    // RAYLIBGAME_SKY_SUN_STEP sets it (A/B: 1e-4 = before).
-    static const float sunStep = getenv("RAYLIBGAME_SKY_SUN_STEP") ? std::max(0.0f, (float)atof(getenv("RAYLIBGAME_SKY_SUN_STEP"))) : 4e-4f;
+    // The sky view moves with the camera height (1 m, or 0.1% higher up) and the sun (~0.006 deg).
     const bool view = planet || fabsf(viewHeight - S.skyH) > std::max(0.001f, 0.001f * (viewHeight - R))
-                   || fabsf(sunCosZenith - S.skyMu) > sunStep;
+                   || fabsf(sunCosZenith - S.skyMu) > 1e-4f;
     if (!view) return;
-    ++S.rebuilds;
     rlDrawRenderBatchActive();
     GLint prevFbo = 0, vp[4] = { 0, 0, 0, 0 }, prevProg = 0, prevVao = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);

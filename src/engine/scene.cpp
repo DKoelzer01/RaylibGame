@@ -632,6 +632,9 @@ void Scene::drawScene(int gamestate) {
     }
     GpuTimer_Mark("shadow");
     KickGpu();
+    // (#2143) The flush's own segment: no GPU commands, but when the CPU is behind the GPU idles here until the next
+    // submission, and that idle time read as ~0.7 ms of "sky" (factory-scale). Its own name keeps it off the next pass.
+    GpuTimer_Mark("kick-idle");
     rlSetClipPlanes(defaultNear, defaultFar);
     }
 
