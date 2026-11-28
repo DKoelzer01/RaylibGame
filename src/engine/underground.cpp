@@ -1,5 +1,6 @@
 #include "underground.h"
 #include "voxel.h"
+#include "depthtable.h"
 
 #include <raymath.h>
 #include <cmath>
@@ -26,14 +27,14 @@ const char* UndergroundRegion_Name(UndergroundRegion r) {
 // then humid forests' fungal caves.
 UndergroundRegion UndergroundRegion_Classify(const UndergroundInputs& in) {
     if (in.depth < 0.0f) return UndergroundRegion::None;                                   // above the ground
-    if (in.ocean) return in.depth < 200.0f ? UndergroundRegion::Flooded : UndergroundRegion::None;
+    if (in.ocean) return in.depth < kDepth.floodedSeaMax ? UndergroundRegion::Flooded : UndergroundRegion::None;
     if (in.province == 3) return UndergroundRegion::Karst;
     if (in.province == 2) return UndergroundRegion::Volcanic;
-    if (in.temp < -2.0f && in.depth < 150.0f) return UndergroundRegion::Frozen;
-    if (in.depth > 150.0f && in.roll < 0.12f) return UndergroundRegion::Crystal;
+    if (in.temp < -2.0f && in.depth < kDepth.frozenMax) return UndergroundRegion::Frozen;
+    if (in.depth > kDepth.crystalMin && in.roll < 0.12f) return UndergroundRegion::Crystal;
     const Biome b = (Biome)in.biome;
-    if (b == Biome::Swamp || (in.moist > 0.8f && in.depth < 100.0f)) return UndergroundRegion::Flooded;
-    if ((b == Biome::Jungle || b == Biome::Forest) && in.moist > 0.55f && in.depth > 30.0f && in.depth < 250.0f && in.roll < 0.45f) return UndergroundRegion::Fungal;
+    if (b == Biome::Swamp || (in.moist > 0.8f && in.depth < kDepth.floodedWetMax)) return UndergroundRegion::Flooded;
+    if ((b == Biome::Jungle || b == Biome::Forest) && in.moist > 0.55f && in.depth > kDepth.fungalMin && in.depth < kDepth.fungalMax && in.roll < 0.45f) return UndergroundRegion::Fungal;
     return UndergroundRegion::None;
 }
 
@@ -88,5 +89,22 @@ TEST(Underground, ClassifyFollowsTheRules) {
     { auto k = in; k.biome = (int)Biome::Jungle; k.moist = 0.7f; k.roll = 0.2f; EXPECT_EQ(UndergroundRegion_Classify(k), UndergroundRegion::Fungal); }
     { auto k = in; k.biome = (int)Biome::Jungle; k.moist = 0.7f; k.roll = 0.6f; EXPECT_EQ(UndergroundRegion_Classify(k), UndergroundRegion::None) << "fungal in patches"; }
     EXPECT_STREQ(UndergroundRegion_Name(UndergroundRegion::Fungal), "fungal");
+}
+
+// #1952: the depth table's bands, and the orders its readers rely on.
+TEST(DepthTable, BandsAndTheirOrder) {
+    const DepthTable& t = kDepth;
+    EXPECT_EQ(t.bandAt(10.0f), DepthBand::Surface);
+    EXPECT_EQ(t.bandAt(t.shallow), DepthBand::Shallow);
+    EXPECT_EQ(t.bandAt(t.middle - 0.01f), DepthBand::Shallow);
+    EXPECT_EQ(t.bandAt(t.middle), DepthBand::Middle);
+    EXPECT_EQ(t.bandAt(t.deep), DepthBand::Deep);
+    EXPECT_EQ(t.bandAt(5000.0f), DepthBand::Deep);
+    EXPECT_LT(t.shallow, t.middle); EXPECT_LT(t.middle, t.deep);
+    EXPECT_LE(t.passageMin, t.chamberMin); EXPECT_LE(t.chamberMin, t.passageMax) << "chambers hang off passage vertices";
+    EXPECT_LE(t.cavernMin, t.passageMax) << "caverns hang off passage vertices";
+    EXPECT_LT(t.sheetMin, t.sheetMax); EXPECT_LE(t.sheetMax, t.passageMax);
+    EXPECT_LT(t.fungalMin, t.fungalMax);
+    EXPECT_LT(t.mantleClearance, t.noiseCavernMantle);
 }
 #endif

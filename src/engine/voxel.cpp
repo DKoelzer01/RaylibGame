@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <cstring>
 #include "voxel.h"
+#include "depthtable.h"
 #include "ores.h"
 #include "oreveins.h"
 #include "underground.h"
@@ -1254,7 +1255,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
     // A passage: a gently turning random walk of segments 15-30 m long, kept 25 m + its radius deep (never at the surface),
     // the radius wandering in [rmin, 8] m. Main passages branch (25% of their vertices) into shorter, narrower side passages,
     // so the tunnels form networks (#615, #999: spaghetti and noodle caves). Branches at 35% of main vertices.
-    auto minDepth = [](float rad) { return 25.0f + 1.3f * rad; };
+    auto minDepth = [](float rad) { return kDepth.passageMin + kDepth.passagePerRadius * rad; };
     // (#1058, Plan 10 step 5) A chamber at a deep passage vertex c (depth m under the ground; 2% of deep background vertices,
     // 10% of karst ones): an ellipsoid flattened
     // along the local vertical (half-width 15-45 m, mostly the smaller, height x0.3-0.45: wide and low, its roof domed),
@@ -1264,7 +1265,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
         const float u0 = Ug(g), u1 = Ug(g), u2 = Ug(g), u3 = Ug(g);
         const float r = 15.0f + 30.0f * u0 * u0, flat = 0.3f + 0.15f * u1;
-        if (depth - r * flat * 2.3f < 10.0f) return;
+        if (depth - r * flat * 2.3f < kDepth.roomRoofClear) return;
         const Vector3 up = Vector3Normalize(c);
         const Vector3 hd = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
         const Vector3 sd = Vector3CrossProduct(up, hd);
@@ -1306,7 +1307,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
         const float u0 = Ug(g), u1 = Ug(g);
         const float r = 50.0f + 100.0f * u0 * u0, flat = 0.3f + 0.1f * u1;
-        if (depth - r * flat * 2.3f < 10.0f) return;
+        if (depth - r * flat * 2.3f < kDepth.roomRoofClear) return;
         const Vector3 sp = Vector3Scale(Vector3Normalize(c), R); // (the gather finds cells by sea-level projections)
         for (int a = 0; a < 3; ++a) {
             const float p = a == 0 ? sp.x : a == 1 ? sp.y : sp.z, lo = a == 0 ? cellLo.x : a == 1 ? cellLo.y : cellLo.z;
@@ -1352,7 +1353,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         std::mt19937 g(bits);
         std::uniform_real_distribution<float> Ug(0.0f, 1.0f);
         const float r = 12.0f + 13.0f * Ug(g), flat = 0.12f + 0.08f * Ug(g), L = 40.0f + 60.0f * Ug(g), turn = 2.0f * PI * Ug(g);
-        if (depth - r * flat * 2.3f < 10.0f) return;
+        if (depth - r * flat * 2.3f < kDepth.roomRoofClear) return;
         const Vector3 hd0 = Vector3Normalize(Vector3Subtract(head, Vector3Scale(up, Vector3DotProduct(head, up))));
         const Vector3 sd0 = Vector3CrossProduct(up, hd0);
         const Vector3 hd = Vector3Add(Vector3Scale(hd0, cosf(turn)), Vector3Scale(sd0, sinf(turn)));
@@ -1362,7 +1363,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         const Vector3 end = Vector3Scale(dir2, R + e2 - depth);           // level: the same depth under the ground
         const Vector3 mid = Vector3Scale(Vector3Add(c, end), 0.5f);
         const float ml = Vector3Length(mid);
-        if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml - r * flat * 2.3f < 10.0f) return; // (the ground between may dip)
+        if (R + f.elevation(Vector3Scale(mid, 1.0f / ml)) - ml - r * flat * 2.3f < kDepth.roomRoofClear) return; // (the ground between may dip)
         const Vector3 sp = Vector3Scale(Vector3Normalize(mid), R);
         for (int a = 0; a < 3; ++a) {
             const float p = a == 0 ? sp.x : a == 1 ? sp.y : sp.z, lo = a == 0 ? cellLo.x : a == 1 ? cellLo.y : cellLo.z;
@@ -1383,7 +1384,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             const Vector3 side = Vector3CrossProduct(dir, head);
             head = Vector3Normalize(Vector3Add(Vector3Scale(head, cosf(turn)), Vector3Scale(side, sinf(turn))));
             const float r2 = std::clamp(r + (U(rng) - 0.5f) * 3.0f, rmin, rmax);
-            const float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), 150.0f);
+            const float depth2 = std::clamp(depth + (U(rng) - 0.5f) * 0.4f * L, minDepth(r2), kDepth.passageMax);
             const Vector3 dir2 = Vector3Normalize(Vector3Add(Vector3Scale(dir, R), Vector3Scale(head, L)));
             const float e2 = f.elevation(dir2);
             if (e2 < 0.0f) break;                                          // not under the sea
@@ -1397,13 +1398,13 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
             sg.up = Vector3Normalize(Vector3Add(pos, pos2));
             segs->push_back(sg);
             pos = pos2; dir = dir2; r = r2; depth = depth2;
-            if (level == 0 && depth2 >= 40.0f && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
+            if (level == 0 && depth2 >= kDepth.chamberMin && U(rng) < 0.02f && CaveChambersOn()) chamber(pos2, head, depth2, rng); // (#1058) a chamber at a deep vertex
             if (level == 0) { // (#1465) large caverns and sheet caves: their own numbers (no draw from rng: the rest stays as before)
                 uint32_t h = cellBits ^ (uint32_t)(++vertexNo) * 0x9E3779B1u;
                 h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
-                if (cavernsOn && depth2 >= 100.0f && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
+                if (cavernsOn && depth2 >= kDepth.cavernMin && (h >> 8) * (1.0f / 16777216.0f) < kCavernShare) cavern(pos2, head, depth2, h);
                 const uint32_t hs = h * 0x85ebca6bu ^ 0x5bd1e995u; // a second draw from the same hash
-                if (sheetsOn && depth2 >= 30.0f && depth2 <= 120.0f && ((hs ^ (hs >> 13)) >> 8) * (1.0f / 16777216.0f) < kSheetShare) sheet(pos2, head, depth2, hs);
+                if (sheetsOn && depth2 >= kDepth.sheetMin && depth2 <= kDepth.sheetMax && ((hs ^ (hs >> 13)) >> 8) * (1.0f / 16777216.0f) < kSheetShare) sheet(pos2, head, depth2, hs);
             }
             head = Vector3Normalize(Vector3Subtract(head, Vector3Scale(dir, Vector3DotProduct(head, dir)))); // back into the new tangent plane
             if (level == 0 && k + 1 < n && U(rng) < 0.35f) {               // a side passage
@@ -1431,7 +1432,7 @@ static std::shared_ptr<const CaveCellData> CaveCell(const PlanetField& f, unsign
         const float ang = U(rng) * 2.0f * PI;
         const Vector3 head = Vector3Normalize(Vector3Add(Vector3Scale(t1, cosf(ang)), Vector3Scale(Vector3CrossProduct(dir, t1), sinf(ang))));
         const float r = 2.0f + 6.0f * U(rng);
-        const float depth = std::max(25.0f + 95.0f * U(rng), minDepth(r));
+        const float depth = std::max(kDepth.passageMin + kDepth.passageStartSpan * U(rng), minDepth(r));
         walk(Vector3Scale(dir, R + f.elevation(dir) - depth), head, depth, r, 0.5f + 0.4f * U(rng), 6 + (int)(U(rng) * 11.0f), 0);
     }
     // (#615 step 3) Natural mouths: at most one per cell, on a slope of ~20 degrees or more. The entrance runs level into the
@@ -2173,7 +2174,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
     const float caveWeight = std::clamp(2.0f - fp / 8.0f, 0.0f, 1.0f);
     if (CavesGraph()) { // (#615 step 2) graph tunnels (never at the surface: no mouths yet) and the caverns
         float m = 1e9f;
-        if (caveWeight > 0.0f && depth > -12.0f && d > mantleRadius + 20.0f) { // (#615 step 3: up to the surface at mouths)
+        if (caveWeight > 0.0f && depth > -12.0f && d > mantleRadius + kDepth.mantleClearance) { // (#615 step 3: up to the surface at mouths)
             if (depth > -12.0f) {
                 const float* segData = tlCaveSegs ? tlCaveSegs->data() : nullptr;
                 int n = tlCaveSegs ? (int)(tlCaveSegs->size() / 24) : 0;
@@ -2261,7 +2262,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
     constexpr float kRoof = 4.0f;
     const float gate = mouth > 0.0f ? -14.0f : caveTop;
     float m = 1e9f;                                            // metres to the nearest cave wall (< 0 inside)
-    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + 20.0f) {
+    if (caveWeight > 0.0f && depth > gate && d > mantleRadius + kDepth.mantleClearance) {
         const float near = 2.0f * std::max(fp, 1.0f) + 2.0f; // farther than this from a cave = plain rock for meshing
         const float reach = mouth > 0.0f ? std::max(near, kRoof + 1.0f - depth) : near; // a thin roof's samples too
         // A tunnel needs both fields near zero: if the first alone rules one out, skip the second.
@@ -2269,7 +2270,7 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
         if ((a - kTunnelLevel) * 100.0f <= reach) {
             float top = std::clamp((depth - caveTop) / 8.0f, 0.0f, 1.0f);
             top = top + (1.0f - top) * mouth;
-            const float fade = top * std::min(1.0f, (d - mantleRadius - 20.0f) / 10.0f);
+            const float fade = top * std::min(1.0f, (d - mantleRadius - kDepth.mantleClearance) / kDepth.mantleFade);
             const float t = std::max(a, fabsf(cavesB.fractal(2, p.x, p.y, p.z)));
             m = (t - kTunnelLevel) * 100.0f + (1.0f - fade * caveWeight) * 20.0f;
             if (hit) hit->kind = 1;
@@ -2280,8 +2281,8 @@ float PlanetField::caveDistance(Vector3 p, float d, float depth, float surface, 
                 if (hit && c > 0.0f) hit->collapsed = true;
             }
         }
-        if (depth > 30.0f && d > mantleRadius + 40.0f) {
-            const float fade = std::min(1.0f, (depth - 30.0f) / 20.0f) * std::min(1.0f, (d - mantleRadius - 40.0f) / 20.0f);
+        if (depth > kDepth.noiseCavernMin && d > mantleRadius + kDepth.noiseCavernMantle) { // (terrain.glsl mirrors kDepth)
+            const float fade = std::min(1.0f, (depth - kDepth.noiseCavernMin) / kDepth.noiseCavernFade) * std::min(1.0f, (d - mantleRadius - kDepth.noiseCavernMantle) / kDepth.noiseCavernFade);
             const float c = caverns.fractal(2, p.x, p.y * 1.4f, p.z); // a little flattened: wider than tall
             const float mc = (kCavernLevel - c) * 120.0f + (1.0f - fade * caveWeight) * 30.0f;
             if (hit && mc < m) hit->kind = 2;
@@ -3935,7 +3936,7 @@ const char* PlanetField::OreKindName(int kind) {
 int PlanetField::OreKindCount() { return Ores_Count(); }
 
 int PlanetField::oreKind(Vector3 p, float depth) const {
-    if (moon || depth < 3.0f) return -1;
+    if (moon || depth < kDepth.oreMin) return -1;
     // A deposit of a vein family in its shape (#1467; every shape stays inside its own cell: centre at least 24 m from the
     // edges, kVeinReach 22 m), each point one of the family's ores
     const int cx = (int)floorf(p.x / kDepositCell), cy = (int)floorf(p.y / kDepositCell), cz = (int)floorf(p.z / kDepositCell);
@@ -3951,7 +3952,7 @@ int PlanetField::oreKind(Vector3 p, float depth) const {
     }
     // Scattered pockets of the common ores and coal, more of them near the surface.
     const float pocket = veins.fractal(1, p.x * 4.0f, p.y * 4.0f, p.z * 4.0f);
-    const float threshold = 0.72f + 0.12f * std::clamp((depth - 20.0f) / 200.0f, 0.0f, 1.0f) - 0.08f * (gen.resources - 1.0f); // #504: richer, more pockets
+    const float threshold = 0.72f + kDepth.pocketFadeThreshold * std::clamp((depth - kDepth.pocketFadeStart) / kDepth.pocketFadeSpan, 0.0f, 1.0f) - 0.08f * (gen.resources - 1.0f); // #504: richer, more pockets
     if (pocket > threshold) {
         uint32_t h = OreHash((int)floorf(p.x / 8.0f), (int)floorf(p.y / 8.0f), (int)floorf(p.z / 8.0f), oreSeed ^ 0x5eedu);
         return Ores_PocketKind(OreUnit(h)); // (#1466) ores.txt: the pocket shares (today iron, copper, tin and coal)
