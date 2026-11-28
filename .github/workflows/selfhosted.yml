@@ -154,6 +154,9 @@ jobs:
       FULL_RUN: ${{ needs.plan.outputs.tier != 'affected' && 'true' || 'false' }}
       TIER: ${{ needs.plan.outputs.tier }}
       AFFECTED: ${{ needs.plan.outputs.scenarios }}
+      # (#2121) The slow scenarios and the twins run in the full tier only (tools/ci/nightly_scenarios.txt): the batch and
+      # affected tiers' tag:X and all selections leave them out; a scenario named outright still runs.
+      RAYLIBGAME_SCENARIO_SKIP_FILE: ${{ needs.plan.outputs.tier != 'full' && format('{0}/tools/ci/nightly_scenarios.txt', github.workspace) || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -286,8 +289,8 @@ jobs:
           done
           echo "scenarios part 1: exit $rc1; part 2: exit $rc2 (run in parallel)" | tee -a "$GITHUB_STEP_SUMMARY"
           [ $rc1 -eq 0 ] && [ $rc2 -eq 0 ]
-      - name: Pose twins (frames/*-pose, rocket/*-pose; nightly and integration branches only, #1768)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.FULL_RUN == 'true' }}
+      - name: Pose twins (frames/*-pose, rocket/*-pose; the full tier only, #1768, #2121)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && env.TIER == 'full' }}
         timeout-minutes: 30
         working-directory: ${{ env.RUN }}
         env:

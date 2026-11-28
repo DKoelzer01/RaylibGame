@@ -60,14 +60,41 @@ std::vector<ScenarioDef> AllDefs() {
     std::sort(out.begin(), out.end(), [](const ScenarioDef& a, const ScenarioDef& b) { return a.name < b.name; });
     return out;
 }
+// (#2121) RAYLIBGAME_SCENARIO_SKIP_FILE: a file of scenario names (one a line, # comments; tools/ci/nightly_scenarios.txt)
+// that a tag:TAG or all selection leaves out. A scenario named outright still runs (a PR's own scenarios, the nightly's list).
+static std::set<std::string> SkipList() {
+    std::set<std::string> out;
+    const char* path = getenv("RAYLIBGAME_SCENARIO_SKIP_FILE");
+    if (!path || !*path) return out;
+    FILE* f = fopen(path, "r");
+    if (!f) { printf("scenario: skip list %s not found: nothing is skipped\n", path); return out; }
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        std::string s(line);
+        if (const size_t h = s.find('#'); h != std::string::npos) s.resize(h);
+        const size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+        if (a != std::string::npos) out.insert(s.substr(a, b - a + 1));
+    }
+    fclose(f);
+    return out;
+}
 // sel: a name, tag:TAG, all, or several of those separated by commas.
 std::vector<ScenarioDef> Matching(const std::string& sel) {
     std::vector<std::string> parts;
     for (size_t a = 0; a <= sel.size();) { const size_t b = std::min(sel.find(',', a), sel.size()); if (b > a) parts.push_back(sel.substr(a, b - a)); a = b + 1; }
+    const std::set<std::string> skip = SkipList();
     std::vector<ScenarioDef> out;
-    for (ScenarioDef& d : AllDefs())
-        for (const std::string& p : parts)
-            if (p == "all" || p == d.name || (p.rfind("tag:", 0) == 0 && d.hasTag(p.substr(4)))) { out.push_back(std::move(d)); break; }
+    std::string skipped;
+    for (ScenarioDef& d : AllDefs()) {
+        bool named = false, byTag = false;
+        for (const std::string& p : parts) {
+            if (p == d.name) named = true;
+            else if (p == "all" || (p.rfind("tag:", 0) == 0 && d.hasTag(p.substr(4)))) byTag = true;
+        }
+        if (!named && byTag && skip.count(d.name)) { skipped += (skipped.empty() ? "" : ", ") + d.name; continue; }
+        if (named || byTag) out.push_back(std::move(d));
+    }
+    if (!skipped.empty()) printf("scenario: left out by the skip list (#2121, nightly only): %s\n", skipped.c_str());
     return out;
 }
 
