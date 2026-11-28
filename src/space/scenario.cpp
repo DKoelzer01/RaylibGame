@@ -435,6 +435,7 @@ void Scenario_PrepareArgs(int& argc, char**& argv) {
         for (const char* x : { "--record", R.capture.c_str(), "--record-every", "4", "--record-continue", "--sheet", "--record-hud", "0" }) a.push_back(x);
         a.push_back("--frames"); a.push_back(std::to_string(frames));
     } else { a.push_back("--fixed-dt"); a.push_back("0.0166666667"); }
+    if (R.def.lod > 0.0) { a.push_back("--lod"); a.push_back(Num(R.def.lod)); } // (#2126) before args and rest: a later --lod wins
     for (const std::string& x : R.def.args) a.push_back(x);
     for (const std::string& x : rest) a.push_back(x);
     for (size_t i = 1; i < a.size(); ++i) R.args += (i > 1 ? " " : "") + a[i];

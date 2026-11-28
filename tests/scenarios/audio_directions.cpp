@@ -138,6 +138,7 @@ SCENARIO("audio/directions") {
     s.timeout = 300.0;
     s.record = false;
     s.env = { { "RAYLIBGAME_AUDIO_V2", "1" } };
+    s.lod = 1.5; // (#2126) checks sound directions, not terrain: 61 -> 38 s and 43 -> 31 s on the sandbox
 
     s.step("settle", 150.0, [](ScenarioCtx& c) {
         const bool idle = WorldIdle();
